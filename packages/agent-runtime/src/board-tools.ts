@@ -18,7 +18,8 @@ import { textResult } from './gateway-tools'
 import { trackRemoteTask } from './remote-tasks'
 import { channelIdentity } from './channel-tools'
 import { resolveRuntimeIdentity } from './workspace-runtime-mode'
-import { agentBoardsRequest } from './internal-api'
+import { agentBoardsRequest, uploadAgentFile } from './internal-api'
+import { publishWorkspaceMedia, uploadWorkspaceMedia, type MediaUploader } from './workspace-media'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { isSafeRelativePath, parseSystemManifest } from './system-manifest'
@@ -73,6 +74,30 @@ function identity(ctx: ToolContext) {
 const enc = (s: string) => encodeURIComponent(s.replace(/^#/, ''))
 
 type Params = Record<string, any>
+
+const DESCRIPTION_MEDIA =
+  'Markdown. Embed workspace images or videos with ![what it shows](path/to/file.png); they are uploaded to the card so people can see them. Always write the alt text.'
+
+const MEDIA_ATTACHMENTS = Type.Optional(Type.Array(Type.String(), {
+  description: 'Workspace paths of images or videos to attach (up to 10), e.g. ["renders/hero.png", "clips/demo.mp4"].',
+}))
+
+/** Uploads into the board's channel through `route` (a board or card attachments route). */
+function boardUploader(ctx: ToolContext, ws: string, route: string): MediaUploader {
+  const { projectId, sessionId } = identity(ctx)
+  return (file) => uploadAgentFile(ws, route, file, { projectId, sessionId })
+}
+
+/** Rewrites workspace media in a description to stored URLs; returns the body field and any problems. */
+async function withPublishedDescription(ctx: ToolContext, ws: string, route: string, description: unknown) {
+  if (typeof description !== 'string' || !description.includes('![')) return { description, mediaErrors: [] as string[] }
+  const published = await publishWorkspaceMedia(description, ctx.workspaceDir, boardUploader(ctx, ws, route))
+  return { description: published.markdown, mediaErrors: published.errors }
+}
+
+function withMediaErrors<T extends { ok: boolean; data?: any }>(r: T, errors: string[]): T {
+  return errors.length && r.ok ? { ...r, data: { ...r.data, media_errors: errors } } : r
+}
 
 function defineTool(
   ctx: ToolContext,
@@ -266,7 +291,7 @@ function itemCreate(ctx: ToolContext) {
       board: BOARD_REF,
       channel: Type.Optional(CHANNEL),
       title: Type.String(),
-      description: Type.Optional(Type.String({ description: 'Markdown. What is needed and the acceptance criteria.' })),
+      description: Type.Optional(Type.String({ description: `What is needed and the acceptance criteria. ${DESCRIPTION_MEDIA}` })),
       column: Type.Optional(Type.String({ description: 'Column name; default is the first backlog column.' })),
       fields: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: 'Values for the board’s fields, e.g. { "amount": 12000, "customer": "Acme" }.' })),
       priority: Type.Optional(PRIORITY),
@@ -279,8 +304,10 @@ function itemCreate(ctx: ToolContext) {
     }),
   }, async (ws, p) => {
     const { board, channel, ...rest } = p
-    const r = await agentBoardsRequest(ws, 'POST', `/agent-boards/${enc(board)}/items`, { body: { ...rest, ...identity(ctx) }, query: { channel } })
-    return withCardTask(ctx, r.ok ? { ...r, data: { item: compactItem(r.data?.item) } } : r, { handoff: true })
+    const route = `/agent-boards/${enc(board)}/attachments${channel ? `?channel=${enc(channel)}` : ''}`
+    const { description, mediaErrors } = await withPublishedDescription(ctx, ws, route, rest.description)
+    const r = await agentBoardsRequest(ws, 'POST', `/agent-boards/${enc(board)}/items`, { body: { ...rest, description, ...identity(ctx) }, query: { channel } })
+    return withCardTask(ctx, withMediaErrors(r.ok ? { ...r, data: { item: compactItem(r.data?.item) } } : r, mediaErrors), { handoff: true })
   })
 }
 
@@ -306,7 +333,7 @@ function itemUpdate(ctx: ToolContext) {
     parameters: Type.Object({
       item: ITEM_REF,
       title: Type.Optional(Type.String()),
-      description: Type.Optional(Type.String()),
+      description: Type.Optional(Type.String({ description: DESCRIPTION_MEDIA })),
       fields: Type.Optional(Type.Record(Type.String(), Type.Any())),
       priority: Type.Optional(PRIORITY),
       assignee_user: Type.Optional(Type.Union([Type.String(), Type.Null()])),
@@ -317,8 +344,10 @@ function itemUpdate(ctx: ToolContext) {
     }),
   }, async (ws, p) => {
     const { item, ...rest } = p
-    const r = await agentBoardsRequest(ws, 'PATCH', `/agent-work-items/${enc(item)}`, { body: { ...rest, ...identity(ctx) } })
-    return withCardTask(ctx, r.ok ? { ...r, data: { item: compactItem(r.data?.item) } } : r, { handoff: true })
+    const { description, mediaErrors } = await withPublishedDescription(ctx, ws, `/agent-work-items/${enc(item)}/attachments`, rest.description)
+    const body = { ...rest, ...(description !== undefined ? { description } : {}), ...identity(ctx) }
+    const r = await agentBoardsRequest(ws, 'PATCH', `/agent-work-items/${enc(item)}`, { body })
+    return withCardTask(ctx, withMediaErrors(r.ok ? { ...r, data: { item: compactItem(r.data?.item) } } : r, mediaErrors), { handoff: true })
   })
 }
 
@@ -347,9 +376,23 @@ function itemComment(ctx: ToolContext) {
   return defineTool(ctx, {
     name: 'work_item_comment',
     label: 'Comment on Card',
-    description: 'Post in a card’s thread as yourself, e.g. what you did, what you found, or a question. Tag a person or agent the same way as in team_chat_post. Use this rather than team_chat_post when you are not already replying in the card’s thread.',
-    parameters: Type.Object({ item: ITEM_REF, text: Type.String() }),
-  }, async (ws, p) => agentBoardsRequest(ws, 'POST', `/agent-work-items/${enc(p.item)}/comments`, { body: { text: p.text, ...identity(ctx) } }))
+    description: 'Post in a card’s thread as yourself, e.g. what you did, what you found, or a question. Tag a person or agent the same way as in team_chat_post. Use this rather than team_chat_post when you are not already replying in the card’s thread. ' +
+      'To show images or videos you made (renders, screenshots, clips), pass their workspace paths in attachments; they appear in the thread.',
+    parameters: Type.Object({ item: ITEM_REF, text: Type.Optional(Type.String()), attachments: MEDIA_ATTACHMENTS }),
+  }, async (ws, p) => {
+    const paths: string[] = Array.isArray(p.attachments) ? p.attachments : []
+    if (!p.text?.trim() && !paths.length) return { ok: false, error: 'text or attachments is required', code: 'invalid_input' }
+    const uploaded = paths.length
+      ? await uploadWorkspaceMedia(ctx.workspaceDir, paths, boardUploader(ctx, ws, `/agent-work-items/${enc(p.item)}/attachments`))
+      : { files: [], errors: [] as string[] }
+    if (paths.length && !uploaded.files.length && !p.text?.trim()) {
+      return { ok: false, error: uploaded.errors.join('; ') || 'No attachments could be uploaded', code: 'upload_failed' }
+    }
+    const r = await agentBoardsRequest(ws, 'POST', `/agent-work-items/${enc(p.item)}/comments`, {
+      body: { text: p.text ?? '', attachmentIds: uploaded.files.map((f) => f.id), ...identity(ctx) },
+    })
+    return withMediaErrors(r, uploaded.errors)
+  })
 }
 
 function itemBulk(ctx: ToolContext) {

@@ -32,6 +32,7 @@ import { renderMentions, renderMentionsMarkdown, type MentionNames } from '../..
 import { isVoiceNote } from '../../lib/voice-note'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
 import { DownloadBadge, FileAttachmentCard } from './FileAttachmentCard'
+import { VideoAttachment } from './VideoAttachment'
 import { hasReacted, reactionTooltip } from '../../lib/team-chat-reactions'
 import { WebTooltip } from '../chat/WebTooltip'
 import { useUserStatus } from '../../hooks/useChatPrefs'
@@ -727,6 +728,11 @@ function MessageRowImpl(props: MessageRowProps) {
                       accessibilityLabel={a.name}
                     />
                   </Pressable>
+                  <DownloadBadge url={absoluteApiUrl(a.url)} name={a.name} />
+                </View>
+              ) : a.mimeType.startsWith('video/') ? (
+                <View key={a.id} className="relative">
+                  <VideoAttachment url={absoluteApiUrl(a.url)} name={a.name} width={a.width} height={a.height} />
                   <DownloadBadge url={absoluteApiUrl(a.url)} name={a.name} />
                 </View>
               ) : (

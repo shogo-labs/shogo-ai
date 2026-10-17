@@ -199,6 +199,93 @@ export function linkifyBareUrls(markdown: string): string {
   return unmask(text, fences, "FENCE")
 }
 
+/**
+ * Relative src for a markdown image that points at a workspace file.
+ * Streamdown's sanitizer replaces bare paths like `brand/x.png` with
+ * "[Image blocked]", so the path rides in a query string instead.
+ */
+export const IMAGE_SRC_PREFIX = "/shogo-image?path="
+
+const MARKDOWN_IMAGE_RE = /!\[([^\]\n]*)\]\(\s*(<[^>\n]+>|[^)\s]+)((?:\s+"[^"\n]*")?)\s*\)/g
+const PASSTHROUGH_SRC_RE = /^(?:[a-z][a-z0-9+.-]*:(?!\/\/\/)|\/\/|#)/i
+const VIDEO_EXT_RE = /\.(?:mp4|m4v|webm|mov|ogv)(?:[?#].*)?$/i
+
+export function imageSrcHref(path: string): string {
+  return `${IMAGE_SRC_PREFIX}${encodeURIComponent(path)}`
+}
+
+export function pathFromImageSrc(src: string | null | undefined): string | null {
+  if (typeof src !== "string") return null
+  try {
+    const url = new URL(src, "http://shogo.local")
+    if (url.pathname !== "/shogo-image") return null
+    const path = url.searchParams.get("path")
+    return path && path.length > 0 ? path : null
+  } catch {
+    return null
+  }
+}
+
+export function isVideoSrc(src: string | null | undefined): boolean {
+  return typeof src === "string" && VIDEO_EXT_RE.test(src)
+}
+
+/** Stored chat or channel file that loads without the agent being awake. */
+export function isStoredMediaSrc(src: string): boolean {
+  return src.startsWith("/api/chat-attachments/") || src.startsWith("/api/conversation-files/")
+}
+
+/**
+ * Workspace path for a markdown media target, or null when the target is a
+ * URL the browser can load as is.
+ */
+export function workspaceMediaTarget(target: string): string | null {
+  let value = target.trim()
+  if (value.startsWith("<") && value.endsWith(">")) value = value.slice(1, -1).trim()
+  if (!value) return null
+  if (/^file:\/\//i.test(value)) {
+    try {
+      value = decodeURIComponent(new URL(value).pathname)
+    } catch {
+      return null
+    }
+  } else if (PASSTHROUGH_SRC_RE.test(value)) {
+    return null
+  }
+  if (value.startsWith(IMAGE_SRC_PREFIX) || isStoredMediaSrc(value)) return null
+  return value
+}
+
+/**
+ * Workspace-relative path the runtime's download route expects. Absolute
+ * sandbox paths keep only what follows the workspace root.
+ */
+export function normalizeWorkspaceMediaPath(path: string): string {
+  let value = path.replace(/\\/g, "/").replace(/^\.\//, "")
+  const rooted = /\/(?:app\/)?workspace\/(.+)$/.exec(value)
+  if (value.startsWith("/") && rooted) value = rooted[1]!
+  return value.replace(/^\/+/, "")
+}
+
+/**
+ * Point markdown images at workspace files through `IMAGE_SRC_PREFIX`.
+ * URLs, data and blob sources, and images inside code are left alone.
+ */
+export function rewriteWorkspaceMedia(markdown: string): string {
+  if (!markdown.includes("![")) return markdown
+  const fences: string[] = []
+  const inlineCode: string[] = []
+  let text = mask(markdown, FENCE_RE, fences, "FENCE")
+  text = mask(text, INLINE_CODE_RE, inlineCode, "CODE")
+  text = text.replace(MARKDOWN_IMAGE_RE, (full, alt: string, target: string, title: string) => {
+    const path = workspaceMediaTarget(target)
+    if (!path) return full
+    return `![${alt}](${imageSrcHref(path)}${title})`
+  })
+  text = unmask(text, inlineCode, "CODE")
+  return unmask(text, fences, "FENCE")
+}
+
 export interface ResolvedChatFile {
   projectId: string | null
   relPath: string

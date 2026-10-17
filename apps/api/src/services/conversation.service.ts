@@ -1231,12 +1231,17 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     },
   })
 
-  if (attachmentIds.length && input.authorUserId) {
+  const uploader = input.authorUserId
+    ? { uploaderUserId: input.authorUserId }
+    : input.authorType === 'agent' && input.authorAgentRef
+      ? { uploaderAgentRef: input.authorAgentRef.projectId ? `project:${input.authorAgentRef.projectId}` : 'workspace' }
+      : null
+  if (attachmentIds.length && uploader) {
     await db.conversationAttachment.updateMany({
       where: {
         id: { in: attachmentIds },
         conversationId: conversation.id,
-        uploaderUserId: input.authorUserId,
+        ...uploader,
         messageId: null,
       },
       data: { messageId: row.id },

@@ -3378,7 +3378,10 @@ model ConversationAttachment {
   id             String   @id @default(uuid())
   conversationId String
   messageId      String?
-  uploaderUserId String
+  /// Null when an agent uploaded the file.
+  uploaderUserId String?
+  /// "workspace" or "project:<id>" for files an agent posted.
+  uploaderAgentRef String?
   storageKey     String
   name           String
   mimeType       String

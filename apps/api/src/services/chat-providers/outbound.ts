@@ -135,6 +135,8 @@ export async function postAgentMessage(input: {
   agentChain?: AgentChain | null
   /** Message kind and status card; see `conversation-message-kind`. */
   blocks?: MessageBlocks | null
+  /** Files this agent uploaded to the conversation (see `storeAgentAttachment`). */
+  attachmentIds?: string[]
   /** Buttons for the mirrored copy on platforms that have them; a function gets the stored row (for its id). */
   actions?: OutboundAction[] | ((row: any) => OutboundAction[])
 }): Promise<PostMessageResult> {
@@ -158,6 +160,7 @@ export async function postAgentMessage(input: {
     clientMsgId: external ? input.externalRef?.slice(0, 100) ?? null : null,
     agentChain: input.agentChain ?? null,
     blocks: input.blocks ?? undefined,
+    attachmentIds: input.attachmentIds,
   })
   if (!result.duplicate) {
     await mirror(result.conversation, result.row, input.text, { type: 'agent', ...agent }, typeof input.actions === 'function' ? input.actions(result.row) : input.actions)

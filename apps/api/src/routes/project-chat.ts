@@ -39,8 +39,11 @@ import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
 import { sendPushToUser } from "../lib/push-notifications"
 import {
+  externalizeAssistantTextMedia,
   externalizeToolOutput,
   inlineChatBodyAttachments,
+  newAssistantMediaBudget,
+  workspaceDownloadPath,
 } from "../lib/chat-attachments"
 import {
   clearActiveTurn,
@@ -168,6 +171,12 @@ export async function trackUsageFromStream(
      * buffer.
      */
     resume?: (fromSeq: number) => Promise<Response | null>
+    /**
+     * Read a workspace file from the runtime (`/agent/workspace/download/…`).
+     * When set, images and videos the reply embeds by workspace path are
+     * copied into chat-attachment storage before the final persist.
+     */
+    fetchWorkspaceFile?: (path: string) => Promise<Response | null>
     /**
      * Backoff delays (ms) between resume attempts when `resume()` returns
      * null / throws. Defaults to a short escalating sequence — this
@@ -922,6 +931,18 @@ export async function trackUsageFromStream(
     if (billedUsd > 0) {
       console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
     }
+  }
+
+  if (chatSessionId && options.fetchWorkspaceFile && !foreignTurn && accumulatedText.includes('![')) {
+    const budget = newAssistantMediaBudget()
+    for (const part of orderedParts) {
+      if (part.type !== 'text' || typeof part.text !== 'string') continue
+      part.text = await externalizeAssistantTextMedia(chatSessionId, part.text, options.fetchWorkspaceFile, budget)
+    }
+    accumulatedText = orderedParts
+      .filter((p) => p.type === 'text')
+      .map((p) => p.text)
+      .join('')
   }
 
   // Always perform one final forced flush after resume/replay handling. This
@@ -1832,6 +1853,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                 return null
               }
             },
+            fetchWorkspaceFile: (path) =>
+              fetchFromRuntime(projectId, workspaceDownloadPath(path), { method: 'GET' }).catch(() => null),
           }).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
           ).finally(() => {

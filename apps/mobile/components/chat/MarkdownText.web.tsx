@@ -9,11 +9,14 @@ import { usePhoneLayoutOverride } from "../../lib/native-phone-layout"
 import { normalizeRichTextPaste } from "../../lib/rich-text-paste"
 import {
   FILE_HREF_PREFIX,
+  IMAGE_SRC_PREFIX,
   isMentionHref,
   linkifyBareUrls,
   linkifyFilePaths,
   pathFromFileHref,
+  rewriteWorkspaceMedia,
 } from "./file-links"
+import { MarkdownMedia } from "./MarkdownMedia.web"
 
 export interface MarkdownTextProps {
   children: string
@@ -105,7 +108,7 @@ export const MarkdownText = memo(
     const cls = className ? `${baseClassName} ${className}` : baseClassName
     const source = children || ""
     const body = useMemo(() => {
-      const normalized = normalizeRichTextPaste(source)
+      const normalized = rewriteWorkspaceMedia(normalizeRichTextPaste(source))
       const fileLinked = onFilePress ? linkifyFilePaths(normalized) : normalized
       return linkifyBareUrls(fileLinked)
     }, [onFilePress, source])
@@ -117,6 +120,9 @@ export const MarkdownText = memo(
           ) : (
             <FileAwareLink {...props} onFilePress={onFilePress} />
           ),
+        img: ({ src, alt }: { src?: string | Blob; alt?: string; node?: unknown }) => (
+          <MarkdownMedia src={typeof src === "string" ? src : null} alt={alt} />
+        ),
       }),
       [onFilePress],
     )
@@ -129,7 +135,7 @@ export const MarkdownText = memo(
         controls={false}
         components={components}
         urlTransform={(url, key, node) =>
-          url.startsWith(FILE_HREF_PREFIX) || isMentionHref(url)
+          url.startsWith(FILE_HREF_PREFIX) || url.startsWith(IMAGE_SRC_PREFIX) || isMentionHref(url)
             ? url
             : defaultUrlTransform(url, key, node)
         }

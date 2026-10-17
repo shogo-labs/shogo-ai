@@ -263,6 +263,133 @@ export async function externalizeMessageAttachments(
   }
 }
 
+const MARKDOWN_MEDIA_RE = /!\[([^\]\n]*)\]\(\s*(<[^>\n]+>|[^)\s]+)((?:\s+"[^"\n]*")?)\s*\)/g
+const MARKDOWN_FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g
+const URL_SCHEME_RE = /^(?:[a-z][a-z0-9+.-]*:(?!\/\/\/)|\/\/|#)/i
+export const MAX_ASSISTANT_MEDIA_FILES = 10
+export const MAX_ASSISTANT_MEDIA_BYTES = 50 * 1024 * 1024
+
+/**
+ * Workspace-relative path for a markdown media target, or null when the
+ * target is already a URL (http, data, blob, stored attachment).
+ */
+export function workspaceMediaPath(target: string): string | null {
+  let value = target.trim()
+  if (value.startsWith('<') && value.endsWith('>')) value = value.slice(1, -1).trim()
+  if (!value) return null
+  if (/^file:\/\//i.test(value)) {
+    try {
+      value = decodeURIComponent(new URL(value).pathname)
+    } catch {
+      return null
+    }
+  } else if (URL_SCHEME_RE.test(value) || value.startsWith('/api/')) {
+    return null
+  }
+  if (value.startsWith('/shogo-image?')) {
+    try {
+      value = new URL(value, 'http://shogo.local').searchParams.get('path') || ''
+    } catch {
+      return null
+    }
+  }
+  value = value.replace(/\\/g, '/').replace(/^\.\//, '')
+  const rooted = /\/(?:app\/)?workspace\/(.+)$/.exec(value)
+  if (value.startsWith('/') && rooted) value = rooted[1]!
+  value = value.replace(/^\/+/, '')
+  if (!value || value.split('/').includes('..')) return null
+  return value
+}
+
+/** Runtime route that serves a workspace file. */
+export function workspaceDownloadPath(path: string): string {
+  return `/agent/workspace/download/${path.split('/').filter(Boolean).map(encodeURIComponent).join('/')}`
+}
+
+export interface AssistantMediaBudget {
+  /** Workspace path -> stored URL, shared across a message's text parts. */
+  stored: Map<string, string | null>
+  files: number
+  bytes: number
+}
+
+export function newAssistantMediaBudget(): AssistantMediaBudget {
+  return { stored: new Map(), files: 0, bytes: 0 }
+}
+
+/**
+ * Copy workspace images and videos referenced by `![alt](path)` in an
+ * assistant reply into chat-attachment storage and point the markdown at the
+ * stored copies, so the reply still renders after the agent sleeps or the
+ * file is removed. A ref that can't be fetched or stored is left as written.
+ */
+export async function externalizeAssistantTextMedia(
+  sessionId: string,
+  text: string,
+  fetchFile: (path: string) => Promise<Response | null>,
+  budget: AssistantMediaBudget = newAssistantMediaBudget(),
+): Promise<string> {
+  if (!text.includes('![')) return text
+  const fences: string[] = []
+  const masked = text.replace(MARKDOWN_FENCE_RE, (match) => {
+    fences.push(match)
+    return `\u0000FENCE${fences.length - 1}\u0000`
+  })
+
+  const paths = new Set<string>()
+  for (const match of masked.matchAll(MARKDOWN_MEDIA_RE)) {
+    const path = workspaceMediaPath(match[2]!)
+    if (path) paths.add(path)
+  }
+
+  for (const path of paths) {
+    if (budget.stored.has(path)) continue
+    if (budget.files >= MAX_ASSISTANT_MEDIA_FILES) {
+      budget.stored.set(path, null)
+      continue
+    }
+    budget.stored.set(path, await storeWorkspaceMedia(sessionId, path, fetchFile, budget))
+  }
+
+  const rewritten = masked.replace(MARKDOWN_MEDIA_RE, (full, alt: string, target: string, title: string) => {
+    const path = workspaceMediaPath(target)
+    const url = path ? budget.stored.get(path) : null
+    return url ? `![${alt}](${url}${title})` : full
+  })
+  return rewritten.replace(/\u0000FENCE(\d+)\u0000/g, (_, index: string) => fences[Number(index)] ?? '')
+}
+
+async function storeWorkspaceMedia(
+  sessionId: string,
+  path: string,
+  fetchFile: (path: string) => Promise<Response | null>,
+  budget: AssistantMediaBudget,
+): Promise<string | null> {
+  try {
+    const response = await fetchFile(path)
+    if (!response || !response.ok) return null
+    const mediaType = (response.headers.get('content-type') || '').split(';')[0]!.trim().toLowerCase()
+    if (!mediaType.startsWith('image/') && !mediaType.startsWith('video/')) return null
+    const declared = Number(response.headers.get('content-length') || 0)
+    if (declared && budget.bytes + declared > MAX_ASSISTANT_MEDIA_BYTES) return null
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (budget.bytes + bytes.byteLength > MAX_ASSISTANT_MEDIA_BYTES) return null
+    const name = path.split('/').pop()
+    const key = buildChatAttachmentKey(sessionId, bytes, mediaType, name)
+    await getArtifactS3Client().send(new PutObjectCommand({
+      Bucket: getArtifactBucket(),
+      Key: key,
+      Body: bytes,
+      ContentType: mediaType,
+    }))
+    budget.files++
+    budget.bytes += bytes.byteLength
+    return buildChatAttachmentUrl(key)
+  } catch {
+    return null
+  }
+}
+
 async function inlineAttachmentPart(part: any): Promise<any> {
   if (!part || typeof part !== 'object' || part.type !== 'file' || typeof part.url !== 'string') {
     return part

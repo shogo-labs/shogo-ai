@@ -11,10 +11,18 @@ import {
   useWindowDimensions,
   View,
   type ColorValue,
+  type ImageStyle,
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { isMentionHref, linkifyBareUrls, linkifyFilePaths, pathFromFileHref } from "./file-links";
+import {
+  isMentionHref,
+  linkifyBareUrls,
+  linkifyFilePaths,
+  pathFromFileHref,
+  rewriteWorkspaceMedia,
+} from "./file-links";
+import { MarkdownMediaNative } from "./MarkdownMediaNative";
 import { normalizeRichTextPaste } from "../../lib/rich-text-paste";
 import { usePhoneLayout } from "../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
@@ -292,6 +300,10 @@ class NativePhoneMarkdownRenderer extends Renderer {
     return super.link(children, href, styles, title);
   }
 
+  override image(uri: string, alt?: string, _style?: ImageStyle, _title?: string): ReactNode {
+    return <MarkdownMediaNative key={this.getKey()} src={uri} alt={alt} />;
+  }
+
   override table(
     header: ReactNode[][],
     rows: ReactNode[][][],
@@ -423,7 +435,7 @@ export const MarkdownText = memo(function MarkdownText({
   );
 
   const value = useMemo(() => {
-    const normalized = normalizeRichTextPaste(children || "");
+    const normalized = rewriteWorkspaceMedia(normalizeRichTextPaste(children || ""));
     const fileLinked = onFilePress ? linkifyFilePaths(normalized) : normalized;
     return linkifyBareUrls(fileLinked);
   }, [children, onFilePress]);

@@ -47,6 +47,7 @@ import {
   type InboxFilter,
 } from '../services/work-boards.service'
 import { agentRefFor, normalizeAgentRef } from '../services/work-board-defaults'
+import { attachmentIdsFrom, readAgentUpload, storeAgentAttachment } from '../services/agent-attachments'
 
 const db = prisma as any
 
@@ -853,11 +854,46 @@ export function agentBoardRoutes(config: AgentBoardRoutesConfig): Hono {
     if (ctx instanceof Response) return ctx
     try {
       const row = await item(ctx.auth.workspaceId, ctx.projectId, c.req.param('item'))
-      return c.json(await commentWorkItem(row, String(body.text ?? ''), ctx.actor, { projectId: ctx.projectId }), 201)
+      return c.json(await commentWorkItem(row, String(body.text ?? ''), ctx.actor, {
+        projectId: ctx.projectId,
+        attachmentIds: attachmentIdsFrom(body.attachmentIds),
+      }), 201)
     } catch (err) {
       return errorResponse(c, err)
     }
   })
+
+  /**
+   * An agent uploads an image or video for a card: to attach to a comment
+   * (`attachmentIds`) or to embed in the description by its returned url.
+   * Files live in the board's channel, next to the card thread.
+   */
+  async function uploadForBoard(c: any, resolve: (ctx: { auth: AgentBoardAuthContext; projectId: string | null }) => Promise<any>) {
+    try {
+      const { file, form } = await readAgentUpload(c)
+      const ctx = await context(c, { projectId: form.get('projectId'), sessionId: form.get('sessionId') })
+      if (ctx instanceof Response) return ctx
+      const boardRow = await resolve(ctx)
+      if (!boardRow?.conversationId) {
+        return c.json({ error: { code: 'no_channel', message: 'This board has no channel to keep files in' } }, 409)
+      }
+      const attachment = await storeAgentAttachment({
+        workspaceId: ctx.auth.workspaceId,
+        conversationId: boardRow.conversationId,
+        agentRef: ctx.actor.agentRef ?? agentRefFor(ctx.projectId),
+        file,
+      })
+      return c.json({ attachment }, 201)
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  }
+
+  router.post(`${base}/:board/attachments`, (c) =>
+    uploadForBoard(c, (ctx) => board(c, ctx.auth.workspaceId, ctx.projectId, c.req.param('board'))))
+
+  router.post(`${items}/:item/attachments`, (c) =>
+    uploadForBoard(c, async (ctx) => (await item(ctx.auth.workspaceId, ctx.projectId, c.req.param('item'))).board))
 
   router.post(`${items}/:item/archive`, async (c) => {
     const body = await readJson(c)

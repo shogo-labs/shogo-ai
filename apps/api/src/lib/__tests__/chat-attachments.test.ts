@@ -45,7 +45,10 @@ const {
   buildChatAttachmentKey,
   buildChatAttachmentUrl,
   copyChatPartsToSession,
+  externalizeAssistantTextMedia,
   externalizeMessageAttachments,
+  newAssistantMediaBudget,
+  workspaceMediaPath,
   inlineChatBodyAttachments,
   loadAttachmentAsDataUrl,
   signAttachmentToken,
@@ -168,5 +171,59 @@ describe('chat attachments', () => {
     )
     expect(allowed.status).toBe(302)
     expect(allowed.headers.get('location')).toBe(`https://signed.example/${key}`)
+  })
+})
+
+describe('externalizeAssistantTextMedia', () => {
+  const png = (bytes = [1, 2, 3]) =>
+    new Response(new Uint8Array(bytes), { headers: { 'content-type': 'image/png', 'content-length': String(bytes.length) } })
+
+  it('copies workspace images into chat storage and rewrites the markdown', async () => {
+    const requested: string[] = []
+    const text = 'Here:\n\n![Faithful](brand/buddy/faithful.png)\n\nand ![](./brand/buddy/faithful.png) again'
+    const out = await externalizeAssistantTextMedia('session-1', text, async (path) => {
+      requested.push(path)
+      return png()
+    })
+
+    expect(requested).toEqual(['brand/buddy/faithful.png'])
+    const puts = sends.filter((s) => s instanceof PutObjectCommand)
+    expect(puts).toHaveLength(1)
+    expect(puts[0].input.ContentType).toBe('image/png')
+    const url = buildChatAttachmentUrl(puts[0].input.Key)
+    expect(out).toBe(`Here:\n\n![Faithful](${url})\n\nand ![](${url}) again`)
+  })
+
+  it('leaves URLs, code and unreadable files as written', async () => {
+    const text = [
+      '![a](https://example.com/a.png)',
+      '```\n![b](code/b.png)\n```',
+      '![c](missing.png)',
+      '![d](notes.txt)',
+    ].join('\n')
+    const out = await externalizeAssistantTextMedia('session-1', text, async (path) =>
+      path === 'notes.txt'
+        ? new Response('hi', { headers: { 'content-type': 'text/plain' } })
+        : new Response('nope', { status: 404 }))
+    expect(out).toBe(text)
+    expect(sends.filter((s) => s instanceof PutObjectCommand)).toHaveLength(0)
+  })
+
+  it('keeps the ref when storage fails, and shares one budget across parts', async () => {
+    failPut = true
+    const budget = newAssistantMediaBudget()
+    expect(await externalizeAssistantTextMedia('s', '![](a.png)', async () => png(), budget)).toBe('![](a.png)')
+    failPut = false
+    const out = await externalizeAssistantTextMedia('s', '![](a.png) ![](b.png)', async () => png(), budget)
+    expect(out.startsWith('![](a.png) ![](/api/chat-attachments/')).toBe(true)
+  })
+
+  it('maps markdown targets to workspace paths', () => {
+    expect(workspaceMediaPath('/app/workspace/brand/x.png')).toBe('brand/x.png')
+    expect(workspaceMediaPath('/shogo-image?path=brand%2Fx.png')).toBe('brand/x.png')
+    expect(workspaceMediaPath('file:///app/workspace/x.mp4')).toBe('x.mp4')
+    expect(workspaceMediaPath('../secret.png')).toBeNull()
+    expect(workspaceMediaPath('/api/conversation-files/a?t=b')).toBeNull()
+    expect(workspaceMediaPath('data:image/png;base64,AA')).toBeNull()
   })
 })

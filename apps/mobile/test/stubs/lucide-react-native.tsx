@@ -247,6 +247,7 @@ export {
   Icon as PinOff,
   Icon as Plane,
   Icon as Play,
+  Icon as PlayCircle,
   Icon as Plug,
   Icon as Plus,
   Icon as PlusCircle,

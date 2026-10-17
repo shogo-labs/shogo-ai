@@ -1085,6 +1085,8 @@ export async function postAgentChannelMessage(
     kind?: AgentMessageKind
     card?: AgentStatusCard
     questions?: AgentQuestion[]
+    /** Files from `uploadAgentFile` to attach to the post. */
+    attachmentIds?: string[]
     /** Return a background task per agent this post hands work to. */
     trackReplies?: boolean
   },
@@ -1104,6 +1106,7 @@ export async function postAgentChannelMessage(
       kind: input.kind,
       card: input.card,
       questions: input.questions,
+      attachmentIds: input.attachmentIds?.length ? input.attachmentIds : undefined,
       trackReplies: input.trackReplies || undefined,
     }),
     parse: (j) => ({
@@ -1149,6 +1152,51 @@ export async function agentBoardsRequest<T = any>(
     method,
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   })
+}
+
+export interface AgentUploadedFile {
+  id: string
+  name: string
+  mimeType: string
+  size: number
+  /** Signed URL that loads without a session (`/api/conversation-files/<id>?t=`). */
+  url: string
+}
+
+/**
+ * Upload a file as this agent. `path` is an agent upload route under the
+ * workspace: `/agent-channels/<channel>/attachments`,
+ * `/agent-boards/<board>/attachments` or `/agent-work-items/<item>/attachments`.
+ */
+export async function uploadAgentFile(
+  workspaceId: string,
+  path: string,
+  file: { bytes: Uint8Array; name: string; mimeType: string },
+  fields: Record<string, string | null | undefined> = {},
+): Promise<CheckpointCallResult<AgentUploadedFile>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
+  const form = new FormData()
+  form.set('file', new Blob([file.bytes as Uint8Array<ArrayBuffer>], { type: file.mimeType }), file.name)
+  for (const [k, v] of Object.entries(fields)) if (v) form.set(k, v)
+  const { 'Content-Type': _json, ...headers } = getInternalHeaders()
+  try {
+    const res = await fetch(`${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}${path}`, {
+      method: 'POST',
+      headers,
+      body: form,
+      signal: AbortSignal.timeout(120_000),
+    })
+    const json = await res.json().catch(() => null) as any
+    if (!res.ok) {
+      const err = json?.error
+      const message = typeof err === 'string' ? err : err?.message
+      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+    }
+    return { ok: true, status: res.status, data: json?.attachment as AgentUploadedFile }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
 }
 
 /** The value a person entered for one of this agent's `secret` questions. */

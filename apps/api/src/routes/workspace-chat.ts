@@ -22,6 +22,7 @@ import { context, metrics, propagation, SpanStatusCode, trace } from '@opentelem
 
 import type { IRuntimeManager } from '../lib/runtime'
 import { ChatLatency } from '../lib/chat-latency'
+import { workspaceDownloadPath } from '../lib/chat-attachments'
 import { captureWake, type WakeInfo } from '../lib/wake-capture'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing-runtime'
@@ -1119,6 +1120,14 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                   return null
                 }
               },
+              fetchWorkspaceFile: (path) =>
+                fetchFromWorkspaceRuntime(
+                  workspaceId,
+                  attachedProjectIds,
+                  workspaceDownloadPath(path),
+                  { method: 'GET' },
+                  runtimeExtra,
+                ).catch(() => null),
             },
           ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err)).finally(() => {
             stopTurnHeartbeat?.()

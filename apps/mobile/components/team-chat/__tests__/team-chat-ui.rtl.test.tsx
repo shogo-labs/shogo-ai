@@ -1563,6 +1563,14 @@ describe('MessageRow image attachments', () => {
     expect(lightbox.getAttribute('data-count')).toBe('2')
   })
 
+  test('a video attachment plays inline instead of showing a file card', () => {
+    renderRow([{ id: 'v1', name: 'demo.mp4', mimeType: 'video/mp4', size: 9000, width: null, height: null, url: '/api/uploads/v1' }])
+
+    const video = screen.getByTestId('message-video')
+    expect(video.tagName).toBe('VIDEO')
+    expect(video.getAttribute('src')).toContain('/api/uploads/v1')
+  })
+
   test('close dismisses the viewer', () => {
     renderRow([image('a1', 'shot-1.png')])
     fireEvent.click(screen.getByLabelText('Open shot-1.png'))

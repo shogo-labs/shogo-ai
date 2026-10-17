@@ -32,11 +32,13 @@ import {
   stopRunningAgents,
   readAgentChatFileText,
   searchAgentChatFiles,
+  uploadAgentFile,
   type AgentChannelIdentity,
   type AgentDocMode,
   type AgentMessageKind,
   type AgentStatusCard,
 } from './internal-api'
+import { uploadWorkspaceMedia } from './workspace-media'
 
 const KIND_SCHEMA = Type.Union(
   [Type.Literal('status'), Type.Literal('result'), Type.Literal('decision'), Type.Literal('alert')],
@@ -220,10 +222,14 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
       'Tagging an agent hands work to it: it runs next and replies in the thread, so tag an agent only when you give it a task, never to thank or update it. ' +
       'A new top-level post makes you the owner of its thread, so unaddressed human replies there come to you. ' +
       'Do not use this to reply to the message you were mentioned in; your normal reply is posted there automatically. ' +
+      'To share images or videos you made, pass their workspace paths in attachments; they show in the message. ' +
       'Returns thread_id (for follow-ups), url (a link to the thread for people outside Shogo), and a background task per agent you tagged.',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
       text: Type.Optional(Type.String({ description: 'Markdown message text. With a card, a note shown under it.' })),
+      attachments: Type.Optional(Type.Array(Type.String(), {
+        description: 'Workspace paths of images or videos to attach (up to 10), e.g. ["renders/hero.png", "clips/demo.mp4"].',
+      })),
       thread_id: Type.Optional(Type.String({ description: 'Root message id to reply in a thread.' })),
       owner: Type.Optional(Type.Boolean({ description: 'Take ownership of the thread when replying in one (default: only for new top-level posts).' })),
       run_id: Type.Optional(Type.String({ description: 'Id of the run or work item this thread tracks; stored on the thread and shown to agents woken in it.' })),
@@ -236,19 +242,34 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
       if (!workspaceId) return noWorkspace()
       const input = params as {
         channel: string; text?: string; thread_id?: string; owner?: boolean; run_id?: string
-        kind?: AgentMessageKind; card?: AgentStatusCard; questions?: QuestionInput[]
+        kind?: AgentMessageKind; card?: AgentStatusCard; questions?: QuestionInput[]; attachments?: string[]
       }
-      if (!input.text?.trim() && !input.card) return textResult({ error: 'text or card is required', code: 'invalid_input' })
-      const result = await postAgentChannelMessage(workspaceId, input.channel.replace(/^#/, ''), {
+      const paths = Array.isArray(input.attachments) ? input.attachments : []
+      if (!input.text?.trim() && !input.card && !paths.length) {
+        return textResult({ error: 'text, card or attachments is required', code: 'invalid_input' })
+      }
+      const channel = input.channel.replace(/^#/, '')
+      const identity = channelIdentity(ctx)
+      const uploaded = paths.length
+        ? await uploadWorkspaceMedia(ctx.workspaceDir, paths, (file) =>
+            uploadAgentFile(workspaceId, `/agent-channels/${encodeURIComponent(channel)}/attachments`, file, {
+              projectId: identity.projectId,
+            }))
+        : { files: [], errors: [] as string[] }
+      if (paths.length && !uploaded.files.length && !input.text?.trim() && !input.card) {
+        return textResult({ error: uploaded.errors.join('; ') || 'No attachments could be uploaded', code: 'upload_failed' })
+      }
+      const result = await postAgentChannelMessage(workspaceId, channel, {
         text: input.text ?? '',
         threadRootId: input.thread_id,
-        identity: channelIdentity(ctx),
+        identity,
         sessionId: ctx.sessionId,
         owner: input.owner,
         runId: input.run_id,
         kind: input.kind,
         card: input.card,
         questions: questionsForApi(input.questions),
+        attachmentIds: uploaded.files.map((f) => f.id),
         trackReplies: !!ctx.commandRegistry && !!ctx.sessionId,
       })
       if (result.ok && result.data) {
@@ -258,6 +279,8 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
           ok: true,
           ...rest,
           thread_id: threadId,
+          ...(uploaded.files.length ? { attached: uploaded.files.map((f) => f.name) } : {}),
+          ...(uploaded.errors.length ? { media_errors: uploaded.errors } : {}),
           ...(tracked.length
             ? {
                 tasks: tracked.map((t, i) => ({ ...t, title: tasks![i].title })),

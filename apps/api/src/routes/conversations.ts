@@ -82,6 +82,7 @@ import { searchMessages } from '../services/conversation-search'
 import { askWorkspace, semanticSearch } from '../services/conversation-semantic'
 import { canExtract, extractAndStoreAttachmentText } from '../services/conversation-file-text'
 import { publicPreview } from '../services/conversation-file-preview'
+import { attachmentIdsFrom, readAgentUpload, storeAgentAttachment } from '../services/agent-attachments'
 import { loadVisibleFile, type FilePrincipal } from '../services/conversation-file-access'
 import { readFileText, searchFiles } from '../services/conversation-file-index'
 import {
@@ -1321,6 +1322,31 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     }
   })
 
+  /** An agent uploads a file to attach to its next post (`attachmentIds`) or to link from markdown. */
+  router.post(`${base}/:channel/attachments`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    try {
+      const { file, form } = await readAgentUpload(c)
+      const projectId = await agentIdentity(auth, form.get('projectId'))
+      const limited = await rateLimited(c, `agent:${auth.workspaceId}:${projectId ?? 'ws'}`, CHAT_RATE_LIMITS.agentPost)
+      if (limited) return limited
+      const conversation = await resolveAgentConversation(auth.workspaceId, c.req.param('channel'), projectId)
+      if (!conversation || conversation.kind === 'activity' || conversation.archivedAt) {
+        return c.json({ error: { code: 'not_found', message: 'Channel not found or not open to agent posts' } }, 404)
+      }
+      const attachment = await storeAgentAttachment({
+        workspaceId: auth.workspaceId,
+        conversationId: conversation.id,
+        agentRef: projectId ? `project:${projectId}` : 'workspace',
+        file,
+      })
+      return c.json({ attachment }, 201)
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
   router.post(`${base}/:channel/messages`, async (c) => {
     const auth = await config.authorize(c)
     if (auth instanceof Response) return auth
@@ -1352,6 +1378,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
         agentChain,
         // The designer leaves alone a message whose agent asked its own questions.
         blocks: questions.length ? { ...blocks, questionScan: 'explicit' } : blocks,
+        attachmentIds: attachmentIdsFrom(body.attachmentIds),
       })
       const rootId = result.row.threadRootId ?? result.row.id
       if (!result.duplicate && (body.owner === true || (!result.row.threadRootId && body.owner !== false))) {

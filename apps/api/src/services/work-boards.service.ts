@@ -1112,9 +1112,15 @@ async function postEscalationLink(item: any, fromBoard: any, toBoard: any, actor
 }
 
 /** A comment is a reply in the card thread; boards with no channel keep it as an event. */
-export async function commentWorkItem(item: any, text: string, actor: BoardActor, opts: { projectId?: string | null } = {}) {
+export async function commentWorkItem(
+  item: any,
+  text: string,
+  actor: BoardActor,
+  opts: { projectId?: string | null; attachmentIds?: string[] } = {},
+) {
   const body = String(text ?? '').trim()
-  if (!body) throw bad('empty', 'A comment needs text')
+  const attachmentIds = opts.attachmentIds ?? []
+  if (!body && !attachmentIds.length) throw bad('empty', 'A comment needs text')
   const thread = await ensureThread(item.id, actor)
   await db.workItem.update({ where: { id: item.id }, data: { lastActivityAt: new Date() } })
   await linkActorSession(item, actor)
@@ -1136,6 +1142,7 @@ export async function commentWorkItem(item: any, text: string, actor: BoardActor
       agent: { projectId, name: await agentDisplayName(item.workspaceId, projectId) },
       threadRootId: thread.rootId,
       agentChain: chain,
+      attachmentIds,
     })
     void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
   } else {
@@ -1145,6 +1152,7 @@ export async function commentWorkItem(item: any, text: string, actor: BoardActor
       authorUserId: actor.userId ?? null,
       threadRootId: thread.rootId,
       text: body,
+      attachmentIds,
     })
     void afterMessagePosted(result, { actorUserId: actor.userId ?? null, origin: 'app' })
   }
