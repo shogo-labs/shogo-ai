@@ -6,6 +6,7 @@ import {
   signUpAndOnboard,
   signUpAndUpgradeToPro,
   waitForAgentIdle,
+  waitForProjectChat,
   type TestUser,
 } from "./helpers"
 
@@ -102,5 +103,6 @@ export async function createProject(page: Page, prompt: string): Promise<string>
   await page.waitForURL(/\/projects\//, { timeout: 60_000 })
   const m = page.url().match(/\/projects\/([^/?#]+)/)
   expect(m, `expected a /projects/<id> URL, got ${page.url()}`).toBeTruthy()
+  await waitForProjectChat(page)
   return m![1]
 }

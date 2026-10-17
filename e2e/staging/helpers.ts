@@ -379,6 +379,23 @@ export const MINIMAL_APP_PROMPT =
   "Create the simplest possible starter app: a single page that shows the word Hello. " +
   "Do not add any extra pages, components, features, or backend, and do not run browser QA."
 
+/**
+ * The project page holds a "Starting your project…" gate, with no chat, until
+ * its runtime reports ready. A cold-claimed runtime on staging takes minutes,
+ * and until then there is no stop button for {@link waitForAgentResponse} to
+ * see, so it would return before the first turn even started.
+ */
+export const RUNTIME_READY_TIMEOUT_MS = 300_000
+
+export async function waitForProjectChat(page: Page, timeoutMs = RUNTIME_READY_TIMEOUT_MS) {
+  extendTestTimeout(timeoutMs)
+  await page
+    .getByRole("textbox", { name: "Chat message input" })
+    .filter({ visible: true })
+    .first()
+    .waitFor({ state: "visible", timeout: timeoutMs })
+}
+
 export async function createProjectAndWait(page: Page, prompt: string) {
   extendTestTimeout(90_000)
   watchChatHealth(page)
@@ -392,6 +409,7 @@ export async function createProjectAndWait(page: Page, prompt: string) {
   await page.keyboard.press("Enter")
 
   await page.waitForURL(/\/projects\//, { timeout: 60_000 })
+  await waitForProjectChat(page)
   await waitForAgentResponse(page)
 }
 
