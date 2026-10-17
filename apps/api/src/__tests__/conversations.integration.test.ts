@@ -113,6 +113,82 @@ describe('conversations and access', () => {
     expect(after.json.conversation.members.map((m: any) => m.userId)).not.toContain(seed.outsider)
   })
 
+  test('adding a member records who added whom, on the channel', async () => {
+    const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, {
+      name: 'client-itau-col', kind: 'private',
+    })
+    const id = created.json.conversation.id
+    await call(seed.owner, 'POST', `/conversations/${id}/members`, { userIds: [seed.member] })
+
+    const list = await call(seed.owner, 'GET', `/conversations/${id}/messages`)
+    const notice = list.json.messages.find((m: any) => m.blocks?.type === 'membership')
+    expect(notice).toBeTruthy()
+    expect(notice.authorType).toBe('system')
+    expect(notice.text).toBe('member was added to 🔒 client-itau-col by owner.')
+    expect(notice.blocks.addedUserIds).toEqual([seed.member])
+    expect(notice.blocks.addedById).toBe(seed.owner)
+  })
+
+  test('adding somebody already in the channel posts no second line', async () => {
+    const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'growth' })
+    const id = created.json.conversation.id
+    await call(seed.owner, 'POST', `/conversations/${id}/members`, { userIds: [seed.member] })
+    await call(seed.owner, 'POST', `/conversations/${id}/members`, { userIds: [seed.member] })
+
+    const list = await call(seed.owner, 'GET', `/conversations/${id}/messages`)
+    expect(list.json.messages.filter((m: any) => m.blocks?.type === 'membership')).toHaveLength(1)
+  })
+
+  test('the notice mentions nobody, so it raises no badge', async () => {
+    const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'quiet' })
+    const id = created.json.conversation.id
+    await call(seed.owner, 'POST', `/conversations/${id}/members`, { userIds: [seed.member] })
+
+    const list = await call(seed.owner, 'GET', `/conversations/${id}/messages`)
+    const notice = list.json.messages.find((m: any) => m.blocks?.type === 'membership')
+    expect(await db.conversationMention.count({ where: { messageId: notice.id } })).toBe(0)
+
+    const convo = (await call(seed.member, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+      .json.conversations.find((c: any) => c.id === id)
+    expect(convo.mentionCount).toBe(0)
+    expect(convo.unreadCount).toBe(0)
+  })
+
+  test('being added leaves you caught up rather than on a wall of unread', async () => {
+    const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, {
+      name: 'busy', kind: 'private',
+    })
+    const id = created.json.conversation.id
+    for (const text of ['one', 'two', 'three']) {
+      await call(seed.owner, 'POST', `/conversations/${id}/messages`, { text })
+    }
+    await call(seed.owner, 'POST', `/conversations/${id}/members`, { userIds: [seed.member] })
+
+    const convo = (await call(seed.member, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+      .json.conversations.find((c: any) => c.id === id)
+    expect(convo.unreadCount).toBe(0)
+    expect(convo.mentionCount).toBe(0)
+
+    // Caught up, not walled off: the history is still readable.
+    const list = await call(seed.member, 'GET', `/conversations/${id}/messages`)
+    expect(list.json.messages.map((m: any) => m.text)).toContain('one')
+  })
+
+  test('an agent that adds somebody is named as the actor', async () => {
+    const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'agent-added' })
+    const id = created.json.conversation.id
+    agentAuth.projectId = seed.projectId
+    const added = await call(null, 'POST', `/internal/workspaces/${seed.workspaceId}/agent-channels/agent-added/members`, { users: [seed.member] })
+    agentAuth.projectId = null
+    expect(added.status).toBe(200)
+
+    const actor = await service.agentDisplayName(seed.workspaceId, seed.projectId)
+    const list = await call(seed.owner, 'GET', `/conversations/${id}/messages`)
+    const notice = list.json.messages.find((m: any) => m.blocks?.type === 'membership')
+    expect(notice.text).toBe(`member was added to #agent-added by ${actor}.`)
+    expect(notice.blocks.addedById).toBeNull()
+  })
+
   test('duplicate channel names get unique slugs and viewers cannot create channels', async () => {
     const a = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'design' })
     const b = await call(seed.member, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'Design' })

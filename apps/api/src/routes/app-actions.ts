@@ -201,7 +201,7 @@ export function appActionsRoutes(): Hono {
     const conversation = await channelFor(auth, params.channel)
     if (!conversation) return fail(c, 404, 'channel_not_found', 'No channel the app can manage matches that name or id')
     const { addUserMembersAsAgent } = await import('../services/conversation.service')
-    const added = await addUserMembersAsAgent(conversation, users.slice(0, 50))
+    const added = await addUserMembersAsAgent(conversation, users.slice(0, 50), { projectId: auth.app?.projectId ?? null })
     return c.json({ ok: true, channel: conversation.id, added })
   }))
 
