@@ -297,6 +297,21 @@ export class SessionManager {
     return this.needsCompaction(session)
   }
 
+  /** Remove these exact message objects (by identity) from a session and persist. */
+  removeMessages(id: string, msgs: Iterable<Message>): number {
+    const session = this.sessions.get(id)
+    if (!session) return 0
+    const drop = new Set(msgs)
+    const before = session.messages.length
+    session.messages = session.messages.filter((m) => !drop.has(m))
+    const removed = before - session.messages.length
+    if (removed > 0) {
+      session.totalMessages = Math.max(0, session.totalMessages - removed)
+      this.persistSession(session)
+    }
+    return removed
+  }
+
   /**
    * Merge `patch` into a session's metadata and persist. Used to durably track
    * the thread's running background processes (so the list survives restart).

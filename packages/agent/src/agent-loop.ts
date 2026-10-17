@@ -1104,7 +1104,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       console.warn(`[AgentLoop] Iteration limit reached after ${toolCalls.length} tool calls — emitting explicit incomplete-turn fallback`)
     }
 
-    if (!finalText.trim() || stoppedByIterationLimit) {
+    // An empty turn with no tool calls has nothing to preserve, so leave it
+    // empty and let the caller retry or explain, not claim tool work happened.
+    if ((!finalText.trim() && !emptyNoToolTurn) || stoppedByIterationLimit) {
       finalText = buildIncompleteTurnFallback(toolCalls.length, maxIterationsExhausted, coreError || promptError?.message)
       onTextDelta?.(finalText)
       const fallbackMessage: AssistantMessage = {

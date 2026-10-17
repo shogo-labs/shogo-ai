@@ -231,6 +231,24 @@ export function isUserStoppedTurn(result: { abortReason?: string }): boolean {
 }
 
 /**
+ * True when a loop ended with nothing to show and no error worth surfacing:
+ * either a clean empty stop or the loop's implicit "no output" error. Real
+ * provider errors were already classified and retried inside the loop.
+ */
+export function isEmptyTurnResult(result: {
+  text?: string
+  toolCalls: unknown[]
+  error?: Error
+  usageLimit?: unknown
+  loopBreak?: unknown
+  abortReason?: string
+}): boolean {
+  if (result.text?.trim() || result.toolCalls.length > 0) return false
+  if (result.usageLimit || result.loopBreak || result.abortReason) return false
+  return !result.error || result.error.message === 'Agent produced no output — possible provider error'
+}
+
+/**
  * Parse the admin-injected `AGENT_SUMMARIZER_MODEL` env var (`{ id, provider }`
  * JSON, resolved by the API server from the `summarizer.model` setting).
  * Falls back to Haiku on Anthropic when unset or malformed — e.g. a desktop
@@ -3848,6 +3866,28 @@ export class AgentGateway {
       }
 
       let result = await runAgentLoop(loopOptions)
+
+      // A turn that produced nothing (no text, no tools) is usually a transient
+      // model or provider hiccup that a manual resend fixes, so resend once
+      // ourselves. Only the prompt and the empty reply were saved so far; drop
+      // them so the retry doesn't record the user's message twice.
+      if (!isHeartbeat && isEmptyTurnResult(result) && !turnAbort.signal.aborted) {
+        this.sessionManager.removeMessages(sessionId, persistedProgressMessages)
+        persistedProgressMessages.clear()
+        console.warn(
+          `${this.logPrefix} Empty model response for session ${sessionId} ` +
+            `(model: ${modelId}, provider: ${provider}, outputTokens: ${result.outputTokens}` +
+            `${result.error ? `, error: ${result.error.message}` : ''}) — retrying once`,
+        )
+        discardFailedStep({ attempt: 1, maxAttempts: 1, reason: 'empty_response', delayMs: 0 })
+        const emptyResult = result
+        result = await runAgentLoop(loopOptions)
+        result.inputTokens += emptyResult.inputTokens
+        result.outputTokens += emptyResult.outputTokens
+        result.cacheReadTokens += emptyResult.cacheReadTokens
+        result.cacheWriteTokens += emptyResult.cacheWriteTokens
+        result.iterations += emptyResult.iterations
+      }
 
       // Defense in depth for stale cloud configuration or a plan change that
       // happens after a runtime was spawned. Auto must not retry the same
