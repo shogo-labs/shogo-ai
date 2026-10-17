@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { selectPooledWorkspaceParent } from "../pooledWorkspaceParent";
+import {
+  eligiblePooledWorkspaceParents,
+  selectPooledWorkspaceParent,
+} from "../pooledWorkspaceParent";
 
 const plans = {
   free: { planId: "free", canManageChildren: true },
@@ -16,9 +19,10 @@ describe("selectPooledWorkspaceParent", () => {
       { id: "enterprise", name: "Enterprise", parentWorkspaceId: null },
     ];
 
-    expect(selectPooledWorkspaceParent(workspaces, "enterprise", plans)).toEqual(
-      workspaces[1],
-    );
+    expect(selectPooledWorkspaceParent(workspaces, "enterprise", plans)).toEqual({
+      ...workspaces[1],
+      planLabel: "Enterprise",
+    });
   });
 
   test("skips child workspaces and free or pro plans", () => {
@@ -29,9 +33,17 @@ describe("selectPooledWorkspaceParent", () => {
       { id: "enterprise", name: "Enterprise", parentWorkspaceId: null },
     ];
 
-    expect(selectPooledWorkspaceParent(workspaces, "child", plans)).toEqual(
-      workspaces[3],
-    );
+    expect(selectPooledWorkspaceParent(workspaces, "child", plans)?.id).toBe("enterprise");
+  });
+
+  test("from inside a child, defaults to that child's parent rather than the first eligible workspace", () => {
+    const workspaces = [
+      { id: "business", name: "Shogo", parentWorkspaceId: null },
+      { id: "enterprise", name: "Odin", parentWorkspaceId: null },
+      { id: "child", name: "Odin - Agentic Dev Team", parentWorkspaceId: "enterprise" },
+    ];
+
+    expect(selectPooledWorkspaceParent(workspaces, "child", plans)?.id).toBe("enterprise");
   });
 
   test("skips Enterprise workspaces the user can't manage", () => {
@@ -51,5 +63,23 @@ describe("selectPooledWorkspaceParent", () => {
     ];
 
     expect(selectPooledWorkspaceParent(workspaces, undefined, plans)).toBeNull();
+  });
+});
+
+describe("eligiblePooledWorkspaceParents", () => {
+  test("lists every manageable Business/Enterprise top-level workspace with its plan", () => {
+    const workspaces = [
+      { id: "business", name: "Shogo", parentWorkspaceId: null },
+      { id: "pro", name: "Pro", parentWorkspaceId: null },
+      { id: "enterprise", name: "Odin", parentWorkspaceId: null },
+      { id: "child", name: "Odin Dev", parentWorkspaceId: "enterprise" },
+    ];
+
+    expect(
+      eligiblePooledWorkspaceParents(workspaces, plans).map((o) => [o.id, o.planLabel]),
+    ).toEqual([
+      ["business", "Business"],
+      ["enterprise", "Enterprise"],
+    ]);
   });
 });

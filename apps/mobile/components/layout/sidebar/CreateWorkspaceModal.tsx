@@ -1,21 +1,58 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Modal,
   Platform,
   Pressable,
   View,
 } from "react-native";
-import { X as XIcon } from "lucide-react-native";
+import { Building2 as Building2Icon, Check as CheckIcon, X as XIcon } from "lucide-react-native";
 import {
   Text,
   TextInput,
   accountSheetIcon,
 } from "../../settings/account-sheet-chrome";
+import type { PooledWorkspaceParentOption } from "../../../hooks/pooledWorkspaceParent";
 
 const X = accountSheetIcon(XIcon);
+const Building2 = accountSheetIcon(Building2Icon);
+const Check = accountSheetIcon(CheckIcon);
+
+function ParentRow({
+  option,
+  selected,
+  selectable,
+  onPress,
+}: {
+  option: PooledWorkspaceParentOption;
+  selected: boolean;
+  selectable: boolean;
+  onPress?: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={!selectable}
+      accessibilityRole={selectable ? "radio" : undefined}
+      accessibilityState={selectable ? { checked: selected } : undefined}
+      accessibilityLabel={`${option.name || "Workspace"}, ${option.planLabel} plan`}
+      className={`flex-row items-center gap-2.5 rounded-md border px-3 py-2 ${
+        selected ? "border-primary bg-primary/5" : "border-border"
+      }${selectable ? " active:bg-muted" : ""}`}
+    >
+      <Building2 size={16} className="text-muted-foreground" />
+      <Text className="flex-1 text-sm font-medium text-foreground" numberOfLines={1}>
+        {option.name || "Untitled workspace"}
+      </Text>
+      <Text className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+        {option.planLabel}
+      </Text>
+      {selectable && selected && <Check size={14} className="text-primary" />}
+    </Pressable>
+  );
+}
 
 // ─── CreateWorkspaceModal ──────────────────────────────────────────────────────
 
@@ -23,17 +60,33 @@ export function CreateWorkspaceModal({
   visible,
   onClose,
   onSubmit,
-  parentName,
+  parent,
+  parentOptions = [],
 }: {
   visible: boolean;
   onClose: () => void;
   /** Resolving to `false` keeps the modal open so the typed name isn't lost. */
-  onSubmit: (name: string) => void | boolean | Promise<void | boolean>;
-  parentName?: string | null;
+  onSubmit: (name: string, parentId?: string) => void | boolean | Promise<void | boolean>;
+  /** Default parent for an included (child) workspace; omit for a standalone one. */
+  parent?: PooledWorkspaceParentOption | null;
+  /** Every workspace the new one could be included in; shown as a picker when > 1. */
+  parentOptions?: PooledWorkspaceParentOption[];
 }) {
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [parentId, setParentId] = useState<string | undefined>(parent?.id);
+
+  useEffect(() => {
+    if (visible) setParentId(parent?.id);
+  }, [visible, parent?.id]);
+
+  const options = parent
+    ? parentOptions.some((option) => option.id === parent.id)
+      ? parentOptions
+      : [parent, ...parentOptions]
+    : [];
+  const selectedParent = options.find((option) => option.id === parentId) ?? parent ?? null;
 
   const handleSubmit = useCallback(async () => {
     if (submitting) return;
@@ -44,14 +97,14 @@ export function CreateWorkspaceModal({
     }
     setSubmitting(true);
     try {
-      if ((await onSubmit(trimmed)) === false) return;
+      if ((await onSubmit(trimmed, selectedParent?.id)) === false) return;
     } finally {
       setSubmitting(false);
     }
     setName("");
     setError(null);
     onClose();
-  }, [name, onSubmit, onClose, submitting]);
+  }, [name, onSubmit, onClose, selectedParent?.id, submitting]);
 
   return (
     <Modal
@@ -77,10 +130,31 @@ export function CreateWorkspaceModal({
             </Pressable>
           </View>
           <Text className="text-sm text-muted-foreground mb-4">
-            {parentName
-              ? `Included with ${parentName}'s plan. Shares its usage, billing, and seats.`
+            {selectedParent
+              ? "Included at no extra cost in the workspace below."
               : "Create a new workspace for your team or projects"}
           </Text>
+          {selectedParent && (
+            <View className="mb-4">
+              <Text className="text-sm font-medium text-foreground mb-1.5">
+                {options.length > 1 ? "Include in" : "Part of"}
+              </Text>
+              <View className="gap-1.5">
+                {(options.length > 1 ? options : [selectedParent]).map((option) => (
+                  <ParentRow
+                    key={option.id}
+                    option={option}
+                    selected={option.id === selectedParent.id}
+                    selectable={options.length > 1}
+                    onPress={() => setParentId(option.id)}
+                  />
+                ))}
+              </View>
+              <Text className="text-xs text-muted-foreground mt-1.5">
+                Uses {selectedParent.name || "this workspace"}'s {selectedParent.planLabel} plan: its usage limits, billing, and seats.
+              </Text>
+            </View>
+          )}
           <Text className="text-sm font-medium text-foreground mb-1.5">
             Workspace name
           </Text>
