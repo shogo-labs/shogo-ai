@@ -8,6 +8,7 @@
  *   project_attach     attach an existing project to this one (readwrite / readonly)
  *   project_detach     remove an attachment
  *   project_configure  heartbeat / model / name / description of a project
+ *   list_models        the chat models the workspace can use (ids for project_configure)
  *   capabilities_configure  enable or disable this project's own capabilities
  *   project_call       run one agent turn in another project, threading a runId
  *   system_apply       reconcile a `shogo-system.yaml` manifest against the workspace
@@ -37,7 +38,14 @@ import { trackRemoteTask } from './remote-tasks'
 import { capabilityState, effectiveCapabilityValue, lockedCapabilityKeys, resolveRuntimeCapabilities } from './capability-status-prompt'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { isMetalRuntime } from './remote-tools'
-import { availableModelsHint, isAvailableModel } from './available-models'
+import {
+  AUTO_MODEL_ID,
+  availableModelsHint,
+  getAvailableModels,
+  isAvailableModel,
+  isAvailableModelListLoaded,
+  refreshAvailableModels,
+} from './available-models'
 import { channelIdentity } from './channel-tools'
 import {
   agentBoardsRequest,
@@ -376,6 +384,43 @@ export function createProjectDetachTool(ctx: ToolContext): AgentTool {
       const res = await apiDetachProject(ctx.projectId, target.id)
       if (!res.ok) return apiFailure(res)
       return textResult({ ok: true, removed: res.data?.removed ?? false })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// list_models
+// ---------------------------------------------------------------------------
+
+/** "Claude Opus 5.5", "claude-opus-5-5" and "opus 5.5" all become space-separated lowercase words. */
+function normalizeModelText(s: string): string {
+  return s.toLowerCase().split(/[\s\-_.]+/).filter(Boolean).join(' ')
+}
+
+export function createListModelsTool(): AgentTool {
+  return {
+    name: 'list_models',
+    label: 'List Models',
+    description:
+      'List the chat models this workspace can use (the same list as the model picker), with id, display name and provider. Use the `id` when setting a model with project_configure, system_apply or a channel. "auto" is always valid and recommended unless the user asks for a specific model.',
+    parameters: Type.Object({
+      query: Type.Optional(Type.String({ description: 'Case-insensitive filter on id, display name or provider, e.g. "opus 5.5".' })),
+    }),
+    execute: async (_id, params) => {
+      const { query } = params as { query?: string }
+      await refreshAvailableModels({ force: true })
+      if (!isAvailableModelListLoaded()) {
+        return textResult({
+          error: 'The model list could not be loaded from the API. Use "auto", or ask the user for the exact model id from the model picker.',
+          code: 'models_unavailable',
+        })
+      }
+      let models = getAvailableModels()
+      const needle = query ? normalizeModelText(query) : ''
+      if (needle) {
+        models = models.filter((m) => [m.id, m.displayName, m.provider].some((s) => normalizeModelText(s).includes(needle)))
+      }
+      return textResult({ default: AUTO_MODEL_ID, count: models.length, models })
     },
   }
 }
@@ -1095,12 +1140,13 @@ export const PROJECT_TOOL_NAMES = [
   'capabilities_configure',
   'project_call',
   'system_apply',
+  'list_models',
 ] as const
 
 /** Read-only tools need no permission gate; the rest are `system` category. */
 export function createProjectTools(ctx: ToolContext): { readonly: AgentTool[]; mutating: AgentTool[] } {
   return {
-    readonly: [createProjectListTool(ctx)],
+    readonly: [createProjectListTool(ctx), createListModelsTool()],
     mutating: [
       createProjectCreateTool(ctx),
       createProjectAttachTool(ctx),
