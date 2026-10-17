@@ -645,6 +645,18 @@ export async function createSharedFileLink(
   })
 }
 
+/** Download link for a file in a workspace runtime with no single owning project. */
+export async function createWorkspaceSharedFileLink(
+  workspaceId: string,
+  opts: SharedFileOptions,
+): Promise<CheckpointCallResult<SharedFileResult>> {
+  return publishFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/shared-files`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    parse: (j) => j as SharedFileResult,
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Project lifecycle wrappers — back the `project_*` / `system_apply` tools
 // (project-tools.ts). Routes live in apps/api/src/routes/internal.ts under

@@ -195,6 +195,40 @@ describe('shared file routes', () => {
     expect(calls).toBe(1)
   })
 
+  it('serves a workspace-scoped link from the workspace runtime', async () => {
+    let requestedUrl = ''
+    let requestedToken = ''
+    globalThis.fetch = (async (input, init) => {
+      requestedUrl = String(input)
+      requestedToken = new Headers(init?.headers).get('x-runtime-token') || ''
+      return new Response('xlsx bytes', { status: 200, headers: { 'content-type': 'application/vnd.ms-excel' } })
+    }) as typeof fetch
+    const pinnedWorkspaces: string[] = []
+    const resolvedWorkspaces: string[] = []
+
+    const app = sharedFileRoutes({
+      pinChatToHomeRegion: async () => { throw new Error('a workspace link has no project to pin') },
+      pinWorkspaceToHomeRegion: async (_c, workspaceId) => { pinnedWorkspaces.push(workspaceId); return null },
+      resolveAgentProxyPodUrl: async () => { throw new Error('a workspace link has no project runtime') },
+      resolveWorkspaceRuntimeUrl: async (workspaceId) => { resolvedWorkspaces.push(workspaceId); return 'http://ws-runtime' },
+      deriveWorkspaceRuntimeToken: (workspaceId) => `wrt-${workspaceId}`,
+    })
+    const workspaceToken = signSharedFileToken({
+      workspaceId: 'workspace-1',
+      path: 'exports/summary.xlsx',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    })
+    const response = await app.fetch(new Request(`http://api.test/api/f/${workspaceToken}`))
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('xlsx bytes')
+    expect(response.headers.get('content-disposition')).toBe('attachment; filename="summary.xlsx"')
+    expect(requestedUrl).toBe('http://ws-runtime/agent/workspace/download/exports/summary.xlsx')
+    expect(requestedToken).toBe('wrt-workspace-1')
+    expect(pinnedWorkspaces).toEqual(['workspace-1'])
+    expect(resolvedWorkspaces).toEqual(['workspace-1'])
+  })
+
   it('retries a connection error to a runtime that is seconds from ready', async () => {
     let calls = 0
     globalThis.fetch = (async () => {

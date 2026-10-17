@@ -1029,7 +1029,37 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!(await validateAuth(c, projectId))) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
+    return mintSharedFileLink(c, projectId, async () => {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspaceId: true },
+      })
+      if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+      return { projectId, workspaceId: project.workspaceId }
+    })
+  })
 
+  /**
+   * POST /api/internal/workspaces/:workspaceId/shared-files
+   *
+   * Same capability for a file in a workspace runtime that has no single
+   * project to own it (e.g. a workspace-agent chat with nothing attached).
+   * The download is served by that workspace's runtime.
+   */
+  app.post('/workspaces/:workspaceId/shared-files', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!workspaceId) return c.json({ error: 'Missing workspaceId' }, 400)
+    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    return mintSharedFileLink(c, `workspace ${workspaceId}`, async () => ({ workspaceId }))
+  })
+
+  async function mintSharedFileLink(
+    c: Context,
+    label: string,
+    loadScope: () => Promise<{ projectId?: string; workspaceId: string } | Response>,
+  ): Promise<Response> {
     const body = await c.req.json().catch(() => null) as {
       path?: unknown
       expiresInDays?: unknown
@@ -1054,15 +1084,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const now = Math.floor(Date.now() / 1000)
 
     try {
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { workspaceId: true },
-      })
-      if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
-
+      const scope = await loadScope()
+      if (scope instanceof Response) return scope
       const token = signSharedFileToken({
-        projectId,
-        workspaceId: project.workspaceId,
+        ...(scope.projectId ? { projectId: scope.projectId } : {}),
+        workspaceId: scope.workspaceId,
         path,
         exp: now + expiresInDays * 24 * 60 * 60,
         now,
@@ -1077,10 +1103,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         path,
       })
     } catch (err: any) {
-      console.error(`[Internal] local shared file token for ${projectId} failed:`, err?.message || err)
+      console.error(`[Internal] shared file token for ${label} failed:`, err?.message || err)
       return c.json({ error: { code: 'shared_file_failed', message: 'Failed to create shared file link' } }, 500)
     }
-  })
+  }
 
   /**
    * POST /api/internal/projects/:projectId/checkpoints/record

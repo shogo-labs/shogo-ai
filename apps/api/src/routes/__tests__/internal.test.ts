@@ -1408,3 +1408,60 @@ describe('POST /projects/:projectId/shared-files', () => {
     expect((await res.json()).error.code).toBe('invalid_path')
   })
 })
+
+// ─── POST /workspaces/:workspaceId/shared-files ─────────────────────────────
+
+describe('POST /workspaces/:workspaceId/shared-files', () => {
+  test('mints a workspace-bound link for the workspace runtime that owns it', async () => {
+    const previousOrigin = process.env.SHOGO_PUBLIC_API_URL
+    const previousSecret = process.env.BETTER_AUTH_SECRET
+    process.env.SHOGO_PUBLIC_API_URL = 'https://api.example'
+    process.env.BETTER_AUTH_SECRET = 'internal-shared-file-test-secret'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+
+    try {
+      const res = await app.request('/workspaces/ws-1/shared-files', {
+        method: 'POST',
+        headers: { 'x-runtime-token': 'wrt', ...JSON_H },
+        body: JSON.stringify({ path: 'exports/summary.xlsx', expiresInDays: 2 }),
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json() as { url: string; expiresAt: string; path: string }
+      expect(body.url).toMatch(/^https:\/\/api\.example\/api\/f\//)
+      expect(body.path).toBe('exports/summary.xlsx')
+
+      const payload = verifySharedFileToken(body.url.split('/f/')[1])
+      expect(payload?.workspaceId).toBe('ws-1')
+      expect(payload?.projectId).toBeUndefined()
+      expect(payload!.exp - payload!.iat).toBe(2 * 24 * 60 * 60)
+    } finally {
+      if (previousOrigin === undefined) delete process.env.SHOGO_PUBLIC_API_URL
+      else process.env.SHOGO_PUBLIC_API_URL = previousOrigin
+      if (previousSecret === undefined) delete process.env.BETTER_AUTH_SECRET
+      else process.env.BETTER_AUTH_SECRET = previousSecret
+    }
+  })
+
+  test('401 for another workspace token or a project token', async () => {
+    store.podIdentity = null
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-other' }
+    const otherWorkspace = await app.request('/workspaces/ws-1/shared-files', {
+      method: 'POST',
+      headers: { 'x-runtime-token': 'wrt', ...JSON_H },
+      body: JSON.stringify({ path: 'exports/summary.xlsx' }),
+    })
+    expect(otherWorkspace.status).toBe(401)
+
+    store.runtimeVerify = { ok: true, projectId: 'proj-x' }
+    store.workspaceVerify = null
+    const projectToken = await app.request('/workspaces/ws-1/shared-files', {
+      method: 'POST',
+      headers: { 'x-runtime-token': 'rt', ...JSON_H },
+      body: JSON.stringify({ path: 'exports/summary.xlsx' }),
+    })
+    expect(projectToken.status).toBe(401)
+  })
+})

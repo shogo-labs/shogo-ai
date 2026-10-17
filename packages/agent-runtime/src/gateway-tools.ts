@@ -161,6 +161,7 @@ import {
   getPublishState as apiGetPublishState,
   publishProject as apiPublishProject,
   createSharedFileLink as apiCreateSharedFileLink,
+  createWorkspaceSharedFileLink as apiCreateWorkspaceSharedFileLink,
   createGitHubPullRequest as apiCreateGitHubPullRequest,
   mergeGitHubPullRequest as apiMergeGitHubPullRequest,
   connectGitHubWithToken as apiConnectGitHubWithToken,
@@ -4171,8 +4172,9 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       'Create a short-lived download link for one file in the workspace.',
       'Use this whenever the user asks to download, receive, get, or send a generated file such as a PDF, DOCX, ZIP, EXE, image, or other artifact.',
       'This is for individual files, not web apps. Do not invent a localhost or preview URL, and do not use the publish tool for a file download.',
+      'Never upload the file to a third-party host (filebin, file.io, transfer.sh, tmpfiles, 0x0.st, or similar) with curl or any other tool; this is the only supported way to hand a user a file.',
       'After this succeeds, paste the returned URL verbatim and tell the user when it expires. Do not delete or overwrite the shared file before the user downloads it.',
-      'In a workspace runtime, pass `project_id` for the project that owns the file. It defaults to the current project, the workspace anchor, or the only attached project.',
+      'In a workspace runtime, pass `project_id` for the project that owns the file. It defaults to the current project, the workspace anchor, or the only attached project; with none of those, the link is served from this workspace.',
     ].join(' '),
     label: 'Share file',
     parameters: Type.Object({
@@ -4218,15 +4220,20 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       }
 
       const projectId = resolveTargetProjectId(ctx, input.project_id)
-      if (!projectId) {
+      const workspaceId = isWorkspaceRuntimeMode()
+        ? ctx.workspaceId || resolveRuntimeIdentity().workspaceId
+        : null
+      if (!projectId && !workspaceId) {
         return textResult({
           error: 'No project selected. Pass project_id for the project that owns this file.',
         })
       }
-      const result = await apiCreateSharedFileLink(projectId, {
-        path,
-        expiresInDays: input.expires_in_days,
-      })
+      const linkOptions = { path, expiresInDays: input.expires_in_days }
+      // With no single owning project, the link is served by this workspace
+      // runtime, which is where the file was just found.
+      const result = projectId
+        ? await apiCreateSharedFileLink(projectId, linkOptions)
+        : await apiCreateWorkspaceSharedFileLink(workspaceId!, linkOptions)
       if (!result.ok || !result.data) {
         return textResult({
           error: result.error ?? 'Failed to create a download link',

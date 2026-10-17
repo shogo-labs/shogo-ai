@@ -16,7 +16,8 @@ const MAX_PATH_LENGTH = 4096
 
 export interface SharedFileTokenPayload {
   typ: typeof TOKEN_TYPE
-  projectId: string
+  /** Absent for a file in a project-less workspace runtime. */
+  projectId?: string
   workspaceId: string
   path: string
   exp: number
@@ -62,13 +63,17 @@ function validPath(value: unknown): value is string {
 }
 
 export function signSharedFileToken(input: {
-  projectId: string
+  projectId?: string
   workspaceId: string
   path: string
   exp: number
   now?: number
 }): string {
-  if (!validId(input.projectId) || !validId(input.workspaceId) || !validPath(input.path)) {
+  if (
+    (input.projectId !== undefined && !validId(input.projectId)) ||
+    !validId(input.workspaceId) ||
+    !validPath(input.path)
+  ) {
     throw new Error('Invalid shared file token claims')
   }
   if (!Number.isSafeInteger(input.exp) || input.exp <= 0) {
@@ -78,7 +83,7 @@ export function signSharedFileToken(input: {
   const now = input.now ?? Math.floor(Date.now() / 1000)
   const payload: SharedFileTokenPayload = {
     typ: TOKEN_TYPE,
-    projectId: input.projectId,
+    ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
     workspaceId: input.workspaceId,
     path: input.path,
     exp: input.exp,
@@ -100,7 +105,7 @@ export function verifySharedFileToken(token: string): SharedFileTokenPayload | n
     const payload = JSON.parse(decode(encodedPayload)) as Partial<SharedFileTokenPayload>
     if (
       payload.typ !== TOKEN_TYPE ||
-      !validId(payload.projectId) ||
+      (payload.projectId !== undefined && !validId(payload.projectId)) ||
       !validId(payload.workspaceId) ||
       !validPath(payload.path) ||
       !Number.isSafeInteger(payload.iat) ||
@@ -110,7 +115,9 @@ export function verifySharedFileToken(token: string): SharedFileTokenPayload | n
     }
 
     const now = Math.floor(Date.now() / 1000)
-    if (payload.exp <= now || payload.iat > now + 60 || payload.exp <= payload.iat) {
+    const exp = payload.exp as number
+    const iat = payload.iat as number
+    if (exp <= now || iat > now + 60 || exp <= iat) {
       return null
     }
 

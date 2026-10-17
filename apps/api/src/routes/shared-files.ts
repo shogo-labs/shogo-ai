@@ -2,8 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { Hono } from 'hono'
-import { pinChatToHomeRegion } from '../lib/chat-region-pin'
+import { pinChatToHomeRegion, pinWorkspaceToHomeRegion } from '../lib/chat-region-pin'
 import { deriveProjectRuntimeToken } from '../lib/project-runtime-token'
+import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
+import { resolveWorkspaceRuntimeUrl as resolveWorkspaceRuntime } from '../lib/resolve-workspace-runtime-url'
 import { resolveAgentProxyPodUrl } from '../lib/agent-proxy-resolver'
 import { relayAgentProxyViaTunnel } from '../lib/tunnel-relay'
 import { verifySharedFileToken } from '../lib/shared-file-token'
@@ -30,6 +32,18 @@ async function invalidateMetalRuntimeUrl(projectId: string): Promise<void> {
   const { getMetalWarmPoolController, workspaceRuntimeKey } =
     await importCloudModule<typeof import('../lib/metal-warm-pool-controller')>('../lib/metal-warm-pool-controller')
   getMetalWarmPoolController().invalidateUrlCache(workspaceRuntimeKey('', projectId))
+}
+
+async function invalidateMetalWorkspaceRuntimeUrl(workspaceId: string): Promise<void> {
+  if (!isMetalEnabled()) return
+  const { getMetalWarmPoolController, workspaceRuntimeKey } =
+    await importCloudModule<typeof import('../lib/metal-warm-pool-controller')>('../lib/metal-warm-pool-controller')
+  getMetalWarmPoolController().invalidateUrlCache(workspaceRuntimeKey(workspaceId))
+}
+
+async function defaultResolveWorkspaceRuntimeUrl(workspaceId: string): Promise<string> {
+  const resolved = await resolveWorkspaceRuntime(workspaceId, { attachedProjectIds: [], logTag: 'SharedFiles' })
+  return resolved.url
 }
 
 const DOWNLOAD_LIMIT = 120
@@ -97,10 +111,14 @@ function encodeRuntimePath(path: string): string {
 
 export interface SharedFileRouteDeps {
   pinChatToHomeRegion?: typeof pinChatToHomeRegion
+  pinWorkspaceToHomeRegion?: typeof pinWorkspaceToHomeRegion
   resolveAgentProxyPodUrl?: typeof resolveAgentProxyPodUrl
+  resolveWorkspaceRuntimeUrl?: (workspaceId: string) => Promise<string>
   deriveProjectRuntimeToken?: typeof deriveProjectRuntimeToken
+  deriveWorkspaceRuntimeToken?: typeof deriveWorkspaceRuntimeToken
   relayAgentProxyViaTunnel?: typeof relayAgentProxyViaTunnel
   invalidateRuntimeUrl?: (projectId: string) => Promise<void>
+  invalidateWorkspaceRuntimeUrl?: (workspaceId: string) => Promise<void>
   sleep?: (ms: number) => Promise<void>
 }
 
@@ -112,10 +130,14 @@ function runtimeUnavailable(c: any): Response {
 export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
   const app = new Hono()
   const pinHome = deps.pinChatToHomeRegion ?? pinChatToHomeRegion
+  const pinWorkspaceHome = deps.pinWorkspaceToHomeRegion ?? pinWorkspaceToHomeRegion
   const resolveRuntime = deps.resolveAgentProxyPodUrl ?? resolveAgentProxyPodUrl
+  const resolveWorkspaceRuntimeUrl = deps.resolveWorkspaceRuntimeUrl ?? defaultResolveWorkspaceRuntimeUrl
   const deriveToken = deps.deriveProjectRuntimeToken ?? deriveProjectRuntimeToken
+  const deriveWorkspaceToken = deps.deriveWorkspaceRuntimeToken ?? deriveWorkspaceRuntimeToken
   const relayTunnel = deps.relayAgentProxyViaTunnel ?? relayAgentProxyViaTunnel
   const invalidateRuntimeUrl = deps.invalidateRuntimeUrl ?? invalidateMetalRuntimeUrl
+  const invalidateWorkspaceRuntimeUrl = deps.invalidateWorkspaceRuntimeUrl ?? invalidateMetalWorkspaceRuntimeUrl
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
 
   // Minted links use `/api/f/`: on the public studio origin only `/api/*`
@@ -134,43 +156,50 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
       return c.json({ error: { code: 'not_found', message: 'This download link is invalid or expired' } }, 404)
     }
 
-    const pinned = await pinHome(c, payload.projectId)
+    const { projectId, workspaceId } = payload
+    const pinned = projectId ? await pinHome(c, projectId) : await pinWorkspaceHome(c, workspaceId)
     if (pinned) return pinned
 
     const agentPath = `/agent/workspace/download/${encodeRuntimePath(payload.path)}`
+    const fetchRuntime = (url: string, runtimeToken: string) =>
+      fetch(`${url.replace(/\/+$/, '')}${agentPath}`, {
+        method: 'GET',
+        headers: { 'x-runtime-token': runtimeToken },
+        signal: c.req.raw.signal,
+      })
+
     let lastFailure = ''
     for (let attempt = 0; attempt <= RUNTIME_RETRY_DELAYS_MS.length; attempt++) {
       if (attempt > 0) {
-        await invalidateRuntimeUrl(payload.projectId).catch(() => {})
+        await (projectId ? invalidateRuntimeUrl(projectId) : invalidateWorkspaceRuntimeUrl(workspaceId)).catch(() => {})
         await sleep(RUNTIME_RETRY_DELAYS_MS[attempt - 1])
         if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
       }
       try {
-        const resolution = await resolveRuntime(payload.projectId)
-        if (!resolution.ok) {
-          lastFailure = `resolve ${resolution.status} ${resolution.body.error.code}`
-          continue
-        }
+        let upstream: Response
+        if (!projectId) {
+          upstream = await fetchRuntime(await resolveWorkspaceRuntimeUrl(workspaceId), deriveWorkspaceToken(workspaceId))
+        } else {
+          const resolution = await resolveRuntime(projectId)
+          if (!resolution.ok) {
+            lastFailure = `resolve ${resolution.status} ${resolution.body.error.code}`
+            continue
+          }
 
-        const runtimeToken = await deriveToken(payload.projectId, {
-          workspaceId: payload.workspaceId,
-        })
-        const upstream = resolution.kind === 'tunnel'
-          ? await relayTunnel({
-              c,
-              instanceId: resolution.instanceId,
-              workspaceId: resolution.workspaceId,
-              projectId: payload.projectId,
-              agentPath,
-              cleanPath: agentPath,
-              method: 'GET',
-              headers: { 'x-runtime-token': runtimeToken },
-            })
-          : await fetch(`${resolution.url.replace(/\/+$/, '')}${agentPath}`, {
-              method: 'GET',
-              headers: { 'x-runtime-token': runtimeToken },
-              signal: c.req.raw.signal,
-            })
+          const runtimeToken = await deriveToken(projectId, { workspaceId })
+          upstream = resolution.kind === 'tunnel'
+            ? await relayTunnel({
+                c,
+                instanceId: resolution.instanceId,
+                workspaceId: resolution.workspaceId,
+                projectId,
+                agentPath,
+                cleanPath: agentPath,
+                method: 'GET',
+                headers: { 'x-runtime-token': runtimeToken },
+              })
+            : await fetchRuntime(resolution.url, runtimeToken)
+        }
 
         if (upstream.ok) {
           return new Response(upstream.body, {
@@ -189,7 +218,7 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
       }
     }
 
-    console.error(`[SharedFiles] Download failed for ${payload.projectId}: ${lastFailure}`)
+    console.error(`[SharedFiles] Download failed for ${projectId ?? `workspace ${workspaceId}`}: ${lastFailure}`)
     return runtimeUnavailable(c)
   }
 

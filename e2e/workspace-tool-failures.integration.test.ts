@@ -247,7 +247,7 @@ describe('workspace tools talk to a real API with a real project id', () => {
     expect(notify?.body.title).toBe('Due')
   })
 
-  test('share_file asks for project_id when several projects are attached', async () => {
+  test('share_file links from the workspace when several projects are attached and none is picked', async () => {
     armWorkspaceEnv({
       WORKSPACE_ANCHOR_PROJECT_ID: undefined,
       WORKSPACE_PROJECT_IDS: 'proj-a,proj-b',
@@ -255,8 +255,9 @@ describe('workspace tools talk to a real API with a real project id', () => {
     const dir = tempDir('ws-ask-')
     writeFileSync(join(dir, 'a.txt'), 'a')
     const result = await tool(workspace(dir), 'share_file').execute('t', { path: 'a.txt' })
-    expect(result.details.error).toMatch(/project_id/)
-    expect(hits.filter((h) => h.url.includes('/shared-files'))).toHaveLength(0)
+    expect(result.details.url).toBe('https://files.test/report')
+    expect(hits.some((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')).toBe(true)
+    expect(hits.some((h) => h.url.includes('/projects/') && h.url.includes('/shared-files'))).toBe(false)
   })
 })
 

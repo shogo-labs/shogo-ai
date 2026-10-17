@@ -65,6 +65,35 @@ async function projectRoot(projectId: string, workspacesDir: string): Promise<{
   }
 }
 
+/** Real path of a project file under its project root, or null when the path leaves it. */
+async function projectFileTarget(root: string, path: string): Promise<string | null> {
+  const realRoot = await realpath(root)
+  const candidate = resolve(realRoot, path)
+  if (!isWithinRoot(realRoot, candidate)) return null
+  const target = await realpath(candidate)
+  return isWithinRoot(realRoot, target) ? target : null
+}
+
+/**
+ * Real path of a file in a workspace runtime's merged root
+ * (`.workspace-roots/<workspaceId>`), or null when the path leaves it. Member
+ * projects are mounted there as `<projectId>` symlinks; a file inside one is
+ * allowed only when that project belongs to the same workspace.
+ */
+async function workspaceFileTarget(workspaceId: string, path: string, workspacesDir: string): Promise<string | null> {
+  const root = await realpath(join(workspacesDir, '.workspace-roots', workspaceId))
+  const candidate = resolve(root, path)
+  if (!isWithinRoot(root, candidate)) return null
+  const target = await realpath(candidate)
+  if (isWithinRoot(root, target)) return target
+
+  const memberId = path.split('/')[0]
+  const member = memberId ? await projectRoot(memberId, workspacesDir) : null
+  if (!member || member.workspaceId !== workspaceId) return null
+  const memberRoot = await realpath(member.root)
+  return isWithinRoot(memberRoot, target) ? target : null
+}
+
 export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono {
   const app = new Hono()
 
@@ -78,19 +107,16 @@ export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono
     }
 
     try {
-      const project = await projectRoot(payload.projectId, config.workspacesDir)
-      if (!project || project.workspaceId !== payload.workspaceId) {
-        return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
+      let target: string | null
+      if (payload.projectId) {
+        const project = await projectRoot(payload.projectId, config.workspacesDir)
+        target = project && project.workspaceId === payload.workspaceId
+          ? await projectFileTarget(project.root, payload.path)
+          : null
+      } else {
+        target = await workspaceFileTarget(payload.workspaceId, payload.path, config.workspacesDir)
       }
-
-      const root = await realpath(project.root)
-      const candidate = resolve(root, payload.path)
-      if (!isWithinRoot(root, candidate)) {
-        return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
-      }
-
-      const target = await realpath(candidate)
-      if (!isWithinRoot(root, target)) {
+      if (!target) {
         return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
       }
 

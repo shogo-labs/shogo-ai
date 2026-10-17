@@ -60,6 +60,29 @@ describe('shared-file-token', () => {
     }))).toBeNull()
   })
 
+  it('round-trips a workspace-scoped capability with no project', () => {
+    const now = Math.floor(Date.now() / 1000)
+    const token = signSharedFileToken({
+      workspaceId: 'workspace-1',
+      path: 'exports/summary.xlsx',
+      exp: now + 3600,
+      now,
+    })
+
+    expect(verifySharedFileToken(token)).toEqual({
+      typ: 'shared-file',
+      workspaceId: 'workspace-1',
+      path: 'exports/summary.xlsx',
+      exp: now + 3600,
+      iat: now,
+    })
+    expect(() => signSharedFileToken({
+      workspaceId: '',
+      path: 'exports/summary.xlsx',
+      exp: now + 3600,
+    })).toThrow()
+  })
+
   it('rejects a token after the signing secret changes', () => {
     const token = signSharedFileToken({
       projectId: 'project-1',
