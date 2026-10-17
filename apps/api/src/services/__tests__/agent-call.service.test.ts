@@ -313,25 +313,126 @@ describe('callProjectAgentAsChat — chat persistence', () => {
     expect(sessions.size).toBe(0)
   })
 
-  it('wait=false acks with the chat id and saves the reply once the background call finishes', async () => {
-    let forwarded: any = null
-    globalThis.fetch = (async (_url: any, init: any) => {
-      forwarded = JSON.parse(init.body)
-      return new Response(JSON.stringify({ status: 'completed', reply: 'later reply' }), { status: 200 })
+  /**
+   * A callee runtime that acks `wait: false` and buffers the turn: `/turn`
+   * reports it once `turnVisible`, `/stream` serves its body.
+   */
+  function fakeCallee(opts: { ack?: Response; turnVisible?: () => boolean; streamStatus?: number } = {}) {
+    const calls: Array<{ url: string; method: string; body?: any }> = []
+    globalThis.fetch = (async (url: any, init: any) => {
+      const u = String(url)
+      const method = init?.method ?? 'GET'
+      calls.push({ url: u, method, body: init?.body ? JSON.parse(init.body) : undefined })
+      if (u.endsWith('/agent/pipeline/call')) return opts.ack ?? new Response(JSON.stringify({ status: 'accepted' }), { status: 202 })
+      if (u.includes('/turn')) {
+        return (opts.turnVisible ?? (() => true))()
+          ? new Response(JSON.stringify({ turnId: 't1', status: 'active', createdAt: Date.now() }), { status: 200 })
+          : new Response(JSON.stringify({ status: 'unknown' }), { status: 404 })
+      }
+      if (u.includes('/stream')) {
+        const status = opts.streamStatus ?? 200
+        return status === 200 ? new Response('data: {"type":"text-delta"}\n\n', { status }) : new Response(null, { status })
+      }
+      return new Response('not found', { status: 404 })
     }) as any
+    return calls
+  }
 
+  const turnState = { started: [] as string[], ended: [] as Array<[string, string]>, heartbeats: 0 }
+  let trackCalls: any[] = []
+  let trackResult: () => Promise<any> = async () => ({ outcome: 'complete', status: 'completed', text: 'final reply', assistantMessageId: 'msg-1' })
+
+  beforeEach(() => {
+    turnState.started.length = 0
+    turnState.ended.length = 0
+    turnState.heartbeats = 0
+    trackCalls = []
+    trackResult = async () => ({ outcome: 'complete', status: 'completed', text: 'final reply', assistantMessageId: 'msg-1' })
+    svc.setCallTurnDeps({
+      track: (async (...args: any[]) => {
+        trackCalls.push(args)
+        return trackResult()
+      }) as any,
+      markTurnStarted: async (id) => {
+        turnState.started.push(id)
+        return `turn-${id}`
+      },
+      markTurnEnded: async (id, turnId) => {
+        turnState.ended.push([id, turnId])
+      },
+      startTurnHeartbeat: () => {
+        turnState.heartbeats++
+        return () => {}
+      },
+      turnPollIntervalMs: 1,
+    })
+  })
+  afterEach(() => svc.setCallTurnDeps(null))
+
+  async function until(cond: () => boolean) {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5))
+  }
+
+  it('wait=false starts the callee turn without holding a request and follows it with the chat tracker', async () => {
+    const calls = fakeCallee()
     const out = await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'long job', runId: 'run-bg', wait: false })
     const chatId = svc.runChatSessionId('proj-1', 'run-bg')
     expect(out.status).toBe(202)
     expect(out.body).toMatchObject({ status: 'accepted', runId: 'run-bg', chatSessionId: chatId })
 
-    for (let i = 0; i < 50 && !messages.some((m) => m.role === 'assistant'); i++) await new Promise((r) => setTimeout(r, 5))
-    expect(forwarded.wait).toBe(true)
-    expect(messages.find((m) => m.role === 'assistant')?.content).toBe('later reply')
+    const forward = calls.find((c) => c.url.endsWith('/agent/pipeline/call'))!
+    expect(forward.body).toMatchObject({ wait: false, sessionId: chatId, runId: 'run-bg' })
+
+    await until(() => turnState.ended.length > 0)
+    expect(calls.some((c) => c.url === `http://pod.internal:8080/agent/chat/${chatId}/stream?fromSeq=0`)).toBe(true)
+    expect(trackCalls).toHaveLength(1)
+    const [, body, project, options] = trackCalls[0]
+    expect(body).toEqual({ chatSessionId: chatId })
+    expect(project).toEqual({ id: 'proj-1', workspaceId: 'ws-1' })
+    expect(options.chatSessionId).toBe(chatId)
+    expect(typeof options.expectedTurnStartedAt).toBe('number')
+    expect(typeof options.resume).toBe('function')
+    expect(turnState.started).toEqual([chatId])
+    expect(turnState.ended).toEqual([[chatId, `turn-${chatId}`]])
+    // The tracker owns the assistant row; the service no longer writes one.
+    expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(0)
+  })
+
+  it('wait=false waits for the callee turn to start before streaming it', async () => {
+    let visible = false
+    const calls = fakeCallee({ turnVisible: () => visible })
+    await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'queued job', runId: 'run-wait', wait: false })
+    await until(() => calls.filter((c) => c.url.includes('/turn')).length >= 3)
+    expect(calls.some((c) => c.url.includes('/stream'))).toBe(false)
+    visible = true
+    await until(() => turnState.ended.length > 0)
+    expect(trackCalls).toHaveLength(1)
+  })
+
+  it('wait=false surfaces a runtime that refuses the call', async () => {
+    fakeCallee({ ack: new Response(JSON.stringify({ error: { code: 'busy', message: 'nope' } }), { status: 503 }) })
+    const out = await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-refused', wait: false })
+    expect(out.status).toBe(503)
+    expect(out.body).toMatchObject({ error: { code: 'busy' }, chatSessionId: svc.runChatSessionId('proj-1', 'run-refused') })
+    expect(turnState.started).toHaveLength(0)
+  })
+
+  it('wait=false through an Instance tunnel falls back to holding the call', async () => {
+    store.resolution = { ok: true, kind: 'tunnel', instanceId: 'inst-1', workspaceId: 'ws-1', projectId: 'proj-1' }
+    store.relayResponse = new Response(JSON.stringify({ status: 'completed', reply: 'via tunnel' }), { status: 200 })
+    const out = await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-tun', wait: false })
+    expect(out.status).toBe(202)
+    await until(() => messages.some((m) => m.role === 'assistant'))
+    expect(JSON.parse(store.relayCalledWith.tunnelOpts.body).wait).toBe(true)
+    expect(messages.find((m) => m.role === 'assistant')?.content).toBe('via tunnel')
+    expect(trackCalls).toHaveLength(0)
   })
 
   describe('track=true', () => {
-    beforeEach(() => agentCallStore._testing.records.clear())
+    beforeEach(() => {
+      agentCallStore._testing.records.clear()
+      agentCallStore._testing.sessionLinks.clear()
+    })
 
     async function settled(runId: string) {
       for (let i = 0; i < 100; i++) {
@@ -342,24 +443,61 @@ describe('callProjectAgentAsChat — chat persistence', () => {
       return agentCallStore.getAgentCall('proj-1', runId)
     }
 
-    it('records running, then completed with the reply and chat id', async () => {
+    it('records running until the callee turn finishes, however long it takes, then completed with the reply', async () => {
+      fakeCallee()
       let release!: () => void
       const gate = new Promise<void>((r) => { release = r })
-      globalThis.fetch = (async () => {
+      trackResult = async () => {
         await gate
-        return new Response(JSON.stringify({ status: 'completed', reply: 'tracked reply' }), { status: 200 })
-      }) as any
+        return { outcome: 'complete', status: 'completed', text: 'tracked reply', assistantMessageId: 'msg-1' }
+      }
 
       const out = await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-t1', wait: false, track: true })
       const chatId = svc.runChatSessionId('proj-1', 'run-t1')
       expect(out.status).toBe(202)
       expect(out.body).toMatchObject({ status: 'accepted', tracked: true, runId: 'run-t1', chatSessionId: chatId })
       expect((await agentCallStore.getAgentCall('proj-1', 'run-t1'))?.status).toBe('running')
+      expect(await agentCallStore.getAgentCallSessionLink(chatId)).toMatchObject({ projectId: 'proj-1', runId: 'run-t1' })
+
+      await until(() => trackCalls.length > 0)
+      expect((await agentCallStore.getAgentCall('proj-1', 'run-t1'))?.status).toBe('running')
 
       release()
       const rec = await settled('run-t1')
       expect(rec).toMatchObject({ status: 'completed', reply: 'tracked reply', chatSessionId: chatId })
-      expect(messages.find((m) => m.role === 'assistant')?.content).toBe('tracked reply')
+      expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(0)
+    })
+
+    it('fails the call with callee_turn_lost when the tracker never sees the turn finish', async () => {
+      fakeCallee()
+      trackResult = async () => ({ outcome: 'partial', status: null, text: 'half a reply', assistantMessageId: 'msg-1' })
+      await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-lost', wait: false, track: true })
+      const rec = await settled('run-lost')
+      expect(rec).toMatchObject({ status: 'failed', reply: 'half a reply', error: { code: svc.CALLEE_TURN_LOST } })
+    })
+
+    it('fails the call with callee_turn_lost when the callee turn never starts', async () => {
+      fakeCallee({ turnVisible: () => false })
+      svc.setCallTurnDeps({
+        track: (async (...args: any[]) => { trackCalls.push(args) }) as any,
+        markTurnStarted: async () => 't',
+        markTurnEnded: async () => {},
+        startTurnHeartbeat: () => () => {},
+        turnPollIntervalMs: 1,
+        turnStartTimeoutMs: 20,
+      })
+      await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-never', wait: false, track: true })
+      const rec = await settled('run-never')
+      expect(rec).toMatchObject({ status: 'failed', error: { code: svc.CALLEE_TURN_LOST } })
+      expect(trackCalls).toHaveLength(0)
+    })
+
+    it('records a failed callee turn as failed', async () => {
+      fakeCallee()
+      trackResult = async () => ({ outcome: 'complete', status: 'failed', text: '', assistantMessageId: null })
+      await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-tf', wait: false, track: true })
+      const rec = await settled('run-tf')
+      expect(rec).toMatchObject({ status: 'failed', error: { code: 'agent_turn_failed' } })
     })
 
     it('records failed with the runtime error', async () => {

@@ -9143,6 +9143,20 @@ async function gracefulShutdown(signal: string) {
   stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
+  // Hand chat turns this pod is following to another replica's reattach job
+  // before the trackers die with the process.
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    try {
+      const { stopChatTurnReattachJob } = await import('./jobs/chat-turn-reattach')
+      await stopChatTurnReattachJob()
+      const { releaseTurnsForHandoff } = await import('./services/chat-turn-state.service')
+      const handedOff = await releaseTurnsForHandoff()
+      if (handedOff > 0) console.log(`[Server] Handed off ${handedOff} active chat turn(s)`)
+    } catch (err: any) {
+      console.error('[Server] Chat turn handoff failed:', err?.message ?? err)
+    }
+  }
+
   // Stop warm pool reconciliation so GC doesn't delete services during drain
   if (isKubernetes()) {
     try {
@@ -9848,6 +9862,19 @@ if (isKubernetes()) {
       )
     }, STORAGE_RECALC_INTERVAL)
     console.log('[Storage] Storage recalculation cron started (every 6h)')
+  }, 10_000)
+}
+
+// Reattach chat turns whose tracking API pod died or drained mid-stream.
+// Desktop runs one process whose runtimes stop with it, so there is nothing to reattach.
+if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+  setTimeout(async () => {
+    try {
+      const { startChatTurnReattachJob } = await import('./jobs/chat-turn-reattach')
+      startChatTurnReattachJob()
+    } catch (err: any) {
+      console.error('[ChatTurnReattach] Failed to start (non-fatal):', err?.message ?? err)
+    }
   }, 10_000)
 }
 

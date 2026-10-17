@@ -26,7 +26,9 @@ export interface AgentCallRecord {
   updatedAt: number
 }
 
-const TTL_SECONDS = 60 * 60
+/** A background call has no time limit, so its record has to outlive long turns. */
+export const AGENT_CALL_TTL_SECONDS = 7 * 24 * 60 * 60
+const TTL_SECONDS = AGENT_CALL_TTL_SECONDS
 const POLL_INTERVAL_MS = 1_000
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -121,5 +123,55 @@ export async function waitForAgentCall(
   return record
 }
 
-/** Test seam — clears the in-memory fallback Map between tests. */
-export const _testing = { records }
+/** Which tracked call a callee chat session is running, so a reattach can complete it. */
+export interface AgentCallSessionLink {
+  projectId: string
+  runId: string
+  startedAt: number
+}
+
+const sessionLinks = new Map<string, { link: AgentCallSessionLink; expiresAt: number }>()
+
+function sessionKey(chatSessionId: string): string {
+  return `agent-call-session:${chatSessionId}`
+}
+
+export async function linkAgentCallSession(chatSessionId: string, link: AgentCallSessionLink): Promise<void> {
+  const k = sessionKey(chatSessionId)
+  const putLocalLink = () => {
+    const now = Date.now()
+    for (const [lk, entry] of sessionLinks) {
+      if (entry.expiresAt <= now) sessionLinks.delete(lk)
+    }
+    sessionLinks.set(k, { link, expiresAt: now + TTL_SECONDS * 1000 })
+  }
+  const r = redisOrNull()
+  if (!r) return putLocalLink()
+  try {
+    await r.set(k, JSON.stringify(link), 'EX', TTL_SECONDS)
+  } catch (err) {
+    console.warn('[agent-call-store] Redis SET failed, falling back to local map:', (err as Error).message)
+    putLocalLink()
+  }
+}
+
+export async function getAgentCallSessionLink(chatSessionId: string): Promise<AgentCallSessionLink | undefined> {
+  const k = sessionKey(chatSessionId)
+  const getLocalLink = () => {
+    const entry = sessionLinks.get(k)
+    if (!entry || entry.expiresAt <= Date.now()) return undefined
+    return entry.link
+  }
+  const r = redisOrNull()
+  if (!r) return getLocalLink()
+  try {
+    const raw = await r.get(k)
+    return raw ? (JSON.parse(raw) as AgentCallSessionLink) : getLocalLink()
+  } catch (err) {
+    console.warn('[agent-call-store] Redis GET failed, falling back to local map:', (err as Error).message)
+    return getLocalLink()
+  }
+}
+
+/** Test seam — clears the in-memory fallback Maps between tests. */
+export const _testing = { records, sessionLinks }

@@ -193,7 +193,10 @@ export async function createTask(input: CreateTaskInput): Promise<BackgroundTask
       targetRef: input.targetRef.trim().slice(0, 500),
       title: String(input.title || input.source).slice(0, 300),
       until: input.until ?? null,
-      expiresAt: new Date(Date.now() + (input.source === 'work_item' ? CARD_TASK_TTL_MS : TASK_TTL_MS)),
+      // A background project call has no time limit, so its task lives as long as a card's.
+      expiresAt: new Date(
+        Date.now() + (input.source === 'work_item' || input.source === 'project_call' ? CARD_TASK_TTL_MS : TASK_TTL_MS),
+      ),
     },
   })
   return (await settleIfAlreadyDone(row)) ?? row

@@ -223,6 +223,7 @@ describe('server.ts runtime-resolving code is pinned to the home region', () => 
  */
 const RESOLVER_FILES: Record<string, string> = {
   'lib/admin-runtime-recycle.ts': 'guard: admin recycle resolves via the resolver layer',
+  'lib/chat-runtime-fetch.ts': 'guard: resolves via resolveWorkspaceRuntimeUrl (home-region guard); callers are route-pinned or home-region filtered (chat-turn-reattach)',
   'lib/heartbeat-scheduler.ts': 'cron: partitioned by workspace home region (#1233) + guard backstop',
   'lib/knative-project-manager.ts': 'resolver: getProjectPodUrl/resolveProjectPodUrl definitions',
   'lib/metal-rewarm.ts': 'cron: rollout re-warm resolves via resolveWorkspaceRuntimeUrl (guard)',

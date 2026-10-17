@@ -590,14 +590,14 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
     description: [
       'Send a message to another project\'s agent and (by default) wait for its reply. This is how one module of a multi-project system invokes the next: intake calls analyst, planner calls implementer, and so on.',
       'Always pass the same `runId` for every hop of one piece of work; a new one is minted and returned when omitted. The callee runs in its own session `run:<runId>` and every cost metric it emits is stamped with that runId, so the run can be traced across projects.',
-      'Use `wait: false` for long jobs: the call runs in the background as a task and its reply arrives like any other task result.',
+      'Use `wait: false` for long jobs: the call runs in the background as a task with no time limit (it can take hours) and its reply arrives like any other task result.',
     ].join(' '),
     parameters: Type.Object({
       project: Type.String({ description: 'Target project id, exact name, or manifest key.' }),
       message: Type.String({ description: 'The request. Be explicit about the expected output shape (e.g. JSON findings) — the callee has none of your context.' }),
       runId: Type.Optional(Type.String({ description: 'Pipeline correlation id shared across hops. Minted when omitted.' })),
       wait: Type.Optional(Type.Boolean({ description: 'Wait for the reply (default true).' })),
-      timeoutMs: Type.Optional(Type.Number({ description: 'Wait budget in ms (default 300000, max 1200000).' })),
+      timeoutMs: Type.Optional(Type.Number({ description: 'How long a `wait: true` call waits for the reply, in ms (default 300000, max 1200000). It does not limit the callee, and `wait: false` calls ignore it.' })),
     }),
     execute: async (toolCallId, params) => {
       const p = params as { project: string; message: string; runId?: string; wait?: boolean; timeoutMs?: number }

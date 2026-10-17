@@ -548,3 +548,106 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     expect(consumeUsageCalls.length).toBe(1)
   })
 })
+
+describe('trackUsageFromStream — reattach options and result', () => {
+  beforeEach(() => {
+    persistedMessages = []
+    persistedToolCalls = []
+    projectUpdates = []
+    consumeUsageCalls = []
+    messageIdCounter = 0
+  })
+
+  test('existingAssistantMessageId rebuilds that row instead of inserting another', async () => {
+    persistedMessages.push({ id: 'msg-existing', sessionId: 'sess-re', role: 'assistant', content: 'half of the' })
+    const result = await trackUsageFromStream(
+      makeSseStream([
+        dataFrame({ type: 'data-turn-start', data: { turnId: 'turn-1', startedAt: 1_000_000 } }),
+        dataFrame({ type: 'text-delta', delta: 'half of the reply, then the rest' }),
+        dataFrame({ type: 'data-turn-complete', data: { status: 'completed' } }),
+      ]),
+      { chatSessionId: 'sess-re', agentMode: 'sonnet' },
+      null,
+      { existingAssistantMessageId: 'msg-existing', expectedTurnStartedAt: 1_000_000 },
+    )
+
+    expect(persistedMessages).toHaveLength(1)
+    expect(persistedMessages[0]).toMatchObject({ id: 'msg-existing', content: 'half of the reply, then the rest' })
+    expect(result).toEqual({
+      outcome: 'complete',
+      status: 'completed',
+      text: 'half of the reply, then the rest',
+      assistantMessageId: 'msg-existing',
+    })
+  })
+
+  test('expectedTurnStartedAt ignores a buffer left by an earlier turn', async () => {
+    persistedMessages.push({ id: 'msg-existing', sessionId: 'sess-old', role: 'assistant', content: 'this turn so far' })
+    const expectedTurnStartedAt = Date.parse('2026-10-16T12:00:00Z')
+    const result = await trackUsageFromStream(
+      makeSseStream([
+        dataFrame({ type: 'data-turn-start', data: { turnId: 'older', startedAt: expectedTurnStartedAt - 10 * 60_000 } }),
+        dataFrame({ type: 'text-delta', delta: 'the previous turn' }),
+        dataFrame({ type: 'data-turn-complete', data: { status: 'completed' } }),
+      ]),
+      { chatSessionId: 'sess-old', agentMode: 'sonnet' },
+      null,
+      { existingAssistantMessageId: 'msg-existing', expectedTurnStartedAt },
+    )
+
+    expect(result.outcome).toBe('foreign')
+    expect(persistedMessages).toEqual([
+      { id: 'msg-existing', sessionId: 'sess-old', role: 'assistant', content: 'this turn so far' },
+    ])
+    expect(persistedToolCalls).toHaveLength(0)
+  })
+
+  test('a turn start within clock skew of expectedTurnStartedAt is still this turn', async () => {
+    const expectedTurnStartedAt = Date.parse('2026-10-16T12:00:00Z')
+    const result = await trackUsageFromStream(
+      makeSseStream([
+        dataFrame({ type: 'data-turn-start', data: { turnId: 't', startedAt: expectedTurnStartedAt - 5_000 } }),
+        dataFrame({ type: 'text-delta', delta: 'reply' }),
+        dataFrame({ type: 'data-turn-complete', data: { status: 'completed' } }),
+      ]),
+      { chatSessionId: 'sess-skew', agentMode: 'sonnet' },
+      null,
+      { expectedTurnStartedAt },
+    )
+    expect(result.outcome).toBe('complete')
+    expect(persistedMessages[0]?.content).toBe('reply')
+  })
+
+  test('reports a partial outcome when the buffer is gone before the turn finishes', async () => {
+    const result = await trackUsageFromStream(
+      makeSseStream([dataFrame({ type: 'text-delta', delta: 'cut off' })]),
+      { chatSessionId: 'sess-partial', agentMode: 'sonnet' },
+      null,
+      { resume: async () => new Response(null, { status: 204 }) },
+    )
+    expect(result).toMatchObject({ outcome: 'partial', status: null, text: 'cut off' })
+    expect(result.assistantMessageId).toBe(persistedMessages[0]?.id)
+  })
+
+  test('a reattach after the billing session was already closed charges nothing more', async () => {
+    const projectId = 'proj-reattach-bill'
+    await openSession(projectId, 'ws-rb', 'user-rb', 'sess-rb')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30, 0, 0, 'sess-rb')
+    const frames = () => makeSseStream([
+      dataFrame({ type: 'text-delta', delta: 'reply' }),
+      dataFrame({ type: 'data-turn-complete', data: { status: 'completed' } }),
+      dataFrame({ type: 'finish', usage: { inputTokens: 100, outputTokens: 30 } }),
+    ])
+    const project = { id: projectId, workspaceId: 'ws-rb' }
+
+    await trackUsageFromStream(frames(), { chatSessionId: 'sess-rb', agentMode: 'sonnet' }, project)
+    expect(consumeUsageCalls).toHaveLength(1)
+
+    const existing = persistedMessages[0]!.id
+    await trackUsageFromStream(frames(), { chatSessionId: 'sess-rb', agentMode: 'sonnet' }, project, {
+      existingAssistantMessageId: existing,
+    })
+    expect(consumeUsageCalls).toHaveLength(1)
+    expect(persistedMessages).toHaveLength(1)
+  })
+})

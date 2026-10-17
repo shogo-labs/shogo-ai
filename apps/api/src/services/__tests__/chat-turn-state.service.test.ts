@@ -7,7 +7,6 @@ const update = mock(async () => ({}))
 const updateMany = mock(async () => ({ count: 1 }))
 const findMany = mock(async () => [])
 const findMessage = mock(async (): Promise<unknown> => null)
-
 mock.module('../../lib/prisma', () => ({
   prisma: {
     chatSession: { update, updateMany, findMany },
@@ -21,7 +20,9 @@ const {
   listActiveChatTurns,
   markTurnEnded,
   markTurnStarted,
+  releaseTurnsForHandoff,
   startTurnHeartbeat,
+  TURN_REATTACH_AFTER_MS,
 } = await import('../chat-turn-state.service')
 
 const CLEARED = { activeTurnId: null, activeTurnStartedAt: null, activeTurnHeartbeatAt: null }
@@ -189,5 +190,25 @@ describe('chat-turn-state service', () => {
     const cutoff = (findMany.mock.calls.at(-1) as any)[0].where.activeTurnHeartbeatAt.gt as Date
     expect(before - cutoff.getTime()).toBeGreaterThanOrEqual(5 * 60 * 1000 - 50)
     expect(before - cutoff.getTime()).toBeLessThan(5 * 60 * 1000 + 1000)
+  })
+
+  test('hands heartbeating turns to the reattach job on shutdown and stops heartbeating them', async () => {
+    const stop = startTurnHeartbeat('session-h', 'turn-h', 60_000)
+    updateMany.mockClear()
+    const before = Date.now()
+    expect(await releaseTurnsForHandoff()).toBe(1)
+
+    const call = (updateMany.mock.calls.at(-1) as any)[0]
+    expect(call.where).toEqual({ id: 'session-h', activeTurnId: 'turn-h' })
+    expect(before - call.data.activeTurnHeartbeatAt.getTime()).toBeGreaterThan(TURN_REATTACH_AFTER_MS)
+    // Already released: a second shutdown pass has nothing left to hand off.
+    expect(await releaseTurnsForHandoff()).toBe(0)
+    stop()
+  })
+
+  test('a stopped heartbeat is not handed off', async () => {
+    const stop = startTurnHeartbeat('session-done', 'turn-done', 60_000)
+    stop()
+    expect(await releaseTurnsForHandoff()).toBe(0)
   })
 })

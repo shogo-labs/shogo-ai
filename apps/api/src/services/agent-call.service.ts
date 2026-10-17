@@ -25,7 +25,8 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from 'hono'
 import { PROJECT_CALL_MESSAGE_AGENT, runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
-import { putAgentCall } from '../lib/agent-call-store'
+import { linkAgentCallSession, putAgentCall, type AgentCallSessionLink } from '../lib/agent-call-store'
+import type { TrackedStreamResult } from '../routes/project-chat'
 
 export { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 
@@ -197,10 +198,12 @@ function detachedContext(c: Context): Context {
  * id is handed to the runtime as the session key, so the transcript the
  * runtime keeps matches the chat. Persistence failures never fail the call.
  *
- * With `wait: false` the API keeps the call going in the background and saves
- * the reply when it lands; the caller gets a 202 straight away. Add
- * `track: true` to also record the outcome in the agent-call store, where
- * `GET .../agent-call/:runId` can poll it from any API replica.
+ * With `wait: false` the caller gets a 202 straight away and the API follows
+ * the callee's turn like any project chat (`followCallTurn`): the reply is
+ * saved as it streams, with no time limit, and the turn reattach job picks it
+ * up if this API pod goes away. Add `track: true` to also record the outcome
+ * in the agent-call store, where `GET .../agent-call/:runId` can poll it from
+ * any API replica.
  */
 export async function callProjectAgentAsChat(
   c: Context,
@@ -228,6 +231,12 @@ export async function callProjectAgentAsChat(
       : null
 
   if (req.wait === false) {
+    const background = await startBackgroundCall(c, projectId, workspaceId, call, chatSessionId, null)
+    if (background) {
+      return background.status >= 200 && background.status < 300
+        ? { status: 202, body: { status: 'accepted', runId, sessionId: chatSessionId, chatSessionId } }
+        : { status: background.status, body: withChat(background.body) }
+    }
     const detached = detachedContext(c)
     void callProjectAgent(detached, projectId, workspaceId, { ...call, wait: true, timeoutMs: 20 * 60_000 })
       .then(async (outcome) => {
@@ -262,6 +271,33 @@ async function startTrackedCall(
   const sessionId = req.sessionId ?? chatSessionId
   const startedAt = Date.now()
   await putAgentCall(projectId, { status: 'running', runId, sessionId, chatSessionId, startedAt, updatedAt: startedAt })
+  const accepted: AgentCallOutcome = {
+    status: 202,
+    body: { status: 'accepted', tracked: true, runId, ...(sessionId ? { sessionId } : {}), ...(chatSessionId ? { chatSessionId } : {}) },
+  }
+
+  if (chatSessionId) {
+    const link = { projectId, runId, startedAt }
+    const background = await startBackgroundCall(c, projectId, workspaceId, { ...req, runId, sessionId: chatSessionId }, chatSessionId, link)
+    if (background) {
+      if (background.status < 200 || background.status >= 300) {
+        const err = background.body?.error
+        await putAgentCall(projectId, {
+          status: 'failed',
+          runId,
+          sessionId,
+          chatSessionId,
+          error: {
+            code: typeof err === 'object' && err ? err.code : undefined,
+            message: (typeof err === 'string' ? err : err?.message) ?? `Project agent call failed (HTTP ${background.status})`,
+          },
+          startedAt,
+          updatedAt: Date.now(),
+        })
+      }
+      return accepted
+    }
+  }
 
   const detached = detachedContext(c)
   void callProjectAgent(detached, projectId, workspaceId, {
@@ -308,10 +344,234 @@ async function startTrackedCall(
       }).catch(() => {})
     })
 
+  return accepted
+}
+
+// ---------------------------------------------------------------------------
+// Background calls: follow the callee's turn like a project chat
+// ---------------------------------------------------------------------------
+
+/** Error code for a call whose callee turn ended without a reply this side saw. */
+export const CALLEE_TURN_LOST = 'callee_turn_lost'
+
+/** The runtime's clock and ours can disagree by this much. */
+const TURN_CLOCK_SKEW_MS = 30_000
+
+type CallTurnDeps = {
+  track: typeof import('../routes/project-chat').trackUsageFromStream
+  markTurnStarted: (chatSessionId: string) => Promise<string>
+  markTurnEnded: (chatSessionId: string, turnId: string) => Promise<void>
+  startTurnHeartbeat: (chatSessionId: string, turnId: string) => () => void
+  /** How often to look for the callee's turn while it waits to start. */
+  turnPollIntervalMs: number
+  /** Give up on a callee turn that never starts after this long. */
+  turnStartTimeoutMs: number
+}
+
+let callTurnDepsOverride: Partial<CallTurnDeps> | null = null
+
+/** Test seam: replace the stream tracker, turn-state writes, or poll timing. */
+export function setCallTurnDeps(deps: Partial<CallTurnDeps> | null): void {
+  callTurnDepsOverride = deps
+}
+
+async function callTurnDeps(): Promise<CallTurnDeps> {
+  const o = callTurnDepsOverride ?? {}
+  const needsTurnState = !o.markTurnStarted || !o.markTurnEnded || !o.startTurnHeartbeat
+  const turnState = needsTurnState ? await import('./chat-turn-state.service') : null
   return {
-    status: 202,
-    body: { status: 'accepted', tracked: true, runId, ...(sessionId ? { sessionId } : {}), ...(chatSessionId ? { chatSessionId } : {}) },
+    track: o.track ?? (await import('../routes/project-chat')).trackUsageFromStream,
+    markTurnStarted: o.markTurnStarted ?? ((id) => turnState!.markTurnStarted(id)),
+    markTurnEnded: o.markTurnEnded ?? turnState!.markTurnEnded,
+    startTurnHeartbeat: o.startTurnHeartbeat ?? ((id, turnId) => turnState!.startTurnHeartbeat(id, turnId)),
+    turnPollIntervalMs: o.turnPollIntervalMs ?? 1_000,
+    turnStartTimeoutMs: o.turnStartTimeoutMs ?? 15 * 60_000,
   }
+}
+
+type CalleeRuntime = { kind: 'url'; url: string } | { kind: 'tunnel' } | { kind: 'error'; outcome: AgentCallOutcome }
+
+/**
+ * The callee runtime's direct URL. A pinned Instance is only reachable
+ * through the tunnel relay, which can't hold a long stream open.
+ */
+async function resolveCalleeRuntime(projectId: string): Promise<CalleeRuntime> {
+  try {
+    const overridden = runtimeUrlOverride ? await runtimeUrlOverride(projectId) : null
+    if (overridden) return { kind: 'url', url: overridden }
+    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+      const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
+      return { kind: 'url', url: (await resolveProjectPodUrl(projectId, { logTag: 'AgentCall' })).url }
+    }
+    const { resolveAgentProxyPodUrl } = await import('../lib/agent-proxy-resolver')
+    const resolution = await resolveAgentProxyPodUrl(projectId, { logTag: 'AgentCall' })
+    if (!resolution.ok) return { kind: 'error', outcome: { status: resolution.status, body: resolution.body } }
+    if (resolution.kind === 'tunnel') return { kind: 'tunnel' }
+    return { kind: 'url', url: resolution.url }
+  } catch (err: any) {
+    return {
+      kind: 'error',
+      outcome: { status: 502, body: { error: { code: 'agent_call_failed', message: err?.message ?? 'Failed to reach the target runtime' } } },
+    }
+  }
+}
+
+/** GET a path on the callee runtime, re-resolving each time so a moved runtime is still found. */
+async function fetchCalleeRuntime(projectId: string, path: string): Promise<Response> {
+  const { fetchFromProjectRuntime } = await import('../lib/chat-runtime-fetch')
+  return fetchFromProjectRuntime(projectId, path, { method: 'GET' }, {
+    resolveUrl: async (id) => {
+      const target = await resolveCalleeRuntime(id)
+      if (target.kind === 'url') return target.url
+      throw new Error(target.kind === 'tunnel' ? 'callee runtime is only reachable through a tunnel' : 'callee runtime unavailable')
+    },
+  })
+}
+
+/**
+ * Start the callee's turn without holding a request open for it, then follow
+ * it in the background. Returns null when the callee can't be followed this
+ * way (only reachable through an Instance tunnel); the caller then falls back
+ * to holding the request.
+ */
+async function startBackgroundCall(
+  c: Context,
+  projectId: string,
+  workspaceId: string,
+  call: AgentCallRequest & { runId: string },
+  chatSessionId: string,
+  link: AgentCallSessionLink | null,
+): Promise<AgentCallOutcome | null> {
+  const target = await resolveCalleeRuntime(projectId)
+  if (target.kind === 'tunnel') return null
+  if (target.kind === 'error') return target.outcome
+
+  const startedAt = link?.startedAt ?? Date.now()
+  const ack = await forwardToProjectRuntime(
+    c,
+    projectId,
+    workspaceId,
+    '/agent/pipeline/call',
+    JSON.stringify({ message: call.message, runId: call.runId, sessionId: chatSessionId, wait: false, callerProjectId: call.callerProjectId }),
+    {
+      runtimeUrl: target.url,
+      timeoutMs: 15_000,
+      ...(call.requesterTicket ? { headers: { 'X-Requester-Ticket': call.requesterTicket } } : {}),
+    },
+  )
+  if (ack.status < 200 || ack.status >= 300) return ack
+
+  if (link) await linkAgentCallSession(chatSessionId, link).catch(() => {})
+  void followCallTurn(projectId, workspaceId, chatSessionId, startedAt, link).catch((err) =>
+    console.warn(`[AgentCall] following call ${call.runId} failed:`, err?.message ?? err),
+  )
+  return ack
+}
+
+async function waitForCalleeTurn(projectId: string, chatSessionId: string, startedAt: number, deps: CallTurnDeps): Promise<boolean> {
+  const deadline = Date.now() + deps.turnStartTimeoutMs
+  for (;;) {
+    const res = await fetchCalleeRuntime(projectId, `/agent/chat/${encodeURIComponent(chatSessionId)}/turn`).catch(() => null)
+    if (res?.ok) {
+      const turn = (await res.json().catch(() => null)) as { createdAt?: number } | null
+      if (typeof turn?.createdAt === 'number' && turn.createdAt >= startedAt - TURN_CLOCK_SKEW_MS) return true
+    } else {
+      await res?.body?.cancel().catch(() => {})
+    }
+    if (Date.now() >= deadline) return false
+    await new Promise((resolve) => setTimeout(resolve, deps.turnPollIntervalMs))
+  }
+}
+
+/**
+ * Persist the callee's turn into its call chat with the project chat tracker
+ * (incremental saves, resume from the runtime buffer), then settle the call.
+ */
+async function followCallTurn(
+  projectId: string,
+  workspaceId: string,
+  chatSessionId: string,
+  startedAt: number,
+  link: AgentCallSessionLink | null,
+): Promise<void> {
+  const deps = await callTurnDeps()
+  const turnId = await deps.markTurnStarted(chatSessionId).catch((err) => {
+    console.warn(`[AgentCall] could not mark call turn active for ${chatSessionId}:`, err?.message ?? err)
+    return null
+  })
+  const stopHeartbeat = turnId ? deps.startTurnHeartbeat(chatSessionId, turnId) : () => {}
+  let result: TrackedStreamResult | null = null
+  try {
+    if (await waitForCalleeTurn(projectId, chatSessionId, startedAt, deps)) {
+      result = await trackCallTurn(projectId, workspaceId, chatSessionId, startedAt, deps)
+    } else {
+      console.warn(`[AgentCall] callee turn for ${chatSessionId} never started`)
+    }
+  } finally {
+    stopHeartbeat()
+    if (link) await settleAgentCallFromTurn(link, chatSessionId, result).catch(() => {})
+    if (turnId) await deps.markTurnEnded(chatSessionId, turnId).catch(() => {})
+  }
+}
+
+/** Stream the callee's turn buffer from the start into the call chat. */
+async function trackCallTurn(
+  projectId: string,
+  workspaceId: string,
+  chatSessionId: string,
+  startedAt: number,
+  deps: CallTurnDeps,
+): Promise<TrackedStreamResult | null> {
+  const streamPath = (fromSeq: number) => `/agent/chat/${encodeURIComponent(chatSessionId)}/stream?fromSeq=${fromSeq}`
+  const res = await fetchCalleeRuntime(projectId, streamPath(0)).catch(() => null)
+  if (!res || res.status !== 200 || !res.body) {
+    await res?.body?.cancel().catch(() => {})
+    return null
+  }
+  return deps.track(res.body, { chatSessionId }, { id: projectId, workspaceId }, {
+    chatSessionId,
+    suppressCompletionPush: true,
+    expectedTurnStartedAt: startedAt,
+    resume: async (fromSeq) => {
+      try {
+        return await fetchCalleeRuntime(projectId, streamPath(fromSeq))
+      } catch {
+        return null
+      }
+    },
+  })
+}
+
+/**
+ * Record a followed call's outcome. A turn this side didn't see finish (gone
+ * buffer, superseded turn, never started) fails the call so the caller isn't
+ * left waiting on it.
+ */
+export async function settleAgentCallFromTurn(
+  link: AgentCallSessionLink,
+  chatSessionId: string,
+  result: TrackedStreamResult | null,
+): Promise<void> {
+  const base = { runId: link.runId, sessionId: chatSessionId, chatSessionId, startedAt: link.startedAt, updatedAt: Date.now() }
+  if (result?.outcome === 'complete' && result.status !== 'failed') {
+    await putAgentCall(link.projectId, { ...base, status: 'completed', reply: result.text })
+    return
+  }
+  if (result?.outcome === 'complete') {
+    await putAgentCall(link.projectId, {
+      ...base,
+      status: 'failed',
+      reply: result.text || null,
+      error: { code: 'agent_turn_failed', message: 'The target agent turn failed.' },
+    })
+    return
+  }
+  await putAgentCall(link.projectId, {
+    ...base,
+    status: 'failed',
+    reply: result?.text || null,
+    error: { code: CALLEE_TURN_LOST, message: 'The target agent turn ended before its reply could be read.' },
+  })
 }
 
 export interface RemoteToolRequest {

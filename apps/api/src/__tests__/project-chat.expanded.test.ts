@@ -562,7 +562,7 @@ describe('trackUsageFromStream — processLine branches', () => {
       'data: {"type":"text-delta","delta":"a"}\n',
       'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
     ])
-    await expect(trackUsageFromStream(stream, { chatSessionId: 's-err' }, { id: 'p-1', workspaceId: 'w-1' })).resolves.toBeUndefined()
+    await expect(trackUsageFromStream(stream, { chatSessionId: 's-err' }, { id: 'p-1', workspaceId: 'w-1' })).resolves.toMatchObject({ outcome: 'complete' })
   })
 
   test('tool-call log error is caught (does not throw)', async () => {
@@ -573,7 +573,7 @@ describe('trackUsageFromStream — processLine branches', () => {
       'data: {"type":"tool-output-available","toolCallId":"t1","output":{}}\n',
       'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
     ])
-    await expect(trackUsageFromStream(stream, { chatSessionId: 's-log' }, { id: 'p-1', workspaceId: 'w-1' })).resolves.toBeUndefined()
+    await expect(trackUsageFromStream(stream, { chatSessionId: 's-log' }, { id: 'p-1', workspaceId: 'w-1' })).resolves.toMatchObject({ outcome: 'complete' })
   })
 
   test('filters out empty/whitespace text and reasoning parts', async () => {

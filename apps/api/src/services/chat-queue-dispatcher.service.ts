@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
 
-const ACTIVE_TURN_STALE_AFTER_MS = 5 * 60 * 1000
+/** Well above TURN_REATTACH_AFTER_MS, so the reattach job gets to a dead tracker's turn first. */
+const ACTIVE_TURN_STALE_AFTER_MS = 10 * 60 * 1000
 
 /**
  * `chat_queued_messages` replicates between regions, and the claim below is a

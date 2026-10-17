@@ -49,6 +49,7 @@ import {
 } from "../services/chat-turn-state.service"
 import { dispatchNext } from "../services/chat-queue-dispatcher.service"
 import { countLineChanges } from "../lib/tool-line-stats"
+import { fetchFromProjectRuntime } from "../lib/chat-runtime-fetch"
 import { importCloudModule } from "../lib/cloud-import"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
@@ -98,6 +99,21 @@ export function hasFileModifyingTools(toolCallMap: Map<string, { toolName: strin
 // =============================================================================
 // Stream Usage Tracking
 // =============================================================================
+
+/**
+ * How a tracked turn ended. `complete` saw the runtime's terminal frame;
+ * `partial` persisted what arrived before the stream (and any resume) ended;
+ * `foreign` found an older turn in the buffer and persisted nothing.
+ */
+export interface TrackedStreamResult {
+  outcome: 'complete' | 'partial' | 'foreign'
+  status: 'completed' | 'failed' | null
+  text: string
+  assistantMessageId: string | null
+}
+
+/** API and runtime clocks differ; a turn-start this much earlier still counts as the expected turn. */
+const TURN_START_CLOCK_SKEW_MS = 30_000
 
 /**
  * Scan a teed copy of the AI SDK stream for usage/tool-call data.
@@ -179,8 +195,19 @@ export async function trackUsageFromStream(
     projectName?: string
     /** A delegated task sends its own terminal notification. */
     suppressCompletionPush?: boolean
+    /**
+     * Assistant row this turn already wrote (a reattach after the tracking
+     * pod died). Snapshots update it instead of inserting a second row.
+     */
+    existingAssistantMessageId?: string | null
+    /**
+     * Epoch ms the turn was started from this side. A replayed buffer whose
+     * `data-turn-start` is older belongs to an earlier turn on the same
+     * session and is ignored instead of overwriting this turn's row.
+     */
+    expectedTurnStartedAt?: number
   } = {},
-) {
+): Promise<TrackedStreamResult> {
   const decoder = new TextDecoder()
   type UsageSnapshot = {
     promptTokens?: number
@@ -257,7 +284,10 @@ export async function trackUsageFromStream(
   // newer turn on the same session replaces it. Resume must only replay the
   // turn this tracker owns, or it overwrites this row with the next turn's parts.
   let trackedTurnId: string | undefined
-  let assistantMessageId: string | null = null
+  let assistantMessageId: string | null = options.existingAssistantMessageId ?? null
+  // Set when the buffer turned out to hold an older turn than the one this
+  // tracker owns (see `expectedTurnStartedAt`). Nothing is persisted then.
+  let foreignTurn = false
   let lastPartialPersistAt = 0
   let partialPersistInFlight: Promise<void> | null = null
   let persistenceDirty = false
@@ -282,7 +312,7 @@ export async function trackUsageFromStream(
    * so a hard-killed desktop still has the last completed step on reload.
    */
   async function persistAssistantSnapshot(force = false): Promise<void> {
-    if (!chatSessionId || (!accumulatedText && toolCallMap.size === 0)) return
+    if (foreignTurn || !chatSessionId || (!accumulatedText && toolCallMap.size === 0)) return
     if (!force && assistantMessageId && Date.now() - lastPartialPersistAt < 2_000) return
     if (partialPersistInFlight) {
       await partialPersistInFlight
@@ -582,6 +612,14 @@ export async function trackUsageFromStream(
     // seq 0, so a later replay must not clobber the original start).
     if (type === 'data-turn-start' && turnStartedAt === undefined) {
       const startedAt = data?.data?.startedAt
+      if (
+        typeof startedAt === 'number' &&
+        options.expectedTurnStartedAt !== undefined &&
+        startedAt < options.expectedTurnStartedAt - TURN_START_CLOCK_SKEW_MS
+      ) {
+        foreignTurn = true
+        return
+      }
       if (typeof startedAt === 'number') turnStartedAt = startedAt
     }
     if (type === 'data-turn-start' && trackedTurnId === undefined) {
@@ -705,6 +743,10 @@ export async function trackUsageFromStream(
 
         for (const line of lines) {
           processLine(line)
+          if (foreignTurn) {
+            try { await reader.cancel() } catch { /* already closed */ }
+            return true
+          }
           if (persistenceDirty) {
             const urgent = persistenceUrgent
             persistenceDirty = false
@@ -725,6 +767,12 @@ export async function trackUsageFromStream(
   // First pass: consume the original tee'd tracking stream.
   const firstOk = await consumeStream(stream.getReader())
   if (!firstOk) originalStreamErrored = true
+  if (foreignTurn) {
+    console.log(
+      `[ProjectChat] Buffer for session ${chatSessionId} holds an older turn than expected — nothing persisted`,
+    )
+    return { outcome: 'foreign', status: null, text: '', assistantMessageId }
+  }
 
   // Auto-resume drive: when the original stream EOF'd cleanly but the runtime
   // never emitted `data-turn-complete`, the upstream proxy cut us off mid-turn.
@@ -788,7 +836,12 @@ export async function trackUsageFromStream(
         // the original stream needs to be cleared to avoid duplication.
         resetAccumulatedState()
         const resumeOk = await consumeStream(resumeRes.body.getReader())
-        if (observedTurnComplete) {
+        if (foreignTurn) {
+          resumeOutcome = 'buffer-gone'
+          console.log(
+            `[ProjectChat] Resume for session ${chatSessionId} replayed an older turn — keeping the persisted partial`,
+          )
+        } else if (observedTurnComplete) {
           resumeOutcome = 'recovered'
         } else {
           resumeOutcome = 'failed'
@@ -914,7 +967,7 @@ export async function trackUsageFromStream(
 
   // Log tool calls with real args, results, duration, and the correct messageId.
   // We log in the partial case too so debugging shows what the user actually saw.
-  if (toolCallMap.size > 0 && chatSessionId) {
+  if (toolCallMap.size > 0 && chatSessionId && !foreignTurn) {
     try {
       const session = assistantMessageId
         ? true
@@ -1003,6 +1056,13 @@ export async function trackUsageFromStream(
         console.warn('[ProjectChat] Auto-checkpoint failed (non-blocking):', err.message)
       })
     }
+  }
+
+  return {
+    outcome: observedTurnComplete ? 'complete' : 'partial',
+    status: turnCompleteStatus,
+    text: accumulatedText,
+    assistantMessageId,
   }
 }
 
@@ -1112,14 +1172,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     path: string,
     init?: RequestInit,
   ): Promise<Response> {
-    const baseUrl = await getProjectUrl(projectId)
-    const { deriveProjectRuntimeToken } = await import("../lib/project-runtime-token")
-    const headers = new Headers(init?.headers)
-    if (!headers.has("Content-Type")) {
-      headers.set("Content-Type", "application/json")
-    }
-    headers.set("x-runtime-token", await deriveProjectRuntimeToken(projectId))
-    return fetch(`${baseUrl}${path}`, { ...init, headers })
+    return fetchFromProjectRuntime(projectId, path, init, { resolveUrl: getProjectUrl })
   }
 
   /**

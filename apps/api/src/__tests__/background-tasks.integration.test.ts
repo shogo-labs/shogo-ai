@@ -124,6 +124,12 @@ describe('tasks', () => {
     expect(late.output).toBe('model overloaded')
   })
 
+  test('a project call task outlives a day, since the call has no time limit', async () => {
+    const chatSessionId = await newSession()
+    const row = await tasks.createTask({ id: tasks.newTaskId(), chatSessionId, source: 'project_call', targetRef: `${seed.projectId}:run-long`, title: 'long' })
+    expect(new Date(row.expiresAt).getTime() - Date.now()).toBeGreaterThan(tasks.CARD_TASK_TTL_MS - 60_000)
+  })
+
   test('a tagged agent reply settles its reply task', async () => {
     const chatSessionId = await newSession()
     const [task] = await tasks.createReplyTasks(chatSessionId, 'msg-1', [{ projectId: seed.projectId, name: 'Billing Bot' }])

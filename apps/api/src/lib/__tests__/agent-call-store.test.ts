@@ -2,7 +2,15 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { beforeEach, describe, expect, it } from 'bun:test'
-import { _testing, getAgentCall, putAgentCall, waitForAgentCall } from '../agent-call-store'
+import {
+  _testing,
+  AGENT_CALL_TTL_SECONDS,
+  getAgentCall,
+  getAgentCallSessionLink,
+  linkAgentCallSession,
+  putAgentCall,
+  waitForAgentCall,
+} from '../agent-call-store'
 
 const base = { runId: 'run-1', startedAt: 1, updatedAt: 1 }
 
@@ -34,5 +42,29 @@ describe('agent-call-store (in-memory fallback)', () => {
     await putAgentCall('proj-a', { ...base, status: 'running' })
     const rec = await waitForAgentCall('proj-a', 'run-1', 30, { pollIntervalMs: 5 })
     expect(rec?.status).toBe('running')
+  })
+
+  it('keeps a call record for 7 days, so long background calls can still be polled', async () => {
+    expect(AGENT_CALL_TTL_SECONDS).toBe(7 * 24 * 60 * 60)
+    const before = Date.now()
+    await putAgentCall('proj-a', { ...base, status: 'running' })
+    const expiresAt = _testing.records.get('agent-call:proj-a:run-1')!.expiresAt
+    expect(expiresAt - before).toBeGreaterThanOrEqual(AGENT_CALL_TTL_SECONDS * 1000 - 1_000)
+  })
+})
+
+describe('agent-call session links', () => {
+  beforeEach(() => _testing.sessionLinks.clear())
+
+  it('maps a callee chat session back to its call', async () => {
+    await linkAgentCallSession('chat-1', { projectId: 'proj-a', runId: 'run-1', startedAt: 5 })
+    expect(await getAgentCallSessionLink('chat-1')).toEqual({ projectId: 'proj-a', runId: 'run-1', startedAt: 5 })
+    expect(await getAgentCallSessionLink('chat-2')).toBeUndefined()
+  })
+
+  it('expires links with the call record', async () => {
+    await linkAgentCallSession('chat-1', { projectId: 'proj-a', runId: 'run-1', startedAt: 5 })
+    _testing.sessionLinks.get('agent-call-session:chat-1')!.expiresAt = Date.now() - 1
+    expect(await getAgentCallSessionLink('chat-1')).toBeUndefined()
   })
 })

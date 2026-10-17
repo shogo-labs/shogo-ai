@@ -12,6 +12,11 @@ import { prisma } from '../lib/prisma'
  */
 const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000
 export const ACTIVE_TURN_HEARTBEAT_INTERVAL_MS = 2 * 60 * 1000
+/**
+ * The turn reattach job takes over a turn whose heartbeat is older than this.
+ * Above the heartbeat interval, below DEFAULT_STALE_AFTER_MS.
+ */
+export const TURN_REATTACH_AFTER_MS = 3 * 60 * 1000
 
 const CLEARED_TURN = {
   activeTurnId: null,
@@ -91,7 +96,38 @@ export function startTurnHeartbeat(
     )
   }, intervalMs)
   ;(timer as { unref?: () => void }).unref?.()
-  return () => clearInterval(timer)
+  const entry = { chatSessionId, turnId, timer }
+  heartbeatingTurns.add(entry)
+  return () => {
+    clearInterval(timer)
+    heartbeatingTurns.delete(entry)
+  }
+}
+
+const heartbeatingTurns = new Set<{ chatSessionId: string; turnId: string; timer: ReturnType<typeof setInterval> }>()
+
+/**
+ * On shutdown, hand every turn this process is following to the reattach
+ * job: stop heartbeating and age the heartbeat past TURN_REATTACH_AFTER_MS,
+ * so the next sweep on another replica claims it.
+ * Only the marker is written here. The runtime owns the turn buffer, which
+ * doesn't need an API subscriber to survive, and the API pod is killed after
+ * its termination grace period, so waiting for a takeover would not finish.
+ */
+export async function releaseTurnsForHandoff(): Promise<number> {
+  const turns = [...heartbeatingTurns]
+  heartbeatingTurns.clear()
+  if (turns.length === 0) return 0
+  const aged = new Date(Date.now() - TURN_REATTACH_AFTER_MS - 1_000)
+  await Promise.all(
+    turns.map(async ({ chatSessionId, turnId, timer }) => {
+      clearInterval(timer)
+      await prisma.chatSession
+        .updateMany({ where: { id: chatSessionId, activeTurnId: turnId }, data: { activeTurnHeartbeatAt: aged } })
+        .catch((error) => console.warn(`[ChatTurnState] Failed to hand off chat ${chatSessionId}:`, error))
+    }),
+  )
+  return turns.length
 }
 
 /**
