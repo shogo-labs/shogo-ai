@@ -37,6 +37,7 @@ import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { buildExposedPortsPrompt } from './exposed-ports-prompt'
+import { buildConcurrentChatsPrompt, concurrentChatLabel, type ConcurrentChat } from './concurrent-chats-prompt'
 import { HookEmitter, loadAllHooks, workspaceHooksSignature } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipConsumedResults } from './session-manager'
@@ -4298,6 +4299,9 @@ export class AgentGateway {
       if (teamCtx) parts.push(teamCtx)
     }
 
+    const concurrentChats = this.buildConcurrentChatsContext(sessionId)
+    if (concurrentChats) parts.push(concurrentChats)
+
     return parts.join('\n\n---\n\n')
   }
 
@@ -4357,6 +4361,9 @@ export class AgentGateway {
       const teamCtx = this.buildTeamContext(sessionId)
       if (teamCtx) parts.push(teamCtx)
     }
+
+    const concurrentChats = this.buildConcurrentChatsContext(sessionId)
+    if (concurrentChats) parts.push(concurrentChats)
 
     return parts.join('\n\n---\n\n')
   }
@@ -4699,6 +4706,9 @@ export class AgentGateway {
       ...this.buildShellNavLines(),
     ].join('\n'))
 
+    const concurrentChats = this.buildConcurrentChatsContext(sessionId)
+    if (concurrentChats) pushDynamic('concurrent-chats', concurrentChats)
+
     const modeLabel = activeMode === 'none' ? 'chat' : activeMode
     pushDynamic('current-mode', `\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
     if (this.viewerContextPrompt) {
@@ -4920,6 +4930,29 @@ export class AgentGateway {
     )
 
     return sections.join('\n')
+  }
+
+  /**
+   * Build a system prompt section listing the other chats live in this
+   * workspace: several chats share one pod, so their turns overlap and their
+   * edits, builds and DB pushes land mid-turn. Excludes the calling session,
+   * and returns null when this chat has the workspace to itself.
+   */
+  private buildConcurrentChatsContext(sessionId?: string): string | null {
+    const others = this.sessionManager
+      .listChatSessions(20 * 60_000)
+      .filter((chat) => chat.id !== sessionId)
+    if (others.length === 0) return null
+
+    const now = Date.now()
+    const chats: ConcurrentChat[] = others.map((chat) => ({
+      id: chat.id,
+      label: concurrentChatLabel({ id: chat.id, title: chat.title, firstUserText: chat.firstUserText }),
+      running: this.turnLocks.has(chat.id),
+      idleSeconds: Math.max(0, Math.floor((now - chat.lastActivityAt) / 1000)),
+    }))
+
+    return buildConcurrentChatsPrompt(chats, { isolatedEdits: this.isWorktreesEnabled() })
   }
 
   /**
