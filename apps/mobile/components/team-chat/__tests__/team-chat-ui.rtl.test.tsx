@@ -622,6 +622,25 @@ describe('MessageRow', () => {
     })
   })
 
+  test('a membership line reads as a compact record, with no author row', () => {
+    const { container } = render(
+      <MessageRow
+        message={message({
+          authorType: 'system', author: null, authorUserId: null,
+          text: 'Swastik Ranjan was added to 🔒 client-itau-col by Eby.',
+          blocks: { type: 'membership', addedUserIds: ['u-2'], addedById: 'u-1' },
+        })}
+        grouped={false} me="u-me" names={names} canManage={false} {...handlers()}
+      />,
+    )
+    const line = 'Swastik Ranjan was added to 🔒 client-itau-col by Eby.'
+    expect(screen.getByText(line)).toBeTruthy()
+    const row = container.querySelector('[accessibilitylabel]')
+    expect(row?.getAttribute('accessibilitylabel')).toBe(`Channel update: ${line}`)
+    // A record of what happened, not a message from Shogo.
+    expect(screen.queryByText('Shogo')).toBeNull()
+  })
+
   test('copy link copies a link to the message; mark unread is offered outside threads', async () => {
     const h = { ...handlers(), onMarkUnread: mock(() => {}) }
     const { container } = render(

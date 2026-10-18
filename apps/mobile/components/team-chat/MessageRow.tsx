@@ -9,7 +9,7 @@ import { createElement, memo, useCallback, useEffect, useRef, useState, type Rea
 import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
-import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, ExternalLink, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
+import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, ExternalLink, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2, UserPlus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
@@ -506,6 +506,21 @@ function MessageRowImpl(props: MessageRowProps) {
           </TimeTooltip>
         )}
       </Pressable>
+    )
+  }
+
+  if (message.authorType === 'system' && message.blocks?.type === 'membership') {
+    return (
+      <View
+        accessibilityLabel={`Channel update: ${message.text}`}
+        className="flex-row items-center gap-2 px-4 py-1.5"
+      >
+        <UserPlus size={13} className="text-muted-foreground" />
+        <Text className="min-w-0 flex-1 text-xs text-muted-foreground">{message.text}</Text>
+        <TimeTooltip iso={message.createdAt}>
+          {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+        </TimeTooltip>
+      </View>
     )
   }
 

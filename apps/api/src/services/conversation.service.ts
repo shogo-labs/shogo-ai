@@ -12,6 +12,7 @@ import { accessibleProjectsWhere, loadAccess as loadAuthzAccess } from '../lib/a
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { deleteConversationFile, previewForAttachments } from '../lib/conversation-files'
 import { flattenMarkdownBlocks, loadNamesForTexts, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
+import { addedMembersNoticeText, membershipChannelLabel } from './conversation-membership-notice'
 import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
 import { publicBlocks } from './conversation-message-kind'
@@ -854,6 +855,52 @@ export async function deleteConversation(conversationId: string, userId: string)
   if (failed) console.warn(`[conversations] ${failed} of ${files.length} stored file(s) of deleted ${conversationId} could not be removed`)
 }
 
+/** Display names for user ids, in the order given, falling back to the email. */
+async function displayNamesFor(userIds: string[]): Promise<string[]> {
+  const users = await db.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, name: true, email: true },
+  })
+  const byId = new Map<string, string>(users.map((u: any) => [u.id, u.name || u.email || 'Someone']))
+  return userIds.map((id) => byId.get(id) ?? 'Someone')
+}
+
+/**
+ * Posts the "who added whom" line and catches the new members' read position up
+ * past it, so being added doesn't arrive as unread. Best-effort on purpose — a
+ * failed notice must never fail the add itself.
+ */
+async function postMembershipNotice(
+  conversationId: string,
+  addedIds: string[],
+  actorName: string | null,
+  addedById: string | null,
+): Promise<void> {
+  try {
+    const conv = await db.conversation.findUnique({
+      where: { id: conversationId },
+      select: { id: true, kind: true, name: true },
+    })
+    if (!conv) return
+    const names = await displayNamesFor(addedIds)
+    const result = await postMessage({
+      conversationId,
+      authorType: 'system',
+      text: addedMembersNoticeText(names, actorName, membershipChannelLabel(conv.kind, conv.name ?? 'channel')),
+      blocks: { type: 'membership', addedUserIds: addedIds, addedById },
+    })
+    const seq = Number((result.row as { seq?: number } | undefined)?.seq ?? 0)
+    if (seq > 0) {
+      await db.conversationMember.updateMany({
+        where: { conversationId, userId: { in: addedIds }, lastReadSeq: { lt: seq } },
+        data: { lastReadSeq: seq, lastReadAt: new Date() },
+      })
+    }
+  } catch (err) {
+    console.error('[conversations] membership notice failed:', (err as Error).message)
+  }
+}
+
 export async function addUserMembers(conversationId: string, actorId: string, userIds: string[]) {
   const access = await loadAccess(conversationId, actorId)
   const conv = access.conversation
@@ -868,10 +915,16 @@ export async function addUserMembers(conversationId: string, actorId: string, us
   const added: string[] = []
   for (const uid of valid) {
     if (have.has(uid)) continue
-    await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId: uid } })
+    // Caught up as of the add: being added grants the history, it shouldn't
+    // land as a wall of unread badges.
+    await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId: uid, lastReadSeq: conv.lastSeq } })
     added.push(uid)
   }
-  if (added.length) await publish(conv, { type: 'member.joined', userIds: added })
+  if (added.length) {
+    await publish(conv, { type: 'member.joined', userIds: added })
+    const actorName = (await displayNamesFor([actorId]))[0] ?? null
+    await postMembershipNotice(conversationId, added, actorName, actorId)
+  }
   return added
 }
 
@@ -880,7 +933,11 @@ export async function addUserMembers(conversationId: string, actorId: string, us
  * with the agent as a member; the caller resolves visibility). Accepts user
  * ids or emails. Returns the user ids that were newly added.
  */
-export async function addUserMembersAsAgent(conversation: { id: string; kind: string; workspaceId: string; archivedAt?: Date | null }, users: string[]) {
+export async function addUserMembersAsAgent(
+  conversation: { id: string; kind: string; workspaceId: string; archivedAt?: Date | null },
+  users: string[],
+  actor: { projectId?: string | null } = {},
+) {
   if (conversation.kind !== 'public' && conversation.kind !== 'private') {
     throw new ConversationError(400, 'invalid', 'People can only be added to channels')
   }
@@ -904,10 +961,15 @@ export async function addUserMembersAsAgent(conversation: { id: string; kind: st
   const added: string[] = []
   for (const uid of valid) {
     if (have.has(uid)) continue
-    await db.conversationMember.create({ data: { conversationId: conversation.id, memberType: 'user', userId: uid } })
+    const conv = await db.conversation.findUnique({ where: { id: conversation.id }, select: { lastSeq: true } })
+    await db.conversationMember.create({ data: { conversationId: conversation.id, memberType: 'user', userId: uid, lastReadSeq: conv?.lastSeq ?? 0 } })
     added.push(uid)
   }
-  if (added.length) await publish(conversation, { type: 'member.joined', userIds: added })
+  if (added.length) {
+    await publish(conversation, { type: 'member.joined', userIds: added })
+    const actorName = await agentDisplayName(conversation.workspaceId, actor.projectId ?? null)
+    await postMembershipNotice(conversation.id, added, actorName, null)
+  }
   return added
 }
 
