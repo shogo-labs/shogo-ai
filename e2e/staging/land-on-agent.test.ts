@@ -4,10 +4,12 @@ import { expect, test, type Page } from "./fixtures"
 import { APP_HOME_PATH, gotoAppHome, makeTestUser, signUpAndOnboard, type TestUser } from "./helpers"
 
 /**
- * SHO-4: a cold start lands on the workspace agent with an empty chat.
+ * SHO-4 + SHO-19: a cold start lands on the workspace agent with an empty chat.
  *
- *   - team workspace: `/` opens the agent on a **new** session every time, so a
- *     reload never reopens the previous landing chat (it stays in history);
+ *   - team workspace: `/` opens the agent on an empty chat and **reuses that
+ *     one** until it has a message in it, so reloading ten times does not leave
+ *     ten empty chats behind, while a chat with a conversation is never
+ *     reopened (it stays in history);
  *   - the old team home (builder / phone feed) is at `/home`;
  *   - an explicit `?chatSessionId=` still wins and mints nothing;
  *   - personal workspaces are untouched: `/` keeps resuming the primary chat.
@@ -50,6 +52,22 @@ async function sessionIds(page: Page, workspaceId: string): Promise<string[]> {
   }, SESSIONS_API(workspaceId))
 }
 
+/**
+ * Give a chat a message without running a model turn: the landing keys off the
+ * message count, and this writes the same row the chat path writes.
+ */
+async function sendFirstMessage(page: Page, sessionId: string): Promise<void> {
+  await page.evaluate(async (id) => {
+    const res = await fetch("/api/chat-messages", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: id, role: "user", content: "hello from the land-on-agent e2e" }),
+    })
+    if (!res.ok) throw new Error(`create chat message failed: ${res.status} ${await res.text()}`)
+  }, sessionId)
+}
+
 /** Switches the active workspace the way the product does (persisted pointer). */
 async function activateWorkspace(page: Page, id: string, kind: string) {
   await page.evaluate(
@@ -62,7 +80,7 @@ async function activateWorkspace(page: Page, id: string, kind: string) {
 }
 
 test.describe("Land on the workspace agent", () => {
-  test("a team cold start opens the agent on a new empty chat every time", async ({ page }) => {
+  test("a team cold start reuses one empty chat until it has a message", async ({ page }) => {
     await signUpAndOnboard(page, TEAM_USER)
 
     const team = (await workspaces(page)).find((w) => w.kind !== "personal")
@@ -70,31 +88,38 @@ test.describe("Land on the workspace agent", () => {
     const workspaceId = team!.id
     const before = await sessionIds(page, workspaceId)
 
-    // ── First cold start ────────────────────────────────────────────────────
+    // ── Ten cold starts leave one empty chat, not ten ───────────────────────
+    for (let load = 0; load < 10; load += 1) {
+      await page.goto("/")
+      await expect(composer(page)).toBeVisible({ timeout: 60_000 })
+      expect(new URL(page.url()).pathname).toBe("/")
+      // The old team home must not flash or stick.
+      await expect(page.getByText("What are we building", { exact: false })).toHaveCount(0)
+    }
+
+    const afterTen = await sessionIds(page, workspaceId)
+    const minted = afterTen.filter((id) => !before.includes(id))
+    expect(minted, "ten cold starts must leave exactly one empty landing chat").toHaveLength(1)
+    const landing = minted[0]
+
+    // ── The first message stays in that chat ───────────────────────────────
+    await sendFirstMessage(page, landing)
+    expect((await sessionIds(page, workspaceId)).sort()).toEqual([...afterTen].sort())
+
+    // ── A chat with a conversation is never reopened ───────────────────────
     await page.goto("/")
     await expect(composer(page)).toBeVisible({ timeout: 60_000 })
-    expect(new URL(page.url()).pathname).toBe("/")
-    // The old team home must not flash or stick.
-    await expect(page.getByText("What are we building", { exact: false })).toHaveCount(0)
-
-    const afterFirst = await sessionIds(page, workspaceId)
-    const mintedFirst = afterFirst.filter((id) => !before.includes(id))
-    expect(mintedFirst, "the landing did not open a new session").toHaveLength(1)
-
-    // ── Reopening still lands on an empty chat, never the previous one ──────
-    await page.reload()
-    await expect(composer(page)).toBeVisible({ timeout: 60_000 })
-    const afterSecond = await sessionIds(page, workspaceId)
-    const mintedSecond = afterSecond.filter((id) => !afterFirst.includes(id))
-    expect(mintedSecond, "a reload reused the previous landing chat").toHaveLength(1)
-    expect(mintedSecond[0]).not.toBe(mintedFirst[0])
+    const afterNext = await sessionIds(page, workspaceId)
+    const mintedNext = afterNext.filter((id) => !afterTen.includes(id))
+    expect(mintedNext, "the landing reopened the previous conversation").toHaveLength(1)
+    expect(mintedNext[0]).not.toBe(landing)
 
     // ── An explicit session in the URL still wins, and mints nothing ────────
-    await page.goto(`/agent?chatSessionId=${mintedFirst[0]}`)
+    await page.goto(`/agent?chatSessionId=${landing}`)
     await expect(composer(page)).toBeVisible({ timeout: 60_000 })
-    expect(new URL(page.url()).searchParams.get("chatSessionId")).toBe(mintedFirst[0])
+    expect(new URL(page.url()).searchParams.get("chatSessionId")).toBe(landing)
     const afterExplicit = await sessionIds(page, workspaceId)
-    expect(afterExplicit.sort()).toEqual(afterSecond.sort())
+    expect(afterExplicit.sort()).toEqual(afterNext.sort())
 
     // ── The old team home is one route away ────────────────────────────────
     await gotoAppHome(page)

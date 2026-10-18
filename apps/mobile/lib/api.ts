@@ -1772,11 +1772,12 @@ export const api = {
 
   /**
    * List the signed-in user's personal workspace-agent chats, newest first.
+   * `messageCount` lets a caller tell an empty chat from a used one.
    */
   async listWorkspaceSessions(
     http: HttpClient,
     workspaceId: string,
-  ): Promise<Array<{ id: string; workspaceId: string; isPrimary?: boolean; isPinned?: boolean; isArchived?: boolean; name?: string | null; inferredName?: string | null; createdAt?: string; lastActiveAt?: string }>> {
+  ): Promise<Array<{ id: string; workspaceId: string; isPrimary?: boolean; isPinned?: boolean; isArchived?: boolean; name?: string | null; inferredName?: string | null; createdAt?: string; lastActiveAt?: string; messageCount?: number }>> {
     const res = await http.get<{
       sessions?: Array<{
         id: string
@@ -1788,6 +1789,7 @@ export const api = {
         inferredName?: string | null
         createdAt?: string
         lastActiveAt?: string
+        messageCount?: number
       }>
     }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`)
     return res.data?.sessions ?? []

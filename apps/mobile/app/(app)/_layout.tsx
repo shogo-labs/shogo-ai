@@ -46,7 +46,6 @@ import { usePostHogIdentify, usePostHogSafe } from "../../contexts/posthog";
 import { DomainProvider, useWorkspaceCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
-import { getActiveWorkspaceId } from "../../lib/workspace-store";
 import {
   homePathForWorkspaceKind,
   subscribeWorkspaceSwitched,
@@ -420,23 +419,19 @@ function AppLayoutInner() {
     if (useMobileWorkspaceShell) resetDrawer();
   }, [resetDrawer, useMobileWorkspaceShell]);
 
-  // After a workspace switch, leave the previous screen. Personal opens
-  // main chat; team opens the project builder. `openInWorkspace` navigates
-  // itself and does not emit this.
+  // After a workspace switch, leave the previous screen: every workspace
+  // lands on its agent chat. `openInWorkspace` navigates itself and does not
+  // emit this.
   useEffect(() => {
     return subscribeWorkspaceSwitched(() => {
-      const id = getActiveWorkspaceId();
-      const kind = (workspaces?.all ?? []).find(
-        (workspace: { id: string; kind?: string }) => workspace.id === id
-      )?.kind;
-      const href = homePathForWorkspaceKind(kind);
+      const href = homePathForWorkspaceKind();
       if (Platform.OS === "web" && typeof window !== "undefined") {
         window.location.assign(href.replace(/\/\([^)]+\)/g, "") || "/");
         return;
       }
       router.replace(href as any);
     });
-  }, [router, workspaces]);
+  }, [router]);
 
   useEffect(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return;

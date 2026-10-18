@@ -314,13 +314,24 @@ export async function assertWorkspaceSessionAccess(
   }
 }
 
-/** List the caller's personal workspace chats (most-recent first). */
+/**
+ * List the caller's personal workspace chats (most-recent first).
+ *
+ * `messageCount` is the session's real message count, so a client can tell an
+ * empty chat from one that has a conversation in it (the landing reuses an
+ * empty chat instead of minting a new one on every cold start).
+ */
 export async function listWorkspaceSessions(workspaceId: string, userId: string) {
-  return prisma.chatSession.findMany({
+  const rows = (await prisma.chatSession.findMany({
     where: { contextType: 'workspace', workspaceId, createdByUserId: userId } as any,
     orderBy: { lastActiveAt: 'desc' },
-    include: { attachedProjects: true } as any,
-  }) as any
+    include: { attachedProjects: true, _count: { select: { messages: true } } } as any,
+  })) as any[]
+
+  return rows.map(({ _count, ...row }) => ({
+    ...row,
+    messageCount: _count?.messages ?? 0,
+  }))
 }
 
 // ──────────────────────────────────────────────────────────────────

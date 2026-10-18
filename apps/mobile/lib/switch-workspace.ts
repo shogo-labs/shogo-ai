@@ -28,9 +28,7 @@ const workspaceSwitchedListeners = new Set<WorkspaceSwitchedListener>()
  * every workspace kind. `/(app)` resolves the landing (see
  * `lib/root-destination`), so switching workspace and opening the app agree.
  */
-export function homePathForWorkspaceKind(
-  _kind: string | null | undefined,
-): '/(app)' {
+export function homePathForWorkspaceKind(): '/(app)' {
   return '/(app)'
 }
 
@@ -72,9 +70,9 @@ function reloadProjects(workspaceId: string, projects: WorkspaceProjectCollectio
  * workspace). Reactively reconciling all of that mounted UI in place after a
  * switch is fragile, so on web/desktop force a clean reload instead — the
  * newly active workspace id is already persisted by the time this runs.
- * Listeners reset the route: personal lands on main chat, team on the
- * project builder. On web that listener does a full navigation. Reload
- * only if nothing is listening (the shell is not mounted).
+ * Listeners reset the route: every workspace lands on its agent chat. On web
+ * that listener does a full navigation. Reload only if nothing is listening
+ * (the shell is not mounted).
  */
 export function reloadAfterWorkspaceSwitch(): void {
   for (const listener of workspaceSwitchedListeners) listener()

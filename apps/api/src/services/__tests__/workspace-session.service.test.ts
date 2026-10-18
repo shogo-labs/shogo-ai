@@ -279,15 +279,31 @@ describe('getOrCreateDefaultWorkspaceSession', () => {
 })
 
 describe('listWorkspaceSessions', () => {
-  it('returns only the caller\'s chats', async () => {
+  it("returns only the caller's chats", async () => {
     s.listedSessions = [{ id: 'mine' }]
     const sessions = await svc.listWorkspaceSessions('ws-1', 'user-1')
-    expect(sessions).toEqual([{ id: 'mine' }])
+    expect(sessions).toEqual([{ id: 'mine', messageCount: 0 }])
     expect(s.findManySessionCalls[0].where).toMatchObject({
       workspaceId: 'ws-1',
       createdByUserId: 'user-1',
       contextType: 'workspace',
     })
+  })
+
+  it('reports how many messages each chat has, so an empty one is reusable', async () => {
+    s.listedSessions = [
+      { id: 'used', inferredName: 'Chat', _count: { messages: 4 } },
+      { id: 'empty', inferredName: 'Chat', _count: { messages: 0 } },
+    ]
+    const sessions = await svc.listWorkspaceSessions('ws-1', 'user-1')
+    expect(sessions.map((row: any) => [row.id, row.messageCount])).toEqual([
+      ['used', 4],
+      ['empty', 0],
+    ])
+    // The count is folded into `messageCount`; the raw `_count` stays internal.
+    expect(sessions[0]).not.toHaveProperty('_count')
+    expect(sessions[0]).toMatchObject({ inferredName: 'Chat' })
+    expect(s.findManySessionCalls[0].include._count).toEqual({ select: { messages: true } })
   })
 })
 

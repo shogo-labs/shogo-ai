@@ -65,10 +65,8 @@ describe('scheduleWorkspaceSwitch', () => {
 })
 
 describe('homePathForWorkspaceKind', () => {
-  test('lands every workspace kind on the workspace agent landing', () => {
-    expect(homePathForWorkspaceKind('personal')).toBe('/(app)')
-    expect(homePathForWorkspaceKind('team')).toBe('/(app)')
-    expect(homePathForWorkspaceKind(undefined)).toBe('/(app)')
+  test('lands on the workspace agent landing', () => {
+    expect(homePathForWorkspaceKind()).toBe('/(app)')
   })
 })
 

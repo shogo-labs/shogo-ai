@@ -27,6 +27,7 @@ import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
 import { chatSessionEvents } from "../../lib/chat-session-events"
 import { agentSessionSource } from "../../lib/root-destination"
+import { ensureLandingSession, LANDING_SESSION_NAME } from "../../lib/landing-session"
 import { ChatPanel } from "../chat/ChatPanel"
 import type { OpenProjectPaneRequest } from "../chat/ChatContext"
 import type { PlanData } from "../chat/PlanCard"
@@ -131,7 +132,8 @@ export const WorkspaceAgentChatScreen = observer(
     const loadVersion = useRef(0)
     // The empty chat the landing opens. Single-flight per workspace so a
     // re-running load (a new `http` identity, a re-render) cannot mint a
-    // second empty session.
+    // second empty session; the session itself is reused across cold starts
+    // (see `lib/landing-session`).
     const landingSession = useRef<{
       workspaceId: string
       promise: Promise<{ id: string }>
@@ -190,8 +192,12 @@ export const WorkspaceAgentChatScreen = observer(
           if (cached && cached.workspaceId === workspace.id) {
             return cached.promise
           }
-          const promise = api.createWorkspaceSession(http, workspace.id, {
-            inferredName: "Chat",
+          const promise = ensureLandingSession(workspace.id, {
+            list: (workspaceId) => api.listWorkspaceSessions(http, workspaceId),
+            create: (workspaceId) =>
+              api.createWorkspaceSession(http, workspaceId, {
+                inferredName: LANDING_SESSION_NAME,
+              }),
           })
           landingSession.current = { workspaceId: workspace.id, promise }
           promise.catch(() => {
