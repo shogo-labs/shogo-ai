@@ -506,6 +506,8 @@ export interface GatewayConfig {
   imageGenEnabled?: boolean
   /** Whether the generate_video tool is enabled (default: false — opt-in, billed per second) */
   videoGenEnabled?: boolean
+  /** Whether the generate_3d_model tool is enabled (default: false — opt-in, billed per task) */
+  threeDGenEnabled?: boolean
   /** Whether memory tools are enabled (default: true) */
   memoryEnabled?: boolean
   /** Whether quick action registration is enabled (default: true) */

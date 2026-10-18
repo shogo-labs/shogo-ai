@@ -24,6 +24,7 @@ import {
   type BillingModel,
 } from '@shogo/model-catalog'
 import { getDbModelBillingModel, getDbModelPricing } from './db-model-pricing'
+import { estimateTripoCredits, type TripoOp } from './tripo-3d'
 
 export type { ModelTier, AgentMode }
 export { MODEL_DOLLAR_COSTS, calculateDollarCost }
@@ -221,6 +222,47 @@ export interface VideoRates {
 export function calculateVideoUsageCost(rates: VideoRates, seconds: number, audio = false): UsageCostResult {
   const perSecond = audio && rates.usdPerSecondWithAudio !== undefined ? rates.usdPerSecondWithAudio : rates.usdPerSecond
   const rawUsd = Math.max(0, seconds) * perSecond
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+}
+
+// =============================================================================
+// 3D Generation Usage Costs (Tripo3D)
+// =============================================================================
+
+/** Tripo bills in credits; 100 credits = $1.00. */
+export const TRIPO_USD_PER_CREDIT = 0.01
+
+/**
+ * Advisory estimate for the `estimated_usd` on the queued response, priced
+ * from the operation registry's credit table (`TRIPO_OPS`). Billing is never
+ * driven by this: the status route charges the task's own `credits_consumed`.
+ */
+export function estimateTripoTaskCost(params: {
+  op: TripoOp
+  model?: string
+  texture?: boolean
+  textureQuality?: string
+  animations?: string[]
+  animation?: string
+  [opParam: string]: unknown
+}): UsageCostResult {
+  const { op, textureQuality, animations, animation, ...rest } = params
+  const credits = estimateTripoCredits(op, {
+    ...rest,
+    ...(textureQuality !== undefined ? { texture_quality: textureQuality } : {}),
+    ...(animations !== undefined ? { animations } : {}),
+    ...(animation !== undefined ? { animation } : {}),
+  })
+  const rawUsd = credits * TRIPO_USD_PER_CREDIT
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+}
+
+/**
+ * USD for a finished Tripo task, from the credits Tripo reports consuming.
+ * Never estimate what the task itself can tell us.
+ */
+export function calculate3dUsageCost(creditsConsumed: number): UsageCostResult {
+  const rawUsd = Math.max(0, creditsConsumed) * TRIPO_USD_PER_CREDIT
   return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
 }
 

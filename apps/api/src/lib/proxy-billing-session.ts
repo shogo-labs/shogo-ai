@@ -159,6 +159,9 @@ interface BillingSession {
   videoBilledUsd: number
   videoGenerationCount: number
   videoSeconds: number
+  threeDRawUsd: number
+  threeDBilledUsd: number
+  threeDGenerationCount: number
   quality: BillingSessionQualitySignals
   openedAt: number
   lastActivityAt: number
@@ -215,6 +218,9 @@ function emptySession(projectId: string, chatSessionId: string | null, workspace
     videoBilledUsd: 0,
     videoGenerationCount: 0,
     videoSeconds: 0,
+    threeDRawUsd: 0,
+    threeDBilledUsd: 0,
+    threeDGenerationCount: 0,
     quality: {},
     openedAt: Date.now(),
     lastActivityAt: Date.now(),
@@ -243,6 +249,9 @@ function parseSessionHash(hash: Record<string, string>, imageModels: string[]): 
     videoBilledUsd: Number(hash.videoBilledUsd || 0),
     videoGenerationCount: Number(hash.videoGenerationCount || 0),
     videoSeconds: Number(hash.videoSeconds || 0),
+    threeDRawUsd: Number(hash.threeDRawUsd || 0),
+    threeDBilledUsd: Number(hash.threeDBilledUsd || 0),
+    threeDGenerationCount: Number(hash.threeDGenerationCount || 0),
     quality: {
       success: hash['quality:success'] === undefined ? undefined : hash['quality:success'] === '1',
       hitMaxTurns: hash['quality:hitMaxTurns'] === '1',
@@ -300,6 +309,18 @@ redis.call('HINCRBYFLOAT', KEYS[1], 'videoSeconds', ARGV[3])
 redis.call('HINCRBY', KEYS[1], 'videoGenerationCount', 1)
 redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[4])
 redis.call('PEXPIRE', KEYS[1], ARGV[5])
+return 1
+`
+
+const ACCUMULATE_3D_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 0
+end
+redis.call('HINCRBYFLOAT', KEYS[1], 'threeDRawUsd', ARGV[1])
+redis.call('HINCRBYFLOAT', KEYS[1], 'threeDBilledUsd', ARGV[2])
+redis.call('HINCRBY', KEYS[1], 'threeDGenerationCount', 1)
+redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[3])
+redis.call('PEXPIRE', KEYS[1], ARGV[4])
 return 1
 `
 
@@ -392,6 +413,21 @@ function accumulateVideoUsageLocal(
   session.videoBilledUsd += billedUsd
   session.videoSeconds += seconds
   session.videoGenerationCount += 1
+  session.lastActivityAt = Date.now()
+  return true
+}
+
+function accumulate3dUsageLocal(
+  projectId: string,
+  rawUsd: number,
+  billedUsd: number,
+  chatSessionId?: string | null,
+): boolean {
+  const session = lookupSessionLocal(projectId, chatSessionId)
+  if (!session) return false
+  session.threeDRawUsd += rawUsd
+  session.threeDBilledUsd += billedUsd
+  session.threeDGenerationCount += 1
   session.lastActivityAt = Date.now()
   return true
 }
@@ -520,6 +556,26 @@ async function accumulateVideoUsageRedis(
   return false
 }
 
+async function accumulate3dUsageRedis(
+  r: NonNullable<ReturnType<typeof redisOrNull>>,
+  projectId: string,
+  rawUsd: number,
+  billedUsd: number,
+  chatSessionId?: string | null,
+): Promise<boolean> {
+  const composite = chatSessionId ? sessionKey(projectId, chatSessionId) : null
+  const legacy = projectId
+  const now = Date.now()
+  for (const key of composite ? [composite, legacy] : [legacy]) {
+    const result = await r.eval(
+      ACCUMULATE_3D_SCRIPT, 1, redisHashKey(key),
+      String(rawUsd), String(billedUsd), String(now), String(REDIS_TTL_MS),
+    )
+    if (result === 1) return true
+  }
+  return false
+}
+
 async function setQualitySignalsRedis(
   r: NonNullable<ReturnType<typeof redisOrNull>>,
   projectId: string,
@@ -577,6 +633,9 @@ async function openSessionRedis(
       videoBilledUsd: '0',
       videoGenerationCount: '0',
       videoSeconds: '0',
+      threeDRawUsd: '0',
+      threeDBilledUsd: '0',
+      threeDGenerationCount: '0',
       openedAt: String(fresh.openedAt),
       lastActivityAt: String(fresh.lastActivityAt),
     })
@@ -820,6 +879,28 @@ export async function accumulateVideoUsage(
   return accumulateVideoUsageLocal(projectId, seconds, rawUsd, billedUsd, chatSessionId)
 }
 
+/**
+ * Accumulate 3D-generation USD (charged when a Tripo task succeeds). Returns
+ * true if accumulated against an active session, false if no session exists
+ * (caller should charge per-call).
+ */
+export async function accumulate3dUsage(
+  projectId: string,
+  rawUsd: number,
+  billedUsd: number,
+  chatSessionId?: string | null,
+): Promise<boolean> {
+  const r = redisOrNull()
+  if (r) {
+    try {
+      return await withRedisTimeout(accumulate3dUsageRedis(r, projectId, rawUsd, billedUsd, chatSessionId))
+    } catch (err) {
+      console.warn(`[BillingSession] Redis accumulate3dUsage failed, falling back to local map:`, (err as Error).message)
+    }
+  }
+  return accumulate3dUsageLocal(projectId, rawUsd, billedUsd, chatSessionId)
+}
+
 export async function setQualitySignals(
   projectId: string,
   quality: BillingSessionQualitySignals,
@@ -891,6 +972,7 @@ export async function closeSession(
     totalTokens === 0 &&
     session.imageBilledUsd === 0 &&
     session.videoBilledUsd === 0 &&
+    session.threeDBilledUsd === 0 &&
     options.fallbackUsage &&
     !options.discardPartial &&
     !options.bookkeeping
@@ -918,7 +1000,7 @@ export async function closeSession(
     }
   }
 
-  if (totalTokens === 0 && session.imageBilledUsd === 0 && session.videoBilledUsd === 0) {
+  if (totalTokens === 0 && session.imageBilledUsd === 0 && session.videoBilledUsd === 0 && session.threeDBilledUsd === 0) {
     // Do not bill, but still record a metrics row so turns that die before
     // the LLM (pod unreachable, 402, stream abort with no tokens) are
     // countable. Skipping this made silent dropped turns invisible in
@@ -1010,8 +1092,8 @@ export async function closeSession(
     session.inputTokens, session.outputTokens, session.model,
     session.cachedInputTokens, session.cacheWriteTokens,
   )
-  const rawUsd = tokenCost.rawUsd + session.imageRawUsd + session.videoRawUsd
-  const billedUsd = tokenCost.billedUsd + session.imageBilledUsd + session.videoBilledUsd
+  const rawUsd = tokenCost.rawUsd + session.imageRawUsd + session.videoRawUsd + session.threeDRawUsd
+  const billedUsd = tokenCost.billedUsd + session.imageBilledUsd + session.videoBilledUsd + session.threeDBilledUsd
   const durationMs = Date.now() - session.openedAt
   const finalQuality = session.quality
 
@@ -1085,6 +1167,13 @@ export async function closeSession(
               videoBilledUsd: session.videoBilledUsd,
             }
           : {}),
+        ...(session.threeDGenerationCount > 0
+          ? {
+              threeDGenerationCount: session.threeDGenerationCount,
+              threeDRawUsd: session.threeDRawUsd,
+              threeDBilledUsd: session.threeDBilledUsd,
+            }
+          : {}),
         durationMs,
         ...(session.chatSessionId ? { chatSessionId: session.chatSessionId } : {}),
         ...(usedStreamFallback ? { usageSource: 'stream-fallback' } : {}),
@@ -1093,7 +1182,7 @@ export async function closeSession(
 
     if (result.success) {
       console.log(
-        `[BillingSession] Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}), ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)}, ${session.videoGenerationCount} videos $${session.videoBilledUsd.toFixed(4)} — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`
+        `[BillingSession] Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}), ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)}, ${session.videoGenerationCount} videos $${session.videoBilledUsd.toFixed(4)}, ${session.threeDGenerationCount} 3D models $${session.threeDBilledUsd.toFixed(4)} — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`
       )
     } else {
       console.warn(`[BillingSession] Could not charge usage: ${result.error}`)

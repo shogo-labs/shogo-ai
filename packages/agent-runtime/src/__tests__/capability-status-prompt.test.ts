@@ -10,7 +10,7 @@ describe('buildCapabilityStatusSection', () => {
     expect(text).toContain('## Project Capabilities')
     expect(text).toContain('Web search (`webEnabled`)')
     expect(text).toContain('Shell (`shellEnabled`)')
-    expect(text).toContain('Disabled: Video generation (`videoGenEnabled`), Git worktrees (`gitWorktreesEnabled`), Social media (`socialMediaEnabled`)')
+    expect(text).toContain('Disabled: Video generation (`videoGenEnabled`), 3D generation (`threeDGenEnabled`), Git worktrees (`gitWorktreesEnabled`), Social media (`socialMediaEnabled`)')
     expect(text).not.toContain('Locked by')
     expect(text).toContain('capabilities_configure')
   })
@@ -26,6 +26,16 @@ describe('buildCapabilityStatusSection', () => {
     const enabled = text.split('\n').find((line) => line.startsWith('Enabled:')) ?? ''
     expect(enabled).not.toContain('channelsEnabled')
     expect(enabled).not.toContain('imageGenEnabled')
+  })
+
+  test('3D generation is opt-in and named with both of its tools', () => {
+    const off = buildCapabilityStatusSection({})
+    expect(off.split('\n').find((line) => line.startsWith('Disabled:'))).toContain('threeDGenEnabled')
+
+    const on = buildCapabilityStatusSection({ threeDGenEnabled: true })
+    const enabled = on.split('\n').find((line) => line.startsWith('Enabled:')) ?? ''
+    expect(enabled).toContain('3D generation (`threeDGenEnabled`)')
+    expect(on.split('\n').find((line) => line.startsWith('Disabled:'))).not.toContain('threeDGenEnabled')
   })
 
   test('opt-in toggles appear as enabled only when exactly true', () => {

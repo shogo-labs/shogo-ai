@@ -292,7 +292,9 @@
     "dist/**/*.cjs",
     "dist/**/*.d.ts",
     "dist/**/*.d.cts",
-    "bin/cli.mjs"
+    "bin/cli.mjs",
+    "bin/three-d-cli.mjs",
+    "bin/three-d-cli.d.mts"
   ],
   "scripts": {
     "build": "tsup",

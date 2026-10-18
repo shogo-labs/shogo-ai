@@ -36,6 +36,7 @@ export const NATIVE_PROVIDER_ENV_KEY: Record<string, string> = {
   google: 'GOOGLE_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
   fal: 'FAL_KEY',
+  tripo: 'TRIPO_API_KEY',
 }
 
 export const SUPPORTED_NATIVE_PROVIDERS = Object.keys(NATIVE_PROVIDER_ENV_KEY)

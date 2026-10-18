@@ -16,8 +16,9 @@ import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
 import { assertWithinWorkspace } from './permission-engine'
+import { createThreeDTools } from './three-d-tools'
 
-export { IMAGE_TOOL_NAMES, VIDEO_TOOL_NAMES, MEDIA_TOOL_NAMES } from './media-tool-names'
+export { IMAGE_TOOL_NAMES, VIDEO_TOOL_NAMES, THREE_D_TOOL_NAMES, MEDIA_TOOL_NAMES } from './media-tool-names'
 
 /** Upper bound on reference images a tool call may attach; models may allow fewer (see list_media_models). */
 export const MAX_REFERENCE_IMAGES = 4
@@ -376,18 +377,18 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'list_media_models',
     description:
-      'List the image and video models you can use, with what each is best for, whether it accepts reference images or a start frame, its main parameters, and its Shogo price (per image or per second of video). ' +
+      'List the image, video and 3D models you can use, with what each is best for, whether it accepts reference images or a start frame, its main parameters, and its Shogo price (per image, per second of video, or per 3D task). ' +
       'Check this before choosing a model or planning a batch so you can budget it.',
     label: 'List Media Models',
     parameters: Type.Object({
       kind: Type.Optional(
-        Type.Union([Type.Literal('image'), Type.Literal('video'), Type.Literal('all')], {
+        Type.Union([Type.Literal('image'), Type.Literal('video'), Type.Literal('3d'), Type.Literal('all')], {
           description: 'Which models to list (default: "all")',
         }),
       ),
     }),
     execute: async (_toolCallId, params, signal) => {
-      const { kind = 'all' } = params as { kind?: 'image' | 'video' | 'all' }
+      const { kind = 'all' } = params as { kind?: 'image' | 'video' | '3d' | 'all' }
       const proxy = proxyConfig(ctx)
       if (!proxy) return textResult({ error: 'Media models are not available: AI proxy not configured.' })
       try {
@@ -401,13 +402,21 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
         const data = (await response.json()) as { images?: unknown[]; videos?: unknown[]; utilities?: unknown[]; currency?: string; note?: string }
         const imageOn = ctx.config?.imageGenEnabled !== false
         const videoOn = ctx.config?.videoGenEnabled === true
+        const threeDOn = ctx.config?.threeDGenEnabled === true
+        const showImages = kind === 'all' || kind === 'image'
+        const showVideos = kind === 'all' || kind === 'video'
+        const show3d = kind === 'all' || kind === '3d'
+        // 3D models come from their own route, and only when the capability is on:
+        // each task is billed, so there is no point advertising them otherwise.
+        const models3d = threeDOn && show3d ? await fetchThreeDModels(proxy, signal) : undefined
         return textResult({
-          ...(kind !== 'video' && imageOn ? { images: data.images ?? [], utilities: data.utilities ?? [] } : {}),
-          ...(kind !== 'image'
+          ...(showImages && imageOn ? { images: data.images ?? [], utilities: data.utilities ?? [] } : {}),
+          ...(showVideos
             ? videoOn
               ? { videos: data.videos ?? [] }
               : { videos: [], videos_note: 'Video generation is off for this project. The user can enable it in Capabilities.' }
             : {}),
+          ...(models3d ?? {}),
           currency: data.currency ?? 'USD',
           note: data.note,
         })
@@ -415,6 +424,29 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `Listing media models failed: ${err.message}` })
       }
     },
+  }
+}
+
+/** `models_3d`, or a note explaining why the 3D list is empty. */
+async function fetchThreeDModels(
+  proxy: ProxyConfig,
+  signal?: AbortSignal,
+): Promise<{ models_3d: unknown[] } | { models_3d: unknown[]; models_3d_note: string }> {
+  try {
+    const response = await fetch(`${proxy.base}/v1/3d/models`, {
+      headers: { Authorization: `Bearer ${proxy.token}` },
+      signal,
+    })
+    if (!response.ok) {
+      return {
+        models_3d: [],
+        models_3d_note: friendlyMediaError('Listing 3D models', response.status, await response.text()),
+      }
+    }
+    const data = (await response.json()) as { models?: unknown[] }
+    return { models_3d: data.models ?? [] }
+  } catch (err: any) {
+    return { models_3d: [], models_3d_note: `Listing 3D models failed: ${err.message}` }
   }
 }
 
@@ -856,6 +888,7 @@ export function createMediaTools(ctx: ToolContext): AgentTool[] {
     createUpscaleImageTool(ctx),
     createRemoveBackgroundTool(ctx),
     createGenerateVideoTool(ctx),
+    ...createThreeDTools(ctx),
   ]
 }
 

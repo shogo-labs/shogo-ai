@@ -993,6 +993,7 @@ export interface TechStackMeta {
     heartbeatToolsEnabled?: boolean
     imageGenEnabled?: boolean
     videoGenEnabled?: boolean
+    threeDGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
   }

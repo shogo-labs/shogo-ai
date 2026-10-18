@@ -66,7 +66,14 @@ export function lockedCapabilityKeys(profile: CapabilityProfileName | undefined)
   return locked
 }
 
-export function capabilityState(config: { capabilityProfile?: CapabilityProfileName }): CapabilityStateView {
+/**
+ * `config` is the runtime config, so it carries the capability toggles
+ * themselves (`videoGenEnabled`, `threeDGenEnabled`, …) plus the profile.
+ * `Partial` because an absent toggle means "use the default", not "disabled".
+ */
+export type CapabilityConfigInput = { capabilityProfile?: CapabilityProfileName } & Partial<CapabilitySettings>
+
+export function capabilityState(config: CapabilityConfigInput): CapabilityStateView {
   const caps = resolveRuntimeCapabilities(config as Record<string, unknown>)
   const locked = new Set(lockedCapabilityKeys(config.capabilityProfile))
   const enabled: CapabilityKey[] = []
@@ -100,7 +107,7 @@ export function effectiveCapabilityValue(
 }
 
 /** Stable prompt block. Changes only when a capability toggle changes. */
-export function buildCapabilityStatusSection(config: { capabilityProfile?: CapabilityProfileName }): string {
+export function buildCapabilityStatusSection(config: CapabilityConfigInput): string {
   const caps = resolveRuntimeCapabilities(config as Record<string, unknown>)
   const { enabled, disabled, locked } = capabilityState(config)
   const lines = [

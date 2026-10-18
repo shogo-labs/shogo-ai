@@ -566,6 +566,8 @@ export default observer(function ProjectLayout() {
       imageGenEnabled: projectSettings.imageGenEnabled !== false,
       // Opt-in: video is billed per second.
       videoGenEnabled: projectSettings.videoGenEnabled === true,
+      // Opt-in: each 3D task is billed.
+      threeDGenEnabled: projectSettings.threeDGenEnabled === true,
       memoryEnabled: projectSettings.memoryEnabled !== false,
       quickActionsEnabled: projectSettings.quickActionsEnabled !== false,
       sdkGuideEnabled: projectSettings.sdkGuideEnabled !== false,

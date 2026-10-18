@@ -14,6 +14,7 @@ import { resolve, dirname } from 'path'
 import { execSync, execFileSync } from 'child_process'
 import { parseArgs } from 'util'
 import { pathToFileURL } from 'url'
+import { runThreeDCommand } from './three-d-cli.mjs'
 
 // ============================================================================
 // CLI Parsing
@@ -28,6 +29,26 @@ const { values, positionals } = parseArgs({
     prune: { type: 'boolean' },
     'dry-run': { type: 'boolean' },
     project: { type: 'string' },
+    // `shogo 3d` flags
+    op: { type: 'string' },
+    input: { type: 'string' },
+    prompt: { type: 'string' },
+    image: { type: 'string' },
+    images: { type: 'string' },
+    model: { type: 'string' },
+    texture: { type: 'boolean' },
+    'no-texture': { type: 'boolean' },
+    'texture-quality': { type: 'string' },
+    'texture-prompt': { type: 'string' },
+    'style-image': { type: 'string' },
+    'face-limit': { type: 'string' },
+    format: { type: 'string' },
+    animation: { type: 'string' },
+    animations: { type: 'string' },
+    'rig-type': { type: 'string' },
+    'part-names': { type: 'string' },
+    out: { type: 'string' },
+    json: { type: 'boolean' },
   },
   allowPositionals: true,
   strict: false,
@@ -42,9 +63,15 @@ Shogo SDK CLI
 Usage:
   shogo generate                          Generate Prisma client, run db push, build
   shogo deploy [--prune] [--dry-run]      Reconcile shogo.config.json#agents with cloud
+  shogo 3d <subcommand>                   3D models through the AI proxy
+                                          (generate | edit | status | upload | models)
   shogo help                              Show this help message
 `)
   process.exit(0)
+}
+
+if (command === '3d') {
+  process.exit(await runThreeDCommand(positionals.slice(1), values))
 }
 
 if (command === 'deploy') {

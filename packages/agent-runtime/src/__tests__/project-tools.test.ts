@@ -828,6 +828,14 @@ describe('capabilities_configure', () => {
     expect(saved.model).toEqual({ name: 'kept' })
   })
 
+  test('advertises threeDGenEnabled in the changes schema', () => {
+    const tool = createCapabilitiesConfigureTool(baseCtx())
+    const properties = (tool.parameters as any).properties.changes.properties
+    expect(Object.keys(properties)).toContain('threeDGenEnabled')
+    expect(properties.threeDGenEnabled.description).toBe('3D generation')
+    expect(properties.videoGenEnabled.description).toBe('Video generation')
+  })
+
   test('rejects an unknown capability', async () => {
     const out = await run(createCapabilitiesConfigureTool(baseCtx()), { changes: { notACapability: true } })
     expect(out.code).toBe('unknown_capability')

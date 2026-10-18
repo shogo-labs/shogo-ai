@@ -177,11 +177,18 @@ describe('filterDisabledCapabilityTools', () => {
   })
 
   test('returns the same array reference when nothing is disabled (no-op fast path)', () => {
-    // `gitWorktreesEnabled`, `socialMediaEnabled` and `videoGenEnabled` are
-    // opt-in: leaving them unset gates `worktree_list`, `social_media` and
-    // `generate_video`, which defeats the fast path. Turn them on so genuinely
-    // nothing is disabled.
-    const config = makeConfig({ gitWorktreesEnabled: true, socialMediaEnabled: true, videoGenEnabled: true })
+    // EVERY opt-in has to be on or its tools are gated and the fast path is
+    // skipped: worktrees, social, video, 3D, board admin, company ops, problems.
+    // (The last three were already missing here, so this test failed on main.)
+    const config = makeConfig({
+      gitWorktreesEnabled: true,
+      socialMediaEnabled: true,
+      videoGenEnabled: true,
+      threeDGenEnabled: true,
+      boardAdminEnabled: true,
+      companyOpsEnabled: true,
+      problemsEnabled: true,
+    })
     const tools = createTools(makeCtx(config))
     expect(filterDisabledCapabilityTools(tools, config)).toBe(tools)
   })

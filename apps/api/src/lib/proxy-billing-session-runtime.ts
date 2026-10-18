@@ -36,6 +36,7 @@ type BillingSessionSeam = Pick<
   | 'accumulateUsage'
   | 'accumulateImageUsage'
   | 'accumulateVideoUsage'
+  | 'accumulate3dUsage'
   | 'setQualitySignals'
 >
 
@@ -107,6 +108,7 @@ export const localBillingSession: BillingSessionSeam = {
   },
   accumulateImageUsage: async () => false,
   accumulateVideoUsage: async () => false,
+  accumulate3dUsage: async () => false,
   setQualitySignals: async (projectId, quality, chatSessionId) => {
     const turn = lookupLocalTurn(projectId, chatSessionId)
     if (!turn) return false
@@ -130,6 +132,9 @@ export const accumulateImageUsage: BillingSessionSeam['accumulateImageUsage'] = 
 // Partial `mock.module()` stubs of the cloud module may predate video billing.
 export const accumulateVideoUsage: BillingSessionSeam['accumulateVideoUsage'] = (...args) =>
   (session().accumulateVideoUsage ?? localBillingSession.accumulateVideoUsage)(...args)
+// Same for 3D: a stub written before SHO-13 need not carry it.
+export const accumulate3dUsage: BillingSessionSeam['accumulate3dUsage'] = (...args) =>
+  (session().accumulate3dUsage ?? localBillingSession.accumulate3dUsage)(...args)
 export const setQualitySignals: BillingSessionSeam['setQualitySignals'] = (...args) =>
   session().setQualitySignals(...args)
 

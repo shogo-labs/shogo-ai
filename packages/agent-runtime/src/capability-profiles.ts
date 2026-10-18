@@ -101,7 +101,7 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
  */
 export const CORE_TOOL_NAMES = [
   'ask_user', 'skill', 'quick_action',
-  // Media generation; gated by imageGenEnabled / videoGenEnabled.
+  // Media generation; gated by imageGenEnabled / videoGenEnabled / threeDGenEnabled.
   ...MEDIA_TOOL_NAMES,
   // Background tasks: every async source (shell, subagents, project_call, team chat, boards) shares these.
   'wait', 'task_list', 'task_cancel',

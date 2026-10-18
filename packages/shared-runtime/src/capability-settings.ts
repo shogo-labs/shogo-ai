@@ -19,6 +19,7 @@ export const CAPABILITY_KEYS = [
   'heartbeatToolsEnabled',
   'imageGenEnabled',
   'videoGenEnabled',
+  'threeDGenEnabled',
   'memoryEnabled',
   'quickActionsEnabled',
   'sdkGuideEnabled',
@@ -69,6 +70,11 @@ export const CAPABILITY_INFO: Record<CapabilityKey, { label: string; summary: st
   videoGenEnabled: {
     label: 'Video generation',
     summary: 'Opt-in. Gates `generate_video`. Video is billed per second of output.',
+  },
+  threeDGenEnabled: {
+    label: '3D generation',
+    summary:
+      'Opt-in. Gates `generate_3d_model` and `edit_3d_model` (text/image/multiview → GLB, plus texture, convert, retopology, rig and animation). Each task is billed, roughly $0.10-$0.60.',
   },
   memoryEnabled: {
     label: 'Memory',
@@ -135,6 +141,7 @@ export const CAPABILITY_INFO: Record<CapabilityKey, { label: string; summary: st
 /** Off unless the stored value is exactly `true`. */
 export const OPT_IN_KEYS: ReadonlySet<CapabilityKey> = new Set<CapabilityKey>([
   'videoGenEnabled',
+  'threeDGenEnabled',
   'gitWorktreesEnabled',
   'socialMediaEnabled',
   'boardAdminEnabled',

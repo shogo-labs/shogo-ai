@@ -32,7 +32,7 @@ import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
 import { createGenerateImageTool, createMediaTools } from './media-tools'
-import { IMAGE_TOOL_NAMES, MEDIA_TOOL_NAMES } from './media-tool-names'
+import { IMAGE_TOOL_NAMES, MEDIA_TOOL_NAMES, THREE_D_TOOL_NAMES } from './media-tool-names'
 import { createAgentRunTools, createChannelTools } from './channel-tools'
 import { createBoardTools } from './board-tools'
 import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
@@ -9368,7 +9368,12 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   if (config.heartbeatToolsEnabled === false) for (const n of TOOL_GROUP_MAP.heartbeat) disabled.add(n)
   if (config.imageGenEnabled === false) for (const n of IMAGE_TOOL_NAMES) disabled.add(n)
   if (config.videoGenEnabled !== true) disabled.add('generate_video')
-  if (config.imageGenEnabled === false && config.videoGenEnabled !== true) disabled.add('list_media_models')
+  if (config.threeDGenEnabled !== true) for (const n of THREE_D_TOOL_NAMES) disabled.add(n)
+  // The listing stays available while ANY generation capability is on, so a
+  // 3D-only (or video-only) project can still price a model before spending.
+  const anyGenerationOn =
+    config.imageGenEnabled !== false || config.videoGenEnabled === true || config.threeDGenEnabled === true
+  if (!anyGenerationOn) disabled.add('list_media_models')
   if (config.quickActionsEnabled === false) disabled.add('quick_action')
   if (config.channelsEnabled === false) for (const n of TOOL_GROUP_MAP.messaging) disabled.add(n)
   if (config.integrationsEnabled === false) for (const n of TOOL_GROUP_MAP.integrations) disabled.add(n)

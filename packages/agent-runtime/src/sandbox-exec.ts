@@ -105,6 +105,11 @@ export function rewriteBunxOnWindows(command: string): string {
 const PROJECT_SCOPED_SAFE = new Set([
   'RUNTIME_AUTH_SECRET',
   'WEBHOOK_TOKEN',
+  // HMAC(projectId + AI_PROXY_SECRET): project-scoped, and it grants nothing
+  // beyond the spend this agent already has through its own tools. Kept
+  // visible so `exec` children (e.g. `bunx shogo 3d generate`) can call the AI
+  // proxy. AI_PROXY_SECRET — the signing key — stays redacted below.
+  'AI_PROXY_TOKEN',
 ])
 
 // Env vars that must never leak to agent-spawned child processes.
