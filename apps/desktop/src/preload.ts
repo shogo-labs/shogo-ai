@@ -326,6 +326,24 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     return () => ipcRenderer.removeListener('system-suspend', listener)
   },
 
+  // The desktop app's local API child can be killed from userland (SHO-26) and
+  // is now respawned in-process — see `LocalApiSupervisor` in
+  // `apps/desktop/src/local-server.ts`. While it is down every loopback
+  // request fails, so the renderer needs to know when it is back (refetch /
+  // re-drain) and when the app has given up on restarting it.
+  onLocalServerRestarted: (
+    callback: (info: { attempt: number; pid?: number }) => void,
+  ): (() => void) => {
+    const listener = (_event: unknown, info: { attempt: number; pid?: number }) => callback(info)
+    ipcRenderer.on('local-server:restarted', listener)
+    return () => ipcRenderer.removeListener('local-server:restarted', listener)
+  },
+  onLocalServerUnavailable: (callback: (info: { error: string }) => void): (() => void) => {
+    const listener = (_event: unknown, info: { error: string }) => callback(info)
+    ipcRenderer.on('local-server:unavailable', listener)
+    return () => ipcRenderer.removeListener('local-server:unavailable', listener)
+  },
+
   // Local filesystem fast-path for the IDE Monaco file tree + file reads.
   // Bypasses the loopback HTTP round-trip to per-project agent-runtimes so
   // the tree renders the moment the user opens a project, before the

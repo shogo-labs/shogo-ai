@@ -5694,10 +5694,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // above and `apps/desktop/src/main.ts`. No-op on mobile/web.
     const bridge = (
       window as unknown as {
-        shogoDesktop?: { onSystemResume?: (cb: () => void) => () => void }
+        shogoDesktop?: {
+          onSystemResume?: (cb: () => void) => () => void
+          // The desktop app respawns its local API in-process after it is
+          // killed from userland (SHO-26); see `preload.ts`.
+          onLocalServerRestarted?: (cb: () => void) => () => void
+        }
       }
     ).shogoDesktop
     const unsubscribeResume = bridge?.onSystemResume?.(() => {
+      void tryDrain()
+    })
+    // Same recovery when the desktop app had to respawn its local API after a
+    // userland kill (SHO-26): requests failed while it was down, so probe and
+    // flush as soon as it is healthy again.
+    const unsubscribeLocalApiRestarted = bridge?.onLocalServerRestarted?.(() => {
       void tryDrain()
     })
     // Poll as a fallback for the remaining case neither event covers: a
@@ -5717,6 +5728,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         window.removeEventListener("online", onOnline)
       }
       unsubscribeResume?.()
+      unsubscribeLocalApiRestarted?.()
       clearInterval(interval)
     }
   }, [
@@ -5781,7 +5793,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useEffect(() => {
     const bridge = (
       window as unknown as {
-        shogoDesktop?: { onSystemResume?: (cb: () => void) => () => void }
+        shogoDesktop?: {
+          onSystemResume?: (cb: () => void) => () => void
+          // The desktop app respawns its local API in-process after it is
+          // killed from userland (SHO-26); see `preload.ts`.
+          onLocalServerRestarted?: (cb: () => void) => () => void
+        }
       }
     ).shogoDesktop
     if (!bridge?.onSystemResume) return
@@ -5791,7 +5808,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
       )
       lastChatProgressAtRef.current = Date.now()
     })
-    return unsubscribe
+    // A respawned local API means the in-flight socket died with the old
+    // process; give the turn a fresh stall window instead of letting the
+    // watchdog trip on the gap (SHO-26).
+    const unsubscribeLocalApiRestarted = bridge.onLocalServerRestarted?.(() => {
+      console.log(
+        "[ChatPanel] Desktop local API restarted — resetting stall watchdog",
+      )
+      lastChatProgressAtRef.current = Date.now()
+    })
+    return () => {
+      unsubscribe()
+      unsubscribeLocalApiRestarted?.()
+    }
   }, [])
 
   useEffect(() => {

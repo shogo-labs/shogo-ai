@@ -14,7 +14,9 @@ import { resolve, relative, sep } from "path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const ENTRY = resolve(ROOT, "apps/api/src/entry.ts");
-const API_PORT = Number(process.env.API_PORT ?? 8002);
+// See the same note in `scripts/dev-all.ts`: `API_PORT` is the desktop app's
+// own API port, so this dev-only watcher must never inherit it.
+const API_PORT = Number(process.env.SHOGO_DEV_API_PORT ?? 8002);
 const IS_WIN = process.platform === "win32";
 
 const WATCH_DIRS = [

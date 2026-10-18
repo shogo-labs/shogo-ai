@@ -8,17 +8,90 @@ import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } f
 import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
 import { resolveHostTier } from './runtime-memory'
 import { resolveDesktopPath } from './login-shell-path'
+import { LocalApiSupervisor } from './local-api-supervisor'
 
 // Shogo-reserved port range — chosen to avoid conflicts with common dev tools
 const PREFERRED_PORT = 39100
 const RUNTIME_BASE_PORT = 39110
 const PORT_RANGE = 100
 const MAX_HEALTH_RETRIES = 60
+// A restart gets a tighter health budget than the cold first boot: the
+// migrations/seed work already happened, and the whole point is to get the UI
+// back within seconds. 20 x 500ms = 10s per attempt, so the five-attempt policy
+// gives up in about a minute instead of leaving the user on a dead UI for 2.5.
+const RESTART_HEALTH_RETRIES = 20
 const HEALTH_RETRY_DELAY_MS = 500
 const SHUTDOWN_TIMEOUT_MS = 5000
 
 let apiProcess: ChildProcess | null = null
 let apiPort: number = PREFERRED_PORT
+
+/**
+ * Everything the API child needs to be spawned. Built once on first boot so a
+ * respawn is a `spawn()` and not another database migration pass.
+ */
+interface ApiLaunchSpec {
+  bunPath: string
+  serverArgs: string[]
+  env: Record<string, string>
+}
+
+let launchSpec: ApiLaunchSpec | null = null
+
+/**
+ * Set by `stopLocalServer()` and cleared by `startLocalServer()`. An exit we
+ * asked for must never trigger a respawn — quitting has to stay quit.
+ */
+let intentionalStop = false
+
+/**
+ * Watches the API child and brings it back when something in userland kills it
+ * (SHO-26: an agent shell that inherited `API_PORT` ran `bun dev:all`, whose
+ * port-clearing step `kill -9`s whatever listens on it). Before this, a
+ * SIGKILL left the app with no API until the user quit and relaunched.
+ */
+const apiSupervisor = new LocalApiSupervisor({
+  start: ({ attempt }) =>
+    bootApiServer(attempt === 0 ? MAX_HEALTH_RETRIES : RESTART_HEALTH_RETRIES),
+  onRestartAttempt: ({ attempt, maxAttempts, delayMs }) => {
+    console.warn(
+      `[Desktop] Local API server went away — restarting (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms`,
+    )
+  },
+  onRestarted: ({ attempt, pid }) => {
+    broadcastApiEvent('local-server:restarted', { attempt, pid })
+  },
+  onGiveUp: (error) => {
+    console.error(`[Desktop] ${error.message}`)
+    broadcastApiEvent('local-server:unavailable', { error: error.message })
+    try {
+      const { dialog } = require('electron') as typeof import('electron')
+      dialog.showErrorBox(
+        'Shogo lost its local server',
+        `Shogo's local server stopped and could not be restarted automatically.\n\n` +
+          `Details: ${error.message}\n\n` +
+          `Quit and relaunch Shogo to recover. Logs are in the app's main.log.`,
+      )
+    } catch {
+      // Headless (e2e) run: the log + IPC event are the surface.
+    }
+  },
+})
+
+function broadcastApiEvent(
+  channel: 'local-server:restarted' | 'local-server:unavailable',
+  payload: Record<string, unknown>,
+): void {
+  try {
+    const { webContents } = require('electron') as typeof import('electron')
+    for (const contents of webContents.getAllWebContents()) {
+      if (!contents.isDestroyed()) contents.send(channel, payload)
+    }
+  } catch {
+    // No Electron (unit tests / headless import): nothing to notify.
+  }
+}
+
 
 export function getApiPort(): number {
   return apiPort
@@ -286,7 +359,6 @@ function readHostRuntimeConfig(): import('./config').HostRuntimeConfig {
 export async function startLocalServer(): Promise<void> {
   const bunPath = getBunPath()
   const projectRoot = getProjectRoot()
-  const isWindows = process.platform === 'win32'
   const IS_DEV = !require('electron').app.isPackaged
 
   const bundleDir = path.join(projectRoot, 'bundle')
@@ -438,58 +510,96 @@ export async function startLocalServer(): Promise<void> {
   console.log(`[Desktop] Workspaces: ${getWorkspacesDir()}`)
   console.log(`[Desktop] Ports: API=${apiPort}, RuntimeBase=${RUNTIME_BASE_PORT}`)
 
-  apiProcess = spawn(bunPath, serverArgs, {
+  launchSpec = { bunPath, serverArgs, env }
+  intentionalStop = false
+
+  await apiSupervisor.start()
+}
+
+/**
+ * Spawns the API child and wires its stdio/pid/exit handling. The heavy
+ * one-time boot work (database ensure, migrations, runtime template) stays in
+ * `startLocalServer()`; a respawn only needs this.
+ */
+function spawnApiServer(spec: ApiLaunchSpec): ChildProcess {
+  const isWindows = process.platform === 'win32'
+  const child = spawn(spec.bunPath, spec.serverArgs, {
     cwd: getProjectRoot(),
-    env,
+    env: spec.env,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: !isWindows,
     windowsHide: true,
   })
 
-  console.log(`[Desktop] API process spawned: pid=${apiProcess.pid}`)
+  apiProcess = child
+  console.log(`[Desktop] API process spawned: pid=${child.pid}`)
 
-  if (apiProcess.pid) {
-    writePidFile(apiProcess.pid)
+  if (child.pid) {
+    writePidFile(child.pid)
   }
 
-  apiProcess.stdout?.on('data', (data: Buffer) => {
+  child.stdout?.on('data', (data: Buffer) => {
     console.log(`[API] ${data.toString().trim()}`)
   })
 
-  apiProcess.stderr?.on('data', (data: Buffer) => {
+  child.stderr?.on('data', (data: Buffer) => {
     console.error(`[API] ${data.toString().trim()}`)
   })
 
-  apiProcess.on('error', (err) => {
+  child.on('error', (err) => {
     console.error('[Desktop] Failed to start API server:', err)
   })
 
-  apiProcess.on('exit', (code, signal) => {
+  child.on('exit', (code, signal) => {
     console.log(`[Desktop] API server exited: code=${code}, signal=${signal}`)
-    apiProcess = null
-    removePidFile()
+    // A stale child's exit must never clobber the pid/handle of its replacement.
+    if (apiProcess === child) {
+      apiProcess = null
+      removePidFile()
+    }
+    if (intentionalStop) {
+      console.log('[Desktop] API server exited after a stop request — not restarting')
+      return
+    }
+    void apiSupervisor.notifyExit(code, signal)
   })
 
   // Unref so the detached process group doesn't keep Electron alive if cleanup fails
-  apiProcess.unref()
+  child.unref()
 
-  await waitForHealth()
+  return child
 }
 
-export async function stopLocalServer(): Promise<void> {
-  if (!apiProcess) {
-    console.log('[Desktop] No API process to stop')
-    return
+/**
+ * One full boot of the API child: spawn, wait for `/health`. Returns its pid.
+ *
+ * Used for the first boot and for every respawn, so a restart is as cheap as
+ * possible. If health never goes green the child is torn down before the
+ * supervisor's next attempt, otherwise the retry would hit EADDRINUSE.
+ */
+async function bootApiServer(healthRetries = MAX_HEALTH_RETRIES): Promise<number | undefined> {
+  const spec = launchSpec
+  if (!spec) throw new Error('startLocalServer() must build the launch spec before booting')
+
+  const child = spawnApiServer(spec)
+  try {
+    await waitForHealth(healthRetries)
+  } catch (err) {
+    await terminateApiChild(child)
+    throw err
   }
+  return child.pid
+}
 
-  const pid = apiProcess.pid
-  console.log(`[Desktop] Stopping local API server (pid=${pid})...`)
-
+/**
+ * SIGTERM the child's process group, escalating to SIGKILL after the shutdown
+ * timeout. Shared by `stopLocalServer()` and a failed respawn.
+ */
+async function terminateApiChild(child: ChildProcess): Promise<boolean> {
+  const pid = child.pid
   if (!pid) {
     console.warn('[Desktop] API process has no pid, cannot kill')
-    apiProcess = null
-    removePidFile()
-    return
+    return false
   }
 
   const isWindows = process.platform === 'win32'
@@ -501,9 +611,12 @@ export async function stopLocalServer(): Promise<void> {
     } catch (err) {
       console.log(`[Desktop] taskkill failed (already dead?): ${err}`)
     }
-    apiProcess = null
-    removePidFile()
-    return
+    return true
+  }
+
+  if (child.exitCode !== null || child.signalCode !== null) {
+    console.log(`[Desktop] API process ${pid} already exited`)
+    return true
   }
 
   const pgid = -pid
@@ -513,9 +626,7 @@ export async function stopLocalServer(): Promise<void> {
     console.log(`[Desktop] Sent SIGTERM to process group ${pgid}`)
   } catch (err) {
     console.log(`[Desktop] SIGTERM to group ${pgid} failed (already dead?): ${err}`)
-    apiProcess = null
-    removePidFile()
-    return
+    return false
   }
 
   const exited = await new Promise<boolean>((resolve) => {
@@ -530,13 +641,32 @@ export async function stopLocalServer(): Promise<void> {
       resolve(false)
     }, SHUTDOWN_TIMEOUT_MS)
 
-    apiProcess?.on('exit', () => {
+    child.on('exit', () => {
       clearTimeout(timeout)
       resolve(true)
     })
   })
 
   console.log(`[Desktop] API server process group terminated (graceful=${exited})`)
+  return exited
+}
+
+export async function stopLocalServer(): Promise<void> {
+  // Belt and braces with `apiSupervisor.stop()`: the exit event that follows
+  // must be recognised as ours, so quitting never resurrects the API.
+  intentionalStop = true
+  apiSupervisor.stop()
+
+  if (!apiProcess) {
+    console.log('[Desktop] No API process to stop')
+    return
+  }
+
+  const pid = apiProcess.pid
+  console.log(`[Desktop] Stopping local API server (pid=${pid})...`)
+
+  await terminateApiChild(apiProcess)
+
   apiProcess = null
   removePidFile()
 }
@@ -1213,10 +1343,10 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
   throw new Error('Failed to run database migrations')
 }
 
-async function waitForHealth(): Promise<void> {
+async function waitForHealth(maxRetries: number = MAX_HEALTH_RETRIES): Promise<void> {
   const url = `${getApiUrl()}/health`
 
-  for (let i = 0; i < MAX_HEALTH_RETRIES; i++) {
+  for (let i = 0; i < maxRetries; i++) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(2000) })
       if (res.ok) {
@@ -1229,7 +1359,7 @@ async function waitForHealth(): Promise<void> {
     await new Promise((r) => setTimeout(r, HEALTH_RETRY_DELAY_MS))
   }
 
-  throw new Error(`API server failed to start after ${MAX_HEALTH_RETRIES} retries`)
+  throw new Error(`API server failed to start after ${maxRetries} retries`)
 }
 
 function getOrCreateAuthSecret(): string {

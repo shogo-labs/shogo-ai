@@ -19,9 +19,16 @@
 import { spawn, spawnSync, type Subprocess } from "bun";
 import { spawn as nodeSpawn } from "node:child_process";
 import { isAbsolute, resolve } from "path";
+import { readProtectedPids } from "./lib/protected-pids";
 
 const ROOT = resolve(import.meta.dir, "..");
-const API_PORT = Number(process.env.API_PORT ?? 8002);
+// Deliberately NOT the generic `API_PORT`: the desktop app exports that name
+// for its own API child (apps/desktop/src/local-server.ts), so reading it here
+// made `bun dev:all` run from a Shogo agent shell target the app's port 39100
+// and `kill -9` it (SHO-26). The agent runtime now strips API_PORT from exec
+// shells too, but this stays opt-in under its own name so the two can never be
+// confused again. Override per-session with SHOGO_DEV_API_PORT=<port>.
+const API_PORT = Number(process.env.SHOGO_DEV_API_PORT ?? 8002);
 const WEB_PORT = 8081;
 const IS_WIN = process.platform === "win32";
 
@@ -94,35 +101,115 @@ async function sweepStaleShogoBunProcesses(): Promise<void> {
   }
 }
 
+/**
+ * Pids listening on `port`. Split out so the kill path can be unit-tested
+ * with a fake lister instead of a real dev server on the machine.
+ */
+export async function listPidsOnPort(port: number): Promise<number[]> {
+  if (IS_WIN) {
+    const netstat = spawn({
+      cmd: ["netstat", "-ano"],
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const output = await new Response(netstat.stdout).text();
+    await netstat.exited;
+
+    const pids = new Set<number>();
+    for (const line of output.split("\n")) {
+      if (line.includes(`:${port}`) && /LISTENING/i.test(line)) {
+        const raw = line.trim().split(/\s+/).pop();
+        if (raw && /^\d+$/.test(raw)) pids.add(Number(raw));
+      }
+    }
+    return [...pids];
+  }
+
+  const lsof = spawn({
+    cmd: ["sh", "-c", `lsof -ti:${port}`],
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const out = await new Response(lsof.stdout).text();
+  await lsof.exited;
+  return out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^\d+$/.test(line))
+    .map(Number);
+}
+
+function killPid(pid: number): void {
+  if (IS_WIN) {
+    spawnSync({
+      cmd: ["taskkill", "/F", "/T", "/PID", String(pid)],
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    return;
+  }
+  process.kill(pid, "SIGKILL");
+}
+
+export interface PortKillDeps {
+  listPids?: (port: number) => Promise<number[]>;
+  killPid?: (pid: number) => void;
+  /** Pids that must never be signalled — see `scripts/lib/protected-pids.ts`. */
+  protectedPids?: ReadonlySet<number>;
+  log?: (message: string) => void;
+}
+
+/**
+ * Kills whatever listens on `port`, except pids in `protectedPids` (the
+ * running Shogo desktop app's API child, which is long-lived and whose death
+ * is fatal to the app — SHO-26). A protected listener is warned about and
+ * left alone; every other listener is still cleared.
+ */
+export async function killPidsOnPort(
+  port: number,
+  deps: PortKillDeps = {},
+): Promise<{ killed: number[]; spared: number[] }> {
+  const listPids = deps.listPids ?? listPidsOnPort;
+  const kill = deps.killPid ?? killPid;
+  const protectedPids = deps.protectedPids ?? new Set<number>();
+  const log = deps.log ?? ((message: string) => console.warn(message));
+
+  const killed: number[] = [];
+  const spared: number[] = [];
+
+  for (const pid of await listPids(port)) {
+    if (protectedPids.has(pid)) {
+      log(
+        `[dev:all] Port ${port} is held by the running Shogo desktop app (pid ${pid}) — not killing it`,
+      );
+      spared.push(pid);
+      continue;
+    }
+    try {
+      kill(pid);
+      killed.push(pid);
+    } catch {
+      // Already gone — best-effort, same as before.
+    }
+  }
+
+  return { killed, spared };
+}
+
 async function killProcessOnPort(port: number) {
   if (!(await isPortBound(port))) return;
 
   console.log(`[dev:all] Port ${port} is occupied — clearing…`);
   try {
+    const { killed, spared } = await killPidsOnPort(port, {
+      protectedPids: readProtectedPids(),
+    });
+
+    // The desktop app owns this port: leave it running and let the dev stack
+    // bind its own port instead of killing the user's live app.
+    if (spared.length > 0 && killed.length === 0) return;
+
     if (IS_WIN) {
-      const netstat = spawn({
-        cmd: ["netstat", "-ano"],
-        stdout: "pipe",
-        stderr: "ignore",
-      });
-      const output = await new Response(netstat.stdout).text();
-      await netstat.exited;
-
-      const pids = new Set<string>();
-      for (const line of output.split("\n")) {
-        if (line.includes(`:${port}`) && /LISTENING/i.test(line)) {
-          const pid = line.trim().split(/\s+/).pop();
-          if (pid && /^\d+$/.test(pid)) pids.add(pid);
-        }
-      }
-      for (const pid of pids) {
-        spawnSync({
-          cmd: ["taskkill", "/F", "/T", "/PID", pid],
-          stdout: "ignore",
-          stderr: "ignore",
-        });
-      }
-
       // Belt-and-suspenders: kill orphaned shogo-ai bun.exe trees that may
       // still hold inherited socket handles to this port.
       await sweepStaleShogoBunProcesses();
@@ -138,16 +225,9 @@ async function killProcessOnPort(port: number) {
         console.warn(
           `[dev:all] Port ${port} is still bound by a leaked socket from a previously-killed process.\n` +
             `[dev:all] Windows will not release the bind until the kernel reaps the dead-PID's sockets.\n` +
-            `[dev:all] Workarounds: 1) close any browser tab pointing at the dev URL (it keeps connections alive), 2) reboot, or 3) override API_PORT=<other> in .env.local for this session.`
+            `[dev:all] Workarounds: 1) close any browser tab pointing at the dev URL (it keeps connections alive), 2) reboot, or 3) override SHOGO_DEV_API_PORT=<other> in .env.local for this session.`
         );
       }
-    } else {
-      const proc = spawn({
-        cmd: ["sh", "-c", `lsof -ti:${port} | xargs kill -9 2>/dev/null`],
-        stdout: "ignore",
-        stderr: "ignore",
-      });
-      await proc.exited;
     }
   } catch {
     // Best-effort — if it fails the watcher will handle the conflict.
