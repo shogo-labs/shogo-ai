@@ -112,6 +112,58 @@ export class CheckpointsDisabledError extends Error {
 }
 
 /**
+ * Typed error thrown when the project's folder is a checkout of someone else's
+ * git repository (a manual `git clone`, or any repo whose `origin` a human
+ * configured) and there is no `GitHubConnection` handing it to Shogo.
+ *
+ * Routes surface this as a 409 with `code: 'checkpoints_disabled_foreign_repo'`
+ * so the panel renders the same "use your own git" banner as external mode.
+ * Thrown BEFORE `initRepo`, so the tracked `.gitignore`, the index and
+ * `.git/config`'s `user.*` are never touched.
+ */
+export class CheckpointsDisabledForeignRepoError extends Error {
+  readonly code = 'checkpoints_disabled_foreign_repo' as const
+  readonly originUrl: string
+  constructor(originUrl: string) {
+    super(
+      `This project's folder is a checkout of another git repository (${originUrl}), ` +
+        "so Shogo won't commit into it. Use your own git — or connect the repo to Shogo " +
+        'so Shogo manages its history.',
+    )
+    this.name = 'CheckpointsDisabledForeignRepoError'
+    this.originUrl = originUrl
+  }
+}
+
+/** The project columns that decide checkpoint ownership. */
+type CheckpointOwnershipProject = {
+  workingMode?: string | null
+  githubConnection?: { id: string } | null
+} | null
+
+/**
+ * Ownership gate: Shogo only commits into a repo it owns.
+ *
+ * Ownership is decided from the repo itself, not `workingMode`. A project with
+ * no `origin` remote (every fresh `initRepo`) is ours; a project with a
+ * `GitHubConnection` row handed its repo to Shogo (`github_connect`); anything
+ * else is someone else's repo and must never be committed to.
+ *
+ * Must run BEFORE `gitService.initRepo()` — that call is not a no-op on an
+ * existing repo: it appends to the tracked `.gitignore`, `git rm --cached`s
+ * build output, and overwrites repo-local `user.name` / `user.email` (which is
+ * exactly what made auto-checkpoint commits fail the CLA check on a clone).
+ */
+async function assertRepoOwnedByShogo(
+  project: CheckpointOwnershipProject,
+  workspacePath: string,
+): Promise<void> {
+  if (project?.githubConnection) return
+  const originUrl = await gitService.getOriginRemoteUrl(workspacePath)
+  if (originUrl) throw new CheckpointsDisabledForeignRepoError(originUrl)
+}
+
+/**
  * Idempotently record a `ProjectCheckpoint` row for an ALREADY-EXISTING commit
  * (identified by SHA) WITHOUT performing any git operations. This is the
  * lightweight counterpart to {@link createCheckpoint} for callers that already
@@ -186,7 +238,7 @@ export async function createCheckpoint(
   // POST) doesn't accidentally write commits into the user's repo.
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { workingMode: true },
+    select: { workingMode: true, githubConnection: { select: { id: true } } },
   });
   if ((project as { workingMode?: string } | null)?.workingMode === 'external') {
     throw new CheckpointsDisabledError();
@@ -196,6 +248,10 @@ export async function createCheckpoint(
   if (!existsSync(workspacePath)) {
     throw new Error(`Workspace not found: ${workspacePath}`);
   }
+
+  // Ownership gate — see assertRepoOwnedByShogo. Runs before initRepo so a
+  // repo we don't own keeps its `.gitignore`, index and `user.*` intact.
+  await assertRepoOwnedByShogo(project as CheckpointOwnershipProject, workspacePath);
 
   // Initialize git repo if needed
   const { branch } = await gitService.initRepo(workspacePath);
@@ -460,6 +516,18 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
       error: 'Checkpoint does not belong to this project',
     };
   }
+
+  // Same ownership gate as createCheckpoint, and for a stronger reason: the
+  // pre-rollback checkpoint would commit, and `checkout --force` +
+  // `read-tree -u --reset` would rewrite a working tree we don't own.
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workingMode: true, githubConnection: { select: { id: true } } },
+  });
+  if ((project as { workingMode?: string } | null)?.workingMode === 'external') {
+    throw new CheckpointsDisabledError();
+  }
+  await assertRepoOwnedByShogo(project as CheckpointOwnershipProject, workspacePath);
 
   // Create a pre-rollback checkpoint to preserve current state
   let preRollbackCheckpoint: CheckpointResult | null = null;

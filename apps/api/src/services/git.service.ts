@@ -623,6 +623,29 @@ export async function getCurrentBranch(workspacePath: string): Promise<string> {
 }
 
 /**
+ * The URL of the repo's `origin` remote, or `null` when it has none (or the
+ * path isn't a git repo, or git isn't available).
+ *
+ * Checkpoint ownership hangs off this. Shogo's own `initRepo` creates a repo
+ * with no remotes and the cloud pod pushes to GitHub with an explicit URL, so
+ * an `origin` always means a human (or `github_connect`) pointed this folder
+ * at an external repository — Shogo must never commit into it.
+ */
+export async function getOriginRemoteUrl(workspacePath: string): Promise<string | null> {
+  try {
+    const url = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+      cwd: workspacePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })
+    return String(url).trim() || null
+  } catch {
+    // No origin (exit 1), not a repo, or no git — all mean "not foreign".
+    return null
+  }
+}
+
+/**
  * Get the current HEAD commit SHA.
  */
 export async function getHeadSha(workspacePath: string): Promise<string | null> {

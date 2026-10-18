@@ -23,7 +23,10 @@
  *
  * External (VS Code-style) projects are never auto-committed — that's the
  * user's own repo. We skip them before even initialising a repo so we never
- * drop a `.git` into a folder we don't own.
+ * drop a `.git` into a folder we don't own. The same goes for a **managed**
+ * project whose folder turns out to be a checkout of someone else's repo (a
+ * hand-made clone): the folder has an `origin` but no `GitHubConnection`, so we
+ * report `skipped-foreign-repo` and leave its git state byte-identical.
  *
  * All work is best-effort and per-project isolated: one project's failure
  * never blocks another's checkpoint, and the whole thing is fire-and-forget
@@ -43,8 +46,16 @@ export type AutoCheckpointStatus =
   | 'clean'
   | 'skipped-missing'
   | 'skipped-external'
+  | 'skipped-foreign-repo'
   | 'skipped-no-git'
   | 'error'
+
+/** The project columns that decide whether Shogo may commit into its folder. */
+export interface AutoCheckpointProjectMeta {
+  workingMode: string | null
+  /** A `GitHubConnection` row means the repo was handed to Shogo. */
+  hasGithubConnection: boolean
+}
 
 export interface AutoCheckpointResult {
   projectId: string
@@ -71,21 +82,33 @@ export interface AutoCheckpointWorkspaceOptions {
   _isGitRepo?: (p: string) => boolean
   _initRepo?: (p: string) => Promise<unknown>
   _getStatus?: (p: string) => Promise<{ hasChanges: boolean }>
+  _getOriginRemoteUrl?: (p: string) => Promise<string | null>
   _createCheckpoint?: (opts: {
     projectId: string
     workspacePath: string
     message: string
     isAutomatic: boolean
   }) => Promise<{ id: string }>
-  _loadWorkingModes?: (ids: string[]) => Promise<Map<string, string | null>>
+  _loadProjectMeta?: (ids: string[]) => Promise<Map<string, AutoCheckpointProjectMeta>>
 }
 
-async function defaultLoadWorkingModes(ids: string[]): Promise<Map<string, string | null>> {
+async function defaultLoadProjectMeta(
+  ids: string[],
+): Promise<Map<string, AutoCheckpointProjectMeta>> {
   const rows = (await prisma.project.findMany({
     where: { id: { in: ids } },
-    select: { id: true, workingMode: true },
-  })) as Array<{ id: string; workingMode: string | null }>
-  return new Map(rows.map((r) => [r.id, r.workingMode]))
+    select: { id: true, workingMode: true, githubConnection: { select: { id: true } } },
+  })) as unknown as Array<{
+    id: string
+    workingMode: string | null
+    githubConnection: { id: string } | null
+  }>
+  return new Map(
+    rows.map((r) => [
+      r.id,
+      { workingMode: r.workingMode, hasGithubConnection: !!r.githubConnection },
+    ]),
+  )
 }
 
 /**
@@ -102,8 +125,10 @@ export async function autoCheckpointWorkspaceProjects(
   const isGitRepo = opts._isGitRepo ?? gitService.isGitRepo
   const initRepo = opts._initRepo ?? ((p: string) => gitService.initRepo(p))
   const getStatus = opts._getStatus ?? ((p: string) => gitService.getStatus(p))
+  const getOriginRemoteUrl =
+    opts._getOriginRemoteUrl ?? ((p: string) => gitService.getOriginRemoteUrl(p))
   const createCheckpoint = opts._createCheckpoint ?? checkpointService.createCheckpoint
-  const loadWorkingModes = opts._loadWorkingModes ?? defaultLoadWorkingModes
+  const loadProjectMeta = opts._loadProjectMeta ?? defaultLoadProjectMeta
 
   const ids = [...new Set(projectIds.filter((id) => typeof id === 'string' && id.length > 0))]
   if (ids.length === 0) return []
@@ -112,16 +137,20 @@ export async function autoCheckpointWorkspaceProjects(
     return ids.map((projectId) => ({ projectId, status: 'skipped-no-git' as const }))
   }
 
-  const workingModes = await loadWorkingModes(ids).catch(() => new Map<string, string | null>())
+  const projectMeta = await loadProjectMeta(ids).catch(
+    () => new Map<string, AutoCheckpointProjectMeta>(),
+  )
   const changeMessage = opts.message ?? 'AI: workspace edit'
   const baselineMessage = opts.baselineMessage ?? 'Workspace baseline'
   const results: AutoCheckpointResult[] = []
 
   for (const projectId of ids) {
     try {
+      const meta = projectMeta.get(projectId)
+
       // External projects are the user's own repo — never auto-commit, and
       // never drop a `.git` into a folder we don't own.
-      if (workingModes.get(projectId) === 'external') {
+      if (meta?.workingMode === 'external') {
         results.push({ projectId, status: 'skipped-external' })
         continue
       }
@@ -130,6 +159,19 @@ export async function autoCheckpointWorkspaceProjects(
       if (!existsSyncFn(workspacePath)) {
         results.push({ projectId, status: 'skipped-missing' })
         continue
+      }
+
+      // A folder that is a checkout of someone else's repo (a manual clone, or
+      // any repo whose `origin` a human configured) is never committed into —
+      // not even to `initRepo`, which would edit its tracked `.gitignore`,
+      // untrack build output and rewrite `.git/config`'s `user.*`. A
+      // `GitHubConnection` row means the repo was handed to Shogo.
+      if (!meta?.hasGithubConnection) {
+        const originUrl = await getOriginRemoteUrl(workspacePath)
+        if (originUrl) {
+          results.push({ projectId, status: 'skipped-foreign-repo' })
+          continue
+        }
       }
 
       // A never-tracked project gets a repo + a one-time baseline checkpoint

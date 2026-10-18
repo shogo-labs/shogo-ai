@@ -24,11 +24,13 @@ function baseSeams(overrides: Record<string, unknown> = {}) {
       return { created: true, branch: 'main' }
     },
     _getStatus: async (_p: string) => ({ hasChanges: true }),
+    _getOriginRemoteUrl: async (_p: string) => null as string | null,
     _createCheckpoint: async (opts: any) => {
       created.push({ projectId: opts.projectId, workspacePath: opts.workspacePath })
       return { id: `cp-${opts.projectId}` }
     },
-    _loadWorkingModes: async (ids: string[]) => new Map(ids.map((id) => [id, 'managed'])),
+    _loadProjectMeta: async (ids: string[]) =>
+      new Map(ids.map((id) => [id, { workingMode: 'managed', hasGithubConnection: false }])),
     ...overrides,
   }
   return { seams, created, initialised }
@@ -58,7 +60,11 @@ describe('autoCheckpointWorkspaceProjects', () => {
   it('never auto-commits external projects (and never inits a repo there)', async () => {
     const { seams, created, initialised } = baseSeams({
       _isGitRepo: () => false, // would init if not guarded
-      _loadWorkingModes: async () => new Map([['p1', 'external'], ['p2', 'managed']]),
+      _loadProjectMeta: async () =>
+        new Map([
+          ['p1', { workingMode: 'external', hasGithubConnection: false }],
+          ['p2', { workingMode: 'managed', hasGithubConnection: false }],
+        ]),
     })
     const results = await autoCheckpointWorkspaceProjects(['p1', 'p2'], seams as any)
     expect(results[0]).toEqual({ projectId: 'p1', status: 'skipped-external' })
@@ -101,6 +107,39 @@ describe('autoCheckpointWorkspaceProjects', () => {
     })
     expect(messages).toContain('p1:Workspace baseline')
     expect(messages).toContain('p2:AI: turn xyz')
+  })
+
+  it('skips a managed project whose folder is a checkout of a foreign repo', async () => {
+    const { seams, created, initialised } = baseSeams({
+      _getOriginRemoteUrl: async (p: string) => (p.endsWith('p2') ? 'https://github.com/x/y.git' : null),
+    })
+    const results = await autoCheckpointWorkspaceProjects(['p1', 'p2'], seams as any)
+    expect(results[0]).toEqual({ projectId: 'p1', status: 'checkpointed', checkpointId: 'cp-p1' })
+    expect(results[1]).toEqual({ projectId: 'p2', status: 'skipped-foreign-repo' })
+    // Nothing was written into the foreign repo's git state.
+    expect(created.map((c) => c.projectId)).toEqual(['p1'])
+    expect(initialised).toEqual([])
+  })
+
+  it('never inits a repo in a foreign folder that has no .git yet', async () => {
+    const { seams, initialised } = baseSeams({
+      _isGitRepo: () => false,
+      _getOriginRemoteUrl: async () => 'git@github.com:x/y.git',
+    })
+    const results = await autoCheckpointWorkspaceProjects(['p1'], seams as any)
+    expect(results[0]).toEqual({ projectId: 'p1', status: 'skipped-foreign-repo' })
+    expect(initialised).toEqual([])
+  })
+
+  it('still checkpoints a foreign-origin repo once it is handed to Shogo via GitHubConnection', async () => {
+    const { seams, created } = baseSeams({
+      _getOriginRemoteUrl: async () => 'https://github.com/x/y.git',
+      _loadProjectMeta: async () =>
+        new Map([['p1', { workingMode: 'managed', hasGithubConnection: true }]]),
+    })
+    const results = await autoCheckpointWorkspaceProjects(['p1'], seams as any)
+    expect(results[0]).toEqual({ projectId: 'p1', status: 'checkpointed', checkpointId: 'cp-p1' })
+    expect(created.map((c) => c.projectId)).toEqual(['p1'])
   })
 
   it('skips missing project folders', async () => {

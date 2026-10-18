@@ -3820,13 +3820,20 @@ function createAskUserTool(_ctx: ToolContext): AgentTool {
 // Checkpoint Tool (WS4) — list / diff / rollback project snapshots
 // ---------------------------------------------------------------------------
 
-/** Surface a checkpoint API failure to the model, handling external-mode 409 gracefully. */
+/** Surface a checkpoint API failure to the model, handling "not our repo" 409s gracefully. */
 function checkpointError(res: CheckpointCallResult<unknown>): AgentToolResult<any> {
   if (res.code === 'checkpoints_disabled_in_external_mode') {
     return textResult({
       error: res.error,
       external_mode: true,
       hint: 'This is a folder-linked project — Shogo does not manage its git. Do NOT claim there is no history; tell the user to revert with their own git (e.g. `git reflog` / `git checkout`).',
+    })
+  }
+  if (res.code === 'checkpoints_disabled_foreign_repo') {
+    return textResult({
+      error: res.error,
+      foreign_repo: true,
+      hint: "This project's folder is a checkout of another git repository, so Shogo never commits into it. Do NOT claim there is no history; tell the user to use their own git (e.g. `git reflog` / `git checkout`) in that folder.",
     })
   }
   return textResult({

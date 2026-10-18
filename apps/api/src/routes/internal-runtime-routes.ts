@@ -1703,6 +1703,15 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         newCheckpoint: result.newCheckpoint,
       })
     } catch (err: any) {
+      // The checkpoint service's ownership gate throws a typed error (foreign
+      // repo, or external mode). Surface it as the same 409 the public route
+      // uses so the agent's rollback tool reports "not ours" instead of a 500.
+      if (
+        err?.code === 'checkpoints_disabled_foreign_repo' ||
+        err?.code === 'checkpoints_disabled_in_external_mode'
+      ) {
+        return c.json({ error: { code: err.code, message: err.message } }, 409)
+      }
       console.error(`[Internal] checkpoint rollback for ${projectId} failed:`, err.message)
       return c.json({ error: 'Failed to rollback' }, 500)
     }

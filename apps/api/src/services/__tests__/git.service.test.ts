@@ -276,6 +276,29 @@ describe('getCurrentBranch', () => {
   })
 })
 
+// ─── getOriginRemoteUrl ──────────────────────────────────────────────────────
+
+describe('getOriginRemoteUrl', () => {
+  it('returns null when there is no repo', async () => {
+    expect(await svc.getOriginRemoteUrl(ws)).toBeNull()
+  })
+
+  it('returns null for a repo Shogo initialised (no remotes)', async () => {
+    await svc.initRepo(ws)
+    expect(await svc.getOriginRemoteUrl(ws)).toBeNull()
+  })
+
+  it('returns the trimmed origin URL when one is configured', async () => {
+    await svc.initRepo(ws)
+    git('remote', 'add', 'origin', 'https://github.com/acme/repo.git')
+    expect(await svc.getOriginRemoteUrl(ws)).toBe('https://github.com/acme/repo.git')
+  })
+
+  it('returns null when the path does not exist', async () => {
+    expect(await svc.getOriginRemoteUrl(join(ws, 'nope'))).toBeNull()
+  })
+})
+
 describe('getHeadSha', () => {
   it('returns the current HEAD sha', async () => {
     await svc.initRepo(ws)

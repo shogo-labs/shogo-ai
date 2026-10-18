@@ -1049,6 +1049,11 @@ export async function trackUsageFromStream(
   // commits into their branch is the cardinal sin every IDE-style tool
   // explicitly avoids. External users keep their own git workflow; the
   // CheckpointsPanel renders a "use your own git" banner instead.
+  // `createCheckpoint` applies the same rule to a *managed* project whose
+  // folder is a checkout of someone else's repo (it has an `origin` but no
+  // `GitHubConnection`) and throws `CheckpointsDisabledForeignRepoError` — no
+  // new gate is needed here, the catch below just stops logging it as a
+  // failure every turn.
   // SHOGO_CLOUD_SYNC=1 indicates a paired worker (cli_worker) is the source
   // of truth for this project's git history — its watcher pushes commits
   // through /api/projects/:id/git/git-receive-pack, and the post-receive
@@ -1088,6 +1093,17 @@ export async function trackUsageFromStream(
         message: `AI: ${toolNames} (${toolCallMap.size} tool calls)`,
         isAutomatic: true,
       }).catch((err) => {
+        // A repo we don't own (external folder, or someone else's clone) is an
+        // expected "no checkpoints here", not a failure — log it once at info
+        // level so a per-turn checkpoint never warn-spams the log. Match on the
+        // error code rather than the class so partially-mocked callers keep working.
+        if (
+          err?.code === 'checkpoints_disabled_in_external_mode' ||
+          err?.code === 'checkpoints_disabled_foreign_repo'
+        ) {
+          console.info(`[ProjectChat] Auto-checkpoint skipped: ${err.message}`)
+          return
+        }
         console.warn('[ProjectChat] Auto-checkpoint failed (non-blocking):', err.message)
       })
     }
