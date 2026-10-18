@@ -22,7 +22,7 @@
  */
 
 import { createHash } from 'crypto'
-import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { spawn } from './child-process'
 
@@ -208,6 +208,25 @@ async function gitOk(cwd: string, args: string[], input?: string): Promise<strin
   return r.stdout
 }
 
+/**
+ * Keep imported packs free of a reverse-index cache. A `.rev` is derived from
+ * the `.idx` and only speeds up walking a pack backwards, but a stale or
+ * half-written one makes `git fsck` die with `unable to load rev-index for
+ * pack` instead of checking the objects — intermittently on CI runners, where
+ * it failed the required check. Imports ask git not to write the cache, and any
+ * `.rev` that still lands next to an imported pack is removed, so the
+ * connectivity check always reads the objects themselves.
+ */
+const NO_REV_INDEX = ['-c', 'pack.writeReverseIndex=false']
+
+function dropReverseIndexCache(dir: string): void {
+  const packDir = join(dir, '.git', 'objects', 'pack')
+  if (!existsSync(packDir)) return
+  for (const name of readdirSync(packDir)) {
+    if (name.endsWith('.rev')) rmSync(join(packDir, name), { force: true })
+  }
+}
+
 /** Which of these object ids exist in the repo. */
 async function presentObjects(dir: string, shas: string[]): Promise<Set<string>> {
   const present = new Set<string>()
@@ -371,8 +390,9 @@ export async function materializeRepoFromBundles(
     }
     await gitOk(stagingDir, ['bundle', 'verify', path])
     // Fetch into a private namespace; the real refs are written from the manifest below.
-    await gitOk(stagingDir, ['fetch', '-q', '--no-tags', '--no-write-fetch-head', path, '+refs/*:refs/shogo-import/*'])
+    await gitOk(stagingDir, [...NO_REV_INDEX, 'fetch', '-q', '--no-tags', '--no-write-fetch-head', path, '+refs/*:refs/shogo-import/*'])
   }
+  dropReverseIndexCache(stagingDir)
 
   const updates = Object.entries(manifest.refs).map(([name, sha]) => `update ${name} ${sha}`)
   if (updates.length) {
