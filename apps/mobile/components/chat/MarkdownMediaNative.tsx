@@ -78,7 +78,7 @@ function MarkdownVideo({ target }: { target: MarkdownMediaTarget }) {
   )
 }
 
-export function MarkdownMediaNative({ src, alt }: { src: string; alt?: string }) {
-  const target = useMarkdownMedia(src, alt)
+export function MarkdownMediaNative({ src, alt, agentUrl }: { src: string; alt?: string; agentUrl?: string | null }) {
+  const target = useMarkdownMedia(src, alt, agentUrl)
   return target.kind === "video" ? <MarkdownVideo target={target} /> : <MarkdownImage target={target} />
 }

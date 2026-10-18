@@ -234,7 +234,7 @@ import {
   type DesktopIslandSessionState,
   type IslandPendingRequest,
 } from "../../lib/desktop-island"
-import { resolveChatFilePath } from "./file-links"
+import { normalizeWorkspaceMediaPath, resolveChatFilePath } from "./file-links"
 import { useChatFileIndex } from "./useChatFileIndex"
 import { useIdeBridge } from "./ideBridge"
 
@@ -552,6 +552,12 @@ export interface ChatPanelProps {
    * navigates to that project's IDE (or Files, on native) tab.
    */
   onOpenFile?: (projectId: string, relPath: string) => void
+  /**
+   * Opens a file by its raw workspace path, with no project lookup. Used by
+   * chats whose files live in the workspace root (the workspace agent), so
+   * the host can show its own file viewer. Takes precedence over `onOpenFile`.
+   */
+  onOpenFilePath?: (path: string) => void
   /**
    * Shows another project (or one of its chats) beside this chat. Only set by
    * hosts with room for a side pane; otherwise cards navigate to the project.
@@ -984,6 +990,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onBuildPlanConsumed,
   onOpenPlan,
   onOpenFile,
+  onOpenFilePath,
   onOpenProjectPane,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
@@ -7244,6 +7251,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const openFile = useCallback(
     (path: string) => {
+      if (onOpenFilePath) {
+        const raw = normalizeWorkspaceMediaPath(path)
+        if (raw) onOpenFilePath(raw)
+        return
+      }
       const resolved = resolveChatFilePath(
         path,
         projectId ?? focusedProjectId ?? null,
@@ -7264,7 +7276,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         },
       } as any)
     },
-    [chatScope, chatSessionId, focusedProjectId, onOpenFile, projectId, router],
+    [chatScope, chatSessionId, focusedProjectId, onOpenFile, onOpenFilePath, projectId, router],
   )
   const fileExists = useChatFileIndex(
     resolvedAgentUrl,

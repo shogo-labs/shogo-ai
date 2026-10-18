@@ -31,6 +31,7 @@ import type { OpenProjectPaneRequest } from "../chat/ChatContext"
 import type { PlanData } from "../chat/PlanCard"
 import { PlanStreamProvider } from "../chat/PlanStreamContext"
 import { PlansPanel } from "../project/panels/PlansPanel"
+import { WorkspaceFileViewer } from "./WorkspaceFileViewer"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { NativePhoneSheet } from "../phone/NativePhoneSheet"
@@ -52,6 +53,13 @@ const PROJECT_SIDE_PANE_MIN_WIDTH = 1024
 
 interface ProjectPaneState extends OpenProjectPaneRequest {
   /** Changes on every open so a new request re-targets the pane. */
+  nonce: number
+}
+
+interface FilePaneState {
+  /** Workspace-relative path the assistant mentioned. */
+  path: string
+  /** Changes on every open so re-opening the same file reloads it. */
   nonce: number
 }
 
@@ -90,6 +98,7 @@ export const WorkspaceAgentChatScreen = observer(
     const { width, height } = useWindowDimensions()
     const [projectPane, setProjectPane] = useState<ProjectPaneState | null>(null)
     const [planPane, setPlanPane] = useState<PlanPaneState | null>(null)
+    const [filePane, setFilePane] = useState<FilePaneState | null>(null)
     const [buildPlanRequest, setBuildPlanRequest] = useState<BuildPlanRequest | null>(null)
     const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
     const [sessionId, setSessionId] = useState<string | null>(null)
@@ -181,16 +190,25 @@ export const WorkspaceAgentChatScreen = observer(
     }, [loadWorkspaceChat])
 
     const hasSidePane = width >= PROJECT_SIDE_PANE_MIN_WIDTH && !usesMobileWorkspaceChrome
+    // Plan, project, and file panes share one slot: opening any of them closes the others.
     const openProjectPane = useCallback((request: OpenProjectPaneRequest) => {
       setPlanPane(null)
+      setFilePane(null)
       setProjectPane({ ...request, nonce: Date.now() })
     }, [])
     const closeProjectPane = useCallback(() => setProjectPane(null), [])
     const openPlanPane = useCallback((filepath?: string | null) => {
       setProjectPane(null)
+      setFilePane(null)
       setPlanPane({ filepath: filepath ?? null, nonce: Date.now() })
     }, [])
     const closePlanPane = useCallback(() => setPlanPane(null), [])
+    const openFilePane = useCallback((path: string) => {
+      setProjectPane(null)
+      setPlanPane(null)
+      setFilePane({ path, nonce: Date.now() })
+    }, [])
+    const closeFilePane = useCallback(() => setFilePane(null), [])
     const handleBuildPlan = useCallback(
       (plan: PlanData, modelId: string) => {
         setBuildPlanRequest({ plan, modelId, nonce: Date.now() })
@@ -484,6 +502,14 @@ export const WorkspaceAgentChatScreen = observer(
         onClose={closePlanPane}
       />
     ) : null
+    const filePaneContent = filePane ? (
+      <WorkspaceFileViewer
+        agentUrl={workspaceAgentUrl}
+        path={filePane.path}
+        nonce={filePane.nonce}
+        onClose={closeFilePane}
+      />
+    ) : null
 
     return (
       <PlanStreamProvider>
@@ -607,6 +633,7 @@ export const WorkspaceAgentChatScreen = observer(
             presentation="agent"
             onOpenProjectPane={hasSidePane ? openProjectPane : undefined}
             onOpenPlan={isPersonalWorkspace ? undefined : openPlanPane}
+            onOpenFilePath={openFilePane}
             buildPlanRequest={buildPlanRequest}
             onBuildPlanConsumed={handleBuildPlanConsumed}
             prefillRequest={prefillRequest}
@@ -752,10 +779,25 @@ export const WorkspaceAgentChatScreen = observer(
             <View style={{ height: Math.round(height * 0.8) }}>{plansPanel}</View>
           </NativePhoneSheet>
         ) : null}
+        {!hasSidePane ? (
+          <NativePhoneSheet
+            visible={!!filePane}
+            onClose={closeFilePane}
+            grabber={false}
+            testID="workspace-file-sheet"
+          >
+            <View style={{ height: Math.round(height * 0.8) }}>{filePaneContent}</View>
+          </NativePhoneSheet>
+        ) : null}
       </View>
       {hasSidePane && plansPanel ? (
         <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-plan-pane">
           {plansPanel}
+        </View>
+      ) : null}
+      {hasSidePane && filePane ? (
+        <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-file-pane">
+          {filePaneContent}
         </View>
       ) : null}
       {activePane ? (
