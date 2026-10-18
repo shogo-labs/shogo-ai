@@ -30,7 +30,8 @@ import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext
 
 /**
  * Semantic markdown palette. Light and dark values follow the GitHub gray
- * scale for structure, with an orange for inline code as the one accent.
+ * scale for structure, with color as the only accent: inline code reads as
+ * body text on a neutral grey chip rather than as its own accent color.
  * Keep in sync with the `.chat-md` variables in `global.css` (web path).
  */
 interface ThemeColors {
@@ -38,7 +39,6 @@ interface ThemeColors {
   heading: ColorValue;
   muted: ColorValue;
   link: ColorValue;
-  codeText: ColorValue;
   codeBg: ColorValue;
   border: ColorValue;
   quoteBorder: ColorValue;
@@ -132,8 +132,7 @@ const lightColors: ThemeColors = {
   heading: "#111827",
   muted: "#59636e",
   link: "#0969da",
-  codeText: "#b45309",
-  codeBg: "#f6f8fa",
+  codeBg: "#e4e4e7",
   border: "#d1d9e0",
   quoteBorder: "#d1d9e0",
   tableHeaderBg: "#f6f8fa",
@@ -146,8 +145,7 @@ const darkColors: ThemeColors = {
   heading: "#ffffff",
   muted: "#8b949e",
   link: "#4493f8",
-  codeText: "#fb923c",
-  codeBg: "#161b22",
+  codeBg: "#333333",
   border: "#30363d",
   quoteBorder: "#30363d",
   tableHeaderBg: "#161b22",
@@ -162,7 +160,6 @@ const lightThinkingColors: ThemeColors = {
   heading: "#525252",
   muted: "#a3a3a3",
   link: "#6b9bd2",
-  codeText: "#737373",
   codeBg: "#f0f0f0",
   border: "#e0e0e0",
   quoteBorder: "#e0e0e0",
@@ -176,7 +173,6 @@ const darkThinkingColors: ThemeColors = {
   heading: "#c4c4c4",
   muted: "#737373",
   link: "#7ba8d4",
-  codeText: "#a0a0a0",
   codeBg: "#252525",
   border: "#444444",
   quoteBorder: "#444444",
@@ -203,7 +199,7 @@ function withColors(sizes: MarkedStyles, c: ThemeColors): MarkedStyles {
     h2: { ...sizes.h2, color: c.heading },
     h3: { ...sizes.h3, color: c.heading },
     h4: { ...sizes.h4, color: c.heading },
-    codespan: { ...sizes.codespan, color: c.codeText, backgroundColor: c.codeBg },
+    codespan: { ...sizes.codespan, color: c.text, backgroundColor: c.codeBg },
     blockquote: {
       ...sizes.blockquote,
       borderLeftWidth: 3,

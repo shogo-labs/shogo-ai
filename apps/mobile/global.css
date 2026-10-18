@@ -15,15 +15,18 @@
 /* ── Streamdown overrides for chat markdown ── */
 
 /* Semantic markdown palette. Mirrors the native palette in
-   components/chat/MarkdownText.tsx: GitHub grays for structure, orange
-   for inline code, blue for links. Dark values apply under `.dark`. */
+   components/chat/MarkdownText.tsx: GitHub grays for structure, blue for
+   links, and body-colored text on a neutral grey chip for inline code.
+   Dark values apply under `.dark`. */
 .chat-md {
   --md-text: #1f2328;
   --md-heading: #111827;
   --md-muted: #59636e;
   --md-link: #0969da;
-  --md-code-text: #b45309;
-  --md-code-bg: #f6f8fa;
+  /* Resolves against this element's own --md-text, so inline code follows
+     the body color in both themes with no dark override to keep in sync. */
+  --md-code-text: var(--md-text);
+  --md-code-bg: #e4e4e7;
   --md-border: #d1d9e0;
   --md-quote-border: #d1d9e0;
   --md-table-header-bg: #f6f8fa;
@@ -35,8 +38,7 @@
   --md-heading: #ffffff;
   --md-muted: #8b949e;
   --md-link: #4493f8;
-  --md-code-text: #fb923c;
-  --md-code-bg: #161b22;
+  --md-code-bg: #333333;
   --md-border: #30363d;
   --md-quote-border: #30363d;
   --md-table-header-bg: #161b22;
