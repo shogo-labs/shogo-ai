@@ -18,6 +18,7 @@ import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { createBufferedTurns, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
+import { describeTurn } from './turn-status'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
   existsSync,
@@ -2130,22 +2131,14 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
 // Read-only durable-turn status endpoint. Lets a client poll for the current
 // state of a turn without opening a stream — useful when deciding whether to
 // reconnect. Mirrors the snapshot exposed by the StreamBufferStore.
+//
+// `reply` is the turn's final text once it is terminal. The buffer is evicted
+// 30 s after a turn completes, so the reply is kept separately for an hour —
+// a caller whose stream follower missed the turn (API restart, slow poll) can
+// still persist what the agent said instead of re-running the turn.
 app.get('/agent/chat/:chatSessionId/turn', (c) => {
-  const chatSessionId = c.req.param('chatSessionId')
-  const snapshot = streamBufferStore.snapshot(chatSessionId)
-  if (!snapshot) {
-    return c.json({ status: 'unknown' as const }, 404)
-  }
-  return c.json({
-    chatSessionId,
-    turnId: snapshot.turnId,
-    status: snapshot.status,
-    lastSeq: snapshot.lastSeq,
-    terminal: snapshot.terminal,
-    createdAt: snapshot.createdAt,
-    completedAt: snapshot.completedAt,
-    lastEventAt: snapshot.lastEventAt,
-  })
+  const { status, body } = describeTurn(streamBufferStore, c.req.param('chatSessionId'))
+  return c.json(body, status as 200 | 404)
 })
 
 // Live browser screencast for a running subagent instance.

@@ -97,6 +97,29 @@ describe('pipeline calls into an openable chat', () => {
       if (sessionId) expect(store.snapshot(sessionId)).toBeNull()
     }
   })
+
+  test('keeps the call reply readable after the turn buffer is done', async () => {
+    const { turns } = setup()
+    const result = await turns.runPipelineCall(async (call) => {
+      return { reply: 'the caller got this', sessionId: call.sessionId!, runId: call.runId }
+    }, { message: 'go', runId: 'run_2', sessionId: 'chat-4' })
+
+    expect(result.reply).toBe('the caller got this')
+    expect(store.turnReply('chat-4')).toMatchObject({
+      reply: 'the caller got this',
+      turnId: store.snapshot('chat-4')!.turnId,
+    })
+  })
+
+  test('a failed call records no reply', async () => {
+    const { turns } = setup()
+    await expect(
+      turns.runPipelineCall(async () => {
+        throw new Error('model down')
+      }, { message: 'go', sessionId: 'chat-5' }),
+    ).rejects.toThrow('model down')
+    expect(store.turnReply('chat-5')).toBeNull()
+  })
 })
 
 describe('isOpenableChatSession', () => {

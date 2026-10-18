@@ -38,7 +38,7 @@ export interface PipelineCallResult {
 }
 
 export interface BufferedTurnDeps {
-  store: Pick<StreamBufferStore, 'create'>
+  store: Pick<StreamBufferStore, 'create'> & Partial<Pick<StreamBufferStore, 'recordTurnReply'>>
   gate: Pick<LiveTurnGate, 'isBusy' | 'waitUntilFree'>
   onStreamStart?: () => void
   onStreamEnd?: () => void
@@ -238,6 +238,11 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
     await turn.done
     if (failure) throw failure
     if (!result) throw new Error('The pipeline call ended without a reply')
+    // The turn's buffer is evicted 30 s after it completes, and the caller's
+    // follower may well miss it (slow poll, API restart, a dropped body). Keep
+    // the reply readable off the buffer so the finished turn can still be
+    // persisted from a durable source instead of being re-run.
+    if (result.reply?.trim()) deps.store.recordTurnReply?.(chatSessionKey, result.reply)
     return result
   }
 

@@ -221,6 +221,21 @@ describe('callProjectAgent — desktop (local mode)', () => {
 describe('callProjectAgentAsChat — chat persistence', () => {
   const sessions = new Map<string, any>()
   const messages: any[] = []
+
+  /** Prisma `where` evaluation for the two queries the call-chat writes use. */
+  function matches(m: any, where: any): boolean {
+    if (where.sessionId && m.sessionId !== where.sessionId) return false
+    if (where.role && m.role !== where.role) return false
+    const agent = where.agent
+    if (typeof agent === 'string') {
+      if (m.agent !== agent) return false
+    } else if (agent?.in && !agent.in.includes(m.agent)) {
+      return false
+    }
+    if (where.createdAt?.gte && !(new Date(m.createdAt) >= new Date(where.createdAt.gte))) return false
+    return true
+  }
+
   const fakeDb = {
     project: { findUnique: async () => ({ name: 'Caller' }) },
     chatSession: {
@@ -230,11 +245,25 @@ describe('callProjectAgentAsChat — chat persistence', () => {
       },
       update: async ({ where, data }: any) => {
         const s = sessions.get(where.id)
+        if (!s) throw new Error(`no chat session ${where.id}`)
         if (data.cachedMessageCount?.increment) s.cachedMessageCount += data.cachedMessageCount.increment
         return s
       },
     },
-    chatMessage: { create: async ({ data }: any) => { messages.push(data); return data } },
+    chatMessage: {
+      create: async ({ data }: any) => {
+        const row = { ...data, createdAt: new Date() }
+        messages.push(row)
+        return row
+      },
+      findFirst: async ({ where, orderBy }: any) => {
+        const rows = messages.filter((m) => matches(m, where))
+        const sorted = [...rows].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+        if (orderBy?.createdAt === 'desc') return sorted[0] ?? null
+        return rows[0] ?? null
+      },
+      count: async ({ where }: any) => messages.filter((m) => matches(m, where)).length,
+    },
   }
 
   beforeEach(() => {
@@ -523,6 +552,97 @@ describe('callProjectAgentAsChat — chat persistence', () => {
       expect(rec).toMatchObject({ status: 'completed', sessionId: 'custom' })
       expect(forwarded).toMatchObject({ sessionId: 'custom', wait: true })
       expect(sessions.size).toBe(0)
+    })
+  })
+
+  /**
+   * The reported bug: a finished call leaves its prompt in the callee chat with
+   * no answer. The tracker owns the reply row when it saw the turn — every
+   * other terminal outcome has to leave an answer behind.
+   */
+  describe('a terminal call always leaves an answer in its chat', () => {
+    const chatId = 'chat-settle-1'
+    const link = { projectId: 'proj-1', runId: 'run-settle', startedAt: Date.now() }
+
+    function seedPrompt() {
+      sessions.set(chatId, { id: chatId, cachedMessageCount: 1 })
+      messages.push({
+        sessionId: chatId,
+        role: 'user',
+        agent: 'project_call',
+        content: 'do it',
+        parts: JSON.stringify([
+          { type: 'text', text: 'do it' },
+          { type: 'data-project-call', data: { runId: 'run-settle', callerName: 'Caller' } },
+        ]),
+        createdAt: new Date(),
+      })
+    }
+
+    const assistantRows = () => messages.filter((m) => m.role === 'assistant')
+
+    it("writes the tracker's text when the tracker persisted no row", async () => {
+      seedPrompt()
+      fakeCallee()
+
+      await svc.settleAgentCallFromTurn(link, chatId, {
+        outcome: 'complete', status: 'completed', text: 'the answer', assistantMessageId: null,
+      })
+
+      expect(assistantRows()).toHaveLength(1)
+      expect(assistantRows()[0]).toMatchObject({ agent: 'technical', content: 'the answer' })
+      expect(JSON.parse(assistantRows()[0].parts)).toEqual([{ type: 'text', text: 'the answer' }])
+      expect(sessions.get(chatId)?.cachedMessageCount).toBe(2)
+    })
+
+    it('does not write a second row when the tracker already persisted one', async () => {
+      seedPrompt()
+      fakeCallee()
+
+      await svc.settleAgentCallFromTurn(link, chatId, {
+        outcome: 'complete', status: 'completed', text: 'the answer', assistantMessageId: 'msg-1',
+      })
+
+      expect(assistantRows()).toHaveLength(0)
+    })
+
+    it('recovers the reply from the runtime turn record when this side saw no text', async () => {
+      seedPrompt()
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ status: 'completed', reply: 'from the turn record' }), { status: 200 })) as any
+
+      await svc.settleAgentCallFromTurn(link, chatId, null)
+
+      expect(assistantRows()).toHaveLength(1)
+      expect(assistantRows()[0].content).toBe('from the turn record')
+      expect(await agentCallStore.getAgentCall('proj-1', 'run-settle')).toMatchObject({
+        status: 'failed',
+        error: { code: svc.CALLEE_TURN_LOST },
+      })
+    })
+
+    it('writes an explicit failure row when the turn produced no text at all', async () => {
+      seedPrompt()
+      globalThis.fetch = (async () => new Response(JSON.stringify({ status: 'unknown' }), { status: 404 })) as any
+
+      await svc.settleAgentCallFromTurn(link, chatId, {
+        outcome: 'complete', status: 'failed', text: '', assistantMessageId: null,
+      })
+
+      expect(assistantRows()).toHaveLength(1)
+      expect(assistantRows()[0].content).toContain('ended before its reply could be saved')
+      expect(assistantRows()[0].agent).toBe('technical')
+    })
+
+    it('is idempotent: settling the same turn twice writes one row', async () => {
+      seedPrompt()
+      fakeCallee()
+      const result = { outcome: 'complete' as const, status: 'completed' as const, text: 'once', assistantMessageId: null }
+
+      await svc.settleAgentCallFromTurn(link, chatId, result)
+      await svc.settleAgentCallFromTurn(link, chatId, result)
+
+      expect(assistantRows()).toHaveLength(1)
     })
   })
 })
