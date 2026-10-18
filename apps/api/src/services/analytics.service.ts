@@ -1646,7 +1646,7 @@ export async function getQualityTimeseries(
     }),
     prisma.agentCostMetric.findMany({
       where: agentWhere,
-      select: { createdAt: true, escalated: true, loopDetected: true, hitMaxTurns: true },
+      select: { createdAt: true, escalated: true, loopDetected: true, hitMaxTurns: true, metadata: true },
     }),
   ])
 
@@ -1689,6 +1689,7 @@ export async function getQualityTimeseries(
   }
   for (const m of messages) ensure(isoDay(m.createdAt)).messages += 1
   for (const r of agentRuns) {
+    if (parseMeta(r.metadata).qualityUnknown === true) continue
     const a = ensure(isoDay(r.createdAt))
     a.runs += 1
     if (r.escalated) a.escalated += 1

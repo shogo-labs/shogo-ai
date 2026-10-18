@@ -91,6 +91,8 @@ interface AgentBreakdownEntry {
   /** Server-resolved display label for `model` (falls back to client resolution). */
   modelLabel?: string
   totalRuns: number
+  /** Runs with quality signals; backfilled turns count toward cost only. */
+  scoredRuns?: number
   promiseSuccesses?: number
   qualitySuccesses?: number
   hitMaxTurns?: number
@@ -620,8 +622,9 @@ function AgentBreakdownSection({
       {entries.map((entry, i) => {
         const key = `${entry.agentType}::${entry.model}`
         const isExpanded = expanded === key
-        const promiseSuccesses = entry.promiseSuccesses ?? Math.round((entry.successRate / 100) * entry.totalRuns)
-        const failures = Math.max(0, entry.totalRuns - promiseSuccesses)
+        const scoredRuns = entry.scoredRuns ?? entry.totalRuns
+        const promiseSuccesses = entry.promiseSuccesses ?? Math.round((entry.successRate / 100) * scoredRuns)
+        const failures = Math.max(0, scoredRuns - promiseSuccesses)
         const qualitySuccessRate = entry.qualitySuccessRate ?? entry.successRate
         const costPercent = data!.totals.totalCreditCost > 0
           ? Math.round((entry.totalCreditCost / data!.totals.totalCreditCost) * 100)

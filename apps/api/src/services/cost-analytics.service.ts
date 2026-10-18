@@ -48,6 +48,8 @@ interface AgentBreakdownEntry {
   /** Human display label resolved from the model registry. */
   modelLabel: string
   totalRuns: number
+  /** Runs that carry quality signals; the denominator for every rate below. */
+  scoredRuns: number
   /** Legacy "promise resolved" successes — kept for backwards compat / debug. */
   promiseSuccesses: number
   /** Multi-signal quality successes (see file header). The number used in recommendations. */
@@ -115,6 +117,15 @@ interface CostForecast {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Rows without real quality signals (history rebuilt from per-call usage
+ * events by the desktop backfill migration). They count toward cost and runs
+ * but are kept out of every quality rate and the recommendation gate.
+ */
+function qualityUnknownSql(): Prisma.Sql {
+  return Prisma.sql`COALESCE(CAST("metadata" AS TEXT), '') LIKE '%"qualityUnknown":%true%'`
+}
 
 function periodToDate(period: CostPeriod): Date {
   const now = new Date()
@@ -249,6 +260,7 @@ export async function getAgentCostBreakdown(
   // do a single raw SQL aggregation alongside. SUM(CASE ...) rather than
   // COUNT(*) FILTER so the same SQL runs on Postgres and local SQLite.
   const projectFilter = projectId ? Prisma.sql`AND "projectId" = ${projectId}` : Prisma.empty
+  const qualityUnknown = qualityUnknownSql()
   const flags = await prisma.$queryRaw<Array<{
     agentType: string
     model: string
@@ -258,21 +270,24 @@ export async function getAgentCostBreakdown(
     loopDetected: bigint
     escalated: bigint
     responseEmpty: bigint
+    unscoredRuns: bigint
   }>>(Prisma.sql`
     SELECT
       "agentType",
       "model",
-      SUM(CASE WHEN "success" THEN 1 ELSE 0 END)          AS "promiseSuccesses",
+      SUM(CASE WHEN "success" AND NOT (${qualityUnknown}) THEN 1 ELSE 0 END) AS "promiseSuccesses",
       SUM(CASE WHEN "success"
             AND NOT "hitMaxTurns"
             AND NOT "loopDetected"
             AND NOT "escalated"
             AND NOT "responseEmpty"
+            AND NOT (${qualityUnknown})
           THEN 1 ELSE 0 END)                              AS "qualitySuccesses",
       SUM(CASE WHEN "hitMaxTurns" THEN 1 ELSE 0 END)      AS "hitMaxTurns",
       SUM(CASE WHEN "loopDetected" THEN 1 ELSE 0 END)     AS "loopDetected",
       SUM(CASE WHEN "escalated" THEN 1 ELSE 0 END)        AS "escalated",
-      SUM(CASE WHEN "responseEmpty" THEN 1 ELSE 0 END)    AS "responseEmpty"
+      SUM(CASE WHEN "responseEmpty" THEN 1 ELSE 0 END)    AS "responseEmpty",
+      SUM(CASE WHEN ${qualityUnknown} THEN 1 ELSE 0 END) AS "unscoredRuns"
     FROM "agent_cost_metrics"
     WHERE "workspaceId" = ${workspaceId}
       AND "createdAt"   >= ${since}
@@ -292,6 +307,7 @@ export async function getAgentCostBreakdown(
     const loopDetected = Number(f?.loopDetected ?? 0)
     const escalated = Number(f?.escalated ?? 0)
     const responseEmpty = Number(f?.responseEmpty ?? 0)
+    const scoredRuns = Math.max(0, totalRuns - Number(f?.unscoredRuns ?? 0))
 
     const totalInputTokens = g._sum.inputTokens ?? 0
     const totalOutputTokens = g._sum.outputTokens ?? 0
@@ -306,6 +322,7 @@ export async function getAgentCostBreakdown(
       model: g.model,
       modelLabel: resolveModelLabelSync(g.model),
       totalRuns,
+      scoredRuns,
       promiseSuccesses,
       qualitySuccesses,
       hitMaxTurns,
@@ -321,9 +338,9 @@ export async function getAgentCostBreakdown(
       totalWallTimeMs,
       avgCostPerRun: totalRuns > 0 ? Math.round((totalCreditCost / totalRuns) * 100) / 100 : 0,
       avgLatencyMs: totalRuns > 0 ? Math.round(totalWallTimeMs / totalRuns) : 0,
-      qualitySuccessRate: totalRuns > 0 ? Math.round((qualitySuccesses / totalRuns) * 1000) / 10 : 0,
-      escalationRate: totalRuns > 0 ? Math.round((escalated / totalRuns) * 1000) / 10 : 0,
-      successRate: totalRuns > 0 ? Math.round((promiseSuccesses / totalRuns) * 1000) / 10 : 0,
+      qualitySuccessRate: scoredRuns > 0 ? Math.round((qualitySuccesses / scoredRuns) * 1000) / 10 : 0,
+      escalationRate: scoredRuns > 0 ? Math.round((escalated / scoredRuns) * 1000) / 10 : 0,
+      successRate: scoredRuns > 0 ? Math.round((promiseSuccesses / scoredRuns) * 1000) / 10 : 0,
     }
   }).sort((a, b) => b.totalCreditCost - a.totalCreditCost)
 
@@ -377,13 +394,13 @@ export async function getCostRecommendations(
   const daysInPeriod = periodToDays(period)
 
   for (const entry of breakdown) {
-    if (entry.totalRuns < RECOMMENDATION_THRESHOLDS.minRuns) continue
+    if (entry.scoredRuns < RECOMMENDATION_THRESHOLDS.minRuns) continue
 
     const currentTier = MODEL_QUALITY_TIER[entry.model] ?? 3
     const currentOutputCost = getModelCostPerMillionOutput(entry.model)
     const monthlyCost = (entry.totalCreditCost / daysInPeriod) * 30
     const evidenceBase = {
-      runs: entry.totalRuns,
+      runs: entry.scoredRuns,
       qualitySuccessRate: entry.qualitySuccessRate,
       escalationRate: entry.escalationRate,
       loopTrips: entry.loopDetected,
@@ -442,7 +459,7 @@ export async function getCostRecommendations(
           reason: `${entry.agentType} succeeds on only ${entry.qualitySuccessRate}% of runs (loop trips: ${entry.loopDetected}, max-turn hits: ${entry.hitMaxTurns}, escalations: ${entry.escalated}). Upgrading to ${resolveModelLabelSync(candidate)} should reduce wasted spend on retries.`,
           estimatedSavingsPercent: -30,
           estimatedMonthlySavings: -Math.round(monthlyCost * 0.3 * 100) / 100,
-          confidence: entry.totalRuns >= 30 ? 'medium' : 'low',
+          confidence: entry.scoredRuns >= 30 ? 'medium' : 'low',
           currentMonthlyCost: Math.round(monthlyCost * 100) / 100,
           evidence: evidenceBase,
         })
@@ -478,8 +495,8 @@ function deriveConfidence(
   entry: AgentBreakdownEntry,
   evalAnchor: { passRate: number } | null,
 ): 'high' | 'medium' | 'low' {
-  if (evalAnchor && evalAnchor.passRate >= 0.85 && entry.totalRuns >= 50) return 'high'
-  // entry.totalRuns is guaranteed >= RECOMMENDATION_THRESHOLDS.minRuns (20) at the
+  if (evalAnchor && evalAnchor.passRate >= 0.85 && entry.scoredRuns >= 50) return 'high'
+  // entry.scoredRuns is guaranteed >= RECOMMENDATION_THRESHOLDS.minRuns (20) at the
   // call site, so the only other outcome is medium.
   return 'medium'
 }
@@ -490,7 +507,7 @@ function buildDowngradeReason(
   evalAnchor: { suite: string; passRate: number; model: string } | null,
 ): string {
   const parts = [
-    `${entry.totalRuns} runs`,
+    `${entry.scoredRuns} runs`,
     `${entry.qualitySuccessRate}% quality success`,
   ]
   if (entry.escalated > 0) parts.push(`${entry.escalated} escalations`)
