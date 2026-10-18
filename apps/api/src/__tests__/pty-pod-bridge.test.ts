@@ -94,14 +94,25 @@ function makeServerWs(): FakeServerWs {
   return ws
 }
 
+/** Pod session list the bridge sees when it probes; `null` = pod unreachable. */
+let podSessions: string[] | null = null
+const fakeFetch = (async () => {
+  if (podSessions === null) throw new Error('connect ECONNREFUSED')
+  return Response.json({ sessions: podSessions.map((id) => ({ id })) })
+}) as unknown as typeof fetch
+
 function makeBridge() {
   instances = []
+  podSessions = null
   const bridge = createPtyPodBridgeHandlers({
     WebSocketCtor: FakeOutbound as unknown as typeof WebSocket,
     logger: { error: () => {} },
+    fetchImpl: fakeFetch,
   })
   return bridge
 }
+
+const settle = () => new Promise((r) => setTimeout(r, 0))
 
 describe('buildPodWsUrl', () => {
   test('http origin → ws scheme', () => {
@@ -203,14 +214,56 @@ describe('createPtyPodBridgeHandlers', () => {
     expect(ws.closeArgs).toEqual({ code: 1000, reason: 'pty:exited' })
   })
 
-  test('pod closes before opening → browser sees 1011 pod-unreachable', () => {
+  test('pod closes before opening → browser sees 1011 pod-unreachable', async () => {
     const bridge = makeBridge()
     const ws = makeServerWs() as any
     bridge.open(ws)
     const outbound = instances[0]
     outbound.triggerClose(1006, '')
+    await settle()
     expect(ws.closeArgs?.code).toBe(1011)
     expect(ws.closeArgs?.reason).toBe('pod-unreachable')
+  })
+
+  test('pod refuses the upgrade and no longer lists the session → 4404 no-session', async () => {
+    const bridge = makeBridge()
+    podSessions = ['some-other-session']
+    const ws = makeServerWs() as any
+    bridge.open(ws)
+    instances[0].triggerClose(1006, '')
+    await settle()
+    expect(ws.closeArgs).toEqual({ code: 4404, reason: 'no-session' })
+  })
+
+  test("Bun's refused-upgrade close (1002 'Expected 101 status code') is probed, not forwarded", async () => {
+    const bridge = makeBridge()
+    podSessions = []
+    const ws = makeServerWs() as any
+    bridge.open(ws)
+    instances[0].triggerClose(1002, 'Expected 101 status code')
+    await settle()
+    expect(ws.closeArgs).toEqual({ code: 4404, reason: 'no-session' })
+  })
+
+  test('pod refuses the upgrade but still lists the session → 1011 pod-unreachable (retry)', async () => {
+    const bridge = makeBridge()
+    podSessions = ['sess-1']
+    const ws = makeServerWs() as any
+    bridge.open(ws)
+    instances[0].triggerClose(1006, '')
+    await settle()
+    expect(ws.closeArgs).toEqual({ code: 1011, reason: 'pod-unreachable' })
+  })
+
+  test('browser leaves while the session probe is in flight → browser not closed again', async () => {
+    const bridge = makeBridge()
+    podSessions = []
+    const ws = makeServerWs() as any
+    bridge.open(ws)
+    instances[0].triggerClose(1006, '')
+    bridge.close(ws, 1000, 'bye')
+    await settle()
+    expect(ws.closeArgs).toBeNull()
   })
 
   test('forbidden close codes (1005/1006) get sanitised to 1011', () => {

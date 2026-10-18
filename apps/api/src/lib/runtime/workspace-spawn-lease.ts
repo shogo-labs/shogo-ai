@@ -61,9 +61,9 @@ export function hashWorkspaceIdToLockKey(workspaceId: string): bigint {
 /**
  * How long we poll (non-blocking) for the spawn lease before proceeding
  * without it. Generous because a real spawn can take tens of seconds and we
- * want the loser to wait for the winner in the common case — but the wait
- * never pins a pooled connection, so a large budget costs latency, not
- * connections.
+ * want the loser to wait for the winner in the common case. A waiter leases a
+ * lock connection only for each try (see `withAdvisoryLock`), so a large
+ * budget costs latency, not connections.
  */
 const SPAWN_LEASE_WAIT_BUDGET_MS = 60_000
 
@@ -115,6 +115,7 @@ export async function withWorkspaceSpawnLease<T>(
     return outcome.result as T
   }
 
-  console.warn(`[${tag}] could not acquire spawn lease for ${workspaceId} within ${budgetMs}ms — proceeding without it (fn must self-guard)`)
+  const why = outcome.reason === 'unavailable' ? 'no lock connection' : 'held elsewhere'
+  console.warn(`[${tag}] could not acquire spawn lease for ${workspaceId} within ${budgetMs}ms (${why}) — proceeding without it (fn must self-guard)`)
   return fn()
 }

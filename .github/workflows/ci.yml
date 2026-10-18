@@ -876,6 +876,20 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Real-Postgres suites that skip themselves elsewhere: the advisory-lock
+      # pool under contention, and the replication monitor script run with
+      # psql (jq/psql ship on the ubuntu runner).
+      - name: Postgres integration suites
+        working-directory: apps/api
+        env:
+          REQUIRE_PG_INTEGRATION: '1'
+        run: |
+          for f in src/__tests__/advisory-lock-pool.integration.test.ts src/__tests__/monitor-rollout-grace.integration.test.ts; do
+            echo "::group::$f"
+            bun --no-env-file test "$f" || exit 1
+            echo "::endgroup::"
+          done
+
   # Thin aggregator so branch protection's required status check keeps its
   # original name/context ("Lint, Typecheck, Test") no matter how the real
   # work above gets split or resharded. `if: always()` makes this run even

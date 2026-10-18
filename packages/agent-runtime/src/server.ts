@@ -141,7 +141,7 @@ import { computePublishedReadiness } from './published-readiness'
 import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
-import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
+import { createPtyWsHandlers, handlePtyUpgrade } from './pty-ws-handler'
 import {
   parsePortParam,
   proxyPortHttp,
@@ -7346,9 +7346,6 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
     })
 }
 
-// Match a path like `/terminal/sessions/<id>/ws`; the id segment is opaque
-// (no slashes) and is whatever PtySessionManager.create() assigned.
-const WS_PATH_RE = /^\/terminal\/sessions\/([^/]+)\/ws$/
 // Raw TCP port-bridge upgrade (Phase 3, Tier 2 plan) — see port-bridge.ts.
 const PORT_WS_PATH_RE = /^\/agent\/ports\/([0-9]+)\/ws$/
 const PORT_HTTP_WS_PATH_RE = /^\/agent\/ports\/([0-9]+)\/http(\/.*)?$/
@@ -7423,21 +7420,8 @@ export default {
       )
     }
     const upgrade = req.headers.get('upgrade')?.toLowerCase()
-    const wsMatch = upgrade === 'websocket' ? WS_PATH_RE.exec(url.pathname) : null
-    if (wsMatch) {
-      const sessionId = wsMatch[1]
-      const since = Number(url.searchParams.get('since')) || 0
-      // Quick existence check pre-upgrade so a missing session returns a
-      // proper 404 rather than a confusing accept-then-immediate-close.
-      // We don't `attach()` here — that happens in the WS open handler.
-      if (!ptyManager.get(sessionId)) {
-        return new Response('Unknown session', { status: 404 })
-      }
-      const data: WsData = { manager: ptyManager, sessionId, since }
-      const upgraded = server.upgrade(req, { data })
-      if (upgraded) return undefined
-      return new Response('WebSocket upgrade failed', { status: 500 })
-    }
+    const ptyUpgrade = handlePtyUpgrade(req, server, ptyManager)
+    if (ptyUpgrade !== null) return ptyUpgrade
     const portWsMatch = upgrade === 'websocket' ? PORT_WS_PATH_RE.exec(url.pathname) : null
     if (portWsMatch) {
       if (!isAuthedForPortBridge(req)) {

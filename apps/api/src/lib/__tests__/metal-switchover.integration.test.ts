@@ -30,7 +30,9 @@ import {
   getRefreshStatus,
   getRewarmStatus,
   getSwitchoverStatus,
+  rewarmLeaseBudget,
   rewarmWatcherTick,
+  runRewarm,
   switchoverTick,
   type RewarmCandidate,
   type RewarmDeps,
@@ -524,6 +526,86 @@ describe('stale-rootfs refresh queue', () => {
     expect(second.started).toEqual([onH1.at(-1)!])
     await Promise.all(second.running)
     expect((await getRefreshStatus(fleet.store)).queued).toBe(0)
+  })
+
+  test("never holds more spawn leases than the replica's lock pool can spare", async () => {
+    // Production US on 2026-10-17: 2 hosts x refreshPerHost(4) = 8 warms on
+    // the watcher's replica, each holding a spawn lease, against a 4-slot
+    // lock pool — user opens on that replica could not get a lease.
+    const budget = rewarmLeaseBudget(4)
+    expect(budget).toBe(2)
+    for (let i = 0; i < SWITCHOVER.refreshPerHost; i++) {
+      await retire(`ws:proj:a${i}`, 'h1')
+      await retire(`ws:proj:b${i}`, 'h2')
+    }
+
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    let inFlight = 0
+    let maxInFlight = 0
+    const base = fleet.deps
+    const deps: RewarmDeps = {
+      ...base,
+      boot: async (c, opts) => {
+        inFlight++
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await gate
+        try {
+          return await base.boot(c, opts)
+        } finally {
+          inFlight--
+        }
+      },
+    }
+    const capped = { ...CFG, leaseBudget: budget }
+
+    const first = await drainRefreshQueue(deps, capped)
+    expect(first.started).toHaveLength(budget)
+    // The watcher ticks again while those boots are still in flight.
+    fleet.advance(MIN)
+    expect((await drainRefreshQueue(deps, capped)).started).toEqual([])
+
+    release()
+    await Promise.all(first.running)
+    const rest: Promise<void>[] = []
+    for (let i = 0; i < 10 && (await getRefreshStatus(fleet.store)).queued > 0; i++) {
+      const res = await drainRefreshQueue(deps, capped)
+      expect(res.started.length).toBeLessThanOrEqual(budget)
+      await Promise.all(res.running)
+      fleet.advance(MIN)
+    }
+    expect((await getRefreshStatus(fleet.store)).queued).toBe(0)
+    expect(maxInFlight).toBeLessThanOrEqual(budget)
+  })
+
+  test('the rollout job is capped by the same lease budget', async () => {
+    expect(rewarmLeaseBudget(8)).toBe(5)
+    expect(rewarmLeaseBudget(1)).toBe(1)
+    for (let i = 0; i < 12; i++) fleet.addCandidate(`ws:proj:j${i}`)
+    let inFlight = 0
+    let maxInFlight = 0
+    const base = fleet.deps
+    const deps: RewarmDeps = {
+      ...base,
+      boot: async (c, opts) => {
+        inFlight++
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await new Promise((r) => setTimeout(r, 1))
+        try {
+          return await base.boot(c, opts)
+        } finally {
+          inFlight--
+        }
+      },
+    }
+    const status = await runRewarm(
+      { reason: 'test', sinceHours: 48, concurrencyPerHost: 4, maxRuntimes: 100 },
+      deps,
+      await base.listCandidates(0, 100),
+      { ...CFG, leaseBudget: rewarmLeaseBudget(4) },
+    )
+    expect(status.concurrency).toBe(2)
+    expect(maxInFlight).toBeLessThanOrEqual(2)
   })
 
   test('waits while a job holds the lease, and on a host with a staged build pending', async () => {

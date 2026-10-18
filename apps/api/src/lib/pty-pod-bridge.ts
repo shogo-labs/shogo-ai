@@ -18,6 +18,12 @@
  *   1. Pod-WS dial fails synchronously → close browser 1011 'pod-unreachable'.
  *   2. Pod-WS errors before opening → onclose fires, browser closes 1011
  *      with reason 'pod-unreachable' so the client retries (pod may be cold).
+ *      Exception: the pod answers an upgrade for an unknown session with a
+ *      plain 404, which the WS client reports only as "Expected 101". We ask
+ *      the pod's session list, and if the session is gone close 4404
+ *      'no-session' — the client's stop-reconnecting signal. Otherwise a
+ *      browser retries a dead session forever (2026-10-17: one tab, ~500
+ *      retries in 53 minutes).
  *   3. Browser frames arriving before pod-WS opens are queued and flushed
  *      on outbound onopen (lossless first paint, no race).
  *   4. Browser closes first → outbound is closed with the same code/reason
@@ -97,11 +103,41 @@ export interface CreateBridgeOptions {
   WebSocketCtor?: typeof WebSocket
   /** Optional sink for diagnostics. Defaults to `console`. */
   logger?: { error(...args: unknown[]): void }
+  /** Used to ask the pod whether a session still exists. Defaults to `fetch`. */
+  fetchImpl?: typeof fetch
+}
+
+const SESSION_PROBE_TIMEOUT_MS = 3_000
+
+/**
+ * Whether `sessionId` is still live on the pod: `false` only when the pod
+ * answered and doesn't list it, `null` when the pod couldn't be asked.
+ */
+export async function podHasSession(
+  podUrl: string,
+  sessionId: string,
+  runtimeToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean | null> {
+  const base = podUrl.endsWith('/') ? podUrl.slice(0, -1) : podUrl
+  try {
+    const res = await fetchImpl(`${base}/terminal/sessions`, {
+      headers: { 'x-runtime-token': runtimeToken },
+      signal: AbortSignal.timeout(SESSION_PROBE_TIMEOUT_MS),
+    })
+    if (!res.ok) return null
+    const body = (await res.json()) as { sessions?: Array<{ id?: string }> }
+    if (!Array.isArray(body?.sessions)) return null
+    return body.sessions.some((s) => s?.id === sessionId)
+  } catch {
+    return null
+  }
 }
 
 export function createPtyPodBridgeHandlers(opts: CreateBridgeOptions = {}): PtyPodBridgeHandlers {
   const Ctor = opts.WebSocketCtor ?? WebSocket
   const log = opts.logger ?? console
+  const fetchImpl = opts.fetchImpl ?? fetch
 
   return {
     open(ws) {
@@ -159,9 +195,17 @@ export function createPtyPodBridgeHandlers(opts: CreateBridgeOptions = {}): PtyP
 
       outbound.onclose = (evt: CloseEvent) => {
         if (ws.data.browserClosed) return
-        const code = sanitizeCloseCode(evt.code)
-        const reason = evt.reason || (ws.data.outboundReady ? 'pod-closed' : 'pod-unreachable')
-        safeClose(ws, code, reason)
+        if (ws.data.outboundReady) {
+          safeClose(ws, sanitizeCloseCode(evt.code), evt.reason || 'pod-closed')
+          return
+        }
+        // Never opened: a failed dial (Bun reports a refused upgrade as 1002
+        // "Expected 101 status code"), not a close the pod chose to send.
+        void podHasSession(podUrl, sessionId, runtimeToken, fetchImpl).then((exists) => {
+          if (ws.data.browserClosed) return
+          if (exists === false) safeClose(ws, 4404, 'no-session')
+          else safeClose(ws, 1011, 'pod-unreachable')
+        })
       }
     },
 

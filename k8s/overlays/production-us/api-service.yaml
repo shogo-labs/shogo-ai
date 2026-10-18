@@ -351,8 +351,12 @@ spec:
             # pooler's max_client_conn (1000 per instance).
             - name: AUTH_POOL_SIZE
               value: "10"
+            # Locks this pod can HOLD at once (waiters don't keep a slot). The
+            # metal rewarm on the watcher's replica uses at most
+            # rewarmLeaseBudget(8) = 5, leaving 3 for user spawns. 20 pods x 8
+            # = 160 direct conns fits the platform-pooler.yaml budget.
             - name: ADVISORY_LOCK_POOL_SIZE
-              value: "4"
+              value: "8"
             - name: BETTER_AUTH_SECRET
               valueFrom:
                 secretKeyRef:

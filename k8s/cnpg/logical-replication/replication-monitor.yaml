@@ -17,6 +17,8 @@
 #   - any table in `public` (other than `_prisma%`) missing from the
 #     publication
 #   - any subscription that trails the local publication by 1+ tables
+#   (these last two only warn within MIGRATION_GRACE_MIN of a local migration:
+#   deploy.yml publishes new tables and refreshes subscriptions right after)
 #
 # Deploy once per region. The job connects to the local CNPG cluster.
 apiVersion: batch/v1
@@ -78,6 +80,27 @@ spec:
                   # scripts/check-publication-drift.ts and
                   # exclude-region-local-tables.sql.
                   EXCLUDED_TABLES="'storage_usage','usage_wallets','proxy_turns'"
+
+                  # Deploy window. `prisma migrate deploy` creates tables a few
+                  # minutes before deploy.yml publishes them
+                  # (exclude-region-local-tables.sql) and refreshes the
+                  # subscriptions, so the two membership checks below only
+                  # warn within GRACE_MIN of a local migration (2026-10-16:
+                  # two false pages at 01:55 and 02:00 for a 01:53 migration).
+                  GRACE_MIN="${MIGRATION_GRACE_MIN:-20}"
+                  IN_DEPLOY_WINDOW=$(psql -X -t -A -c "
+                    SELECT count(*) > 0
+                    FROM _prisma_migrations
+                    WHERE finished_at > now() - make_interval(mins => ${GRACE_MIN});
+                  " 2>/dev/null || echo f)
+                  fail_or_warn() {
+                    if [ "$IN_DEPLOY_WINDOW" = "t" ]; then
+                      echo "WARNING (migration in the last ${GRACE_MIN}m; deploy publishes/refreshes next): $1"
+                    else
+                      echo "CRITICAL: $1"
+                      EXIT_RC=1
+                    fi
+                  }
 
                   echo "--- Subscription Status ---"
                   psql -X -t -A -F'|' -c "
@@ -215,7 +238,7 @@ spec:
                   ")
 
                   if [ "$UNPUBLISHED" -gt 0 ]; then
-                    echo "CRITICAL: $UNPUBLISHED table(s) missing from publication!"
+                    fail_or_warn "$UNPUBLISHED table(s) missing from publication!"
                     psql -X -t -A -c "
                       SELECT t.tablename
                       FROM pg_tables t
@@ -229,7 +252,6 @@ spec:
                         AND pt.tablename IS NULL
                       ORDER BY t.tablename;
                     "
-                    EXIT_RC=1
                   fi
 
                   # Inverse guard: if an EXCLUDED_TABLE ever REappears in the
@@ -279,12 +301,11 @@ spec:
                   ")
 
                   if [ -n "$STALE_SUBS" ]; then
-                    echo "CRITICAL: subscription(s) trail the local publication by 1+ tables."
+                    fail_or_warn "subscription(s) trail the local publication by 1+ tables."
                     echo "Run: ALTER SUBSCRIPTION <subname> REFRESH PUBLICATION WITH (copy_data = false);"
                     echo "Only copy data if the peer's rows in the new tables were NOT copied from"
                     echo "this region, or the copy brings them back and disables the subscription."
                     echo "$STALE_SUBS"
-                    EXIT_RC=1
                   fi
 
                   # `_prisma_migrations` REPLICA-trigger contract

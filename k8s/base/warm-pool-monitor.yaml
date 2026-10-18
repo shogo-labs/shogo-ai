@@ -17,13 +17,15 @@
 #   * any warm-pool pod is in ImagePullBackOff / ErrImagePull /
 #     CrashLoopBackOff at sample time
 #       — same incident class, runtime variant.
-#   * warm-pool ksvcs exist but 0 are Ready
+#   * warm-pool ksvcs exist but 0 are Ready, and at least one is older than
+#     ROLLOUT_GRACE_MIN
 #       — controller alive but every pod broken.
 #   * any node is under DiskPressure
 #       — node disk exhaustion (the 2026-06-02 EU incident class): boot
 #         volume fills with stacked runtime images, kubelet evicts pods and
 #         GCs images, and the warm pool churns. Earliest clear signal.
-#   * more than one studio revision has Ready pods
+#   * more than one studio revision has Ready pods, and the newest of them is
+#     older than ROLLOUT_GRACE_MIN
 #       — the `studio-direct` Service selects ALL studio revisions, so >1
 #         Ready revision means the WS-capable ingress round-robins across
 #         mismatched web builds. With content-hashed assets served per-pod
@@ -131,6 +133,12 @@ spec:
                 - |
                   echo "=== Warm-Pool Monitor — $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
                   EXIT_RC=0
+                  # Rollout grace: a deploy (studio) or the warm-pool rotation
+                  # briefly has a new revision/ksvc not Ready yet, or two studio
+                  # revisions Ready while the old one drains. Checks 3 and 5
+                  # only page once that state outlives ROLLOUT_GRACE_MIN
+                  # (2026-10-17: three false pages during routine rollouts).
+                  GRACE_S=$(( ${ROLLOUT_GRACE_MIN:-15} * 60 ))
 
                   # 1) Bootstrap placeholder leak on api ksvc.
                   # Mirrors the guardrail in
@@ -180,10 +188,19 @@ spec:
                   READY=$(echo "$KSVC_JSON" | jq '
                     [.items[] | select(.status.conditions[]? | select(.type == "Ready" and .status == "True"))] | length
                   ')
-                  echo "  total=$TOTAL  ready=$READY"
+                  # ksvcs older than the grace window: a freshly rotated pool is
+                  # allowed to still be coming up.
+                  SETTLED=$(echo "$KSVC_JSON" | jq --argjson grace "$GRACE_S" '
+                    [.items[] | select((now - (.metadata.creationTimestamp | fromdateiso8601)) > $grace)] | length
+                  ')
+                  echo "  total=$TOTAL  ready=$READY  settled=$SETTLED"
                   if [ "$TOTAL" -gt 0 ] && [ "$READY" -eq 0 ]; then
-                    echo "CRITICAL: $TOTAL warm-pool ksvcs but 0 are Ready"
-                    EXIT_RC=1
+                    if [ "$SETTLED" -gt 0 ]; then
+                      echo "CRITICAL: $TOTAL warm-pool ksvcs but 0 are Ready"
+                      EXIT_RC=1
+                    else
+                      echo "WARNING: $TOTAL warm-pool ksvcs, 0 Ready yet — all created within the rollout grace window"
+                    fi
                   fi
 
                   # 4) Node DiskPressure.
@@ -228,8 +245,19 @@ spec:
                   STUDIO_REV_LIST=$(echo "$STUDIO_REVS" | jq -r 'join(", ")')
                   echo "  ready studio revisions: count=$STUDIO_REV_COUNT [$STUDIO_REV_LIST]"
                   if [ "$STUDIO_REV_COUNT" -gt 1 ]; then
-                    echo "CRITICAL: studio-direct spans $STUDIO_REV_COUNT revisions ($STUDIO_REV_LIST) — mixed builds serving; deploy-time revision GC did not converge."
-                    EXIT_RC=1
+                    # Age of the newest of those revisions: the deploy that
+                    # created it retires the old one once it is Ready.
+                    NEWEST_AGE_S=$(kubectl get revisions -n "$API_NS" -l serving.knative.dev/service=studio -o json \
+                      | jq --argjson revs "$STUDIO_REVS" '
+                        [.items[] | select(.metadata.name as $n | $revs | any(. == $n))
+                          | now - (.metadata.creationTimestamp | fromdateiso8601)] | min // 1e9 | floor
+                      ')
+                    if [ "$NEWEST_AGE_S" -gt "$GRACE_S" ]; then
+                      echo "CRITICAL: studio-direct spans $STUDIO_REV_COUNT revisions ($STUDIO_REV_LIST) — mixed builds serving; deploy-time revision GC did not converge."
+                      EXIT_RC=1
+                    else
+                      echo "WARNING: studio-direct spans $STUDIO_REV_COUNT revisions ($STUDIO_REV_LIST) — newest is ${NEWEST_AGE_S}s old, deploy still retiring the old one"
+                    fi
                   fi
 
                   echo "=== Monitor complete (exit=$EXIT_RC) ==="
