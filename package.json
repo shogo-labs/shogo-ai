@@ -10,6 +10,9 @@
     "apps/mobile",
     "apps/shogo-ide"
   ],
+  "overrides": {
+    "react-native-css-interop": "0.2.2"
+  },
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || exit 0",
     "build": "bun run build:packages && bun run --cwd packages/agent-runtime build",
