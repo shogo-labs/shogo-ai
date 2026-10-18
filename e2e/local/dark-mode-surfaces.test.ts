@@ -163,8 +163,14 @@ test.describe("dark mode surfaces", () => {
     )
     await page.goto(`/projects/${projectId}`)
 
-    const queued = page.getByText("queued prompt", { exact: true })
-    await queued.waitFor({ state: "visible", timeout: 30_000 })
+    // The queued message now paints in the transcript as well as the dock, so
+    // the dock row is the scope: a page-wide text lookup matches both.
+    const dockRow = page
+      .getByLabel("Queued message", { exact: true })
+      .filter({ hasText: "queued prompt" })
+      .first()
+    await dockRow.waitFor({ state: "visible", timeout: 30_000 })
+    const queued = dockRow.getByText("queued prompt", { exact: true })
     expectDarkReadable("queue dock", await surfaceOf(queued), { opaque: true })
 
     const failedRow = page.getByLabel("Queued message").filter({ hasText: "failed prompt" })
