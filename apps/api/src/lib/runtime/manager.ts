@@ -504,6 +504,11 @@ export class RuntimeManager implements IRuntimeManager {
     cleanupRanAtModuleScope = true
     if (process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP === '1') return
 
+    this.cleanupOrphanedRuntimeListeners()
+    if (process.platform !== 'win32') this.cleanupOrphanedViteWatchers()
+  }
+
+  private cleanupOrphanedRuntimeListeners(): void {
     const rangesToClean = [
       { start: PORT_RANGE_START, end: PORT_RANGE_END },
       { start: PORT_RANGE_START + AGENT_PORT_OFFSET, end: PORT_RANGE_END + AGENT_PORT_OFFSET + 1 },
@@ -550,6 +555,44 @@ export class RuntimeManager implements IRuntimeManager {
         }
       } catch {
         // Process already exited / permission denied — fine.
+      }
+    }
+  }
+
+  /**
+   * Preview watchers are only reaped per-project when that project starts a
+   * new one, so watchers for projects that are never reopened leak forever
+   * (observed: 120 orphans, ~18GB). Scoped to this API's workspaces dir so
+   * another Shogo instance's watchers are untouched.
+   */
+  private cleanupOrphanedViteWatchers(): void {
+    const workspacesDir = this.resolvedWorkspacesDir()
+    const dirs = [workspacesDir]
+    try {
+      const real = realpathSync(workspacesDir)
+      if (real !== workspacesDir) dirs.push(real)
+    } catch {
+      // Not created yet — nothing can be running under it.
+    }
+
+    let psOutput = ''
+    try {
+      psOutput = execSync('ps -A -o pid=,ppid=,pgid=,command=', {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+    } catch {
+      return
+    }
+
+    const pgids = selectOrphanedViteWatcherPgids(psOutput, dirs)
+    if (pgids.length === 0) return
+    console.log(`[RuntimeManager] Cleaning up ${pgids.length} orphaned vite watcher group(s): ${pgids.join(', ')}`)
+    for (const pgid of pgids) {
+      try {
+        process.kill(-pgid, 'SIGKILL')
+      } catch {
+        // Group already gone — fine.
       }
     }
   }
@@ -3463,6 +3506,34 @@ export function selectOrphanedRuntimePids(
     }
     return false
   })
+}
+
+/**
+ * Picks the `vite build --watch` process groups under `workspacesDirs` that
+ * were reparented to init. PreviewManager spawns each watcher as its own
+ * group leader, so it outlives an agent-runtime (or API) that dies without
+ * a graceful stop, and it holds no port for the listener sweep to find.
+ * Parses `ps -A -o pid=,ppid=,pgid=,command=` output.
+ */
+export function selectOrphanedViteWatcherPgids(
+  psOutput: string,
+  workspacesDirs: string[],
+  selfPid: number = process.pid,
+): number[] {
+  const prefixes = workspacesDirs.map((dir) => dir.replace(/\/+$/, '') + '/')
+  const pgids = new Set<number>()
+  for (const line of psOutput.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line)
+    if (!match) continue
+    const pid = Number(match[1])
+    const pgid = Number(match[3])
+    const command = match[4]
+    if (match[2] !== '1' || pid !== pgid || pid === selfPid) continue
+    if (!command.includes(' build --watch')) continue
+    if (!prefixes.some((prefix) => command.includes(prefix))) continue
+    pgids.add(pgid)
+  }
+  return [...pgids]
 }
 
 /** Default singleton instance (lazy initialized) */

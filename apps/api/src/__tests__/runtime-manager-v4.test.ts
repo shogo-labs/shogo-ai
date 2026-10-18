@@ -34,6 +34,7 @@ const {
   setRuntimeManager,
   parsePidTable,
   selectOrphanedRuntimePids,
+  selectOrphanedViteWatcherPgids,
   __resetRuntimeManagerInternalsForTests,
 } = await import('../lib/runtime/manager')
 
@@ -176,6 +177,34 @@ describe('selectOrphanedRuntimePids', () => {
       ['11', '10'],
     ])
     expect(selectOrphanedRuntimePids(['10', '11', '12'], parentOf)).toEqual([])
+  })
+})
+
+describe('selectOrphanedViteWatcherPgids', () => {
+  const ws = '/Users/me/Library/Application Support/Shogo/data/workspaces'
+  const watch = (root: string, id: string) =>
+    `node ${root}/.workspace-roots/proj-${id}/${id}/node_modules/.bin/vite build --watch --emptyOutDir false --config ${root}/.workspace-roots/proj-${id}/${id}/.shogo/vite.watch.config.ts`
+
+  test('selects group-leader watchers under the workspaces dir reparented to init', () => {
+    const ps = [
+      `  500     1   500 ${watch(ws, 'a')}`,
+      `  600  4242   600 ${watch(ws, 'b')}`, // owner alive
+      `  700     1   700 ${watch('/Users/me/git/shogo-ai/workspaces', 'c')}`, // another instance
+      `  800     1   555 ${watch(ws, 'd')}`, // not a group leader
+      `  900     1   900 node ${ws}/x/node_modules/.bin/vite --port 3000`, // not a watcher
+      'garbage',
+    ].join('\n')
+    expect(selectOrphanedViteWatcherPgids(ps, [ws], 1)).toEqual([500])
+  })
+
+  test('matches any of several dirs (symlinked /tmp) and ignores a trailing slash', () => {
+    const ps = `  42     1    42 ${watch('/private/tmp/ws', 'e')}\n`
+    expect(selectOrphanedViteWatcherPgids(ps, ['/tmp/ws/', '/private/tmp/ws'], 1)).toEqual([42])
+  })
+
+  test('never selects its own pid', () => {
+    const ps = `  77     1    77 ${watch(ws, 'f')}\n`
+    expect(selectOrphanedViteWatcherPgids(ps, [ws], 77)).toEqual([])
   })
 })
 
