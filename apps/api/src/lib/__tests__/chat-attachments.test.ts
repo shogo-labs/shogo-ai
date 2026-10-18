@@ -198,13 +198,15 @@ describe('externalizeAssistantTextMedia', () => {
     const text = [
       '![a](https://example.com/a.png)',
       '```\n![b](code/b.png)\n```',
+      'Write `![e](inline/e.png)` to embed it.',
       '![c](missing.png)',
       '![d](notes.txt)',
     ].join('\n')
-    const out = await externalizeAssistantTextMedia('session-1', text, async (path) =>
-      path === 'notes.txt'
-        ? new Response('hi', { headers: { 'content-type': 'text/plain' } })
-        : new Response('nope', { status: 404 }))
+    const out = await externalizeAssistantTextMedia('session-1', text, async (path) => {
+      if (path === 'notes.txt') return new Response('hi', { headers: { 'content-type': 'text/plain' } })
+      if (path === 'inline/e.png') return png()
+      return new Response('nope', { status: 404 })
+    })
     expect(out).toBe(text)
     expect(sends.filter((s) => s instanceof PutObjectCommand)).toHaveLength(0)
   })

@@ -46,6 +46,8 @@ export async function storeAgentAttachment(input: {
   conversationId: string
   agentRef: string
   file: File
+  /** Message the file belongs to, when it is published with one (an agent reply). */
+  messageId?: string
 }): Promise<AgentAttachment> {
   const name = (input.file.name || 'file').slice(0, 255)
   const mimeType = input.file.type || 'application/octet-stream'
@@ -55,6 +57,7 @@ export async function storeAgentAttachment(input: {
   const row = await db.conversationAttachment.create({
     data: {
       conversationId: input.conversationId,
+      messageId: input.messageId ?? null,
       uploaderUserId: null,
       uploaderAgentRef: input.agentRef,
       storageKey: key,

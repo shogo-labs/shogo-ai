@@ -112,7 +112,26 @@ export async function uploadWorkspaceMedia(
 
 const MARKDOWN_MEDIA_RE = /!\[([^\]\n]*)\]\(\s*(<[^>\n]+>|[^)\s]+)((?:\s+"[^"\n]*")?)\s*\)/g
 const FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g
+const INLINE_CODE_RE = /(`+)([^`\n]*?)\1/g
 const URL_RE = /^(?:[a-z][a-z0-9+.-]*:(?!\/\/\/)|\/\/|#|\/api\/)/i
+
+/**
+ * Hide fenced blocks and inline code from a media scan: an image ref the agent
+ * only quotes in a docs example is not an attachment, and rewriting it would
+ * corrupt the example. `restore` puts the original text back.
+ */
+function maskCode(markdown: string): { masked: string; restore: (text: string) => string } {
+  const hidden: string[] = []
+  const hide = (match: string) => {
+    hidden.push(match)
+    return `\u0000CODE${hidden.length - 1}\u0000`
+  }
+  const masked = markdown.replace(FENCE_RE, hide).replace(INLINE_CODE_RE, hide)
+  return {
+    masked,
+    restore: (text) => text.replace(/\u0000CODE(\d+)\u0000/g, (_, index: string) => hidden[Number(index)] ?? ''),
+  }
+}
 
 /** Target of a markdown image that names a workspace file, or null for URLs. */
 export function workspaceMediaRef(target: string): string | null {
@@ -132,11 +151,7 @@ export async function publishWorkspaceMedia(
   upload: MediaUploader,
 ): Promise<{ markdown: string; uploaded: number; errors: string[] }> {
   if (!markdown.includes('![')) return { markdown, uploaded: 0, errors: [] }
-  const fences: string[] = []
-  const masked = markdown.replace(FENCE_RE, (m) => {
-    fences.push(m)
-    return `\u0000FENCE${fences.length - 1}\u0000`
-  })
+  const { masked, restore } = maskCode(markdown)
 
   const refs = [...new Set([...masked.matchAll(MARKDOWN_MEDIA_RE)].map((m) => workspaceMediaRef(m[2]!)).filter((r): r is string => !!r))]
   const { files, errors } = refs.length
@@ -148,11 +163,7 @@ export async function publishWorkspaceMedia(
     const url = ref ? files.get(ref) : undefined
     return url ? `![${alt}](${url}${title})` : full
   })
-  return {
-    markdown: rewritten.replace(/\u0000FENCE(\d+)\u0000/g, (_, i: string) => fences[Number(i)] ?? ''),
-    uploaded: files.size,
-    errors,
-  }
+  return { markdown: restore(rewritten), uploaded: files.size, errors }
 }
 
 async function uploadWorkspaceMediaByRef(workspaceDir: string, refs: string[], upload: MediaUploader) {

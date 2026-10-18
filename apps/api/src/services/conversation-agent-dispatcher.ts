@@ -59,6 +59,7 @@ import { docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
 import { getAgentDefaultModel } from './workspace-agent.service'
 import { isModelVisibleForWorkspace } from './workspace-models.service'
+import { publishReplyMedia } from './agent-reply-media'
 
 const db = prisma as any
 
@@ -71,6 +72,8 @@ const DEFAULT_START_RETRY_BUDGET_MS = 3 * 60_000
 const MAX_START_RETRIES = 20
 const CONTEXT_MESSAGES = 20
 const DELTA_THROTTLE_MS = 350
+/** A workspace file read for a reply's media; a slow runtime must not hold the reply. */
+const REPLY_MEDIA_FETCH_TIMEOUT_MS = 10_000
 export { AGENT_REPLY_TIMEOUT_MS }
 /**
  * A running turn streams a heartbeat every ~250ms, even while it waits on a
@@ -87,6 +90,11 @@ interface DispatcherConfig {
   respondToPermission?: (input: { projectId: string; requestId: string; decision: 'allow_once' | 'deny' }) => Promise<boolean>
   /** Test seam: replaces the call that stops the runtime turn behind a reply. */
   stopRuntimeTurn?: (input: { workspaceId: string; projectId: string | null; sessionId: string; userId: string }) => Promise<void>
+  /**
+   * Test seam: replaces the read of a workspace file when a reply embeds one.
+   * The default fetches it from the runtime that answered the turn.
+   */
+  fetchWorkspaceFile?: (input: { workspaceId: string; projectId: string | null; path: string }) => Promise<Response | null>
   /**
    * Waits between retries of a retryable 503, in milliseconds. The last entry
    * is reused. Defaults to 2s, 4s, 8s, then 15s.
@@ -1059,6 +1067,26 @@ export interface RunAgentReplyArgs {
   chain?: AgentChain
 }
 
+/**
+ * Read a workspace file from the runtime that answered the turn: the replying
+ * project's runtime, or the workspace runtime for the workspace agent. A slow
+ * or missing runtime yields null, and the ref is left as the agent wrote it.
+ */
+async function workspaceFileFetcher(input: { workspaceId: string; projectId: string | null }): Promise<(path: string) => Promise<Response | null>> {
+  const { workspaceDownloadPath } = await import('../lib/chat-attachments')
+  const { fetchFromProjectRuntime, fetchFromWorkspaceRuntime } = await import('../lib/chat-runtime-fetch')
+  const init: RequestInit = { method: 'GET', signal: AbortSignal.timeout(REPLY_MEDIA_FETCH_TIMEOUT_MS) }
+  return async (path: string) => {
+    try {
+      return input.projectId
+        ? await fetchFromProjectRuntime(input.projectId, workspaceDownloadPath(path), init)
+        : await fetchFromWorkspaceRuntime(input.workspaceId, [], workspaceDownloadPath(path), init)
+    } catch {
+      return null
+    }
+  }
+}
+
 export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | null> {
   const { conversation, trigger, target, userId } = args
   if (!(await inWorkspace(conversation.workspaceId, [target])).length) {
@@ -1093,8 +1121,29 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
   let endedAs: string | null = null
   const settle = async (text: string, agentStatus: string) => {
     endedAs = agentStatus
-    await finishAgentReply(reply, { text, agentStatus, work, connect })
-    await emitTaskEvent('agent_reply', replyTargetRef(trigger.id, target.projectId), replyEvent(agentStatus, text))
+    // Media the agent embedded in its answer is published before the text lands,
+    // so the thread shows the picture without the agent making a second call.
+    let fetcher: ((path: string) => Promise<Response | null>) | null = null
+    const media = await publishReplyMedia({
+      workspaceId: conversation.workspaceId,
+      conversationId: conversation.id,
+      messageId,
+      agentRef: target.projectId ? `project:${target.projectId}` : 'workspace',
+      text,
+      fetchFile: async (path) => {
+        fetcher ??= config.fetchWorkspaceFile
+          ? (p) => config.fetchWorkspaceFile!({ workspaceId: conversation.workspaceId, projectId: target.projectId, path: p })
+          : await workspaceFileFetcher({ workspaceId: conversation.workspaceId, projectId: target.projectId })
+        return fetcher(path)
+      },
+    }).catch((err: Error) => {
+      console.error('[ChannelAgent] reply media failed:', err.message)
+      return { text, uploaded: 0, errors: [err.message] }
+    })
+    if (media.errors.length) console.warn(`[ChannelAgent] reply media left as written: ${media.errors.join('; ')}`)
+    // External channels stay text-only: only the stored reply carries media URLs.
+    await finishAgentReply(reply, { text: media.text, externalText: text, agentStatus, work, connect })
+    await emitTaskEvent('agent_reply', replyTargetRef(trigger.id, target.projectId), replyEvent(agentStatus, media.text))
   }
   // After the reply's own tags are dispatched, so a card watcher knows whether the work was handed on.
   const noteRunEnded = async () => {

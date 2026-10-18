@@ -243,7 +243,14 @@ function connectLabel(provider: string): string {
  */
 export async function finishAgentReply(
   handle: AgentReplyHandle,
-  final: { text: string; agentStatus: string; work?: AgentWork | null; connect?: IntegrationConnectRequest[] },
+  final: {
+    text: string
+    agentStatus: string
+    work?: AgentWork | null
+    connect?: IntegrationConnectRequest[]
+    /** What an external channel shows, when it differs from the stored text (media is Shogo-only). */
+    externalText?: string
+  },
 ): Promise<void> {
   const connect = final.connect?.length ? final.connect : null
   const blocks = final.work || connect
@@ -256,13 +263,14 @@ export async function finishAgentReply(
   )
   const ext = handle.external
   if (!ext) return
+  const shown = final.externalText ?? final.text
   try {
     const footer = final.work ? `_${workedForLabel(final.work)}_` : ''
     // External surfaces have no connect card, so the link goes in the text unless the agent already wrote it.
     const links = (connect ?? [])
-      .filter((c) => !final.text.includes(c.connectUrl))
+      .filter((c) => !shown.includes(c.connectUrl))
       .map((c) => `Connect ${connectLabel(c.provider)}: ${c.connectUrl}`)
-    const body = [final.text, ...links, footer].filter(Boolean).join('\n\n')
+    const body = [shown, ...links, footer].filter(Boolean).join('\n\n')
     const msg = { text: await providerText(ext.conv.workspaceId, body), author: handle.author }
     if (ext.provider.updateMessage && ext.provider.capabilities.edits) {
       await ext.provider.updateMessage(ext.conv, ext.ref, msg)

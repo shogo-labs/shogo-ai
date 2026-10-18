@@ -265,9 +265,29 @@ export async function externalizeMessageAttachments(
 
 const MARKDOWN_MEDIA_RE = /!\[([^\]\n]*)\]\(\s*(<[^>\n]+>|[^)\s]+)((?:\s+"[^"\n]*")?)\s*\)/g
 const MARKDOWN_FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g
+const INLINE_CODE_RE = /(`+)([^`\n]*?)\1/g
 const URL_SCHEME_RE = /^(?:[a-z][a-z0-9+.-]*:(?!\/\/\/)|\/\/|#)/i
 export const MAX_ASSISTANT_MEDIA_FILES = 10
 export const MAX_ASSISTANT_MEDIA_BYTES = 50 * 1024 * 1024
+
+/**
+ * Hide fenced blocks and inline code from a markdown scan: an image ref a
+ * message only quotes is documentation, not an attachment. `restore` puts the
+ * original text back once the scan has rewritten what it found.
+ */
+export function maskMarkdownCode(markdown: string): { masked: string; restore: (text: string) => string } {
+  const hidden: string[] = []
+  const hide = (match: string) => {
+    hidden.push(match)
+    return `\u0000CODE${hidden.length - 1}\u0000`
+  }
+  const masked = markdown.replace(MARKDOWN_FENCE_RE, hide).replace(INLINE_CODE_RE, hide)
+  return {
+    masked,
+    restore: (text) => text.replace(/\u0000CODE(\d+)\u0000/g, (_, index: string) => hidden[Number(index)] ?? ''),
+  }
+}
+
 
 /**
  * Workspace-relative path for a markdown media target, or null when the
@@ -330,11 +350,7 @@ export async function externalizeAssistantTextMedia(
   budget: AssistantMediaBudget = newAssistantMediaBudget(),
 ): Promise<string> {
   if (!text.includes('![')) return text
-  const fences: string[] = []
-  const masked = text.replace(MARKDOWN_FENCE_RE, (match) => {
-    fences.push(match)
-    return `\u0000FENCE${fences.length - 1}\u0000`
-  })
+  const { masked, restore } = maskMarkdownCode(text)
 
   const paths = new Set<string>()
   for (const match of masked.matchAll(MARKDOWN_MEDIA_RE)) {
@@ -356,7 +372,7 @@ export async function externalizeAssistantTextMedia(
     const url = path ? budget.stored.get(path) : null
     return url ? `![${alt}](${url}${title})` : full
   })
-  return rewritten.replace(/\u0000FENCE(\d+)\u0000/g, (_, index: string) => fences[Number(index)] ?? '')
+  return restore(rewritten)
 }
 
 async function storeWorkspaceMedia(
