@@ -89,10 +89,12 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
           {failed ? <Text className="text-center text-sm text-muted-foreground">Couldn’t load this agent’s details.</Text> : null}
           {card ? (
             <View className="rounded-xl border border-border bg-card p-4">
+              {/* The workspace agent's editable "Workspace agent model" card below is its model row. */}
               <AgentProfileBody
                 card={card}
                 onToggleMute={toggleMute}
                 onOpenChannel={(id) => router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: id } } as any)}
+                showModel={!!projectId}
               />
             </View>
           ) : null}

@@ -57,9 +57,8 @@ import { agentWorkOf } from './agent-work-log'
 import { AGENT_REPLY_TIMEOUT_MS, emitTaskEvent, replyEvent, replyTargetRef, silenceSessionTasks } from './background-tasks.service'
 import { docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
-import { getAgentDefaultModel } from './workspace-agent.service'
-import { isModelVisibleForWorkspace } from './workspace-models.service'
 import { publishReplyMedia } from './agent-reply-media'
+import { resolveAgentRunModel } from './agent-run-model.service'
 
 const db = prisma as any
 
@@ -767,24 +766,15 @@ function chainContext(conversation: any, trigger: any, threadRootId: string | nu
   return lines
 }
 
-/** `AgentConfig.modelName` when nobody chose a model for the project. */
-const DEFAULT_AGENT_MODEL = 'claude-haiku-4-5'
-
 /**
  * The model a channel run asks for. Auto routing suits a general assistant, but a project whose
  * agent was given a model on purpose (a team template pins one for its builder, say) keeps it.
  * The workspace agent uses the admin-set workspace default, while that model is still allowed.
+ *
+ * Delegates to `agent-run-model.service` so the profile card reports the same model this run uses.
  */
 export async function agentModeFor(projectId: string | null, workspaceId?: string): Promise<string> {
-  if (!projectId) {
-    if (!workspaceId) return 'auto'
-    const model = await getAgentDefaultModel(workspaceId).catch(() => null)
-    if (!model || model === 'auto') return 'auto'
-    return (await isModelVisibleForWorkspace(workspaceId, model)) ? model : 'auto'
-  }
-  const row = await db.agentConfig.findUnique({ where: { projectId }, select: { modelName: true } }).catch(() => null)
-  const name = row?.modelName?.trim()
-  return name && name !== DEFAULT_AGENT_MODEL && name !== 'auto' ? name : 'auto'
+  return resolveAgentRunModel(projectId, workspaceId)
 }
 
 async function invokeChat(args: InvokeArgs): Promise<Response> {

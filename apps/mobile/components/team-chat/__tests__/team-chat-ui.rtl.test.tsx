@@ -128,6 +128,7 @@ mock.module('../../../lib/team-chat-api', () => ({
       name: 'Billing Bot',
       iconUrl: 'https://cdn.example.com/billing.png',
       role: 'Sends invoices',
+      model: projectId ? { id: '11111111-1111-4111-8111-111111111111', label: 'Claude Sonnet 4.6' } : { id: 'auto', label: 'Auto' },
       owner: { id: 'u-ana', name: 'Ana Lopez' },
       channels: [{ conversationId: 'c-eng', kind: 'public', name: 'eng', slug: 'eng', agentTrigger: 'auto', muted: false }],
     }),
@@ -518,7 +519,7 @@ describe('MessageRow', () => {
     expect(markdown?.textContent).not.toContain('**')
   })
 
-  test('tapping an agent opens its profile card with role, owner and channels', async () => {
+  test('tapping an agent opens its profile card with role, model, owner and channels', async () => {
     const h = handlers()
     const agentReply = message({
       id: 'm9', authorType: 'agent', author: null, authorUserId: null,
@@ -532,6 +533,8 @@ describe('MessageRow', () => {
     expect(screen.queryByTestId('agent-profile-card')).toBeNull()
     fireEvent.click(screen.getAllByLabelText('Billing Bot profile')[0])
     expect(await screen.findByText('Sends invoices')).toBeTruthy()
+    expect(screen.getByText('Model')).toBeTruthy()
+    expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy()
     expect(screen.getByText('Ana Lopez')).toBeTruthy()
     expect(screen.getByText('eng')).toBeTruthy()
     expect(screen.getByText('Replies when relevant')).toBeTruthy()

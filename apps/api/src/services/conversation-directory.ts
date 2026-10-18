@@ -10,6 +10,7 @@ import { prisma } from '../lib/prisma'
 import { loadAccess } from '../lib/authz'
 import { agentIconUrl, ConversationError, storedAgentBuddyLook } from './conversation.service'
 import { publishConversationEvent } from '../lib/conversation-bus'
+import { resolveAgentRunModelLabel } from './agent-run-model.service'
 import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 import {
   agentMentionToken,
@@ -104,6 +105,12 @@ export interface AgentCard {
   canEdit: boolean
   /** What the agent is for: a project's description, or the workspace agent's tagline. */
   role: string | null
+  /**
+   * The model the agent runs with, named the way the app names models (`Auto`,
+   * `Claude Sonnet 4.6`) — never a raw id. Resolved server-side because the
+   * app's own lookup only knows the cached, workspace-scoped model snapshot.
+   */
+  model: { id: string; label: string }
   owner: { id: string; name: string } | null
   /** Channels the viewer can see this agent in. */
   channels: Array<{
@@ -173,7 +180,8 @@ export async function loadAgentCard(workspaceId: string, projectId: string | nul
       agentTrigger: r.agentTrigger,
       muted: !!r.agentMuted,
     }))
-  return { projectId, name, iconUrl: await agentIconUrl(workspaceId, projectId), buddyLook, canEdit, role, owner, channels }
+  const model = await resolveAgentRunModelLabel(projectId, workspaceId)
+  return { projectId, name, iconUrl: await agentIconUrl(workspaceId, projectId), buddyLook, canEdit, role, model, owner, channels }
 }
 
 /** `ws` for the workspace agent; a project id, optionally written as the mention key `p:<id>`. */

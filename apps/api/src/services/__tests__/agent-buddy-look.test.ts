@@ -35,6 +35,7 @@ mock.module('../../lib/prisma', () => withPrismaExports({
         return s.project
       },
     },
+    agentConfig: { findUnique: async () => null },
     workspaceAgentProfile: {
       findUnique: async () => s.profile,
       upsert: async (args: any) => {

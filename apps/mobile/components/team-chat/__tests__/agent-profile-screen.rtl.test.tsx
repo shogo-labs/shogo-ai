@@ -11,6 +11,8 @@ const saved: Array<{ projectId: string | null; look: any }> = []
 const localLooks: Array<{ projectId: string | null; look: any }> = []
 let canEdit = true
 let windowWidth = 1280
+/** A registry UUID: the API sends the label, so this must never reach the screen. */
+const MODEL_ID = '11111111-1111-4111-8111-111111111111'
 
 mock.module('react-native', () =>
   createReactNativeMock({
@@ -38,6 +40,7 @@ mock.module('../../../lib/team-chat-api', () => ({
       buddyLook: null,
       canEdit,
       role: 'Sends invoices',
+      model: projectId ? { id: MODEL_ID, label: 'Claude Sonnet 4.6' } : { id: 'auto', label: 'Auto' },
       owner: { id: 'u-ana', name: 'Ana Lopez' },
       channels: [],
     }),
@@ -101,6 +104,20 @@ describe('AgentProfileScreen', () => {
     expect(document.querySelector('[data-rn-shim="buddy"]')).toBeTruthy()
     fireEvent.click(screen.getByLabelText('Open project'))
     expect(routed).toEqual([{ pathname: '/(app)/projects/[id]', params: { id: 'proj-1' } }])
+  })
+
+  test('shows the model the API resolved, never the raw id, and drops the body row for the workspace agent', async () => {
+    render(<AgentProfileScreen workspaceId="ws" agentKey="proj-1" />)
+    await screen.findByText('Sends invoices')
+    expect(screen.getByText('Model')).toBeTruthy()
+    expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy()
+    expect(screen.queryByText(MODEL_ID)).toBeNull()
+    cleanup()
+
+    // The workspace agent's editable "Workspace agent model" card is its model row.
+    render(<AgentProfileScreen workspaceId="ws" agentKey="ws" />)
+    await screen.findByText('Sends invoices')
+    expect(screen.queryByText('Model')).toBeNull()
   })
 
   test('Customize look is only for people who can edit the agent', async () => {

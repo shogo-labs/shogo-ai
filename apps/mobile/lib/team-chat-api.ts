@@ -243,6 +243,8 @@ export interface AgentCard {
   /** The viewer may change the agent's look. */
   canEdit?: boolean
   role: string | null
+  /** The model the agent runs with, already labelled by the API (`Auto`, `Claude Sonnet 4.6`). */
+  model: { id: string; label: string }
   owner: { id: string; name: string } | null
   channels: Array<{ conversationId: string; kind: string; name: string | null; slug: string | null; agentTrigger: string; muted: boolean }>
 }
