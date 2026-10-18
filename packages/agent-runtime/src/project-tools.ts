@@ -186,6 +186,7 @@ function toLive(nodes: ProjectGraphNode[]): LiveProject[] {
     id: n.id,
     name: n.name,
     description: n.description,
+    workingMode: n.workingMode,
     attachments: n.attachments,
     agent: n.agent,
     capabilities: settingsObject(n.settings),
@@ -389,11 +390,14 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
     name: 'project_configure',
     label: 'Configure Project',
     description:
-      'Read or change a project\'s agent configuration: heartbeat (enabled/interval/quiet hours), default model, name and description. Defaults to the current project. Call with no changes to read the current config. Heartbeats require a paid plan: on a free plan the other changes are still applied and the result includes a `heartbeatError`.',
+      'Read or change a project\'s agent configuration: heartbeat (enabled/interval/quiet hours), default model, name, description and working mode. Defaults to the current project. Call with no changes to read the current config. `workingMode: "external"` makes an existing managed project folder-linked (one-way: it gains a primary folder row pointing at the workspace it already uses, and Shogo stops managing its git). An external project cannot become managed again. Heartbeats require a paid plan: on a free plan the other changes are still applied and the result includes a `heartbeatError`.',
     parameters: Type.Object({
       project: Type.Optional(Type.String({ description: 'Project id, name, or manifest key. Default: current project.' })),
       name: Type.Optional(Type.String()),
       description: Type.Optional(Type.String()),
+      workingMode: Type.Optional(Type.String({
+        description: '\'external\' turns the project into a folder-linked one (one-way; managed → external only). \'managed\' is only valid for a project that is already managed.',
+      })),
       model: Type.Optional(Type.String({ description: `Default model for the agent. Defaults to "auto" (recommended). ${availableModelsHint()}` })),
       provider: Type.Optional(Type.String({ description: 'Model provider (usually inferred).' })),
       heartbeatEnabled: Type.Optional(Type.Boolean()),
@@ -404,9 +408,12 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
     }),
     execute: async (_id, params) => {
       const p = params as {
-        project?: string; name?: string; description?: string; model?: string; provider?: string
+        project?: string; name?: string; description?: string; workingMode?: string; model?: string; provider?: string
         heartbeatEnabled?: boolean; heartbeatInterval?: number
         quietHoursStart?: string; quietHoursEnd?: string; quietHoursTimezone?: string
+      }
+      if (p.workingMode !== undefined && p.workingMode !== 'managed' && p.workingMode !== 'external') {
+        return textResult({ error: 'workingMode must be "managed" or "external"' })
       }
       let targetId = ctx.projectId
       if (p.project) {
@@ -430,11 +437,16 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
       if (p.quietHoursEnd !== undefined) agent.quietHoursEnd = p.quietHoursEnd
       if (p.quietHoursTimezone !== undefined) agent.quietHoursTimezone = p.quietHoursTimezone
 
-      const hasChanges = p.name !== undefined || p.description !== undefined || Object.keys(agent).length > 0
+      const hasChanges =
+        p.name !== undefined ||
+        p.description !== undefined ||
+        p.workingMode !== undefined ||
+        Object.keys(agent).length > 0
       const res = hasChanges
         ? await apiConfigureProject(targetId, {
             name: p.name,
             description: p.description,
+            workingMode: p.workingMode as 'managed' | 'external' | undefined,
             agent: Object.keys(agent).length > 0 ? (agent as any) : undefined,
           })
         : await apiGetProjectConfig(targetId)

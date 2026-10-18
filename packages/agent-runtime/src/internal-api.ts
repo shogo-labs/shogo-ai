@@ -1868,6 +1868,8 @@ export async function detachProject(
 export interface ProjectConfigPatch {
   name?: string
   description?: string | null
+  /** One-way flip to `external` (folder-linked); `external → managed` is refused. */
+  workingMode?: 'managed' | 'external'
   settings?: Record<string, unknown>
   slackEnabled?: boolean
   agent?: {
@@ -1885,6 +1887,7 @@ export interface ProjectConfigSnapshot {
   id: string
   name: string
   description: string | null
+  workingMode: string
   settings: unknown
   slackEnabled: boolean
   agent: {

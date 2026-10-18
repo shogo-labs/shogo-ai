@@ -1821,6 +1821,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         : anyErr.code === 'not_found' ? 404
         : anyErr.code === 'instance_too_small' ? 402
         : anyErr.code === 'paywall' ? 402
+        // Working-mode flips conflict with the project's current state: the
+        // repo already has a history we cannot detach, or the direction is
+        // unsupported. 409 so the runtime can tell it apart from a bad body.
+        : anyErr.code === 'working_mode_flip_not_supported' || anyErr.code === 'durable_repo_external_flip' ? 409
         : 400
       return c.json({ error: { code: anyErr.code, message: anyErr.message } }, status)
     }
@@ -2048,7 +2052,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   /**
    * PATCH /api/internal/projects/:projectId/config
-   *   body: { name?, description?, settings?, slackEnabled?, agent?: { heartbeat*, model*, quietHours* } }
+   *   body: { name?, description?, settings?, slackEnabled?, workingMode?, agent?: { heartbeat*, model*, quietHours* } }
    */
   app.patch('/projects/:projectId/config', async (c) => {
     const projectId = c.req.param('projectId')
@@ -2056,8 +2060,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!authz) return c.json({ error: 'Unauthorized' }, 401)
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    // `workingMode` is one-way (managed → external). Anything else is a caller
+    // bug, so reject it here rather than letting it fall through as undefined.
+    if (body.workingMode !== undefined && body.workingMode !== 'managed' && body.workingMode !== 'external') {
+      return c.json(
+        { error: { code: 'invalid_working_mode', message: 'workingMode must be "managed" or "external"' } },
+        400,
+      )
+    }
     const permissions = new Set<Permission>()
-    if (typeof body.name === 'string' || body.description !== undefined || (body.agent && typeof body.agent === 'object')) {
+    if (
+      typeof body.name === 'string' ||
+      body.description !== undefined ||
+      body.workingMode !== undefined ||
+      (body.agent && typeof body.agent === 'object')
+    ) {
       permissions.add('project:update')
     }
     if ((body.settings && typeof body.settings === 'object') || typeof body.slackEnabled === 'boolean') {
@@ -2075,6 +2092,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       const project = await configureProject(projectId, {
         name: typeof body.name === 'string' ? body.name : undefined,
         description: typeof body.description === 'string' || body.description === null ? (body.description as string | null) : undefined,
+        workingMode: body.workingMode as 'managed' | 'external' | undefined,
         settings: body.settings && typeof body.settings === 'object' ? (body.settings as Record<string, unknown>) : undefined,
         slackEnabled: typeof body.slackEnabled === 'boolean' ? body.slackEnabled : undefined,
         agent: body.agent && typeof body.agent === 'object' ? (body.agent as any) : undefined,

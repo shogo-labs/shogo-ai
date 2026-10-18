@@ -342,6 +342,48 @@ describe('computeSystemDiff', () => {
     expect(mismatched.configure[0].patch).toEqual({ agent: { modelProvider: 'anthropic' } })
   })
 
+  test('pins workingMode: external as a configure op for an existing managed project', () => {
+    const manifestFor = (mode: string) =>
+      parseSystemManifest({
+        version: 1,
+        name: 'm',
+        projects: [{ key: 'a', name: 'A', workingMode: mode }],
+      }).manifest!
+    const managed = [live({ id: 'id-a', name: 'A', workingMode: 'managed' })]
+
+    // managed → external is a real change
+    const flip = computeSystemDiff(manifestFor('external'), managed, null, { callerProjectId: 'caller-1' })
+    expect(flip.configure).toEqual([
+      { kind: 'configure', key: 'a', projectId: 'id-a', patch: { workingMode: 'external' } },
+    ])
+    expect(summarizeDiff(flip)).toContain('configure a: workingMode')
+
+    // Second run against the applied state is empty — the setting is pinned, not re-sent.
+    const applied = [live({ id: 'id-a', name: 'A', workingMode: 'external' })]
+    expect(computeSystemDiff(manifestFor('external'), applied, null, { callerProjectId: 'caller-1' }).configure).toEqual([])
+
+    // ...and so is a manifest that already agrees on managed.
+    expect(computeSystemDiff(manifestFor('managed'), managed, null, { callerProjectId: 'caller-1' }).configure).toEqual([])
+  })
+
+  test('reports an external project that a manifest declares managed as a manual step, never as a flip', () => {
+    const manifest = parseSystemManifest({
+      version: 1,
+      name: 'm',
+      projects: [{ key: 'a', name: 'A', workingMode: 'managed' }],
+    }).manifest!
+    const diff = computeSystemDiff(
+      manifest,
+      [live({ id: 'id-a', name: 'A', workingMode: 'external' })],
+      null,
+      { callerProjectId: 'caller-1' },
+    )
+    // The reverse flip has no defined semantics, so it must not become an op that
+    // fails the whole apply.
+    expect(diff.configure).toEqual([])
+    expect(diff.manual.join('\n')).toContain('cannot go back to managed')
+  })
+
   test('surfaces channels/integrations as manual steps, never as ops', () => {
     const manifest = parseSystemManifest({
       version: 1,

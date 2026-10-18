@@ -371,6 +371,8 @@ export interface LiveProject {
   id: string
   name: string
   description: string | null
+  /** `managed` (sandboxed workspace) or `external` (folder-linked). */
+  workingMode?: string
   attachments: Array<{ attachedProjectId: string; attachMode: AttachMode }>
   agent: { heartbeatEnabled: boolean; heartbeatInterval: number; modelName: string; modelProvider: string } | null
   /** Capability toggles saved on the project (Project.settings). */
@@ -396,6 +398,11 @@ export interface ConfigureOp {
   projectId: string | null
   patch: {
     description?: string
+    /**
+     * Only ever `'external'` — the flip is one-way, so a manifest can make a
+     * managed project folder-linked but never the reverse.
+     */
+    workingMode?: 'external'
     agent?: {
       heartbeatEnabled?: boolean
       heartbeatInterval?: number
@@ -679,6 +686,15 @@ export function computeSystemDiff(
     }
     const agent = agentPatch(spec, liveProject)
     if (agent) patch.agent = agent
+    // Working mode can be pinned; the flip is one-way (managed → external) and
+    // only applies to a project that already exists (a create carries it).
+    if (spec.workingMode === 'external' && liveProject && (liveProject.workingMode ?? 'managed') !== 'external') {
+      patch.workingMode = 'external'
+    } else if (spec.workingMode === 'managed' && liveProject?.workingMode === 'external') {
+      manual.push(
+        `${spec.key}: project is folder-linked (external) and cannot go back to managed — export its folder or drop workingMode from the manifest`,
+      )
+    }
     const settings = capabilityPatch(spec, liveProject)
     if (settings) patch.settings = settings
     if (Object.keys(patch).length > 0) configure.push({ kind: 'configure', key: spec.key, projectId: id, patch })

@@ -14,6 +14,7 @@
  * same economy-model downgrade for workspaces without advanced model access.
  */
 
+import { join, resolve } from 'node:path'
 import { prisma } from '../lib/prisma'
 import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { projectHooks, type HookContext } from '../generated/project.hooks'
@@ -28,6 +29,8 @@ export type ProjectLifecycleErrorCode =
   | 'bad_request'
   | 'not_found'
   | 'invalid_working_mode'
+  | 'working_mode_flip_not_supported'
+  | 'durable_repo_external_flip'
   | 'instance_too_small'
   | 'docker_class_disabled'
   | 'paywall'
@@ -157,6 +160,12 @@ export async function createProjectInWorkspace(input: CreateProjectInput): Promi
 export interface ConfigureProjectInput {
   name?: string
   description?: string | null
+  /**
+   * One-way flip to `external` (folder-linked). `external → managed` is
+   * refused: turning a folder-linked project back into a sandboxed one has no
+   * defined folder semantics, so it stays out of the API until it does.
+   */
+  workingMode?: 'managed' | 'external'
   /** Shallow-merged over the existing `Project.settings`. */
   settings?: Record<string, unknown>
   slackEnabled?: boolean
@@ -175,6 +184,7 @@ export interface ConfiguredProject {
   id: string
   name: string
   description: string | null
+  workingMode: string
   settings: unknown
   slackEnabled: boolean
   agent: {
@@ -197,9 +207,10 @@ export interface ConfiguredProject {
 
 /**
  * Patch the agent-facing configuration of a project: display fields, the
- * `settings` blob (merged), Slack routing, and the `AgentConfig` row
- * (heartbeat + default model). Deliberately excludes publish state, trust
- * level, working mode and billing, which stay behind their own routes.
+ * `settings` blob (merged), Slack routing, the `AgentConfig` row (heartbeat +
+ * default model) and the one-way `managed → external` working-mode flip
+ * (see `flipToExternal`). Publish state, trust level and billing stay behind
+ * their own routes.
  */
 export async function configureProject(
   projectId: string,
@@ -207,12 +218,18 @@ export async function configureProject(
 ): Promise<ConfiguredProject> {
   const existing = (await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true, settings: true, workspaceId: true },
-  })) as { id: string; settings: unknown; workspaceId: string } | null
+    select: { id: true, settings: true, workspaceId: true, workingMode: true } as any,
+  })) as { id: string; settings: unknown; workspaceId: string; workingMode?: string } | null
   if (!existing) throw new ProjectLifecycleError('not_found', `Project ${projectId} not found`)
 
   if (patch.agent?.heartbeatInterval !== undefined && patch.agent.heartbeatInterval < 60) {
     throw new ProjectLifecycleError('bad_request', 'heartbeatInterval must be at least 60 seconds')
+  }
+  if (patch.workingMode !== undefined && patch.workingMode !== 'managed' && patch.workingMode !== 'external') {
+    throw new ProjectLifecycleError(
+      'invalid_working_mode',
+      `Unknown workingMode "${patch.workingMode}" (expected "managed" or "external")`,
+    )
   }
 
   const projectData: Record<string, unknown> = {}
@@ -253,6 +270,20 @@ export async function configureProject(
       }
     }
     projectData.settings = encodeProjectSettingsForWrite({ ...current, ...patch.settings })
+  }
+
+  if (patch.workingMode !== undefined && patch.workingMode !== (existing.workingMode ?? 'managed')) {
+    if (patch.workingMode === 'managed') {
+      throw new ProjectLifecycleError(
+        'working_mode_flip_not_supported',
+        // One-way on purpose: an external project's files are the user's own
+        // folders, so there is nothing to move back into a sandboxed
+        // workspace and no rule for what would happen to the folder rows.
+        "A folder-linked (external) project cannot become managed — its files live in the user's own folders, not in a Shogo workspace.",
+      )
+    }
+    await flipToExternal(projectId)
+    projectData.workingMode = 'external'
   }
 
   if (Object.keys(projectData).length > 0) {
@@ -311,13 +342,55 @@ export async function configureProject(
   return heartbeatError ? { ...configured, heartbeatError } : configured
 }
 
+const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
+
+/**
+ * Where a managed project's files live. Mirrors `getWorkspacesDir()` in
+ * `marketplace-install.service` (the pair every files / checkpoint / terminal
+ * route builds as `<workspaces>/<projectId>`).
+ */
+function managedWorkspacePath(projectId: string): string {
+  return join(process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces'), projectId)
+}
+
+/**
+ * Make an existing managed project external.
+ *
+ * External projects resolve their workspace from `ProjectFolder` rows rather
+ * than `workspaces/<projectId>`, so the flip adds a primary row pointing at
+ * the folder the project already renders from. Nothing is created, moved or
+ * cloned on disk: the files stay exactly where they are and the project opens
+ * on them with external semantics (no Shogo-managed git, no checkpoints).
+ *
+ * Refused when the project has a durable git repo in object storage: that repo
+ * is its source of truth and the durable backend does not serve external
+ * projects (see `git-http.ts`), so flipping would silently detach it.
+ */
+async function flipToExternal(projectId: string): Promise<void> {
+  const { durableRepoExists } = await import('./git-repo-store')
+  if (await durableRepoExists(projectId)) {
+    throw new ProjectLifecycleError(
+      'durable_repo_external_flip',
+      'This project keeps its git history in Shogo-managed durable storage, which folder-linked projects do not use. Export the repo before making the project external.',
+    )
+  }
+
+  const folders = (await prisma.projectFolder.findMany({
+    where: { projectId },
+    select: { id: true, isPrimary: true },
+  })) as Array<{ id: string; isPrimary: boolean }>
+  if (folders.some((folder) => folder.isPrimary)) return
+  await prisma.projectFolder.create({
+    data: { projectId, path: managedWorkspacePath(projectId), isPrimary: true },
+  })
+}
 
 export async function readProjectConfig(projectId: string): Promise<ConfiguredProject> {
   const project = (await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true, name: true, description: true, settings: true, slackEnabled: true },
+    select: { id: true, name: true, description: true, settings: true, slackEnabled: true, workingMode: true } as any,
   })) as
-    | { id: string; name: string; description: string | null; settings: unknown; slackEnabled: boolean }
+    | { id: string; name: string; description: string | null; settings: unknown; slackEnabled: boolean; workingMode?: string }
     | null
   if (!project) throw new ProjectLifecycleError('not_found', `Project ${projectId} not found`)
   const agent = (await prisma.agentConfig.findUnique({
@@ -338,6 +411,7 @@ export async function readProjectConfig(projectId: string): Promise<ConfiguredPr
     id: project.id,
     name: project.name,
     description: project.description ?? null,
+    workingMode: project.workingMode ?? 'managed',
     settings: normalizeProjectSettings(project.settings),
     slackEnabled: project.slackEnabled,
     agent,

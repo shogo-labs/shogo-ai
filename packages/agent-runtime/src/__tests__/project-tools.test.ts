@@ -331,6 +331,23 @@ describe('project_configure', () => {
     expect(out.warning).toBeUndefined()
   })
 
+  test('forwards an explicit workingMode to configureProject, including on its own', async () => {
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { workingMode: 'external' })
+    expect(out.changed).toBe(true)
+    expect(calls.find((c) => c.fn === 'configureProject')?.args).toEqual([
+      'proj-1',
+      { workingMode: 'external' },
+    ])
+  })
+
+  test('rejects a workingMode outside managed/external before calling the API', async () => {
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { workingMode: 'cloud' })
+    expect(out.error).toMatch(/managed.*external|external.*managed/)
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+  })
+
   test('targets another project by manifest key resolved through the lock', async () => {
     api.graph.data = [
       { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },

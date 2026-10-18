@@ -557,6 +557,46 @@ describe('PATCH /projects/:projectId/config', () => {
     })
     expect(res.status).toBe(402)
   })
+
+  test('200 forwards workingMode to configureProject', async () => {
+    store.projects.set('proj-1', { workspaceId: 'ws-1' })
+    const res = await app.request('/projects/proj-1/config', {
+      method: 'PATCH',
+      headers: { ...SA, ...JSON_H },
+      body: JSON.stringify({ workingMode: 'external' }),
+    })
+    expect(res.status).toBe(200)
+    expect(store.configureCalledWith).toMatchObject({
+      projectId: 'proj-1',
+      patch: { workingMode: 'external' },
+    })
+  })
+
+  test('400 for a workingMode outside the allowlist', async () => {
+    store.projects.set('proj-1', { workspaceId: 'ws-1' })
+    const res = await app.request('/projects/proj-1/config', {
+      method: 'PATCH',
+      headers: { ...SA, ...JSON_H },
+      body: JSON.stringify({ workingMode: 'cloud' }),
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('invalid_working_mode')
+    expect(store.configureCalledWith).toBeNull()
+  })
+
+  test('409 when the flip is refused (unsupported direction or durable repo)', async () => {
+    store.projects.set('proj-1', { workspaceId: 'ws-1' })
+    for (const code of ['working_mode_flip_not_supported', 'durable_repo_external_flip']) {
+      store.configureThrow = ProjectLifecycleErrorLike(code)
+      const res = await app.request('/projects/proj-1/config', {
+        method: 'PATCH',
+        headers: { ...SA, ...JSON_H },
+        body: JSON.stringify({ workingMode: 'external' }),
+      })
+      expect(res.status).toBe(409)
+      expect((await res.json()).error.code).toBe(code)
+    }
+  })
 })
 
 // ─── GET /projects/:projectId/app-runtime-token ─────────────────────────────

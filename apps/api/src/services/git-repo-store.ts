@@ -173,6 +173,34 @@ export interface GitRepoStoreResult {
 }
 
 /**
+ * Whether the project has a durable git repo in object storage — the
+ * authoritative copy the pod-owned backend persists (manifest or legacy
+ * tarball, see the module doc). `false` when object storage isn't configured
+ * (local dev) or nothing has been persisted yet.
+ *
+ * External (folder-linked) projects are excluded from the durable backend
+ * (`git-http.ts`), so a caller flipping a project to external uses this to
+ * refuse rather than silently detach its source of truth.
+ */
+export async function durableRepoExists(projectId: string): Promise<boolean> {
+  const s3 = getS3()
+  const b = bucket()
+  if (!s3 || !b) return false
+  for (const key of [manifestKey(projectId), repoKey(projectId)]) {
+    try {
+      await s3.send(new HeadObjectCommand({ Bucket: b, Key: key }))
+      return true
+    } catch (err: any) {
+      if (isNotFound(err)) continue
+      // A read failure is not "no repo": fail closed so a transient S3 error
+      // cannot wave through a flip that would detach the repo.
+      throw err
+    }
+  }
+  return false
+}
+
+/**
  * Per-pod cache of the object ETag the local `.git` was last hydrated from.
  * In the pod-owned model the runtime updates the durable object out-of-band
  * on every turn, so a warm API pod's local copy goes stale. We can't just
