@@ -98,6 +98,20 @@ mock.module('../../lib/prisma', () => withPrismaExports({
     },
     platformSetting: {
       findUnique: async ({ where }: any) => settings.get(where.key) ?? null,
+      findMany: async ({ where }: any = {}) => {
+        let entries = [...settings.entries()]
+        if (where?.key?.startsWith) entries = entries.filter(([k]) => k.startsWith(where.key.startsWith))
+        // Rows are stored as full objects (create/upsert); normalise to { key, value }.
+        return entries.map(([key, row]: any) => ({
+          ...(typeof row === 'string' ? {} : row),
+          key,
+          value: typeof row === 'string' ? row : row.value,
+        }))
+      },
+      deleteMany: async ({ where }: any) => {
+        if (where?.key) settings.delete(where.key)
+        return {}
+      },
       upsert: async ({ where, update, create }: any) => {
         const existing = settings.get(where.key)
         const row = existing ? { ...existing, ...update } : { key: where.key, ...create }
@@ -430,5 +444,56 @@ describe('admin public-models', () => {
     const read = await (await get('/public-models')).json() as any
     expect(read.models[0].backingValid).toBe(false)
     expect(read.models[0].backingDisplayName).toBeNull()
+  })
+})
+
+// SHO-37: the admin Models card renders a Tripo (3D) key row, so the route has
+// to accept it. `tripo` is an `NATIVE_PROVIDER_ENV_KEY` entry, which is what
+// `SUPPORTED_NATIVE_PROVIDERS` derives from — if that mapping is ever dropped,
+// the row would render but silently no-op on save.
+describe('admin provider keys (native, incl. tripo)', () => {
+  test('GET lists a tripo entry next to the LLM + image providers', async () => {
+    const data = await (await get('/provider-keys')).json() as any
+    expect(Object.keys(data.keys)).toEqual(
+      expect.arrayContaining(['anthropic', 'openai', 'google', 'openrouter', 'fal', 'tripo']),
+    )
+    expect(data.keys.tripo).toEqual({ configured: false, mask: '', source: null })
+  })
+
+  test('PUT encrypts the tripo key at rest and only returns a mask', async () => {
+    const plaintext = 'tsk_live_staging_3d_key'
+    const res = await put('/provider-keys', { tripo: plaintext })
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    expect(data.ok).toBe(true)
+    expect(data.keys.tripo).toEqual({ configured: true, mask: 'tsk_…_key', source: 'db' })
+    expect(JSON.stringify(data)).not.toContain(plaintext)
+
+    const stored = settings.get('provider-key.tripo')
+    expect(stored.value).toBeTruthy()
+    expect(stored.value).not.toContain(plaintext)
+
+    // The read API agrees and keeps the mask.
+    const read = await (await get('/provider-keys')).json() as any
+    expect(read.keys.tripo).toEqual({ configured: true, mask: 'tsk_…_key', source: 'db' })
+    expect(JSON.stringify(read)).not.toContain(plaintext)
+  })
+
+  test('PUT with an empty string clears the stored tripo key', async () => {
+    await put('/provider-keys', { tripo: 'tsk_live_staging_3d_key' })
+    expect(settings.has('provider-key.tripo')).toBe(true)
+
+    const res = await put('/provider-keys', { tripo: '' })
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    expect(data.keys.tripo).toEqual({ configured: false, mask: '', source: null })
+    expect(settings.has('provider-key.tripo')).toBe(false)
+  })
+
+  test('PUT ignores an unknown provider id instead of storing it', async () => {
+    const res = await put('/provider-keys', { nope: 'x' })
+    expect(res.status).toBe(200)
+    expect((await res.json() as any).keys.nope).toBeUndefined()
+    expect([...settings.keys()].filter((k) => k.startsWith('provider-key.'))).toEqual([])
   })
 })

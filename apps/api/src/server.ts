@@ -1146,6 +1146,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     { id: 'google',     envKey: 'GOOGLE_API_KEY' },
     { id: 'openrouter', envKey: 'OPENROUTER_API_KEY' },
     { id: 'fal',        envKey: 'FAL_KEY' },
+    { id: 'tripo',      envKey: 'TRIPO_API_KEY' },
   ] as const
 
   const PROVIDER_BY_ID: Map<string, string> = new Map(PROVIDER_KEYS.map((p) => [p.id, p.envKey]))

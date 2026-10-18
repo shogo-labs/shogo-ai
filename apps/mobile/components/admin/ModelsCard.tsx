@@ -53,12 +53,16 @@ import { invalidateVisibleModelsCache } from '../../lib/visible-models'
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Providers whose keys gate routing + discovery, shown in the keys section. */
+/** Providers whose keys gate routing + discovery, shown in the keys section.
+ *  Every entry here is stored through the same provider-keys route; `tripo` is
+ *  not an LLM provider (so it is absent from discovery + the model pickers) but
+ *  its key gates the 3D proxy. */
 const KEY_PROVIDERS = [
   { id: 'anthropic', name: 'Anthropic', placeholder: 'sk-ant-…' },
   { id: 'openai', name: 'OpenAI', placeholder: 'sk-…' },
   { id: 'openrouter', name: 'OpenRouter', placeholder: 'sk-or-…' },
   { id: 'fal', name: 'fal.ai (images and video)', placeholder: 'key-id:key-secret' },
+  { id: 'tripo', name: 'Tripo (3D)', placeholder: 'tsk_…' },
 ] as const
 
 /** Providers we can prefill via live discovery. OpenRouter lists without a key. */
