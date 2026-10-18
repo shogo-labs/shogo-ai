@@ -65,10 +65,10 @@ describe('scheduleWorkspaceSwitch', () => {
 })
 
 describe('homePathForWorkspaceKind', () => {
-  test('opens main chat for personal and the project builder for team', () => {
+  test('lands every workspace kind on the workspace agent landing', () => {
     expect(homePathForWorkspaceKind('personal')).toBe('/(app)')
-    expect(homePathForWorkspaceKind('team')).toBe('/(app)/new-project')
-    expect(homePathForWorkspaceKind(undefined)).toBe('/(app)/new-project')
+    expect(homePathForWorkspaceKind('team')).toBe('/(app)')
+    expect(homePathForWorkspaceKind(undefined)).toBe('/(app)')
   })
 })
 

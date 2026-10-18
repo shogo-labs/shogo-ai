@@ -34,10 +34,25 @@ export const STRIPE_CARDS = {
 // ── Core helpers ─────────────────────────────────────────────────────────────
 
 /**
+ * The app's pre-landing home (phone feed / wide "What are we building" builder).
+ *
+ * `/` is the workspace agent chat on an empty session for a team workspace
+ * (SHO-4) — every `page.goto("/")` that then waits for the builder heading has
+ * to come here instead.
+ */
+export const APP_HOME_PATH = "/home"
+
+/** Opens the app home (phone feed / builder) and waits for it to paint. */
+export async function gotoAppHome(page: Page, timeout = 30_000): Promise<void> {
+  await page.goto(APP_HOME_PATH)
+  await page.waitForSelector("text=What are we building", { timeout })
+}
+
+/**
  * Signs up a new account at /sign-in, then walks through the cloud onboarding
  * flow into the Team workspace:
  *
- *   team setup → build prompt (skip) → home
+ *   team setup → build prompt (skip) → app home
  *
  * Leaves the browser on the home screen with "What are we building" visible.
  */
@@ -48,7 +63,9 @@ export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void
   }
 
   // ── Home screen ────────────────────────────────────────────────────────────
-  await page.waitForSelector("text=What are we building", { timeout: 30_000 })
+  // Skipping onboarding lands on `/` (the empty agent chat); the builder is at
+  // `/home` now.
+  await gotoAppHome(page)
 }
 
 /** Signs up a new account at /sign-in and waits to leave the sign-in page. */
@@ -399,8 +416,7 @@ export async function waitForProjectChat(page: Page, timeoutMs = RUNTIME_READY_T
 export async function createProjectAndWait(page: Page, prompt: string) {
   extendTestTimeout(90_000)
   watchChatHealth(page)
-  await page.goto("/")
-  await page.waitForSelector("text=What are we building", { timeout: 15_000 })
+  await gotoAppHome(page, 15_000)
 
   const input = homeComposerInput(page)
   await input.click()

@@ -78,6 +78,9 @@ async function signUpAndOnboard(page: Page, user: TestUser): Promise<void> {
     await page.getByRole("button", { name: "Enter Shogo" }).click()
   } catch {}
 
+  // Onboarding finishes on `/`, which is the empty agent chat now; the builder
+  // moved to `/home`.
+  await page.goto("/home")
   await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 }
 

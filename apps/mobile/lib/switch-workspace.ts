@@ -23,11 +23,15 @@ let pending: ReturnType<typeof setTimeout> | null = null
 type WorkspaceSwitchedListener = () => void
 const workspaceSwitchedListeners = new Set<WorkspaceSwitchedListener>()
 
-/** Personal opens the companion chat. Team opens the project builder. */
+/**
+ * Where a workspace switch lands: the workspace agent on a fresh chat for
+ * every workspace kind. `/(app)` resolves the landing (see
+ * `lib/root-destination`), so switching workspace and opening the app agree.
+ */
 export function homePathForWorkspaceKind(
-  kind: string | null | undefined,
-): '/(app)' | '/(app)/new-project' {
-  return kind === 'personal' ? '/(app)' : '/(app)/new-project'
+  _kind: string | null | undefined,
+): '/(app)' {
+  return '/(app)'
 }
 
 /** Shells subscribe so a workspace switch can reset route and chrome. */

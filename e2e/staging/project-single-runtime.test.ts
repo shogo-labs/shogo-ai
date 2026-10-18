@@ -95,7 +95,7 @@ async function timeOpenUntilReady(page: Page, projectId: string): Promise<number
  * chat stream, status poll) wakes it before the timed reopen.
  */
 async function suspendFromHome(page: Page, projectId: string): Promise<void> {
-  await page.goto("/")
+  await page.goto("/home")
   await page.waitForSelector("text=What are we building", { timeout: 60_000 })
   expect(await suspendRuntimeViaApi(page, projectId), "runtime must really suspend").toBe(true)
 }

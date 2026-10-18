@@ -53,6 +53,8 @@ test.describe("Team workspace: phone dock and tab screens", () => {
   })
 
   test("Home is a feed with the workspace agent, not a settings list", async ({ page }) => {
+    // `/` is the workspace agent chat since SHO-4; the feed lives at `/home`.
+    await page.goto("/home")
     const feed = page.getByTestId("mobile-home-feed")
     await expect(feed).toBeVisible()
     await expect(feed.getByRole("button", { name: "Ask the workspace agent" })).toBeVisible()
@@ -60,6 +62,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
   })
 
   test("tapping a project on Home opens the project", async ({ page }) => {
+    await page.goto("/home")
     const feed = page.getByTestId("mobile-home-feed")
     const row = feed.getByRole("link", { name: seed.idleAgent, exact: true })
     await expect(row).toBeVisible({ timeout: 30_000 })

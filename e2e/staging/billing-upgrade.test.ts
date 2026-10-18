@@ -90,7 +90,7 @@ test.describe("Billing & Upgrade Flow", () => {
   })
 
   test("free plan: sidebar shows Upgrade to Pro CTA", async () => {
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
     await expect(page.getByText("Upgrade to Pro")).toBeVisible()
@@ -185,7 +185,7 @@ test.describe("Billing & Upgrade Flow", () => {
   // ── Phase 6: Sidebar After Upgrade ───────────────────────────────
 
   test.skip("post-upgrade: sidebar hides Upgrade to Pro CTA", async () => {
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
     await expect(page.getByText("Upgrade to Pro")).not.toBeVisible()
@@ -194,7 +194,7 @@ test.describe("Billing & Upgrade Flow", () => {
   // ── Phase 7: Model Gating ────────────────────────────────────────
 
   test.skip("post-upgrade: Advanced model is available for Pro users", async () => {
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
     const input = homeComposerInput(page)

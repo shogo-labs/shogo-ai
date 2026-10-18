@@ -51,6 +51,7 @@ import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceCh
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig, isWorkspaceRuntimeEnabled } from '../../lib/platform-config'
+import { appHomeSurface } from '../../lib/root-destination'
 import { resolveChatScope } from '../../lib/chat-scope'
 import { api, getOnboardingMessage } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
@@ -233,9 +234,12 @@ const styles = StyleSheet.create({
 
 export const HomeScreen = observer(function HomeScreen({
   forceBuilder = false,
+  explicitHome = false,
   originWorkspaceSessionId,
 }: {
   forceBuilder?: boolean
+  /** `/(app)/home`: the pre-landing home, not the landing itself. */
+  explicitHome?: boolean
   originWorkspaceSessionId?: string
 }) {
   const router = useRouter()
@@ -334,11 +338,17 @@ export const HomeScreen = observer(function HomeScreen({
 
   const currentWorkspace = useActiveWorkspace()
   const currentExperience = useWorkspaceExperience()
-  // Personal (and narrow) surfaces render `WorkspaceAgentChatScreen`.
-  const rendersAgentChat =
-    !forceBuilder &&
-    isWorkspaceRuntimeEnabled() &&
-    (isNarrowAgentSurface || currentExperience.kind === 'personal')
+  // `/` lands on the workspace agent on an empty chat for every workspace
+  // kind and width; `/(app)/home` keeps the pre-landing layout (phone feed /
+  // wide builder) and `/(app)/new-project` pins the builder.
+  const homeSurface = appHomeSurface({
+    forceBuilder,
+    explicitHome,
+    kind: currentExperience.kind,
+    narrow: isNarrowAgentSurface,
+    runtimeEnabled: isWorkspaceRuntimeEnabled(),
+  })
+  const rendersAgentChat = homeSurface === 'agent'
 
   // Whether the user already has a `kind: 'personal'` workspace. `false`
   // surfaces `CreatePersonalSpaceBanner` below — see that component for why
@@ -902,16 +912,19 @@ export const HomeScreen = observer(function HomeScreen({
     )
   }
 
-  // Personal workspaces use the agent chat surface on every platform.
-  // Shared workspaces use it on narrow surfaces while wide web retains the
-  // established builder home.
-  // Team workspaces on a phone open on a work-first feed; the workspace agent
-  // chat is one tap away at `/agent`.
-  if (rendersAgentChat && currentExperience.kind === 'team' && isNarrowAgentSurface) {
+  // `/(app)/home` keeps the pre-landing team home: the work-first feed on a
+  // phone and the "What are we building" builder on wide web. The landing
+  // itself is the workspace agent on an empty chat (see `appHomeSurface`).
+  if (homeSurface === 'feed') {
     return <MobileHomeFeed />
   }
   if (rendersAgentChat) {
-    return <WorkspaceAgentChatScreen key={currentWorkspace?.id ?? 'workspace-loading'} />
+    return (
+      <WorkspaceAgentChatScreen
+        key={currentWorkspace?.id ?? 'workspace-loading'}
+        startNewSession
+      />
+    )
   }
 
   const greeting = (

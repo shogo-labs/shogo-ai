@@ -20,7 +20,8 @@ import { badgeText } from './sidebar/IconRail'
 import { useTeamChatNav } from '../team-chat/TeamChatSidebarProvider'
 
 const ITEMS = [
-  { id: 'home', label: 'Home', icon: Home, href: '/(app)' },
+  // `/` lands on the workspace agent; Home in the dock keeps the feed.
+  { id: 'home', label: 'Home', icon: Home, href: '/(app)/home' },
   { id: 'dms', label: 'DMs', icon: MessagesSquare, href: '/(app)/c/dms' },
   { id: 'activity', label: 'Activity', icon: Bell, href: '/(app)/activity' },
   { id: 'more', label: 'More', icon: MoreHorizontal, href: '/(app)/more' },

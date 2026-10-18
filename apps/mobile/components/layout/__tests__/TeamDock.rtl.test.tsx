@@ -65,6 +65,18 @@ describe("TeamDock", () => {
     expect(replace.mock.calls.map((c) => c[0])).toEqual(["/(app)/c/dms", "/(app)/activity", "/(app)/more"])
   })
 
+  test("Home opens the feed, not the landing", () => {
+    render(<TeamDock maxWidth={640} />)
+    fireEvent.click(screen.getByRole("tab", { name: "Home" }))
+    expect(replace.mock.calls.map((c) => c[0])).toEqual(["/(app)/home"])
+  })
+
+  test("the feed route highlights Home", () => {
+    pathname = "/(app)/home"
+    render(<TeamDock maxWidth={640} />)
+    expect(screen.getByRole("tab", { name: "Home" }).getAttribute("aria-selected")).toBe("true")
+  })
+
   test("the search button is separate from the tabs and opens search", () => {
     render(<TeamDock maxWidth={640} />)
     expect(screen.queryByRole("tab", { name: "Search" })).toBeNull()

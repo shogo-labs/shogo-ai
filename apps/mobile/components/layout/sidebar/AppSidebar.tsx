@@ -845,6 +845,10 @@ export const AppSidebar = observer(function AppSidebar({
 
   const isHomePage =
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index";
+  // `/(app)/home` is the pre-landing home (phone feed / wide builder); `/`
+  // itself is the workspace agent chat.
+  const isExplicitHome =
+    pathname === "/home" || pathname === "/(app)/home";
   const isMeetingsPage =
     pathname.startsWith("/meetings") || pathname.startsWith("/(app)/meetings");
   const isMarketplacePage =
@@ -1696,8 +1700,8 @@ export const AppSidebar = observer(function AppSidebar({
               <NavItem
                 icon={Home}
                 label="Home"
-                href="/(app)"
-                active={isHomePage}
+                href="/(app)/home"
+                active={isExplicitHome}
                 collapsed={false}
                 onNavPress={onNavPress}
               />

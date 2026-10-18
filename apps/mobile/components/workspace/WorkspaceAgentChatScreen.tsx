@@ -26,6 +26,7 @@ import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
 import { chatSessionEvents } from "../../lib/chat-session-events"
+import { agentSessionSource } from "../../lib/root-destination"
 import { ChatPanel } from "../chat/ChatPanel"
 import type { OpenProjectPaneRequest } from "../chat/ChatContext"
 import type { PlanData } from "../chat/PlanCard"
@@ -78,6 +79,11 @@ interface BuildPlanRequest {
 export interface WorkspaceAgentChatScreenProps {
   /** Open this workspace session instead of the primary one (e.g. a session a DM reply ran in). */
   initialSessionId?: string
+  /**
+   * Start a new, empty session instead of resuming the primary one. The
+   * landing (`/`) sets this; an explicit `?chatSessionId=` still wins.
+   */
+  startNewSession?: boolean
   /** Sent as the first message when the opened session is still empty. */
   initialMessage?: string
   /** Rendered above the chat, e.g. the breadcrumb back to the conversation it was opened from. */
@@ -85,7 +91,7 @@ export interface WorkspaceAgentChatScreenProps {
 }
 
 export const WorkspaceAgentChatScreen = observer(
-  function WorkspaceAgentChatScreen({ initialSessionId, initialMessage, header }: WorkspaceAgentChatScreenProps = {}) {
+  function WorkspaceAgentChatScreen({ initialSessionId, startNewSession, initialMessage, header }: WorkspaceAgentChatScreenProps = {}) {
     const [capturedInitialMessage] = useState(() => initialMessage)
     const router = useRouter()
     const { user } = useAuth()
@@ -123,6 +129,13 @@ export const WorkspaceAgentChatScreen = observer(
     )
     const [scopeError, setScopeError] = useState<string | null>(null)
     const loadVersion = useRef(0)
+    // The empty chat the landing opens. Single-flight per workspace so a
+    // re-running load (a new `http` identity, a re-render) cannot mint a
+    // second empty session.
+    const landingSession = useRef<{
+      workspaceId: string
+      promise: Promise<{ id: string }>
+    } | null>(null)
     const reloadAttachments = useRef<(() => void) | null>(null)
     const avatarFinishedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
     const avatarStreaming = useRef(false)
@@ -165,10 +178,35 @@ export const WorkspaceAgentChatScreen = observer(
         setSessionId(null)
         setAttachments([])
         setFocusedProjectId(null)
+        const sessionSource = agentSessionSource({
+          initialSessionId,
+          startNewSession,
+          // The workspace the session belongs to, not the resolved
+          // experience: they can disagree for a frame during a switch.
+          kind: workspace.kind,
+        })
+        const openLandingSession = () => {
+          const cached = landingSession.current
+          if (cached && cached.workspaceId === workspace.id) {
+            return cached.promise
+          }
+          const promise = api.createWorkspaceSession(http, workspace.id, {
+            inferredName: "Chat",
+          })
+          landingSession.current = { workspaceId: workspace.id, promise }
+          promise.catch(() => {
+            if (landingSession.current?.promise === promise) {
+              landingSession.current = null
+            }
+          })
+          return promise
+        }
         const [session, nextProfile] = await Promise.all([
-          initialSessionId
-            ? Promise.resolve({ id: initialSessionId })
-            : api.getPrimaryWorkspaceSession(http, workspace.id),
+          sessionSource === "url"
+            ? Promise.resolve({ id: initialSessionId as string })
+            : sessionSource === "new"
+              ? openLandingSession()
+              : api.getPrimaryWorkspaceSession(http, workspace.id),
           api.getAgentProfile(http, workspace.id),
         ])
         if (version !== loadVersion.current) return
@@ -183,7 +221,7 @@ export const WorkspaceAgentChatScreen = observer(
             : "Could not load Workspace Agent Chat",
         )
       }
-    }, [http, workspace?.id, initialSessionId])
+    }, [http, workspace?.id, workspace?.kind, initialSessionId, startNewSession])
 
     useEffect(() => {
       void loadWorkspaceChat()
