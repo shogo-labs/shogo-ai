@@ -275,6 +275,26 @@ async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | 
 }
 
 /**
+ * Keep one paused row per session instead of one per attempt.
+ *
+ * A paused wake is released back to the sweep and retried every few minutes for
+ * as long as the session stays paused, so a fresh failed row per attempt would
+ * accumulate for hours, each with its own error text. The newest row is the
+ * signal; older copies (and the signal itself, once a wake lands and the
+ * session is evidently awake again) are dropped.
+ */
+async function clearPausedWakeRows(chatSessionId: string, keepId?: string): Promise<void> {
+  await (prisma as any).chatQueuedMessage.deleteMany({
+    where: {
+      sessionId: chatSessionId,
+      status: 'failed',
+      error: WAKE_PAUSED,
+      ...(keepId ? { id: { not: keepId } } : {}),
+    },
+  }).catch(() => {})
+}
+
+/**
  * Hand a dropped wake's tasks back to the sweep, which queues the message
  * again once the session can take it. A message persisted for a dispatch that
  * never started a turn is removed with it, so the retry is not a second copy.
@@ -317,6 +337,7 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
         where: { id: row.id, status: 'dispatching' },
         data: { status: 'failed', error: skip },
       }).catch(() => {})
+      await clearPausedWakeRows(chatSessionId, row.id)
       await releaseTaskWake(row)
     }
     row = await claimNext(chatSessionId)
@@ -328,6 +349,8 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
     await persistQueuedUserMessage(row, body)
     await dispatchRow(row)
     await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } })
+    // A wake landed (or a person's message went through): the pause is over.
+    await clearPausedWakeRows(chatSessionId)
     return true
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

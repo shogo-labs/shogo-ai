@@ -48,6 +48,7 @@ const mockPrisma = {
       return { count: 1 }
     },
     delete: async () => ({}),
+    deleteMany: async () => ({ count: 0 }),
     findMany: async ({ where }: any) => {
       state.findManyWheres.push(where)
       return [{ sessionId: "home-session" }]

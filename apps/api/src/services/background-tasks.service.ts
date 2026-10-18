@@ -53,6 +53,12 @@ export const MAX_CONSECUTIVE_CARD_WAKES = 40
  * usually a busy runtime); repeats back off up to five minutes.
  */
 const WAKE_RETRY_BACKOFF_MS = [0, 15_000, 30_000, 60_000, 120_000, 300_000]
+/**
+ * The longest a released wake waits before its next attempt. A paused session
+ * is retried on this same schedule, so this is also how long a person's message
+ * can take to revive a paused wake.
+ */
+export const MAX_WAKE_BACKOFF_MS = WAKE_RETRY_BACKOFF_MS[WAKE_RETRY_BACKOFF_MS.length - 1]!
 /** An `agent_reply` task whose run never reports back is given up this long after its timeout. */
 export const AGENT_REPLY_RECONCILE_MS = AGENT_REPLY_TIMEOUT_MS + 5 * 60_000
 /**

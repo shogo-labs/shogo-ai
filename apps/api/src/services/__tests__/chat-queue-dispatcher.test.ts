@@ -49,6 +49,7 @@ const mockPrisma = {
     delete: async () => {
       state.row.status = "deleted"
     },
+    deleteMany: async () => ({ count: 0 }),
     update: async () => state.row,
     findMany: async () => [],
   },
