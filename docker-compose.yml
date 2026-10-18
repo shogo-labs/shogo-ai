@@ -143,7 +143,10 @@ services:
     # Run as current user to match host workspaces permissions
     user: "${UID:-1000}:${GID:-1000}"
     ports:
-      - "${API_PORT:-8002}:8002"
+      # Host side follows SHOGO_DEV_API_PORT, the variable worktree-setup.sh and
+      # .env.local.template write (SHO-28). The container still binds 8002 —
+      # `environment:` below pins API_PORT for the API process itself.
+      - "${SHOGO_DEV_API_PORT:-8002}:8002"
       # Vite runtime ports for project previews
       - "${VITE_RUNTIME_BASE:-5200}-${VITE_RUNTIME_END:-5209}:5200-5209"
     env_file:

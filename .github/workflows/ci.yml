@@ -655,7 +655,7 @@ jobs:
             desktop_bundle: false
             include_e2e: false
           - name: remaining + e2e
-            packages: packages/shared-runtime,packages/model-catalog,packages/authz,packages/sdk,scripts,packages/shared-app,apps/metal-agent,packages/agent,packages/core,packages/email,packages/voice
+            packages: packages/shared-runtime,packages/model-catalog,packages/authz,packages/sdk,scripts,packages/shared-app,apps/metal-agent,packages/agent,packages/core,packages/email,packages/voice,apps/desktop
             shard: ''
             build_templates: true
             desktop_bundle: true

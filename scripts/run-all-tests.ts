@@ -64,9 +64,10 @@ const BACKEND_PACKAGES = [
 // not pretend backend + frontend share a meaningful aggregate.
 const FRONTEND_PACKAGES = [
   'apps/mobile',
-  // apps/desktop — Electron app, has only Playwright e2e tests today
-  // (no `test:coverage` script). Listed here for documentation; the
-  // runPackage skip path takes care of it.
+  // apps/desktop — Electron app. Its `test` script runs src/__tests__ per-file
+  // via run-tests-isolated.ts (no `test:coverage`: the app is not installed in
+  // CI and its suites don't produce lcov). It is in the "remaining + e2e" CI
+  // leg, which is the leg that also owns the desktop bundle assertions.
   'apps/desktop',
   // packages/shared-app — UI-shared code (component primitives,
   // theming, etc.) used by the mobile + desktop frontends.

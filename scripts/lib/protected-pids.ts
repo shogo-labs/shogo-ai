@@ -8,8 +8,8 @@
  * That is the right thing for a leftover dev stack and a fatal thing for the
  * running Shogo desktop app, which owns its own long-lived API child on port
  * 39100 and re-reads `api.pid` on the next launch. On 2026-10-18 an agent
- * shell that had inherited `API_PORT=39100` ran `bun dev:all` and SIGKILLed
- * the desktop's API (SHO-26).
+ * shell that had inherited the desktop's API port (39100) ran `bun dev:all`
+ * and SIGKILLed the desktop's API (SHO-26).
  *
  * The desktop app writes its API child's pid to `<SHOGO_DATA_DIR>/api.pid`
  * (apps/desktop/src/local-server.ts) and exports `SHOGO_DATA_DIR` into the API

@@ -50,6 +50,25 @@ async function freePort(): Promise<number> {
 }
 
 /**
+ * The lister SHO-28 replaced: `lsof -ti:<port>` with no TCP-state filter, which
+ * matches every socket touching the port — both ends of an established pair.
+ * Kept only so the client test can prove its client is really connected.
+ */
+async function unfilteredLsofPids(port: number): Promise<number[]> {
+  const proc = Bun.spawn(['sh', '-c', `lsof -ti:${port}`], {
+    stdout: 'pipe',
+    stderr: 'ignore',
+  })
+  const out = await new Response(proc.stdout).text()
+  await proc.exited
+  return out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^\d+$/.test(line))
+    .map(Number)
+}
+
+/**
  * A stand-in for the desktop app's long-lived API child.
  *
  * Readiness is detected with `listPidsOnPort`, never with a request from this
@@ -136,5 +155,50 @@ describe.skipIf(IS_WINDOWS)('killPidsOnPort against a real listener', () => {
 
     expect(result.killed).toEqual([listener.pid])
     expect(result.spared).toEqual([])
+  }, 30_000)
+
+  /**
+   * SHO-28: `lsof -ti:<port>` matched clients too, so the "clear the port"
+   * sweep would SIGKILL anything merely *connected* to it — a browser tab on
+   * the dev URL, a curl, or (QA found this on 39100) the test runner holding a
+   * keep-alive connection. Only the listener blocks a bind, so only the
+   * listener is in the kill set.
+   */
+  test('a client holding a connection to the port is not listed and not killed', async () => {
+    const port = await freePort()
+
+    const listener = await spawnListener(port)
+    cleanups.push(() => listener.kill('SIGKILL'))
+
+    const client = Bun.spawn(
+      [
+        BUN,
+        '-e',
+        `const net = require('node:net');
+         const s = net.connect({ host: '127.0.0.1', port: ${port} });
+         s.write('GET / HTTP/1.1\\r\\nHost: x\\r\\nConnection: keep-alive\\r\\n\\r\\n');
+         s.once('data', () => {});
+         setInterval(() => {}, 1000);`,
+      ],
+      { stdio: ['ignore', 'ignore', 'ignore'] },
+    )
+    cleanups.push(() => client.kill('SIGKILL'))
+
+    // The assertion below is only meaningful if the client really is connected,
+    // and the *only* way to prove that is the unfiltered lsof SHO-28 removed:
+    // it lists both ends of the socket pair, so the client's pid must appear
+    // here and must not appear in the guarded lister.
+    await waitFor(async () => (await unfilteredLsofPids(port)).includes(client.pid), 10_000, 'the client connection')
+
+    const listed = await listPidsOnPort(port)
+    expect(listed).toContain(listener.pid)
+    expect(listed).not.toContain(client.pid)
+
+    const result = await killPidsOnPort(port, { log: () => {} })
+
+    expect(result.killed).toEqual([listener.pid])
+    expect(result.spared).toEqual([])
+    await waitFor(() => !isAlive(listener.pid), 5_000, 'the listener to die')
+    expect(isAlive(client.pid)).toBe(true)
   }, 30_000)
 })

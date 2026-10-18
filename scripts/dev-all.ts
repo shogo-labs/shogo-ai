@@ -104,6 +104,13 @@ async function sweepStaleShogoBunProcesses(): Promise<void> {
 /**
  * Pids listening on `port`. Split out so the kill path can be unit-tested
  * with a fake lister instead of a real dev server on the machine.
+ *
+ * `-sTCP:LISTEN` matters: a bare `lsof -ti:<port>` also matches *clients*
+ * with a socket open to that port (a browser tab holding a keep-alive
+ * connection, a curl, the test runner itself), and `killPidsOnPort`
+ * SIGKILLs everything the lister returns. Only the listener blocks the
+ * bind, so only the listener belongs in the kill set. The Windows branch
+ * below already filters on LISTENING.
  */
 export async function listPidsOnPort(port: number): Promise<number[]> {
   if (IS_WIN) {
@@ -126,7 +133,7 @@ export async function listPidsOnPort(port: number): Promise<number[]> {
   }
 
   const lsof = spawn({
-    cmd: ["sh", "-c", `lsof -ti:${port}`],
+    cmd: ["sh", "-c", `lsof -ti:${port} -sTCP:LISTEN`],
     stdout: "pipe",
     stderr: "ignore",
   });
