@@ -59,6 +59,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LinearGradient } from "expo-linear-gradient"
 import { DefaultChatTransport } from "ai"
 import { appendQueuedUserMessage } from "./queued-user-message"
+import {
+  appendOptimisticEcho,
+  buildOptimisticUserMessage,
+  hasMatchingUserMessage,
+  newestUserId,
+  type OptimisticEchoInput as OptimisticUserInput,
+} from "./optimistic-echo"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
@@ -351,12 +358,6 @@ interface VirtualToolEvent {
   timestamp: number
 }
 
-type OptimisticUserInput = {
-  sessionId: string
-  content: string
-  files?: FileAttachment[]
-}
-
 export type QueuedMessage = {
   id: string
   content: string
@@ -389,45 +390,6 @@ export type QueuedMessage = {
     }
     bodyExtra: Record<string, unknown>
   }
-}
-
-function buildOptimisticUserMessage(
-  input: OptimisticUserInput,
-  id = "optimistic-user-pending",
-): UIMessage {
-  const parts: any[] = []
-  const text = input.content.trim()
-
-  if (text) {
-    parts.push({ type: "text", text })
-  }
-
-  for (const file of input.files ?? []) {
-    parts.push({
-      type: "file",
-      mediaType: file.type || "application/octet-stream",
-      url: file.dataUrl,
-      ...(file.name ? { name: file.name } : {}),
-    })
-  }
-
-  return {
-    id,
-    role: "user",
-    parts,
-  } as unknown as UIMessage
-}
-
-function hasMatchingUserMessage(
-  messages: UIMessage[],
-  input: OptimisticUserInput,
-): boolean {
-  const text = input.content.trim()
-  return messages.some((message) => {
-    if (message.role !== "user") return false
-    if (text && extractTextContent(message).trim() === text) return true
-    return !text && (input.files?.length ?? 0) > 0
-  })
 }
 
 interface SubagentProgress {
@@ -3658,17 +3620,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       optimisticUserInput?.sessionId === currentSessionId
         ? optimisticUserInput
         : null
-    const shouldPrependOptimisticUser =
-      currentOptimisticInput &&
-      !hasMatchingUserMessage(effectiveMessages, currentOptimisticInput)
 
     if (effectiveMessages.length > 0) {
-      return shouldPrependOptimisticUser
-        ? [
-            buildOptimisticUserMessage(currentOptimisticInput),
-            ...effectiveMessages,
-          ]
-        : effectiveMessages
+      return appendOptimisticEcho(effectiveMessages, currentOptimisticInput)
     }
 
     if (isStreaming || isSendingMessageRef.current) {
@@ -3707,6 +3661,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
         } as unknown as UIMessage,
       ]
     }
+    // A brand-new chat has no other message to show, but the person's own
+    // bubble is already known — paint it while the send is still in flight.
+    if (currentOptimisticInput) {
+      return appendOptimisticEcho([], currentOptimisticInput)
+    }
     return []
   }, [
     currentSessionId,
@@ -3717,6 +3676,50 @@ const ChatPanelContent = observer(function ChatPanelContent({
     optimisticUserInput,
     isStreaming,
   ])
+
+  /**
+   * Paints the user's own bubble. `ChatInput` clears the composer synchronously
+   * on submit, so anything awaited before this (the live-turn probe, the consent
+   * modal) leaves the transcript frozen for that whole round trip.
+   */
+  const showOptimisticEcho = useCallback(
+    (content: string, files?: FileAttachment[]) => {
+      if (!currentSessionId) return
+      const trimmedContent = content.trim()
+      const fileArray = files ?? []
+      if (!trimmedContent && fileArray.length === 0) return
+      lastUserInputRef.current = { content: trimmedContent, files: fileArray }
+      const baselineUserId = newestUserId(messagesRef.current)
+      setOptimisticUserInput((current) =>
+        current &&
+        current.sessionId === currentSessionId &&
+        current.content === trimmedContent
+          ? current
+          : {
+              sessionId: currentSessionId,
+              content: trimmedContent,
+              files: fileArray,
+              baselineUserId,
+            },
+      )
+    },
+    [currentSessionId],
+  )
+
+  /** Drops the echo painted for a queued send that will not run as it was sent. */
+  const clearOptimisticEcho = useCallback(
+    (content: string) => {
+      const trimmedContent = content.trim()
+      setOptimisticUserInput((current) =>
+        current &&
+        current.sessionId === currentSessionId &&
+        current.content === trimmedContent
+          ? null
+          : current,
+      )
+    },
+    [currentSessionId],
+  )
 
   // Stable references for memo'd downstream components (TurnList / SubagentPanel).
   // Previously these were `Array.from(Map.values())` inline, which allocated on
@@ -5248,12 +5251,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         isUserAtBottomRef.current = true
       }
       setIsFollowing(true)
-      lastUserInputRef.current = { content: trimmedContent, files: fileArray }
-      setOptimisticUserInput({
-        sessionId: currentSessionId,
-        content: trimmedContent,
-        files: fileArray,
-      })
+      showOptimisticEcho(trimmedContent, fileArray)
 
       const parts: Array<
         | { type: "text"; text: string }
@@ -5441,6 +5439,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       isPhoneViewport,
       windowWidth,
       maybeAutoNameSession,
+      showOptimisticEcho,
     ],
   )
 
@@ -5805,6 +5804,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const handleRemoveQueuedMessage = useCallback(
     (messageId: string) => {
+      const removed =
+        messageQueue.find((m) => m.id === messageId) ??
+        serverQueue.queuedMessages.find((m) => m.id === messageId)
+      if (removed) clearOptimisticEcho(removed.content)
       if (serverQueue.isServerQueued(messageId)) {
         void serverQueue.remove(messageId).catch((error) => {
           console.warn(
@@ -5816,7 +5819,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
       setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
     },
-    [serverQueue],
+    [clearOptimisticEcho, messageQueue, serverQueue],
   )
 
   const handleReorderQueuedMessage = useCallback(
@@ -5862,6 +5865,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         (m) => m.id === messageId,
       )
       if (serverTarget) {
+        clearOptimisticEcho(serverTarget.content)
         void serverQueue.remove(messageId).catch((error) => {
           console.warn(
             "[ChatPanel] Failed to edit server queued message:",
@@ -5882,13 +5886,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return queue.filter((m) => m.id !== messageId)
       })
       if (!target) return
+      clearOptimisticEcho(target.content)
       setRestoreDraftRequest({
         nonce: Date.now(),
         content: target.content,
         files: target.files,
       })
     },
-    [serverQueue],
+    [clearOptimisticEcho, serverQueue],
   )
 
   // "Send now" — interrupt the current streaming turn and immediately drain
@@ -6036,6 +6041,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
       const trimmedContent = content.trim()
 
+      // iOS shows a one-time consent prompt before the message leaves the
+      // device; everywhere else this resolves on the next microtask, so the
+      // echo below still paints before any request goes out.
+      if (!(await ensureAiConsentForMessage())) return
+
+      // Paint the user's own bubble before anything is awaited or sent: the
+      // composer is already empty, and the live-turn probe below can take its
+      // full budget before `sendMessageInternal` runs.
+      showOptimisticEcho(trimmedContent, files)
+
       const queueMessage = async () => {
         const queueLocally = () =>
           setMessageQueue((queue) => [
@@ -6113,6 +6128,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       currentSessionId,
       probeLiveTurn,
       reloadAndAttachLiveTurn,
+      showOptimisticEcho,
     ],
   )
 
