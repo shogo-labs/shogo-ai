@@ -98,6 +98,18 @@ export interface DesktopIslandSnapshot {
 
 export type DesktopIslandBuddyLook = BuddyLook
 
+/**
+ * Snapshot `projectId` for sessions that belong to the workspace agent rather
+ * than a project. The API already keys that agent as `ws` (see
+ * `conversation.service.ts`), so the island reuses the id instead of inventing
+ * a second one.
+ */
+export const DESKTOP_ISLAND_WORKSPACE_AGENT_ID = "ws"
+
+export function isWorkspaceAgentProjectId(projectId: string | undefined): boolean {
+  return projectId === DESKTOP_ISLAND_WORKSPACE_AGENT_ID
+}
+
 export type DesktopIslandTarget =
   | { kind: "session"; projectId: string; sessionId: string }
   | { kind: "new"; projectId: string }
@@ -137,8 +149,9 @@ export type DesktopIslandAction =
 
 /** Where to route when the target project isn't mounted in this window. */
 export type DesktopIslandNavigation =
-  | { projectId: string; sessionId: string }
-  | { projectId: string; newChat: true }
+  | { kind: "project"; projectId: string; sessionId: string }
+  | { kind: "project"; projectId: string; newChat: true }
+  | { kind: "workspace-agent"; sessionId?: string }
 
 interface DesktopIslandBridge {
   islandUpdate?: (snapshot: DesktopIslandSnapshot) => void
@@ -297,7 +310,7 @@ function publishSnapshot(): void {
   const recentProjects = new Map<string, DesktopIslandProject>()
   const nextSessions = [...sessions.values()].map((session) => {
     if (session.pending?.kind === "permission") livePermissionIds.add(session.pending.request.id)
-    if (!recentProjects.has(session.projectId)) {
+    if (!recentProjects.has(session.projectId) && !isWorkspaceAgentProjectId(session.projectId)) {
       recentProjects.set(session.projectId, { projectId: session.projectId, name: session.projectName })
     }
     return snapshotSession(session)
@@ -357,13 +370,20 @@ function takePendingSend(key: string): PendingSend | undefined {
 
 async function handleAction(action: DesktopIslandAction): Promise<void> {
   if (action.type === "open") {
+    // The workspace agent lives in the app's agent chat, not in a project
+    // window, so route it through the navigator even when a window has the
+    // session registered.
+    if (isWorkspaceAgentProjectId(action.projectId)) {
+      navigator?.({ kind: "workspace-agent", sessionId: action.sessionId })
+      return
+    }
     if (isProjectMounted(action.projectId)) {
       chatSessionEvents.requestSelect({
         projectId: action.projectId,
         sessionId: action.sessionId,
       })
     } else {
-      navigator?.({ projectId: action.projectId, sessionId: action.sessionId })
+      navigator?.({ kind: "project", projectId: action.projectId, sessionId: action.sessionId })
     }
     return
   }
@@ -410,14 +430,29 @@ async function handleAction(action: DesktopIslandAction): Promise<void> {
     return
   }
 
+  if (isWorkspaceAgentProjectId(target.projectId)) {
+    // The agent chat is a single app surface: open it (with the session when
+    // the island knows one) and let the registered panel take the message.
+    if (target.kind === "session") {
+      queueSend(sessionKey(target.projectId, target.sessionId), action, "that chat")
+      navigator?.({
+        kind: "workspace-agent",
+        sessionId: target.sessionId,
+      })
+    } else {
+      navigator?.({ kind: "workspace-agent" })
+    }
+    return
+  }
+
   if (target.kind === "session") {
     queueSend(sessionKey(target.projectId, target.sessionId), action, "that chat")
     if (mounted) chatSessionEvents.requestSelect(target)
-    else navigator?.({ projectId: target.projectId, sessionId: target.sessionId })
+    else navigator?.({ kind: "project", projectId: target.projectId, sessionId: target.sessionId })
   } else {
     queueSend(projectKey(target.projectId), action, "a new chat")
     if (mounted) chatSessionEvents.requestNewChat({ projectId: target.projectId })
-    else navigator?.({ projectId: target.projectId, newChat: true })
+    else navigator?.({ kind: "project", projectId: target.projectId, newChat: true })
   }
 }
 
@@ -435,7 +470,7 @@ export function registerDesktopIslandSession(
 ): () => void {
   const session: RegisteredIslandSession = {
     ...options,
-    projectName: options.projectName ?? "Project",
+    projectName: options.projectName ?? (isWorkspaceAgentProjectId(options.projectId) ? "Shogo" : "Project"),
     title: options.title ?? "Untitled chat",
     status: options.status ?? "idle",
     lastActivityAt: Date.now(),

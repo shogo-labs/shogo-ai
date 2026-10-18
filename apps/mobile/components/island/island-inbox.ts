@@ -16,6 +16,10 @@ const STATUS_RANK: Record<IslandSessionStatus, number> = {
   idle: 3,
 }
 
+/** Needs-you first, then running, then finished. Exported for the workspace
+ * agent's inbox rows, which are not built by `orderIslandSessions`. */
+export const ISLAND_STATUS_RANK = STATUS_RANK
+
 export function needsAttention(status: IslandSessionStatus): boolean {
   return status === "needs_approval" || status === "needs_answer"
 }

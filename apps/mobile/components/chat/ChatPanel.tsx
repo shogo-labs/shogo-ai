@@ -236,6 +236,7 @@ import {
   type OpenProjectPaneRequest,
 } from "./ChatContext"
 import {
+  DESKTOP_ISLAND_WORKSPACE_AGENT_ID,
   registerDesktopIslandSession,
   updateDesktopIslandSession,
   type DesktopIslandSessionState,
@@ -7198,12 +7199,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   // Register this chat with the desktop island. The registration is a no-op
   // on web/mobile, but on Electron it lets the overlay reuse the exact same
-  // send, permission and ask-user paths as the in-window composer.
+  // send, permission and ask-user paths as the in-window composer. Workspace
+  // agent chats have no project, so they register under the agent's id.
+  const islandProjectId =
+    projectId ?? (chatScope === "workspace" && workspaceId ? DESKTOP_ISLAND_WORKSPACE_AGENT_ID : undefined)
   useEffect(() => {
-    if (!projectId || !currentSessionId) return
+    if (!islandProjectId || !currentSessionId) return
     return registerDesktopIslandSession({
       sessionId: currentSessionId,
-      projectId,
+      projectId: islandProjectId,
       ...islandStateRef.current,
       sendMessage: (text, files) => islandSendRef.current(text, files),
       respondPermission: (requestId, decision, pattern) =>
@@ -7214,14 +7218,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
       buildPlan: (modelId) => islandBuildPlanRef.current(modelId),
       sendPlanFeedback: (text) => islandPlanFeedbackRef.current(text),
     })
-  }, [currentSessionId, projectId])
+  }, [currentSessionId, islandProjectId])
 
   // Streaming ticks and activity transitions update the existing
   // registration instead of re-registering the session.
   useEffect(() => {
-    if (!projectId || !currentSessionId) return
-    updateDesktopIslandSession(projectId, currentSessionId, islandState)
-  }, [currentSessionId, islandState, projectId])
+    if (!islandProjectId || !currentSessionId) return
+    updateDesktopIslandSession(islandProjectId, currentSessionId, islandState)
+  }, [currentSessionId, islandProjectId, islandState])
 
   // Stable session summary so a new object literal isn't allocated each
   // render even when the underlying session id/name haven't changed.

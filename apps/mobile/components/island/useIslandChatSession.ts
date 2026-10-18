@@ -103,6 +103,7 @@ export interface IslandChatSession {
 
 export interface IslandSessionContext {
   bridge: IslandBridge
+  /** `"ws"` for a workspace-agent chat; a project id otherwise. */
   projectId: string
   sessionId: string
   workspaceId?: string
@@ -110,6 +111,8 @@ export interface IslandSessionContext {
   /** Model for sends that don't pick one. */
   modelId: string
   interactionMode: ChatSendInteractionMode
+  /** Chat runs against the workspace-agent runtime, not a project runtime. */
+  workspaceAgent?: boolean
 }
 
 const OK: IslandResult = { ok: true }
@@ -244,20 +247,24 @@ export function useOwnedIslandSession(
   ctx: IslandSessionContext,
   initialSend?: { text: string; files?: IslandFileRef[]; attachments?: IslandAttachment[] } | null,
 ): IslandChatSession {
-  const { bridge, projectId, sessionId, workspaceId, userId, modelId, interactionMode } = ctx
+  const { bridge, projectId, sessionId, workspaceId, userId, modelId, interactionMode, workspaceAgent } = ctx
   const actions = useDomainActions()
   const { collection, load } = useSessionHistory(sessionId)
-  const chatWorkspaceId =
-    resolveChatScope({ surface: "project-tab", isInitialSession: false, requestedScope: "project" }) ===
-      "workspace" && workspaceId
-      ? workspaceId
-      : undefined
+  // The workspace agent is addressed by workspace, not by project; sending a
+  // project id would route the turn back through a project runtime.
+  const chatProjectId = workspaceAgent ? undefined : projectId
+  const chatWorkspaceId = workspaceAgent
+    ? workspaceId
+    : resolveChatScope({ surface: "project-tab", isInitialSession: false, requestedScope: "project" }) ===
+          "workspace" && workspaceId
+        ? workspaceId
+        : undefined
 
   const clientTurnIdRef = useRef<string | undefined>(undefined)
   const getClientTurnId = useCallback(() => clientTurnIdRef.current, [])
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
-    projectId,
+    projectId: chatProjectId,
     workspaceId: chatWorkspaceId,
     credentials: "include",
     chatSessionId: sessionId,
@@ -339,7 +346,7 @@ export function useOwnedIslandSession(
         if (cancelled) return
         setMessages(history)
         const turnStatus = await probeChatTurnStatus({
-          url: buildChatTurnUrl(API_URL!, projectId, null, sessionId, chatWorkspaceId),
+          url: buildChatTurnUrl(API_URL!, chatProjectId, null, sessionId, chatWorkspaceId),
           credentials: "include",
         })
         if (!cancelled && shouldAttachLiveStream(turnStatus)) resume()
@@ -373,12 +380,12 @@ export function useOwnedIslandSession(
       setError(null)
       const clientTurnId = generateClientTurnId()
       const body = buildChatSendBody({
-        featureId: projectId,
+        featureId: chatProjectId,
         phase: null,
         chatSessionId: sessionId,
-        workspaceId,
+        workspaceId: chatWorkspaceId,
         userId,
-        projectId,
+        projectId: chatProjectId,
         agentMode: options.modelId || modelId,
         interactionMode: options.interactionMode ?? interactionMode,
         clientTurnId,
@@ -412,7 +419,7 @@ export function useOwnedIslandSession(
         return fail(err)
       }
     },
-    [actions, interactionMode, modelId, projectId, sendMessage, serverQueue, sessionId, userId, workspaceId],
+    [actions, chatProjectId, chatWorkspaceId, interactionMode, modelId, sendMessage, serverQueue, sessionId, userId],
   )
 
   const send = useCallback(
@@ -442,7 +449,7 @@ export function useOwnedIslandSession(
     stop()
     const req = buildStopRequest({
       localAgentUrl: null,
-      projectId,
+      projectId: chatProjectId,
       workspaceId: chatWorkspaceId,
       apiBaseUrl: API_URL!,
       platform: "web",
@@ -455,15 +462,18 @@ export function useOwnedIslandSession(
     } catch (err) {
       return fail(err)
     }
-  }, [chatWorkspaceId, projectId, sessionId, stop])
+  }, [chatProjectId, chatWorkspaceId, sessionId, stop])
 
   const respondPermission = useCallback(
     async (decision: IslandPermissionDecision, pattern?: string) => {
       if (!permission) return OK
+      if (!chatProjectId) {
+        return { ok: false, error: "Approve this step in Shogo" }
+      }
       const id = permission.id
       setPermission(null)
       try {
-        await api.sendPermissionResponse(createHttpClient(), projectId, {
+        await api.sendPermissionResponse(createHttpClient(), chatProjectId, {
           id,
           decision,
           ...(pattern ? { pattern } : {}),
@@ -473,7 +483,7 @@ export function useOwnedIslandSession(
         return fail(err)
       }
     },
-    [permission, projectId],
+    [chatProjectId, permission],
   )
 
   const pendingQuestion = useMemo(() => derivePendingQuestion(messages), [messages])

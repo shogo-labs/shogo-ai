@@ -11,6 +11,11 @@ import type {
   IslandPermissionDecision,
 } from "../../lib/desktop-island"
 
+export {
+  DESKTOP_ISLAND_WORKSPACE_AGENT_ID as ISLAND_WORKSPACE_AGENT_ID,
+  isWorkspaceAgentProjectId as isWorkspaceAgentId,
+} from "../../lib/desktop-island"
+
 export type IslandMode = "hidden" | "collapsed" | "expanded" | "compose"
 
 export type IslandSession = DesktopIslandSession
