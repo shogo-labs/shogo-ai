@@ -470,7 +470,9 @@ test.describe("chat resumes a live turn it is not attached to", () => {
     await llm.waitForTokens(lead, 60, 30_000)
 
     const ghost = watchForGhostStop(page, [lead])
-    await send(page, `${marker("long", "pb", 60)} follow-up`)
+    // 400 × 25 ms = 10 s: the queued turn must outlast Stop → attach, or the
+    // window reads the Stop it correctly had before the turn started and reds.
+    await send(page, `${marker("long", "pb", 400, { ms: 25 })} follow-up`)
     await page.waitForTimeout(1500)
     soft(await stopShown(page), "after sending, the window shows the chat as busy").toBe(true)
     await expectFollows(page, lead, "after sending, before Stop")
@@ -513,7 +515,9 @@ test.describe("chat resumes a live turn it is not attached to", () => {
     const page = await newWindow(sid)
     await page.waitForTimeout(2000)
     soft(await stopShown(page), "a window opened while the model is thinking shows the chat as busy").toBe(true)
-    await send(page, `${marker("long", "hb", 60)} follow-up`)
+    // Same budget as the "pb" follow-up above: 400 × 25 ms = 10 s, long enough
+    // that a loaded runner still sees the queued turn start after Stop.
+    await send(page, `${marker("long", "hb", 400, { ms: 25 })} follow-up`)
     await page.waitForTimeout(1500)
     soft(llm.turn("hb"), "the follow-up must wait for the thinking turn, not run alongside it").toBeUndefined()
     soft(await stopShown(page), "after sending, the window shows the chat as busy").toBe(true)
@@ -524,7 +528,10 @@ test.describe("chat resumes a live turn it is not attached to", () => {
   test("the turn-status probe fails when the window opens, then the user sends a message", async () => {
     const sid = await createChat("probe fails")
     const lead = "fa"
-    const leadN = 900
+    // A CI window open takes ~24 s (cold Expo bundle + runtime warm), so a
+    // 900-token (22.5 s) lead is often already over when the probe runs — and
+    // then there is nothing live to resume. 1800 × 25 ms = 45 s ≈ 2× that open.
+    const leadN = 1800
     await startTurnElsewhere(sid, `${marker("long", lead, leadN, { ms: 25 })} elsewhere`)
     await llm.waitForTokens(lead, 60, 30_000)
     const page = await context.newPage()
