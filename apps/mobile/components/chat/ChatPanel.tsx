@@ -58,7 +58,11 @@ import { useRouter } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LinearGradient } from "expo-linear-gradient"
 import { DefaultChatTransport } from "ai"
-import { appendQueuedUserMessage, queuedRowToUserMessage } from "./queued-user-message"
+import {
+  appendQueuedUserMessage,
+  appendQueuedUserMessages,
+  canAttachQueuedTurn,
+} from "./queued-user-message"
 import {
   appendOptimisticEcho,
   buildOptimisticUserMessage,
@@ -3267,20 +3271,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // Whatever happens next, the transcript is live again: the stop
       // snapshot's reply is merged in rather than left frozen behind this turn.
       releaseStopSnapshot()
-      // A message already on screen means this window showed that turn some
-      // other way and whatever runs now is a later one; attaching bare would
-      // write its reply over the last one. Load the history (which has the
-      // running turn's message) and attach from there.
-      if (
-        !queuedUserMessage ||
-        messagesRef.current.some((m) => m.id === queuedUserMessage.id)
-      ) {
+      if (!queuedUserMessage) {
+        reloadAndAttachLiveTurnRef.current()
+        return
+      }
+      const onScreen = messagesRef.current.some(
+        (m) => m.id === queuedUserMessage.id,
+      );
+      // Still queued bubbles are painted from the queue rows, not from this
+      // list, so a message already here came from the server's history (or a
+      // previous dispatch). If nothing landed after it, this turn's reply
+      // belongs at the end and attaching directly is right — no reload, so the
+      // messages still queued behind it keep their bubbles. If something did
+      // land after it, the transcript has moved on and history is the truth.
+      if (onScreen && !canAttachQueuedTurn(messagesRef.current, queuedUserMessage)) {
         reloadAndAttachLiveTurnRef.current()
         return
       }
       // The server saved the queued message and started its turn; show the
       // message before attaching to the reply (see queued-user-message.ts).
-      setMessages((prev) => appendQueuedUserMessage(prev, queuedUserMessage))
+      if (!onScreen) {
+        setMessages((prev) => appendQueuedUserMessage(prev, queuedUserMessage))
+      }
       void resumeStreamSingleFlight().catch((error) => {
         console.warn("[ChatPanel] Failed to attach to queued turn:", error)
       })
@@ -3631,24 +3643,38 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [messages.length, pendingInitialMessage])
 
+  /**
+   * The transcript plus the bubbles for the rows still waiting on the server.
+   * Derived here (not copied into `messages`) so a deleted or edited queued
+   * message loses its bubble and a history reload cannot drop the ones still
+   * queued (see queued-user-message.ts).
+   */
+  const messagesWithQueued = useMemo(
+    () => appendQueuedUserMessages(messages, serverQueue.pendingUserMessages),
+    [messages, serverQueue.pendingUserMessages],
+  )
+
   useEffect(() => {
     if (!optimisticUserInput) return
     if (optimisticUserInput.sessionId !== currentSessionId) {
       setOptimisticUserInput(null)
       return
     }
-    if (hasMatchingUserMessage(messages, optimisticUserInput)) {
+    if (hasMatchingUserMessage(messagesWithQueued, optimisticUserInput)) {
       setOptimisticUserInput(null)
     }
-  }, [currentSessionId, messages, optimisticUserInput])
+  }, [currentSessionId, messagesWithQueued, optimisticUserInput])
 
   const displayMessages = useMemo((): UIMessage[] => {
     // While the stop snapshot is held, the window still shows it — merged with
     // the live array so a message sent after Stop appears under the reply it
     // followed, instead of being hidden behind the frozen transcript.
-    const effectiveMessages = foldSnapshotContinuation(
-      stoppedMessages ? mergeStoppedSnapshot(messages, stoppedMessages) : messages,
-      resumeSnapshotIdRef.current,
+    const effectiveMessages = appendQueuedUserMessages(
+      foldSnapshotContinuation(
+        stoppedMessages ? mergeStoppedSnapshot(messages, stoppedMessages) : messages,
+        resumeSnapshotIdRef.current,
+      ),
+      serverQueue.pendingUserMessages,
     )
     const currentOptimisticInput =
       optimisticUserInput?.sessionId === currentSessionId
@@ -3704,6 +3730,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [
     currentSessionId,
     messages,
+    serverQueue.pendingUserMessages,
     stoppedMessages,
     pendingInitialMessage,
     initialMessage,
@@ -6049,7 +6076,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         extra: { text: wireText },
       })
 
-      const row = await serverQueue.enqueue({
+      await serverQueue.enqueue({
         content: trimmedContent,
         files,
         selectedModel: perMsgModel || selectedModel,
@@ -6059,15 +6086,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // The queued turn is the server's to run, but the bubble is the send's:
       // waiting for the queue poll to notice the dispatch means the reply
       // arrives before its own message, and with the previous user bubble
-      // still last, the new reply renders under the old message. Paint it from
-      // the row the server created (same id the persisted message gets), after
-      // handing back any stopped snapshot so it lands *below* the stop.
+      // still last, the new reply renders under the old message. The bubble is
+      // painted from the queue row itself (see `displayMessages`), so deleting
+      // or editing the queued message takes it away again; hand back any
+      // stopped snapshot so it lands *below* the stop.
       releaseStopSnapshot()
-      if (row) {
-        setMessages((prev) =>
-          appendQueuedUserMessage(prev, queuedRowToUserMessage(row)),
-        )
-      }
     },
     [
       currentSession,

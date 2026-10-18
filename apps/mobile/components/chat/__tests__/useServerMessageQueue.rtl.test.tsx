@@ -65,6 +65,7 @@ const { useServerMessageQueue } = await import("../useServerMessageQueue")
 
 const turns: Array<{ id: string; text: string } | undefined> = []
 let queueApi: ReturnType<typeof useServerMessageQueue> | null = null
+let pendingIds: string[] = []
 
 const Probe = observer(function Probe({ isStreaming = true }: { isStreaming?: boolean }) {
   const queue = useServerMessageQueue({
@@ -75,6 +76,7 @@ const Probe = observer(function Probe({ isStreaming = true }: { isStreaming?: bo
       turns.push(message ? { id: message.id, text: (message.parts[0] as { text: string }).text } : undefined),
   })
   queueApi = queue
+  pendingIds = queue.pendingUserMessages.map((m) => m.id)
   return <ul>{queue.queuedMessages.map((m) => <li key={m.id}>{m.content}</li>)}</ul>
 })
 
@@ -84,6 +86,7 @@ function row(id: string, position: number, content: string, sessionId = "s1"): R
 
 function reset() {
   turns.length = 0
+  pendingIds = []
   dispatchedBeforeObserved = false
   serverSeq = 0
   act(() => runInAction(() => { collection.all.splice(0, collection.all.length) }))
@@ -128,6 +131,25 @@ describe("useServerMessageQueue", () => {
     // client saw the new order.
     act(() => runInAction(() => { collection.all.splice(1, 1) }))
     expect(turns).toEqual([{ id: "q2", text: "second" }])
+  })
+
+  test("a dispatched head keeps its bubble until the panel can attach it", () => {
+    reset()
+    // A turn is streaming, so the hook holds the dispatch until the stream
+    // closes: the row is already gone from the queue, and the transcript must
+    // not lose the bubble in that gap.
+    const view = render(<Probe isStreaming />)
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
+    expect(pendingIds).toEqual(["q1", "q2"])
+
+    act(() => runInAction(() => { collection.all.splice(0, 1) })) // the server took q1
+    expect(turns).toEqual([]) // not attached yet — the previous stream is open
+    expect(pendingIds).toEqual(["q1", "q2"])
+
+    view.rerender(<Probe isStreaming={false} />)
+    expect(turns).toEqual([{ id: "q1", text: "first" }])
+    // q1 is the panel's now; the one still queued keeps its bubble.
+    expect(pendingIds).toEqual(["q2"])
   })
 
   test("a row the user deletes is not a turn starting", async () => {

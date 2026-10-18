@@ -36,3 +36,34 @@ export function appendQueuedUserMessage<T extends UIMessage>(messages: T[], user
   if (messages.some((m) => m.id === userMessage.id)) return messages
   return [...messages, userMessage as T]
 }
+
+/**
+ * The bubbles for the messages the server has not saved yet, in send order —
+ * still-queued rows and a dispatched head that has not been attached.
+ *
+ * They are derived from the queue, not copied into the transcript: the queue is
+ * the only thing that knows whether a message is still going to be sent, so a
+ * delete, an edit, a dispatch and a history reload all resolve themselves
+ * instead of leaving a bubble behind (or dropping the ones still queued).
+ */
+export function appendQueuedUserMessages<T extends UIMessage>(
+  messages: T[],
+  pending: UIMessage[],
+): T[] {
+  if (pending.length === 0) return messages
+  let next = messages
+  for (const userMessage of pending) next = appendQueuedUserMessage(next, userMessage)
+  return next
+}
+
+/**
+ * Whether the reply to `queuedUserMessage` can be attached as-is: its message
+ * is on screen *and* nothing landed after it, so the reply belongs at the end.
+ * A message that is on screen but no longer last came from a reload of a
+ * transcript that has moved on — attaching there would write the reply over a
+ * later turn, so that path reloads history instead.
+ */
+export function canAttachQueuedTurn(messages: UIMessage[], queuedUserMessage: UIMessage): boolean {
+  const index = messages.findIndex((m) => m.id === queuedUserMessage.id)
+  return index !== -1 && index === messages.length - 1
+}

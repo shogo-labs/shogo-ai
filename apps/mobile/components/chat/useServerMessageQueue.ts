@@ -101,6 +101,15 @@ export function useServerMessageQueue({
    */
   const enqueuedRef = useRef(new Map<string, UIMessage>())
   const [trackedCount, setTrackedCount] = useState(0)
+  /**
+   * The message of a row the server has taken but whose turn this window has
+   * not attached to yet (it waits for the previous stream to close). Its queue
+   * row is gone, so the transcript keeps painting the bubble from here until
+   * `onTurnAvailable` hands it over.
+   */
+  const [pendingUserMessage, setPendingUserMessage] = useState<
+    UIMessage | undefined
+  >(undefined)
   const rowsRef = useRef<IChatQueuedMessage[]>([])
   const isStreamingRef = useRef(isStreaming)
   const onTurnAvailableRef = useRef(onTurnAvailable)
@@ -119,6 +128,24 @@ export function useServerMessageQueue({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const rows = useMemo(() => liveRows, [rowsSignature])
   const queuedMessages = useMemo(() => rows.map(toQueuedMessage), [rows])
+  /**
+   * The queued rows as transcript messages, so the panel can paint their
+   * bubbles from the queue itself. Ids are the ones the server saves them
+   * under, so the bubble and the persisted message are the same turn.
+   */
+  const queuedUserMessages = useMemo(() => rows.map(queuedRowToUserMessage), [rows])
+  /**
+   * Everything the transcript should paint that the server has not saved as a
+   * message yet: the dispatched-but-unattached head first (it was queued before
+   * the rest), then the rows still waiting.
+   */
+  const pendingUserMessages = useMemo(
+    () =>
+      pendingUserMessage
+        ? [pendingUserMessage, ...queuedUserMessages]
+        : queuedUserMessages,
+    [pendingUserMessage, queuedUserMessages],
+  )
 
   rowsRef.current = rows
   isStreamingRef.current = isStreaming
@@ -130,6 +157,7 @@ export function useServerMessageQueue({
     pendingTurnRef.current = null
     enqueuedRef.current.clear()
     setTrackedCount(0)
+    setPendingUserMessage(undefined)
   }, [sessionId, enabled])
 
   const load = useCallback(async () => {
@@ -142,6 +170,7 @@ export function useServerMessageQueue({
     const { userMessage } = pendingTurnRef.current
     const notify = onTurnAvailableRef.current
     pendingTurnRef.current = null
+    setPendingUserMessage(undefined)
     notify?.(userMessage)
   }, [])
 
@@ -170,6 +199,7 @@ export function useServerMessageQueue({
     if (dropped > 0) setTrackedCount((count) => Math.max(0, count - dropped))
     if (!dispatched) return
     pendingTurnRef.current = { userMessage: dispatched }
+    setPendingUserMessage(dispatched)
     flushPendingTurn()
   }, [flushPendingTurn])
 
@@ -219,9 +249,9 @@ export function useServerMessageQueue({
     }
     if (dispatchedId && !pendingTurnRef.current) {
       const removed = previousRows.get(dispatchedId)
-      pendingTurnRef.current = {
-        userMessage: removed ? queuedRowToUserMessage(removed) : undefined,
-      }
+      const userMessage = removed ? queuedRowToUserMessage(removed) : undefined
+      pendingTurnRef.current = { userMessage }
+      setPendingUserMessage(userMessage)
     }
     drainEnqueued()
     flushPendingTurn()
@@ -339,6 +369,7 @@ export function useServerMessageQueue({
 
   return {
     queuedMessages,
+    pendingUserMessages,
     enqueue,
     remove,
     update,

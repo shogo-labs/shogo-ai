@@ -34,6 +34,112 @@ function completedTurn(text: string): string {
   ].join("")
 }
 
+/**
+ * The queue is the server's: `rows` stands in for the `chat_queued_message`
+ * table, so the spec decides when a queued message is dispatched (the server
+ * removes the row when it starts the turn).
+ */
+type QueueMockState = {
+  rows: Array<Record<string, unknown>>
+  mockChat: boolean
+  holdNextChat: boolean
+  onChatSeen?: () => void
+  releaseChat?: () => void
+  nextRowId: number
+  nextReply: number
+}
+
+function installQueueMock(page: Page, state: QueueMockState) {
+  return Promise.all([
+    page.route(CHAT_URL_GLOB, async (route: Route) => {
+      if (route.request().method() !== "POST") return route.continue()
+      if (!state.mockChat) return route.continue()
+      if (state.holdNextChat) {
+        state.holdNextChat = false
+        state.onChatSeen?.()
+        await new Promise<void>((resolve) => {
+          state.releaseChat = resolve
+        })
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: completedTurn(`Mocked response ${++state.nextReply}`),
+      })
+    }),
+    page.route(QUEUE_URL_GLOB, async (route: Route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      const parts = url.pathname.split("/").filter(Boolean)
+      const resourceIndex = parts.indexOf("chat-queued-messages")
+      const id = parts[resourceIndex + 1]
+      if (request.method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, items: state.rows, total: state.rows.length }),
+        })
+        return
+      }
+      if (request.method() === "POST" && parts.length === resourceIndex + 1) {
+        const body = request.postDataJSON() as Record<string, unknown>
+        const row = {
+          id: `queue-e2e-${++state.nextRowId}`,
+          sessionId: body.sessionId,
+          userId: "local-e2e-user",
+          position: state.rows.length,
+          status: "pending",
+          content: body.content,
+          parts: body.parts,
+          body: body.body,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }
+        state.rows.push(row)
+        await route.fulfill({
+          status: 201,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, data: row }),
+        })
+        return
+      }
+      if (!id) return route.continue()
+      const index = state.rows.findIndex((row) => row.id === id)
+      if (request.method() === "PATCH") {
+        Object.assign(state.rows[index], request.postDataJSON())
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, data: state.rows[index] }),
+        })
+        return
+      }
+      if (request.method() === "DELETE") {
+        state.rows.splice(index, 1)
+        await route.fulfill({ status: 200, body: JSON.stringify({ ok: true }) })
+        return
+      }
+      if (request.method() === "POST" && parts.at(-1) === "reorder") {
+        const body = request.postDataJSON() as { direction: "up" | "down" }
+        const next = body.direction === "up" ? index - 1 : index + 1
+        if (index >= 0 && next >= 0 && next < state.rows.length) {
+          ;[state.rows[index], state.rows[next]] = [state.rows[next], state.rows[index]]
+          state.rows.forEach((row, position) => {
+            row.position = position
+          })
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, data: state.rows.find((row) => row.id === id) }),
+        })
+        return
+      }
+      await route.continue()
+    }),
+  ])
+}
+
 function projectComposerInput(page: Page) {
   return page.getByTestId("project-composer-input").or(
     page.getByRole("textbox", { name: "Chat message input" }),
@@ -41,11 +147,11 @@ function projectComposerInput(page: Page) {
 }
 
 /**
- * A row in the "N Queued" strip. A queued prompt now also paints as a
- * transcript bubble (the send owns its bubble), so a page-wide
- * `getByText(prompt)` matches both — assertions have to say which one they
- * mean. `exact: true` matters: without it this also matches the
- * "Delete queued message" / "Move queued message down" buttons.
+ * A row in the "N Queued" strip. A queued prompt also paints as a transcript
+ * bubble (the send owns its bubble), so a page-wide `getByText(prompt)` matches
+ * both — assertions have to say which one they mean. `exact: true` matters:
+ * without it this also matches the "Delete queued message" / "Move queued
+ * message down" buttons.
  *
  * The shell mounts more than one chat panel (desktop + phone layouts, restored
  * tabs), so several strips can be in the DOM with the same rows: callers use
@@ -55,17 +161,60 @@ function queuedRow(page: Page, text: string) {
   return page.getByLabel("Queued message", { exact: true }).filter({ hasText: text })
 }
 
-/** How many times `text` appears on screen outside the queued strip. */
-async function transcriptCount(page: Page, text: string): Promise<number> {
+/**
+ * Positions (document order) of the transcript text containing `text`.
+ *
+ * A page-wide text scan has to skip two lookalikes: the "N Queued" strip, which
+ * repeats the text of every queued message, and the composer, whose transparent
+ * mention-highlight mirror repeats whatever is typed or restored as a draft.
+ * Both are decorative for this purpose, so only real transcript text counts.
+ */
+async function transcriptPositions(page: Page, text: string): Promise<number[]> {
   return page.evaluate((needle) => {
-    const count = (haystack: string) => haystack.split(needle).length - 1
-    const total = count(document.body?.innerText ?? "")
-    let queued = 0
-    for (const row of Array.from(document.querySelectorAll('[aria-label="Queued message"]'))) {
-      queued += count((row as HTMLElement).innerText ?? "")
+    // The composer repeats its own text twice over: once in the transparent
+    // mention-highlight mirror and once in the input, so its subtree is skipped
+    // whole (the input's parent is the composer row that holds both).
+    const composer = document.querySelector('[aria-label="Chat message input"]')
+    const composerRoot = composer?.parentElement ?? null
+    const hidden = (start: Element | null) => {
+      for (let el: Element | null = start; el; el = el.parentElement) {
+        if (el.getAttribute("aria-label") === "Queued message") return true
+        if (el.getAttribute("aria-hidden") === "true") return true
+        if (composerRoot && el === composerRoot) return true
+        const style = (el as HTMLElement).style
+        if (style && (style.pointerEvents === "none" || style.color === "transparent")) {
+          return true
+        }
+      }
+      return false
     }
-    return total - queued
+    const positions: number[] = []
+    const walker = document.createTreeWalker(document.body!, NodeFilter.SHOW_TEXT)
+    let position = 0
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      position += 1
+      if (hidden(node.parentElement)) continue
+      if ((node.nodeValue ?? "").includes(needle)) positions.push(position)
+    }
+    return positions
   }, text)
+}
+
+/** How many transcript bubbles carry `text`. */
+async function transcriptCount(page: Page, text: string): Promise<number> {
+  return (await transcriptPositions(page, text)).length
+}
+
+/** Where in the transcript `text` sits, for ordering two bubbles. -1 when absent. */
+async function bubbleIndex(page: Page, text: string): Promise<number> {
+  const [first] = await transcriptPositions(page, text)
+  return first ?? -1
+}
+
+async function transcriptOrder(page: Page, first: string, second: string): Promise<boolean> {
+  const firstIndex = await bubbleIndex(page, first)
+  const secondIndex = await bubbleIndex(page, second)
+  return firstIndex >= 0 && secondIndex >= 0 && firstIndex < secondIndex
 }
 
 async function waitForIdle(page: Page) {
@@ -126,139 +275,159 @@ async function openProject(page: Page, api: APIRequestContext) {
   await waitForIdle(page)
 }
 
+/**
+ * Send `first` with the chat POST held open so the composer is mid-turn and the
+ * next sends queue instead of starting turns.
+ */
+async function holdATurnWith(page: Page, state: QueueMockState, first: string) {
+  state.mockChat = true
+  state.holdNextChat = true
+  const chatSeen = new Promise<void>((resolve) => {
+    state.onChatSeen = resolve
+  })
+  await projectComposerInput(page).fill(first)
+  await page.keyboard.press("Enter")
+  await chatSeen
+}
+
+/**
+ * Unique prompts per test: the local API keeps its database across runs and
+ * `openProject` reuses the first project, so a prompt reused from an earlier run
+ * is already in that session's history — and a transcript assertion counts
+ * whatever is on screen, not just this run's bubbles.
+ */
+function prompts(stamp: string) {
+  return {
+    lead: `lead prompt ${stamp}`,
+    alpha: `alpha queued prompt ${stamp}`,
+    beta: `beta queued prompt ${stamp}`,
+  }
+}
+
 test.describe("server-backed chat queue — local UI", () => {
-  test("keeps a queued prompt after reload and supports reorder/delete", async ({ page }) => {
-    const queueRows: Array<Record<string, unknown>> = []
-    let nextId = 0
-    let holdNextChat = false
-    let mockChatRequests = false
-    let chatSeenResolve: (() => void) | null = null
-    let releaseHeldChat: (() => void) | null = null
-
-    await page.route(CHAT_URL_GLOB, async (route: Route) => {
-      if (route.request().method() !== "POST") return route.continue()
-      if (!mockChatRequests) return route.continue()
-      if (holdNextChat) {
-        holdNextChat = false
-        chatSeenResolve?.()
-        await new Promise<void>((resolve) => {
-          releaseHeldChat = resolve
-        })
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: "text/event-stream",
-        body: completedTurn("Mocked response"),
-      })
-    })
-
-    await page.route(QUEUE_URL_GLOB, async (route: Route) => {
-      const request = route.request()
-      const url = new URL(request.url())
-      const parts = url.pathname.split("/").filter(Boolean)
-      const resourceIndex = parts.indexOf("chat-queued-messages")
-      const id = parts[resourceIndex + 1]
-      if (request.method() === "GET") {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true, items: queueRows, total: queueRows.length }),
-        })
-        return
-      }
-      if (request.method() === "POST" && parts.length === resourceIndex + 1) {
-        const body = request.postDataJSON() as Record<string, unknown>
-        const row = {
-          id: `queue-e2e-${++nextId}`,
-          sessionId: body.sessionId,
-          userId: "local-e2e-user",
-          position: queueRows.length,
-          status: "pending",
-          content: body.content,
-          parts: body.parts,
-          body: body.body,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        }
-        queueRows.push(row)
-        await route.fulfill({
-          status: 201,
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true, data: row }),
-        })
-        return
-      }
-      if (!id) return route.continue()
-      const index = queueRows.findIndex((row) => row.id === id)
-      if (request.method() === "PATCH") {
-        Object.assign(queueRows[index], request.postDataJSON())
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true, data: queueRows[index] }),
-        })
-        return
-      }
-      if (request.method() === "DELETE") {
-        queueRows.splice(index, 1)
-        await route.fulfill({ status: 200, body: JSON.stringify({ ok: true }) })
-        return
-      }
-      if (request.method() === "POST" && parts.at(-1) === "reorder") {
-        const body = request.postDataJSON() as { direction: "up" | "down" }
-        const next = body.direction === "up" ? index - 1 : index + 1
-        if (index >= 0 && next >= 0 && next < queueRows.length) {
-          ;[queueRows[index], queueRows[next]] = [queueRows[next], queueRows[index]]
-          queueRows.forEach((row, position) => { row.position = position })
-        }
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true, data: queueRows.find((row) => row.id === id) }),
-        })
-        return
-      }
-      await route.continue()
-    })
-
+  test("keeps a queued prompt after reload and supports reorder/delete/edit", async ({ page }) => {
+    const state: QueueMockState = {
+      rows: [],
+      mockChat: false,
+      holdNextChat: false,
+      nextRowId: 0,
+      nextReply: 0,
+    }
+    const { lead, alpha, beta } = prompts(`reorder-${Date.now().toString(36)}`)
+    await installQueueMock(page, state)
     await openProject(page, page.request)
+    await holdATurnWith(page, state, lead)
 
-    mockChatRequests = true
-    holdNextChat = true
-    const firstChatSeen = new Promise<void>((resolve) => {
-      chatSeenResolve = resolve
-    })
-    await projectComposerInput(page).fill("first prompt")
+    await projectComposerInput(page).fill(alpha)
     await page.keyboard.press("Enter")
-    await firstChatSeen
-
-    await projectComposerInput(page).fill("queued prompt")
-    await page.keyboard.press("Enter")
-    await expect(queuedRow(page, "queued prompt").first()).toBeVisible()
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
     // …and it is already a transcript bubble of its own, next to the strip.
-    await expect.poll(() => transcriptCount(page, "queued prompt")).toBe(1)
-    await projectComposerInput(page).fill("second queued prompt")
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(1)
+    await projectComposerInput(page).fill(beta)
     await page.keyboard.press("Enter")
-    await expect(queuedRow(page, "second queued prompt").first()).toBeVisible()
-    await expect.poll(() => transcriptCount(page, "second queued prompt")).toBe(1)
-    expect(queueRows).toHaveLength(2)
+    await expect(queuedRow(page, beta).first()).toBeVisible()
+    await expect.poll(() => transcriptCount(page, beta)).toBe(1)
+    expect(state.rows).toHaveLength(2)
+    // Two queued messages are two bubbles, in the order they were sent.
+    await expect.poll(() => transcriptOrder(page, alpha, beta)).toBe(true)
 
-    await page.getByLabel("Move queued message down").first().click()
-    await expect.poll(() => queueRows.map((row) => row.content)).toEqual([
-      "second queued prompt",
-      "queued prompt",
-    ])
+    await queuedRow(page, alpha).first().getByLabel("Move queued message down").click()
+    await expect.poll(() => state.rows.map((row) => row.content)).toEqual([beta, alpha])
+    // The bubbles follow the queue, not the order they were painted in.
+    await expect.poll(() => transcriptOrder(page, beta, alpha)).toBe(true)
 
-    releaseHeldChat?.()
+    // Deleting a queued message takes its bubble with it: nothing is left on
+    // screen for a message that will never be sent.
+    await queuedRow(page, beta).first().getByLabel("Delete queued message").click()
+    await expect(queuedRow(page, beta)).toHaveCount(0)
+    await expect.poll(() => transcriptCount(page, beta)).toBe(0)
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(1)
+
+    // Editing pulls it back into the composer; re-sending gives one bubble, not
+    // one for the draft and one for the send.
+    await queuedRow(page, alpha).first().getByLabel("Edit queued message").click()
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
+    await expect(projectComposerInput(page)).toHaveValue(alpha)
+    await page.keyboard.press("Enter")
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(1)
+    expect(state.rows.map((row) => row.content)).toEqual([alpha])
+
+    state.releaseChat?.()
     await page.waitForTimeout(300)
     await page.reload()
-    await expect(queuedRow(page, "queued prompt").first()).toBeVisible()
-    await expect(queuedRow(page, "second queued prompt").first()).toBeVisible()
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
+    // Part D: a reloaded page shows the queue in the transcript too, and
+    // deleting it there takes the bubble away with the row.
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(1)
+    await queuedRow(page, alpha).first().getByLabel("Delete queued message").click()
+    await expect(queuedRow(page, alpha)).toHaveCount(0)
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
+    expect(state.rows).toHaveLength(0)
+  })
 
-    const queuedId = String(queueRows[0].id)
-    await page.getByLabel("Delete queued message").first().click()
-    await expect(queuedRow(page, "second queued prompt")).toHaveCount(0)
-    await expect(queuedRow(page, "queued prompt").first()).toBeVisible()
-    expect(queueRows.find((row) => row.id === queuedId)).toBeUndefined()
+  test("a still-queued bubble survives the dispatch of the message ahead of it", async ({ page }) => {
+    const state: QueueMockState = {
+      rows: [],
+      mockChat: false,
+      holdNextChat: false,
+      nextRowId: 0,
+      nextReply: 0,
+    }
+    const { lead, alpha, beta } = prompts(`dispatch-${Date.now().toString(36)}`)
+    await installQueueMock(page, state)
+    await openProject(page, page.request)
+    // Acceptance criterion for the bug: attaching a dispatch whose bubble is
+    // already on screen must not reload the history.
+    const historyGets: string[] = []
+    page.on("request", (request) => {
+      if (request.method() !== "GET") return
+      if (new URL(request.url()).pathname !== "/api/chat-messages") return
+      historyGets.push(request.url())
+    })
+    await holdATurnWith(page, state, lead)
+
+    await projectComposerInput(page).fill(alpha)
+    await page.keyboard.press("Enter")
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
+    await projectComposerInput(page).fill(beta)
+    await page.keyboard.press("Enter")
+    await expect(queuedRow(page, beta).first()).toBeVisible()
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(1)
+    await expect.poll(() => transcriptCount(page, beta)).toBe(1)
+
+    state.releaseChat?.()
+    await waitForIdle(page)
+
+    // A turn that just finished reconciles the persisted reply with a few
+    // bounded retries (~5 × 400 ms). Let that go quiet first, so a stray fetch
+    // cannot be mistaken for the reload the dispatch used to pay.
+    await expect
+      .poll(
+        async () => {
+          const before = historyGets.length
+          await page.waitForTimeout(700)
+          return historyGets.length - before
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(0)
+
+    // The server takes the head of the queue and starts its turn.
+    historyGets.length = 0
+    state.rows.splice(0, 1)
+    expect(state.rows.map((row) => row.content)).toEqual([beta])
+    await expect.poll(() => queuedRow(page, alpha).count(), { timeout: 15_000 }).toBe(0)
+    // Alpha's bubble is the turn's own message, so it stays on screen; beta is
+    // still queued, so its bubble must survive the dispatch too, in order.
+    await expect
+      .poll(() => transcriptCount(page, alpha), { timeout: 15_000 })
+      .toBe(1)
+    await expect
+      .poll(() => transcriptCount(page, beta), { timeout: 15_000 })
+      .toBe(1)
+    await expect.poll(() => transcriptOrder(page, alpha, beta)).toBe(true)
+    expect(historyGets).toEqual([])
   })
 })
