@@ -13,9 +13,9 @@
  * `?card=<id>` opens a card beside it on wide screens (taking over from the
  * other panes) and in its place on narrow ones.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type ConversationFile } from '../../../lib/team-chat-api'
 import { sessionRoute } from '../../../lib/team-chat-nav'
@@ -82,6 +82,8 @@ export default function ConversationScreen() {
   const boardParam = first(params.board) ?? null
   const cardId = first(params.card) ?? null
   const router = useRouter()
+  const navigation = useNavigation()
+  const activeToken = useRef({}).current
   const workspace = useActiveWorkspace()
   const me = useMyUserId()
   const { width: windowWidth } = useWindowDimensions()
@@ -157,12 +159,12 @@ export default function ConversationScreen() {
   useFocusEffect(
     useCallback(() => {
       setFocused(true)
-      setActiveConversation(conversationId)
+      setActiveConversation(conversationId, activeToken)
       return () => {
         setFocused(false)
-        setActiveConversation(null)
+        setActiveConversation(null, activeToken)
       }
-    }, [conversationId]),
+    }, [conversationId, activeToken]),
   )
 
   useEffect(() => {
@@ -189,11 +191,40 @@ export default function ConversationScreen() {
 
   const openThread = useCallback(
     (message: ChatMessage) => {
-      router.setParams({ thread: message.threadRootId ?? message.id, project: undefined, files: undefined, doc: undefined } as any)
+      if (!conversationId) return
+      const thread = message.threadRootId ?? message.id
+      if (threadRootId) {
+        // Already in a thread: swap it in place so Back returns to the channel, not to the previous thread.
+        router.setParams({ thread, project: undefined, files: undefined, doc: undefined } as any)
+        return
+      }
+      // Push an entry so the browser or OS back button closes the thread rather than leaving the channel.
+      router.push({
+        pathname: '/(app)/c/[conversationId]',
+        params: {
+          conversationId,
+          thread,
+          ...(boardParam ? { board: boardParam } : {}),
+          ...(cardId ? { card: cardId } : {}),
+        },
+      } as any)
     },
-    [router],
+    [router, conversationId, threadRootId, boardParam, cardId],
   )
-  const closeThread = useCallback(() => router.setParams({ thread: undefined } as any), [router])
+  const closeThread = useCallback(() => {
+    // A thread opened from this channel pushed an entry on top of the channel: pop it, so the
+    // channel comes back as it was and the browser history stays in step. A thread opened from
+    // elsewhere (a deep link) has nothing to pop, so it closes in place.
+    const state: any = navigation.getState()
+    const current = state?.routes?.[state.index]
+    const previous = state && state.index > 0 ? state.routes[state.index - 1] : undefined
+    const previousParams = previous?.params as Record<string, string | undefined> | undefined
+    if (current && previous && previous.name === current.name && previousParams?.conversationId === conversationId && !previousParams?.thread) {
+      router.back()
+      return
+    }
+    router.setParams({ thread: undefined } as any)
+  }, [navigation, router, conversationId])
   const openProjectPane = useCallback(
     (projectId: string) => router.setParams({ project: projectId, thread: undefined, files: undefined, doc: undefined } as any),
     [router],

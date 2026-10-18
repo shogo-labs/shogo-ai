@@ -45,9 +45,18 @@ const TIMELINE_TRIM_TO = 300
 // ─── Which conversation is on screen (suppresses its unread badge) ──────────
 
 let activeConversationId: string | null = null
+// The screen that set the active conversation. Opening a thread pushes a second
+// screen for the same conversation, so the one being covered must not clear it.
+let activeOwner: object | null = null
 const activeListeners = new Set<() => void>()
 
-export function setActiveConversation(id: string | null): void {
+export function setActiveConversation(id: string | null, owner: object): void {
+  if (id === null) {
+    if (activeOwner !== owner) return
+    activeOwner = null
+  } else {
+    activeOwner = owner
+  }
   if (activeConversationId === id) return
   activeConversationId = id
   setActiveChannelNotificationContext(id)
