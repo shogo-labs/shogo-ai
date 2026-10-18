@@ -131,6 +131,8 @@ export interface TaskNotification {
   outputFile?: string
   tail: string
   remote?: boolean
+  /** When the task settled; a turn only injects notes that finished after it started. */
+  finishedAt?: number
 }
 
 /** API-side task state, as returned by the internal task routes. */
@@ -455,6 +457,7 @@ export class TaskRegistry {
       outputFile: this.displayPath(entry.outputFile),
       tail: tailLines(stripAnsi(this.readOutput(entry))),
       remote: entry.remote,
+      finishedAt: entry.finishedAt,
     }
   }
 
@@ -496,9 +499,16 @@ export class TaskRegistry {
     }
   }
 
-  /** Take pending notifications (formatted) and mark them consumed. */
-  consumeCompletionNotes(): string[] {
-    return this.takeNotifications().map(formatTaskNotification)
+  /**
+   * Take pending notifications (formatted) and mark them consumed.
+   *
+   * `filter` lets a caller take only the notes it is actually reporting — a
+   * wake turn must not swallow another queued task's note, or that task's own
+   * wake is dropped as already-consumed and its result never reaches the
+   * transcript.
+   */
+  consumeCompletionNotes(filter?: (n: TaskNotification) => boolean): string[] {
+    return this.takeNotifications(filter).map(formatTaskNotification)
   }
 
   /** Take pending notifications and mark their tasks consumed. */

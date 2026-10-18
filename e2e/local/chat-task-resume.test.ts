@@ -177,6 +177,18 @@ async function waitForIdle(page: Page, timeoutMs = 60_000): Promise<void> {
   while (Date.now() - started < timeoutMs && (await stopShown(page))) await page.waitForTimeout(200)
 }
 
+/**
+ * Wait until the just-sent turn is really streaming. `waitForIdle` returns at
+ * once when no Stop button is rendered yet, so a second send fired straight
+ * after the first can land in the same turn window — and a background `exec`
+ * that races the turn's start never registers with the API, so it never wakes.
+ */
+async function waitForTurnStart(page: Page, timeoutMs = 60_000): Promise<void> {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs && !(await stopShown(page))) await page.waitForTimeout(100)
+  await page.waitForTimeout(500)
+}
+
 /** The wake turn reached the model, so the whole chain ran, not just a repaint. */
 function wakeRequests(): FakeTurn[] {
   return llm.turns.filter((t) => t.userText.includes("[Task update]"))
@@ -240,8 +252,10 @@ test.describe("background task resume", () => {
     const baseline = wakeRequests().length
 
     await send(page, `${marker("bg", "bg2a", 20, { ms: 5, cmd: first })} start the first build in the background`)
+    await waitForTurnStart(page)
     await waitForIdle(page)
     await send(page, `${marker("bg", "bg2b", 20, { ms: 5, cmd: second })} and the second one too`)
+    await waitForTurnStart(page)
 
     // No user input from here on: both wakes have to come from the API.
     const started = Date.now()

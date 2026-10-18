@@ -3520,6 +3520,12 @@ export class AgentGateway {
       }
 
       const maxIterations = parseInt(process.env.AGENT_MAX_ITERATIONS || '200', 10)
+      // Notes that settled before this turn began already have (or will get)
+      // their own queued wake, whose message carries the task. Injecting them
+      // here would mark them consumed and the dispatcher would drop that wake
+      // as already seen — so only notes that finish *during* the turn are
+      // injected.
+      const turnStartedAt = Date.now()
 
       // --- Prefix-cache debug: turn-start snapshot ---
       // Emits short hashes of the three inputs Anthropic keys its prompt
@@ -3619,7 +3625,9 @@ export class AgentGateway {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
         },
         takeInjectedMessages: () => {
-          const notes = commandRegistry?.consumeCompletionNotes() ?? []
+          const notes = commandRegistry?.consumeCompletionNotes(
+            (note) => (note.finishedAt ?? 0) >= turnStartedAt,
+          ) ?? []
           // One message per finished task: the agent acts on each result as its
           // own note, not on a batch joined into one message.
           return notes.map((text) => ({

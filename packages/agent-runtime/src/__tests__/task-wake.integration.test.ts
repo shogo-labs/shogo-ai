@@ -182,6 +182,53 @@ describe('task wake', () => {
     expect(apiCalls.filter((c) => c.path === '/api/internal/tasks/notify')).toHaveLength(0)
   }, 20_000)
 
+  test('a wake turn does not consume another finished task\'s note', async () => {
+    const calls: Message[][] = []
+    const gw = await startGateway([
+      buildToolUseResponse([
+        { name: 'exec', arguments: { command: 'sleep 0.1', background: true }, id: 'tc-1' },
+        { name: 'exec', arguments: { command: 'sleep 0.1', background: true }, id: 'tc-2' },
+      ]),
+      buildTextResponse('Both builds are running.'),
+      buildTextResponse('The first build is done.'),
+      buildTextResponse('The second build is done.'),
+    ], (_i, msgs) => calls.push([...msgs]))
+
+    await gw.processChatMessageStream('run two builds', writer() as any, { chatSessionId: 'two-notes' })
+    const ids = execTaskIds(calls[1]!)
+    expect(ids).toHaveLength(2)
+
+    // Both finish while the session is idle: one notify carrying both notes.
+    await sleep(3_000)
+    const notifies = apiCalls.filter((c) => c.path === '/api/internal/tasks/notify')
+    expect(notifies).toHaveLength(1)
+    const notes = new Map<string, string>(notifies[0]!.body.tasks.map((t: any) => [t.id, t.text]))
+    expect([...notes.keys()].sort()).toEqual([...ids].sort())
+
+    // The API dispatches one wake row per finished task. The first task's turn
+    // must leave the second task's pending note alone: it belongs to its own
+    // wake, and consuming it here drops that wake as already-seen.
+    const beforeWake = calls.length
+    gw.acknowledgeTaskNotification('two-notes', [ids[0]!])
+    await gw.processChatMessageStream(notes.get(ids[0]!)!, writer() as any, { chatSessionId: 'two-notes' })
+
+    expect(calls.length - beforeWake).toBe(1) // one model turn: nothing was injected
+    expect(taskUpdatesIn(calls.at(-1)!).filter((t) => t.includes(ids[1]!))).toHaveLength(0)
+
+    await sleep(300) // consume is reported in the background
+    const consumed = apiCalls
+      .filter((c) => c.path === '/api/internal/tasks/consume')
+      .flatMap((c) => c.body.ids ?? c.body.taskIds ?? [])
+    expect(consumed).toContain(ids[0]!)
+    expect(consumed).not.toContain(ids[1]!)
+
+    // Its own wake turn still delivers it, exactly once.
+    gw.acknowledgeTaskNotification('two-notes', [ids[1]!])
+    await gw.processChatMessageStream(notes.get(ids[1]!)!, writer() as any, { chatSessionId: 'two-notes' })
+    const delivered = calls.slice(beforeWake).flatMap((turn) => taskUpdatesIn(turn)).filter((t) => t.includes(ids[1]!))
+    expect(delivered).toHaveLength(1)
+  }, 20_000)
+
   test('a task finishing while idle is handed to the API once, and the wake turn does not repeat it', async () => {
     const calls: Message[][] = []
     const gw = await startGateway([
