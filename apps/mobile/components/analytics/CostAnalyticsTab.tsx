@@ -69,6 +69,7 @@ import {
   formatNumber,
   formatDuration,
   formatDollarCost,
+  formatPartialCost,
   getModelColor,
   getModelTextColor,
   getModelDisplayName,
@@ -105,6 +106,8 @@ interface AgentBreakdownEntry {
   totalCacheWriteTokens?: number
   totalToolCalls: number
   totalCreditCost: number
+  /** Desktop runs recorded without rates for their model; their cost is 0, not a guess. */
+  unpricedRuns?: number
   totalWallTimeMs: number
   avgCostPerRun: number
   avgLatencyMs: number
@@ -122,6 +125,7 @@ interface BreakdownData {
     shogoFeeUsd?: number
     totalWithFeeUsd?: number
     totalRuns: number
+    unpricedRuns?: number
     totalInputTokens: number
     totalOutputTokens: number
     totalToolCalls: number
@@ -473,6 +477,7 @@ function SummaryCards({
   const shogoFee = data?.totals.shogoFeeUsd ?? 0
   const totalWithFee = data?.totals.totalWithFeeUsd ?? totalCost + shogoFee
   const totalRuns = data?.totals.totalRuns ?? 0
+  const unpricedRuns = data?.totals.unpricedRuns ?? 0
   const avgCost = totalRuns > 0 ? Math.round((totalCost / totalRuns) * 100) / 100 : 0
   const forecast = trends?.forecast
 
@@ -480,9 +485,10 @@ function SummaryCards({
     <View className="flex-row flex-wrap gap-2">
       <MiniCard
         label="Provider Cost"
-        value={formatDollarCost(totalCost)}
+        value={formatPartialCost(totalCost, unpricedRuns, totalRuns)}
         icon={icons.DollarSign}
         color="text-orange-400"
+        subtitle={unpricedRuns > 0 ? `${formatNumber(unpricedRuns)} runs on models without published rates` : undefined}
       />
       {shogoFee > 0 && (
         <MiniCard
@@ -658,7 +664,7 @@ function AgentBreakdownSection({
                   </View>
                   <View className="items-end">
                     <Text className="text-sm font-bold text-foreground">
-                      {formatDollarCost(entry.totalCreditCost)}
+                      {formatPartialCost(entry.totalCreditCost, entry.unpricedRuns, entry.totalRuns)}
                     </Text>
                     <Text className="text-[10px] text-muted-foreground">{costPercent}% of period cost</Text>
                   </View>

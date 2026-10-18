@@ -81,6 +81,24 @@ export interface UsageCostResult {
   rawUsd: number
   /** Marked-up cost charged to the workspace in USD. */
   billedUsd: number
+  /**
+   * Desktop has no real rates for the model (a cloud-only model whose catalog
+   * entry carries no pricing, or one the catalog doesn't list). The cost is 0
+   * rather than a guess; record `pricingUnknown: true` on the row so
+   * `repriceLocalUsage` can fix it once rates arrive.
+   */
+  pricingUnknown?: true
+}
+
+/**
+ * Desktop only: whether `model` has real per-token rates. Cloud keeps billing
+ * unknown models at the `sonnet` bucket so usage is never free.
+ */
+export function hasKnownUsagePricing(model?: string): boolean {
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') return true
+  if (!model || model === 'basic' || model === 'advanced') return true
+  if (model in MODEL_DOLLAR_COSTS || getModelEntry(model)) return true
+  return getDbModelPricing(model) !== undefined
 }
 
 /**
@@ -113,6 +131,7 @@ export function calculateUsageCost(
       return { rawUsd: dbRawUsd, billedUsd: dbRawUsd * MARKUP_MULTIPLIER }
     }
   }
+  if (!hasKnownUsagePricing(modelOrAgentMode)) return { rawUsd: 0, billedUsd: 0, pricingUnknown: true }
 
   const model = resolveModel(modelOrAgentMode)
   const costs = MODEL_DOLLAR_COSTS[model]

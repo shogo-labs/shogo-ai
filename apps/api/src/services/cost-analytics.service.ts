@@ -64,6 +64,8 @@ interface AgentBreakdownEntry {
   totalCacheWriteTokens: number
   totalToolCalls: number
   totalCreditCost: number
+  /** Desktop runs recorded without rates for their model; their cost is 0, not a guess. */
+  unpricedRuns: number
   totalWallTimeMs: number
   avgCostPerRun: number
   avgLatencyMs: number
@@ -271,6 +273,7 @@ export async function getAgentCostBreakdown(
     escalated: bigint
     responseEmpty: bigint
     unscoredRuns: bigint
+    unpricedRuns: bigint
   }>>(Prisma.sql`
     SELECT
       "agentType",
@@ -287,7 +290,8 @@ export async function getAgentCostBreakdown(
       SUM(CASE WHEN "loopDetected" THEN 1 ELSE 0 END)     AS "loopDetected",
       SUM(CASE WHEN "escalated" THEN 1 ELSE 0 END)        AS "escalated",
       SUM(CASE WHEN "responseEmpty" THEN 1 ELSE 0 END)    AS "responseEmpty",
-      SUM(CASE WHEN ${qualityUnknown} THEN 1 ELSE 0 END) AS "unscoredRuns"
+      SUM(CASE WHEN ${qualityUnknown} THEN 1 ELSE 0 END) AS "unscoredRuns",
+      SUM(CASE WHEN COALESCE(CAST("metadata" AS TEXT), '') LIKE '%"pricingUnknown":%true%' THEN 1 ELSE 0 END) AS "unpricedRuns"
     FROM "agent_cost_metrics"
     WHERE "workspaceId" = ${workspaceId}
       AND "createdAt"   >= ${since}
@@ -335,6 +339,7 @@ export async function getAgentCostBreakdown(
       totalCacheWriteTokens,
       totalToolCalls,
       totalCreditCost,
+      unpricedRuns: Number(f?.unpricedRuns ?? 0),
       totalWallTimeMs,
       avgCostPerRun: totalRuns > 0 ? Math.round((totalCreditCost / totalRuns) * 100) / 100 : 0,
       avgLatencyMs: totalRuns > 0 ? Math.round(totalWallTimeMs / totalRuns) : 0,
@@ -356,6 +361,7 @@ export async function getAgentCostBreakdown(
     shogoFeeUsd,
     totalWithFeeUsd: totalCreditCost + shogoFeeUsd,
     totalRuns: breakdown.reduce((s, e) => s + e.totalRuns, 0),
+    unpricedRuns: breakdown.reduce((s, e) => s + e.unpricedRuns, 0),
     totalInputTokens: breakdown.reduce((s, e) => s + e.totalInputTokens, 0),
     totalOutputTokens: breakdown.reduce((s, e) => s + e.totalOutputTokens, 0),
     totalCachedInputTokens: breakdown.reduce((s, e) => s + e.totalCachedInputTokens, 0),
@@ -1745,14 +1751,17 @@ export async function recordAgentCostMetric(data: {
     const cachedInputTokens = data.cachedInputTokens ?? 0
     const cacheWriteTokens = data.cacheWriteTokens ?? 0
     let creditCost = data.creditCost
+    let metadata = data.metadata
     if (creditCost === 0 && (data.inputTokens > 0 || data.outputTokens > 0 || cachedInputTokens > 0 || cacheWriteTokens > 0)) {
-      creditCost = calculateUsageCost(
+      const cost = calculateUsageCost(
         data.inputTokens,
         data.outputTokens,
         normalizedModel,
         cachedInputTokens,
         cacheWriteTokens,
-      ).rawUsd
+      )
+      creditCost = cost.rawUsd
+      if (cost.pricingUnknown) metadata = { ...metadata, pricingUnknown: true }
     }
     await prisma.agentCostMetric.create({
       data: {
@@ -1773,7 +1782,7 @@ export async function recordAgentCostMetric(data: {
         loopDetected: data.loopDetected ?? false,
         escalated: data.escalated ?? false,
         responseEmpty: data.responseEmpty ?? false,
-        metadata: data.metadata ? (data.metadata as Prisma.InputJsonValue) : undefined,
+        metadata: metadata ? (metadata as Prisma.InputJsonValue) : undefined,
       },
     })
 

@@ -2652,7 +2652,7 @@ export async function recordUsage(
         await billingService.ensureSystemWorkspace()
       }
       const billingModel = proxyModelToBillingModel(model)
-      const { rawUsd } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
+      const { rawUsd, pricingUnknown } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
       const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
       await prisma.usageEvent.create({
         data: {
@@ -2665,7 +2665,7 @@ export async function recordUsage(
           source: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
-          actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false },
+          actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false, ...(pricingUnknown ? { pricingUnknown } : {}) },
         },
       })
       console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${billingModel}) — not billed`)
@@ -2697,7 +2697,7 @@ export async function recordUsage(
     // model's own per-token pricing (custom providers / admin-added models).
     // Passing the collapsed `billingModel` bucket here billed every DB model at
     // the `sonnet` fallback rate. `billingModel` is kept only for display.
-    const { rawUsd, billedUsd } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
+    const { rawUsd, billedUsd, pricingUnknown } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
     if (billingUserId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
@@ -2710,7 +2710,7 @@ export async function recordUsage(
       actionType: 'ai_proxy_completion',
       rawUsd,
       billedUsd,
-      actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens },
+      actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, ...(pricingUnknown ? { pricingUnknown } : {}) },
     })
 
     if (result.success) {

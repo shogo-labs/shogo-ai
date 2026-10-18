@@ -417,6 +417,11 @@ async function refresh(): Promise<void> {
 
     next.loadedAt = Date.now()
     snapshot = next
+    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+      void import('../lib/local-usage-repricing')
+        .then((m) => m.repriceLocalUsage(next.pricing, next.cloudIds))
+        .catch(() => {})
+    }
   } catch (err) {
     // Keep whatever snapshot we had; just stamp it so we don't hot-loop.
     snapshot = { ...snapshot, loadedAt: Date.now() }

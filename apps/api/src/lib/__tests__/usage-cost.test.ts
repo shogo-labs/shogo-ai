@@ -96,6 +96,23 @@ describe('calculateUsageCost', () => {
     expect(unknown.rawUsd).toBe(sonnet.rawUsd)
   })
 
+  it('on desktop, records unknown models as unpriced instead of guessing', () => {
+    const previous = process.env.SHOGO_LOCAL_MODE
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    try {
+      expect(calculateUsageCost(1_000_000, 1_000_000, '4fa677d1-cloud-only', 1_000_000)).toEqual({
+        rawUsd: 0,
+        billedUsd: 0,
+        pricingUnknown: true,
+      })
+      expect(calculateUsageCost(1_000_000, 1_000_000, 'sonnet').pricingUnknown).toBeUndefined()
+      expect(calculateUsageCost(1_000_000, 1_000_000, 'advanced').pricingUnknown).toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = previous
+    }
+  })
+
   it('uses sonnet when modelOrAgentMode is omitted entirely', () => {
     const def = calculateUsageCost(1_000_000, 0)
     const sonnet = calculateUsageCost(1_000_000, 0, 'sonnet')

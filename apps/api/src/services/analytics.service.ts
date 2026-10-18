@@ -131,6 +131,8 @@ interface UsageModelAggregate {
   totalBilledUsd: number
   totalRawUsd: number
   totalDurationMs: number
+  /** Desktop events recorded without rates for their model (cost 0, not a guess). */
+  unpricedRequests: number
 }
 
 interface UsageAggregateEvent {
@@ -170,6 +172,7 @@ function aggregateUsageByModel(
         inputTokens + outputTokens + Number(meta.cachedInputTokens || 0) + Number(meta.cacheWriteTokens || 0),
     )
     const rawForEvent = event.rawUsd ?? Number(meta.rawUsd ?? meta.dollarCost ?? 0)
+    const unpriced = meta.pricingUnknown === true ? 1 : 0
     const existing = aggregateMap.get(key)
 
     if (existing) {
@@ -180,6 +183,7 @@ function aggregateUsageByModel(
       existing.totalBilledUsd += Number(event.billedUsd || 0)
       existing.totalRawUsd += Number(rawForEvent || 0)
       existing.totalDurationMs += Number(meta.durationMs || 0)
+      existing.unpricedRequests += unpriced
     } else {
       aggregateMap.set(key, {
         userId: event.memberId,
@@ -196,6 +200,7 @@ function aggregateUsageByModel(
         totalBilledUsd: Number(event.billedUsd || 0),
         totalRawUsd: Number(rawForEvent || 0),
         totalDurationMs: Number(meta.durationMs || 0),
+        unpricedRequests: unpriced,
       })
     }
   }
@@ -1770,6 +1775,7 @@ export interface UsageSummaryEntry {
   totalBilledUsd: number
   totalRawUsd: number
   avgDurationMs: number
+  unpricedRequests: number
 }
 
 /**
@@ -1966,6 +1972,7 @@ export async function getUsageSummary(
         totalBilledUsd: agg.totalBilledUsd,
         totalRawUsd: agg.totalRawUsd,
         avgDurationMs: agg.requestCount > 0 ? Math.round(agg.totalDurationMs / agg.requestCount) : 0,
+        unpricedRequests: agg.unpricedRequests,
       }
     })
     .sort((a, b) => b.totalTokens - a.totalTokens)
@@ -1978,6 +1985,7 @@ export async function getUsageSummary(
     totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
     totalBilledUsd: summaries.reduce((s, e) => s + e.totalBilledUsd, 0),
     totalRawUsd: summaries.reduce((s, e) => s + e.totalRawUsd, 0),
+    unpricedRequests: summaries.reduce((s, e) => s + e.unpricedRequests, 0),
     totalToolCalls,
     uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
     uniqueModels: new Set([...aggregateMap.values()].map((a) => a.model)).size,

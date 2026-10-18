@@ -39,12 +39,16 @@ export async function recordLocalTurnUsage(
 
   const model = turn.usage.model || 'sonnet'
   const billingModel = proxyModelToBillingModel(model)
-  const { rawUsd, billedUsd: tokenBilledUsd } = calculateUsageCost(
+  const { rawUsd, billedUsd: tokenBilledUsd, pricingUnknown } = calculateUsageCost(
     inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens,
   )
   const durationMs = turn.openedAt ? Date.now() - turn.openedAt : 0
   const quality = turn.quality ?? {}
-  const source = { ...(turn.chatSessionId ? { chatSessionId: turn.chatSessionId } : {}), usageSource: turn.usageSource ?? 'stream-fallback' }
+  const source = {
+    ...(turn.chatSessionId ? { chatSessionId: turn.chatSessionId } : {}),
+    usageSource: turn.usageSource ?? 'stream-fallback',
+    ...(pricingUnknown ? { pricingUnknown } : {}),
+  }
 
   await Promise.all([
     recordAgentCostMetric({
