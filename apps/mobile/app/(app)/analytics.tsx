@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Analytics: workspace usage and the agent cost optimizer, in one place.
- * Reached from the More tab and the desktop sidebar's More panel.
- * `?view=usage|costs` selects the segment on open.
+ * Analytics: workspace usage, per-channel activity and the agent cost
+ * optimizer, in one place. Reached from the More tab and the desktop
+ * sidebar's More panel.
+ * `?view=usage|channels|costs` selects the segment on open.
  */
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -14,32 +15,49 @@ import {
   TabScreenScrollView,
 } from "../../components/layout/TabScreenHeader";
 import { Text } from "../../components/settings/account-sheet-chrome";
+import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { usePermissions } from "../../hooks/usePermissions";
 import { WorkspaceUsagePanel } from "../../components/analytics/WorkspaceUsagePanel";
+import { WorkspaceChannelsPanel } from "../../components/analytics/WorkspaceChannelsPanel";
 import { WorkspaceCostPanel } from "../../components/analytics/WorkspaceCostPanel";
 
-type AnalyticsView = "usage" | "costs";
+type AnalyticsView = "usage" | "channels" | "costs";
 
 const VIEWS: Array<{ id: AnalyticsView; label: string }> = [
   { id: "usage", label: "Usage" },
+  { id: "channels", label: "Channels" },
   { id: "costs", label: "Cost Optimizer" },
 ];
 
+const isAnalyticsView = (value: unknown): value is AnalyticsView =>
+  VIEWS.some((item) => item.id === value);
+
 export default function AnalyticsScreen() {
   const params = useLocalSearchParams<{ view?: string }>();
+  const workspace = useActiveWorkspace();
+  const { can } = usePermissions({ workspaceId: workspace?.id });
+  // The server gates per-channel activity to owners/admins, so members never
+  // get a tab that would only 403.
+  const showChannels = can("workspace.analytics:read");
+  const views = VIEWS.filter((item) => item.id !== "channels" || showChannels);
+
   const [view, setView] = useState<AnalyticsView>(
-    params.view === "costs" ? "costs" : "usage"
+    isAnalyticsView(params.view) ? params.view : "usage"
   );
+  const activeView: AnalyticsView =
+    view === "channels" && !showChannels ? "usage" : view;
 
   return (
     <TabScreen title="Analytics" testID="analytics-screen">
-      <View className="flex-row gap-2 px-4 pb-3">
-        {VIEWS.map((item) => {
-          const active = view === item.id;
+      <View className="flex-row flex-wrap gap-2 px-4 pb-3">
+        {views.map((item) => {
+          const active = activeView === item.id;
           return (
             <Pressable
               key={item.id}
               accessibilityRole="tab"
               accessibilityState={{ selected: active }}
+              aria-selected={active}
               testID={`analytics-view-${item.id}`}
               onPress={() => setView(item.id)}
               className={cn(
@@ -60,7 +78,13 @@ export default function AnalyticsScreen() {
         })}
       </View>
       <TabScreenScrollView contentContainerClassName="px-4 pb-36">
-        {view === "usage" ? <WorkspaceUsagePanel /> : <WorkspaceCostPanel />}
+        {activeView === "usage" ? (
+          <WorkspaceUsagePanel />
+        ) : activeView === "channels" ? (
+          <WorkspaceChannelsPanel />
+        ) : (
+          <WorkspaceCostPanel />
+        )}
       </TabScreenScrollView>
     </TabScreen>
   );

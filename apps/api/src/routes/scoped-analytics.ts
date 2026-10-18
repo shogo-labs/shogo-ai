@@ -19,6 +19,7 @@ import * as analytics from '../services/analytics.service'
 import type { AnalyticsPeriod } from '../services/analytics.service'
 import * as engagement from '../services/engagement-analytics.service'
 import type { EngagementPeriod } from '../services/engagement-analytics.service'
+import { getChannelBreakdown } from '../services/conversation-metrics'
 
 // ============================================================================
 // Helpers
@@ -503,6 +504,27 @@ export function scopedAnalyticsRoutes(): Hono {
       const url = new URL(c.req.url)
       const data = await engagement.getTeamWork(workspaceId, parseEngagementPeriod(url), url.searchParams.get('tz'))
       return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  // One row per channel (DMs excluded) plus workspace totals, for the Analytics
+  // Channels tab. Owners/admins only, and Business plan or higher.
+  router.get('/workspaces/:workspaceId/analytics/channels', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
+      if (!access) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+      if (!access.isAdmin) {
+        return c.json({ error: { code: 'forbidden', message: 'Only workspace owners and admins can view channel activity' } }, 403)
+      }
+
+      const period = parseEngagementPeriod(new URL(c.req.url))
+      const data = await getChannelBreakdown(workspaceId, engagement.engagementWindow(period))
+      return c.json({ ok: true, data: { period, ...data } })
     } catch (error: any) {
       return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
     }

@@ -81,6 +81,31 @@ function fmtUsd(n: number): string {
   return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
+/** A labelled block of the Usage tab, so the long scroll reads as distinct parts. */
+function Section({
+  title,
+  subtitle,
+  children,
+  testID,
+}: {
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
+  testID?: string;
+}) {
+  return (
+    <View className="gap-3" testID={testID}>
+      <View>
+        <Text className="text-base font-semibold text-foreground">{title}</Text>
+        {subtitle ? (
+          <Text className="text-xs text-muted-foreground">{subtitle}</Text>
+        ) : null}
+      </View>
+      {children}
+    </View>
+  );
+}
+
 export function WorkspaceUsagePanel() {
   const { Coins, CreditCard, Download, Zap } = useUsageIcons();
   const http = useDomainHttp();
@@ -264,7 +289,7 @@ export function WorkspaceUsagePanel() {
   };
 
   return (
-    <View className="gap-4">
+    <View className="gap-6">
       <View>
         <Text className="text-lg font-bold text-foreground mb-1">Usage</Text>
         <Text className="text-xs text-muted-foreground">
@@ -274,138 +299,161 @@ export function WorkspaceUsagePanel() {
         </Text>
       </View>
 
-      {/* Who is doing what: team table + dashboard for admins, own stats for members */}
-      {workspaceId ? (
-        <WorkspaceActivitySection
-          workspaceId={workspaceId}
-          isBusinessOrHigher={isBusinessOrHigher}
-        />
-      ) : null}
-
-      {/* Progress cards */}
-      <View className="flex-row flex-wrap gap-3">
-        {(["fiveHour", "weekly"] as const).map((key) => {
-          const w = displayWindows?.[key];
-          const label = key === "fiveHour" ? "5-hour usage" : "Weekly usage";
-          const { pct, uncapped, countdown } = analyticsWindowDisplays[key];
-          return (
-            <BillingProgressCard
-              key={key}
-              title={label}
-              current={!w ? "—" : uncapped ? "Unlimited" : `${pct}%`}
-              total={null}
-              percent={uncapped ? 0 : pct}
-              tone={
-                pct >= 100 ? "destructive" : pct >= 90 ? "warning" : "primary"
-              }
-              helper={
-                uncapped
-                  ? "Unlimited — no usage window"
-                  : countdown
-                  ? pct >= 100
-                    ? `Limit reached — resets in ${countdown}`
-                    : `Resets in ${countdown}`
-                  : "Window not started"
-              }
-            />
-          );
-        })}
-        <BillingProgressCard
-          title="On-Demand Usage (Team)"
-          current={fmtUsd(onDemandUsed)}
-          total={onDemandLimit != null ? fmtUsd(onDemandLimit) : null}
-          percent={onDemandPct}
-          tone={onDemandPct > 80 ? "warning" : "primary"}
-          helper="Pay for extra usage beyond your plan limits."
-          subHelper={
-            onDemandLimit != null
-              ? `${fmtUsd(onDemandLimit)} team spend cap`
-              : "No spend cap set"
-          }
-          {...(Platform.OS !== "ios" &&
-          (!localMode ||
-            (cloudBilling.summary?.signedIn === true &&
-              cloudBilling.summary.plan?.paidTier === true))
-            ? {
-                actionLabel: "Set Limit",
-                onActionPress: () => setSpendLimitOpen(true),
-              }
-            : {})}
-        />
-      </View>
-
-      {/* Date range pills */}
+      {/* Date range pills: one period drives every section below */}
       <View className="flex-row items-center justify-between flex-wrap gap-3">
         <DateRangePills value={period} onChange={setPeriod} />
       </View>
 
       <LoadErrorNotice errors={loadErrors} />
 
-      {/* Summary cards */}
-      <View className="flex-row flex-wrap gap-2">
-        <StatCard label="Total spend" value={fmtUsd(totalSpend)} icon={Coins} />
-        <StatCard
-          label="Included"
-          value={fmtUsd(includedSpend)}
-          icon={CreditCard}
-        />
-        <StatCard label="On-demand" value={fmtUsd(onDemandSpend)} icon={Zap} />
-      </View>
-
-      {/* Team Usage chart */}
-      <UsageTimeseriesChart
-        data={spend.data}
-        loading={spend.loading}
-        groupBy={groupBy}
-        metric={metric}
-        onGroupByChange={setGroupBy}
-        onMetricChange={setMetric}
-        isLocalMode={localMode}
-        title="Team Usage"
-        subtitle="Team usage per day across this billing period"
-        groupByOptions={["model", "user", "source"]}
-        showTotals={false}
-      />
-
-      {/* Event log + CSV export */}
-      <View className="gap-2">
-        <View className="flex-row items-center justify-end">
-          <Pressable
-            onPress={handleExportCsv}
-            className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background active:bg-muted"
-          >
-            <Download size={14} className="text-foreground" />
-            <Text className="text-xs font-medium text-foreground">
-              Export CSV
-            </Text>
-          </Pressable>
+      <Section
+        title="Plan & limits"
+        subtitle="Rolling usage windows and on-demand spend for this workspace."
+        testID="usage-section-plan"
+      >
+        <View className="flex-row flex-wrap gap-3">
+          {(["fiveHour", "weekly"] as const).map((key) => {
+            const w = displayWindows?.[key];
+            const label = key === "fiveHour" ? "5-hour usage" : "Weekly usage";
+            const { pct, uncapped, countdown } = analyticsWindowDisplays[key];
+            return (
+              <BillingProgressCard
+                key={key}
+                title={label}
+                current={!w ? "—" : uncapped ? "Unlimited" : `${pct}%`}
+                total={null}
+                percent={uncapped ? 0 : pct}
+                tone={
+                  pct >= 100 ? "destructive" : pct >= 90 ? "warning" : "primary"
+                }
+                helper={
+                  uncapped
+                    ? "Unlimited — no usage window"
+                    : countdown
+                    ? pct >= 100
+                      ? `Limit reached — resets in ${countdown}`
+                      : `Resets in ${countdown}`
+                    : "Window not started"
+                }
+              />
+            );
+          })}
+          <BillingProgressCard
+            title="On-Demand Usage (Team)"
+            current={fmtUsd(onDemandUsed)}
+            total={onDemandLimit != null ? fmtUsd(onDemandLimit) : null}
+            percent={onDemandPct}
+            tone={onDemandPct > 80 ? "warning" : "primary"}
+            helper="Pay for extra usage beyond your plan limits."
+            subHelper={
+              onDemandLimit != null
+                ? `${fmtUsd(onDemandLimit)} team spend cap`
+                : "No spend cap set"
+            }
+            {...(Platform.OS !== "ios" &&
+            (!localMode ||
+              (cloudBilling.summary?.signedIn === true &&
+                cloudBilling.summary.plan?.paidTier === true))
+              ? {
+                  actionLabel: "Set Limit",
+                  onActionPress: () => setSpendLimitOpen(true),
+                }
+              : {})}
+          />
         </View>
-        <UsageTableSection
-          summaryData={usageSummary.data}
-          logData={usageLog.data}
-          summaryLoading={usageSummary.loading}
-          logLoading={usageLog.loading}
-          onLogPageChange={setLogPage}
-          logPage={logPage}
-          isLocalMode={localMode}
-        />
-      </View>
+      </Section>
 
-      {/* Leaderboard (Image 2) */}
-      <UsageLeaderboard
-        data={usageSummary.data}
-        loading={usageSummary.loading}
-      />
+      <Section
+        title="Spend"
+        subtitle="What this workspace spent in the selected period."
+        testID="usage-section-spend"
+      >
+        <View className="flex-row flex-wrap gap-2">
+          <StatCard label="Total spend" value={fmtUsd(totalSpend)} icon={Coins} />
+          <StatCard
+            label="Included"
+            value={fmtUsd(includedSpend)}
+            icon={CreditCard}
+          />
+          <StatCard label="On-demand" value={fmtUsd(onDemandSpend)} icon={Zap} />
+        </View>
+
+        <UsageTimeseriesChart
+          data={spend.data}
+          loading={spend.loading}
+          groupBy={groupBy}
+          metric={metric}
+          onGroupByChange={setGroupBy}
+          onMetricChange={setMetric}
+          isLocalMode={localMode}
+          title="Team Usage"
+          subtitle="Team usage per day across this billing period"
+          groupByOptions={["model", "user", "source"]}
+          showTotals={false}
+        />
+      </Section>
+
+      <Section
+        title="Usage"
+        subtitle="Every billable event in the period, and who used the most."
+        testID="usage-section-usage"
+      >
+        <View className="gap-2">
+          <View className="flex-row items-center justify-end">
+            <Pressable
+              onPress={handleExportCsv}
+              className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background active:bg-muted"
+            >
+              <Download size={14} className="text-foreground" />
+              <Text className="text-xs font-medium text-foreground">
+                Export CSV
+              </Text>
+            </Pressable>
+          </View>
+          <UsageTableSection
+            summaryData={usageSummary.data}
+            logData={usageLog.data}
+            summaryLoading={usageSummary.loading}
+            logLoading={usageLog.loading}
+            onLogPageChange={setLogPage}
+            logPage={logPage}
+            isLocalMode={localMode}
+          />
+        </View>
+
+        <UsageLeaderboard
+          data={usageSummary.data}
+          loading={usageSummary.loading}
+        />
+      </Section>
 
       {isBusinessOrHigher && (
-        <>
+        <Section
+          title="Chat & agents"
+          subtitle="Chat traffic and the models behind it."
+          testID="usage-section-chat"
+        >
           <ChatAnalyticsSection
             data={chatStats.data}
             loading={chatStats.loading}
           />
           <UsageBreakdownSection data={usage.data} loading={usage.loading} />
-        </>
+        </Section>
       )}
+
+      {/* Who is doing what: team table + dashboard for admins, own stats for members */}
+      {workspaceId ? (
+        <Section
+          title="Team"
+          subtitle="Activity, streaks and work done per member."
+          testID="usage-section-team"
+        >
+          <WorkspaceActivitySection
+            workspaceId={workspaceId}
+            isBusinessOrHigher={isBusinessOrHigher}
+          />
+        </Section>
+      ) : null}
 
       {Platform.OS !== "ios" && (
         <SetSpendLimitDialog
