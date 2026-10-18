@@ -124,6 +124,34 @@ describe('SHO-30 acceptance: the wake is delivered exactly once', () => {
     expect(await queueRows(session)).toHaveLength(0)
   })
 
+  test('a failed wake releases only its own task, not the rest of the burst', async () => {
+    const session = await newSession()
+    await notifyShellTask(session, 't_own0001')
+    await notifyShellTask(session, 't_own0002')
+    tasks._testing.clearTimers()
+    expect(await tasks.enqueueTaskWake(session, { dispatch: false })).toBe(true)
+    expect(await queueRows(session)).toHaveLength(2)
+
+    runtimeDown = true
+    await runChatQueueDrain()                     // the first row fails and is handed back
+    expect(dispatched).toHaveLength(0)
+    const failed = await db.backgroundTask.findUnique({ where: { id: 't_own0001' } })
+    const untouched = await db.backgroundTask.findUnique({ where: { id: 't_own0002' } })
+    expect(failed.notifiedAt).toBeNull()
+    expect(failed.attempts).toBe(1)
+    expect(untouched.notifiedAt).not.toBeNull()   // its own row still owns it
+    expect(untouched.attempts).toBe(0)
+
+    runtimeDown = false
+    await runChatQueueDrain()                     // the second row runs; the first is swept back
+    await waitFor(async () => dispatched.length > 0)
+    expect(dispatched[0].taskNotification).toEqual({ taskIds: ['t_own0002'] })
+
+    await runChatQueueDrain()
+    await waitFor(async () => dispatched.length > 1)
+    expect(dispatched[1].taskNotification).toEqual({ taskIds: ['t_own0001'] })
+  })
+
   test('a wake that keeps failing backs off instead of hot-looping, then lands once', async () => {
     const session = await newSession()
     runtimeDown = true

@@ -12,7 +12,8 @@
  *
  * A settled task that the agent has not seen yet (`consumed`) wakes its
  * session: finished tasks are coalesced for a moment, then one queued message
- * of kind `task_notification` is dispatched through the normal chat queue.
+ * of kind `task_notification` per task is dispatched through the normal chat
+ * queue, so each result arrives as its own [Task update].
  * The runtime also hands over its own finished tasks (`notifyLocalTasks`) when
  * the session is idle, so the queue is the one wake path.
  */
@@ -537,9 +538,11 @@ async function wakeUserFor(session: { id: string; createdByUserId?: string | nul
 }
 
 /**
- * Queue one wake message for every finished, unseen task in the session. The
- * dispatcher re-checks `consumed` just before sending it, so a turn the person
- * started in the meantime (which already saw the results) cancels the wake.
+ * Queue one wake message per finished, unseen task in the session, in finish
+ * order: one [Task update] per message, so the agent acts on each result as it
+ * lands instead of on a batch. The dispatcher re-checks `consumed` just before
+ * sending a row, and the turn-end hook chains the rest, so a burst is delivered
+ * one turn each. The coalesce timers upstream only delay the burst.
  */
 export async function enqueueTaskWake(chatSessionId: string, opts: { dispatch?: boolean } = {}): Promise<boolean> {
   const session = await db.chatSession.findUnique({
@@ -552,40 +555,47 @@ export async function enqueueTaskWake(chatSessionId: string, opts: { dispatch?: 
       chatSessionId, status: { not: 'running' }, notify: true, consumed: false, notifiedAt: null,
       OR: [{ heldUntil: null }, { heldUntil: { lte: new Date() } }],
     },
-    orderBy: { finishedAt: 'asc' },
+    orderBy: [{ finishedAt: 'asc' }, { createdAt: 'asc' }],
     take: 20,
   })
   if (!tasks.length) return false
   const userId = await wakeUserFor(session)
   if (!userId) return false
-  const taskIds = tasks.map((t) => t.id)
-  const claimed = await db.backgroundTask.updateMany({
-    where: { id: { in: taskIds }, notifiedAt: null },
-    data: { notifiedAt: new Date() },
-  })
-  if (claimed.count === 0) return false
-
-  const text = tasks.map(formatTaskNote).join('\n\n')
   const latest = await db.chatQueuedMessage.findFirst({
     where: { sessionId: chatSessionId },
     orderBy: [{ position: 'desc' }, { createdAt: 'desc' }],
     select: { position: true },
   })
-  await db.chatQueuedMessage.create({
-    data: {
-      sessionId: chatSessionId,
-      userId,
-      position: (latest?.position ?? -1) + 1,
-      status: 'pending',
-      kind: 'task_notification',
-      content: text,
-      parts: JSON.stringify([
-        { type: 'text', text },
-        { type: 'data-task-notification', data: { taskIds } },
-      ]),
-      body: JSON.stringify({ text, taskNotification: { taskIds } }),
-    },
-  })
+  let position = latest?.position ?? -1
+  let queued = 0
+  for (const task of tasks) {
+    const claimed = await db.backgroundTask.updateMany({
+      where: { id: task.id, notifiedAt: null },
+      data: { notifiedAt: new Date() },
+    })
+    if (claimed.count === 0) continue
+
+    const text = formatTaskNote(task)
+    const taskIds = [task.id]
+    position += 1
+    await db.chatQueuedMessage.create({
+      data: {
+        sessionId: chatSessionId,
+        userId,
+        position,
+        status: 'pending',
+        kind: 'task_notification',
+        content: text,
+        parts: JSON.stringify([
+          { type: 'text', text },
+          { type: 'data-task-notification', data: { taskIds } },
+        ]),
+        body: JSON.stringify({ text, taskNotification: { taskIds } }),
+      },
+    })
+    queued++
+  }
+  if (queued === 0) return false
   // The drain sweeps and then dispatches in one pass, so it asks for the row
   // without racing its own dispatcher for the claim.
   if (opts.dispatch !== false) {
@@ -593,6 +603,78 @@ export async function enqueueTaskWake(chatSessionId: string, opts: { dispatch?: 
     void dispatchNext(chatSessionId).catch(() => {})
   }
   return true
+}
+
+// ─── Wake pause: waits, not messages ─────────────────────────────────────────
+
+function parseJson<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback
+  try {
+    return JSON.parse(value) as T
+  } catch {
+    return fallback
+  }
+}
+
+/** A user message that is a queued background-task wake. */
+export function isTaskWakeMessage(parts: string | null | undefined): boolean {
+  return parseJson<Array<{ type?: string }>>(parts, []).some((p) => p?.type === 'data-task-notification')
+}
+
+/** The tasks a wake message's `parts` were queued for. */
+export function taskWakeIdsFromParts(parts: string | null | undefined): string[] {
+  for (const part of parseJson<Array<{ type?: string; data?: { taskIds?: unknown } }>>(parts, [])) {
+    if (part?.type !== 'data-task-notification') continue
+    const ids = part.data?.taskIds
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []
+  }
+  return []
+}
+
+/** The tasks a queued wake row was queued for. */
+export function taskWakeIdsFromBody(body: string | null | undefined): string[] {
+  const parsed = parseJson<{ taskNotification?: { taskIds?: unknown } }>(body, {})
+  const ids = parsed.taskNotification?.taskIds
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []
+}
+
+/**
+ * How many distinct waits the trailing run of wake turns adds up to.
+ *
+ * With one wake message per finished task, counting messages pauses a session
+ * that merely had four tasks finish. What matters is how many *new* waits the
+ * agent woke for: a wake is a continuation of the previous one (no count) when
+ * every task in it was already running before that previous wake turn started;
+ * it starts a new wait when it introduces a task created after it. A person
+ * writing ends the run, and the oldest wake in it always counts as one.
+ */
+export async function consecutiveWakeWaits(chatSessionId: string, limit: number): Promise<number> {
+  const recent: Array<{ parts: string | null; createdAt: Date }> = await db.chatMessage.findMany({
+    where: { sessionId: chatSessionId, role: 'user' },
+    orderBy: { createdAt: 'desc' },
+    take: limit + 1,
+    select: { parts: true, createdAt: true },
+  })
+  const run: Array<{ at: Date; taskIds: string[] }> = []
+  for (const message of recent) {
+    if (!isTaskWakeMessage(message.parts)) break
+    run.push({ at: message.createdAt, taskIds: taskWakeIdsFromParts(message.parts) })
+  }
+  if (!run.length) return 0
+
+  const ids = [...new Set(run.flatMap((wake) => wake.taskIds))]
+  const rows: Array<{ id: string; createdAt: Date }> = ids.length
+    ? await db.backgroundTask.findMany({ where: { id: { in: ids } }, select: { id: true, createdAt: true } })
+    : []
+  const startedAt = new Map(rows.map((row) => [row.id, row.createdAt.getTime()]))
+
+  let waits = 1
+  for (let i = 0; i + 1 < run.length; i++) {
+    let newestTaskAt = 0
+    for (const id of run[i]!.taskIds) newestTaskAt = Math.max(newestTaskAt, startedAt.get(id) ?? 0)
+    if (newestTaskAt > run[i + 1]!.at.getTime()) waits++
+  }
+  return waits
 }
 
 // ─── Durability ───────────────────────────────────────────────────────────────

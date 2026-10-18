@@ -228,4 +228,45 @@ test.describe("background task resume", () => {
     soft(wakeRequests().length, "the chat was woken once, not once per drain tick").toBe(1)
     soft(await stopShown(page), "the wake turn finished instead of streaming forever").toBe(false)
   })
+
+  // SHO-33: one finished task is one [Task update] message, so two commands
+  // finishing in one burst wake the chat twice instead of once with both.
+  test("two finished background commands send one [Task update] each", async () => {
+    const sid = await createChat("task resume two")
+    const page = await newWindow(sid)
+    const first = "sleep 10"
+    const second = "sleep 8"
+    // The fake model is shared with the test above, so count from here.
+    const baseline = wakeRequests().length
+
+    await send(page, `${marker("bg", "bg2a", 20, { ms: 5, cmd: first })} start the first build in the background`)
+    await waitForIdle(page)
+    await send(page, `${marker("bg", "bg2b", 20, { ms: 5, cmd: second })} and the second one too`)
+
+    // No user input from here on: both wakes have to come from the API.
+    const started = Date.now()
+    while (Date.now() - started < WAKE_MS && wakeRequests().length < baseline + 2) {
+      await page.waitForTimeout(250)
+    }
+    soft(wakeRequests().length - baseline, "each finished task woke the chat on its own").toBe(2)
+
+    // Read the transcript through the API: an already-open window does not
+    // live-update a server-initiated turn (SHO-31).
+    const messages = await apiJson<any>("GET", `/api/chat-messages?sessionId=${encodeURIComponent(sid)}`)
+    const items: any[] = messages?.items ?? messages?.data ?? messages ?? []
+    const updates = items.filter(
+      (m) => m?.role === "user" && String(m?.content ?? "").includes("[Task update]"),
+    )
+    const texts = updates.map((m) => String(m.content))
+    soft(texts.length, "two separate [Task update] user messages").toBe(2)
+    soft(texts.filter((t) => t.includes(first)).length, "one message names the first command").toBe(1)
+    soft(texts.filter((t) => t.includes(second)).length, "one message names the second command").toBe(1)
+    for (const text of texts) {
+      soft((text.match(/\[Task update\]/g) ?? []).length, "one task per message").toBe(1)
+    }
+
+    await page.waitForTimeout(16_000)
+    soft(wakeRequests().length - baseline, "the chat was woken twice, not once per drain tick").toBe(2)
+    soft(await stopShown(page), "both wake turns finished instead of streaming forever").toBe(false)
+  })
 })

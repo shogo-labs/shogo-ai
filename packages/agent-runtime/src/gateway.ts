@@ -2231,8 +2231,9 @@ export class AgentGateway {
 
   /**
    * Coalesce finished-task notes for an idle session and hand them to the API,
-   * which queues one wake message. While a turn runs, notes are injected into
-   * it instead (takeInjectedMessages) and the turn's end re-schedules this.
+   * which queues one wake message per task. While a turn runs, notes are
+   * injected into it instead (takeInjectedMessages) and the turn's end
+   * re-schedules this.
    * API-tracked tasks are skipped: the API wakes the session for those itself.
    */
   private scheduleTaskWake(sessionId: string): void {
@@ -3619,13 +3620,14 @@ export class AgentGateway {
         },
         takeInjectedMessages: () => {
           const notes = commandRegistry?.consumeCompletionNotes() ?? []
-          if (notes.length === 0) return []
-          return [{
+          // One message per finished task: the agent acts on each result as its
+          // own note, not on a batch joined into one message.
+          return notes.map((text) => ({
             role: 'user',
-            content: notes.join('\n\n'),
+            content: text,
             timestamp: Date.now(),
             __shogoBackgroundNote: true,
-          } as unknown as Message]
+          } as unknown as Message))
         },
         onProgress: (progressMessages) => {
           const durableMessages = progressMessages.filter((message) => {

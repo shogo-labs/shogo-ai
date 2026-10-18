@@ -115,14 +115,22 @@ async function startGateway(responses: ReturnType<typeof buildTextResponse>[], o
   return gateway
 }
 
-/** The task id from the first exec tool result in the conversation. */
-function execTaskId(messages: Message[]): string {
+/** The task ids of the exec tool results in the conversation, in order. */
+function execTaskIds(messages: Message[]): string[] {
+  const ids: string[] = []
   for (const m of messages) {
     if (m.role !== 'toolResult') continue
     const match = textOf(m).match(/"task_id":\s*"(t_[^"]+)"/)
-    if (match) return match[1]!
+    if (match && !ids.includes(match[1]!)) ids.push(match[1]!)
   }
-  throw new Error('no task_id in tool results')
+  return ids
+}
+
+/** The task id from the first exec tool result in the conversation. */
+function execTaskId(messages: Message[]): string {
+  const [id] = execTaskIds(messages)
+  if (!id) throw new Error('no task_id in tool results')
+  return id
 }
 
 describe('task wake', () => {
@@ -145,6 +153,34 @@ describe('task wake', () => {
     await sleep(2_500)
     expect(apiCalls.filter((c) => c.path === '/api/internal/tasks/notify')).toHaveLength(0)
   }, 15_000)
+
+  test('two tasks finishing mid-turn arrive as two separate messages', async () => {
+    const calls: Message[][] = []
+    const gw = await startGateway([
+      buildToolUseResponse([{ name: 'exec', arguments: { command: 'sleep 0.2', background: true }, id: 'tc-1' }]),
+      buildToolUseResponse([{ name: 'exec', arguments: { command: 'sleep 0.2', background: true }, id: 'tc-2' }]),
+      buildToolUseResponse([{ name: 'exec', arguments: { command: 'sleep 0.9' }, id: 'tc-3' }]),
+      buildTextResponse('The first build finished.'),
+      buildTextResponse('The second build finished too.'),
+    ], (_i, msgs) => calls.push([...msgs]))
+
+    await gw.processChatMessageStream('run both builds in the background', writer() as any, { chatSessionId: 'mid-turn-two' })
+
+    const ids = execTaskIds(calls[2]!)
+    expect(ids).toHaveLength(2)
+
+    const notes = calls.at(-1)!.filter((m) => m.role === 'user' && textOf(m).includes('[Task update]'))
+    expect(notes).toHaveLength(2)
+    expect(notes.map(textOf)).toEqual([
+      expect.stringContaining(`(${ids[0]}) completed`),
+      expect.stringContaining(`(${ids[1]}) completed`),
+    ])
+    // One [Task update] per message: they are not joined into a single note.
+    for (const note of notes) expect((textOf(note).match(/\[Task update\]/g) ?? []).length).toBe(1)
+
+    await sleep(2_500)
+    expect(apiCalls.filter((c) => c.path === '/api/internal/tasks/notify')).toHaveLength(0)
+  }, 20_000)
 
   test('a task finishing while idle is handed to the API once, and the wake turn does not repeat it', async () => {
     const calls: Message[][] = []

@@ -276,11 +276,26 @@ describe('wake', () => {
     expect(dispatched).toHaveLength(0)
   })
 
-  test('after several wakes in a row the next one pauses until someone writes', async () => {
+  /** A wake turn already in the transcript, for the task it reported. */
+  async function pastWake(chatSessionId: string, index: number, source = 'agent_reply'): Promise<string> {
+    const id = tasks.newTaskId()
+    await db.backgroundTask.create({
+      data: {
+        id, chatSessionId, source, targetRef: `old-${index}`, title: `@Ops reply ${index}`,
+        status: 'completed', consumed: true, finishedAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
+      },
+    })
+    const wakeParts = JSON.stringify([{ type: 'text', text: '[Task update] x' }, { type: 'data-task-notification', data: { taskIds: [id] } }])
+    await db.chatMessage.create({ data: { sessionId: chatSessionId, role: 'user', content: '[Task update] x', parts: wakeParts, agent: 'technical' } })
+    return id
+  }
+
+  test('after several waits in a row the next one pauses until someone writes', async () => {
     const chatSessionId = await newSession()
-    const wakeParts = JSON.stringify([{ type: 'text', text: '[Task update] x' }, { type: 'data-task-notification', data: { taskIds: ['t_old'] } }])
+    // Each wake reports a task created after the previous wake turn: three separate waits.
     for (let i = 0; i < tasks.MAX_CONSECUTIVE_WAKES; i++) {
-      await db.chatMessage.create({ data: { sessionId: chatSessionId, role: 'user', content: '[Task update] x', parts: wakeParts, agent: 'technical', createdAt: new Date(Date.now() - (10 - i) * 1000) } })
+      await pastWake(chatSessionId, i)
+      await new Promise((r) => setTimeout(r, 20))
     }
     await db.chatSession.update({ where: { id: chatSessionId }, data: { activeTurnId: 'turn-1', activeTurnHeartbeatAt: new Date() } })
     await tasks.createTask({ id: tasks.newTaskId(), chatSessionId, source: 'agent_reply', targetRef: 'msg-4:ws', title: '@Ops reply' })
@@ -298,11 +313,59 @@ describe('wake', () => {
     expect(dispatched).toHaveLength(0)
   })
 
+  test('a batch of tasks from one wait does not pause the session', async () => {
+    const chatSessionId = await newSession()
+    // Four tasks were all running before the first wake turn: four wakes, one wait.
+    const ids = [0, 1, 2, 3].map(() => tasks.newTaskId())
+    for (const id of ids) {
+      await db.backgroundTask.create({
+        data: {
+          id, chatSessionId, source: 'agent_reply', targetRef: `batch-${id}`, title: 'batch job',
+          status: 'completed', consumed: true, finishedAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
+        },
+      })
+    }
+    for (const id of ids) {
+      const wakeParts = JSON.stringify([{ type: 'text', text: '[Task update] x' }, { type: 'data-task-notification', data: { taskIds: [id] } }])
+      await db.chatMessage.create({ data: { sessionId: chatSessionId, role: 'user', content: '[Task update] x', parts: wakeParts, agent: 'technical' } })
+    }
+
+    const row = await tasks.createTask({ id: tasks.newTaskId(), chatSessionId, source: 'agent_reply', targetRef: 'msg-batch:ws', title: '@Ops reply' })
+    await tasks.emitTaskEvent('agent_reply', 'msg-batch:ws', { status: 'completed' })
+    tasks._testing.clearTimers()
+    await tasks.enqueueTaskWake(chatSessionId)
+
+    await dispatchNext(chatSessionId)
+    await waitFor(async () => dispatched.length > 0)
+    expect(dispatched[0].taskNotification).toEqual({ taskIds: [row.id] })
+  })
+
+  test('a burst is dispatched one turn per task, in finish order', async () => {
+    const chatSessionId = await newSession()
+    const ids: Record<string, string> = {}
+    for (const name of ['a', 'b', 'c']) {
+      ids[name] = (await tasks.createTask({
+        id: tasks.newTaskId(), chatSessionId, source: 'agent_reply', targetRef: `burst-${name}:ws`, title: `@Ops ${name}`,
+      })).id
+    }
+    for (const name of ['c', 'a', 'b']) {
+      await tasks.emitTaskEvent('agent_reply', `burst-${name}:ws`, { status: 'completed' })
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    tasks._testing.clearTimers()
+    await tasks.enqueueTaskWake(chatSessionId, { dispatch: false })
+
+    for (let i = 0; i < 3; i++) await dispatchNext(chatSessionId)
+
+    expect(dispatched.map((body) => body.taskNotification.taskIds)).toEqual([[ids.c], [ids.a], [ids.b]])
+    expect(dispatched.map((body) => body.text.match(/@Ops (\w)/)[1])).toEqual(['c', 'a', 'b'])
+  })
+
   test('wakes that only report cards keep going past the general cap', async () => {
     const chatSessionId = await newSession()
-    const wakeParts = JSON.stringify([{ type: 'text', text: '[Task update] x' }, { type: 'data-task-notification', data: { taskIds: ['t_old'] } }])
     for (let i = 0; i < tasks.MAX_CONSECUTIVE_WAKES + 2; i++) {
-      await db.chatMessage.create({ data: { sessionId: chatSessionId, role: 'user', content: '[Task update] x', parts: wakeParts, agent: 'technical', createdAt: new Date(Date.now() - (20 - i) * 1000) } })
+      await pastWake(chatSessionId, i, 'work_item')
+      await new Promise((r) => setTimeout(r, 20))
     }
     await db.chatSession.update({ where: { id: chatSessionId }, data: { activeTurnId: 'turn-1', activeTurnHeartbeatAt: new Date() } })
     const row = await tasks.createTask({ id: tasks.newTaskId(), chatSessionId, source: 'work_item', targetRef: 'card-wake-cap', title: 'P0-2 Sim kernel' })

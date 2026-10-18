@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
+import { taskWakeIdsFromBody } from './background-tasks.service'
 
 /** Well above TURN_REATTACH_AFTER_MS, so the reattach job gets to a dead tracker's turn first. */
 const ACTIVE_TURN_STALE_AFTER_MS = 10 * 60 * 1000
@@ -245,16 +246,9 @@ async function dispatchRow(row: QueueRow): Promise<void> {
 const WAKE_PAUSED =
   'Paused: background tasks finished several times in a row without anyone writing. Send a message to continue.'
 
-function isTaskWakeMessage(parts: string | null | undefined): boolean {
-  return parseJson<Array<{ type?: string }>>(parts, []).some((p) => p?.type === 'data-task-notification')
-}
-
 /** The tasks a task-notification row was queued for. */
 function taskWakeIds(row: QueueRow): string[] {
-  const body = parseJson<QueueBody & { taskNotification?: { taskIds?: unknown } }>(row.body, {})
-  return Array.isArray(body.taskNotification?.taskIds)
-    ? (body.taskNotification!.taskIds as unknown[]).filter((id): id is string => typeof id === 'string')
-    : []
+  return taskWakeIdsFromBody(row.body)
 }
 
 /**
@@ -273,17 +267,10 @@ async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | 
     if (!tasks.some((t) => !t.consumed)) return 'consumed'
     cardsOnly = tasks.every((t) => t.source === 'work_item')
   }
-  const { MAX_CONSECUTIVE_WAKES, MAX_CONSECUTIVE_CARD_WAKES } = await import('./background-tasks.service')
+  const { MAX_CONSECUTIVE_WAKES, MAX_CONSECUTIVE_CARD_WAKES, consecutiveWakeWaits } =
+    await import('./background-tasks.service')
   const limit = cardsOnly ? MAX_CONSECUTIVE_CARD_WAKES : MAX_CONSECUTIVE_WAKES
-  const recent = await (prisma as any).chatMessage.findMany({
-    where: { sessionId: row.sessionId, role: 'user' },
-    orderBy: { createdAt: 'desc' },
-    take: limit,
-    select: { parts: true },
-  })
-  if (recent.length >= limit && recent.every((m: { parts: string | null }) => isTaskWakeMessage(m.parts))) {
-    return WAKE_PAUSED
-  }
+  if ((await consecutiveWakeWaits(row.sessionId, limit)) >= limit) return WAKE_PAUSED
   return null
 }
 

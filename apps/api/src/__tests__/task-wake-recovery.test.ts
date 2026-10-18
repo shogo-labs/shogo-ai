@@ -88,11 +88,21 @@ describe('task wake recovery', () => {
 
   test('the 3-wake pause releases its tasks once a person writes', async () => {
     const session = await newSession()
+    // Each wake reports a task created after the previous wake turn: three waits.
     for (let i = 0; i < 3; i++) {
+      const id = tasks.newTaskId()
+      await db.backgroundTask.create({ data: {
+        id, chatSessionId: session, source: 'agent_reply', targetRef: `earlier-${i}`, title: `@Ops reply ${i}`,
+        status: 'completed', consumed: true, finishedAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
+      } })
       await db.chatMessage.create({ data: {
         id: `m_pause_${i}`, sessionId: session, role: 'user', content: `[Task update] earlier ${i}`,
-        parts: JSON.stringify([{ type: 'text', text: `[Task update] earlier ${i}` }, { type: 'data-task-notification', data: {} }]),
+        parts: JSON.stringify([
+          { type: 'text', text: `[Task update] earlier ${i}` },
+          { type: 'data-task-notification', data: { taskIds: [id] } },
+        ]),
       } })
+      await new Promise((r) => setTimeout(r, 20))
     }
     await notifyShellTask(session, 't_lost0003')
     await tasks.enqueueTaskWake(session)
