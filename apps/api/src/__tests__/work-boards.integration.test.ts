@@ -144,6 +144,11 @@ describe('cards', () => {
     const blocks = typeof root.blocks === 'string' ? JSON.parse(root.blocks) : root.blocks
     expect(blocks.type).toBe('status_card')
     expect(blocks.workItem.key).toBe('ESC-1')
+    expect(blocks.workItem).toMatchObject({
+      id: item.id, boardId: board.id, boardName: 'Escalations', title: 'Refund stuck',
+      column: { name: 'Backlog', category: 'backlog' }, priority: 'high', assignee: null, dueAt: null,
+    })
+    expect(blocks.workItem.path).toBe(`/work?card=${item.id}`)
     const chain = typeof root.agentChain === 'string' ? JSON.parse(root.agentChain) : root.agentChain
     expect(chain.runId).toBe(item.id)
   })
@@ -160,12 +165,38 @@ describe('cards', () => {
     const root = await db.conversationMessage.findUnique({ where: { id: json.item.threadRootMessageId } })
     const blocks = typeof root.blocks === 'string' ? JSON.parse(root.blocks) : root.blocks
     expect(blocks.card.status).toBe('done')
+    expect(blocks.workItem.column).toEqual({ name: 'Done', category: 'done' })
     const doneLine = await db.conversationMessage.findFirst({ where: { threadRootId: json.item.threadRootMessageId, alsoSentToChannel: true } })
     expect(doneLine?.text).toContain('Done')
 
     const reopened = await call(seed.member, 'POST', `/work-items/${id}/move`, { column: 'Backlog' })
     expect(reopened.json.item.completedAt).toBeNull()
     expect(await db.workItemEvent.count({ where: { workItemId: id, type: 'regressed' } })).toBe(1)
+  })
+
+  test('moving a card to another board’s channel posts the same card with the destination as a note', async () => {
+    const target = await createBoard({ conversationId: otherChannelId, name: 'Escalated', keyPrefix: 'ESCX' })
+    const { json } = await call(seed.member, 'POST', `/boards/${board.id}/items`, { title: 'Wrong team' })
+    const moved = await call(seed.member, 'POST', `/work-items/${json.item.id}/move`, { board: target.id, column: 'Backlog' })
+    expect(moved.status).toBe(200)
+
+    const link = await waitFor(() => db.workItemLink.findFirst({ where: { workItemId: json.item.id, reason: 'escalation' } }))
+    const pointer = await db.conversationMessage.findUnique({ where: { id: link.refId } })
+    expect(pointer.conversationId).toBe(otherChannelId)
+    const blocks = typeof pointer.blocks === 'string' ? JSON.parse(pointer.blocks) : pointer.blocks
+    expect(blocks.type).toBe('status_card')
+    expect(blocks.workItem).toMatchObject({
+      id: json.item.id, key: json.item.key, boardId: target.id, boardName: 'Escalated', title: 'Wrong team',
+      column: { name: 'Backlog', category: 'backlog' },
+    })
+    expect(blocks.workItem.note).toBe('Moved to Escalated from #support')
+
+    // Its home thread's card moves with it, in place — no second root message.
+    const root = await db.conversationMessage.findUnique({ where: { id: json.item.threadRootMessageId } })
+    const rootBlocks = typeof root.blocks === 'string' ? JSON.parse(root.blocks) : root.blocks
+    expect(rootBlocks.workItem.boardName).toBe('Escalated')
+    expect(rootBlocks.workItem.column).toEqual({ name: 'Backlog', category: 'backlog' })
+    expect(await db.conversationMessage.count({ where: { clientMsgId: `card:${json.item.id}` } })).toBe(1)
   })
 
   test('agents cannot close cards on boards that need human review, but people can', async () => {

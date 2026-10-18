@@ -22,8 +22,9 @@ import { AgentAvatar } from './AgentAvatar'
 import { ShogoAvatar } from './ShogoAvatar'
 import { AgentProfileCard } from './AgentProfileCard'
 import { ApprovalCardView, StatusCardView } from './AgentStatus'
+import { WorkItemCard } from './WorkItemCard'
 import { QuestionCardView } from './QuestionCard'
-import { approvalOf, connectRequestsOf, isAskedOf, messageKind, questionRefsOf, questionsOf, statusCardOf, workOf } from '../../lib/team-chat-kinds'
+import { approvalOf, connectRequestsOf, isAskedOf, messageKind, questionRefsOf, questionsOf, statusCardOf, workItemOf, workOf, type WorkItemBlock } from '../../lib/team-chat-kinds'
 import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { ImagePreviewModal } from '../chat/ImagePreviewModal'
@@ -290,6 +291,8 @@ function MessageRowImpl(props: MessageRowProps) {
   const running = message.authorType === 'agent' && message.agentStatus === 'running'
   const body = running ? streaming?.text ?? '' : message.text
   const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
+  // Board cards are posted by the system, so this is deliberately author-agnostic.
+  const workItem = running || deleted ? null : workItemOf(message)
   const approval = !running && message.authorType === 'agent' ? approvalOf(message) : null
   const kind = message.authorType === 'agent' ? messageKind(message) : null
   const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
@@ -362,6 +365,17 @@ function MessageRowImpl(props: MessageRowProps) {
   /** Clicking a reaction you already have removes it; otherwise it adds it. */
   const toggleReact = (emoji: string) => {
     props.onReact(message, emoji, !hasReacted(message.reactions, emoji, props.me))
+  }
+
+  /** Open the card pane: its thread when the post is in a channel, the inbox otherwise. */
+  const openWorkItem = (item: WorkItemBlock) => {
+    if (message.conversationId) {
+      const params: Record<string, string> = { conversationId: message.conversationId, card: item.id }
+      if (item.boardId) params.board = item.boardId
+      router.push({ pathname: '/(app)/c/[conversationId]', params } as any)
+      return
+    }
+    router.push({ pathname: '/(app)/work', params: { card: item.id } } as any)
   }
 
   const openActions = () => {
@@ -614,7 +628,11 @@ function MessageRowImpl(props: MessageRowProps) {
           </View>
         ) : (
           <>
-            {card ? <StatusCardView card={card} onOpenLink={openMessageLinkInApp} /> : null}
+            {workItem ? (
+              <WorkItemCard item={workItem} onPress={() => openWorkItem(workItem)} />
+            ) : card ? (
+              <StatusCardView card={card} onOpenLink={openMessageLinkInApp} />
+            ) : null}
             {approval ? <ApprovalCardView approval={approval} messageId={message.id} canDecide={!message.pending} onDecide={(decision) => api.decideApproval(message.id, decision)} /> : null}
             {work ? <AgentWorkedFor messageId={message.id} work={work} /> : null}
             {connectRequests.filter((c) => !continuedConnects.includes(c.provider)).map((c) => (
@@ -659,12 +677,12 @@ function MessageRowImpl(props: MessageRowProps) {
               </Pressable>
             ))}
             {/* While an agent works the row shows its status; its closing message appears when it is done. */}
-            {!card && !approval && !!body && !(running && message.authorType === 'agent') && foldBody ? (
+            {!workItem && !card && !approval && !!body && !(running && message.authorType === 'agent') && foldBody ? (
               <Pressable onPress={() => setShowFullUpdate(true)} accessibilityRole="button" className="mt-1 self-start" testID="show-full-update">
                 <Text className="text-xs font-medium text-primary">Show full update</Text>
               </Pressable>
             ) : null}
-            {!card && !approval && !!body && !foldBody && !(running && message.authorType === 'agent') && (() => {
+            {!workItem && !card && !approval && !!body && !foldBody && !(running && message.authorType === 'agent') && (() => {
               const jumbo = running ? null : jumboEmojiCodes(body, customEmoji)
               return (
                 <View className={cn(message.pending && 'opacity-60')}>

@@ -55,11 +55,31 @@ export interface IntegrationConnectRequest {
   message?: string
 }
 
+/** A board card's channel post: enough for a client to draw a tappable card without a fetch. */
+export interface WorkItemBlock {
+  id: string
+  key: string
+  boardId: string
+  boardName?: string | null
+  /** The full card title, not `card.title`'s clipped one. */
+  title?: string
+  column?: { name: string; category: string }
+  priority?: string
+  assignee?: { kind: 'user' | 'agent'; name: string } | null
+  dueAt?: string | null
+  /** App path to the card. */
+  path?: string
+  /** Why the card appears here, e.g. where it was moved from. */
+  note?: string
+}
+
 export interface MessageBlocks {
   type?: 'status_card' | 'approval_request'
   messageKind?: MessageKind
   card?: StatusCard
   work?: AgentWork
+  /** The board card this message is about; see `work-boards.service`. */
+  workItem?: WorkItemBlock
   /** Connect links the agent hit during the run, shown as cards on its reply. */
   connect?: IntegrationConnectRequest[]
   /** Questions this message asks people; see `conversation-questions`. */

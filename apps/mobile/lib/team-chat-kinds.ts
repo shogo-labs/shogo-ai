@@ -35,6 +35,33 @@ export function statusCardOf(message: Pick<ChatMessage, 'blocks'>): StatusCard |
   return blocks.card
 }
 
+/** A board card's post in a channel; see the API's `workItemBlock()`. */
+export interface WorkItemBlock {
+  id: string
+  key: string
+  /** The full card title, not the clipped one in `card.title`. */
+  title: string
+  boardId?: string
+  boardName?: string | null
+  column?: { name: string; category: string } | null
+  priority?: string
+  assignee?: { kind: 'user' | 'agent'; name: string } | null
+  dueAt?: string | null
+  path?: string
+  note?: string
+}
+
+/**
+ * The board card a message is about, if it carries one. Author-agnostic: board
+ * posts come from `system`. Blocks posted before cards carried a title have no
+ * `title` and are left to the plain-text fallback.
+ */
+export function workItemOf(message: Pick<ChatMessage, 'blocks'>): WorkItemBlock | null {
+  const block = (message.blocks as { workItem?: WorkItemBlock } | null)?.workItem
+  if (!block || typeof block.id !== 'string' || typeof block.key !== 'string' || typeof block.title !== 'string') return null
+  return block
+}
+
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired'
 
 /** An action an agent is waiting for a person to approve. */

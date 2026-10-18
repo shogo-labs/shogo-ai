@@ -79,6 +79,20 @@ test.describe("Channel boards", () => {
     await expect.poll(async () => (await cards()).items[0].columnId, { timeout: 15_000 }).toBe(doing.id)
   })
 
+  test("a card's channel post is a card, and tapping it opens the card", async () => {
+    const item = (await cards()).items[0]
+    await page.getByTestId("channel-tabs").getByRole("tab", { name: "Messages" }).click()
+    const post = page.getByTestId("work-item-card").first()
+    await expect(post).toBeVisible({ timeout: 30_000 })
+    await expect(post).toContainText(item.key)
+    await expect(post).toContainText(item.title)
+    await post.click()
+    await expect(page).toHaveURL(new RegExp(`card=${item.id}`))
+    await expect(cardPane(page)).toBeVisible({ timeout: 15_000 })
+    await page.getByRole("button", { name: "Close card" }).click()
+    await page.getByTestId("channel-tabs").getByRole("tab", { name: boardName }).click()
+  })
+
   test("a card opens beside the board, takes an assignee, and shows its history", async () => {
     const item = (await cards()).items[0]
     await page.getByTestId(`board-card-${item.key}`).click()

@@ -961,6 +961,53 @@ describe('agent message kinds', () => {
   })
 })
 
+describe('board card posts', () => {
+  const block = {
+    type: 'status_card',
+    messageKind: 'status',
+    card: { title: 'SHO-17 · Board card posted to a channel', status: 'working', summary: 'In Development · Shogo Dev 3 · high' },
+    workItem: {
+      id: 'i1', key: 'SHO-17', boardId: 'b1', boardName: 'Shogo Dev',
+      title: 'Board card posted to a channel renders as clipped prose',
+      column: { name: 'In Development', category: 'active' }, priority: 'high',
+      assignee: { kind: 'agent', name: 'Shogo Dev 3' }, dueAt: null, path: '/work?card=i1',
+    },
+  }
+  const systemMsg = (blocks: unknown, text: string) =>
+    message({ id: 'w1', authorType: 'system', author: null, authorUserId: null, text, blocks })
+
+  test('a board card paints its own card and not the clipped markdown body', () => {
+    routed.length = 0
+    render(
+      <MessageRow
+        message={systemMsg(block, '**SHO-17 · Board card posted**\nIn Development · Shogo Dev 3 · high\n\nCLIPPED-BODY-MARKER')}
+        grouped={false} me="u-me" names={names} canManage={false} {...handlers()}
+      />,
+    )
+    expect(screen.getByTestId('work-item-card')).toBeTruthy()
+    expect(shim('work-item-key')!.textContent).toBe('SHO-17')
+    expect(shim('work-item-title')!.textContent).toBe(block.workItem.title)
+    expect(screen.getByText('In Development')).toBeTruthy()
+    expect(screen.getByText('Shogo Dev 3')).toBeTruthy()
+    expect(screen.getByText('Shogo Dev')).toBeTruthy()
+    expect(document.body.textContent).not.toContain('CLIPPED-BODY-MARKER')
+
+    fireEvent.click(screen.getByTestId('work-item-card'))
+    expect(routed.at(-1)).toEqual({ pathname: '/(app)/c/[conversationId]', params: { conversationId: 'c1', card: 'i1', board: 'b1' } })
+  })
+
+  test('a block posted before cards carried a title keeps the plain-text rendering', () => {
+    render(
+      <MessageRow
+        message={systemMsg({ workItem: { id: 'i1', key: 'SHO-1', boardId: 'b1' } }, 'SHO-1 · legacy post')}
+        grouped={false} me="u-me" names={names} canManage={false} {...handlers()}
+      />,
+    )
+    expect(screen.queryByTestId('work-item-card')).toBeNull()
+    expect(screen.getByText(/legacy post/)).toBeTruthy()
+  })
+})
+
 describe('ConversationHeader channel editing', () => {
   const channel = (overrides: Record<string, unknown> = {}): any => ({
     id: 'c9', workspaceId: 'ws', kind: 'public', name: 'design', slug: 'design', topic: null, lastSeq: 0, lastMessageAt: null,

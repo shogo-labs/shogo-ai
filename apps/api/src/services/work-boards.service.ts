@@ -338,13 +338,18 @@ async function workspaceOwnerId(workspaceId: string): Promise<string | null> {
   return owner?.userId ?? null
 }
 
-async function assigneeLabel(workspaceId: string, item: any): Promise<string> {
-  if (item.assigneeAgentRef) return agentDisplayName(workspaceId, agentRefProjectId(item.assigneeAgentRef))
+async function assigneeInfo(workspaceId: string, item: any): Promise<{ kind: 'user' | 'agent'; name: string } | null> {
+  if (item.assigneeAgentRef) return { kind: 'agent', name: await agentDisplayName(workspaceId, agentRefProjectId(item.assigneeAgentRef)) }
   if (item.assigneeUserId) {
     const u = await db.user.findUnique({ where: { id: item.assigneeUserId }, select: { name: true, email: true } })
-    return u?.name || u?.email || 'Someone'
+    const name = u?.name || u?.email
+    return name ? { kind: 'user', name } : null
   }
-  return 'Unassigned'
+  return null
+}
+
+async function assigneeLabel(workspaceId: string, item: any): Promise<string> {
+  return (await assigneeInfo(workspaceId, item))?.name ?? 'Unassigned'
 }
 
 async function actorLabel(workspaceId: string, actor: BoardActor): Promise<string> {
@@ -710,8 +715,29 @@ async function cardFor(item: any, column: any): Promise<StatusCard> {
   }
 }
 
-function cardBlocks(item: any, card: StatusCard) {
-  return { ...blocksForKind({ kind: 'status', card }), workItem: { id: item.id, key: item.key, boardId: item.boardId } }
+/**
+ * The channel-facing card: everything a client needs to draw a card of its own
+ * without re-fetching, plus the status card the Slack/Telegram bridges read.
+ * `title` is the full card title — `cardFor()`'s 200-char clip is for text only.
+ */
+async function workItemBlock(item: any, column: any, board: any, opts: { card?: StatusCard; note?: string } = {}) {
+  const card = opts.card ?? (await cardFor(item, column))
+  return {
+    ...blocksForKind({ kind: 'status', card }),
+    workItem: {
+      id: item.id,
+      key: item.key,
+      boardId: board?.id ?? item.boardId,
+      boardName: board?.name ?? null,
+      title: item.title,
+      column: { name: column.name, category: column.category },
+      priority: item.priority,
+      assignee: await assigneeInfo(item.workspaceId, item),
+      dueAt: item.dueAt ? new Date(item.dueAt).toISOString() : null,
+      path: itemPath(item),
+      ...(opts.note ? { note: opts.note } : {}),
+    },
+  }
 }
 
 function rootText(item: any, card: StatusCard): string {
@@ -739,7 +765,7 @@ export async function ensureThread(itemId: string, actor: BoardActor = {}): Prom
     conversationId: conversation.id,
     authorType: 'system',
     text: rootText(item, card),
-    blocks: cardBlocks(item, card),
+    blocks: await workItemBlock(item, item.column, item.board, { card }),
     clientMsgId: `card:${item.id}`,
     agentChain: originUserId
       ? { rootMessageId: '', originUserId, depth: 0, hops: [], turns: 0, runId: item.id }
@@ -752,10 +778,10 @@ export async function ensureThread(itemId: string, actor: BoardActor = {}): Prom
 }
 
 async function refreshCardMessage(itemId: string) {
-  const item = await db.workItem.findUnique({ where: { id: itemId }, include: { column: true } })
+  const item = await db.workItem.findUnique({ where: { id: itemId }, include: { column: true, board: true } })
   if (!item?.threadRootMessageId) return
   const card = await cardFor(item, item.column)
-  await updateMessageInternal(item.threadRootMessageId, { text: rootText(item, card), blocks: cardBlocks(item, card) }).catch((err: Error) => {
+  await updateMessageInternal(item.threadRootMessageId, { text: rootText(item, card), blocks: await workItemBlock(item, item.column, item.board, { card }) }).catch((err: Error) => {
     console.warn('[Boards] card message refresh failed:', err.message)
   })
 }
@@ -1101,11 +1127,12 @@ async function postEscalationLink(item: any, fromBoard: any, toBoard: any, actor
   const conversation = await db.conversation.findUnique({ where: { id: toBoard.conversationId } })
   if (!conversation || conversation.archivedAt) return
   const from = fromBoard.conversationId ? await db.conversation.findUnique({ where: { id: fromBoard.conversationId }, select: { name: true } }) : null
+  const note = `Moved to ${toBoard.name}${from?.name ? ` from #${from.name}` : ''}`
   const result = await postMessage({
     conversationId: conversation.id,
     authorType: 'system',
     text: `**${item.key} · ${item.title}** moved to ${toBoard.name}${from?.name ? ` from #${from.name}` : ''}. [Open card](${itemUrl(item)})`,
-    blocks: { workItem: { id: item.id, key: item.key, boardId: toBoard.id } },
+    blocks: await workItemBlock(item, item.column, toBoard, { note }),
   })
   await upsertLink(item, { kind: 'message', refId: result.row.id, conversationId: conversation.id, reason: 'escalation', snippet: `Moved to ${toBoard.name}` }, actor)
   void afterMessagePosted(result, { actorUserId: null, origin: 'system' })
