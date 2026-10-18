@@ -42,6 +42,8 @@ interface DesktopBridgeState {
   showChatNotificationImpl?: (args: any) => Promise<void>
   onNotificationClickedCalls: Array<(d: any) => void>
   removeListenerCalls: number
+  /** Main-process delivery report; omit to model a bridge older than this change. */
+  notificationStatus?: { state: 'unknown' | 'shown' | 'failed'; error?: string; at: number; supported: boolean } | null
 }
 
 function makeFakeDocument(overrides?: Partial<FakeDocument>): FakeDocument {
@@ -75,6 +77,7 @@ function installEnv(options?: {
         showChatNotificationImpl: options.desktop.showChatNotificationImpl,
         onNotificationClickedCalls: [],
         removeListenerCalls: 0,
+        notificationStatus: options.desktop.notificationStatus,
       }
     : null
 
@@ -82,7 +85,8 @@ function installEnv(options?: {
     focus: () => {},
   }
   if (desktopState) {
-    win.shogoDesktop = {
+    const desktopOptions = options!.desktop!
+    const bridge: Record<string, unknown> = {
       isDesktop: desktopState.isDesktop,
       showChatNotification: async (args: any) => {
         desktopState.showChatNotificationCalls.push(args)
@@ -98,6 +102,13 @@ function installEnv(options?: {
       },
       isWindowFocused: async () => desktopState.isWindowFocusedReturn,
     }
+    // Left off when a scenario does not set it, so tests can model a bridge
+    // built before getNotificationStatus existed.
+    if (desktopOptions.notificationStatus !== undefined) {
+      bridge.getNotificationStatus = async () =>
+        desktopOptions.notificationStatus ?? { state: 'unknown', at: 0, supported: true }
+    }
+    win.shogoDesktop = bridge
   }
   ;(globalThis as any).window = win
 
@@ -501,5 +512,76 @@ describe('chat-notifier.web — subscribeNotificationClicks', () => {
 
     unsubscribe()
     expect(desktop!.removeListenerCalls).toBe(1)
+  })
+})
+
+describe('chat-notifier.web — desktop permission state', () => {
+  beforeEach(() => uninstallEnv())
+  afterEach(() => uninstallEnv())
+
+  test('reports denied when the OS refused the last notification', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      desktop: {
+        isDesktop: true,
+        notificationStatus: { state: 'failed', error: 'not authorized', at: 5, supported: true },
+      },
+    })
+    const mod = await freshModule()
+    expect(await mod.getNotificationPermissionState()).toBe('denied')
+    expect(await mod.requestNotificationPermissionFromGesture()).toBe('denied')
+  })
+
+  test('reports granted once a notification has been delivered', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      desktop: { isDesktop: true, notificationStatus: { state: 'shown', at: 5, supported: true } },
+    })
+    const mod = await freshModule()
+    expect(await mod.getNotificationPermissionState()).toBe('granted')
+  })
+
+  test('reports unsupported when the platform cannot show notifications at all', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      desktop: {
+        isDesktop: true,
+        notificationStatus: { state: 'failed', error: 'nope', at: 5, supported: false },
+      },
+    })
+    const mod = await freshModule()
+    expect(await mod.getNotificationPermissionState()).toBe('unsupported')
+  })
+
+  test('stays granted for a bridge older than getNotificationStatus', async () => {
+    installEnv({ document: makeFakeDocument(), desktop: { isDesktop: true } })
+    const mod = await freshModule()
+    expect(await mod.getNotificationPermissionState()).toBe('granted')
+  })
+
+  test('falls back to granted rather than throwing when the bridge rejects', async () => {
+    const { win } = installEnv({
+      document: makeFakeDocument(),
+      desktop: { isDesktop: true, notificationStatus: { state: 'shown', at: 5, supported: true } },
+    })
+    win.shogoDesktop.getNotificationStatus = async () => {
+      throw new Error('ipc gone')
+    }
+    const mod = await freshModule()
+    expect(await mod.getNotificationPermissionState()).toBe('granted')
+  })
+
+  test('keeps the send gate permissive after a refusal so a later fix is not latched off', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      desktop: {
+        isDesktop: true,
+        notificationStatus: { state: 'failed', error: 'denied', at: 5, supported: true },
+      },
+    })
+    const mod = await freshModule()
+    // The gate runs before every notification; returning false here would stop
+    // every future attempt, including after the user re-enables alerts.
+    expect(await mod.ensureNotificationPermission()).toBe(true)
   })
 })

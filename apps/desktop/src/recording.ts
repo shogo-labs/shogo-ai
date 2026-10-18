@@ -76,6 +76,9 @@ let meetingPromptTimer: ReturnType<typeof setTimeout> | null = null
 /** Returns true when the island will show the prompt, so the native
  * notification would only duplicate it. */
 let meetingPromptPresenter: (() => boolean) | null = null
+/** The live meeting-detected notification. Kept referenced so Electron does
+ * not garbage-collect it (and drop the prompt with it). */
+let meetingNotification: Notification | null = null
 
 // ---------------------------------------------------------------------------
 // Paths / helpers
@@ -518,6 +521,11 @@ function onMeetingDetected(appLabel: string): void {
     if (meetingPromptPresenter?.()) return
 
     const promptId = meetingState.prompt?.id
+    // Held in a module-level reference for the same reason NotificationCenter
+    // exists: a notification with no live reference is garbage-collected, and
+    // Electron then drops it from Notification Center and stops firing its
+    // handlers — which here means the "close → dismiss" wiring silently dies.
+    meetingNotification?.close()
     const notification = new Notification({
       title: 'Meeting detected',
       body:
@@ -529,12 +537,18 @@ function onMeetingDetected(appLabel: string): void {
         { type: 'button', text: 'Ignore' },
       ],
     })
+    meetingNotification = notification
+    notification.on('failed', (_event, error) => {
+      console.warn('[Recording] Meeting prompt was not delivered:', error)
+      if (meetingNotification === notification) meetingNotification = null
+    })
     notification.on('action', (_event, index) => {
       void respondToMeeting(index === 0 ? 'record' : 'dismiss', promptId).then((result) => {
         if (!result.ok) console.error('[Recording] Record from notification failed:', result.error)
       })
     })
     notification.on('close', () => {
+      if (meetingNotification === notification) meetingNotification = null
       if (detectionState === 'detected') void respondToMeeting('dismiss')
     })
     notification.show()

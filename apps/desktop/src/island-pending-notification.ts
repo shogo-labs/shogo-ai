@@ -38,6 +38,12 @@ export class PendingNotifier {
       notification.on('close', () => {
         if (this.shown.get(notice.requestId) === notification) this.shown.delete(notice.requestId)
       })
+      // macOS emits `failed` when the OS refuses the banner. Swallowing it is
+      // how a blocked notification stayed invisible.
+      notification.on('failed', (_event, error) => {
+        console.warn(`[Island] Notification delivery failed: ${describeFailure(error)}`)
+        if (this.shown.get(notice.requestId) === notification) this.shown.delete(notice.requestId)
+      })
       this.shown.set(notice.requestId, notification)
       notification.show()
     } catch {
@@ -59,4 +65,10 @@ export class PendingNotifier {
   closeAll(): void {
     for (const id of [...this.shown.keys()]) this.close(id)
   }
+}
+
+function describeFailure(error: unknown): string {
+  if (typeof error === 'string') return error
+  if (error instanceof Error) return error.message
+  return 'unknown error'
 }

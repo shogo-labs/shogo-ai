@@ -26,12 +26,40 @@ type ShogoDesktopBridge = {
   onNotificationClicked?: (cb: (data: ChatNotificationClickData) => void) => void
   removeNotificationClickedListener?: () => void
   isWindowFocused?: () => Promise<boolean>
+  getNotificationStatus?: () => Promise<{
+    state: 'unknown' | 'shown' | 'failed'
+    error?: string
+    at: number
+    supported: boolean
+  }>
 }
 
 function getDesktop(): ShogoDesktopBridge | null {
   if (typeof window === 'undefined') return null
   const d = (window as unknown as { shogoDesktop?: ShogoDesktopBridge }).shogoDesktop
   return d && d.isDesktop ? d : null
+}
+
+/**
+ * What the OS did with the last notification it was asked to show.
+ *
+ * Electron has no browser-style permission prompt, so there is nothing to read
+ * up front — the only signal is whether the last attempt was refused, which the
+ * main process reports as `failed` (macOS emits `failed` for a denied or
+ * unsigned app). Reporting a flat 'granted' here is what let Settings claim
+ * notifications worked while every banner was being dropped.
+ */
+async function desktopPermissionState(): Promise<NotificationPermissionState> {
+  const desktop = getDesktop()
+  if (!desktop) return 'unsupported'
+  if (!desktop.getNotificationStatus) return 'granted'
+  try {
+    const status = await desktop.getNotificationStatus()
+    if (!status.supported) return 'unsupported'
+    return status.state === 'failed' ? 'denied' : 'granted'
+  } catch {
+    return 'granted'
+  }
 }
 
 export async function isUserInactive(): Promise<boolean> {
@@ -65,8 +93,11 @@ function toState(permission: NotificationPermission): NotificationPermissionStat
  * left to `requestNotificationPermissionFromGesture`.
  */
 export async function ensureNotificationPermission(): Promise<boolean> {
-  // On desktop, the OS handles permissions; Electron's Notification API
-  // doesn't require a browser-style permission prompt.
+  // On desktop the OS decides, and it can only be asked by trying. Stay
+  // permissive here on purpose: this gate is checked before every
+  // notification, so returning false once the last attempt failed would latch
+  // notifications off for the rest of the session — including after the user
+  // re-enables them. The blocked state is surfaced in Settings instead.
   if (getDesktop()) return true
   if (typeof window === 'undefined' || typeof Notification === 'undefined') return false
   return Notification.permission === 'granted'
@@ -77,13 +108,14 @@ export function subscribeNotificationPermissionGranted(_listener: () => void): (
 }
 
 export async function getNotificationPermissionState(): Promise<NotificationPermissionState> {
-  if (getDesktop()) return 'granted'
+  if (getDesktop()) return desktopPermissionState()
   if (typeof window === 'undefined' || typeof Notification === 'undefined') return 'unsupported'
   return toState(Notification.permission)
 }
 
 export async function requestNotificationPermissionFromGesture(): Promise<NotificationPermissionState> {
-  if (getDesktop()) return 'granted'
+  // On desktop there is no prompt to trigger — report what the OS last did.
+  if (getDesktop()) return desktopPermissionState()
   if (typeof window === 'undefined' || typeof Notification === 'undefined') return 'unsupported'
   if (Notification.permission !== 'default') return toState(Notification.permission)
   try {

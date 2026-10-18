@@ -117,7 +117,18 @@ export function useNotifyOnTurnComplete(args: UseNotifyOnTurnCompleteArgs): void
 
     void (async () => {
       try {
-        if (requiresInactivity(Platform.OS) && !(await isUserInactive())) return
+        if (requiresInactivity(Platform.OS)) {
+          const inactive = await isUserInactive()
+          if (!inactive) {
+            // Shogo counts as focused, so the completion is not announced. On
+            // desktop this is the line to check when notifications go missing
+            // while the window sits behind another app: Electron's
+            // BrowserWindow.isFocused() can keep reporting true for a window
+            // that was never explicitly unfocused.
+            console.debug('[Notify] turn finished while the window counts as focused — skipped')
+            return
+          }
+        }
         if (!(await ensureNotificationPermission())) return
         await notifyChatFinished({
           sessionId: snapshot.sessionId as string,
