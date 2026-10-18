@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * One card: title, column, priority, assignee and fields up top, then
- * Thread (the card's channel thread, live), History (thread, card events and
- * other conversations that mention it), and Agent runs.
+ * One card. A pinned header (editable title, column/priority/assignee/due
+ * chips, save notice) sits above four tabs: Thread (the card's channel thread,
+ * live), Details (description, summary, board fields), History (thread, card
+ * events and other conversations that mention it) and Agent runs. Description
+ * and summary live on Details so the other three get the pane's full height.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
@@ -31,7 +33,7 @@ import { PRIORITY_DOT } from './priority'
 const api = workBoardsApi()
 const chat = teamChatApi()
 
-type Tab = 'thread' | 'history' | 'runs'
+type Tab = 'thread' | 'details' | 'history' | 'runs'
 type Sheet = 'column' | 'priority' | 'assignee' | null
 
 export interface CardPaneProps {
@@ -50,8 +52,6 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
   const [tab, setTab] = useState<Tab>('thread')
   const [sheet, setSheet] = useState<Sheet>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [editingDescription, setEditingDescription] = useState(false)
-  const [descriptionDraft, setDescriptionDraft] = useState('')
 
   const patch = useCallback(async (change: ItemPatch) => {
     if (!detail) return
@@ -87,17 +87,7 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
   }
 
   const { item, board } = detail
-  const startEditingDescription = () => {
-    setDescriptionDraft(item.description ?? '')
-    setEditingDescription(true)
-  }
-  const saveDescription = () => {
-    setEditingDescription(false)
-    const next = descriptionDraft.trim()
-    if (next !== (item.description ?? '').trim()) void patch({ description: next || null })
-  }
   const columns = board.columns ?? []
-  const fieldEntries = Object.entries(item.fields ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '')
   return (
     <View className="flex-1 bg-background" testID="card-pane">
       <PaneHeader
@@ -131,7 +121,7 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
           </>
         )}
       />
-      <ScrollView className="max-h-[45%] shrink-0 grow-0" contentContainerClassName="gap-3 px-4 py-3">
+      <View className="shrink-0 gap-2 px-4 pb-2 pt-3">
         <EditableText
           key={`title:${item.id}`}
           value={item.title}
@@ -156,65 +146,25 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
           />
           {item.dueAt ? <Chip label={`Due ${new Date(item.dueAt).toLocaleDateString()}`} hint="Due" /> : null}
         </View>
-        <View className="gap-1">
-          <View className="flex-row items-center justify-between">
-            <Text className="text-[11px] font-medium uppercase text-muted-foreground">Description</Text>
-            {editingDescription ? null : (
-              <Pressable accessibilityRole="button" accessibilityLabel="Edit description" onPress={startEditingDescription} className="rounded-md p-1 hover:bg-muted active:bg-muted">
-                <Pencil size={13} className="text-muted-foreground" />
-              </Pressable>
-            )}
-          </View>
-          {editingDescription ? (
-            <TextInput
-              value={descriptionDraft}
-              onChangeText={setDescriptionDraft}
-              onBlur={saveDescription}
-              multiline
-              autoFocus
-              placeholder="Add a description"
-              placeholderTextColor="#8a8a8a"
-              accessibilityLabel="Description"
-              className="rounded-md px-1 py-1 text-sm text-foreground focus:bg-muted/50"
-              style={Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : undefined}
-            />
-          ) : item.description?.trim() ? (
-            <MarkdownText>{item.description}</MarkdownText>
-          ) : (
-            <Pressable accessibilityRole="button" accessibilityLabel="Add a description" onPress={startEditingDescription} className="rounded-md px-1 py-1 hover:bg-muted/50">
-              <Text className="text-sm text-muted-foreground">Add a description</Text>
-            </Pressable>
-          )}
-        </View>
-        {item.historySummary ? (
-          <View className="rounded-md bg-muted/60 p-2.5">
-            <Text className="mb-1 text-[11px] font-medium uppercase text-muted-foreground">Summary</Text>
-            <MarkdownText>{item.historySummary}</MarkdownText>
-          </View>
-        ) : null}
-        {fieldEntries.length ? (
-          <View className="gap-1">
-            {fieldEntries.map(([key, value]) => {
-              const label = board.fieldsSchema?.find((f) => f.key === key)?.label ?? key
-              return (
-                <View key={key} className="flex-row gap-2">
-                  <Text className="w-28 text-xs text-muted-foreground" numberOfLines={1}>{label}</Text>
-                  <Text className="flex-1 text-xs text-foreground" numberOfLines={2}>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</Text>
-                </View>
-              )
-            })}
-          </View>
-        ) : null}
         {notice ? <Text className="text-xs text-amber-700 dark:text-amber-400">{notice}</Text> : null}
-      </ScrollView>
-      <View className="flex-row gap-1 border-b border-t border-border px-3" accessibilityRole="tablist">
-        <TabButton label="Thread" active={tab === 'thread'} onPress={() => setTab('thread')} />
-        <TabButton label="History" active={tab === 'history'} onPress={() => setTab('history')} />
-        <TabButton label={`Agent runs${detail.agentRuns.length ? ` (${detail.agentRuns.length})` : ''}`} active={tab === 'runs'} onPress={() => setTab('runs')} />
       </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        className="max-h-11 shrink-0 grow-0 border-b border-t border-border"
+        contentContainerClassName="gap-1 px-3"
+        accessibilityRole="tablist"
+      >
+        <TabButton label="Thread" testID="card-tab-thread" active={tab === 'thread'} onPress={() => setTab('thread')} />
+        <TabButton label="Details" testID="card-tab-details" active={tab === 'details'} onPress={() => setTab('details')} />
+        <TabButton label="History" testID="card-tab-history" active={tab === 'history'} onPress={() => setTab('history')} />
+        <TabButton label={`Agent runs${detail.agentRuns.length ? ` (${detail.agentRuns.length})` : ''}`} testID="card-tab-runs" active={tab === 'runs'} onPress={() => setTab('runs')} />
+      </ScrollView>
       <View className="min-h-0 flex-1">
         {tab === 'thread' ? (
           <CardThread detail={detail} workspaceId={workspaceId} me={me} mentionables={mentionables} conversation={conversation ?? null} visible={visible} onCommented={reload} />
+        ) : tab === 'details' ? (
+          <CardDetails detail={detail} onPatch={patch} />
         ) : tab === 'history' ? (
           <CardHistory itemId={item.id} mentionables={mentionables} />
         ) : (
@@ -256,6 +206,76 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
   )
 }
 
+/** Description, summary and board fields — the long-form parts of a card. */
+function CardDetails({ detail, onPatch }: { detail: WorkItemDetail; onPatch: (change: ItemPatch) => void }) {
+  const { item, board } = detail
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const startEditing = () => {
+    setDraft(item.description ?? '')
+    setEditing(true)
+  }
+  const save = () => {
+    setEditing(false)
+    const next = draft.trim()
+    if (next !== (item.description ?? '').trim()) onPatch({ description: next || null })
+  }
+  const fieldEntries = Object.entries(item.fields ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '')
+  return (
+    <ScrollView className="flex-1" contentContainerClassName="gap-3 px-4 py-3" testID="card-details">
+      <View className="gap-1">
+        <View className="flex-row items-center justify-between">
+          <Text className="text-[11px] font-medium uppercase text-muted-foreground">Description</Text>
+          {editing ? null : (
+            <Pressable accessibilityRole="button" accessibilityLabel="Edit description" onPress={startEditing} className="rounded-md p-1 hover:bg-muted active:bg-muted">
+              <Pencil size={13} className="text-muted-foreground" />
+            </Pressable>
+          )}
+        </View>
+        {editing ? (
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            onBlur={save}
+            multiline
+            autoFocus
+            placeholder="Add a description"
+            placeholderTextColor="#8a8a8a"
+            accessibilityLabel="Description"
+            className="rounded-md px-1 py-1 text-sm text-foreground focus:bg-muted/50"
+            style={Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : undefined}
+          />
+        ) : item.description?.trim() ? (
+          <MarkdownText>{item.description}</MarkdownText>
+        ) : (
+          <Pressable accessibilityRole="button" accessibilityLabel="Add a description" onPress={startEditing} className="rounded-md px-1 py-1 hover:bg-muted/50">
+            <Text className="text-sm text-muted-foreground">Add a description</Text>
+          </Pressable>
+        )}
+      </View>
+      {item.historySummary ? (
+        <View className="rounded-md bg-muted/60 p-2.5">
+          <Text className="mb-1 text-[11px] font-medium uppercase text-muted-foreground">Summary</Text>
+          <MarkdownText>{item.historySummary}</MarkdownText>
+        </View>
+      ) : null}
+      {fieldEntries.length ? (
+        <View className="gap-1">
+          {fieldEntries.map(([key, value]) => {
+            const label = board.fieldsSchema?.find((f) => f.key === key)?.label ?? key
+            return (
+              <View key={key} className="flex-row gap-2">
+                <Text className="w-28 text-xs text-muted-foreground" numberOfLines={1}>{label}</Text>
+                <Text className="flex-1 text-xs text-foreground" numberOfLines={2}>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</Text>
+              </View>
+            )
+          })}
+        </View>
+      ) : null}
+    </ScrollView>
+  )
+}
+
 function PaneHeader({ title, onClose, actions }: { title: string; onClose: () => void; actions?: React.ReactNode }) {
   return (
     <View className="flex-row items-center gap-1 border-b border-border px-4 py-2.5">
@@ -285,11 +305,12 @@ function Chip({ label, hint, dot, icon, onPress, testID }: { label: string; hint
   )
 }
 
-function TabButton({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+function TabButton({ label, active, onPress, testID }: { label: string; active: boolean; onPress: () => void; testID?: string }) {
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="tab"
+      testID={testID}
       aria-selected={active}
       className={cn('border-b-2 px-2 py-2', active ? 'border-primary' : 'border-transparent hover:bg-muted')}
     >

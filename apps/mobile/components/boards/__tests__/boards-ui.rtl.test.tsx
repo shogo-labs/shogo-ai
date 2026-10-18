@@ -50,6 +50,10 @@ mock.module('expo-router', () => ({ useRouter: () => ({ push: (r: unknown) => ro
 mock.module('../../team-chat/TimelinePane', () => ({
   TimelinePane: ({ threadRootId }: any) => createElement('div', { 'data-testid': 'thread' }, `thread ${threadRootId}`),
 }))
+// The real one parses markdown into a FlatList, which the RN mock renders empty.
+mock.module('../../chat/MarkdownText', () => ({
+  MarkdownText: ({ children }: any) => createElement('div', null, children),
+}))
 mock.module('../../../lib/team-chat-connection', () => ({ useTeamChatEvents: () => 'open' }))
 
 type Call = { method: string; path: string; body?: any }
@@ -260,6 +264,76 @@ describe('CardPane', () => {
     fireEvent.click(await screen.findByText('Agent runs (1)'))
     fireEvent.click(screen.getByText('Investigate 500s'))
     expect(routed).toEqual([{ pathname: '/(app)/projects/[id]', params: { id: 'p1', chatSessionId: 's1' } }])
+  })
+
+  const detailsPane = () => document.querySelector('[data-rn-shim="card-details"]')
+
+  test('description and summary live on their own Details tab', async () => {
+    routes['GET /api/work-items/7'] = () => detail({
+      description: 'Checkout 500s on retry',
+      historySummary: 'Rolled back the deploy; watching the next hour.',
+    })
+    render(createElement(CardPane, { itemId: '7', workspaceId: 'ws', me: 'u1', mentionables: mentionables as any, conversation, visible: true, onClose: () => {} }))
+    expect(await screen.findByTestId('thread')).toBeTruthy()
+    expect(screen.getByLabelText('Card title')).toBeTruthy()
+    expect(screen.getByLabelText('Column: Doing')).toBeTruthy()
+    expect(detailsPane()).toBeNull()
+    expect(document.body.textContent).not.toContain('Checkout 500s on retry')
+    expect(document.body.textContent).not.toContain('Rolled back the deploy')
+
+    fireEvent.click(screen.getByTestId('card-tab-details'))
+    const details = detailsPane()!
+    expect(details.textContent).toContain('Summary')
+    expect(screen.queryByTestId('thread')).toBeNull()
+    expect(details.textContent).toContain('Checkout 500s on retry')
+    expect(details.textContent).toContain('Rolled back the deploy')
+
+    fireEvent.click(screen.getByTestId('card-tab-thread'))
+    expect(await screen.findByTestId('thread')).toBeTruthy()
+    expect(detailsPane()).toBeNull()
+  })
+
+  test('a card with no description and no summary shows neither on Details', async () => {
+    render(createElement(CardPane, { itemId: '7', workspaceId: 'ws', me: 'u1', mentionables: mentionables as any, conversation, visible: true, onClose: () => {} }))
+    fireEvent.click(await screen.findByTestId('card-tab-details'))
+    const details = detailsPane()!
+    expect(details.textContent).toContain('Add a description')
+    expect(details.textContent).not.toContain('Summary')
+  })
+
+  test('board fields render on Details under their schema labels', async () => {
+    const base = detail({ fields: { area: 'checkout-v2' } })
+    routes['GET /api/work-items/7'] = () => ({
+      ...base,
+      board: { ...base.board, fieldsSchema: [{ key: 'area', label: 'Area', type: 'text' }] },
+    })
+    render(createElement(CardPane, { itemId: '7', workspaceId: 'ws', me: 'u1', mentionables: mentionables as any, conversation, visible: true, onClose: () => {} }))
+    expect(await screen.findByTestId('thread')).toBeTruthy()
+    expect(document.body.textContent).not.toContain('checkout-v2')
+
+    fireEvent.click(screen.getByTestId('card-tab-details'))
+    const details = detailsPane()!
+    expect(details.textContent).toContain('Area')
+    expect(details.textContent).toContain('checkout-v2')
+  })
+
+  test('editing the description from Details patches the card', async () => {
+    routes['PATCH /api/work-items/7'] = (c) => ({ item: item('7', 'c2', 1, c.body) })
+    render(createElement(CardPane, { itemId: '7', workspaceId: 'ws', me: 'u1', mentionables: mentionables as any, conversation, visible: true, onClose: () => {} }))
+    fireEvent.click(await screen.findByTestId('card-tab-details'))
+    fireEvent.click(screen.getByLabelText('Add a description'))
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Retry loop double-charges' } })
+    await act(async () => {
+      fireEvent.blur(screen.getByLabelText('Description'))
+    })
+    await waitFor(() => expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ description: 'Retry loop double-charges' }))
+
+    fireEvent.click(screen.getByLabelText('Edit description'))
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: '   ' } })
+    await act(async () => {
+      fireEvent.blur(screen.getByLabelText('Description'))
+    })
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').at(-1)?.body).toEqual({ description: null }))
   })
 
   test('a card without a thread offers a comment box', async () => {

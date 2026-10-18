@@ -110,6 +110,31 @@ test.describe("Channel boards", () => {
     await expect(page).not.toHaveURL(/card=/)
   })
 
+  test("a card's description and summary live on its Details tab", async () => {
+    const item = (await cards()).items[0]
+    const description = `Retry loop double-charges the customer ${suffix}`
+    const summary = `Rolled back the deploy; watching the next hour ${suffix}`
+    const patched = await api(page, "PATCH", `/api/work-items/${item.id}`, { description, historySummary: summary })
+    expect(patched.status).toBeLessThan(300)
+
+    await page.getByTestId(`board-card-${item.key}`).click()
+    await expect(page.getByTestId("card-details")).toHaveCount(0)
+    await expect(cardPane(page).getByTestId("card-tab-thread")).toHaveAttribute("aria-selected", "true")
+
+    await cardPane(page).getByTestId("card-tab-details").click()
+    const details = page.getByTestId("card-details")
+    await expect(details).toBeVisible()
+    await expect(details).toContainText(description)
+    await expect(details).toContainText("Summary")
+    await expect(details).toContainText(summary)
+    await expect(kanban(page)).toBeVisible()
+
+    await cardPane(page).getByTestId("card-tab-thread").click()
+    await expect(page.getByTestId("card-details")).toHaveCount(0)
+    await expect(cardPane(page).getByTestId("card-tab-thread")).toHaveAttribute("aria-selected", "true")
+    await page.getByRole("button", { name: "Close card" }).click()
+  })
+
   test("a message becomes a card from its menu", async () => {
     const text = `Customers can't reset passwords ${suffix}`
     const posted = await api(page, "POST", `/api/conversations/${channelId}/messages`, { text })
