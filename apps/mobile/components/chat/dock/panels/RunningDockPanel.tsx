@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { View, Text, Pressable, ActivityIndicator } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { AtSign, Bot, Clock, Hourglass, KanbanSquare, Send, Terminal, X } from "lucide-react-native"
+import { AtSign, Ban, Bot, CircleCheck, CircleX, Clock, Hourglass, KanbanSquare, Send, Terminal, X } from "lucide-react-native"
 import type { RunningProcess } from "../../ProcessPanel"
 import type { SubagentProgress } from "../../subagent/SubagentPanel"
 import type { RecentTool } from "../../subagent/SubagentStats"
@@ -60,8 +60,39 @@ const SOURCE_ICON: Record<string, typeof Terminal> = {
   work_item: KanbanSquare,
 }
 
+/** A task that has settled: it keeps its row for a while, with a frozen duration. */
+function isFinished(proc: RunningProcess): boolean {
+  return !!proc.finishedAt || (!!proc.status && proc.status !== "running")
+}
+
+function finishedLabel(proc: RunningProcess): string {
+  if (proc.status === "failed") return "failed"
+  if (proc.status === "cancelled") return "cancelled"
+  return "completed"
+}
+
+function StatusIcon({ proc }: { proc: RunningProcess }) {
+  if (proc.status === "failed") return <CircleX size={11} className="shrink-0 text-red-400" />
+  if (proc.status === "cancelled") return <Ban size={11} className="shrink-0 text-muted-foreground/70" />
+  return <CircleCheck size={11} className="shrink-0 text-green-500" />
+}
+
 function taskId(proc: RunningProcess): string {
   return proc.id ?? proc.runId
+}
+
+/** Running vs recently finished rows (the panel summary and the wake line). */
+export function dockProcessCounts(processes: RunningProcess[]): {
+  running: number
+  finished: number
+} {
+  let running = 0
+  let finished = 0
+  for (const proc of processes) {
+    if (isFinished(proc)) finished++
+    else running++
+  }
+  return { running, finished }
 }
 
 function TaskRow({
@@ -84,7 +115,11 @@ function TaskRow({
   const Icon = SOURCE_ICON[proc.source ?? "shell"] ?? Terminal
   const isShell = !proc.source || proc.source === "shell"
   const title = proc.title || proc.command
+  const finished = isFinished(proc)
   const canShowOutput = !!loadOutput && !proc.stale
+  const frozenMs = proc.finishedAt
+    ? Math.max(0, proc.finishedAt - (proc.startedAt ?? proc.finishedAt))
+    : (proc.elapsedMs ?? 0)
 
   async function toggleOutput() {
     if (output !== null) {
@@ -104,15 +139,31 @@ function TaskRow({
   return (
     <View className="gap-1">
       <View className="flex-row items-center gap-2">
-        <Icon size={11} className={cn("shrink-0", waitedOn ? "text-primary" : "text-muted-foreground")} />
+        {finished ? (
+          <StatusIcon proc={proc} />
+        ) : (
+          <Icon size={11} className={cn("shrink-0", waitedOn ? "text-primary" : "text-muted-foreground")} />
+        )}
         <Text
-          className={cn("flex-1 text-[11px] text-foreground", isShell && "font-mono")}
+          className={cn(
+            "flex-1 text-[11px] text-foreground",
+            isShell && "font-mono",
+            finished && "text-muted-foreground",
+          )}
           numberOfLines={1}
         >
           {title}
         </Text>
-        {waitedOn ? <Text className="text-[9px] font-medium text-primary">waiting</Text> : null}
-        {proc.stale ? (
+        {waitedOn && !finished ? <Text className="text-[9px] font-medium text-primary">waiting</Text> : null}
+        {finished ? (
+          <View className="flex-row items-center gap-1">
+            <Text className="text-[9px] font-medium text-muted-foreground/80">{finishedLabel(proc)}</Text>
+            <Clock size={10} className="text-muted-foreground/70" />
+            <Text className="text-[10px] font-mono text-muted-foreground">
+              {formatElapsed(frozenMs)}
+            </Text>
+          </View>
+        ) : proc.stale ? (
           <Text className="text-[9px] font-medium text-yellow-500/80">unverified</Text>
         ) : (
           <View className="flex-row items-center gap-1">
@@ -137,22 +188,24 @@ function TaskRow({
             )}
           </Pressable>
         ) : null}
-        <Pressable
-          onPress={onKill}
-          disabled={killing}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={proc.stale ? "Dismiss" : isShell ? "Kill process" : "Cancel task"}
-          className={cn(
-            "flex-row items-center gap-1 rounded px-1.5 py-0.5 bg-red-500/10 border border-red-500/20 active:opacity-60",
-            killing && "opacity-40",
-          )}
-        >
-          {killing ? <ActivityIndicator size="small" color="#ef4444" /> : <X size={10} className="text-red-400" />}
-          <Text className="text-[10px] font-medium text-red-400">
-            {proc.stale ? "Dismiss" : isShell ? "Kill" : "Cancel"}
-          </Text>
-        </Pressable>
+        {finished ? null : (
+          <Pressable
+            onPress={onKill}
+            disabled={killing}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={proc.stale ? "Dismiss" : isShell ? "Kill process" : "Cancel task"}
+            className={cn(
+              "flex-row items-center gap-1 rounded px-1.5 py-0.5 bg-red-500/10 border border-red-500/20 active:opacity-60",
+              killing && "opacity-40",
+            )}
+          >
+            {killing ? <ActivityIndicator size="small" color="#ef4444" /> : <X size={10} className="text-red-400" />}
+            <Text className="text-[10px] font-medium text-red-400">
+              {proc.stale ? "Dismiss" : isShell ? "Kill" : "Cancel"}
+            </Text>
+          </Pressable>
+        )}
       </View>
       {output !== null ? (
         <Text className="ml-5 font-mono text-[10px] text-muted-foreground" selectable>
@@ -176,10 +229,11 @@ function RunningBody({
   const pendingKills = useRef<Set<string>>(new Set())
 
   useEffect(() => {
-    if (processes.length === 0 && !waiting) return
+    const hasRunning = processes.some((p) => !isFinished(p))
+    if (!hasRunning && !waiting) return
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
-  }, [processes.length, waiting])
+  }, [processes, waiting])
 
   function handleKill(runId: string) {
     if (pendingKills.current.has(runId)) return
@@ -190,7 +244,8 @@ function RunningBody({
   }
 
   const waitedOn = new Set(waiting?.taskIds ?? [])
-  const notifying = processes.filter((p) => p.notify && !p.stale)
+  // Only a running task can wake the agent; a finished row just lingers.
+  const notifying = processes.filter((p) => p.notify && !p.stale && !isFinished(p))
   // Background subagents are listed as tasks; the live progress rows only add
   // to that when no subagent task is shown.
   const showSubagentRows = !processes.some((p) => p.source === "subagent")
@@ -265,20 +320,26 @@ export function RunningDockPanel(props: RunningDockPanelProps) {
 
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (processes.length === 0 && subagents.length === 0 && !waiting) return null
+    const counts = dockProcessCounts(processes)
     const parts: string[] = []
     if (waiting) parts.push("agent waiting")
-    const tasks = processes.length
-    if (tasks > 0) parts.push(`${tasks} task${tasks === 1 ? "" : "s"}`)
+    if (counts.running > 0) {
+      parts.push(`${counts.running} running`)
+    }
+    if (counts.finished > 0) {
+      parts.push(`${counts.finished} finished`)
+    }
     if (subagents.length > 0 && !processes.some((p) => p.source === "subagent")) {
       parts.push(`${subagents.length} agent${subagents.length === 1 ? "" : "s"}`)
     }
+    const onlyFinished = counts.running === 0 && counts.finished > 0
     return {
       id: "running",
       kind: "status",
       order: 60,
-      title: waiting ? "Waiting" : "Running",
+      title: waiting ? "Waiting" : onlyFinished ? "Finished" : "Running",
       icon: waiting ? Hourglass : Terminal,
-      accent: waiting || processes.length > 0 || runningSubagents > 0 ? "running" : "default",
+      accent: waiting || counts.running > 0 || runningSubagents > 0 ? "running" : "default",
       summary: parts.join(" · "),
       defaultExpanded: true,
       render: () => <RunningBody {...props} />,

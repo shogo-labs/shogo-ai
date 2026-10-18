@@ -27,10 +27,14 @@
 
 import {
   appendFileSync,
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -56,6 +60,22 @@ export interface TaskOutputFooter {
   status: string
   exitCode?: number
   elapsedMs: number
+}
+
+/** One restored row from a task log, for the dock after a restart. */
+export interface TaskOutputRow {
+  taskId: string
+  source: string
+  title: string
+  startedAt: number
+  path: string
+  /** Present when the log has a footer block, i.e. the task settled. */
+  status?: 'completed' | 'failed' | 'cancelled'
+  exitCode?: number
+  elapsedMs?: number
+  finishedAt?: number
+  /** File mtime, used to order the rows newest-first. */
+  modifiedAt: number
 }
 
 function headerBlock(header: TaskOutputHeader): string {
@@ -187,6 +207,93 @@ export function tailLines(text: string, maxLines = 40, maxChars = 4000): string 
   const lines = text.replace(/\s+$/, '').split('\n')
   const tail = lines.slice(-maxLines).join('\n')
   return tail.length > maxChars ? tail.slice(-maxChars) : tail
+}
+
+function parseKeyValueBlock(text: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const match = line.match(/^([a-z_]+):\s*(.*)$/)
+    if (match && match[1] && match[2] !== undefined) out[match[1]] = match[2].trim()
+  }
+  return out
+}
+
+/** Read the first/last `bytes` of a file without loading a 10 MB log. */
+function readHeadAndTail(path: string, bytes = 4096): { head: string; tail: string } {
+  const fd = openSync(path, 'r')
+  try {
+    const { size } = fstatSync(fd)
+    const len = Math.min(bytes, size)
+    const head = Buffer.alloc(len)
+    readSync(fd, head, 0, len, 0)
+    const tail = Buffer.alloc(len)
+    readSync(fd, tail, 0, len, Math.max(0, size - len))
+    return { head: head.toString('utf-8'), tail: tail.toString('utf-8') }
+  } finally {
+    closeSync(fd)
+  }
+}
+
+const SETTLED = new Set(['completed', 'failed', 'cancelled'])
+
+/**
+ * Describe the tasks whose logs live in `dir`, newest first. The header gives
+ * identity and start; a closing footer block means the task settled (and how),
+ * no footer means the runtime died while it was still running. Logs outside
+ * the retention window are skipped.
+ */
+export function listTaskOutputRows(
+  dir: string,
+  opts: { maxAgeMs?: number; limit?: number } = {},
+): TaskOutputRow[] {
+  if (!existsSync(dir)) return []
+  const cutoff = Date.now() - (opts.maxAgeMs ?? TASK_OUTPUT_RETENTION_MS)
+  const rows: TaskOutputRow[] = []
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return []
+  }
+  for (const name of names) {
+    if (!name.endsWith('.log')) continue
+    const path = join(dir, name)
+    try {
+      const st = statSync(path)
+      if (!st.isFile() || st.mtimeMs < cutoff) continue
+      const { head, tail } = readHeadAndTail(path)
+      const header = parseKeyValueBlock(head.split('\n---')[0] ?? '')
+      const taskId = header.task_id
+      if (!taskId) continue
+      const startedAt = header.started_at ? Date.parse(header.started_at) : st.mtimeMs
+      const row: TaskOutputRow = {
+        taskId,
+        source: header.source ?? 'shell',
+        title: header.title ?? taskId,
+        startedAt: Number.isFinite(startedAt) ? startedAt : st.mtimeMs,
+        path,
+        modifiedAt: st.mtimeMs,
+      }
+      const footerMatch = tail.match(/(?:^|\n)---\n([\s\S]*?)\n---\s*$/)
+      if (footerMatch) {
+        const footer = parseKeyValueBlock(footerMatch[1] ?? '')
+        if (footer.status && SETTLED.has(footer.status)) {
+          row.status = footer.status as TaskOutputRow['status']
+          const exitCode = Number(footer.exit_code)
+          if (footer.exit_code !== undefined && Number.isFinite(exitCode)) row.exitCode = exitCode
+          const elapsedMs = Number(footer.elapsed_ms)
+          if (Number.isFinite(elapsedMs)) row.elapsedMs = elapsedMs
+          const finishedAt = footer.finished_at ? Date.parse(footer.finished_at) : NaN
+          row.finishedAt = Number.isFinite(finishedAt) ? finishedAt : st.mtimeMs
+        }
+      }
+      rows.push(row)
+    } catch {
+      /* raced with a cleanup or a writer: skip this log */
+    }
+  }
+  rows.sort((a, b) => b.modifiedAt - a.modifiedAt)
+  return opts.limit ? rows.slice(0, opts.limit) : rows
 }
 
 /** Delete task logs (and empty session dirs) older than `maxAgeMs` under `rootDir`. */

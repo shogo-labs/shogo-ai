@@ -122,7 +122,7 @@ import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { loadWorkspaceCustomAgents } from './subagent'
 import { TaskRegistry, formatTaskNotification } from './task-registry'
-import { cleanupTaskOutputs, taskOutputDir, taskOutputRoot } from './task-output'
+import { cleanupTaskOutputs, listTaskOutputRows, taskOutputDir, taskOutputRoot } from './task-output'
 import { createApiTaskClient } from './remote-tasks'
 import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
 import { TeamManager } from './team-manager'
@@ -2217,8 +2217,45 @@ export class AgentGateway {
       registry.onNotification(() => this.scheduleTaskWake(sessionId))
 
       this.commandRegistries.set(sessionId, registry)
+      // `sessionManager.get()` is memory-only: on a cold process the session is
+      // not loaded yet, so the seed above sees nothing. Load it once and retry,
+      // then fall back to the per-task logs when no snapshot survived.
+      this.hydrateCommandRegistry(sessionId, registry).catch(() => {})
     }
     return reg
+  }
+
+  private hydratingRegistries = new Map<string, Promise<void>>()
+
+  /**
+   * Seed a cold registry from the loaded session (or, failing that, the
+   * per-task logs). Returns the in-flight promise so callers that answer a
+   * request can wait for it: `sessionManager.get()` is memory-only, and a
+   * client that receives an empty dock never asks again.
+   */
+  private hydrateCommandRegistry(sessionId: string, registry: TaskRegistry): Promise<void> {
+    const inflight = this.hydratingRegistries.get(sessionId)
+    if (inflight) return inflight
+    const pending = (async () => {
+      try {
+        const session = await this.sessionManager.getOrCreateAsync(sessionId)
+        // Another caller already re-seeded this registry from the loaded session.
+        if (registry.listDock().length > 0) return
+        const persisted = session.metadata?.runningProcesses
+        if (Array.isArray(persisted) && persisted.length > 0) {
+          registry.restoreStale(persisted)
+          return
+        }
+        const rows = listTaskOutputRows(taskOutputDir(this.workspaceDir, sessionId))
+        if (rows.length > 0) registry.restoreFromOutputRows(rows)
+      } catch {
+        // Best effort: a dock that starts empty beats a failed first request.
+      } finally {
+        this.hydratingRegistries.delete(sessionId)
+      }
+    })()
+    this.hydratingRegistries.set(sessionId, pending)
+    return pending
   }
 
   // ---------------------------------------------------------------------------
@@ -2330,11 +2367,15 @@ export class AgentGateway {
     return this.getOrCreateCommandRegistry(sessionId).listVisible()
   }
 
-  /** Running tasks for the dock, with API-tracked ones refreshed first. */
+  /** Tasks for the dock (running + recently finished), remote ones refreshed first. */
   async listSessionTasks(sessionId: string): Promise<import('./task-registry').RunningProcess[]> {
     const reg = this.getOrCreateCommandRegistry(sessionId)
+    // A cold registry is seeded asynchronously; answer from the hydrated list.
+    // The client only polls the seed route while it already has rows, so an
+    // empty first response would never be retried.
+    await this.hydratingRegistries.get(sessionId)
     if (reg.hasRunningRemote()) await reg.refreshRemote()
-    return reg.listVisible()
+    return reg.listDock()
   }
 
   /** Last part of a task's output, for the dock's output viewer. */
@@ -3146,18 +3187,20 @@ export class AgentGateway {
       const reg = this.getOrCreateCommandRegistry(sessionId)
       const visibleKey = (tasks: readonly { runId: string; status: string }[]) =>
         tasks.map((task) => `${task.runId}:${task.status}`).join('\0')
-      const writeTasks = (tasks: ReturnType<typeof reg.listVisible>) => {
+      const writeTasks = (tasks: ReturnType<typeof reg.listDock>) => {
         uiWriter.write({ type: 'data-task-update', data: { tasks }, transient: true } as any)
         uiWriter.write({ type: 'data-process-update', data: { processes: tasks }, transient: true } as any)
       }
       // Push the current list immediately so a reconnecting client re-syncs.
-      const initialTasks = reg.listVisible()
+      // `listDock` keeps a settled task as a terminal row, so a row that
+      // finishes during the turn updates in place instead of vanishing.
+      const initialTasks = reg.listDock()
       let lastVisibleKey = visibleKey(initialTasks)
       try {
         writeTasks(initialTasks)
       } catch { /* writer may already be closed */ }
       unsubscribeProcesses = reg.onChange(() => {
-        const tasks = reg.listVisible()
+        const tasks = reg.listDock()
         const nextKey = visibleKey(tasks)
         if (nextKey === lastVisibleKey) return
         lastVisibleKey = nextKey

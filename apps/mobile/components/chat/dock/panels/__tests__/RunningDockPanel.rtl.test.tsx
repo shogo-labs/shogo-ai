@@ -81,7 +81,7 @@ describe("RunningDockPanel", () => {
       onKillProcess: (id) => { killed.push(id) },
     })
     expect(d!.title).toBe("Running")
-    expect(d!.summary).toBe("5 tasks")
+    expect(d!.summary).toBe("5 running")
 
     const view = body()
     for (const title of ["bun dev", "explore: auth flow", "Analyst", "@Ops reply", "SUP-12 Fix login"]) {
@@ -100,7 +100,7 @@ describe("RunningDockPanel", () => {
       waiting: { taskIds: ["t_dev"], until: "ready", timeoutMs: 60_000, startedAt: now - 3_000 },
     })
     expect(d!.title).toBe("Waiting")
-    expect(d!.summary).toBe("agent waiting · 2 tasks")
+    expect(d!.summary).toBe("agent waiting · 2 running")
 
     const view = body()
     expect(view.getByText(/Agent is waiting on a task/)).toBeTruthy()
@@ -141,5 +141,62 @@ describe("RunningDockPanel", () => {
     expect(loaded).toEqual(["t_log"])
     fireEvent.click(view.getByText("Hide"))
     expect(view.queryByText(/3 pass/)).toBeNull()
+  })
+
+  test("a finished task keeps its row: outcome, frozen duration, no Cancel, Output still works", async () => {
+    const killed: string[] = []
+    const loaded: string[] = []
+    const d = renderPanel({
+      processes: [
+        task({ id: "t_run", command: "bun dev", source: "shell", notify: true }),
+        task({
+          id: "t_done",
+          command: "bun test",
+          source: "shell",
+          status: "completed",
+          startedAt: now - 121_000,
+          finishedAt: now - 1_000,
+          elapsedMs: 120_000,
+          notify: true,
+        }),
+      ],
+      agentIdle: true,
+      onKillProcess: (id) => { killed.push(id) },
+      loadOutput: async (id) => {
+        loaded.push(id)
+        return "3 pass\n0 fail"
+      },
+    })
+    expect(d!.title).toBe("Running")
+    expect(d!.summary).toBe("1 running · 1 finished")
+
+    const view = body()
+    expect(view.getByText("completed")).toBeTruthy()
+    expect(view.getByText("2m 0s")).toBeTruthy()
+    // Only the running row can be cancelled.
+    expect(view.getAllByText("Kill")).toHaveLength(1)
+    // A finished task does not wake the agent, so it is not "waited on".
+    expect(view.getByText("Waiting on 1 task · the agent will continue when it finishes")).toBeTruthy()
+
+    fireEvent.click(view.getAllByText("Output")[1]!)
+    await waitFor(() => expect(view.getByText(/3 pass/)).toBeTruthy())
+    expect(loaded).toEqual(["t_done"])
+    expect(killed).toEqual([])
+  })
+
+  test("with only finished rows the chip stays and says so", () => {
+    const d = renderPanel({
+      processes: [
+        task({ id: "t_a", title: "explore", source: "subagent", status: "completed", finishedAt: now - 2_000 }),
+        task({ id: "t_b", command: "bun test", status: "failed", finishedAt: now - 5_000 }),
+      ],
+    })
+    expect(d!.title).toBe("Finished")
+    expect(d!.summary).toBe("2 finished")
+    const view = body()
+    expect(view.getByText("completed")).toBeTruthy()
+    expect(view.getByText("failed")).toBeTruthy()
+    expect(view.queryByText("Kill")).toBeNull()
+    expect(view.queryByText("Cancel")).toBeNull()
   })
 })

@@ -10,6 +10,7 @@
 import { describe, test, expect } from 'bun:test'
 import {
   TaskRegistry,
+  COMPLETED_RETENTION_MS,
   formatTaskNotification,
   type RemoteTaskClient,
   type RemoteTaskState,
@@ -270,5 +271,155 @@ describe('listing and persistence', () => {
     expect(byId.get('t_api00002')?.stale).toBeUndefined()
     expect(byId.get('t_api00002')?.remote).toBe(true)
     expect([...byId.values()].find((p) => p.source === 'subagent')?.stale).toBe(true)
+  })
+})
+
+describe('the dock list', () => {
+  /** A task that started in the background and has already settled. */
+  async function finishedTask(reg: TaskRegistry, command: string, exitCode = 0) {
+    const f = fakeHandle()
+    const entry = reg.register(command, f.handle)
+    reg.markBackgrounded(entry.id)
+    f.finish(exitCode)
+    await tick()
+    return entry
+  }
+
+  test('a finished task keeps its row, running ones first', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 60_000 })
+    const done = await finishedTask(reg, 'bun test')
+    const running = reg.registerTask({ source: 'subagent', title: 'explore' })
+
+    const dock = reg.listDock()
+    expect(dock.map((p) => p.id)).toEqual([running.entry.id, done.id])
+    expect(dock[1]?.status).toBe('completed')
+    expect(dock[1]?.finishedAt).toBeGreaterThan(0)
+    // The agent's own list stays running-only.
+    expect(reg.listVisible().map((p) => p.id)).toEqual([running.entry.id])
+  })
+
+  test('finished rows are newest first', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 60_000 })
+    const first = await finishedTask(reg, 'bun test')
+    await new Promise((r) => setTimeout(r, 5))
+    const second = await finishedTask(reg, 'bun build')
+    expect(reg.listDock().map((p) => p.id)).toEqual([second.id, first.id])
+  })
+
+  test('a quiet shell command that came and went never appears', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 30_000 })
+    const f = fakeHandle()
+    reg.register('ls', f.handle)
+    f.finish(0)
+    await tick()
+    expect(reg.listDock()).toHaveLength(0)
+  })
+
+  test('a background task announces itself the moment it is marked backgrounded', () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 30_000 })
+    const keys: string[] = []
+    reg.onChange(() => keys.push(reg.listDock().map((p) => p.id).join(',')))
+    const entry = reg.register('sleep 900', fakeHandle().handle)
+    // Still below the visibility delay: registering alone tells the dock nothing.
+    expect(keys).toEqual([''])
+    reg.markBackgrounded(entry.id)
+    expect(keys).toEqual(['', entry.id])
+    expect(reg.listDock().map((p) => p.id)).toEqual([entry.id])
+  })
+
+  test('a dormant card stays hidden and entries drop past the retention window', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 60_000 })
+    reg.registerTask({ source: 'work_item', title: 'SUP-1', dormant: true })
+    const done = await finishedTask(reg, 'bun test')
+    expect(reg.listDock().map((p) => p.id)).toEqual([done.id])
+
+    reg.get(done.id)!.finishedAt = Date.now() - COMPLETED_RETENTION_MS - 1
+    expect(reg.listDock()).toHaveLength(0)
+  })
+
+  test('a failed task reports its outcome, not just its disappearance', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 60_000 })
+    const entry = await finishedTask(reg, 'bun test', 1)
+    expect(reg.listDock()[0]?.status).toBe('failed')
+    expect(reg.listDock()[0]?.id).toBe(entry.id)
+  })
+
+  test('snapshot round-trip keeps a finished row finished (and drops it once stale)', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 60_000 })
+    const done = await finishedTask(reg, 'bun test', 2)
+    const running = reg.registerTask({ source: 'subagent', title: 'explore' })
+
+    const snap = reg.snapshot()
+    expect(snap.find((s) => s.runId === done.id)?.status).toBe('failed')
+
+    const restored = new TaskRegistry()
+    restored.restoreStale(snap)
+    const byId = new Map(restored.listDock().map((p) => [p.id, p]))
+    // The dead task is a terminal row; the one that was running is stale.
+    expect(byId.get(done.id)?.status).toBe('failed')
+    expect(byId.get(done.id)?.stale).toBeUndefined()
+    expect(byId.get(running.entry.id)?.stale).toBe(true)
+  })
+
+  test('a running task the dock has not shown yet is still persisted', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 30_000 })
+    const hidden = reg.register('npm run dev', fakeHandle().handle)
+    const done = await finishedTask(reg, 'bun test', 2)
+    // Invisible to the dock (below the delay), but it must survive a restart.
+    expect(reg.listDock().map((p) => p.id)).toEqual([done.id])
+
+    const snap = reg.snapshot()
+    expect(snap.map((s) => s.runId).sort()).toEqual([hidden.id, done.id].sort())
+    expect(snap.find((s) => s.runId === hidden.id)?.status).toBe('running')
+
+    const restored = new TaskRegistry()
+    restored.restoreStale(snap)
+    const byId = new Map(restored.listRunning().map((p) => [p.id, p]))
+    expect(byId.get(hidden.id)?.stale).toBe(true)
+    expect(byId.get(hidden.id)?.command).toBe('npm run dev')
+  })
+
+  test('a finished row past its retention is not restored', () => {
+    const reg = new TaskRegistry()
+    reg.restoreStale([{
+      runId: 't_old00001',
+      command: 'bun test',
+      pid: undefined,
+      sandboxed: false,
+      startedAt: Date.now() - 3_600_000,
+      status: 'completed',
+      finishedAt: Date.now() - COMPLETED_RETENTION_MS - 1,
+    }])
+    expect(reg.listDock()).toHaveLength(0)
+  })
+
+  test('without a snapshot the task logs still describe what ran', () => {
+    const reg = new TaskRegistry()
+    const now = Date.now()
+    reg.restoreFromOutputRows([
+      {
+        taskId: 't_log00001',
+        source: 'shell',
+        title: 'bun test',
+        startedAt: now - 200_000,
+        path: '/tmp/.shogo/tasks/s/t_log00001.log',
+        status: 'completed',
+        finishedAt: now - 100_000,
+        modifiedAt: now - 100_000,
+      },
+      {
+        taskId: 't_log00002',
+        source: 'shell',
+        title: 'bun dev',
+        startedAt: now - 60_000,
+        path: '/tmp/.shogo/tasks/s/t_log00002.log',
+        modifiedAt: now - 60_000,
+      },
+    ])
+    const byId = new Map(reg.listDock().map((p) => [p.id, p]))
+    expect(byId.get('t_log00001')?.status).toBe('completed')
+    expect(byId.get('t_log00001')?.outputFile).toBe('/tmp/.shogo/tasks/s/t_log00001.log')
+    expect(byId.get('t_log00002')?.status).toBe('running')
+    expect(byId.get('t_log00002')?.stale).toBe(true)
   })
 })

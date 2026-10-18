@@ -146,6 +146,7 @@ import { markStoppedTail, mergeStoppedSnapshot } from "./stopped-turn"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useBillingData } from "@shogo/shared-app/hooks"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import { agentProxyBase } from "../../lib/agent-proxy-base"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import {
@@ -918,6 +919,36 @@ async function ensureAiConsentForMessage(): Promise<boolean> {
 // Component
 // ============================================================
 
+/**
+ * A seed fetch replaces the dock list wholesale. If a row that was running is
+ * simply missing from the answer (the runtime forgot it, or its registry was
+ * recreated), keep it once as a finished row so it fades out instead of
+ * blinking away — and so the "a task finished" probe still sees it drop.
+ */
+function keepDroppedAsFinished(
+  prev: RunningProcess[],
+  next: RunningProcess[],
+): RunningProcess[] {
+  if (prev.length === 0) return next
+  const seen = new Set(next.map((p) => p.id ?? p.runId))
+  const dropped = prev.filter(
+    (p) =>
+      !seen.has(p.id ?? p.runId) &&
+      !p.stale &&
+      (!p.status || p.status === "running"),
+  )
+  if (dropped.length === 0) return next
+  const now = Date.now()
+  return [
+    ...next,
+    ...dropped.map((p) => ({
+      ...p,
+      status: p.status === "running" ? "completed" : p.status,
+      finishedAt: p.finishedAt ?? now,
+    })),
+  ]
+}
+
 const ChatPanelContent = observer(function ChatPanelContent({
   presentation = "studio",
   featureId,
@@ -987,6 +1018,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
+
+  // Workspace-scoped chat routes to `/api/workspaces/:workspaceId/chat`
+  // instead of the per-project endpoint. Only set when this panel is
+  // operating in workspace scope and we actually have a workspace id.
+  const chatWorkspaceId =
+    chatScope === "workspace" && workspaceId ? workspaceId : undefined
+
+  // One base for every runtime call (tasks, cancel, output, quick actions).
+  // The landing chat has a workspaceId but no projectId, and used to resolve
+  // this to `null` — so its dock never seeded and lost every row on remount.
+  const agentBaseUrl = agentProxyBase({
+    localAgentUrl,
+    projectId,
+    workspaceId: chatWorkspaceId,
+    apiUrl: API_URL,
+  })
 
   // Sibling projects (same workspace, excluding the current one) for the
   // composer's "@" mention menu. Tagging one mounts it into the chat runtime
@@ -1120,9 +1167,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   >([])
 
   const fetchQuickActions = useCallback(async () => {
-    const url =
-      localAgentUrl ||
-      (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+    const url = agentBaseUrl
     if (!url) return
     try {
       const fetchFn = expoFetch ?? globalThis.fetch
@@ -1142,7 +1187,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     } catch {
       // Silently ignore — quick actions are non-critical
     }
-  }, [localAgentUrl, projectId, nativeHeaders, expoFetch])
+  }, [agentBaseUrl, nativeHeaders, expoFetch])
 
   useEffect(() => {
     if (!isActive) return
@@ -1742,9 +1787,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
   const fetchRunningProcesses = useCallback(async () => {
-    const base =
-      localAgentUrl ||
-      (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+    const base = agentBaseUrl
     if (!base || !currentSessionId) return
     try {
       const fetchFn = expoFetch ?? globalThis.fetch
@@ -1763,18 +1806,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (res.ok) {
         const data = await res.json()
         const list = data?.tasks ?? data?.processes
-        if (Array.isArray(list)) setRunningProcesses(list as RunningProcess[])
+        if (Array.isArray(list))
+          setRunningProcesses((prev) =>
+            keepDroppedAsFinished(prev, list as RunningProcess[]),
+          )
       }
     } catch {
       // Non-critical — the panel just won't seed until the next live frame.
     }
-  }, [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch])
+  }, [agentBaseUrl, currentSessionId, nativeHeaders, expoFetch])
 
   const handleKillProcess = useCallback(
     async (runId: string) => {
-      const base =
-        localAgentUrl ||
-        (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+      const base = agentBaseUrl
       if (!base || !currentSessionId) return
       setKillingProcesses((prev) => new Set(prev).add(runId))
       try {
@@ -1800,10 +1844,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         if (res.ok) {
           const data = await res.json()
           const list = data?.tasks ?? data?.processes
+          // The runtime now answers with the dock list, in which a cancelled
+          // task is a terminal row (Output still opens, no Kill). Trust it.
           if (Array.isArray(list))
-            setRunningProcesses(
-              (list as RunningProcess[]).filter((p) => p.runId !== runId),
-            )
+            setRunningProcesses(list as RunningProcess[])
           else
             setRunningProcesses((prev) => prev.filter((p) => p.runId !== runId))
         }
@@ -1817,14 +1861,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
       }
     },
-    [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch],
+    [agentBaseUrl, currentSessionId, nativeHeaders, expoFetch],
   )
 
   const loadTaskOutput = useCallback(
     async (taskId: string): Promise<string | null> => {
-      const base =
-        localAgentUrl ||
-        (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+      const base = agentBaseUrl
       if (!base || !currentSessionId) return null
       try {
         const fetchFn = expoFetch ?? globalThis.fetch
@@ -1840,7 +1882,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return null
       }
     },
-    [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch],
+    [agentBaseUrl, currentSessionId, nativeHeaders, expoFetch],
   )
 
   // The agent blocked in `wait` (live `data-task-wait` frames during a turn).
@@ -1947,12 +1989,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // saved history replaces it once the turn is over (see `onFinish`).
   const joinedStreamRef = useRef(false)
   const refreshHistoryRef = useRef<() => void>(() => {})
-
-  // Workspace-scoped chat routes to `/api/workspaces/:workspaceId/chat`
-  // instead of the per-project endpoint. Only set when this panel is
-  // operating in workspace scope and we actually have a workspace id.
-  const chatWorkspaceId =
-    chatScope === "workspace" && workspaceId ? workspaceId : undefined
 
   // Stable identity across renders: this is a dep of `useChatTransportConfig`'s
   // internal `useMemo`, so an inline arrow here would rebuild `transportConfig`
@@ -3957,8 +3993,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   // While idle with tasks that will wake the agent, keep the list fresh; when
   // one of them finishes, the API queues a wake turn, so look for it.
+  // Only running rows count: a finished row stays in the dock for ten
+  // minutes, so it must not keep the "waiting for a wake" state alive.
   const notifyTaskIds = runningProcesses
-    .filter((p) => p.notify && !p.stale)
+    .filter(
+      (p) => p.notify && !p.stale && (!p.status || p.status === "running"),
+    )
     .map((p) => p.id ?? p.runId)
     .join("\0")
   const previousNotifyTaskIdsRef = useRef(notifyTaskIds)
@@ -3975,11 +4015,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     )
     return () => timers.forEach(clearTimeout)
   }, [notifyTaskIds, isStreaming, isActive])
+  // Poll while any row is on screen — running ones so a wake turn is noticed,
+  // finished ones so they leave the dock when their retention window ends.
+  const dockRowCount = runningProcesses.length
   useEffect(() => {
-    if (isStreaming || !isActive || !notifyTaskIds) return
+    if (isStreaming || !isActive || dockRowCount === 0) return
     const timer = setInterval(() => void fetchRunningProcesses(), 5000)
     return () => clearInterval(timer)
-  }, [notifyTaskIds, isStreaming, isActive, fetchRunningProcesses])
+  }, [dockRowCount, isStreaming, isActive, fetchRunningProcesses])
 
   // A delegated task or a channel mention starts its turn outside this panel.
   // The first history-load probe can therefore see `unknown` while a slot or
@@ -7034,13 +7077,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // silently failed to render (only the "Image generated" placeholder
   // showed, never the actual picture — see workspace-chat.ts's matching
   // `/workspaces/:workspaceId/agent-proxy/*` route).
-  const resolvedAgentUrl =
-    localAgentUrl ||
-    (projectId
-      ? `${API_URL}/api/projects/${projectId}/agent-proxy`
-      : chatWorkspaceId
-        ? `${API_URL}/api/workspaces/${chatWorkspaceId}/agent-proxy`
-        : null)
+  const resolvedAgentUrl = agentBaseUrl
 
   // Generate a stakeholder summary for a plan that doesn't have one yet.
   // Mutates the local pending/streaming plan as soon as the summary comes

@@ -457,7 +457,9 @@ jobs:
           # then send) and runs in the same job, one worker at a time.
           # chat-task-resume needs it too: a background exec that finishes has
           # to wake the chat with no user input.
-          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume' }
+          # chat-background-tasks reads the dock a background task left behind
+          # after navigating away, a reload and a restart of the panel.
+          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks' }
     permissions:
       contents: read
     timeout-minutes: 60

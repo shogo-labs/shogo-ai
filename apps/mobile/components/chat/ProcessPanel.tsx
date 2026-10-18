@@ -33,6 +33,9 @@ export interface RunningProcess {
   /** The agent is woken when it finishes. */
   notify?: boolean
   remote?: boolean
+  /** Set once the task settled; the row then shows a frozen duration. */
+  finishedAt?: number
+  elapsedMs?: number
 }
 
 export interface ProcessPanelProps {

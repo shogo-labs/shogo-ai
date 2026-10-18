@@ -16,6 +16,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import type { Message } from '@mariozechner/pi-ai'
 import { AgentGateway } from '../gateway'
+import { SqliteSessionPersistence } from '../sqlite-session-persistence'
 import { buildTextResponse, buildToolUseResponse, createMockStreamFn } from '../pi-adapter'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
@@ -339,4 +340,71 @@ describe('task wake', () => {
     gw.clearSessionHistory('cd-session')
     expect(shellCwd.has('cd-session')).toBe(false)
   })
+
+  /**
+   * `GET /agent/chat/:chatSessionId/tasks` is a thin wrapper over
+   * `listSessionTasks`, so this is the payload the dock seeds from: a task
+   * that settles while the turn runs keeps its row instead of vanishing with
+   * the frame that announced it.
+   */
+  test('the dock payload carries a finished task next to a running one', async () => {
+    const gw = await startGateway([
+      buildToolUseResponse([
+        { name: 'exec', arguments: { command: 'sleep 0.1', background: true }, id: 'tc-1' },
+        { name: 'exec', arguments: { command: 'sleep 30', background: true }, id: 'tc-2' },
+      ]),
+      buildTextResponse('Both started.'),
+    ], () => {})
+
+    await gw.processChatMessageStream('run them', writer() as any, { chatSessionId: 'dock-list' })
+    await sleep(600)
+
+    const tasks = await gw.listSessionTasks('dock-list')
+    expect(tasks.map((t) => t.status).sort()).toEqual(['completed', 'running'])
+    const done = tasks.find((t) => t.status === 'completed')!
+    expect(done.finishedAt).toBeGreaterThan(0)
+    expect(done.elapsedMs).toBeGreaterThanOrEqual(0)
+    expect(done.outputFile).toContain('.shogo/tasks/dock-list/')
+
+    // The agent's own view is unchanged: only running tasks.
+    expect(gw.listSessionProcesses('dock-list').map((t) => t.status)).toEqual(['running'])
+  }, 20_000)
+
+  /**
+   * AC7: after a restart the first seed request already carries the rows.
+   * `sessionManager.get()` is memory-only, so the registry has to wait for the
+   * session load — ChatPanel only polls this route while it has rows, so an
+   * empty first answer is never retried.
+   */
+  test('a cold runtime answers the seed route from the persisted session', async () => {
+    const warm = await startGateway([
+      buildToolUseResponse([{ name: 'exec', arguments: { command: 'sleep 0.2', background: true }, id: 'tc-1' }]),
+      buildTextResponse('Started.'),
+    ], () => {})
+    await warm.processChatMessageStream('start it', writer() as any, { chatSessionId: 'cold-seed' })
+    await sleep(800)
+    expect((await warm.listSessionTasks('cold-seed')).map((t) => t.status)).toEqual(['completed'])
+
+    // What the finished run left on disk: the settled row, terminal.
+    const reader = new SqliteSessionPersistence(testDir)
+    const persisted = await reader.load('cold-seed')
+    reader.close()
+    const rows = persisted?.metadata?.runningProcesses
+    expect(rows?.map((r: any) => r.status)).toEqual(['completed'])
+    expect(rows?.[0]?.finishedAt).toBeGreaterThan(0)
+    await warm.stop()
+    gateway = undefined
+
+    // A graceful stop kills the tasks it tracked and persists the empty list;
+    // a real restart does not get that chance, so put the pre-stop record back
+    // and boot a cold process over it.
+    const restore = new SqliteSessionPersistence(testDir)
+    await restore.save('cold-seed', persisted!)
+    restore.close()
+
+    const cold = await startGateway([buildTextResponse('ok')])
+    const tasks = await cold.listSessionTasks('cold-seed')
+    expect(tasks.map((t) => t.status)).toEqual(['completed'])
+    expect(tasks[0]!.command).toContain('sleep 0.2')
+  }, 30_000)
 })
