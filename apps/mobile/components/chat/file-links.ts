@@ -286,6 +286,31 @@ export function rewriteWorkspaceMedia(markdown: string): string {
   return unmask(text, fences, "FENCE")
 }
 
+/**
+ * Whether a path the agent wrote names a file in `files`, the runtime's
+ * file list. Project runtimes list project-relative paths; workspace
+ * runtimes list `<projectId>/...`, so both spellings are tried.
+ */
+export function fileIndexHas(
+  files: ReadonlySet<string>,
+  path: string,
+  projectId?: string | null,
+): boolean {
+  if (files.size === 0) return false
+  const normalized = normalizeWorkspaceMediaPath(path.trim())
+  if (!normalized) return false
+  const candidates = new Set<string>([normalized])
+  const resolved = resolveChatFilePath(normalized, projectId)
+  if (resolved) {
+    if (!projectId || resolved.projectId === projectId) candidates.add(resolved.relPath)
+    if (resolved.projectId) candidates.add(`${resolved.projectId}/${resolved.relPath}`)
+  }
+  for (const candidate of candidates) {
+    if (files.has(candidate)) return true
+  }
+  return false
+}
+
 export interface ResolvedChatFile {
   projectId: string | null
   relPath: string

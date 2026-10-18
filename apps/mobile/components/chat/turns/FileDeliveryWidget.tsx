@@ -13,6 +13,7 @@ import {
 import { Check, Copy, Download } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import type { ToolCallData } from "../tools/types";
+import { FileTypeIcon } from "../FileTypeIcon";
 
 function resultObject(result: unknown): Record<string, unknown> {
   if (result && typeof result === "object") return result as Record<string, unknown>;
@@ -123,43 +124,36 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
 
   if (tool.state !== "success" || !url) return null;
 
+  const expires = `Link expires ${formatExpiry(expiresAt)}`;
+
   return (
-    <View className={cn("rounded-md border border-border/60 bg-muted/20 px-2.5 py-2", className)}>
-      <View className="flex-row items-center gap-1.5">
-        <Download size={13} className="text-foreground" />
-        <Text className="flex-1 text-[11px] font-medium text-foreground" numberOfLines={1}>
-          {name}
-        </Text>
-        <Text className="text-[10px] text-muted-foreground">
-          Expires {formatExpiry(expiresAt)}
-        </Text>
-      </View>
-      <Text className="mt-1 text-[10px] text-muted-foreground" selectable numberOfLines={2}>
-        {url}
-      </Text>
-      <View className="mt-2 flex-row gap-2">
+    <View className={cn("items-start", className)}>
+      <View className="max-w-full flex-row items-center overflow-hidden rounded-md border border-border bg-muted/40">
         <Pressable
           onPress={download}
           disabled={busy}
-          accessibilityRole="button"
-          accessibilityLabel={`Download ${name}`}
-          className="flex-row items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 active:opacity-70"
+          accessibilityRole="link"
+          accessibilityLabel={`Download ${name}. ${expires}`}
+          // @ts-expect-error -- web-only tooltip
+          title={`Download ${name} · ${expires}`}
+          testID="file-delivery-chip"
+          className="shrink flex-row items-center gap-1.5 py-1 pl-2 pr-1.5 hover:bg-muted active:opacity-70"
         >
-          {busy ? <ActivityIndicator size="small" /> : <Download size={12} className="text-foreground" />}
-          <Text className="text-[11px] font-medium text-foreground">
-            {busy ? "Preparing…" : "Download"}
+          {busy ? <ActivityIndicator size="small" /> : <FileTypeIcon path={name} size={14} />}
+          <Text className="shrink text-[11px] font-medium text-foreground" numberOfLines={1}>
+            {busy ? "Preparing…" : name}
           </Text>
+          <Download size={12} className="text-muted-foreground" />
         </Pressable>
         <Pressable
           onPress={copyLink}
           accessibilityRole="button"
-          accessibilityLabel="Copy download link"
-          className="flex-row items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 active:opacity-70"
+          accessibilityLabel={copied ? "Link copied" : "Copy download link"}
+          // @ts-expect-error -- web-only tooltip
+          title={copied ? "Copied" : "Copy link"}
+          className="self-stretch justify-center border-l border-border px-1.5 hover:bg-muted active:opacity-70"
         >
-          {copied ? <Check size={12} className="text-foreground" /> : <Copy size={12} className="text-foreground" />}
-          <Text className="text-[11px] font-medium text-foreground">
-            {copied ? "Copied" : "Copy link"}
-          </Text>
+          {copied ? <Check size={12} className="text-muted-foreground" /> : <Copy size={12} className="text-muted-foreground" />}
         </Pressable>
       </View>
       {error ? <Text className="mt-1 text-[10px] text-destructive">{error}</Text> : null}

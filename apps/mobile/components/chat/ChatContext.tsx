@@ -115,6 +115,9 @@ export interface ChatContextValue {
   /** Open a file the assistant mentioned. `path` may be project-relative or `<projectId>/...`. */
   openFile?: (path: string) => void
 
+  /** True when a path the assistant mentioned is a file in the workspace. */
+  fileExists?: (path: string) => boolean
+
   /** The workspace this chat belongs to, when known (agent avatars use it). */
   workspaceId?: string | null
 

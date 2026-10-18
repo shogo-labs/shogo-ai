@@ -627,6 +627,7 @@ export const AssistantContent = memo(
             <ChatMarkdown
               isStreaming={part.id === streamingTextPartId}
               onFilePress={chatContext?.openFile}
+              fileExists={chatContext?.fileExists}
             >
               {part.text}
             </ChatMarkdown>

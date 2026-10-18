@@ -93,6 +93,7 @@ const UNGROUPABLE_TOOLS = new Set([
   "browser",
   "create_plan",
   "update_plan",
+  "share_file",
 ]);
 
 const MIN_WORK_GROUP_SIZE = 1;
@@ -130,7 +131,6 @@ const CUSTOM_RENDER_TOOLS = new Set([
   "upscale_image",
   "remove_background",
   "generate_video",
-  "share_file",
 ]);
 
 /**

@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   fileHref,
+  fileIndexHas,
   linkifyBareUrls,
   linkifyFilePaths,
   pathFromFileHref,
@@ -10,6 +11,34 @@ import {
 } from "../file-links"
 
 const PROJECT = "6c2a5faf-9683-4cf1-b3d1-bfdab2e912a9"
+const OTHER = "0b1c2d3e-4f50-4617-8899-aabbccddeeff"
+
+describe("fileIndexHas", () => {
+  const projectFiles = new Set(["src/app.tsx", "README.md"])
+  const workspaceFiles = new Set([`${PROJECT}/src/app.tsx`, `${OTHER}/notes.md`])
+
+  test("matches project-relative spellings against a project runtime's list", () => {
+    expect(fileIndexHas(projectFiles, "src/app.tsx", PROJECT)).toBe(true)
+    expect(fileIndexHas(projectFiles, "./src/app.tsx", PROJECT)).toBe(true)
+    expect(fileIndexHas(projectFiles, `${PROJECT}/src/app.tsx`, PROJECT)).toBe(true)
+    expect(fileIndexHas(projectFiles, "/app/workspace/src/app.tsx", PROJECT)).toBe(true)
+    expect(fileIndexHas(projectFiles, "src/missing.tsx", PROJECT)).toBe(false)
+  })
+
+  test("does not match another project's path against this project's files", () => {
+    expect(fileIndexHas(projectFiles, `${OTHER}/src/app.tsx`, PROJECT)).toBe(false)
+  })
+
+  test("matches against a workspace runtime's project-prefixed list", () => {
+    expect(fileIndexHas(workspaceFiles, "src/app.tsx", PROJECT)).toBe(true)
+    expect(fileIndexHas(workspaceFiles, `${OTHER}/notes.md`, PROJECT)).toBe(true)
+    expect(fileIndexHas(workspaceFiles, "notes.md", PROJECT)).toBe(false)
+  })
+
+  test("is false for an empty index", () => {
+    expect(fileIndexHas(new Set(), "src/app.tsx", PROJECT)).toBe(false)
+  })
+})
 
 describe("linkifyFilePaths", () => {
   test("links a bare workspace path and leaves the trailing note alone", () => {

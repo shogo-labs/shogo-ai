@@ -15,6 +15,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
+import { FileTypeIcon } from "./FileTypeIcon";
 import {
   isMentionHref,
   linkifyBareUrls,
@@ -55,6 +56,8 @@ export interface MarkdownTextProps {
   variant?: MarkdownVariant;
   /** Opens a workspace file when the text mentions its path. */
   onFilePress?: (path: string) => void;
+  /** Mentioned paths that pass this check render as file chips. */
+  fileExists?: (path: string) => boolean;
   /** Return true to handle a link in the app instead of opening it in a browser. */
   onLinkPress?: (href: string) => boolean;
 }
@@ -231,8 +234,10 @@ class NativePhoneMarkdownRenderer extends Renderer {
     private readonly tableWidth: number,
     private readonly tableHeaderBg: ColorValue,
     private readonly mentionColors: { bg: ColorValue; text: ColorValue },
+    private readonly chipColors: { bg: ColorValue; text: ColorValue },
     private readonly onFilePress?: (path: string) => void,
     private readonly onLinkPress?: (href: string) => boolean,
+    private readonly fileExists?: (path: string) => boolean,
   ) {
     super();
   }
@@ -265,6 +270,32 @@ class NativePhoneMarkdownRenderer extends Renderer {
       );
     }
     const path = pathFromFileHref(href);
+    if (path && this.onFilePress && this.fileExists?.(path)) {
+      const open = this.onFilePress;
+      const { bg, text } = this.chipColors;
+      return (
+        <Text
+          accessibilityRole="link"
+          accessibilityLabel={path}
+          testID="chat-file-chip"
+          key={this.getKey()}
+          onPress={() => open(path)}
+          style={[
+            styles,
+            {
+              textDecorationLine: "none",
+              fontWeight: "500",
+              color: text,
+              backgroundColor: bg,
+              borderRadius: 6,
+            },
+          ]}
+        >
+          <FileTypeIcon path={path} size={14} />
+          {` ${path.split("/").pop() || path} `}
+        </Text>
+      );
+    }
     if (path && this.onFilePress) {
       const open = this.onFilePress;
       return (
@@ -386,6 +417,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.className !== next.className) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.onFilePress !== next.onFilePress) return false;
+  if (prev.fileExists !== next.fileExists) return false;
   if (prev.onLinkPress !== next.onLinkPress) return false;
   const a = prev.children || "";
   const b = next.children || "";
@@ -396,6 +428,7 @@ export const MarkdownText = memo(function MarkdownText({
   children,
   variant = "default",
   onFilePress,
+  fileExists,
   onLinkPress,
 }: MarkdownTextProps) {
   const { colorScheme } = useColorScheme();
@@ -443,16 +476,22 @@ export const MarkdownText = memo(function MarkdownText({
     () => ({ bg: colors.mentionBg, text: colors.mentionText }),
     [colors.mentionBg, colors.mentionText],
   );
+  const chipColors = useMemo(
+    () => ({ bg: colors.codeBg, text: colors.text }),
+    [colors.codeBg, colors.text],
+  );
   const renderer = useMemo(
     () =>
       new NativePhoneMarkdownRenderer(
         width,
         colors.tableHeaderBg,
         mentionColors,
+        chipColors,
         onFilePress,
         onLinkPress,
+        fileExists,
       ),
-    [width, colors.tableHeaderBg, mentionColors, onFilePress, onLinkPress],
+    [width, colors.tableHeaderBg, mentionColors, chipColors, onFilePress, onLinkPress, fileExists],
   );
 
   return (

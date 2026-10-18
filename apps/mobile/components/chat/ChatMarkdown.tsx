@@ -15,6 +15,8 @@ export interface ChatMarkdownProps {
   isStreaming?: boolean
   /** Opens a workspace file when the text mentions its path. */
   onFilePress?: (path: string) => void
+  /** Mentioned paths that pass this check render as file chips. */
+  fileExists?: (path: string) => boolean
   /** Return true to handle a link in the app instead of opening it in a browser. */
   onLinkPress?: (href: string) => boolean
   /** Extra classes. A color class such as `text-white` overrides the default. */
@@ -33,6 +35,7 @@ export function ChatMarkdown({
   children,
   isStreaming,
   onFilePress,
+  fileExists,
   onLinkPress,
   className,
 }: ChatMarkdownProps) {
@@ -47,6 +50,7 @@ export function ChatMarkdown({
       )}
       isStreaming={isStreaming}
       onFilePress={onFilePress}
+      fileExists={fileExists}
       onLinkPress={onLinkPress}
     >
       {children}

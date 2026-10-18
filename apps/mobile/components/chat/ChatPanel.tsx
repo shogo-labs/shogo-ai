@@ -235,6 +235,7 @@ import {
   type IslandPendingRequest,
 } from "../../lib/desktop-island"
 import { resolveChatFilePath } from "./file-links"
+import { useChatFileIndex } from "./useChatFileIndex"
 import { useIdeBridge } from "./ideBridge"
 
 import { TurnList } from "./turns"
@@ -7265,6 +7266,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
     [chatScope, chatSessionId, focusedProjectId, onOpenFile, projectId, router],
   )
+  const fileExists = useChatFileIndex(
+    resolvedAgentUrl,
+    projectId ?? focusedProjectId ?? null,
+    isStreaming,
+  )
 
   const contextValue = useMemo<ChatContextValue>(
     () => ({
@@ -7284,6 +7290,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       confirmedPlan,
       openPlan: onOpenPlan,
       openFile,
+      fileExists,
       workspaceId: workspaceId ?? null,
       openProjectPane: onOpenProjectPane,
       generateSummary: handleGenerateSummary,
@@ -7305,6 +7312,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       confirmedPlan,
       onOpenPlan,
       openFile,
+      fileExists,
       workspaceId,
       onOpenProjectPane,
       handleGenerateSummary,

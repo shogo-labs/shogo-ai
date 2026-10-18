@@ -16,6 +16,7 @@ mock.module("lucide-react-native", () => ({
   Copy: Icon,
   Download: Icon,
 }));
+mock.module("../../FileTypeIcon", () => ({ FileTypeIcon: Icon }));
 
 const { render, screen } = await import("@testing-library/react");
 const { FileDeliveryWidget } = await import("../FileDeliveryWidget");
@@ -36,11 +37,11 @@ const tool = {
   timestamp: 0,
 } as ToolCallData;
 
-test("renders the direct download URL and delivery actions", () => {
+test("renders a download chip with a copy-link action", () => {
   render(<FileDeliveryWidget tool={tool} />);
 
   expect(screen.getByText("report.pdf")).toBeTruthy();
-  expect(screen.getByText("https://api.example/f/signed-token")).toBeTruthy();
-  expect(screen.getByText("Download")).toBeTruthy();
-  expect(screen.getByText("Copy link")).toBeTruthy();
+  expect(screen.getByTitle(/^Download report\.pdf · Link expires/)).toBeTruthy();
+  expect(screen.getByTitle("Copy link")).toBeTruthy();
+  expect(screen.queryByText("https://api.example/f/signed-token")).toBeNull();
 });
