@@ -43,6 +43,9 @@ mock.module('../../lib/prisma', () => ({
         return {
           id: 'sess-1',
           ...args.data,
+          // Prisma fills these from column defaults (now()) on insert.
+          createdAt: new Date('2026-04-01T00:00:00Z'),
+          lastActiveAt: new Date('2026-04-01T00:00:00Z'),
           attachedProjects: attached.map((a: any, i: number) => ({
             id: `csp-${i}`,
             projectId: a.projectId,
@@ -144,6 +147,15 @@ describe('createWorkspaceSession', () => {
     expect(s.createCalls[0].data.contextType).toBe('workspace')
     expect(s.createCalls[0].data.workspaceId).toBe('ws-1')
     expect(s.createCalls[0].data.inferredName).toBe('My chat')
+  })
+
+  it('returns the row name and timestamps so clients can rank the new chat', async () => {
+    const res = await svc.createWorkspaceSession('ws-1', { name: 'My chat', createdByUserId: 'user-1' })
+    expect(res.id).toBe('sess-1')
+    expect(res.name).toBe('My chat')
+    expect(res.inferredName).toBe('My chat')
+    expect(res.createdAt).toBe('2026-04-01T00:00:00.000Z')
+    expect(res.lastActiveAt).toBe('2026-04-01T00:00:00.000Z')
   })
 
   it('attaches valid projects on create', async () => {

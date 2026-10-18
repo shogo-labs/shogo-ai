@@ -1728,8 +1728,26 @@ export const api = {
       /** Pin the session to this project so chat runs on the runtime serving its preview. */
       anchorProjectId?: string
     } = {},
-  ): Promise<{ id: string; workspaceId: string; attached: Array<{ id: string; projectId: string; attachMode: string }> }> {
-    const res = await http.post<{ session: { id: string; workspaceId: string; attached: Array<{ id: string; projectId: string; attachMode: string }> } }>(
+  ): Promise<{
+    id: string
+    workspaceId: string
+    name?: string | null
+    inferredName?: string | null
+    createdAt?: string | null
+    lastActiveAt?: string | null
+    attached: Array<{ id: string; projectId: string; attachMode: string }>
+  }> {
+    const res = await http.post<{
+      session: {
+        id: string
+        workspaceId: string
+        name?: string | null
+        inferredName?: string | null
+        createdAt?: string | null
+        lastActiveAt?: string | null
+        attached: Array<{ id: string; projectId: string; attachMode: string }>
+      }
+    }>(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
       opts,
     )

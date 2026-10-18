@@ -57,7 +57,16 @@ export async function createWorkspaceSession(
      */
     createdByUserId?: string
   } = {},
-): Promise<{ id: string; workspaceId: string; contextId: string | null; attached: AttachedProject[] }> {
+): Promise<{
+  id: string
+  workspaceId: string
+  contextId: string | null
+  name: string | null
+  inferredName: string | null
+  createdAt: string | null
+  lastActiveAt: string | null
+  attached: AttachedProject[]
+}> {
   const anchorProjectId = opts.anchorProjectId || undefined
   const attachIds = dedupe([...(anchorProjectId ? [anchorProjectId] : []), ...(opts.attachProjectIds ?? [])])
   if (attachIds.length > 0) {
@@ -89,8 +98,18 @@ export async function createWorkspaceSession(
     id: session.id,
     workspaceId,
     contextId: anchorProjectId ?? null,
+    name: session.name ?? null,
+    inferredName: session.inferredName ?? null,
+    createdAt: toIsoOrNull(session.createdAt),
+    lastActiveAt: toIsoOrNull(session.lastActiveAt),
     attached: (session.attachedProjects ?? []).map(toAttachedProject),
   }
+}
+
+function toIsoOrNull(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === 'string' && value.length > 0) return new Date(value).toISOString()
+  return null
 }
 
 /**

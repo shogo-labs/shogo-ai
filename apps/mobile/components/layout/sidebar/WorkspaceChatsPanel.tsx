@@ -99,7 +99,15 @@ export function WorkspaceChatsPanel({ onNavPress }: { onNavPress?: () => void })
     setCreating(true)
     try {
       const session = await api.createWorkspaceSession(http, workspace.id, {})
-      setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)])
+      // Stamp the row so it ranks as the most recent chat even if the server
+      // response omits timestamps; sortSideChats would otherwise push it last.
+      const now = new Date().toISOString()
+      const row: WorkspaceChat = {
+        ...session,
+        createdAt: session.createdAt ?? now,
+        lastActiveAt: session.lastActiveAt ?? now,
+      }
+      setSessions((current) => [row, ...current.filter((item) => item.id !== session.id)])
       openChat(session.id)
     } catch {
       // The person can try again.
