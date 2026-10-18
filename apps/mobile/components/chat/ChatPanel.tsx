@@ -130,6 +130,7 @@ import {
   shouldAutoRecoverStalledTurn,
 } from "./stall-recovery"
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
+import { followNextTurn } from "./next-turn-follow"
 import {
   runResumeStreamSingleFlight,
   type ResumeStreamFlightRef,
@@ -3868,10 +3869,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     historyOnlyNonceRef.current = ++liveTurnReloadNonceRef.current
     setLiveTurnReloadNonce(liveTurnReloadNonceRef.current)
   }
-  const attachToLiveTurnIfAny = useCallback(async () => {
+  /**
+   * @returns true when a live turn was found and this window started attaching
+   * to it. Callers that got `false` know nothing is running *yet*.
+   */
+  const attachToLiveTurnIfAny = useCallback(async (): Promise<boolean> => {
     const sessionId = currentSessionIdRef.current
     if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) {
-      return
+      return false
     }
     lastLiveTurnCheckAtRef.current = Date.now()
     const turn = await probeLiveTurn(sessionId)
@@ -3880,13 +3885,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
       isStreamingRef.current ||
       isSendingMessageRef.current
     ) {
-      return
+      return false
     }
     // The turn Stop just cancelled can still read `active`: attaching to it
     // would rebuild the reply the user stopped and hide the one that follows.
-    if (isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)) {
-      reloadAndAttachLiveTurn()
-    }
+    if (!isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)) return false
+    reloadAndAttachLiveTurn()
+    return true
   }, [probeLiveTurn, reloadAndAttachLiveTurn])
 
   useEffect(() => {
@@ -3919,16 +3924,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const attachToLiveTurnIfAnyRef = useRef(attachToLiveTurnIfAny)
   attachToLiveTurnIfAnyRef.current = attachToLiveTurnIfAny
   const wasTransportStreamingRef = useRef(false)
+  // A window that followed a turn must keep following: the next message in the
+  // server queue starts once the API has seen this turn end, which can be a
+  // dispatcher tick away, and a short queued turn can start *and* finish
+  // between two probes. Two fixed probes therefore miss it (SHO-29: window A
+  // showed none of the second queued reply), so keep looking for as long as the
+  // dispatcher could take, then refresh the history on the way out — a turn
+  // that ran while nothing here was attached still has to land on screen.
   useEffect(() => {
     const wasStreaming = wasTransportStreamingRef.current
     wasTransportStreamingRef.current = isTransportStreaming
     if (!wasStreaming || isTransportStreaming || !isActive) return
-    // The queue dispatcher starts the next message once the API has seen
-    // this turn end, a moment after this window has.
-    const timers = [1500, 4000].map((delay) =>
-      setTimeout(() => void attachToLiveTurnIfAnyRef.current(), delay),
-    )
-    return () => timers.forEach(clearTimeout)
+    let cancelled = false
+    void followNextTurn({
+      attachIfLive: attachToLiveTurnIfAnyRef.current,
+      refreshHistory: () => refreshHistoryRef.current(),
+      // A stream or a send starting is this window taking over again: the
+      // stream's own end re-arms the follow, and reloading history mid-send
+      // would drop the bubble just echoed.
+      isCancelled: () =>
+        cancelled || isStreamingRef.current || isSendingMessageRef.current,
+    })
+    return () => {
+      cancelled = true
+    }
   }, [isTransportStreaming, isActive])
 
   // A `wait` ends with its turn at the latest.
