@@ -108,25 +108,35 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(feed.getByRole("button", { name: "Unreads only" })).toHaveAttribute("aria-selected", "true")
   })
 
-  test("More holds only the places without a tab", async ({ page }) => {
+  test("More holds the places without a tab, then Settings as its last row", async ({ page }) => {
     await tab(page, "More").click()
     await expect(page).toHaveURL(/\/more/)
     const more = page.getByTestId("more-screen")
     await expect(more).toBeVisible()
     await expect(more.getByText("Tasks", { exact: true })).toBeVisible()
-    // Settings live behind the profile avatar, not in More.
-    await expect(more.getByText("Settings", { exact: true })).toHaveCount(0)
+    // SHO-7: the overflow screen names Settings, and it is always the last row.
+    const rows = more.getByRole("link")
+    await expect(rows.last()).toHaveAccessibleName("Settings")
+    await expect(rows.last()).toContainText("Account, workspace, integrations and billing")
     await more.getByText("Tasks", { exact: true }).click()
     await expect(page).toHaveURL(/\/tasks/)
   })
 
-  test("settings sit behind the profile avatar", async ({ page }) => {
+  test("the Settings row in More opens the settings screen", async ({ page }) => {
+    await tab(page, "More").click()
+    const more = page.getByTestId("more-screen")
+    await more.getByRole("link", { name: "Settings" }).click()
+    await expect(page).toHaveURL(/\/settings/, { timeout: 30_000 })
+    await expect(page.getByText("Settings", { exact: true }).last()).toBeVisible({ timeout: 30_000 })
+  })
+
+  test("settings also sit behind the profile avatar, under the name Settings", async ({ page }) => {
     await tab(page, "DMs").click()
     await page.getByTestId("profile-avatar").click()
     const menu = page.getByTestId("profile-menu")
     await expect(menu).toBeVisible()
     await expect(menu.getByRole("menuitem", { name: "Pause notifications" })).toBeVisible()
-    await menu.getByRole("menuitem", { name: "Preferences" }).click()
+    await menu.getByRole("menuitem", { name: "Settings" }).click()
     await expect(page).toHaveURL(/\/settings/)
   })
 

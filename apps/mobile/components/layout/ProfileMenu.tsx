@@ -269,9 +269,9 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
           </PopoverBody>
         </PopoverContent>
       </Popover>
-      <Pressable role="menuitem" accessibilityLabel="Preferences" onPress={() => go('/(app)/settings')} className={ROW}>
+      <Pressable role="menuitem" accessibilityLabel="Settings" onPress={() => go('/(app)/settings')} className={ROW}>
         <Settings size={16} className="text-muted-foreground" />
-        <Text className="flex-1 text-sm text-foreground">Preferences</Text>
+        <Text className="flex-1 text-sm text-foreground">Settings</Text>
       </Pressable>
       <Pressable role="menuitem" accessibilityLabel="Account and workspaces" onPress={() => go('/(app)/account')} className={ROW}>
         <UserRound size={16} className="text-muted-foreground" />

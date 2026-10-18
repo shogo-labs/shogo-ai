@@ -4,7 +4,7 @@
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { CANVAS_NAV_HIDDEN, TASKS_NAV_HIDDEN } from '../../../packages/shared-app/src/hooks/useWorkspaceExperience'
 
-export type MoreIcon = 'analytics' | 'tasks' | 'work' | 'marketplace' | 'files'
+export type MoreIcon = 'analytics' | 'tasks' | 'work' | 'marketplace' | 'files' | 'settings'
 
 export interface MoreItem {
   id: string
@@ -29,5 +29,6 @@ export function moreItems(opts: { kind: 'personal' | 'team'; marketplace: boolea
   if (!(opts.canvasesHidden ?? CANVAS_NAV_HIDDEN)) {
     items.push({ id: 'files', icon: 'files', title: 'Files', subtitle: 'Canvases and files from you and your agents', href: '/(app)/canvases' })
   }
+  items.push({ id: 'settings', icon: 'settings', title: 'Settings', subtitle: 'Account, workspace, integrations and billing', href: '/(app)/settings' })
   return items
 }

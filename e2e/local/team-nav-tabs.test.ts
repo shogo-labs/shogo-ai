@@ -272,7 +272,7 @@ test.describe("Team workspace: desktop rail and panels", () => {
     await page.getByRole("menuitem", { name: "Resume notifications" }).click()
     await expect(page.getByRole("menuitem", { name: "Pause notifications" })).toBeVisible({ timeout: 15_000 })
 
-    await page.getByRole("menuitem", { name: "Preferences" }).click()
+    await page.getByRole("menuitem", { name: "Settings" }).click()
     await expect(page).toHaveURL(/\/settings/)
   })
 
