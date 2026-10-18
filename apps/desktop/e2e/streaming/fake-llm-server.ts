@@ -30,7 +30,7 @@
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 
-export type Script = 'long' | 'hold' | 'tool' | 'plain'
+export type Script = 'long' | 'hold' | 'tool' | 'bg' | 'plain'
 
 /** One request the app made to the model. */
 export interface FakeTurn {
@@ -51,16 +51,18 @@ export interface FakeTurn {
 }
 
 interface Marker {
-  script: 'long' | 'hold' | 'tool'
+  script: 'long' | 'hold' | 'tool' | 'bg'
   tag: string
   n: number
   ms: number
   rounds: number
   holdAt: number | null
   gap: number
+  /** `bg`: the shell command, `_` standing in for a space. */
+  cmd?: string
 }
 
-const MARKER = /\[\[e2e:(long|hold|tool)((?::[a-zA-Z]+=[\w-]+)*)\]\]/
+const MARKER = /\[\[e2e:(long|hold|tool|bg)((?::[a-zA-Z]+=[\w-]+)*)\]\]/
 
 /** Tool the fake model calls. `read_file` works on a missing path too: an error result still continues the turn. */
 const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
@@ -72,15 +74,16 @@ const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
 const toolArgs = (_tag: string, round: number): Record<string, unknown> => ({ path: 'AGENTS.md', offset: 1, limit: round + 1 })
 
 export function marker(
-  script: 'long' | 'hold' | 'tool',
+  script: 'long' | 'hold' | 'tool' | 'bg',
   tag: string,
   n: number,
-  options: { ms?: number; rounds?: number; holdAt?: number; gap?: number } = {},
+  options: { ms?: number; rounds?: number; holdAt?: number; gap?: number; cmd?: string } = {},
 ): string {
   const parts = [`tag=${tag}`, `n=${n}`, `ms=${options.ms ?? 10}`]
   if (options.rounds !== undefined) parts.push(`rounds=${options.rounds}`)
   if (options.holdAt !== undefined) parts.push(`holdAt=${options.holdAt}`)
   if (options.gap !== undefined) parts.push(`gap=${options.gap}`)
+  if (options.cmd !== undefined) parts.push(`cmd=${options.cmd.replace(/ /g, '_')}`)
   return `[[e2e:${script}:${parts.join(':')}]]`
 }
 
@@ -107,9 +110,10 @@ function parseMarker(text: string): Marker | null {
     tag: params.tag ?? 'x',
     n: Number(params.n ?? 100),
     ms: Number(params.ms ?? 10),
-    rounds: script === 'tool' ? Math.max(1, Number(params.rounds ?? 1)) : 0,
+    rounds: script === 'tool' ? Math.max(1, Number(params.rounds ?? 1)) : script === 'bg' ? 1 : 0,
     holdAt: script === 'hold' ? 0 : params.holdAt !== undefined ? Number(params.holdAt) : null,
     gap: Number(params.gap ?? 0),
+    ...(script === 'bg' ? { cmd: (params.cmd ?? 'sleep_2').replace(/_/g, ' ') } : {}),
   }
 }
 
@@ -312,7 +316,9 @@ export class FakeLlmServer {
       })
 
     if (!parsed) {
-      res.write(chunk({ content: 'ok' }))
+      // A task wake has no marker; answer it with a recognisable token so a
+      // spec can tell the auto-resumed turn apart from any other reply.
+      res.write(chunk({ content: userText.includes('[Task update]') ? 'wake-ack' : 'ok' }))
       turn.sentAt.push(Date.now())
       finish('stop')
       return
@@ -354,9 +360,14 @@ export class FakeLlmServer {
     if (closed) return
 
     if (round < parsed.rounds) {
-      const name = TOOL_PREFERENCE.find((n) => toolNames.includes(n))
+      const background = parsed.script === 'bg'
+      const name = background
+        ? (toolNames.includes('exec') ? 'exec' : undefined)
+        : TOOL_PREFERENCE.find((n) => toolNames.includes(n))
       if (name) {
-        const args = JSON.stringify(toolArgs(parsed.tag, round))
+        const args = JSON.stringify(
+          background ? { command: parsed.cmd, background: true } : toolArgs(parsed.tag, round),
+        )
         const id = `call_${parsed.tag}_${round}`
         res.write(chunk({ tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: '' } }] }))
         res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: args.slice(0, 8) } }] }))

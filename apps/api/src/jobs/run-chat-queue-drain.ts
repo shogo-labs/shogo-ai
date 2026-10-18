@@ -5,6 +5,7 @@ import {
   dispatchPendingSessions,
   resetStuckDispatching,
 } from '../services/chat-queue-dispatcher.service'
+import { reconcileStuckTasks, sweepUnnotifiedWakes } from '../services/background-tasks.service'
 
 const CHAT_QUEUE_DISPATCH_INTERVAL_MS = 15_000
 
@@ -13,8 +14,14 @@ const CHAT_QUEUE_DISPATCH_INTERVAL_MS = 15_000
  * queue rows whose session's workspace is homed in this region, so each
  * region drains a disjoint slice. A global lock would leave the peer's
  * sessions undrained because the lock holder skips non-home sessions.
+ *
+ * The sweep is what makes a wake durable: a finished task whose coalesce timer
+ * died with its process (or whose notify never arrived) is re-queued here, so
+ * a restarted API heals itself on its first tick.
  */
 export async function runChatQueueDrain(): Promise<void> {
+  await reconcileStuckTasks()
+  await sweepUnnotifiedWakes()
   await resetStuckDispatching()
   await dispatchPendingSessions()
 }

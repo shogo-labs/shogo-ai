@@ -1541,7 +1541,13 @@ model BackgroundTask {
   note          String?
   notify        Boolean   @default(true)
   consumed      Boolean   @default(false)
+  /// Set when a wake claims this row; cleared again if that wake never ran, so
+  /// the drain sweep can re-queue it.
   notifiedAt    DateTime?
+  /// How many wakes claimed this row and had to be released.
+  attempts      Int       @default(0)
+  /// Earliest time the sweep may re-queue it, so a broken wake cannot hot-loop.
+  nextAttemptAt DateTime?
   /// A finished card watch waits while agents are still working the card's
   /// thread; its wake goes out when the thread goes quiet or at this time.
   heldUntil     DateTime?
@@ -1553,6 +1559,7 @@ model BackgroundTask {
   @@index([source, targetRef, status])
   @@index([chatSessionId, status])
   @@index([expiresAt])
+  @@index([notify, consumed, notifiedAt])
   @@map("background_tasks")
 }
 

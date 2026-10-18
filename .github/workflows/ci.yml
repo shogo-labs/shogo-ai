@@ -455,7 +455,9 @@ jobs:
           # would change every other spec, so it gets a stack of its own.
           # chat-stop-then-send needs the same stack (stop a turn mid-stream,
           # then send) and runs in the same job, one worker at a time.
-          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send' }
+          # chat-task-resume needs it too: a background exec that finishes has
+          # to wake the chat with no user input.
+          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume' }
     permissions:
       contents: read
     timeout-minutes: 60

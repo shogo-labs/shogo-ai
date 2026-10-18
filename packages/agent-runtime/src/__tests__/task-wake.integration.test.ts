@@ -24,6 +24,8 @@ interface ApiCall { method: string; path: string; body: any }
 let server: ReturnType<typeof Bun.serve>
 const apiCalls: ApiCall[] = []
 const savedEnv: Record<string, string | undefined> = {}
+/** How many notify calls the stub refuses before it accepts them. */
+let notifyFailures = 0
 
 beforeAll(() => {
   server = Bun.serve({
@@ -32,7 +34,13 @@ beforeAll(() => {
       const url = new URL(req.url)
       const body = req.method === 'GET' ? null : await req.json().catch(() => null)
       apiCalls.push({ method: req.method, path: url.pathname, body })
-      if (url.pathname === '/api/internal/tasks/notify') return Response.json({ queued: true })
+      if (url.pathname === '/api/internal/tasks/notify') {
+        if (notifyFailures > 0) {
+          notifyFailures--
+          return Response.json({ error: 'boom' }, { status: 500 })
+        }
+        return Response.json({ queued: true })
+      }
       if (url.pathname === '/api/internal/tasks/consume') return Response.json({ ok: true })
       return Response.json({})
     },
@@ -57,6 +65,7 @@ let counter = 0
 
 beforeEach(() => {
   apiCalls.length = 0
+  notifyFailures = 0
   testDir = join(tmpdir(), `test-task-wake-${process.pid}-${++counter}`)
   rmSync(testDir, { recursive: true, force: true })
   mkdirSync(join(testDir, 'memory'), { recursive: true })
@@ -80,6 +89,15 @@ afterEach(async () => {
 
 const writer = () => ({ write() {} })
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+async function waitUntil(fn: () => boolean, timeoutMs = 8_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (fn()) return
+    await sleep(50)
+  }
+  throw new Error('waitUntil timed out')
+}
 
 function textOf(m: Message): string {
   if (typeof m.content === 'string') return m.content
@@ -160,6 +178,42 @@ describe('task wake', () => {
 
     await sleep(2_500)
     expect(apiCalls.filter((c) => c.path === '/api/internal/tasks/notify')).toHaveLength(1)
+  }, 20_000)
+
+  test('a notify the API refuses is retried and delivered exactly once', async () => {
+    notifyFailures = 1
+    const calls: Message[][] = []
+    const gw = await startGateway([
+      buildToolUseResponse([{ name: 'exec', arguments: { command: 'sleep 0.3', background: true }, id: 'tc-1' }]),
+      buildTextResponse('Started; I will report back when it finishes.'),
+    ], (_i, msgs) => calls.push([...msgs]))
+
+    const notifies = () => apiCalls.filter((c) => c.path === '/api/internal/tasks/notify')
+    await gw.processChatMessageStream('run the build', writer() as any, { chatSessionId: 'retry' })
+
+    await waitUntil(() => notifies().length === 1)   // coalesced, then refused
+    await waitUntil(() => notifies().length === 2)   // retried, then accepted
+    await sleep(1_000)
+    expect(notifies()).toHaveLength(2)
+    expect(notifies()[1]!.body.chatSessionId).toBe('retry')
+    expect(notifies()[1]!.body.tasks[0]).toMatchObject({ id: notifies()[0]!.body.tasks[0].id, source: 'shell' })
+  }, 20_000)
+
+  test('Stop drops a wake the API refused instead of retrying it', async () => {
+    notifyFailures = 5
+    const calls: Message[][] = []
+    const gw = await startGateway([
+      buildToolUseResponse([{ name: 'exec', arguments: { command: 'sleep 0.3', background: true }, id: 'tc-1' }]),
+      buildTextResponse('Started.'),
+    ], (_i, msgs) => calls.push([...msgs]))
+
+    const notifies = () => apiCalls.filter((c) => c.path === '/api/internal/tasks/notify')
+    await gw.processChatMessageStream('run the build', writer() as any, { chatSessionId: 'retry-stopped' })
+
+    await waitUntil(() => notifies().length === 1)
+    gw.muteSessionTasks('retry-stopped')
+    await sleep(3_000)
+    expect(notifies()).toHaveLength(1)
   }, 20_000)
 
   test('Stop mutes running tasks so they never wake the agent', async () => {

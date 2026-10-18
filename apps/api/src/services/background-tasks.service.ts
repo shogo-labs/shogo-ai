@@ -47,6 +47,14 @@ export const MAX_CONSECUTIVE_WAKES = 3
  */
 export const MAX_CONSECUTIVE_CARD_WAKES = 40
 /**
+ * A wake that was queued and never ran hands its tasks back, and the drain
+ * sweep re-queues them. The first retry is immediate (a dispatch failure is
+ * usually a busy runtime); repeats back off up to five minutes.
+ */
+const WAKE_RETRY_BACKOFF_MS = [0, 15_000, 30_000, 60_000, 120_000, 300_000]
+/** An `agent_reply` task whose run never reports back is given up this long after its timeout. */
+export const AGENT_REPLY_RECONCILE_MS = AGENT_REPLY_TIMEOUT_MS + 5 * 60_000
+/**
  * Longest a finished card watch waits for agents still working the card's
  * thread. Outlasts the longest channel agent run (`AGENT_REPLY_TIMEOUT_MS`), so it only
  * fires when a run hangs or ends without reporting back.
@@ -67,6 +75,8 @@ export interface BackgroundTaskRow {
   notify: boolean
   consumed: boolean
   notifiedAt: Date | null
+  attempts?: number
+  nextAttemptAt?: Date | null
   heldUntil?: Date | null
   finishedAt: Date | null
   expiresAt: Date
@@ -531,7 +541,7 @@ async function wakeUserFor(session: { id: string; createdByUserId?: string | nul
  * dispatcher re-checks `consumed` just before sending it, so a turn the person
  * started in the meantime (which already saw the results) cancels the wake.
  */
-export async function enqueueTaskWake(chatSessionId: string): Promise<boolean> {
+export async function enqueueTaskWake(chatSessionId: string, opts: { dispatch?: boolean } = {}): Promise<boolean> {
   const session = await db.chatSession.findUnique({
     where: { id: chatSessionId },
     select: { id: true, createdByUserId: true, workspaceId: true, contextType: true, contextId: true },
@@ -576,9 +586,110 @@ export async function enqueueTaskWake(chatSessionId: string): Promise<boolean> {
       body: JSON.stringify({ text, taskNotification: { taskIds } }),
     },
   })
-  const { dispatchNext } = await import('./chat-queue-dispatcher.service')
-  void dispatchNext(chatSessionId).catch(() => {})
+  // The drain sweeps and then dispatches in one pass, so it asks for the row
+  // without racing its own dispatcher for the claim.
+  if (opts.dispatch !== false) {
+    const { dispatchNext } = await import('./chat-queue-dispatcher.service')
+    void dispatchNext(chatSessionId).catch(() => {})
+  }
   return true
+}
+
+// ─── Durability ───────────────────────────────────────────────────────────────
+
+/**
+ * Re-derive wakes that the coalesce timer never got to: a finished, unseen
+ * task whose row was never claimed has no queued message behind it, and
+ * nothing else would ever create one. Runs from the drain worker, so a
+ * restarted API heals itself on its next tick (and a peer region leaves the
+ * session to its home region). `enqueueTaskWake`'s conditional claim keeps
+ * concurrent sweeps from queueing the same wake twice.
+ */
+export async function sweepUnnotifiedWakes(limit = 50): Promise<number> {
+  const now = new Date()
+  const sessions: Array<{ chatSessionId: string }> = await db.backgroundTask.findMany({
+    where: {
+      status: { not: 'running' },
+      notify: true,
+      consumed: false,
+      notifiedAt: null,
+      expiresAt: { gt: now },
+      AND: [
+        { OR: [{ heldUntil: null }, { heldUntil: { lte: now } }] },
+        { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
+      ],
+    },
+    distinct: ['chatSessionId'],
+    select: { chatSessionId: true },
+    take: limit,
+  })
+  if (!sessions.length) return 0
+  const { isHomeRegionSession } = await import('./chat-queue-dispatcher.service')
+  let queued = 0
+  for (const row of sessions) {
+    if (!(await isHomeRegionSession(row.chatSessionId))) continue
+    if (await enqueueTaskWake(row.chatSessionId, { dispatch: false })) queued++
+  }
+  return queued
+}
+
+/**
+ * A wake claimed these tasks but never ran: hand them back so the sweep can
+ * queue them again once the runtime is healthy. Repeated failures back off
+ * instead of hot-looping, and `expiresAt` still bounds the whole thing.
+ */
+export async function releaseTaskWakes(taskIds: string[]): Promise<number> {
+  const ids = taskIds.filter((id) => typeof id === 'string' && id.length <= 64).slice(0, 200)
+  if (!ids.length) return 0
+  const rows: Array<{ id: string; attempts: number }> = await db.backgroundTask.findMany({
+    where: { id: { in: ids }, consumed: false, notifiedAt: { not: null } },
+    select: { id: true, attempts: true },
+  })
+  if (!rows.length) return 0
+  const byAttempts = new Map<number, string[]>()
+  for (const row of rows) {
+    const group = byAttempts.get(row.attempts) ?? []
+    group.push(row.id)
+    byAttempts.set(row.attempts, group)
+  }
+  for (const [attempts, group] of byAttempts) {
+    const delay = WAKE_RETRY_BACKOFF_MS[Math.min(attempts, WAKE_RETRY_BACKOFF_MS.length - 1)]!
+    await db.backgroundTask.updateMany({
+      where: { id: { in: group }, consumed: false, notifiedAt: { not: null } },
+      data: { notifiedAt: null, attempts: { increment: 1 }, nextAttemptAt: new Date(Date.now() + delay) },
+    })
+  }
+  return rows.length
+}
+
+/**
+ * Tasks the API tracks itself only settle when their producer reports back. A
+ * run that died leaves the row `running` for its whole TTL, so the watcher
+ * would never be told anything: give up on it here, with the wake left on.
+ */
+export async function reconcileStuckTasks(): Promise<number> {
+  const now = new Date()
+  const stuck: BackgroundTaskRow[] = await db.backgroundTask.findMany({
+    where: {
+      source: 'agent_reply',
+      status: 'running',
+      createdAt: { lt: new Date(now.getTime() - AGENT_REPLY_RECONCILE_MS) },
+    },
+    take: 50,
+  })
+  let settled = 0
+  for (const row of stuck) {
+    await settle(row, 'failed', 'the agent run ended without reporting back')
+    settled++
+  }
+  const calls: BackgroundTaskRow[] = await db.backgroundTask.findMany({
+    where: { source: 'project_call', status: 'running', createdAt: { lt: new Date(now.getTime() - 5 * 60_000) } },
+    take: 50,
+  })
+  for (const row of calls) {
+    if (await settleIfAlreadyDone(row)) settled++
+  }
+  return settled
 }
 
 /** Test seam. */
