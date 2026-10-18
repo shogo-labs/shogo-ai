@@ -40,6 +40,34 @@ function projectComposerInput(page: Page) {
   )
 }
 
+/**
+ * A row in the "N Queued" strip. A queued prompt now also paints as a
+ * transcript bubble (the send owns its bubble), so a page-wide
+ * `getByText(prompt)` matches both — assertions have to say which one they
+ * mean. `exact: true` matters: without it this also matches the
+ * "Delete queued message" / "Move queued message down" buttons.
+ *
+ * The shell mounts more than one chat panel (desktop + phone layouts, restored
+ * tabs), so several strips can be in the DOM with the same rows: callers use
+ * `.first()` to assert presence, `toHaveCount(0)` to assert absence.
+ */
+function queuedRow(page: Page, text: string) {
+  return page.getByLabel("Queued message", { exact: true }).filter({ hasText: text })
+}
+
+/** How many times `text` appears on screen outside the queued strip. */
+async function transcriptCount(page: Page, text: string): Promise<number> {
+  return page.evaluate((needle) => {
+    const count = (haystack: string) => haystack.split(needle).length - 1
+    const total = count(document.body?.innerText ?? "")
+    let queued = 0
+    for (const row of Array.from(document.querySelectorAll('[aria-label="Queued message"]'))) {
+      queued += count((row as HTMLElement).innerText ?? "")
+    }
+    return total - queued
+  }, text)
+}
+
 async function waitForIdle(page: Page) {
   await page.waitForSelector('[data-testid="stop-streaming"], [aria-label="Stop"]', {
     state: "detached",
@@ -206,10 +234,13 @@ test.describe("server-backed chat queue — local UI", () => {
 
     await projectComposerInput(page).fill("queued prompt")
     await page.keyboard.press("Enter")
-    await expect(page.getByText("queued prompt", { exact: true })).toBeVisible()
+    await expect(queuedRow(page, "queued prompt").first()).toBeVisible()
+    // …and it is already a transcript bubble of its own, next to the strip.
+    await expect.poll(() => transcriptCount(page, "queued prompt")).toBe(1)
     await projectComposerInput(page).fill("second queued prompt")
     await page.keyboard.press("Enter")
-    await expect(page.getByText("second queued prompt", { exact: true })).toBeVisible()
+    await expect(queuedRow(page, "second queued prompt").first()).toBeVisible()
+    await expect.poll(() => transcriptCount(page, "second queued prompt")).toBe(1)
     expect(queueRows).toHaveLength(2)
 
     await page.getByLabel("Move queued message down").first().click()
@@ -221,13 +252,13 @@ test.describe("server-backed chat queue — local UI", () => {
     releaseHeldChat?.()
     await page.waitForTimeout(300)
     await page.reload()
-    await expect(page.getByText("queued prompt", { exact: true })).toBeVisible()
-    await expect(page.getByText("second queued prompt", { exact: true })).toBeVisible()
+    await expect(queuedRow(page, "queued prompt").first()).toBeVisible()
+    await expect(queuedRow(page, "second queued prompt").first()).toBeVisible()
 
     const queuedId = String(queueRows[0].id)
     await page.getByLabel("Delete queued message").first().click()
-    await expect(page.getByText("second queued prompt", { exact: true })).toHaveCount(0)
-    await expect(page.getByText("queued prompt", { exact: true })).toBeVisible()
+    await expect(queuedRow(page, "second queued prompt")).toHaveCount(0)
+    await expect(queuedRow(page, "queued prompt").first()).toBeVisible()
     expect(queueRows.find((row) => row.id === queuedId)).toBeUndefined()
   })
 })

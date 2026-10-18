@@ -45,6 +45,17 @@ describe("isUnfinishedAssistant", () => {
     expect(isUnfinishedAssistant(done)).toBe(false)
   })
 
+  test("a reply the user stopped is finished, not unfinished", () => {
+    expect(
+      isUnfinishedAssistant(
+        message("assistant", [
+          { type: "text", text: "half a sen" },
+          { type: "data-turn-stopped", data: { turnId: "turn-1" } },
+        ]),
+      ),
+    ).toBe(false)
+  })
+
   test("user messages and an empty list are never dropped", () => {
     expect(isUnfinishedAssistant(message("user"))).toBe(false)
     expect(isUnfinishedAssistant(undefined)).toBe(false)
@@ -55,6 +66,14 @@ describe("dropUnfinishedAssistantTail", () => {
   test("drops only the trailing unfinished assistant message", () => {
     const history = [message("user"), message("assistant")]
     expect(dropUnfinishedAssistantTail(history)).toEqual([history[0]])
+  })
+
+  test("keeps a reply the user stopped", () => {
+    const history = [
+      message("user"),
+      message("assistant", [{ type: "data-turn-stopped", data: { turnId: "t1" } }]),
+    ]
+    expect(dropUnfinishedAssistantTail(history)).toBe(history)
   })
 
   test("returns the same array when there is nothing to drop", () => {

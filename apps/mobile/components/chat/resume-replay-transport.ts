@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import type { ChatTransport, UIMessage } from "ai"
 import { coalesceChunkBursts } from "./chunk-coalescer"
+import { TURN_STOPPED_PART_TYPE } from "./stopped-turn"
 
 /**
  * `resumeStream()` hits the SDK's default `/stream` URL, which carries no
@@ -20,11 +21,16 @@ import { coalesceChunkBursts } from "./chunk-coalescer"
  * True for an assistant message whose turn hasn't finished: no live
  * `data-turn-complete` frame and no persisted `completedAt`. A finished
  * assistant message from an earlier turn is left alone.
+ *
+ * A reply the user stopped carries neither of those — the turn was cancelled,
+ * so the runtime never reports it complete — but it is finished history, not
+ * a message a replay should rebuild (see stopped-turn.ts).
  */
 export function isUnfinishedAssistant(message: UIMessage | undefined): boolean {
   if (!message || message.role !== "assistant") return false
   for (const part of (message.parts ?? []) as Array<Record<string, any>>) {
     if (part?.type === "data-turn-complete") return false
+    if (part?.type === TURN_STOPPED_PART_TYPE) return false
     if (
       part?.type === "data-turn-timing" &&
       typeof part?.data?.completedAt === "number"

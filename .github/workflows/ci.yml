@@ -453,7 +453,9 @@ jobs:
           - { name: 'E2E (local mode) (3/3)', shard: '3/3' }
           # chat-resume-on-send needs the API pointed at its fake model, which
           # would change every other spec, so it gets a stack of its own.
-          - { name: 'E2E (chat resume)', spec: chat-resume-on-send }
+          # chat-stop-then-send needs the same stack (stop a turn mid-stream,
+          # then send) and runs in the same job, one worker at a time.
+          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send' }
     permissions:
       contents: read
     timeout-minutes: 60

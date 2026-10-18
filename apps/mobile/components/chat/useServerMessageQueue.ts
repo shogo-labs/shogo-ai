@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { getEnv } from "mobx-state-tree"
 import type { IChatQueuedMessage } from "@shogo/domain-stores"
 import { useSDKDomains } from "@shogo/shared-app/domain"
@@ -91,6 +91,19 @@ export function useServerMessageQueue({
   const previousRowsRef = useRef(new Map<string, IChatQueuedMessage>())
   const userRemovedIdsRef = useRef(new Set<string>())
   const pendingTurnRef = useRef<{ userMessage?: UIMessage } | null>(null)
+  /**
+   * Rows this window enqueued, keyed by their server id, with the user message
+   * the server will save for them. A row can be created and dispatched between
+   * two polls, so it never shows up in `rows` at all — the disappeared-row
+   * diff below only ever sees a row it observed first, and the reply then
+   * arrives with no user message to attach to. Chasing our own rows by id is
+   * what catches that case.
+   */
+  const enqueuedRef = useRef(new Map<string, UIMessage>())
+  const [trackedCount, setTrackedCount] = useState(0)
+  const rowsRef = useRef<IChatQueuedMessage[]>([])
+  const isStreamingRef = useRef(isStreaming)
+  const onTurnAvailableRef = useRef(onTurnAvailable)
 
   // `collection.all` mutates in place, so it must be read on every render for
   // the observer to see new rows; the signature keeps `rows` stable otherwise.
@@ -107,16 +120,58 @@ export function useServerMessageQueue({
   const rows = useMemo(() => liveRows, [rowsSignature])
   const queuedMessages = useMemo(() => rows.map(toQueuedMessage), [rows])
 
+  rowsRef.current = rows
+  isStreamingRef.current = isStreaming
+  onTurnAvailableRef.current = onTurnAvailable
+
   useEffect(() => {
     previousIdsRef.current = []
     previousRowsRef.current = new Map()
     pendingTurnRef.current = null
+    enqueuedRef.current.clear()
+    setTrackedCount(0)
   }, [sessionId, enabled])
 
   const load = useCallback(async () => {
     if (!enabled || !sessionId) return
     await collection.loadAll({ sessionId })
   }, [collection, enabled, sessionId])
+
+  const flushPendingTurn = useCallback(() => {
+    if (isStreamingRef.current || !pendingTurnRef.current) return
+    const { userMessage } = pendingTurnRef.current
+    const notify = onTurnAvailableRef.current
+    pendingTurnRef.current = null
+    notify?.(userMessage)
+  }, [])
+
+  /**
+   * A row this window enqueued that is no longer pending has been taken by the
+   * server, which started its turn. Checked against `rows`, not against a
+   * previous render: the row may have been dispatched between two polls and
+   * never appeared there at all.
+   */
+  const drainEnqueued = useCallback(() => {
+    const tracked = enqueuedRef.current
+    if (tracked.size === 0) return
+    const byId = new Map(rowsRef.current.map((row) => [row.id, row]))
+    let dispatched: UIMessage | undefined
+    let dropped = 0
+    for (const [id, userMessage] of tracked) {
+      const row = byId.get(id)
+      if (row?.status === "pending") continue
+      tracked.delete(id)
+      dropped++
+      // A failed dispatch stays on the queue with its error for the user to
+      // retry; it is not a turn starting.
+      if (row?.status === "failed") continue
+      dispatched ??= userMessage
+    }
+    if (dropped > 0) setTrackedCount((count) => Math.max(0, count - dropped))
+    if (!dispatched) return
+    pendingTurnRef.current = { userMessage: dispatched }
+    flushPendingTurn()
+  }, [flushPendingTurn])
 
   useEffect(() => {
     void load().catch((error) => {
@@ -127,10 +182,22 @@ export function useServerMessageQueue({
   useEffect(() => {
     if (!enabled || !sessionId || rows.length === 0 || isStreaming) return
     const timer = setInterval(() => {
-      void load().catch(() => {})
+      void load().then(() => drainEnqueued(), () => {})
     }, 1500)
     return () => clearInterval(timer)
-  }, [enabled, sessionId, rows.length, isStreaming, load])
+  }, [enabled, sessionId, rows.length, isStreaming, load, drainEnqueued])
+
+  // A row this window enqueued that never appeared in `rows` never changes it
+  // either, so the poll above (which only runs while something is queued)
+  // would never look again. Keep polling while a row of ours is unaccounted
+  // for, and stop as soon as the server's dispatch is seen.
+  useEffect(() => {
+    if (!enabled || !sessionId || trackedCount === 0) return
+    const timer = setInterval(() => {
+      void load().then(() => drainEnqueued(), () => {})
+    }, 1500)
+    return () => clearInterval(timer)
+  }, [enabled, sessionId, trackedCount, load, drainEnqueued])
 
   useEffect(() => {
     const previous = previousIdsRef.current
@@ -150,21 +217,21 @@ export function useServerMessageQueue({
       }
       dispatchedId ??= id
     }
-    if (!dispatchedId) return
-    const removed = previousRows.get(dispatchedId)
-    pendingTurnRef.current = {
-      userMessage: removed ? queuedRowToUserMessage(removed) : undefined,
+    if (dispatchedId && !pendingTurnRef.current) {
+      const removed = previousRows.get(dispatchedId)
+      pendingTurnRef.current = {
+        userMessage: removed ? queuedRowToUserMessage(removed) : undefined,
+      }
     }
-  }, [rows])
+    drainEnqueued()
+    flushPendingTurn()
+  }, [rows, drainEnqueued, flushPendingTurn])
 
   // Attaching while the previous turn's stream is still open (the server
   // stops it for "send now") would resume on top of a live stream.
   useEffect(() => {
-    if (isStreaming || !pendingTurnRef.current || !onTurnAvailable) return
-    const { userMessage } = pendingTurnRef.current
-    pendingTurnRef.current = null
-    onTurnAvailable(userMessage)
-  }, [rows, isStreaming, onTurnAvailable])
+    if (!isStreaming) flushPendingTurn()
+  }, [isStreaming, flushPendingTurn])
 
   const enqueue = useCallback(
     async (input: ServerQueueEnqueueInput) => {
@@ -185,13 +252,18 @@ export function useServerMessageQueue({
         text: input.body.text ?? input.content.trim(),
         references: input.references ?? input.body.references,
       }
-      return collection.create({
+      const created = (await collection.create({
         sessionId,
         userId: "",
         content: input.content.trim(),
         parts: JSON.stringify(parts),
         body: JSON.stringify(body),
-      } as any)
+      } as any)) as IChatQueuedMessage | undefined
+      if (created && !created.id.startsWith(OPTIMISTIC_ID_PREFIX)) {
+        enqueuedRef.current.set(created.id, queuedRowToUserMessage(created))
+        setTrackedCount((count) => count + 1)
+      }
+      return created
     },
     [collection, sessionId],
   )
@@ -199,10 +271,22 @@ export function useServerMessageQueue({
   const remove = useCallback(
     async (id: string) => {
       userRemovedIdsRef.current.add(id)
+      // Delete is the only other way a row this window enqueued disappears, so
+      // it must stop being tracked here: `drainEnqueued` reads a gone row as the
+      // server having started its turn, and deleting a queued message is not
+      // that.
+      const tracked = enqueuedRef.current.get(id)
+      if (tracked && enqueuedRef.current.delete(id)) {
+        setTrackedCount((count) => Math.max(0, count - 1))
+      }
       try {
         await collection.delete(id)
       } catch (error) {
         userRemovedIdsRef.current.delete(id)
+        if (tracked) {
+          enqueuedRef.current.set(id, tracked)
+          setTrackedCount((count) => count + 1)
+        }
         throw error
       } finally {
         setTimeout(() => userRemovedIdsRef.current.delete(id), 0)
