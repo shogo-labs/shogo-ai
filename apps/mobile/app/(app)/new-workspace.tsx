@@ -70,7 +70,11 @@ export default function NewWorkspacePage() {
   const [pooledCreateOpen, setPooledCreateOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const goHome = useCallback(() => router.replace('/(app)'), [router])
-  const { parent: pooledWorkspaceParent, createPooledWorkspace } = usePooledWorkspaceCreation({
+  const {
+    parent: pooledWorkspaceParent,
+    parentOptions: pooledParentOptions,
+    createPooledWorkspace,
+  } = usePooledWorkspaceCreation({
     workspaces: workspaces?.all ?? [],
     currentWorkspaceId: currentWorkspace?.id,
     enabled: true,
@@ -546,7 +550,8 @@ export default function NewWorkspacePage() {
             visible={pooledCreateOpen}
             onClose={() => setPooledCreateOpen(false)}
             onSubmit={createPooledWorkspace}
-            parentName={pooledWorkspaceParent?.name}
+            parent={pooledWorkspaceParent}
+            parentOptions={pooledParentOptions}
           />
         </View>
       </ScrollView>

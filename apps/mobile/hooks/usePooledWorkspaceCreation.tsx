@@ -26,6 +26,7 @@ import { api } from "../lib/api";
 import { setActiveWorkspaceId } from "../lib/workspace-store";
 import { useWorkspacePlans } from "./useWorkspacePlans";
 import {
+  eligiblePooledWorkspaceParents,
   selectPooledWorkspaceParent,
   type PooledWorkspaceCandidate,
 } from "./pooledWorkspaceParent";
@@ -58,6 +59,10 @@ export function usePooledWorkspaceCreation({
     [workspaces],
   );
   const plans = useWorkspacePlans(workspaceIds, enabled);
+  const parentOptions = useMemo(
+    () => eligiblePooledWorkspaceParents(workspaces, plans),
+    [plans, workspaces],
+  );
   const parent = useMemo(
     () => selectPooledWorkspaceParent(workspaces, currentWorkspaceId, plans),
     [currentWorkspaceId, plans, workspaces],
@@ -84,13 +89,15 @@ export function usePooledWorkspaceCreation({
    * (so a caller's modal can stay open and keep the typed name).
    */
   const createPooledWorkspace = useCallback(
-    async (name: string): Promise<boolean> => {
-      if (!user?.id || !parent) return false;
+    async (name: string, parentId?: string): Promise<boolean> => {
+      const target =
+        parentOptions.find((option) => option.id === parentId) ?? parent;
+      if (!user?.id || !target) return false;
       let createdId: string;
       try {
         const created = await api.createChildWorkspace(http, {
           name,
-          parentWorkspaceId: parent.id,
+          parentWorkspaceId: target.id,
           ownerId: user.id,
         });
         createdId = created.id;
@@ -125,6 +132,7 @@ export function usePooledWorkspaceCreation({
       http,
       onCreated,
       parent,
+      parentOptions,
       posthog,
       projects,
       router,
@@ -134,5 +142,5 @@ export function usePooledWorkspaceCreation({
     ],
   );
 
-  return { parent, createPooledWorkspace };
+  return { parent, parentOptions, createPooledWorkspace };
 }

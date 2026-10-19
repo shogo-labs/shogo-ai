@@ -89,7 +89,11 @@ export default observer(function AccountPage() {
   const billingData = useBillingData(features.billing ? displayWorkspace?.id : undefined)
   const allPlans = useWorkspacePlans(workspaceIds, !!features.billing)
   const workspacePlan = displayWorkspace?.id ? (allPlans[displayWorkspace.id] ?? null) : null
-  const { parent: pooledWorkspaceParent, createPooledWorkspace } = usePooledWorkspaceCreation({
+  const {
+    parent: pooledWorkspaceParent,
+    parentOptions: pooledParentOptions,
+    createPooledWorkspace,
+  } = usePooledWorkspaceCreation({
     workspaces: allWorkspaces,
     currentWorkspaceId: currentWorkspace?.id,
     enabled: !!features.billing,
@@ -135,8 +139,8 @@ export default observer(function AccountPage() {
   }, [hasTeamWorkspace, pooledWorkspaceParent, router])
 
   const handleCreateWorkspaceSubmit = useCallback(
-    async (name: string) => {
-      if (pooledWorkspaceParent) return createPooledWorkspace(name)
+    async (name: string, parentId?: string) => {
+      if (pooledWorkspaceParent) return createPooledWorkspace(name, parentId)
       if (!user?.id) return
       try {
         const created = await actions.createWorkspace(name, undefined, user.id)
@@ -257,7 +261,8 @@ export default observer(function AccountPage() {
           visible={createWorkspaceOpen}
           onClose={() => setCreateWorkspaceOpen(false)}
           onSubmit={handleCreateWorkspaceSubmit}
-          parentName={pooledWorkspaceParent?.name}
+          parent={pooledWorkspaceParent}
+          parentOptions={pooledParentOptions}
         />
       </AccountSheetChromeProvider>
     </View>
