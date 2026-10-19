@@ -14,10 +14,11 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { View, Text, Pressable, ActivityIndicator } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { AtSign, Ban, Bot, CircleCheck, CircleX, Clock, Hourglass, KanbanSquare, Send, Terminal, X } from "lucide-react-native"
+import { AtSign, Ban, Bot, ChevronRight, CircleCheck, CircleX, Clock, Hourglass, KanbanSquare, Send, Terminal, X } from "lucide-react-native"
 import type { RunningProcess } from "../../ProcessPanel"
 import type { SubagentProgress } from "../../subagent/SubagentPanel"
 import type { RecentTool } from "../../subagent/SubagentStats"
+import { linkOpensThread, type TaskOutputInfo } from "../../../../lib/task-link"
 import { useDockPanel } from "../useDockPanel"
 import type { DockPanelDescriptor } from "../../../../lib/chat-dock-store"
 
@@ -49,7 +50,9 @@ export interface RunningDockPanelProps {
   /** No turn is running: tasks that notify will start the next one. */
   agentIdle?: boolean
   /** Last part of a task's output, for the inline viewer. */
-  loadOutput?: (taskId: string) => Promise<string | null>
+  loadOutput?: (taskId: string) => Promise<TaskOutputInfo | null>
+  /** Open a task's destination (thread, card, project session, log) in the side window. */
+  onOpenTask?: (proc: RunningProcess) => void
 }
 
 const SOURCE_ICON: Record<string, typeof Terminal> = {
@@ -102,13 +105,15 @@ function TaskRow({
   killing,
   onKill,
   loadOutput,
+  onOpen,
 }: {
   proc: RunningProcess
   now: number
   waitedOn: boolean
   killing: boolean
   onKill: () => void
-  loadOutput?: (taskId: string) => Promise<string | null>
+  loadOutput?: (taskId: string) => Promise<TaskOutputInfo | null>
+  onOpen?: () => void
 }) {
   const [output, setOutput] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -117,6 +122,7 @@ function TaskRow({
   const title = proc.title || proc.command
   const finished = isFinished(proc)
   const canShowOutput = !!loadOutput && !proc.stale
+  const opensThread = linkOpensThread(proc.link)
   const frozenMs = proc.finishedAt
     ? Math.max(0, proc.finishedAt - (proc.startedAt ?? proc.finishedAt))
     : (proc.elapsedMs ?? 0)
@@ -129,31 +135,51 @@ function TaskRow({
     if (!loadOutput) return
     setLoading(true)
     try {
-      const text = await loadOutput(taskId(proc))
-      setOutput((text ?? "").split("\n").slice(-20).join("\n") || "(no output yet)")
+      const info = await loadOutput(taskId(proc))
+      const text = (info?.output ?? "").split("\n").slice(-20).join("\n")
+      setOutput(text.trim() ? text : "No output yet")
     } finally {
       setLoading(false)
     }
   }
 
+  const Title = (
+    <>
+      {finished ? (
+        <StatusIcon proc={proc} />
+      ) : (
+        <Icon size={11} className={cn("shrink-0", waitedOn ? "text-primary" : "text-muted-foreground")} />
+      )}
+      <Text
+        className={cn(
+          "flex-1 text-[11px] text-foreground",
+          isShell && "font-mono",
+          finished && "text-muted-foreground",
+        )}
+        numberOfLines={1}
+      >
+        {title}
+      </Text>
+      {opensThread ? <ChevronRight size={11} className="shrink-0 text-muted-foreground/70" /> : null}
+    </>
+  )
+
   return (
     <View className="gap-1">
       <View className="flex-row items-center gap-2">
-        {finished ? (
-          <StatusIcon proc={proc} />
+        {onOpen ? (
+          <Pressable
+            onPress={onOpen}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel={`Open ${title}`}
+            className="min-w-0 flex-1 flex-row items-center gap-2 active:opacity-60"
+          >
+            {Title}
+          </Pressable>
         ) : (
-          <Icon size={11} className={cn("shrink-0", waitedOn ? "text-primary" : "text-muted-foreground")} />
+          <View className="min-w-0 flex-1 flex-row items-center gap-2">{Title}</View>
         )}
-        <Text
-          className={cn(
-            "flex-1 text-[11px] text-foreground",
-            isShell && "font-mono",
-            finished && "text-muted-foreground",
-          )}
-          numberOfLines={1}
-        >
-          {title}
-        </Text>
         {waitedOn && !finished ? <Text className="text-[9px] font-medium text-primary">waiting</Text> : null}
         {finished ? (
           <View className="flex-row items-center gap-1">
@@ -224,6 +250,7 @@ function RunningBody({
   waiting,
   agentIdle,
   loadOutput,
+  onOpenTask,
 }: RunningDockPanelProps) {
   const [now, setNow] = useState(() => Date.now())
   const pendingKills = useRef<Set<string>>(new Set())
@@ -276,6 +303,7 @@ function RunningBody({
           killing={killingProcesses?.has(proc.runId) ?? false}
           onKill={() => handleKill(proc.runId)}
           loadOutput={loadOutput}
+          onOpen={onOpenTask ? () => onOpenTask(proc) : undefined}
         />
       ))}
 
@@ -345,7 +373,7 @@ export function RunningDockPanel(props: RunningDockPanelProps) {
       render: () => <RunningBody {...props} />,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [processes, subagents, recentTools, runningSubagents, waiting, agentIdle])
+  }, [processes, subagents, recentTools, runningSubagents, waiting, agentIdle, props.onOpenTask, props.loadOutput])
 
   useDockPanel(descriptor)
   return null

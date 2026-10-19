@@ -150,12 +150,26 @@ async function withCardTask(ctx: ToolContext, r: { ok: boolean; data?: any }, op
   const item = r.data?.item
   if (!r.ok || !item?.id || !ctx.commandRegistry || !ctx.sessionId) return r
   const watch = !!opts.handoff && isHandedOff(item, selfAgentRef(ctx))
+  // The card's thread is where the work happens: the dock opens it rather than
+  // an empty log. Without a conversation/thread there is nothing to open.
+  const link = item.conversationId && item.threadRootMessageId
+    ? {
+        kind: 'card' as const,
+        workspaceId: workspaceIdOf(ctx) ?? undefined,
+        conversationId: item.conversationId,
+        threadRootId: item.threadRootMessageId,
+        itemId: item.id,
+        itemKey: item.key ?? item.id,
+        board: item.board?.name ?? '',
+      }
+    : undefined
   const task = await trackRemoteTask(ctx.commandRegistry, ctx.sessionId, {
     source: 'work_item',
     targetRef: item.id,
     title: [item.key, item.title].filter(Boolean).join(' ') || item.id,
     lazy: !watch,
     ...(watch ? { until: HANDOFF_WATCH_UNTIL } : {}),
+    ...(link ? { link } : {}),
   }).catch(() => undefined)
   if (!task) return r
   return { ...r, data: { ...r.data, task_id: task.task_id, ...(watch ? { watching: true } : {}) } }

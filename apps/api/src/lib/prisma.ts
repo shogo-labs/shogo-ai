@@ -71,6 +71,9 @@ const JSON_OBJECT_FIELDS = new Set([
   'origin',
   // Work boards
   'fieldsSchema', 'fields', 'eventData', 'occurrenceContext', 'workItemTarget',
+  // Background task destination (Json? on PG, JSON String on SQLite): where the
+  // dock opens the agent's thread for a task that handed work off.
+  'link',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and

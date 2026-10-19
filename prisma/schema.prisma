@@ -1947,6 +1947,9 @@ model BackgroundTask {
   /// A finished card watch waits while agents are still working the card's
   /// thread; its wake goes out when the thread goes quiet or at this time.
   heldUntil     DateTime?
+  /// Where the task's work is happening, so the chat dock can open that thread
+  /// instead of an empty log: channel thread, card, project session, subagent.
+  link          Json?
   finishedAt    DateTime?
   expiresAt     DateTime
   createdAt     DateTime  @default(now())

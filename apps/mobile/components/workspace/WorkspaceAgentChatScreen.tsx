@@ -35,6 +35,7 @@ import { PlanStreamProvider } from "../chat/PlanStreamContext"
 import { PlansPanel } from "../project/panels/PlansPanel"
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
+import { TaskThreadPaneHost } from "../chat/task/TaskThreadPaneHost"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { NativePhoneSheet } from "../phone/NativePhoneSheet"
 import { PersonalAgentHeader } from "../personal/PersonalAgentHeader"
@@ -857,6 +858,9 @@ export const WorkspaceAgentChatScreen = observer(
           />
         </View>
       ) : null}
+      {/* The thread a pressed background task runs in — beside the chat on
+          desktop, in a sheet on phones. Never replaces this chat. */}
+      <TaskThreadPaneHost />
       </View>
       </PlanStreamProvider>
     )

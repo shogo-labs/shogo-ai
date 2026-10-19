@@ -1332,6 +1332,8 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // model decided to wait while we were already returning).
       const registry = ctx.commandRegistry ?? new CommandRegistry()
       const entry = registry.register(attributedCommand, handle, { cwd: currentCwd })
+      // A shell task's thread is its own output file — the log the dock shows.
+      entry.link = { kind: 'log', path: registry.displayPath(entry.outputFile) }
 
       if (background) {
         registry.markBackgrounded(entry.id)
@@ -7233,6 +7235,14 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
             title: `${type}: ${prompt.replace(/\s+/g, ' ').trim().slice(0, 80)}`,
             backgrounded: true,
             cancel: () => { if (instanceRef) am.cancel(instanceRef) },
+            // While it streams, the dock opens the agent's live view; after that
+            // it falls back to this task's log.
+            link: {
+              kind: 'subagent',
+              toolCallId,
+              projectId: ctx.projectId ?? undefined,
+              chatSessionId: ctx.sessionId ?? undefined,
+            },
           })
         : undefined
       const callbacks = task ? withTaskOutput(spawn?.callbacks, task) : spawn?.callbacks

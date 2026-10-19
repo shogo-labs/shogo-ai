@@ -243,7 +243,10 @@ import {
   type ChatContextValue,
   type ChatMessage,
   type OpenProjectPaneRequest,
+  type OpenTaskHint,
 } from "./ChatContext"
+import { asTaskLink, type TaskOutputInfo } from "../../lib/task-link"
+import { taskThreadPane } from "../../lib/task-thread-pane-store"
 import {
   DESKTOP_ISLAND_WORKSPACE_AGENT_ID,
   registerDesktopIslandSession,
@@ -1865,7 +1868,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
   const loadTaskOutput = useCallback(
-    async (taskId: string): Promise<string | null> => {
+    async (taskId: string): Promise<TaskOutputInfo | null> => {
       const base = agentBaseUrl
       if (!base || !currentSessionId) return null
       try {
@@ -1877,12 +1880,48 @@ const ChatPanelContent = observer(function ChatPanelContent({
         )
         if (!res.ok) return null
         const data = await res.json()
-        return typeof data?.output === "string" ? data.output : null
+        return {
+          taskId: typeof data?.taskId === "string" ? data.taskId : taskId,
+          source: typeof data?.source === "string" ? data.source : undefined,
+          title: typeof data?.title === "string" ? data.title : undefined,
+          status: typeof data?.status === "string" ? data.status : undefined,
+          outputFile: typeof data?.outputFile === "string" ? data.outputFile : undefined,
+          output: typeof data?.output === "string" ? data.output : "",
+          link: asTaskLink(data?.link),
+        }
       } catch {
         return null
       }
     },
     [agentBaseUrl, currentSessionId, nativeHeaders, expoFetch],
+  )
+
+  // Pressing a background task opens where its work is happening: the tagged
+  // agent's thread, the card's thread, the callee project's chat, or its log.
+  const openTaskThread = useCallback(
+    async (taskId: string, hint?: OpenTaskHint) => {
+      taskThreadPane.open({
+        taskId,
+        title: hint?.title,
+        source: hint?.source,
+        status: hint?.status,
+        outputFile: hint?.outputFile,
+        link: hint?.link ?? null,
+        loading: true,
+      })
+      const out = await loadTaskOutput(taskId)
+      taskThreadPane.patch(taskId, {
+        loading: false,
+        output: out?.output ?? undefined,
+        outputFile: out?.outputFile ?? hint?.outputFile,
+        title: out?.title ?? hint?.title,
+        source: out?.source ?? hint?.source,
+        status: out?.status ?? hint?.status,
+        link: out?.link ?? hint?.link ?? null,
+        ...(out ? {} : { error: "This task is no longer tracked." }),
+      })
+    },
+    [loadTaskOutput],
   )
 
   // The agent blocked in `wait` (live `data-task-wait` frames during a turn).
@@ -7507,6 +7546,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       fileExists,
       workspaceId: workspaceId ?? null,
       openProjectPane: onOpenProjectPane,
+      openTaskThread,
       generateSummary: handleGenerateSummary,
       selectedModel,
       isPro: hasAdvancedModelAccess,
@@ -7529,6 +7569,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       fileExists,
       workspaceId,
       onOpenProjectPane,
+      openTaskThread,
       handleGenerateSummary,
       selectedModel,
       hasAdvancedModelAccess,
@@ -8059,6 +8100,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
             waiting={taskWait}
             agentIdle={!isStreaming}
             loadOutput={loadTaskOutput}
+            onOpenTask={(proc) =>
+              void openTaskThread(proc.id ?? proc.runId, {
+                title: proc.title ?? proc.command,
+                source: proc.source,
+                status: proc.status,
+                outputFile: proc.outputFile,
+                link: proc.link,
+              })
+            }
           />
           <BrowserDockPanel />
           <WorktreeDockPanel

@@ -99,6 +99,7 @@ import {
   latchApiGate,
 } from "../../../../lib/preview-gate";
 import { ChatPanel } from "../../../../components/chat/ChatPanel";
+import { TaskThreadPaneHost } from "../../../../components/chat/task/TaskThreadPaneHost";
 import { PlanStreamProvider } from "../../../../components/chat/PlanStreamContext";
 import {
   ChatBridgeProvider,
@@ -4284,6 +4285,10 @@ export default observer(function ProjectLayout() {
                   </View>
                 );
               })()}
+
+              {/* The thread a pressed background task runs in: a pane beside the
+                  canvas (wide) or a sheet (phone). The chat column stays put. */}
+              <TaskThreadPaneHost />
 
               {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
               <View

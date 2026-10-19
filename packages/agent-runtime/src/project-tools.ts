@@ -662,6 +662,13 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
           source: 'project_call',
           targetRef: `${target.id}:${runId}`,
           title: `${target.name}: ${p.message.replace(/\s+/g, ' ').slice(0, 80)}`,
+          // The callee's own session: pressing the row opens that agent's chat.
+          link: {
+            kind: 'project_session',
+            projectId: target.id,
+            name: target.name,
+            chatSessionId: res.data.chatSessionId ?? res.data.sessionId ?? undefined,
+          },
         })
         if (task) {
           return textResult({

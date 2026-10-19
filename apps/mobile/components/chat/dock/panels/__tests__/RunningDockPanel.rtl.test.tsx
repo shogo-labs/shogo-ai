@@ -132,7 +132,7 @@ describe("RunningDockPanel", () => {
       processes: [task({ id: "t_log", command: "bun test" })],
       loadOutput: async (id) => {
         loaded.push(id)
-        return "line 1\n3 pass\n0 fail"
+        return { taskId: id, output: "line 1\n3 pass\n0 fail" }
       },
     })
     const view = body()
@@ -164,7 +164,7 @@ describe("RunningDockPanel", () => {
       onKillProcess: (id) => { killed.push(id) },
       loadOutput: async (id) => {
         loaded.push(id)
-        return "3 pass\n0 fail"
+        return { taskId: id, output: "3 pass\n0 fail" }
       },
     })
     expect(d!.title).toBe("Running")
@@ -198,5 +198,62 @@ describe("RunningDockPanel", () => {
     expect(view.getByText("failed")).toBeTruthy()
     expect(view.queryByText("Kill")).toBeNull()
     expect(view.queryByText("Cancel")).toBeNull()
+  })
+
+  test("pressing a linked task row opens its thread with the link it carries", () => {
+    const opened: RunningProcess[] = []
+    const link = {
+      kind: "channel_thread" as const,
+      conversationId: "c-1",
+      threadRootId: "m-1",
+    }
+    renderPanel({
+      processes: [task({ id: "t_ar", source: "agent_reply", title: "@Ops reply", link })],
+      onOpenTask: (proc) => { opened.push(proc) },
+    })
+    const view = body()
+    fireEvent.click(view.getByRole("button", { name: "@Ops reply" }))
+    expect(opened).toHaveLength(1)
+    expect(opened[0]!.id).toBe("t_ar")
+    expect(opened[0]!.link).toEqual(link)
+  })
+
+  test("a shell row with nothing written yet says No output yet instead of blank", async () => {
+    renderPanel({
+      processes: [task({ id: "t_shell", command: "sleep 300", source: "shell" })],
+      loadOutput: async (id) => ({ taskId: id, output: "" }),
+    })
+    const view = body()
+    fireEvent.click(view.getByText("Output"))
+    await waitFor(() => expect(view.getByText("No output yet")).toBeTruthy())
+  })
+
+  test("a finished row still opens its thread and keeps no Cancel", () => {
+    const opened: RunningProcess[] = []
+    renderPanel({
+      processes: [
+        task({
+          id: "t_done",
+          source: "work_item",
+          title: "SUP-12 Fix login",
+          status: "completed",
+          finishedAt: now - 1_000,
+          link: {
+            kind: "card",
+            conversationId: "c-1",
+            threadRootId: "m-1",
+            itemId: "i-1",
+            itemKey: "SUP-12",
+            board: "Support",
+          },
+        }),
+      ],
+      onOpenTask: (proc) => { opened.push(proc) },
+    })
+    const view = body()
+    expect(view.queryByText("Cancel")).toBeNull()
+    fireEvent.click(view.getByRole("button", { name: "SUP-12 Fix login" }))
+    expect(opened).toHaveLength(1)
+    expect(opened[0]!.link?.kind).toBe("card")
   })
 })

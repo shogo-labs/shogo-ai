@@ -121,8 +121,8 @@ import { BACKGROUND_TASKS_GUIDE } from './background-tasks-guide'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { loadWorkspaceCustomAgents } from './subagent'
-import { TaskRegistry, formatTaskNotification } from './task-registry'
-import { cleanupTaskOutputs, listTaskOutputRows, taskOutputDir, taskOutputRoot } from './task-output'
+import { TaskRegistry, formatTaskNotification, type TaskLink, type TaskSource, type TaskStatus } from './task-registry'
+import { cleanupTaskOutputs, listTaskOutputRows, taskOutputBody, taskOutputDir, taskOutputRoot } from './task-output'
 import { createApiTaskClient } from './remote-tasks'
 import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
 import { TeamManager } from './team-manager'
@@ -458,6 +458,17 @@ export function describeTurnFailure(
 }
 
 export type VisualMode = 'canvas' | 'app' | 'none'
+
+/** What the dock's output route answers with: the text plus where the task lives. */
+export interface SessionTaskOutput {
+  taskId: string
+  source: TaskSource
+  title: string
+  status: TaskStatus
+  outputFile?: string
+  output: string
+  link?: TaskLink
+}
 
 export interface GatewayConfig {
   /**
@@ -2378,16 +2389,34 @@ export class AgentGateway {
     return reg.listDock()
   }
 
-  /** Last part of a task's output, for the dock's output viewer. */
-  readSessionTaskOutput(sessionId: string, taskId: string): { taskId: string; outputFile?: string; output: string } | null {
-    const reg = this.commandRegistries.get(sessionId)
-    const entry = reg?.get(taskId)
-    if (!reg || !entry) return null
-    const output = reg.readOutput(entry)
+  /**
+   * Last part of a task's output, for the dock's output viewer. Remote tasks
+   * are refreshed first: the API is where their text lands, and a reader that
+   * skips the refresh sees an empty local log. The task's destination (`link`)
+   * comes back with it, so the client can open the agent's thread instead.
+   */
+  async readSessionTaskOutput(sessionId: string, taskId: string): Promise<SessionTaskOutput | null> {
+    const reg = this.getOrCreateCommandRegistry(sessionId)
+    let entry = reg.get(taskId)
+    if (!entry) {
+      // A cold registry is seeded asynchronously; the task may still arrive.
+      await this.hydratingRegistries.get(sessionId)
+      entry = reg.get(taskId)
+    }
+    if (!entry) return null
+    if (entry.remote && entry.status === 'running') {
+      await reg.refreshWhere((e) => e.id === entry!.id)
+    }
+    const local = taskOutputBody(reg.readOutput(entry)).trim()
+    const output = local || (entry.result?.summary ?? '').trim() || (entry.remoteNote ?? '').trim()
     return {
       taskId: entry.id,
+      source: entry.source,
+      title: entry.title,
+      status: entry.status,
       outputFile: reg.displayPath(entry.outputFile),
       output: output.length > 64_000 ? output.slice(-64_000) : output,
+      link: entry.link ?? (entry.outputFile ? { kind: 'log', path: reg.displayPath(entry.outputFile) } : undefined),
     }
   }
 

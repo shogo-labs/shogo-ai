@@ -65,6 +65,15 @@ export interface OpenProjectPaneRequest {
   tab?: "canvas" | "files" | "plans" | "chat"
 }
 
+/** What a task row already knows about the task it opens. */
+export interface OpenTaskHint {
+  title?: string
+  source?: string
+  status?: string
+  outputFile?: string
+  link?: import("../../lib/task-link").TaskLink | null
+}
+
 export interface ChatContextValue {
   /** The currently active chat session, or null if none exists */
   currentSession: ChatSession | null
@@ -126,6 +135,13 @@ export interface ChatContextValue {
    * Absent when the host surface has no side pane; callers then navigate.
    */
   openProjectPane?: (request: OpenProjectPaneRequest) => void
+
+  /**
+   * Open a background task's destination (the tagged agent's thread, a card
+   * thread, another project's session, or its log) in the host's side window.
+   * Absent when the host surface has none; rows then keep their inline output.
+   */
+  openTaskThread?: (taskId: string, hint?: OpenTaskHint) => void
 
   /** Chat's current model — the plan Build picker starts here. */
   selectedModel?: string

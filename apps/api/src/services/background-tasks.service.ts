@@ -85,9 +85,91 @@ export interface BackgroundTaskRow {
   attempts?: number
   nextAttemptAt?: Date | null
   heldUntil?: Date | null
+  /** Where the task's work is happening (channel thread, card, project session, log). */
+  link?: unknown
   finishedAt: Date | null
   expiresAt: Date
   createdAt: Date
+}
+
+/**
+ * Where a task's thread lives, carried from the runtime that created it to the
+ * chat dock that shows it. Kept as plain data (not a union class) because it
+ * round-trips through `background_tasks.link`.
+ */
+export type TaskLink =
+  | { kind: 'log'; path?: string }
+  | { kind: 'project_session'; projectId: string; chatSessionId?: string; name?: string }
+  | { kind: 'subagent'; projectId?: string; chatSessionId?: string; toolCallId: string }
+  | { kind: 'channel_thread'; workspaceId?: string; conversationId: string; threadRootId: string; title?: string }
+  | {
+      kind: 'card'
+      workspaceId?: string
+      conversationId: string
+      threadRootId: string
+      itemId: string
+      itemKey: string
+      board: string
+    }
+
+function str(value: unknown, max = 200): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : undefined
+}
+
+/** Validate a link posted by a runtime, dropping anything malformed. */
+export function normalizeTaskLink(input: unknown): TaskLink | null {
+  if (!input || typeof input !== 'object') return null
+  const raw = input as Record<string, unknown>
+  const kind = str(raw.kind, 32)
+  if (kind === 'log') {
+    const path = str(raw.path, 1000)
+    return path ? { kind: 'log', path } : { kind: 'log' }
+  }
+  if (kind === 'project_session') {
+    const projectId = str(raw.projectId)
+    if (!projectId) return null
+    const chatSessionId = str(raw.chatSessionId)
+    const name = str(raw.name)
+    return { kind: 'project_session', projectId, ...(chatSessionId ? { chatSessionId } : {}), ...(name ? { name } : {}) }
+  }
+  if (kind === 'subagent') {
+    const toolCallId = str(raw.toolCallId)
+    if (!toolCallId) return null
+    const projectId = str(raw.projectId)
+    const chatSessionId = str(raw.chatSessionId)
+    return { kind: 'subagent', toolCallId, ...(projectId ? { projectId } : {}), ...(chatSessionId ? { chatSessionId } : {}) }
+  }
+  if (kind === 'channel_thread') {
+    const conversationId = str(raw.conversationId)
+    const threadRootId = str(raw.threadRootId)
+    if (!conversationId || !threadRootId) return null
+    const workspaceId = str(raw.workspaceId)
+    const title = str(raw.title)
+    return {
+      kind: 'channel_thread',
+      conversationId,
+      threadRootId,
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(title ? { title } : {}),
+    }
+  }
+  if (kind === 'card') {
+    const conversationId = str(raw.conversationId)
+    const threadRootId = str(raw.threadRootId)
+    const itemId = str(raw.itemId)
+    if (!conversationId || !threadRootId || !itemId) return null
+    const workspaceId = str(raw.workspaceId)
+    return {
+      kind: 'card',
+      conversationId,
+      threadRootId,
+      itemId,
+      itemKey: str(raw.itemKey) ?? itemId,
+      board: str(raw.board) ?? '',
+      ...(workspaceId ? { workspaceId } : {}),
+    }
+  }
+  return null
 }
 
 export interface BackgroundTaskView {
@@ -99,6 +181,10 @@ export interface BackgroundTaskView {
   result: { summary: string } | null
   matched?: boolean
   startedAt: string
+  /** Where the task's thread lives, so the dock can open it. */
+  link?: TaskLink | null
+  /** The wake text, once the task settled — the runtime falls back to it when it has no output. */
+  note?: string | null
 }
 
 export class BackgroundTaskError extends Error {
@@ -155,6 +241,7 @@ function isFinal(status: string): boolean {
 }
 
 export function viewOf(row: BackgroundTaskRow, matched?: boolean): BackgroundTaskView {
+  const link = normalizeTaskLink(row.link)
   return {
     id: row.id,
     source: row.source,
@@ -164,6 +251,8 @@ export function viewOf(row: BackgroundTaskRow, matched?: boolean): BackgroundTas
     result: isFinal(row.status) ? { summary: row.summary ?? row.status } : null,
     ...(matched ? { matched: true } : {}),
     startedAt: new Date(row.createdAt).toISOString(),
+    ...(link ? { link } : {}),
+    ...(isFinal(row.status) && row.note ? { note: row.note } : {}),
   }
 }
 
@@ -197,6 +286,8 @@ export interface CreateTaskInput {
   targetRef: string
   title: string
   until?: string | null
+  /** Where the task's thread lives, so the dock can open it instead of an empty log. */
+  link?: unknown
 }
 
 const REMOTE_SOURCES = new Set(['project_call', 'agent_reply', 'work_item'])
@@ -209,6 +300,7 @@ export async function createTask(input: CreateTaskInput): Promise<BackgroundTask
   await expireStale(input.chatSessionId)
   const existing = await db.backgroundTask.findUnique({ where: { id: input.id } })
   if (existing) return existing
+  const link = normalizeTaskLink(input.link)
   const row = await db.backgroundTask.create({
     data: {
       id: input.id,
@@ -217,6 +309,7 @@ export async function createTask(input: CreateTaskInput): Promise<BackgroundTask
       targetRef: input.targetRef.trim().slice(0, 500),
       title: String(input.title || input.source).slice(0, 300),
       until: input.until ?? null,
+      ...(link ? { link: link as any } : {}),
       // A background project call has no time limit, so its task lives as long as a card's.
       expiresAt: new Date(
         Date.now() + (input.source === 'work_item' || input.source === 'project_call' ? CARD_TASK_TTL_MS : TASK_TTL_MS),
@@ -447,8 +540,19 @@ export async function createReplyTasks(
   chatSessionId: string,
   triggerMessageId: string,
   agents: Array<{ projectId: string | null; name: string }>,
+  where?: { conversationId?: string | null; threadRootId?: string | null; workspaceId?: string | null },
 ): Promise<Array<{ task_id: string; title: string; status: 'running' }>> {
   const out: Array<{ task_id: string; title: string; status: 'running' }> = []
+  // The thread the tags were posted in: that is where the replies land, so it
+  // is what the dock opens instead of an empty log.
+  const link = where?.conversationId
+    ? {
+        kind: 'channel_thread' as const,
+        conversationId: where.conversationId,
+        threadRootId: where.threadRootId ?? triggerMessageId,
+        ...(where.workspaceId ? { workspaceId: where.workspaceId } : {}),
+      }
+    : undefined
   for (const agent of agents) {
     const row = await createTask({
       id: newTaskId(),
@@ -456,6 +560,7 @@ export async function createReplyTasks(
       source: 'agent_reply',
       targetRef: replyTargetRef(triggerMessageId, agent.projectId),
       title: `@${agent.name} reply`,
+      ...(link ? { link } : {}),
     })
     out.push({ task_id: row.id, title: row.title, status: 'running' })
   }

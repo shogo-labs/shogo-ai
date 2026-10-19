@@ -459,7 +459,9 @@ jobs:
           # to wake the chat with no user input.
           # chat-background-tasks reads the dock a background task left behind
           # after navigating away, a reload and a restart of the panel.
-          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks' }
+          # chat-task-thread-pane presses a dock row and reads the side window
+          # it opens (its log, never blank) without leaving the chat.
+          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks chat-task-thread-pane' }
     permissions:
       contents: read
     timeout-minutes: 60

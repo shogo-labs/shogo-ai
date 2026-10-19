@@ -209,6 +209,26 @@ export function tailLines(text: string, maxLines = 40, maxChars = 4000): string 
   return tail.length > maxChars ? tail.slice(-maxChars) : tail
 }
 
+const FOOTER_START = '\n---\nstatus: '
+
+/**
+ * The streamed output alone: the log's `---` header and footer blocks removed.
+ * A task that settled without writing anything leaves only those blocks behind,
+ * which reads as a blank log in the dock's output viewer.
+ */
+export function taskOutputBody(text: string): string {
+  let body = text
+  if (body.startsWith('---\n')) {
+    const end = body.indexOf('\n---\n', 4)
+    if (end !== -1) body = body.slice(end + 5)
+  }
+  const footer = body.lastIndexOf(FOOTER_START)
+  if (footer !== -1) body = body.slice(0, footer)
+  // A log that ends exactly on the closing header delimiter has no body at all.
+  if (body.trim() === '' || /^\n*---\s*$/.test(body)) return ''
+  return body
+}
+
 function parseKeyValueBlock(text: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const line of text.split('\n')) {

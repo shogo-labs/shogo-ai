@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from 'fs'
 import { publishRequestTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
 import { requesterTicketHeaders } from './credential-scope'
+import type { TaskLink } from './task-registry'
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
@@ -2091,6 +2092,10 @@ export interface BackgroundTaskState {
   result?: { summary?: string; exitCode?: number } | null
   matched?: boolean
   startedAt?: string
+  /** Where the task's work is happening (channel thread, card, project session, log). */
+  link?: TaskLink | null
+  /** The wake text the API formatted, once the task has settled. */
+  note?: string | null
 }
 
 /** A finished local task (shell, subagent) whose session is idle and should be woken. */
@@ -2111,6 +2116,7 @@ export async function createBackgroundTask(input: {
   targetRef: string
   title: string
   until?: string
+  link?: TaskLink
 }): Promise<CheckpointCallResult<BackgroundTaskState>> {
   return lifecycleFetch(tasksPath, {
     method: 'POST',

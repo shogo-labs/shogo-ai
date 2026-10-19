@@ -2318,7 +2318,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     throw err
   }
 
-  /** POST /api/internal/tasks  body: { id, chatSessionId, source, targetRef, title, until? } */
+  /** POST /api/internal/tasks  body: { id, chatSessionId, source, targetRef, title, until?, link? } */
   app.post('/tasks', async (c) => {
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
     const chatSessionId = typeof body?.chatSessionId === 'string' ? body.chatSessionId : ''
@@ -2333,6 +2333,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         targetRef: String(body!.targetRef ?? ''),
         title: String(body!.title ?? ''),
         until: typeof body!.until === 'string' ? body!.until : null,
+        link: body!.link,
       })
       return c.json({ task: viewOf(row) }, 201)
     } catch (err) {

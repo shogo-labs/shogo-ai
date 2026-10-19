@@ -42,6 +42,27 @@ const REMOTE_MIN_POLL_GAP_MS = 500
 export type TaskSource = 'shell' | 'subagent' | 'project_call' | 'agent_reply' | 'work_item'
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 
+/**
+ * Where a task's work is actually happening. The chat dock opens this instead
+ * of the runtime-local log, so pressing a background row lands on the agent's
+ * thread (a channel thread, a card, a project session) rather than an empty
+ * file. `log` is the local output file, used by shell commands.
+ */
+export type TaskLink =
+  | { kind: 'log'; path?: string }
+  | { kind: 'project_session'; projectId: string; chatSessionId?: string; name?: string }
+  | { kind: 'subagent'; projectId?: string; chatSessionId?: string; toolCallId: string }
+  | { kind: 'channel_thread'; workspaceId?: string; conversationId: string; threadRootId: string; title?: string }
+  | {
+      kind: 'card'
+      workspaceId?: string
+      conversationId: string
+      threadRootId: string
+      itemId: string
+      itemKey: string
+      board: string
+    }
+
 export interface TaskResult {
   exitCode?: number
   summary: string
@@ -84,6 +105,10 @@ export interface TaskEntry {
   dormant?: boolean
   /** Source-specific reference (subagent instance id, remote target, ...). */
   ref?: string
+  /** Where this task's work is happening, for the dock's "open the thread" action. */
+  link?: TaskLink
+  /** Wake text the API formatted for this task, when it finished. */
+  remoteNote?: string
   /** Absolute path of the output file, when output files are enabled. */
   outputFile?: string
   /** Shell tasks only. */
@@ -115,6 +140,8 @@ export interface RunningProcess {
   notify: boolean
   remote?: boolean
   stale?: boolean
+  /** Where the task's work is happening (thread, card, project session, log). */
+  link?: TaskLink
 }
 
 /** Serializable subset persisted into session metadata so the list survives restart. */
@@ -130,6 +157,8 @@ export interface RunningProcessSnapshot {
   remote?: boolean
   ref?: string
   outputFile?: string
+  /** Where the task's work is happening; survives a restart with the row. */
+  link?: TaskLink
   /** Terminal rows keep their outcome and freeze so a restart still lists them. */
   status?: TaskStatus
   finishedAt?: number
@@ -157,6 +186,10 @@ export interface RemoteTaskState {
   output?: string
   result?: TaskResult
   matched?: boolean
+  /** Where the API says the task's work is happening. */
+  link?: TaskLink
+  /** The API's formatted wake text, when the task has settled. */
+  note?: string
 }
 
 /** Transport for remote tasks; implemented over the internal API by the gateway. */
@@ -240,7 +273,7 @@ export class TaskRegistry {
   // ---------------------------------------------------------------------------
 
   /** Register a freshly spawned shell command. */
-  register(command: string, handle: CommandHandle, opts: { title?: string; notify?: boolean; cwd?: string } = {}): CommandEntry {
+  register(command: string, handle: CommandHandle, opts: { title?: string; notify?: boolean; cwd?: string; link?: TaskLink } = {}): CommandEntry {
     const id = newTaskId()
     let resolveDone!: () => void
     const done = new Promise<void>((r) => { resolveDone = r })
@@ -255,6 +288,7 @@ export class TaskRegistry {
       notify: opts.notify ?? true,
       consumed: false,
       handle,
+      link: opts.link,
       done,
     }
     this.entries.set(id, entry)
@@ -304,6 +338,7 @@ export class TaskRegistry {
     cancel?: () => void | Promise<void>
     id?: string
     dormant?: boolean
+    link?: TaskLink
   }): TaskHandle {
     const id = opts.id ?? newTaskId()
     let resolveDone!: () => void
@@ -320,6 +355,7 @@ export class TaskRegistry {
       consumed: false,
       backgrounded: opts.backgrounded,
       ref: opts.ref,
+      link: opts.link,
       dormant: opts.dormant || undefined,
       done,
     }
@@ -369,9 +405,14 @@ export class TaskRegistry {
     /** The API holds the task (wakes the session, records consumption). Default: no per-task client. */
     apiTracked?: boolean
     dormant?: boolean
+    /** Where the task's work is happening; shown as the dock row's destination. */
+    link?: TaskLink
   }): TaskEntry {
     const existing = this.entries.get(opts.id)
-    if (existing) return existing
+    if (existing) {
+      if (opts.link && !existing.link) existing.link = opts.link
+      return existing
+    }
     const handle = this.registerTask({
       id: opts.id,
       source: opts.source,
@@ -380,6 +421,7 @@ export class TaskRegistry {
       notify: opts.notify,
       backgrounded: true,
       dormant: opts.dormant,
+      link: opts.link,
     })
     handle.entry.remote = true
     handle.entry.apiTracked = opts.apiTracked ?? !opts.client
@@ -769,6 +811,8 @@ export class TaskRegistry {
 
   /** Apply API state to a mirrored remote entry. */
   applyRemoteState(entry: TaskEntry, state: RemoteTaskState): void {
+    if (state.link && !entry.link) entry.link = state.link
+    if (state.note) entry.remoteNote = state.note
     if (state.output !== undefined) {
       const prev = this.recent.get(entry.id) ?? ''
       if (state.output.length > prev.length && state.output.startsWith(prev)) {
@@ -848,6 +892,7 @@ export class TaskRegistry {
       notify: entry.notify && !!entry.backgrounded,
       remote: entry.remote || undefined,
       stale: entry.stale || undefined,
+      link: entry.link,
     }
   }
 
@@ -943,6 +988,7 @@ export class TaskRegistry {
         remote: entry?.apiTracked || undefined,
         ref: entry?.ref,
         outputFile: entry?.outputFile,
+        link: entry?.link,
         // A settled task keeps its outcome across a restart, so it comes back
         // as a finished row for the rest of its retention window.
         status: p.status,
@@ -971,6 +1017,7 @@ export class TaskRegistry {
           title: snap.title ?? snap.command,
           ref: snap.ref,
           startedAt: snap.startedAt,
+          link: snap.link,
         })
         changed = true
         continue
@@ -991,6 +1038,7 @@ export class TaskRegistry {
         consumed: false,
         stale: true,
         outputFile: snap.outputFile,
+        link: snap.link,
         handle: makeStaleHandle(snap),
         done: Promise.resolve(),
       })
@@ -1040,6 +1088,7 @@ export class TaskRegistry {
         consumed: false,
         stale: true,
         outputFile: row.path,
+        link: snap.link,
         handle: makeStaleHandle(snap),
         done: Promise.resolve(),
       })
@@ -1066,6 +1115,7 @@ export class TaskRegistry {
       consumed: true,
       shown: snap.shown,
       outputFile: snap.outputFile,
+      link: snap.link,
       done: Promise.resolve(),
     })
     const cleanupTimer = setTimeout(() => this.forget(snap.runId), remaining)
@@ -1138,7 +1188,13 @@ export class TaskRegistry {
 function stripFrontMatter(text: string): string {
   if (!text.startsWith('---\n')) return text
   const end = text.indexOf('\n---\n', 4)
-  return end === -1 ? text : text.slice(end + 5)
+  if (end !== -1) return text.slice(end + 5)
+  // A settled task's log can end exactly at the closing delimiter, with no
+  // body written at all. Returning the header would make the output viewer
+  // look blank, so report the empty body instead.
+  const close = text.lastIndexOf('\n---')
+  if (close !== -1 && text.slice(close + 4).trim() === '') return ''
+  return text
 }
 
 /** Build a synthetic, already-exited handle for a restored (stale) entry. */

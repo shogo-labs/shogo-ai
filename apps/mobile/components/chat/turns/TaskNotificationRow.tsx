@@ -11,6 +11,7 @@ import { Pressable, Text, View } from "react-native"
 import { Ban, CheckCircle2, XCircle } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { TaskNotification, TaskUpdateLine } from "@shogo/shared-app/chat"
+import { useChatContextSafe } from "../ChatContext"
 
 function iconFor(outcome: string) {
   if (outcome.startsWith("failed")) return { Icon: XCircle, tone: "text-destructive" }
@@ -20,25 +21,39 @@ function iconFor(outcome: string) {
 
 function UpdateRow({ update }: { update: TaskUpdateLine }) {
   const [open, setOpen] = useState(false)
+  const chat = useChatContextSafe()
+  const openTask = chat?.openTaskThread
   const { Icon, tone } = iconFor(update.outcome)
   return (
     <View className="gap-1">
-      <Pressable
-        onPress={() => setOpen((v) => !v)}
-        disabled={!update.detail}
-        accessibilityRole="button"
-        accessibilityLabel={`${update.title} ${update.outcome}`}
-        className="flex-row items-center gap-2"
-      >
-        <Icon size={13} className={tone} />
-        <Text className="flex-1 text-xs text-muted-foreground" numberOfLines={1}>
-          <Text className="font-medium text-foreground">{update.title}</Text>
-          {` ${update.outcome}`}
-        </Text>
+      <View className="flex-row items-center gap-1">
+        <Pressable
+          onPress={() => (openTask ? openTask(update.taskId, { title: update.title }) : setOpen((v) => !v))}
+          disabled={!update.detail && !openTask}
+          accessibilityRole="button"
+          accessibilityLabel={
+            openTask ? `Open ${update.title} thread` : `${update.title} ${update.outcome}`
+          }
+          className="min-w-0 flex-1 flex-row items-center gap-2"
+        >
+          <Icon size={13} className={tone} />
+          <Text className="flex-1 text-xs text-muted-foreground" numberOfLines={1}>
+            <Text className="font-medium text-foreground">{update.title}</Text>
+            {` ${update.outcome}`}
+          </Text>
+        </Pressable>
         {update.detail ? (
-          <Text className="text-[10px] text-muted-foreground">{open ? "Hide" : "Output"}</Text>
+          <Pressable
+            onPress={() => setOpen((v) => !v)}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel={open ? "Hide log" : "Show log"}
+            className="rounded px-1 py-0.5 active:opacity-60"
+          >
+            <Text className="text-[10px] text-muted-foreground">{open ? "Hide" : "Log"}</Text>
+          </Pressable>
         ) : null}
-      </Pressable>
+      </View>
       {open && update.detail ? (
         <Text className="ml-5 font-mono text-[11px] text-muted-foreground" selectable>
           {update.detail}

@@ -1431,9 +1431,9 @@ app.post('/agent/chat/:chatSessionId/tasks/:taskId/cancel', async (c) => {
   return c.json({ ok: true, tasks: await agentGateway.listSessionTasks(sessionId) })
 })
 
-app.get('/agent/chat/:chatSessionId/tasks/:taskId/output', (c) => {
+app.get('/agent/chat/:chatSessionId/tasks/:taskId/output', async (c) => {
   if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
-  const output = agentGateway.readSessionTaskOutput(c.req.param('chatSessionId'), c.req.param('taskId'))
+  const output = await agentGateway.readSessionTaskOutput(c.req.param('chatSessionId'), c.req.param('taskId'))
   if (!output) return c.json({ error: 'unknown task_id' }, 404)
   return c.json(output)
 })

@@ -15,7 +15,7 @@ import {
   type BackgroundTaskSource,
   type BackgroundTaskState,
 } from './internal-api'
-import { newTaskId, type RemoteTaskClient, type RemoteTaskState, type TaskRegistry } from './task-registry'
+import { newTaskId, type RemoteTaskClient, type RemoteTaskState, type TaskLink, type TaskRegistry } from './task-registry'
 
 export function toRemoteState(task: BackgroundTaskState): RemoteTaskState {
   return {
@@ -24,6 +24,8 @@ export function toRemoteState(task: BackgroundTaskState): RemoteTaskState {
     output: task.output,
     result: task.result ? { ...task.result, summary: task.result.summary ?? task.status } : undefined,
     matched: task.matched,
+    link: task.link ?? undefined,
+    note: task.note ?? undefined,
   }
 }
 
@@ -83,11 +85,14 @@ export async function trackRemoteTask(
     id?: string
     lazy?: boolean
     until?: string
+    /** Where the task's work is happening, so the dock can open it. */
+    link?: TaskLink
   },
 ): Promise<TrackedTask | undefined> {
   if (!hasInternalApiCredentials() && !process.env.SHOGO_API_URL) return undefined
   const existing = registry.get(opts.id ?? opts.targetRef)
   if (existing?.status === 'running' && existing.source === opts.source) {
+    if (opts.link && !existing.link) existing.link = opts.link
     if (existing.dormant && !opts.lazy) {
       const start = lazyStarters.get(registry)?.get(existing.id)
       if (start) {
@@ -104,7 +109,7 @@ export async function trackRemoteTask(
   const id = opts.id ?? newTaskId()
 
   if (!opts.lazy) {
-    const created = await createBackgroundTask({ id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title, until: opts.until })
+    const created = await createBackgroundTask({ id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title, until: opts.until, link: opts.link })
     if (!created.ok) return undefined
   }
 
@@ -112,7 +117,7 @@ export async function trackRemoteTask(
   const api = createApiTaskClient()
   const ensure = async (until?: string) => {
     if (created) return
-    const res = await createBackgroundTask({ id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title, until })
+    const res = await createBackgroundTask({ id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title, until, link: opts.link })
     if (!res.ok) throw new Error(res.error ?? 'could not start tracking the task')
     created = true
   }
@@ -141,6 +146,7 @@ export async function trackRemoteTask(
     apiTracked: true,
     notify: !opts.lazy,
     dormant: opts.lazy,
+    link: opts.link,
   })
   return { task_id: entry.id, status: 'running', output_file: registry.displayPath(entry.outputFile) }
 }

@@ -1390,7 +1390,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       }
       // Created before dispatch, so a fast reply cannot finish ahead of its task.
       const tasks = body.trackReplies === true && typeof body.sessionId === 'string' && !result.duplicate
-        ? await trackedReplies(auth.workspaceId, body.sessionId, result)
+        ? await trackedReplies(auth.workspaceId, body.sessionId, result, { conversationId: conversation.id, threadRootId: rootId })
         : []
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
       return c.json({
@@ -1409,12 +1409,21 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
   })
 
   /** Background tasks for the agents a post hands work to, so the poster can wait for their replies. */
-  async function trackedReplies(workspaceId: string, chatSessionId: string, result: any) {
+  async function trackedReplies(
+    workspaceId: string,
+    chatSessionId: string,
+    result: any,
+    where: { conversationId: string; threadRootId: string },
+  ) {
     try {
       const targets = await agentPostTargets(result)
       if (!targets.length) return []
       const agents = await Promise.all(targets.map(async (t) => ({ projectId: t.projectId, name: await agentDisplayName(workspaceId, t.projectId) })))
-      return await createReplyTasks(chatSessionId, result.row.id, agents)
+      return await createReplyTasks(chatSessionId, result.row.id, agents, {
+        conversationId: where.conversationId,
+        threadRootId: where.threadRootId,
+        workspaceId,
+      })
     } catch (err) {
       console.warn('[AgentChannels] reply tracking failed:', (err as Error).message)
       return []
