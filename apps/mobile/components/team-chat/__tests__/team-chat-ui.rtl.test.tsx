@@ -865,6 +865,41 @@ describe('MessageList unread line', () => {
   })
 })
 
+describe('MessageList day dividers', () => {
+  const timeline = (messages: any[]) => ({ messages, streaming: {}, hasMoreOlder: false }) as any
+  const at = (day: number, hour: number, minute: number) => new Date(2026, 9, day, hour, minute).toISOString()
+  /** The divider that shares a cell with the message carrying this text. */
+  const dividerAbove = (text: string) =>
+    shims('day-divider').find((d) => d.parentElement?.textContent?.includes(text))
+
+  const list = () => (
+    <MessageList
+      state={timeline([
+        message({ id: 'a', seq: 1, text: 'alpha', createdAt: at(5, 23, 56) }),
+        message({ id: 'b', seq: 2, text: 'bravo', createdAt: at(5, 23, 57) }),
+        message({ id: 'c', seq: 3, text: 'charlie', createdAt: at(6, 0, 0) }),
+      ])}
+      loading={false} me="u-me" names={names} canManage={false} {...handlers()} />
+  )
+
+  test('a divider opens each day, above the first message sent that day', () => {
+    render(list())
+    expect(shims('day-divider')).toHaveLength(2)
+    // Midnight starts a new day; a message a minute after an earlier same-day one does not.
+    expect(dividerAbove('charlie')).toBeTruthy()
+    expect(dividerAbove('bravo')).toBeUndefined()
+    expect(dividerAbove('alpha')).toBeTruthy()
+  })
+
+  test('a new day breaks the author grouping, so the header repeats', () => {
+    render(list())
+    // "bravo" is grouped under "alpha" (a minute apart, same author) and shows no
+    // name; "charlie" is only three minutes later but a day has turned over, so it
+    // must carry its own header rather than hanging under the previous day.
+    expect(screen.getAllByText('Ana Lopez')).toHaveLength(2)
+  })
+})
+
 describe('agent message kinds', () => {
   const agentMsg = (id: string, seq: number, text: string, blocks: unknown, extra: Record<string, unknown> = {}) =>
     message({

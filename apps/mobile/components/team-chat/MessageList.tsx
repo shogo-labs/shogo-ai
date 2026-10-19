@@ -5,9 +5,11 @@ import { ActivityIndicator, FlatList, Platform, Pressable, Text, View, type Nati
 import { ArrowDown, ArrowUp, X } from 'lucide-react-native'
 import type { ChatMessage } from '../../lib/team-chat-api'
 import { firstUnreadIndex, startsGroup, type MentionNames, type TimelineState } from '../../lib/team-chat-state'
+import { dayKey, formatDayDivider } from '../../lib/team-chat-time'
 import { foldStatusRuns, type TimelineItem } from '../../lib/team-chat-kinds'
 import { MessageRow, type MessageRowProps } from './MessageRow'
 import { StatusRunRow } from './AgentStatus'
+import { DayDivider } from './DayDivider'
 
 type RowHandlers = Omit<MessageRowProps, 'message' | 'grouped' | 'me' | 'names' | 'streaming' | 'canManage' | 'inThread' | 'highlighted'>
 
@@ -38,7 +40,11 @@ export interface MessageListProps extends RowHandlers {
   insets?: { top: number; bottom: number }
 }
 
-type Row = TimelineItem & { grouped: boolean }
+type Row = TimelineItem & {
+  grouped: boolean
+  /** First instant of the day this row opens, or null if it doesn't open one. */
+  dayIso: string | null
+}
 
 const JUMP_OFFSET = 800
 const AT_LATEST_OFFSET = 40
@@ -53,7 +59,17 @@ export function MessageList({
 }: MessageListProps) {
   const rows = useMemo(() => {
     const items = foldStatusRuns(state.messages)
-    const out: Row[] = items.map((item, i) => ({ ...item, grouped: !startsGroup(items[i - 1]?.message, item.message) }))
+    const out: Row[] = items.map((item, i) => {
+      // A folded run is dated by its first message, not its latest.
+      const first = item.folded[0] ?? item.message
+      const older = items[i - 1]
+      const startsDay = !older || dayKey(older.message.createdAt) !== dayKey(first.createdAt)
+      return {
+        ...item,
+        grouped: !startsGroup(older?.message, item.message),
+        dayIso: startsDay ? first.createdAt : null,
+      }
+    })
     return out.reverse()
   }, [state.messages])
   const unreadIdx = useMemo(
@@ -134,12 +150,13 @@ export function MessageList({
     return out as RowHandlers
   }, [shape])
   const renderItem = useCallback(({ item }: { item: Row }) => {
+    const dayIso = item.dayIso
     const row = item.folded.length ? (
       <StatusRunRow latest={item.message} folded={item.folded} onOpenThread={inThread ? undefined : rowProps.onReply} />
     ) : (
       <MessageRow
         message={item.message}
-        grouped={item.grouped && item.message.id !== firstUnreadId}
+        grouped={item.grouped && !dayIso && item.message.id !== firstUnreadId}
         me={me}
         names={names}
         streaming={state.streaming[item.message.id]}
@@ -149,14 +166,20 @@ export function MessageList({
         {...rowProps}
       />
     )
-    if (item.message.id !== firstUnreadId) return row
-    return (
+    const body = item.message.id !== firstUnreadId ? row : (
       <View>
         <View className="flex-row items-center gap-2 px-4 pt-2" testID="new-messages-line" accessibilityLabel="New messages">
           <View className="h-px flex-1 bg-red-500/60" />
           <Text className="text-[11px] font-semibold text-red-500">New</Text>
         </View>
         {row}
+      </View>
+    )
+    if (!dayIso) return body
+    return (
+      <View>
+        <DayDivider label={formatDayDivider(dayIso)} />
+        {body}
       </View>
     )
   }, [me, names, state.streaming, canManage, inThread, rowProps, firstUnreadId, highlightId])
