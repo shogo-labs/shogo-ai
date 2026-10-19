@@ -9,6 +9,7 @@
  *   <!here> <!channel> everyone active / everyone in the conversation
  *   <#c:CONVERSATION_ID> a channel reference
  *   <@g:GROUP_ID>      a user group (@team); expands to its members
+ *   <@c:CHAT_ID>       another chat (the message is handed to it, SHO-52)
  *
  * Clients render tokens as chips; the server resolves them to names when text
  * leaves the app (agent prompts, notifications, Slack).
@@ -20,13 +21,30 @@ export type ParsedMention =
   | { targetType: 'here' }
   | { targetType: 'channel' }
   | { targetType: 'group'; groupId: string }
+  | { targetType: 'chat'; chatId: string }
 
 export interface AgentTarget {
   projectId: string | null
 }
 
-const TOKEN_RE = /<@u:([A-Za-z0-9_-]+)>|<@a:ws>|<@a:p:([A-Za-z0-9_-]+)>|<!(here|channel)>|<@g:([A-Za-z0-9_-]+)>/g
-const ANY_TOKEN_RE = /<@u:([A-Za-z0-9_-]+)>|<@a:ws>|<@a:p:([A-Za-z0-9_-]+)>|<!(here|channel)>|<#c:([A-Za-z0-9_-]+)>|<@g:([A-Za-z0-9_-]+)>/g
+const TOKEN_RE = /<@u:([A-Za-z0-9_-]+)>|<@a:ws>|<@a:p:([A-Za-z0-9_-]+)>|<!(here|channel)>|<@g:([A-Za-z0-9_-]+)>|<@c:([A-Za-z0-9_-]+)>/g
+const ANY_TOKEN_RE = /<@u:([A-Za-z0-9_-]+)>|<@a:ws>|<@a:p:([A-Za-z0-9_-]+)>|<!(here|channel)>|<#c:([A-Za-z0-9_-]+)>|<@g:([A-Za-z0-9_-]+)>|<@c:([A-Za-z0-9_-]+)>/g
+
+/** The `<@c:ID>` token that addresses another chat. */
+export function chatMentionToken(chatSessionId: string): string {
+  return `<@c:${chatSessionId}>`
+}
+
+/** Chat ids a message addresses, in first-seen order, deduped. */
+export function mentionedChatIds(text: string): string[] {
+  const ids: string[] = []
+  for (const match of text.matchAll(ANY_TOKEN_RE)) {
+    const chatId = match[6]
+    if (chatId && !ids.includes(chatId)) ids.push(chatId)
+  }
+  return ids
+}
+
 
 export function userMentionToken(userId: string): string {
   return `<@u:${userId}>`
@@ -48,10 +66,11 @@ export function parseMentions(text: string): ParsedMention[] {
   const seen = new Set<string>()
   const result: ParsedMention[] = []
   for (const match of text.matchAll(TOKEN_RE)) {
-    const [token, userId, projectId, broadcast, groupId] = match
+    const [token, userId, projectId, broadcast, groupId, chatId] = match
     let mention: ParsedMention
     if (userId) mention = { targetType: 'user', userId }
     else if (groupId) mention = { targetType: 'group', groupId }
+    else if (chatId) mention = { targetType: 'chat', chatId }
     else if (projectId) mention = { targetType: 'agent', projectId }
     else if (broadcast === 'here' || broadcast === 'channel') mention = { targetType: broadcast }
     else if (token === '<@a:ws>') mention = { targetType: 'agent', projectId: null }
@@ -75,14 +94,16 @@ export interface MentionNames {
   projects?: Map<string, string>
   conversations?: Map<string, string>
   groups?: Map<string, string>
+  chats?: Map<string, string>
   workspaceAgentName?: string
 }
 
 /** Replace tokens with readable `@Name` / `#channel` text. */
 export function renderMentionsAsText(text: string, names: MentionNames = {}): string {
-  return text.replace(ANY_TOKEN_RE, (token, userId, projectId, broadcast, conversationId, groupId) => {
+  return text.replace(ANY_TOKEN_RE, (token, userId, projectId, broadcast, conversationId, groupId, chatId) => {
     if (userId) return `@${names.users?.get(userId) ?? 'someone'}`
     if (groupId) return `@${names.groups?.get(groupId) ?? 'group'}`
+    if (chatId) return `@${names.chats?.get(chatId) ?? 'chat'}`
     if (projectId) return `@${names.projects?.get(projectId) ?? 'agent'}`
     if (broadcast) return `@${broadcast}`
     if (conversationId) return `#${names.conversations?.get(conversationId) ?? 'channel'}`
@@ -97,20 +118,29 @@ export function collectMentionIds(texts: string[]): {
   projectIds: string[]
   conversationIds: string[]
   groupIds: string[]
+  chatIds: string[]
 } {
   const userIds = new Set<string>()
   const projectIds = new Set<string>()
   const conversationIds = new Set<string>()
   const groupIds = new Set<string>()
+  const chatIds = new Set<string>()
   for (const text of texts) {
-    for (const [, userId, projectId, , conversationId, groupId] of text.matchAll(ANY_TOKEN_RE)) {
+    for (const [, userId, projectId, , conversationId, groupId, chatId] of text.matchAll(ANY_TOKEN_RE)) {
       if (userId) userIds.add(userId)
       if (projectId) projectIds.add(projectId)
       if (conversationId) conversationIds.add(conversationId)
       if (groupId) groupIds.add(groupId)
+      if (chatId) chatIds.add(chatId)
     }
   }
-  return { userIds: [...userIds], projectIds: [...projectIds], conversationIds: [...conversationIds], groupIds: [...groupIds] }
+  return {
+    userIds: [...userIds],
+    projectIds: [...projectIds],
+    conversationIds: [...conversationIds],
+    groupIds: [...groupIds],
+    chatIds: [...chatIds],
+  }
 }
 
 export interface MentionDirectoryEntry {
@@ -181,7 +211,7 @@ export function resolveFriendlyMentionsWith(text: string, lookup: Map<string, st
   return result + resolveSegment(text.slice(last))
 }
 
-const COLLAPSIBLE_TOKEN = '<(?:@[uag]:[A-Za-z0-9_:-]+|@a:ws)>'
+const COLLAPSIBLE_TOKEN = '<(?:@[uagc]:[A-Za-z0-9_:-]+|@a:ws)>'
 const REPEATED_TOKEN_RE = new RegExp(`(${COLLAPSIBLE_TOKEN})\\s*\\(\\s*\\1\\s*\\)`, 'g')
 const TOKEN_THEN_NAME_RE = new RegExp(`(${COLLAPSIBLE_TOKEN})\\s*\\(([^()<>\\n]{1,80})\\)`, 'g')
 
@@ -217,17 +247,19 @@ export async function groupNames(db: any, workspaceId: string, groupIds: string[
  */
 export async function loadNamesForTexts(db: any, workspaceId: string, texts: string[]): Promise<MentionNames> {
   const ids = collectMentionIds(texts)
-  const [users, projects, conversations, groups] = await Promise.all([
+  const [users, projects, conversations, groups, chats] = await Promise.all([
     ids.userIds.length ? db.user.findMany({ where: { id: { in: ids.userIds } }, select: { id: true, name: true, email: true } }) : [],
     ids.projectIds.length ? db.project.findMany({ where: { id: { in: ids.projectIds } }, select: { id: true, name: true } }) : [],
     ids.conversationIds.length ? db.conversation.findMany({ where: { id: { in: ids.conversationIds } }, select: { id: true, name: true } }) : [],
     groupNames(db, workspaceId, ids.groupIds),
+    ids.chatIds.length ? db.chatSession.findMany({ where: { id: { in: ids.chatIds } }, select: { id: true, name: true, inferredName: true } }) : [],
   ])
   return {
     users: new Map<string, string>(users.map((u: any) => [u.id, u.name || u.email])),
     projects: new Map<string, string>(projects.map((p: any) => [p.id, p.name])),
     conversations: new Map<string, string>(conversations.map((c: any) => [c.id, c.name ?? 'channel'])),
     groups,
+    chats: new Map<string, string>(chats.map((c: any) => [c.id, c.name?.trim() || c.inferredName || `chat ${String(c.id).slice(0, 8)}`])),
   }
 }
 

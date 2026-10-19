@@ -64,6 +64,11 @@ import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session-runtime'
 import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from '../lib/chat-references'
 import {
+  chatHandoffText,
+  deliverChatMentions,
+  isChatHandoff,
+} from '../services/chat-mention-delivery.service'
+import {
   attachProjectToProject,
   syncPinnedSessionAttachments,
 } from '../services/project-attachment.service'
@@ -785,7 +790,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       const historyChanged = await enrichChatReferences(
         parsedBody,
         auth.userId,
-        anchorProjectId,
         workspaceId,
       )
       if (anchorProjectId && projectRefs.attachProjectIds.length > 0) {
@@ -816,6 +820,27 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         }
       }
       if (wsChanged || projectRefs.changed || historyChanged) body = JSON.stringify(parsedBody)
+    }
+
+    // A `<@c:CHAT_ID>` token addresses another chat (SHO-52): the message is
+    // delivered there with a one-line origin and that chat's turn starts —
+    // including when it lives in another workspace, because the queue
+    // dispatches against the target session's own runtime. A message that
+    // arrived as a handoff never fans out again.
+    if (auth.userId && !isChatHandoff(parsedBody)) {
+      const handoffText = chatHandoffText(parsedBody)
+      if (handoffText.includes('<@c:')) {
+        try {
+          await deliverChatMentions({
+            text: handoffText,
+            actingUserId: auth.userId,
+            sourceSessionId: sessionId,
+            references: parsedBody?.references,
+          })
+        } catch (err: any) {
+          console.warn('[WorkspaceChat] Chat handoff failed:', err?.message ?? err)
+        }
+      }
     }
 
     // Billing anchor: the AI proxy accumulates usage keyed by projectId, and

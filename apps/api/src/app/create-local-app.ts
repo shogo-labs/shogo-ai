@@ -53,6 +53,7 @@ import { localRemoteHostsRoutes } from '../routes/local-remote-hosts'
 import { localLogsRoutes } from '../routes/local-logs'
 import { meetingRoutes } from '../routes/meetings'
 import { historyRoutes } from '../routes/history'
+import { chatMentionRoutes } from '../routes/chat-mentions'
 import { scopedAnalyticsRoutes } from '../routes/scoped-analytics'
 import { costAnalyticsRoutes } from '../routes/cost-analytics'
 import { localSystemRoutes } from '../routes/local-system'
@@ -164,6 +165,7 @@ export function createLocalApp(): LocalAppBundle {
   })
   app.route('/api', createAgentTaskRoutes({ runtimeManager }))
   app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
+  app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
   // Usage and Cost Optimizer on the desktop. server.ts mounts these for cloud
   // only; without these two lines every local analytics call 404s.
   app.route('/api', scopedAnalyticsRoutes())

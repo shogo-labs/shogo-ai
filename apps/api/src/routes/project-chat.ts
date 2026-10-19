@@ -34,6 +34,11 @@ import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession, setQualitySignals, recordTurnUsage } from "../lib/proxy-billing-session-runtime"
 import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from "../lib/chat-references"
+import {
+  chatHandoffText,
+  deliverChatMentions,
+  isChatHandoff,
+} from "../services/chat-mention-delivery.service"
 import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
@@ -1427,7 +1432,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         const historyChanged = await enrichChatReferences(
           parsedBody,
           verifiedUserId,
-          projectId,
           project.workspaceId,
         )
         if (wsChanged || projectRefs.changed || historyChanged) {
@@ -1480,7 +1484,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         c.req.header('X-Client-Turn-Id') ||
         (typeof parsedBody?.clientTurnId === 'string' ? parsedBody.clientTurnId : null)
 
-      if (clientTurnId && isRecentClientTurn(incomingChatSessionId, clientTurnId)) {
+      const isRetriedTurn = Boolean(
+        clientTurnId && isRecentClientTurn(incomingChatSessionId, clientTurnId),
+      )
+
+      if (isRetriedTurn) {
         console.log(
           `[ProjectChat] X-Client-Turn-Id ${clientTurnId} matches a recent turn for session ` +
             `${incomingChatSessionId} — attaching to the existing buffer instead of starting a new turn`,
@@ -1527,6 +1535,32 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       if (clientTurnId) {
         recordClientTurn(incomingChatSessionId, clientTurnId)
       }
+
+      // A `<@c:CHAT_ID>` in the message addresses another chat (SHO-52): the
+      // message is delivered there with a one-line origin and that chat's turn
+      // starts. A message that arrived as a handoff never fans out again.
+      //
+      // This runs *after* the idempotency gate on purpose: the offline send
+      // queue re-POSTs a send that may already have landed, and delivering
+      // before the gate would enqueue the same handoff twice. `isRetriedTurn`
+      // is recorded before the delivery, so a retry that arrives while the
+      // handoff is still being written also skips it.
+      if (!isRetriedTurn && verifiedUserId && !isChatHandoff(parsedBody)) {
+        const handoffText = chatHandoffText(parsedBody)
+        if (handoffText.includes('<@c:')) {
+          try {
+            await deliverChatMentions({
+              text: handoffText,
+              actingUserId: verifiedUserId,
+              sourceSessionId: incomingChatSessionId,
+              references: parsedBody?.references,
+            })
+          } catch (err: any) {
+            console.warn('[ProjectChat] Chat handoff failed:', err?.message ?? err)
+          }
+        }
+      }
+
       let activityTurnId: string | null = null
 
       // Open a billing session so the AI proxy accumulates tokens across

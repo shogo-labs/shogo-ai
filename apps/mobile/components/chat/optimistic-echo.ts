@@ -58,6 +58,10 @@ export function buildOptimisticUserMessage(
     id,
     role: "user",
     parts,
+    // The send time, so time-windowed reads anchored on this bubble have
+    // something to anchor to before the server's row arrives — the chat tag's
+    // delivery state (`since`) is the one that goes blank without it.
+    createdAt: Date.now(),
   } as unknown as UIMessage
 }
 

@@ -26,8 +26,10 @@ describe('buildConcurrentChatsPrompt', () => {
     ])!
 
     expect(text).toContain('## Other chats in this workspace')
-    expect(text).toContain('- "Busy chat" — turn running now')
-    expect(text).toContain('- "Idle chat" — idle 4m')
+    expect(text).toContain('- "Busy chat" — <@c:b> — turn running now')
+    expect(text).toContain('- "Idle chat" — <@c:a> — idle 4m')
+    // every row carries the token the chat_handoff tool and a message tag use
+    expect(text).toContain('chat_handoff')
     // running-first ordering
     expect(text.indexOf('Busy chat')).toBeLessThan(text.indexOf('Idle chat'))
   })

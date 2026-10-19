@@ -194,6 +194,7 @@ import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES } from './image-size-guar
 import { injectCommitTrailer } from './git-attribution'
 import type { TeamManager } from './team-manager'
 import type { TeammateLoopHandle } from './teammate-loop'
+import { createChatHandoffTool } from './chat-handoff-tool'
 
 export interface ToolContext {
   workspaceDir: string
@@ -8870,6 +8871,9 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   // BETA: per-chat git worktrees — cross-chat awareness tool
   tools.push(createWorktreeListTool(ctx))
+
+  // Hand work to another chat (any workspace the person can open).
+  tools.push(createChatHandoffTool(ctx))
 
   // Project lifecycle: compose multi-project systems (project-tools.ts).
   // Creating/attaching/calling projects is a `project`-category mutation —

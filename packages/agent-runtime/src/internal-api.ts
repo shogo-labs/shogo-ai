@@ -1156,6 +1156,27 @@ export async function agentBoardsRequest<T = any>(
   })
 }
 
+export interface AgentChatHandoffInput {
+  chat: string
+  message: string
+  sourceChatId?: string
+}
+
+/**
+ * Deliver a message into another chat as the requester (the `chat_handoff`
+ * tool). The API resolves the target chat against that person's access; the
+ * receiving chat's own runtime starts the turn.
+ */
+export async function deliverAgentChatHandoff(
+  workspaceId: string,
+  input: AgentChatHandoffInput,
+): Promise<CheckpointCallResult<{ delivered?: { id: string; title: string; started: boolean } }>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/chat-handoff`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
 export interface AgentUploadedFile {
   id: string
   name: string

@@ -31,6 +31,16 @@ describe("buildOptimisticUserMessage", () => {
     expect(message.parts).toEqual([{ type: "text", text: "hello" }] as any)
   })
 
+  test("carries the send time, so time-windowed reads have an anchor", () => {
+    // Chat tags read their delivery state from this bubble's `createdAt`
+    // (ChatPanel passes it as `since`); without it a just-sent tag has no
+    // window and shows no state at all until the server's row lands.
+    const before = Date.now()
+    const message = buildOptimisticUserMessage(echo("hello", null)) as any
+    expect(typeof message.createdAt).toBe("number")
+    expect(message.createdAt).toBeGreaterThanOrEqual(before)
+  })
+
   test("carries attachments as file parts", () => {
     const message = buildOptimisticUserMessage({
       sessionId: "s1",

@@ -25,6 +25,7 @@ import { extractTextContent } from "@shogo/shared-app/chat"
 import { MarkdownText } from "../MarkdownText"
 import { analyzeContent } from "../long-text-utils"
 import { LongTextPreviewCard } from "../LongTextPreviewCard"
+import { ChatMentionText, chatMentionSince } from "../ChatMentionChip"
 import { FileViewerModal } from "../FileViewerModal"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { VideoPreviewModal } from "../VideoPreviewModal"
@@ -482,7 +483,10 @@ export function MessageContent({
       isLongText ? (
         <LongTextPreviewCard text={content} title="Your Message" />
       ) : (
-        <Text
+        <ChatMentionText
+          text={content}
+          since={chatMentionSince(message as any)}
+          inverted={userBubble}
           style={
             usesMobileChatTypography
               ? { fontSize: 16, lineHeight: 24 }
@@ -498,9 +502,7 @@ export function MessageContent({
                 : "text-sm leading-5 text-foreground"
           }
           selectable={!userBubble}
-        >
-          {content}
-        </Text>
+        />
       )
     ) : null
 

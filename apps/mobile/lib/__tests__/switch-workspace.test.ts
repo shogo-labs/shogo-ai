@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { Platform } from 'react-native'
 import {
   homePathForWorkspaceKind,
+  adoptChatWorkspace,
   openInWorkspace,
   reloadAfterWorkspaceSwitch,
   scheduleWorkspaceSwitch,
@@ -88,6 +89,41 @@ describe('reloadAfterWorkspaceSwitch', () => {
     unsubscribe()
     reloadAfterWorkspaceSwitch()
     expect(calls).toBe(1)
+  })
+})
+
+describe('adoptChatWorkspace', () => {
+  test('switches to the workspace that owns the chat and reloads projects', () => {
+    let cleared = 0
+    const loaded: string[] = []
+    const projects = {
+      clear: () => {
+        cleared += 1
+      },
+      loadAll: async ({ workspaceId }: { workspaceId: string }) => {
+        loaded.push(workspaceId)
+      },
+    }
+
+    expect(adoptChatWorkspace('ws-team', 'ws-personal', projects)).toBe(true)
+    expect(getActiveWorkspaceId()).toBe('ws-team')
+    expect(cleared).toBe(1)
+    expect(loaded).toEqual(['ws-team'])
+  })
+
+  test('leaves the workspace alone when the chat is already in it', () => {
+    let cleared = 0
+    const projects = {
+      clear: () => {
+        cleared += 1
+      },
+      loadAll: async () => {},
+    }
+
+    expect(adoptChatWorkspace('ws-personal', 'ws-personal', projects)).toBe(false)
+    expect(adoptChatWorkspace(undefined, 'ws-personal', projects)).toBe(false)
+    expect(getActiveWorkspaceId()).toBeNull()
+    expect(cleared).toBe(0)
   })
 })
 

@@ -19,13 +19,14 @@ import {
   useProjectCollection,
   useWorkspaceCollection,
 } from "../../contexts/domain"
-import { openInWorkspace } from "../../lib/switch-workspace"
+import { openInWorkspace, adoptChatWorkspace } from "../../lib/switch-workspace"
 import { pickTeamWorkspace } from "../../lib/team-workspace"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
 import { chatSessionEvents } from "../../lib/chat-session-events"
+import { chatMentionMetaFor } from "../../lib/chat-mention-meta"
 import { agentSessionSource } from "../../lib/root-destination"
 import { ensureLandingSession, LANDING_SESSION_NAME } from "../../lib/landing-session"
 import { ChatPanel } from "../chat/ChatPanel"
@@ -131,6 +132,9 @@ export const WorkspaceAgentChatScreen = observer(
     )
     const [scopeError, setScopeError] = useState<string | null>(null)
     const loadVersion = useRef(0)
+    // The `?chatSessionId=` whose owning workspace this screen already adopted,
+    // so a re-run of the load does not switch (or reload projects) twice.
+    const adoptedChat = useRef<string | null>(null)
     // The empty chat the landing opens. Single-flight per workspace so a
     // re-running load (a new `http` identity, a re-render) cannot mint a
     // second empty session; the session itself is reused across cold starts
@@ -188,6 +192,19 @@ export const WorkspaceAgentChatScreen = observer(
           // experience: they can disagree for a frame during a switch.
           kind: workspace.kind,
         })
+        // `?chatSessionId=` comes from a chat chip, which can point at a chat
+        // in another workspace. The session's workspace, not the URL, decides:
+        // adopt it here — after boot, with the fact in hand — and return, so
+        // this load re-runs against the right workspace instead of opening a
+        // chat the server would refuse to take a send for.
+        if (sessionSource === "url" && initialSessionId && adoptedChat.current !== initialSessionId) {
+          const owner = await chatMentionMetaFor(initialSessionId)
+          if (version !== loadVersion.current) return
+          if (adoptChatWorkspace(owner?.workspaceId, workspace.id, projects)) {
+            adoptedChat.current = initialSessionId
+            return
+          }
+        }
         const openLandingSession = () => {
           const cached = landingSession.current
           if (cached && cached.workspaceId === workspace.id) {
@@ -228,7 +245,7 @@ export const WorkspaceAgentChatScreen = observer(
             : "Could not load Workspace Agent Chat",
         )
       }
-    }, [http, workspace?.id, workspace?.kind, initialSessionId, startNewSession])
+    }, [http, workspace?.id, workspace?.kind, initialSessionId, startNewSession, projects])
 
     useEffect(() => {
       void loadWorkspaceChat()

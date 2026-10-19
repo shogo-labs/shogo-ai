@@ -69,11 +69,19 @@ export function buildConcurrentChatsPrompt(
 
   const lines: string[] = ['## Other chats in this workspace', 'These chats are open in this same workspace right now:']
   for (const chat of shown) {
-    lines.push(`- "${chat.label}" — ${chat.running ? 'turn running now' : idleLabel(chat.idleSeconds)}`)
+    lines.push(
+      `- "${chat.label}" — <@c:${chat.id}> — ${chat.running ? 'turn running now' : idleLabel(chat.idleSeconds)}`,
+    )
   }
   if (hidden > 0) lines.push(`(and ${hidden} more)`)
 
   lines.push('')
+  lines.push(
+    '- To hand work to one of them, call `chat_handoff` with that chat id (or write `<@c:CHAT_ID>` in a message the person sends). The message arrives there with a one-line origin and that chat\'s agent starts its turn; nothing is posted back here automatically.',
+  )
+  lines.push(
+    '- A `<@c:CHAT_ID>` the person already sent has been delivered to that chat — do not re-send it with `chat_handoff`.',
+  )
   if (opts.isolatedEdits) {
     lines.push('- They share one dev database, one preview/dev server and its ports with you; their commands land while you work.')
   } else {

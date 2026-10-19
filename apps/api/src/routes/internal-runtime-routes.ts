@@ -68,6 +68,8 @@ import {
   type RequesterTicket,
 } from '../lib/requester-ticket'
 import { signResumeToken } from '../services/integration-credentials/resume'
+import { resolveChatByRef } from '../lib/chat-mentionables'
+import { handOffToChat } from '../services/chat-mention-delivery.service'
 import { waitForAgentCall } from '../lib/agent-call-store'
 import { keepAliveJson, KEEPALIVE_HEADER, wantsKeepAlive } from '../lib/keepalive-json'
 
@@ -703,6 +705,44 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       },
     }),
   )
+
+  /**
+   * `chat_handoff`: deliver a message into another chat and start its turn,
+   * acting as the person whose turn this is. The person comes from the signed
+   * requester ticket (never from the body), and the target chat must be one
+   * they can open — the same rule the composer picker follows.
+   */
+  app.post('/workspaces/:workspaceId/chat-handoff', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const chat = typeof body?.chat === 'string' ? body.chat.trim() : ''
+    const message = typeof body?.message === 'string' ? body.message : ''
+    const sourceChatId = typeof body?.sourceChatId === 'string' ? body.sourceChatId : null
+    if (!chat || !message.trim()) {
+      return c.json({ error: { code: 'invalid_body', message: 'chat and message are required' } }, 400)
+    }
+    const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), workspaceId)
+    if (!ticket) {
+      return c.json({ error: { code: 'requester_required', message: 'A signed requester is required for this action' } }, 403)
+    }
+    const target = await resolveChatByRef(ticket.userId, chat)
+    if (!target) {
+      return c.json({ error: { code: 'chat_not_found', message: `No chat "${chat}" the requester can open` } }, 404)
+    }
+    const delivered = await handOffToChat({
+      targetChatId: target.id,
+      text: message,
+      actingUserId: ticket.userId,
+      sourceSessionId: sourceChatId ?? (ticket.origin.kind === 'chat' ? ticket.origin.chatSessionId ?? null : null),
+    })
+    if (!delivered) {
+      return c.json({ error: { code: 'not_delivered', message: 'The chat could not take the message' } }, 409)
+    }
+    return c.json({ delivered })
+  })
 
   // ---------------------------------------------------------------------------
   // Workspace meta-agent membership

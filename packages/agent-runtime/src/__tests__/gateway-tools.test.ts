@@ -456,7 +456,8 @@ describe('gateway-tools', () => {
       // generate_video (registered, then hidden unless videoGenEnabled).
       // The 3D tools add generate_3d_model and edit_3d_model (registered, then
       // hidden unless threeDGenEnabled).
-      expect(createTools(createCtx())).toHaveLength(77)
+      // `chat_handoff` (SHO-52) adds one more: handing a turn to another chat.
+      expect(createTools(createCtx())).toHaveLength(78)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()

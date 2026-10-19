@@ -84,7 +84,7 @@ describe('SHO-8 — concurrent chats in the system prompt (e2e)', () => {
     const prompt = build(gw, 'full', 'chat-a')
 
     expect(prompt).toContain('## Other chats in this workspace')
-    expect(prompt).toContain('- "Rewrite the pricing page" — turn running now')
+    expect(prompt).toContain('- "Rewrite the pricing page" — <@c:chat-b> — turn running now')
     expect(prompt).not.toContain('Fix login redirect')
 
     const boundary = prompt.indexOf('<|CACHE_BOUNDARY|>')
@@ -96,12 +96,12 @@ describe('SHO-8 — concurrent chats in the system prompt (e2e)', () => {
     const swe = new AgentGateway(makeWs('prof-swe', { channels: [], promptProfile: 'swe' }), 'p1') as Gw
     seedChat(swe, 'chat-a', { title: 'Fix login redirect' })
     seedChat(swe, 'chat-b', { title: 'Rewrite the pricing page', running: true })
-    expect(build(swe, 'swe', 'chat-a')).toContain('- "Rewrite the pricing page" — turn running now')
+    expect(build(swe, 'swe', 'chat-a')).toContain('- "Rewrite the pricing page" — <@c:chat-b> — turn running now')
 
     const gen = new AgentGateway(makeWs('prof-gen', { channels: [], promptProfile: 'general' }), 'p1') as Gw
     seedChat(gen, 'chat-a', { title: 'Fix login redirect' })
     seedChat(gen, 'chat-b', { title: 'Rewrite the pricing page', running: true })
-    expect(build(gen, 'general', 'chat-a')).toContain('- "Rewrite the pricing page" — turn running now')
+    expect(build(gen, 'general', 'chat-a')).toContain('- "Rewrite the pricing page" — <@c:chat-b> — turn running now')
   })
 
   test('a chat with the workspace to itself gets an unchanged prompt (no section at all)', () => {
@@ -139,7 +139,7 @@ describe('SHO-8 — concurrent chats in the system prompt (e2e)', () => {
     seedChat(gw, 'chat-recent', { title: 'Waiting on review', idleMs: 90_000 })
 
     const prompt = build(gw, 'full', 'chat-a')
-    expect(prompt).toContain('- "Waiting on review" — idle 2m')
+    expect(prompt).toContain('- "Waiting on review" — <@c:chat-recent> — idle 2m')
     expect(prompt).not.toContain('Abandoned yesterday')
   })
 
@@ -159,7 +159,7 @@ describe('SHO-8 — concurrent chats in the system prompt (e2e)', () => {
     }
 
     const prompt = build(gw, 'full', 'chat-a')
-    expect(prompt).toContain('- "Other 6" — turn running now')
+    expect(prompt).toContain('- "Other 6" — <@c:chat-6> — turn running now')
     expect(prompt).toContain('(and 2 more)')
     expect(prompt).not.toContain('Calling chat')
     expect(prompt.match(/- "Other/g)!.length).toBe(5)

@@ -44,6 +44,10 @@ import {
   NATIVE_PHONE_SHEET_COMPACT_RATIO,
 } from "../../lib/native-phone-layout";
 import { composerColumnStyle } from "../../lib/chat-column";
+import {
+  encodeChatMentionTokens,
+  sanitizeChatMentionLabel,
+} from "../../lib/chat-mention-text";
 import { useIsInsideChatColumn } from "./ChatColumn";
 import {
   Popover,
@@ -299,6 +303,18 @@ export interface ProjectMentionOption {
   name: string;
 }
 
+/** A chat the "@" menu can address, from any workspace the user belongs to. */
+export interface ChatMentionable {
+  id: string;
+  title: string;
+  contextType?: string;
+  projectId?: string | null;
+  projectName?: string | null;
+  workspaceId?: string;
+  workspaceName?: string;
+  lastActiveAt?: string;
+}
+
 /** One selectable row in the "@" menu (files first, then projects). */
 type MentionItem =
   | { kind: "file"; path: string; name: string }
@@ -309,6 +325,8 @@ type MentionItem =
       id: string;
       name: string;
       projectId?: string;
+      projectName?: string;
+      workspaceName?: string;
       result: AgentHistoryResult;
     }
   | {
@@ -531,6 +549,13 @@ export interface ChatInputProps {
     query: string,
     kind?: "chat" | "plan"
   ) => Promise<AgentHistoryResult[]>;
+  /**
+   * Chats the user can tag from the "@" menu, from every workspace they belong
+   * to (server-checked). Unlike `workspaceHistorySearch` these are addresses,
+   * not context: selecting one inserts `<@c:ID>` and the message is handed to
+   * that chat when it is sent.
+   */
+  chatMentionables?: (query: string) => Promise<ChatMentionable[]>;
   ideMode?: boolean;
   ideContext?: IdeContextState;
   ideFileSearch?: (query?: string) => Promise<IdeFileResult[]>;
@@ -632,6 +657,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   projects = [],
   chatSessionId,
   workspaceHistorySearch,
+  chatMentionables,
   ideMode = false,
   ideContext,
   ideFileSearch,
@@ -901,6 +927,9 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   const [historyResults, setHistoryResults] = useState<AgentHistoryResult[]>(
     []
   );
+  const [chatMentionableResults, setChatMentionableResults] = useState<
+    ChatMentionable[]
+  >([]);
   // Per-project cache of the workspace file list, so name matching as the user
   // types is instant and doesn't refetch the tree on every keystroke.
   const treeFilesRef = useRef<{
@@ -1201,6 +1230,28 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     ideMode,
   ]);
 
+  // Chats from every workspace the user belongs to. The server decides what is
+  // openable; this only mirrors it into the menu next to same-workspace history.
+  useEffect(() => {
+    if (!showMentionMenu || ideMode || !chatMentionables) {
+      setChatMentionableResults([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const results = await chatMentionables(mentionQuery.trim());
+        if (!cancelled) setChatMentionableResults(results);
+      } catch {
+        if (!cancelled) setChatMentionableResults([]);
+      }
+    }, 180);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [showMentionMenu, mentionQuery, chatMentionables, ideMode]);
+
   const filteredProjects = useMemo(() => {
     if (ideMode) return [];
     const q = mentionQuery.trim().toLowerCase();
@@ -1215,28 +1266,52 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     return matched.slice(0, MAX_MENTION_PROJECT_RESULTS);
   }, [projects, mentionQuery, ideMode]);
 
-  const historyItems = useMemo<MentionItem[]>(
-    () =>
-      historyResults.map((result) =>
-        result.kind === "chat"
-          ? {
-              kind: "chat",
-              id: result.id,
-              name: result.title,
-              projectId: result.projectId,
-              result,
-            }
-          : {
-              kind: "plan",
-              id: result.id,
-              name: result.title,
-              filename: result.filename || result.id,
-              projectId: result.projectId,
-              result,
-            }
-      ),
-    [historyResults]
-  );
+  const historyItems = useMemo<MentionItem[]>(() => {
+    const fromHistory = historyResults.map((result) =>
+      result.kind === "chat"
+        ? {
+            kind: "chat" as const,
+            id: result.id,
+            name: result.title,
+            projectId: result.projectId,
+            projectName: result.projectName,
+            result,
+          }
+        : {
+            kind: "plan" as const,
+            id: result.id,
+            name: result.title,
+            filename: result.filename || result.id,
+            projectId: result.projectId,
+            result,
+          }
+    );
+    // Cross-workspace chats the history search cannot see. Same-workspace
+    // results win: their transcript is already inlined for context.
+    const seen = new Set(fromHistory.map((item) => item.id));
+    const fromMentionables = chatMentionableResults
+      .filter((chat) => chat.id !== chatSessionId && !seen.has(chat.id))
+      .map((chat) => ({
+        kind: "chat" as const,
+        id: chat.id,
+        name: chat.title,
+        projectId: chat.projectId ?? undefined,
+        projectName: chat.projectName ?? undefined,
+        workspaceName: chat.workspaceName,
+        result: {
+          kind: "chat" as const,
+          id: chat.id,
+          title: chat.title,
+          snippet: "",
+          score: 0,
+          projectId: chat.projectId ?? undefined,
+          projectName: chat.projectName ?? undefined,
+          createdAt: chat.lastActiveAt ?? "",
+          lastActivityAt: chat.lastActiveAt ?? "",
+        },
+      }));
+    return [...fromHistory, ...fromMentionables];
+  }, [historyResults, chatMentionableResults, chatSessionId]);
 
   // Flat, ordered list backing keyboard navigation (files, projects, chats, plans).
   const mentionItems = useMemo<MentionItem[]>(
@@ -1276,7 +1351,10 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         item.kind === "project"
           ? slugifyMention(item.name)
           : item.kind === "chat"
-          ? `chat:${item.id}`
+          ? // A chat is addressed by its title (spaces included): the pill in the
+            // composer reads like the chat, and the wire token is swapped in at
+            // send time so no `@chat:<uuid>` ever reaches a reader.
+            sanitizeChatMentionLabel(item.name)
           : item.kind === "plan"
           ? `plan:${slugifyMention(item.name)}`
           : item.name
@@ -1617,7 +1695,15 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     const fileData = combinedFiles.length > 0 ? combinedFiles : undefined;
     const refData = references.length > 0 ? references : undefined;
 
-    onSubmit(trimmedContent, fileData, currentModelId, refData);
+    // A tagged chat is an address, not decoration: send `<@c:ID>` in place of
+    // its "@Title" label so the message can be delivered there and a reader
+    // never sees an id.
+    onSubmit(
+      encodeChatMentionTokens(trimmedContent, refData),
+      fileData,
+      currentModelId,
+      refData
+    );
     // Drop any still-pending coalesced text-change flush (see
     // `handleChangeText`) so it can't fire AFTER this clear and resurrect
     // text the user already sent.
@@ -2114,14 +2200,28 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                             >
                               {chat.name}
                             </Text>
-                            {chat.result.projectName && (
-                              <Text
-                                className="text-[10px] text-muted-foreground"
-                                numberOfLines={1}
-                              >
-                                {chat.result.projectName}
-                              </Text>
-                            )}
+                            {(() => {
+                              // Which workspace this chat lives in is the one
+                              // thing the id/name cannot tell you — without it a
+                              // duplicate title looks like the same chat twice.
+                              const detail = [
+                                chat.workspaceName,
+                                chat.result.projectName &&
+                                chat.result.projectName !== chat.workspaceName
+                                  ? chat.result.projectName
+                                  : null,
+                              ]
+                                .filter(Boolean)
+                                .join(" · ");
+                              return detail ? (
+                                <Text
+                                  className="text-[10px] text-muted-foreground"
+                                  numberOfLines={1}
+                                >
+                                  {detail}
+                                </Text>
+                              ) : null;
+                            })()}
                           </View>
                         </Pressable>
                       );
