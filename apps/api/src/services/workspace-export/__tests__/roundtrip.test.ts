@@ -107,7 +107,16 @@ function seedWorkspace() {
     { id: 'm1', workspaceId, userId, role: 'owner', isBillingAdmin: true },
     { id: 'm2', workspaceId, userId: 'u-other-instance', role: 'member', isBillingAdmin: false },
   ])
-  seed('Project', [{ id: projectId, workspaceId, name: 'Landing page', slug: 'landing' }])
+  seed('Project', [
+    {
+      id: projectId,
+      workspaceId,
+      name: 'Landing page',
+      slug: 'landing',
+      sitePasswordHash: '$2b$12$hash',
+    },
+  ])
+  seed('InviteLink', [{ id: 'il1', workspaceId, token: 'inv_secret', role: 'member' }])
   seed('ProjectFolder', [{ id: 'pf1', projectId, path: join(projectsBase, projectId), branch: null }])
   seed('AgentConfig', [
     {
@@ -249,7 +258,14 @@ describe('workspace export', () => {
       expect(env).not.toContain('xoxb-real-secret')
 
       const required = decode('credentials-required.json')
-      expect(required.credentials.map((entry: any) => entry.label)).toContain('env.SLACK_BOT_TOKEN')
+      const labels = required.credentials.map((entry: any) => entry.label)
+      expect(labels).toContain('env.SLACK_BOT_TOKEN')
+      // Every blanked column is actionable, not just the ones inside a JSON blob.
+      expect(labels).toContain('GitHubConnection.encryptedToken')
+      expect(labels).toContain('Project.sitePasswordHash')
+      expect(labels).toContain('InviteLink.token')
+      expect(labels).toContain('slack.botToken')
+      expect(labels).toContain('github.pat')
 
       const manifest = decode('manifest.json')
       expect(manifest.options.redacted).toBe(true)
@@ -367,6 +383,35 @@ describe('workspace import', () => {
     )
     expect(existsSync(join(target, importedProject.id, 'src/App.tsx'))).toBe(true)
     expect(existsSync(join(workspaceRootOut, 'import-report.json'))).toBe(true)
+  })
+
+  test('importing as the archived owner does not duplicate or drop their member row', async () => {
+    const bytes = await makeArchive()
+
+    const report = await importWorkspace({
+      archive: bytes,
+      // Same person as the archive's owner: the importer is created as owner
+      // before the loop, so their archived Member row must merge, not collide.
+      requesterId: userId,
+      name: 'Self import',
+      workspacesDirOverride: join(tmp, 'imported-self'),
+      db: database,
+    })
+
+    const members = db
+      .rows('Member')
+      .filter((row) => row.workspaceId === report.workspace.id)
+      .filter((row) => row.userId === userId)
+    expect(members.length).toBe(1)
+    expect(members[0].role).toBe('owner')
+    // Only the archived member with no account here is skipped — never the
+    // requester's own row.
+    expect(
+      report.skippedRows.filter((row) => row.model === 'Member').map((row) => row.id),
+    ).toEqual(['m2'])
+    expect(report.warnings.some((warning) => warning.includes('merged into that owner membership'))).toBe(
+      true,
+    )
   })
 
   test('dry run validates without writing anything', async () => {

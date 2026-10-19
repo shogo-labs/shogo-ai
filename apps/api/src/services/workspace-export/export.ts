@@ -177,7 +177,12 @@ function redactRow(
   for (const column of rules.redact ?? []) {
     if (out[column] != null && out[column] !== '') {
       out[column] = null
-      redactions.push({ model, id: String(row.id ?? ''), column, label: `${model}.${column}` })
+      const id = String(row.id ?? '')
+      redactions.push({ model, id, column, label: `${model}.${column}` })
+      // The manifest entry is for auditors; `credentials-required.json` and the
+      // import UI are what a person acts on, so every blanked column has to be
+      // listed here too — not only the ones inside a JSON blob.
+      credentials.push({ channel: `${model}:${id}`, field: column, label: `${model}.${column}` })
     }
   }
   for (const column of rules.jsonSecrets ?? []) {

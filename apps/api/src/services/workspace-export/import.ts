@@ -347,6 +347,7 @@ export async function importWorkspace(
   if (workspaceOldId) idMap.set(workspaceOldId, newWorkspaceId)
 
   const droppedIds = new Set<string>()
+  const mergedMemberships: Array<{ id: string; email: string; role: string }> = []
   const rewritten = new Map<string, Array<Record<string, any>>>()
   let rowsSkipped = 0
 
@@ -375,6 +376,13 @@ export async function importWorkspace(
       if (model === 'Member') {
         const email = memberEmailById.get(oldId) ?? ''
         const userId = emailToUser.get(email)
+        // The requester is inserted as the new owner before this loop runs, and
+        // `Member` is unique on (userId, workspaceId): replaying their row would
+        // fail with a constraint error on a real database.
+        if (userId && userId === opts.requesterId) {
+          mergedMemberships.push({ id: oldId, email, role: String(row.role ?? 'member') })
+          continue
+        }
         if (!userId) {
           rowsSkipped++
           skippedRows.push({ model, id: oldId, reason: `no account for ${email || 'this member'}` })
@@ -407,6 +415,11 @@ export async function importWorkspace(
     rewritten.set(model, out)
   }
 
+  if (mergedMemberships.length) {
+    warnings.push(
+      `The requester already owns this import, so ${mergedMemberships.length} member row(s) for their own account were merged into that owner membership instead of duplicated.`,
+    )
+  }
   const workspaceName = newWorkspaceName(parsed, opts.name)
   const projectOldIds = (parsed.rows.get('Project') ?? []).map((row) => String(row.id))
   const plannedFiles = Object.keys(parsed.files)

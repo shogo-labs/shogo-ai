@@ -100,8 +100,9 @@ export function workspaceExportRoutes(): Hono {
     if (!principal.userId) {
       return errorResponse(c, 401, 'unauthorized', 'Authentication required')
     }
-    const isOwner =
-      decision.access.workspaceRole === 'owner' || decision.access.workspaceRole === 'admin'
+    // "Owner opt-in" means owner: an admin runs the workspace but is not the
+    // person who answers for everyone else's DMs.
+    const isOwner = decision.access.workspaceRole === 'owner'
     const cap = await workspaceExportCapBytes(workspaceId)
 
     let result
