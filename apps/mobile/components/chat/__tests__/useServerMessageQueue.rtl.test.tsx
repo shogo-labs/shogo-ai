@@ -36,6 +36,12 @@ const collection = observable({
       if (index !== -1) collection.all.splice(index, 1)
     })
   },
+  update: async (id: string, changes: Partial<Row>) => {
+    runInAction(() => {
+      const row = collection.all.find((r) => r.id === id)
+      if (row) Object.assign(row, changes, { updatedAt: Date.now() })
+    })
+  },
   create: async (input: Partial<Row>) => {
     const created: Row = {
       id: `srv-${++serverSeq}`,
@@ -133,23 +139,43 @@ describe("useServerMessageQueue", () => {
     expect(turns).toEqual([{ id: "q2", text: "second" }])
   })
 
-  test("a dispatched head keeps its bubble until the panel can attach it", () => {
+  test("only the dispatched head is pending — a queued row is dock-only", () => {
     reset()
     // A turn is streaming, so the hook holds the dispatch until the stream
-    // closes: the row is already gone from the queue, and the transcript must
-    // not lose the bubble in that gap.
+    // closes. While both rows are still queued nothing belongs to the
+    // transcript; once the server takes q1 it is painted from the dispatch
+    // until the panel attaches, so its bubble never blinks out.
     const view = render(<Probe isStreaming />)
     act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
-    expect(pendingIds).toEqual(["q1", "q2"])
+    expect(pendingIds).toEqual([])
 
     act(() => runInAction(() => { collection.all.splice(0, 1) })) // the server took q1
     expect(turns).toEqual([]) // not attached yet — the previous stream is open
-    expect(pendingIds).toEqual(["q1", "q2"])
+    expect(pendingIds).toEqual(["q1"])
 
     view.rerender(<Probe isStreaming={false} />)
     expect(turns).toEqual([{ id: "q1", text: "first" }])
-    // q1 is the panel's now; the one still queued keeps its bubble.
-    expect(pendingIds).toEqual(["q2"])
+    // q1 is the panel's now; q2 is still queued, so it is still dock-only.
+    expect(pendingIds).toEqual([])
+  })
+
+  test("deleting, editing and reordering queued rows never puts them in the transcript", async () => {
+    reset()
+    render(<Probe isStreaming={false} />)
+    act(() => runInAction(() => {
+      collection.all.push(row("q1", 0, "first"), row("q2", 1, "second"), row("q3", 2, "third"))
+    }))
+    expect(pendingIds).toEqual([])
+
+    await act(async () => { await queueApi!.reorder("q3", "up") })
+    expect(pendingIds).toEqual([])
+
+    await act(async () => { await queueApi!.update("q2", { content: "second, edited" }) })
+    expect(pendingIds).toEqual([])
+
+    await act(async () => { await queueApi!.remove("q1") })
+    expect(pendingIds).toEqual([])
+    expect(turns).toEqual([])
   })
 
   test("a row the user deletes is not a turn starting", async () => {

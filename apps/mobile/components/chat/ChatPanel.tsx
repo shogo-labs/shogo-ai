@@ -3355,18 +3355,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const onScreen = messagesRef.current.some(
         (m) => m.id === queuedUserMessage.id,
       );
-      // Still queued bubbles are painted from the queue rows, not from this
-      // list, so a message already here came from the server's history (or a
-      // previous dispatch). If nothing landed after it, this turn's reply
-      // belongs at the end and attaching directly is right — no reload, so the
-      // messages still queued behind it keep their bubbles. If something did
-      // land after it, the transcript has moved on and history is the truth.
+      // Queued messages are not in this list at all any more — only the dock
+      // shows them — so a message already here came from the server's history
+      // (a reload while its turn was running). If nothing landed after it,
+      // this turn's reply belongs at the end and attaching directly is right;
+      // if something did, the transcript has moved on and history is the truth.
       if (onScreen && !canAttachQueuedTurn(messagesRef.current, queuedUserMessage)) {
         reloadAndAttachLiveTurnRef.current()
         return
       }
-      // The server saved the queued message and started its turn; show the
-      // message before attaching to the reply (see queued-user-message.ts).
+      // The server saved the queued message and started its turn: append it at
+      // the end and attach the reply under it, without reloading history. This
+      // is the normal path — the bubble first appears here, when the turn it
+      // belongs to starts.
       if (!onScreen) {
         setMessages((prev) => appendQueuedUserMessage(prev, queuedUserMessage))
       }
@@ -3721,10 +3722,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [messages.length, pendingInitialMessage])
 
   /**
-   * The transcript plus the bubbles for the rows still waiting on the server.
-   * Derived here (not copied into `messages`) so a deleted or edited queued
-   * message loses its bubble and a history reload cannot drop the ones still
-   * queued (see queued-user-message.ts).
+   * The transcript plus the bubble of a dispatched head the panel has not
+   * attached yet. Only used to tell whether the pre-send echo has been
+   * superseded by the real message — still-queued rows are not in here (they
+   * live in the dock), so queueing clears the echo explicitly.
    */
   const messagesWithQueued = useMemo(
     () => appendQueuedUserMessages(messages, serverQueue.pendingUserMessages),
@@ -6215,13 +6216,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
         references,
         body,
       })
-      // The queued turn is the server's to run, but the bubble is the send's:
-      // waiting for the queue poll to notice the dispatch means the reply
-      // arrives before its own message, and with the previous user bubble
-      // still last, the new reply renders under the old message. The bubble is
-      // painted from the queue row itself (see `displayMessages`), so deleting
-      // or editing the queued message takes it away again; hand back any
-      // stopped snapshot so it lands *below* the stop.
+      // The queued turn is the server's to run: until it takes the row there
+      // is no user message in this session, so the message lives in the dock
+      // only and the caller drops the pre-send echo. When the server
+      // dispatches it, the hook hands over that turn's saved user message and
+      // it appears in the transcript with its reply. Hand back any stopped
+      // snapshot so that reply lands *below* the stop.
       releaseStopSnapshot()
     },
     [
@@ -6278,7 +6278,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       showOptimisticEcho(trimmedContent, files)
 
       const queueMessage = async () => {
-        const queueLocally = () =>
+        // Anything that lands in `displayedQueue` (the dock) must not also sit
+        // in the transcript: a queued message is not a turn yet, and its bubble
+        // appears when the server dispatches it.
+        const queueLocally = () => {
+          clearOptimisticEcho(trimmedContent)
           setMessageQueue((queue) => [
             ...queue,
             {
@@ -6291,6 +6295,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               references,
             },
           ])
+        }
         if (localAgentUrl) {
           queueLocally()
           return
@@ -6302,6 +6307,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             perMsgModel,
             references,
           )
+          clearOptimisticEcho(trimmedContent)
         } catch (error) {
           console.warn(
             "[ChatPanel] Server queue unavailable; retaining a local queued message:",
@@ -6351,6 +6357,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       )
     },
     [
+      clearOptimisticEcho,
       enqueueServerMessage,
       isStreaming,
       localAgentUrl,

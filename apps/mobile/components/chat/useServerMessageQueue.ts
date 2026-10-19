@@ -129,22 +129,21 @@ export function useServerMessageQueue({
   const rows = useMemo(() => liveRows, [rowsSignature])
   const queuedMessages = useMemo(() => rows.map(toQueuedMessage), [rows])
   /**
-   * The queued rows as transcript messages, so the panel can paint their
-   * bubbles from the queue itself. Ids are the ones the server saves them
-   * under, so the bubble and the persisted message are the same turn.
-   */
-  const queuedUserMessages = useMemo(() => rows.map(queuedRowToUserMessage), [rows])
-  /**
-   * Everything the transcript should paint that the server has not saved as a
-   * message yet: the dispatched-but-unattached head first (it was queued before
-   * the rest), then the rows still waiting.
+   * What the transcript should paint that the server has not saved as a
+   * message yet — only the dispatched head that this window has not attached
+   * to. A row still waiting on the queue belongs to the dock alone: it is not
+   * a turn until the server starts one, and painting it early puts a message
+   * in the transcript that a delete or an edit can no longer take back.
+   *
+   * The dispatched head is different: the server saved it and started its
+   * turn, so it is a real message. It is painted from here only for the gap
+   * between dispatch and the panel attaching (the previous stream may still
+   * be closing), so the bubble does not blink out while its row leaves the
+   * queue and its reply arrives.
    */
   const pendingUserMessages = useMemo(
-    () =>
-      pendingUserMessage
-        ? [pendingUserMessage, ...queuedUserMessages]
-        : queuedUserMessages,
-    [pendingUserMessage, queuedUserMessages],
+    () => (pendingUserMessage ? [pendingUserMessage] : []),
+    [pendingUserMessage],
   )
 
   rowsRef.current = rows

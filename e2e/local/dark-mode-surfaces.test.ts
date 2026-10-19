@@ -163,8 +163,10 @@ test.describe("dark mode surfaces", () => {
     )
     await page.goto(`/projects/${projectId}`)
 
-    // The queued message now paints in the transcript as well as the dock, so
-    // the dock row is the scope: a page-wide text lookup matches both.
+    // A queued prompt lives in the dock alone until its turn starts, so there
+    // is exactly one of it on the page — no need to scope the lookup away from
+    // a transcript copy.
+    await expect(page.getByText("queued prompt", { exact: true })).toHaveCount(1)
     const dockRow = page
       .getByLabel("Queued message", { exact: true })
       .filter({ hasText: "queued prompt" })

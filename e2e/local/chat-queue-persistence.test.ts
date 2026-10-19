@@ -147,11 +147,10 @@ function projectComposerInput(page: Page) {
 }
 
 /**
- * A row in the "N Queued" strip. A queued prompt also paints as a transcript
- * bubble (the send owns its bubble), so a page-wide `getByText(prompt)` matches
- * both — assertions have to say which one they mean. `exact: true` matters:
- * without it this also matches the "Delete queued message" / "Move queued
- * message down" buttons.
+ * A row in the "N Queued" strip. A queued prompt lives there and nowhere else
+ * until the server starts its turn, so a page-wide `getByText(prompt)` should
+ * match this row only. `exact: true` matters: without it this also matches the
+ * "Delete queued message" / "Move queued message down" buttons.
  *
  * The shell mounts more than one chat panel (desktop + phone layouts, restored
  * tabs), so several strips can be in the DOM with the same rows: callers use
@@ -305,7 +304,7 @@ function prompts(stamp: string) {
 }
 
 test.describe("server-backed chat queue — local UI", () => {
-  test("keeps a queued prompt after reload and supports reorder/delete/edit", async ({ page }) => {
+  test("a queued prompt is dock-only: reorder, delete, edit and reload never add a bubble", async ({ page }) => {
     const state: QueueMockState = {
       rows: [],
       mockChat: false,
@@ -317,57 +316,62 @@ test.describe("server-backed chat queue — local UI", () => {
     await installQueueMock(page, state)
     await openProject(page, page.request)
     await holdATurnWith(page, state, lead)
+    // Whatever the transcript already shows must not move while the queue is
+    // edited: the dock is the only thing a queued message may touch.
+    const leadIndex = await bubbleIndex(page, lead)
 
     await projectComposerInput(page).fill(alpha)
     await page.keyboard.press("Enter")
     await expect(queuedRow(page, alpha).first()).toBeVisible()
-    // …and it is already a transcript bubble of its own, next to the strip.
-    await expect.poll(() => transcriptCount(page, alpha)).toBe(1)
+    // A message the server has not started a turn for is not in the transcript.
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
     await projectComposerInput(page).fill(beta)
     await page.keyboard.press("Enter")
     await expect(queuedRow(page, beta).first()).toBeVisible()
-    await expect.poll(() => transcriptCount(page, beta)).toBe(1)
+    await expect.poll(() => transcriptCount(page, beta)).toBe(0)
     expect(state.rows).toHaveLength(2)
-    // Two queued messages are two bubbles, in the order they were sent.
-    await expect.poll(() => transcriptOrder(page, alpha, beta)).toBe(true)
+    // Order is a dock property while both are queued.
+    await expect.poll(() => state.rows.map((row) => row.content)).toEqual([alpha, beta])
+    expect(await bubbleIndex(page, lead)).toBe(leadIndex)
 
     await queuedRow(page, alpha).first().getByLabel("Move queued message down").click()
     await expect.poll(() => state.rows.map((row) => row.content)).toEqual([beta, alpha])
-    // The bubbles follow the queue, not the order they were painted in.
-    await expect.poll(() => transcriptOrder(page, beta, alpha)).toBe(true)
+    // Reordering moves the dock rows only — nothing appears in the transcript.
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
+    await expect.poll(() => transcriptCount(page, beta)).toBe(0)
+    expect(await bubbleIndex(page, lead)).toBe(leadIndex)
 
-    // Deleting a queued message takes its bubble with it: nothing is left on
-    // screen for a message that will never be sent.
+    // Deleting a queued message leaves nothing behind anywhere.
     await queuedRow(page, beta).first().getByLabel("Delete queued message").click()
     await expect(queuedRow(page, beta)).toHaveCount(0)
     await expect.poll(() => transcriptCount(page, beta)).toBe(0)
     await expect(queuedRow(page, alpha).first()).toBeVisible()
-    await expect.poll(() => transcriptCount(page, alpha)).toBe(1)
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
+    expect(await bubbleIndex(page, lead)).toBe(leadIndex)
 
-    // Editing pulls it back into the composer; re-sending gives one bubble, not
-    // one for the draft and one for the send.
+    // Editing pulls it back into the composer; re-sending queues it again and
+    // still paints no bubble until its turn starts.
     await queuedRow(page, alpha).first().getByLabel("Edit queued message").click()
     await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
     await expect(projectComposerInput(page)).toHaveValue(alpha)
     await page.keyboard.press("Enter")
     await expect(queuedRow(page, alpha).first()).toBeVisible()
-    await expect.poll(() => transcriptCount(page, alpha)).toBe(1)
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
     expect(state.rows.map((row) => row.content)).toEqual([alpha])
 
     state.releaseChat?.()
     await page.waitForTimeout(300)
     await page.reload()
+    // Reloading with rows still queued restores the dock, not the transcript.
     await expect(queuedRow(page, alpha).first()).toBeVisible()
-    // Part D: a reloaded page shows the queue in the transcript too, and
-    // deleting it there takes the bubble away with the row.
-    await expect.poll(() => transcriptCount(page, alpha)).toBe(1)
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
     await queuedRow(page, alpha).first().getByLabel("Delete queued message").click()
     await expect(queuedRow(page, alpha)).toHaveCount(0)
     await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
     expect(state.rows).toHaveLength(0)
   })
 
-  test("a still-queued bubble survives the dispatch of the message ahead of it", async ({ page }) => {
+  test("a queued message enters the transcript when its turn starts, not before", async ({ page }) => {
     const state: QueueMockState = {
       rows: [],
       mockChat: false,
@@ -378,8 +382,9 @@ test.describe("server-backed chat queue — local UI", () => {
     const { lead, alpha, beta } = prompts(`dispatch-${Date.now().toString(36)}`)
     await installQueueMock(page, state)
     await openProject(page, page.request)
-    // Acceptance criterion for the bug: attaching a dispatch whose bubble is
-    // already on screen must not reload the history.
+    // Acceptance criterion for the bug: attaching a dispatch must not reload
+    // the history, and the bubble must not blink out on its way to the
+    // transcript.
     const historyGets: string[] = []
     page.on("request", (request) => {
       if (request.method() !== "GET") return
@@ -394,8 +399,8 @@ test.describe("server-backed chat queue — local UI", () => {
     await projectComposerInput(page).fill(beta)
     await page.keyboard.press("Enter")
     await expect(queuedRow(page, beta).first()).toBeVisible()
-    await expect.poll(() => transcriptCount(page, alpha)).toBe(1)
-    await expect.poll(() => transcriptCount(page, beta)).toBe(1)
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
+    await expect.poll(() => transcriptCount(page, beta)).toBe(0)
 
     state.releaseChat?.()
     await waitForIdle(page)
@@ -414,19 +419,66 @@ test.describe("server-backed chat queue — local UI", () => {
       )
       .toBe(0)
 
+    // Sample the page across the dispatch: the message must always be visible
+    // somewhere (dock or transcript), never absent from both for a frame.
+    await page.evaluate((needle) => {
+      const w = window as unknown as {
+        __queueSamples: boolean[]
+        __queueSampler: ReturnType<typeof setInterval>
+      }
+      w.__queueSamples = []
+      w.__queueSampler = setInterval(() => {
+        const composer = document.querySelector('[aria-label="Chat message input"]')
+        const composerRoot = composer?.parentElement ?? null
+        const walker = document.createTreeWalker(document.body!, NodeFilter.SHOW_TEXT)
+        let found = false
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!(node.nodeValue ?? "").includes(needle)) continue
+          let inComposer = false
+          for (let el: Element | null = node.parentElement; el; el = el.parentElement) {
+            if (composerRoot && el === composerRoot) {
+              inComposer = true
+              break
+            }
+          }
+          if (!inComposer) {
+            found = true
+            break
+          }
+        }
+        w.__queueSamples.push(found)
+      }, 25)
+    }, alpha)
+
     // The server takes the head of the queue and starts its turn.
     historyGets.length = 0
     state.rows.splice(0, 1)
     expect(state.rows.map((row) => row.content)).toEqual([beta])
     await expect.poll(() => queuedRow(page, alpha).count(), { timeout: 15_000 }).toBe(0)
-    // Alpha's bubble is the turn's own message, so it stays on screen; beta is
-    // still queued, so its bubble must survive the dispatch too, in order.
+    // Alpha's bubble is the turn's own message: it appears, exactly once, with
+    // no history reload to fetch it. Beta is still queued, so it is dock-only.
     await expect
       .poll(() => transcriptCount(page, alpha), { timeout: 15_000 })
       .toBe(1)
-    await expect
-      .poll(() => transcriptCount(page, beta), { timeout: 15_000 })
-      .toBe(1)
+    await expect.poll(() => transcriptCount(page, beta)).toBe(0)
+    expect(historyGets).toEqual([])
+
+    const samples = await page.evaluate(() => {
+      const w = window as unknown as {
+        __queueSamples: boolean[]
+        __queueSampler: ReturnType<typeof setInterval>
+      }
+      clearInterval(w.__queueSampler)
+      return w.__queueSamples
+    })
+    expect(samples.length, "the sampler never ran").toBeGreaterThan(4)
+    expect(samples.filter((visible) => !visible), "the message vanished from the dock and the transcript").toEqual([])
+
+    // Then the second one dispatches too: one bubble each, in order.
+    state.rows.splice(0, 1)
+    await expect.poll(() => queuedRow(page, beta).count(), { timeout: 15_000 }).toBe(0)
+    await expect.poll(() => transcriptCount(page, beta), { timeout: 15_000 }).toBe(1)
+    await expect.poll(() => transcriptCount(page, alpha), { timeout: 15_000 }).toBe(1)
     await expect.poll(() => transcriptOrder(page, alpha, beta)).toBe(true)
     expect(historyGets).toEqual([])
   })

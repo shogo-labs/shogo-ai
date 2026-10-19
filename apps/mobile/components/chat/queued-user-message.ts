@@ -38,13 +38,14 @@ export function appendQueuedUserMessage<T extends UIMessage>(messages: T[], user
 }
 
 /**
- * The bubbles for the messages the server has not saved yet, in send order —
- * still-queued rows and a dispatched head that has not been attached.
+ * Appends a dispatched-but-unattached head's bubble to the transcript.
  *
- * They are derived from the queue, not copied into the transcript: the queue is
- * the only thing that knows whether a message is still going to be sent, so a
- * delete, an edit, a dispatch and a history reload all resolve themselves
- * instead of leaving a bubble behind (or dropping the ones still queued).
+ * Still-queued rows are deliberately *not* part of this: a message that the
+ * server has not started a turn for belongs to the dock alone, so a delete, an
+ * edit or a reload can never leave a bubble behind in the transcript. The
+ * dispatched head is the only pending message here — it is already saved
+ * server-side, and it is painted from here just for the gap before the panel
+ * attaches to its turn.
  */
 export function appendQueuedUserMessages<T extends UIMessage>(
   messages: T[],
