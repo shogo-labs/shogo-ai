@@ -60,6 +60,7 @@ import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
 import { buildCapabilityStatusSection, resolveRuntimeCapabilities } from './capability-status-prompt'
 import { BOARDS_GUIDE, COMPANY_OPS_GUIDE } from './board-tools'
+import { TASK_WAKE_RETRY_MS } from './remote-tasks'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
 import { buildAccountContextPrompt, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
@@ -280,11 +281,11 @@ const AUTO_TIER_CEILING_TTL_MS = 5 * 60 * 1000
 /** Finished tasks arriving this close together wake an idle session once. */
 const TASK_WAKE_COALESCE_MS = 2_000
 /**
- * A wake the API did not accept is retried on these delays. The note stays
- * unreported until a flush succeeds, so a refused notify cannot silently end
- * the session's wake.
+ * A wake the API did not accept is retried on these delays (shared with the
+ * task-create retry, so one table governs both). The note stays unreported
+ * until a flush succeeds, so a refused notify cannot silently end the
+ * session's wake.
  */
-const TASK_WAKE_RETRY_MS = [2_000, 5_000, 15_000, 60_000, 300_000]
 /** How often an idle session polls tasks mirrored from another project's runtime. */
 const REMOTE_TASK_POLL_MS = 10_000
 /** How often a running turn refreshes remote tasks so their results can be injected mid-turn. */

@@ -7,6 +7,7 @@ import { createTools } from '../gateway-tools'
 import { CORE_TOOL_NAMES } from '../capability-profiles'
 import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, createBoardTools, HANDOFF_WATCH_UNTIL, isHandedOff, PROBLEM_TOOL_NAMES } from '../board-tools'
 import { TaskRegistry } from '../task-registry'
+import { __setCreateRetryDelaysForTest } from '../remote-tasks'
 
 function ctx(overrides: Partial<ToolContext> = {}, capabilityProfile?: 'personal' | 'team'): ToolContext {
   return {
@@ -32,17 +33,25 @@ const saved = { api: process.env.SHOGO_API_URL, mode: process.env.WORKSPACE_RUNT
 let calls: Array<{ url: string; method: string; body: any }> = []
 let reply: unknown = {}
 let status = 200
+/** How many task creates the API refuses before accepting them (SHO-35). */
+let taskCreateFailures = 0
 
 beforeEach(() => {
   calls = []
   reply = {}
   status = 200
+  taskCreateFailures = 0
   process.env.SHOGO_API_URL = 'http://api.test'
   delete process.env.WORKSPACE_RUNTIME
   delete process.env.PROJECT_ID
   delete process.env.WORKSPACE_ID
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
-    calls.push({ url, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    const method = init?.method ?? 'GET'
+    calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    if (taskCreateFailures > 0 && method === 'POST' && String(url).endsWith('/api/internal/tasks')) {
+      taskCreateFailures--
+      return new Response(JSON.stringify({ error: 'boom' }), { status: 500, headers: { 'content-type': 'application/json' } })
+    }
     return new Response(JSON.stringify(reply), { status, headers: { 'content-type': 'application/json' } })
   }) as any
 })
@@ -207,6 +216,37 @@ describe('handed-off cards are watched', () => {
     const track = calls.find((c) => c.url.endsWith('/api/internal/tasks'))
     expect(track?.body).toMatchObject({ source: 'work_item', targetRef: 'i1', until: HANDOFF_WATCH_UNTIL })
     expect(registry.get(out.task_id)?.dormant).toBeUndefined()
+  })
+
+  // SHO-35: a create the API refuses must not cost the hand-off its watch.
+  test('a hand-off whose task create the API refuses is still watched, with one row', async () => {
+    const { registry, context } = withRegistry()
+    const restore = __setCreateRetryDelaysForTest([10, 10, 10])
+    const posts = () => calls.filter((c) => c.method === 'POST' && c.url.endsWith('/api/internal/tasks'))
+    try {
+      reply = { item: handedOff }
+      taskCreateFailures = 2
+      const out = await run('work_item_create', { board: 'Tickets', title: 'Refund not received', assignee_agent: 'proj-eng' }, context)
+
+      // The caller no longer shrugs: the tool still reports a live watch, so
+      // the agent is woken when the card comes back instead of losing it.
+      expect(out.watching).toBe(true)
+      expect(out.task_id).toBeDefined()
+      expect(registry.get(out.task_id)?.status).toBe('running')
+      expect(registry.get(out.task_id)?.dormant).toBeUndefined()
+
+      const deadline = Date.now() + 5_000
+      while (Date.now() < deadline && posts().length < 3) await new Promise((r) => setTimeout(r, 10))
+      // Refused, refused, accepted — and every attempt carries the same id, so
+      // the API cannot end up with two rows (two wakes) for one card.
+      expect(posts()).toHaveLength(3)
+      expect(new Set(posts().map((c) => c.body.id))).toEqual(new Set([out.task_id]))
+
+      await new Promise((r) => setTimeout(r, 50))
+      expect(posts()).toHaveLength(3) // and it stops once the row exists
+    } finally {
+      restore()
+    }
   })
 
   test('reading a card stays lazy, and handing it off later activates the same task', async () => {

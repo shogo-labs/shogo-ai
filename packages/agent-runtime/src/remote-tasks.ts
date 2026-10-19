@@ -69,25 +69,91 @@ export interface TrackedTask {
 const lazyStarters = new WeakMap<TaskRegistry, Map<string, (until?: string) => Promise<void>>>()
 
 /**
+ * A wake the API did not accept is retried on these delays; so is a task the
+ * API did not accept on its first `POST /internal/tasks`. The note stays
+ * unreported until a flush succeeds, and a task row stays uncreated until a
+ * create succeeds, so a refusal cannot silently end either one.
+ */
+export const TASK_WAKE_RETRY_MS = [2_000, 5_000, 15_000, 60_000, 300_000] as const
+
+// Mutable so tests can install a tight schedule instead of waiting out the
+// ~6 minute production budget. Only the create retry below reads it.
+let createRetryDelaysMs: readonly number[] = TASK_WAKE_RETRY_MS
+
+/**
+ * Test-only: swap the create-retry schedule. Returns a restore function the
+ * caller MUST invoke (typically in `afterEach`).
+ */
+export function __setCreateRetryDelaysForTest(delays: readonly number[]): () => void {
+  const before = createRetryDelaysMs
+  createRetryDelaysMs = delays
+  return () => {
+    createRetryDelaysMs = before
+  }
+}
+
+interface TrackOptions {
+  source: BackgroundTaskSource
+  targetRef: string
+  title: string
+  id?: string
+  lazy?: boolean
+  until?: string
+  /** Where the task's work is happening, so the dock can open it. */
+  link?: TaskLink
+}
+
+function createInput(sessionId: string, id: string, opts: TrackOptions, until?: string) {
+  return { id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title, until, link: opts.link }
+}
+
+/**
+ * Retry a task the API did not accept, off the caller's path.
+ *
+ * `enqueueTaskWake` only reads `background_tasks` rows and the drain sweep has
+ * nothing to reconcile, so a task that keeps running with no row can never wake
+ * the session: its result is lost until the agent happens to look at the dock.
+ * A transient 5xx, a restart or a network blip must not cost that wake, so keep
+ * trying on the wake flush's schedule and log the give-up once.
+ */
+function retryCreateInBackground(
+  registry: TaskRegistry,
+  sessionId: string,
+  id: string,
+  opts: TrackOptions,
+  firstError: string,
+  attempt = 0,
+): void {
+  if (attempt >= createRetryDelaysMs.length) {
+    console.warn(
+      `[remote-tasks] Gave up creating the API row for task ${id} (${opts.source}:${opts.targetRef}) after ${attempt + 1} attempts: ${firstError}`,
+    )
+    return
+  }
+  const timer = setTimeout(() => {
+    if (registry.get(id)?.status === 'cancelled') return
+    void createBackgroundTask(createInput(sessionId, id, opts, opts.until)).then(
+      (res) => {
+        if (!res.ok) retryCreateInBackground(registry, sessionId, id, opts, firstError, attempt + 1)
+      },
+      () => retryCreateInBackground(registry, sessionId, id, opts, firstError, attempt + 1),
+    )
+  }, createRetryDelaysMs[attempt]!)
+  ;(timer as any).unref?.()
+}
+
+/**
  * Register an API-tracked task for this session. With `lazy`, the API row is
  * only created when the agent first waits on it (cards: reading one should not
  * start tracking it). Without it, tracking starts now and `until` settles the
  * task when an event line matches. Returns undefined when this runtime cannot
- * reach the API.
+ * reach the API at all; a create the API refuses is retried and the task stays
+ * tracked locally meanwhile.
  */
 export async function trackRemoteTask(
   registry: TaskRegistry,
   sessionId: string,
-  opts: {
-    source: BackgroundTaskSource
-    targetRef: string
-    title: string
-    id?: string
-    lazy?: boolean
-    until?: string
-    /** Where the task's work is happening, so the dock can open it. */
-    link?: TaskLink
-  },
+  opts: TrackOptions,
 ): Promise<TrackedTask | undefined> {
   if (!hasInternalApiCredentials() && !process.env.SHOGO_API_URL) return undefined
   const existing = registry.get(opts.id ?? opts.targetRef)
@@ -109,15 +175,19 @@ export async function trackRemoteTask(
   const id = opts.id ?? newTaskId()
 
   if (!opts.lazy) {
-    const created = await createBackgroundTask({ id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title, until: opts.until, link: opts.link })
-    if (!created.ok) return undefined
+    const created = await createBackgroundTask(createInput(sessionId, id, opts, opts.until))
+    if (!created.ok) {
+      // Keep the task visible locally and keep trying for the API row: without
+      // one nothing can ever wake the session when the task finishes.
+      retryCreateInBackground(registry, sessionId, id, opts, created.error ?? `HTTP ${created.status}`)
+    }
   }
 
   let created = !opts.lazy
   const api = createApiTaskClient()
   const ensure = async (until?: string) => {
     if (created) return
-    const res = await createBackgroundTask({ id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title, until, link: opts.link })
+    const res = await createBackgroundTask(createInput(sessionId, id, opts, until))
     if (!res.ok) throw new Error(res.error ?? 'could not start tracking the task')
     created = true
   }
