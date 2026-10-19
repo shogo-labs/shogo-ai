@@ -223,6 +223,14 @@ export interface AgentLoopOptions {
    */
   transformContext?: (messages: Message[], signal?: AbortSignal) => Promise<Message[]> | Message[]
   /**
+   * Last-resort repair when a provider rejects an image: called with the
+   * current transcript and must return a copy in which images the provider
+   * cannot decode are replaced by text placeholders. The runtime injects
+   * `scrubInvalidImages` from image-size-guard; without it the loop falls back
+   * to dropping image blocks outright (history first, then this turn's too).
+   */
+  scrubInvalidImages?: (messages: Message[]) => Message[]
+  /**
    * Extra HTTP headers to attach to every outbound LLM request inside this
    * loop. Merged into the resolved Model's `headers` so pi-ai forwards them
    * on every `stream()` / `complete()` call.
@@ -362,6 +370,24 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     model = { ...model, headers: { ...(model.headers || {}), ...options.extraHeaders } }
   }
 
+  // pi-ai's openai-completions / google converters forward image blocks only
+  // when the model's catalog entry advertises image input; otherwise they drop
+  // them without a word. Know which case we're in before the first call.
+  const modelAcceptsImages =
+    Array.isArray((model as any).input) && ((model as any).input as string[]).includes('image')
+
+  // Same rule for images attached to the prompt itself: say so in the text
+  // rather than let the provider converter bin them.
+  let promptText = prompt
+  let promptImages = images
+  if (images && images.length > 0 && !modelAcceptsImages) {
+    promptText = `${prompt}\n\n[${images.length} image(s) were attached but ${modelId} cannot accept image input, so they were not sent.]`
+    promptImages = undefined
+    console.warn(
+      `[AgentLoop] MODEL_NO_IMAGE_INPUT model=${modelId} — ${images.length} attached image(s) not sent`,
+    )
+  }
+
   const loopDetector = options.loopDetection !== false
     ? new LoopDetector(typeof options.loopDetection === 'object' ? options.loopDetection : {})
     : null
@@ -402,16 +428,45 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // unchanged, so custom messages flow through safely. We cast at the
   // boundary. Wrapped with a try/catch per pi-agent-core's "must not throw"
   // contract.
-  const wrappedTransformContext = options.transformContext
-    ? async (msgs: Message[], signal?: AbortSignal): Promise<Message[]> => {
-        try {
-          return await options.transformContext!(msgs, signal)
-        } catch (err: any) {
-          console.warn(`[AgentLoop] transformContext threw — falling back to raw messages: ${err?.message}`)
-          return msgs
-        }
+  //
+  // It also enforces what the routed model can actually accept: pi-ai's
+  // openai-completions and google converters silently discard image blocks
+  // when the catalog entry for the model has no `image` input, which is how a
+  // screenshot ended up reaching the agent as nothing but the tool's JSON
+  // `path`. Replacing those blocks with a note keeps the fact — and the path —
+  // in the transcript instead of dropping it on the floor.
+  let warnedNoImageInput = false
+  const applyModelImageSupport = (msgs: Message[]): Message[] => {
+    if (modelAcceptsImages) return msgs
+    const stripped = replaceImageBlocks(msgs, () => true, (msg) =>
+      buildImageOmittedNote({
+        modelId,
+        toolName: msg.role === 'toolResult' ? msg.toolName : undefined,
+        pathHint: extractPathHint(msg),
+        reason: 'this model only accepts text input',
+      }),
+    )
+    if (stripped !== msgs && !warnedNoImageInput) {
+      warnedNoImageInput = true
+      console.warn(
+        `[AgentLoop] MODEL_NO_IMAGE_INPUT model=${modelId} — image blocks replaced with text notes ` +
+          '(the provider would have dropped them silently)',
+      )
+    }
+    return stripped
+  }
+  const wrappedTransformContext = async (msgs: Message[], signal?: AbortSignal): Promise<Message[]> => {
+    let next: Message[] = msgs
+    if (options.transformContext) {
+      try {
+        next = await options.transformContext(msgs, signal)
+      } catch (err: any) {
+        console.warn(`[AgentLoop] transformContext threw — falling back to raw messages: ${err?.message}`)
+        next = msgs
       }
-    : undefined
+    }
+    return applyModelImageSupport(next)
+  }
 
   // Resolve the effective stream function. Tests/mocks pass an explicit
   // `streamFn` and must run unwrapped. When using Pi's default `streamSimple`,
@@ -574,7 +629,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     if (abortTriggered) {
       promptError = new Error('Aborted before prompt')
     } else {
-      await agent.prompt(prompt, images && images.length > 0 ? images : undefined)
+      await agent.prompt(promptText, promptImages && promptImages.length > 0 ? promptImages : undefined)
     }
   } catch (err: any) {
     if (!abortTriggered) {
@@ -588,7 +643,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
             agent.state.messages = [...compactedHistory]
             historyLength = compactedHistory.length
             lastProgressMessageCount = historyLength
-            await agent.prompt(prompt, images && images.length > 0 ? images : undefined)
+            await agent.prompt(promptText, promptImages && promptImages.length > 0 ? promptImages : undefined)
           } else {
             promptError = err
           }
@@ -635,6 +690,22 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // (connection dropped, 5xx, overloaded) never reaches the user.
   let unresolvedFailureText: string | undefined
 
+  // Strip a failed assistant tail so `continue()` can re-issue from the last
+  // user/tool-result message, folding the dropped attempt's usage into the
+  // totals we report (the provider billed for it).
+  const trimFailedAssistantTail = (): Message[] => {
+    const trimmed = stripTrailingFailedAssistants(agent.state.messages) ?? agent.state.messages
+    if (trimmed !== agent.state.messages) {
+      const removedUsage = sumUsage(agent.state.messages.slice(trimmed.length))
+      discardedUsage.input += removedUsage.input
+      discardedUsage.output += removedUsage.output
+      discardedUsage.cacheRead += removedUsage.cacheRead
+      discardedUsage.cacheWrite += removedUsage.cacheWrite
+      agent.state.messages = trimmed
+    }
+    return trimmed
+  }
+
   // Rebuilds the transcript on compacted history + this turn's messages and
   // re-issues. Returns false when compaction produced nothing to retry with.
   const compactAfterOverflow = async (errorText: string): Promise<boolean> => {
@@ -674,6 +745,41 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     }
     return true
   }
+
+  // Image rejections (`400 ... You have uploaded an unsupported image`) are not
+  // retryable as-is: the offending block lives in the transcript, so re-issuing
+  // the same request fails identically — this turn and every later one. Repair
+  // the transcript instead, escalating: remove images we can prove are
+  // undecodable, then every image in history, then this turn's as well. Each
+  // stage that actually changes something buys exactly one retry.
+  let imageRecoveryStage = 0
+  const imageRecoveryStages: Array<() => Message[] | null> = []
+  const imageNote = (msg: Message) =>
+    buildImageOmittedNote({
+      modelId,
+      toolName: msg.role === 'toolResult' ? msg.toolName : undefined,
+      pathHint: extractPathHint(msg),
+      reason: 'the provider rejected this image',
+    })
+  if (options.scrubInvalidImages) {
+    imageRecoveryStages.push(() => {
+      try {
+        const scrubbed = options.scrubInvalidImages!(agent.state.messages)
+        return scrubbed === agent.state.messages ? null : scrubbed
+      } catch (err: any) {
+        console.warn(`[AgentLoop] IMAGE_RECOVERY scrub threw: ${err?.message}`)
+        return null
+      }
+    })
+  }
+  imageRecoveryStages.push(() => {
+    const next = replaceImageBlocks(agent.state.messages, (i) => i < historyLength, imageNote)
+    return next === agent.state.messages ? null : next
+  })
+  imageRecoveryStages.push(() => {
+    const next = replaceImageBlocks(agent.state.messages, () => true, imageNote)
+    return next === agent.state.messages ? null : next
+  })
 
   if (inferenceRetry && !abortTriggered) {
     let retryAttempt = 0
@@ -741,6 +847,41 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       }
       unresolvedFailureText = failure.errorText
 
+      if (IMAGE_REJECTION_RE.test(failure.errorText)) {
+        let retried = false
+        while (imageRecoveryStage < imageRecoveryStages.length) {
+          const stage = ++imageRecoveryStage
+          const before = trimFailedAssistantTail()
+          const imageIndexes = imageBlockIndexes(before)
+          const repaired = imageRecoveryStages[stage - 1]()
+          if (!repaired) continue
+          console.warn(
+            `[AgentLoop] IMAGE_RECOVERY stage=${stage}/${imageRecoveryStages.length} model=${modelId} ` +
+              `imagesAt=[${imageIndexes.join(',')}] error=${failure.errorText.slice(0, 200)}`,
+          )
+          agent.state.messages = repaired
+          promptError = undefined
+          try {
+            await agent.continue()
+          } catch (err: any) {
+            promptError = err
+          }
+          retried = true
+          break
+        }
+        if (retried) continue
+        console.warn(
+          `[AgentLoop] IMAGE_RECOVERY exhausted after ${imageRecoveryStages.length} stage(s) — surfacing image failure: ` +
+            failure.errorText.slice(0, 300),
+        )
+        promptError = new Error(
+          'The model provider rejected the images in this conversation, and the turn could not continue. ' +
+            `Provider said: ${failure.errorText}`,
+        )
+        endEpisode('failed_non_transient')
+        break
+      }
+
       const classification = classifyRetryability({
         message: failure.errorText,
         stopReason: failure.stopReason,
@@ -767,21 +908,12 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       // assistant message (e.g. a synchronous stream throw on the very first
       // call), there's nothing to strip and the transcript already ends on a
       // user/tool-result message — continue() can re-issue directly.
-      const trimmed = stripTrailingFailedAssistants(agent.state.messages) ?? agent.state.messages
+      const trimmed = trimFailedAssistantTail()
       const last = trimmed[trimmed.length - 1]
       // Can't continue from a clean assistant tail (continue() rejects) — bail.
       if (!last || last.role === 'assistant') {
         endEpisode('failed_non_transient')
         break
-      }
-      if (trimmed !== agent.state.messages) {
-        // Preserve the usage of the stripped failed attempt for billing parity.
-        const removedUsage = sumUsage(agent.state.messages.slice(trimmed.length))
-        discardedUsage.input += removedUsage.input
-        discardedUsage.output += removedUsage.output
-        discardedUsage.cacheRead += removedUsage.cacheRead
-        discardedUsage.cacheWrite += removedUsage.cacheWrite
-        agent.state.messages = trimmed
       }
 
       // A re-issued call succeeded and later work failed anew: the new failure
@@ -1189,6 +1321,89 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   await onAgentEnd?.(result)
 
   return result
+}
+
+/**
+ * Provider errors that mean "there is an image in this request I cannot
+ * decode". Anthropic: `messages[N].image[0]: You have uploaded an unsupported
+ * image`; OpenAI-compatible providers: `invalid image` / `unsupported image`.
+ */
+const IMAGE_REJECTION_RE =
+  /You have uploaded an unsupported image|unsupported image|invalid image|image\[\d+\]/i
+
+/** Indexes of messages carrying at least one image block (for the logs). */
+function imageBlockIndexes(messages: ReadonlyArray<Message>): number[] {
+  const out: number[] = []
+  messages.forEach((msg, index) => {
+    if (msg.role !== 'user' && msg.role !== 'toolResult') return
+    if (!Array.isArray(msg.content)) return
+    if (msg.content.some((block) => block.type === 'image')) out.push(index)
+  })
+  return out
+}
+
+/** Best-effort image path from a message's sibling text block. */
+function extractPathHint(msg: Message): string | undefined {
+  if (!Array.isArray(msg.content)) return undefined
+  for (const block of msg.content as Array<{ type: string; text?: string }>) {
+    if (block.type !== 'text' || typeof block.text !== 'string') continue
+    const match = block.text.match(/"path"\s*:\s*"([^"]+)"/)
+    if (match) return match[1]
+  }
+  return undefined
+}
+
+function buildImageOmittedNote(opts: {
+  modelId: string
+  toolName?: string
+  pathHint?: string
+  reason: string
+}): string {
+  const source = opts.toolName ? `from ${opts.toolName}` : 'attached here'
+  const where = opts.pathHint ? ` The image file is still at "${opts.pathHint}".` : ''
+  return (
+    `[Image omitted — ${source}] This image was not sent to ${opts.modelId} (${opts.reason}).${where} ` +
+    'Do not describe or guess what it shows; tell the user the image could not be viewed and where it is saved.'
+  )
+}
+
+/**
+ * Replace every image block in the selected messages with one text note per
+ * message. Returns the input array unchanged when nothing was replaced, so
+ * callers can use reference equality to decide whether a retry is worth it.
+ */
+function replaceImageBlocks(
+  messages: ReadonlyArray<Message>,
+  shouldReplace: (index: number) => boolean,
+  buildNote: (msg: Message) => string,
+): Message[] {
+  let mutated = false
+  const out: Message[] = []
+  messages.forEach((msg, index) => {
+    const carriesImages =
+      (msg.role === 'user' || msg.role === 'toolResult') &&
+      Array.isArray(msg.content) &&
+      shouldReplace(index) &&
+      msg.content.some((block) => block.type === 'image')
+    if (!carriesImages) {
+      out.push(msg)
+      return
+    }
+    const note = buildNote(msg)
+    const next: Array<{ type: string; text?: string }> = []
+    let noted = false
+    for (const block of msg.content as Array<{ type: string }>) {
+      if (block.type !== 'image') {
+        next.push(block)
+      } else if (!noted) {
+        next.push({ type: 'text', text: note })
+        noted = true
+      }
+    }
+    out.push({ ...msg, content: next } as Message)
+    mutated = true
+  })
+  return mutated ? out : (messages as Message[])
 }
 
 function buildIncompleteTurnFallback(toolCallCount: number, maxIterationsExhausted: boolean, error?: string): string {

@@ -13,8 +13,12 @@
  *   - screencast path (subagentInstanceId set)
  */
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { mkdirSync, rmSync, existsSync, readdirSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
+
+// Real encoder output: the screenshot path decode-validates before handing the
+// image to the model, so a fabricated Buffer here would be (correctly) dropped.
+const REAL_PNG = readFileSync(new URL('./fixtures/screenshot-fixture.png', import.meta.url))
 
 const TEST_DIR = '/tmp/test-gateway-tools-browser'
 
@@ -106,7 +110,7 @@ function makeFakePage(opts: { evalResult?: any; gotoErr?: Error; evalErr?: Error
       selectOption: async () => undefined,
       scrollIntoViewIfNeeded: async () => undefined,
     }),
-    screenshot: async (_o: any) => Buffer.from('PNGDATA'),
+    screenshot: async (_o: any) => REAL_PNG,
     waitForTimeout: async () => undefined,
     waitForSelector: async () => undefined,
     close: async () => undefined,

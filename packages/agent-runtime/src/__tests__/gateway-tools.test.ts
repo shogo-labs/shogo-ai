@@ -11,6 +11,12 @@ import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust
 
 const TEST_DIR = '/tmp/test-gateway-tools'
 
+// Real encoder output: read_file decode-validates before handing an image to the
+// model, so a fabricated header-only Buffer would be (correctly) rejected.
+const REAL_PNG = readFileSync(new URL('./fixtures/screenshot-fixture.png', import.meta.url))
+const REAL_JPEG = readFileSync(new URL('./fixtures/screenshot-fixture.jpg', import.meta.url))
+const REAL_GIF = readFileSync(new URL('./fixtures/screenshot-fixture.gif', import.meta.url))
+
 function createCtx(overrides?: Partial<ToolContext>): ToolContext {
   return {
     workspaceDir: TEST_DIR,
@@ -107,10 +113,7 @@ describe('gateway-tools', () => {
     })
 
     test('returns image content for PNG files instead of UTF-8 garbage', async () => {
-      const pngBytes = Buffer.from([
-        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-      ])
+      const pngBytes = REAL_PNG
       writeFileSync(join(TEST_DIR, 'pic.png'), pngBytes)
       const fileStateCache = new FileStateCache()
       const ctx = createCtx({ fileStateCache })
@@ -131,7 +134,7 @@ describe('gateway-tools', () => {
     })
 
     test('maps common image extensions to the correct mime type', async () => {
-      const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10])
+      const jpegBytes = REAL_JPEG
       writeFileSync(join(TEST_DIR, 'photo.jpeg'), jpegBytes)
       const tool = getTool(createCtx(), 'read_file')
       const result = await tool.execute('test-call', { path: 'photo.jpeg' })
@@ -165,7 +168,7 @@ describe('gateway-tools', () => {
     })
 
     test('ignores offset/limit for image files and notes it in details', async () => {
-      writeFileSync(join(TEST_DIR, 'tiny.gif'), Buffer.from([0x47, 0x49, 0x46, 0x38]))
+      writeFileSync(join(TEST_DIR, 'tiny.gif'), REAL_GIF)
       const tool = getTool(createCtx(), 'read_file')
       const result = await tool.execute('test-call', { path: 'tiny.gif', offset: 1, limit: 10 })
       const imagePart = (result.content as any[]).find((p) => p.type === 'image')
