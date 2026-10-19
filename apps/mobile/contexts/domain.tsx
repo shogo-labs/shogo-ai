@@ -27,8 +27,10 @@ import { installWorkspaceFetchRouter } from '../lib/workspace-route'
 if (isLocalMode()) installWorkspaceFetchRouter(API_URL!)
 
 export {
+  getSDKHttpClient as getDomainHttpClient,
   useSDKDomain as useDomain,
   useSDKHttp as useDomainHttp,
+  useSDKHttpOptional as useDomainHttpOptional,
   useSDKReady as useDomainReady,
   useProjectCollection,
   useWorkspaceCollection,

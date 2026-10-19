@@ -39,30 +39,34 @@ export function createDomainActions(store: IDomainStore) {
     // =========================================================================
 
     /**
-     * Create a workspace and add the user as owner
+     * Create a workspace.
+     *
+     * The owner `Member` is the *server's* job: cloud creates it in
+     * `workspaceHooks.afterCreate`, local in `createLocalWorkspace`. A second
+     * `memberCollection.create` here used to duplicate it wherever no member
+     * hook rejected the write (`already_member`) — which locally was everywhere,
+     * so a new workspace showed two owner rows and double-counted toward the
+     * owned-workspace count. Older servers that did not create the member are
+     * tolerated the same way: no member write from the client at all.
      */
     createWorkspace: async (
       name: string,
       description: string | undefined,
-      userId: string
+      _userId: string
     ) => {
-      // 1. Create the workspace
       const workspace = await store.workspaceCollection.create({
         name,
-        description,
+        // `WorkspaceModel.slug` is a required identifier-ish string, so the
+        // optimistic insert throws without one. The server owns the real value
+        // (local allocates its own; cloud's `beforeCreate` dedupes a provided
+        // one) — this placeholder only has to be a legal slug-shaped string.
         slug: name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
+        ...(description ? { description } : {}),
       })
 
       if (!workspace) {
         throw new Error("Failed to create workspace")
       }
-
-      // 2. Create owner membership
-      await store.memberCollection.create({
-        userId,
-        workspaceId: workspace.id,
-        role: "owner",
-      })
 
       return workspace
     },

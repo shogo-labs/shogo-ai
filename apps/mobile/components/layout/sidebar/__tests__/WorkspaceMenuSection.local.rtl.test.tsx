@@ -32,6 +32,10 @@ mock.module("lucide-react-native", () => {
 })
 
 mock.module(resolve(import.meta.dir, "../../../../contexts/posthog"), () => ({ usePostHogSafe: () => null }))
+mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
+  useDomainHttpOptional: () => null,
+  getDomainHttpClient: () => null,
+}))
 mock.module(resolve(import.meta.dir, "../../../../lib/billing-config"), () => ({ getPlanDisplayName: () => "Free" }))
 mock.module(resolve(import.meta.dir, "../../../../lib/analytics"), () => ({ EVENTS: {}, trackEvent: () => {} }))
 mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({ CompactUsageWindows: () => null }))
@@ -39,6 +43,15 @@ mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({ 
 let cloud = { signedIn: false, cloudUrl: null, reachable: true, user: null as any, workspaces: [] as any[] }
 const cloudIds = () => new Set(cloud.workspaces.map((w) => w.id))
 mock.module(resolve(import.meta.dir, "../../../../lib/workspace-route"), () => ({
+  routeUrl: (url: string) => url,
+  routePath: (path: string) => path,
+  isActiveWorkspaceCloud: () => false,
+  installWorkspaceFetchRouter: () => {},
+  refreshCloudWorkspaces: async () => cloud,
+  setCloudWorkspacesState: () => {},
+  getCloudWorkspacesState: () => cloud,
+  subscribeCloudWorkspaces: () => () => {},
+  _resetWorkspaceRouteForTests: () => {},
   useCloudWorkspaces: () => cloud,
   isCloudWorkspace: (id: string) => cloudIds().has(id),
 }))
@@ -56,6 +69,8 @@ const localWorkspaces = [
   { id: "local-team", name: "My Workspace", kind: "team" },
 ]
 
+const createWorkspace = mock(() => {})
+
 function renderSection(workspaces: any[]) {
   return render(
     <WorkspaceMenuSection
@@ -67,7 +82,7 @@ function renderSection(workspaces: any[]) {
       showBilling={false}
       onNavigate={() => {}}
       onSwitchWorkspace={() => {}}
-      onCreateWorkspace={() => {}}
+      onCreateWorkspace={createWorkspace}
       localMode
       onClose={() => {}}
     />,
@@ -78,6 +93,7 @@ beforeEach(() => {
   cloud = { signedIn: false, cloudUrl: null, reachable: true, user: null, workspaces: [] }
   signIn.mockClear()
   signOut.mockClear()
+  createWorkspace.mockClear()
 })
 
 describe("workspaceKindBadge", () => {
@@ -98,7 +114,8 @@ describe("WorkspaceMenuSection in local mode", () => {
     renderSection(localWorkspaces)
     expect(screen.getAllByText("Local")).toHaveLength(2)
     expect(screen.queryByText("Cloud")).toBeNull()
-    expect(screen.queryByText("Create new workspace")).toBeNull()
+    fireEvent.click(screen.getByText("Create new workspace"))
+    expect(createWorkspace).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByLabelText("Sign in to Shogo Cloud"))
     expect(signIn).toHaveBeenCalledTimes(1)
   })

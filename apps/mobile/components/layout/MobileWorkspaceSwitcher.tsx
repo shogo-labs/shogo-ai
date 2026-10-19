@@ -27,6 +27,7 @@ import {
   scheduleWorkspaceSwitch,
 } from "../../lib/switch-workspace";
 import { setActiveWorkspaceId } from "../../lib/workspace-store";
+import { workspaceErrorMessage } from "../../lib/workspace-errors";
 import { isCloudWorkspace, useCloudWorkspaces } from "../../lib/workspace-route";
 import { NativePhoneSheet } from "../phone/NativePhoneSheet";
 import { CreateWorkspaceModal } from "./sidebar/CreateWorkspaceModal";
@@ -142,17 +143,19 @@ export function MobileWorkspaceSwitcherSheet({
 
   const handleCreateWorkspace = useCallback(() => {
     onClose();
-    if (hasTeamWorkspace) {
-      onSwitched?.();
-      router.push("/(app)/new-workspace" as never);
+    // Local mode has no billing gate — always the name modal, never the paid
+    // `/(app)/new-workspace` checkout page (its billing route 404s locally).
+    if (localMode || !hasTeamWorkspace) {
+      setCreateOpen(true);
       return;
     }
-    setCreateOpen(true);
-  }, [hasTeamWorkspace, onClose, onSwitched, router]);
+    onSwitched?.();
+    router.push("/(app)/new-workspace" as never);
+  }, [hasTeamWorkspace, localMode, onClose, onSwitched, router]);
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
-      if (!user?.id) return;
+      if (!user?.id) return false;
       try {
         const created = await actions.createWorkspace(name, undefined, user.id);
         if (created?.id) {
@@ -165,6 +168,7 @@ export function MobileWorkspaceSwitcherSheet({
         }
       } catch (err) {
         console.warn("Failed to create workspace:", err);
+        return workspaceErrorMessage(err);
       }
     },
     [actions, posthog, projects, user?.id, workspaces]

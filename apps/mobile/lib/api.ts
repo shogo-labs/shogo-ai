@@ -43,6 +43,31 @@ export function isInvitationExpired(invitation: { status?: string; expiresAt?: s
 
 export type ProjectVisibility = 'workspace' | 'restricted'
 
+/**
+ * `GET /api/workspaces/:id/deletion-preview` payload — exactly what a delete
+ * removes, so the confirm dialog can list the directories instead of warning
+ * vaguely that "all data" goes away.
+ */
+export interface WorkspaceDeletionPreview {
+  workspaceId: string
+  workspaceName: string
+  projects: Array<{
+    id: string
+    name: string
+    /** App-owned directory, or null for a folder-linked project. */
+    path: string | null
+    sizeBytes: number | null
+    folderLinked: boolean
+    /** The user's own folder; never deleted. */
+    folderPath: string | null
+  }>
+  removedDirs: string[]
+  channelCount: number
+  boardCount: number
+  chatCount: number
+  totalBytes: number | null
+}
+
 /** `GET /api/workspaces/:id/permissions` payload. */
 export interface WorkspacePermissionsData {
   workspaceId: string
@@ -1638,6 +1663,38 @@ export const api = {
     )
     if (!res.data?.workspace) throw new Error('createPersonalWorkspace: no workspace returned')
     return res.data.workspace
+  },
+
+  /**
+   * What deleting this workspace would destroy: its project directories (and
+   * their sizes), the merged runtime root, and how many channels, boards and
+   * chats go with it. Read-only; drives the type-to-confirm dialog.
+   */
+  async getWorkspaceDeletionPreview(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ ok: boolean; preview?: WorkspaceDeletionPreview }>(
+      `/api/workspaces/${workspaceId}/deletion-preview`,
+    )
+    if (!res.data?.preview) throw new Error('getWorkspaceDeletionPreview: no preview returned')
+    return res.data.preview
+  },
+
+  /** Local-only: a true wipe (rows, runtimes, project dirs, attachments). */
+  async deleteWorkspace(http: HttpClient, workspaceId: string) {
+    const res = await http.delete<{ ok: boolean; removedDirs?: string[]; warnings?: string[] }>(
+      `/api/workspaces/${workspaceId}`,
+    )
+    return {
+      removedDirs: res.data?.removedDirs ?? [],
+      warnings: res.data?.warnings ?? [],
+    }
+  },
+
+  /** Which local workspaces have a runtime up and work in flight. */
+  async getWorkspaceActivity(http: HttpClient) {
+    const res = await http.get<{
+      items?: Array<{ workspaceId: string; running?: boolean; inFlight?: boolean }>
+    }>('/api/workspaces/activity')
+    return res.data?.items ?? []
   },
 
   // ─── Members ──────────────────────────────────────────

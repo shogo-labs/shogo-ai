@@ -14,6 +14,7 @@ import {
   TextInput,
   accountSheetIcon,
 } from "../../settings/account-sheet-chrome";
+import { workspaceErrorMessage } from "../../../lib/workspace-errors";
 
 const X = accountSheetIcon(XIcon);
 
@@ -27,8 +28,12 @@ export function CreateWorkspaceModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  /** Resolving to `false` keeps the modal open so the typed name isn't lost. */
-  onSubmit: (name: string) => void | boolean | Promise<void | boolean>;
+  /**
+   * Resolving to `false` (or to a message string) keeps the modal open so the
+   * typed name isn't lost; a string is shown as the error, e.g. the server's
+   * `invalid_name` / `personal_workspace_exists` message.
+   */
+  onSubmit: (name: string) => void | boolean | string | Promise<void | boolean | string>;
   parentName?: string | null;
 }) {
   const [name, setName] = useState("");
@@ -43,11 +48,20 @@ export function CreateWorkspaceModal({
       return;
     }
     setSubmitting(true);
+    let result: void | boolean | string;
     try {
-      if ((await onSubmit(trimmed)) === false) return;
-    } finally {
+      result = await onSubmit(trimmed);
+    } catch (err) {
       setSubmitting(false);
+      setError(workspaceErrorMessage(err));
+      return;
     }
+    setSubmitting(false);
+    if (typeof result === "string" && result) {
+      setError(result);
+      return;
+    }
+    if (result === false) return;
     setName("");
     setError(null);
     onClose();

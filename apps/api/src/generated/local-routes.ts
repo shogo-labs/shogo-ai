@@ -122,6 +122,12 @@ export const localWorkspaceHooks: WorkspaceHooks = {
             some: { userId: ctx.userId, projectId: null },
           },
         },
+        // Seed order is the user's mental order: the personal workspace (and
+        // any workspace they were already used to) stays first. Without this
+        // the picker order past two rows is whatever SQLite returns, which is
+        // unstable across restarts and — since `resolveActiveWorkspaceId`
+        // falls back to the first owned workspace — could move the default.
+        orderBy: { createdAt: 'asc' },
       },
     }
   },

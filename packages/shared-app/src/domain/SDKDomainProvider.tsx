@@ -327,6 +327,30 @@ export function useSDKHttp(): HttpClient {
   return ctx.http
 }
 
+/**
+ * Same client as `useSDKHttp`, but `null` when there is no provider above —
+ * for components that render both inside and outside the domain tree (a
+ * workspace switcher in a popover, a shared row). Callers already have to
+ * cope with "no data yet", so they should degrade to their empty state
+ * instead of crashing the shell with a provider error.
+ */
+export function useSDKHttpOptional(): HttpClient | null {
+  return useContext(SDKDomainContext)?.http ?? null
+}
+
+/**
+ * The provider's client, without React context.
+ *
+ * Some shell chrome renders through a portal that sits outside the provider
+ * tree (the desktop workspace/account popover), where a context read yields
+ * nothing. This returns the same singleton instance the provider created, or
+ * `null` before it has mounted — so a caller that cannot see the context can
+ * still make an authenticated request instead of silently doing nothing.
+ */
+export function getSDKHttpClient(): HttpClient | null {
+  return moduleProxiedHttpClient
+}
+
 export function useSDKReady() {
   const ctx = useContext(SDKDomainContext)
   if (!ctx) throw new Error('useSDKReady must be used within SDKDomainProvider')

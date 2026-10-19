@@ -130,6 +130,7 @@ import {
 import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
 import { useWorkspacePlans } from "../../../hooks/useWorkspacePlans";
 import { usePooledWorkspaceCreation } from "../../../hooks/usePooledWorkspaceCreation";
+import { workspaceErrorMessage } from "../../../lib/workspace-errors";
 
 // Cap the projects list; pinned + the open project always show, the rest
 // collapse behind a "More" toggle.
@@ -702,20 +703,23 @@ export const AppSidebar = observer(function AppSidebar({
   );
 
   const handleCreateWorkspace = useCallback(() => {
-    if (pooledWorkspaceParent) {
+    // Local mode has no billing and no plan limit: every "Create new
+    // workspace" entry opens the name modal directly. `hasTeamWorkspace` is
+    // always true locally (bootstrap seeds one), so falling through to the
+    // cloud branch sent desktop users to `/(app)/new-workspace`, the paid
+    // checkout page whose `/api/billing/workspace-checkout` 404s locally.
+    if (pooledWorkspaceParent || localMode || !hasTeamWorkspace) {
       setCreateWorkspaceOpen(true);
-      if (!isWide) closeNativeDrawer();
-    } else if (hasTeamWorkspace) {
-      router.push("/(app)/new-workspace" as any);
       if (!isWide) closeNativeDrawer();
     } else {
-      setCreateWorkspaceOpen(true);
+      router.push("/(app)/new-workspace" as any);
       if (!isWide) closeNativeDrawer();
     }
   }, [
     closeNativeDrawer,
     hasTeamWorkspace,
     isWide,
+    localMode,
     pooledWorkspaceParent,
     router,
   ]);
@@ -723,7 +727,7 @@ export const AppSidebar = observer(function AppSidebar({
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
       if (pooledWorkspaceParent) return createPooledWorkspace(name);
-      if (!user?.id) return;
+      if (!user?.id) return false;
       try {
         const newWorkspace = await actions.createWorkspace(
           name,
@@ -735,11 +739,19 @@ export const AppSidebar = observer(function AppSidebar({
           setSelectedWorkspaceId(newWorkspace.id);
           setActiveWorkspaceId(newWorkspace.id);
           await workspaces.loadAll();
-          projects.clear();
-          await projects.loadAll({ workspaceId: newWorkspace.id });
+          // Activating a new workspace goes through the same path as switching
+          // to an existing one: the shell has to rebind to that workspace's
+          // data *and* its runtime (`ws:<id>`), not just highlight a new row.
+          scheduleWorkspaceSwitch(
+            newWorkspace.id,
+            projects,
+            reloadAfterWorkspaceSwitch,
+          );
         }
       } catch (e) {
         console.warn("Failed to create workspace:", e);
+        // Keep the modal open with the server's reason (`invalid_name`, …).
+        return workspaceErrorMessage(e);
       }
     },
     [

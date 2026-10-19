@@ -84,11 +84,21 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/posthog"), () => ({
 mock.module(resolve(import.meta.dir, "../../../../contexts/theme"), () => ({
   useTheme: () => ({ theme: "dark", setTheme: () => {} }),
 }))
+mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
+  useDomainHttpOptional: () => null,
+  getDomainHttpClient: () => null,
+}))
 mock.module(resolve(import.meta.dir, "../../../../lib/platform-config"), () => ({
+  isLocalMode: () => false,
+  isWorkspaceRuntimeEnabled: () => false,
+  isProjectWorkspaceRuntimeEnabled: () => false,
+  invalidatePlatformConfigCache: () => {},
   usePlatformConfig: () => ({ localMode: false, shogoKeyConnected: false }),
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/native-phone-layout"), () => ({
   isNativePlatform: () => true,
+  isPhoneLayout: () => true,
+  usePhoneLayout: () => true,
   useIsNativePhoneLayout: () => true,
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/billing-config"), () => ({

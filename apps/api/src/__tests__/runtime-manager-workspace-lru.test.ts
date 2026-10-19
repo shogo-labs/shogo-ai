@@ -2,7 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, mock, test } from 'bun:test'
-import { RuntimeManager, projectWorkspaceRuntimeKey } from '../lib/runtime/manager'
+import {
+  RuntimeManager,
+  projectWorkspaceRuntimeKey,
+  workspaceRuntimeKey,
+} from '../lib/runtime/manager'
 
 function fakeProcess() {
   const proc = {
@@ -140,5 +144,100 @@ describe('RuntimeManager — warm-3 preview LRU', () => {
     await rm.enforceWorkspacePreviewCap()
 
     expect(stopped).toEqual([])
+  })
+})
+
+/**
+ * SHO-43: a workspace-session runtime (`ws:<id>`, one per open workspace) is a
+ * foreground open exactly like a project preview, so it shares the same MRU and
+ * cap. Before this, only `ws:proj:` keys were recorded, so opening five
+ * workspaces piled up five runtime processes with nothing bounding them.
+ */
+describe('RuntimeManager — workspace-session runtimes share the warm cap', () => {
+  function seedWorkspaceRuntime(rm: PrivateRM, workspaceId: string, port: number) {
+    const key = workspaceRuntimeKey(workspaceId)
+    rm.runtimes.set(key, {
+      id: key,
+      port,
+      agentPort: port + 1000,
+      status: 'running',
+      url: `http://localhost:${port}`,
+      startedAt: Date.now(),
+      process: null,
+      agentProcess: fakeProcess(),
+    })
+    rm.usedPorts.add(port)
+    return key
+  }
+
+  test('recordWorkspaceMru records a ws:<id> key, not just ws:proj:', () => {
+    const rm = newManager()
+    const key = seedWorkspaceRuntime(rm, 'w1', 37300)
+
+    rm.recordWorkspaceMru(key)
+
+    expect(rm.workspacePreviewMru[0]).toBe(key)
+  })
+
+  test('a background runtime is never recorded, whatever its key shape', () => {
+    const rm = newManager()
+    const key = seedWorkspaceRuntime(rm, 'w2', 37301)
+    rm.runtimes.get(key)!.background = true
+
+    rm.recordWorkspaceMru(key)
+
+    expect(rm.workspacePreviewMru).not.toContain(key)
+  })
+
+  test('the cap evicts the oldest workspace-session runtime alongside previews', async () => {
+    const rm = newManager()
+    const preview = seedAnchored(rm, 'p1', 37310)
+    const w1 = seedWorkspaceRuntime(rm, 'w1', 37311)
+    const w2 = seedWorkspaceRuntime(rm, 'w2', 37312)
+    const w3 = seedWorkspaceRuntime(rm, 'w3', 37313) // oldest
+    rm.workspacePreviewMru = [w2, preview, w1, w3]
+
+    const stopped: string[] = []
+    ;(rm as any).stop = mock(async (key: string) => {
+      stopped.push(key)
+      rm.runtimes.delete(key)
+    })
+
+    await rm.enforceWorkspacePreviewCap()
+
+    expect(stopped).toEqual([w3])
+  })
+
+  test('a workspace mid-turn is kept even when it is the least recently used', async () => {
+    const rm = newManager()
+    const w1 = seedWorkspaceRuntime(rm, 'w1', 37320)
+    const w2 = seedWorkspaceRuntime(rm, 'w2', 37321)
+    const w3 = seedWorkspaceRuntime(rm, 'w3', 37322)
+    const w4 = seedWorkspaceRuntime(rm, 'w4', 37323) // oldest, but busy
+    rm.workspacePreviewMru = [w1, w2, w3, w4]
+    ;(rm as any).hasActiveWork = mock(async (key: string) => key === w4)
+
+    const stopped: string[] = []
+    ;(rm as any).stop = mock(async (key: string) => {
+      stopped.push(key)
+      rm.runtimes.delete(key)
+    })
+
+    await rm.enforceWorkspacePreviewCap()
+
+    // Nothing else is over the cap once the busy runtime is exempted.
+    expect(stopped).toEqual([])
+    expect(rm.runtimes.has(w4)).toBe(true)
+  })
+
+  test('workspaceActivity reports running + in-flight, and false once stopped', async () => {
+    const rm = newManager()
+    const key = seedWorkspaceRuntime(rm, 'w5', 37330)
+    ;(rm as any).hasActiveWork = mock(async () => true)
+
+    expect(await rm.workspaceActivity('w5')).toEqual({ running: true, inFlight: true })
+
+    rm.runtimes.delete(key)
+    expect(await rm.workspaceActivity('w5')).toEqual({ running: false, inFlight: false })
   })
 })

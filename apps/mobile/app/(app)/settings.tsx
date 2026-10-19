@@ -84,9 +84,14 @@ import {
   API_URL,
   isInvitationExpired,
   type WorkspaceChildrenResponse,
+  type WorkspaceDeletionPreview,
   type MemberInsight,
   type MemberInsightsData,
 } from "../../lib/api";
+import {
+  workspaceDeleteErrorMessage,
+  workspaceErrorMessage,
+} from "../../lib/workspace-errors";
 import { useBillingData } from "@shogo/shared-app/hooks";
 import {
   formatUsd,
@@ -463,6 +468,14 @@ function SettingsSidebar({
 // WORKSPACE SETTINGS TAB
 // ============================================================================
 
+/** Human byte size for the delete dialog's "what disappears" list. */
+function formatBytes(bytes: number): string {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** exp).toFixed(exp === 0 ? 0 : 1)} ${units[exp]}`;
+}
+
 const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const { X } = useSettingsIcons();
   const { width } = useWindowDimensions();
@@ -476,6 +489,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const members = useMemberCollection();
   const http = useDomainHttp();
   const currentWorkspace = useActiveWorkspace();
+  const toast = useToast();
 
   const [name, setName] = useState(currentWorkspace?.name || "");
   const [trainingDataEnabled, setTrainingDataEnabled] = useState(
@@ -494,6 +508,10 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deletePreview, setDeletePreview] = useState<WorkspaceDeletionPreview | null>(null);
+  const [deletePreviewError, setDeletePreviewError] = useState<string | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const originalName = currentWorkspace?.name || "";
   const hasChanges = name !== originalName;
@@ -554,15 +572,80 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
     }
   };
 
+  const openDeleteDialog = async () => {
+    const workspaceId = currentWorkspace?.id;
+    setDeleteConfirmText("");
+    setDeleteError(null);
+    setDeletePreview(null);
+    setDeletePreviewError(null);
+    setIsDeleteDialogOpen(true);
+    if (!workspaceId || !http) return;
+    setIsLoadingPreview(true);
+    try {
+      setDeletePreview(await api.getWorkspaceDeletionPreview(http, workspaceId));
+    } catch (error: any) {
+      setDeletePreviewError(
+        workspaceDeleteErrorMessage(error, "Could not list this workspace's files.")
+      );
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  };
+
   const handleDeleteWorkspace = async () => {
     if (!currentWorkspace?.id || !isDeleteConfirmed) return;
     setIsDeleting(true);
+    setDeleteError(null);
     try {
-      await actions.deleteWorkspace(currentWorkspace.id);
+      const workspaceId = currentWorkspace.id;
+      // Local mode wipes the files too, so it goes through the dedicated route
+      // (which reports what it removed); the cloud path keeps the collection's
+      // optimistic delete.
+      let result: { removedDirs: string[]; warnings: string[] } = {
+        removedDirs: [],
+        warnings: [],
+      };
+      if (localMode && http) {
+        result = await api.deleteWorkspace(http, workspaceId);
+      } else {
+        await actions.deleteWorkspace(workspaceId);
+      }
       setIsDeleteDialogOpen(false);
+      await workspaces.loadAll();
+      const remaining = (Array.isArray(workspaces.all) ? workspaces.all : []).filter(
+        (ws: any) => ws.id !== workspaceId
+      );
+      if (remaining.length > 0) setActiveWorkspaceId(remaining[0].id);
+      // A delete takes the workspace's runtime with it, so the shell has to move
+      // to a workspace that still exists — same destination as the cloud path.
+      // The file report can't live on this screen (it unmounts), so it goes out
+      // as a toast that survives the navigation.
+      if (localMode && result.removedDirs.length + result.warnings.length > 0) {
+        const removed = result.removedDirs.length;
+        const hasWarnings = result.warnings.length > 0;
+        toast.show({
+          placement: "top",
+          duration: 6000,
+          render: ({ id }: { id: string }) => (
+            <Toast nativeID={id} variant="solid" action={hasWarnings ? "warning" : "success"}>
+              <ToastTitle>
+                {hasWarnings ? "Workspace deleted with warnings" : "Workspace deleted"}
+              </ToastTitle>
+              <ToastDescription>
+                {`${removed} ${removed === 1 ? "directory" : "directories"} removed` +
+                  (result.removedDirs[0] ? ` (${result.removedDirs[0]})` : "") +
+                  (hasWarnings ? ` — ${result.warnings[0]}` : "")}
+              </ToastDescription>
+            </Toast>
+          ),
+        });
+      }
       router.replace("/(app)");
     } catch (error) {
       console.error("Failed to delete workspace:", error);
+      setDeleteError(
+        workspaceDeleteErrorMessage(error, "Could not delete the workspace.")
+      );
     } finally {
       setIsDeleting(false);
     }
@@ -723,66 +806,69 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
       </Card>
 
       {!localMode && (
-        <>
-          {/* Leave workspace */}
-          <Card>
-            <CardContent className="p-0">
-              <View className="px-6 py-5 flex-row items-center justify-between">
-                <View className="flex-1 mr-4">
-                  <Text className="text-base font-semibold text-foreground">
-                    Leave workspace
-                  </Text>
-                  <Text className="text-sm text-muted-foreground mt-0.5">
-                    Leave this workspace. You will lose access to its projects
-                    and data.
-                  </Text>
-                </View>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={
-                    wsAll.length <= 1 ||
-                    (isOwner &&
-                      !workspaceMembers.some(
-                        (m: any) => m.role === "owner" && m.userId !== user?.id
-                      ))
-                  }
-                  onPress={() => setIsLeaveDialogOpen(true)}
-                >
+        <Card>
+          <CardContent className="p-0">
+            <View className="px-6 py-5 flex-row items-center justify-between">
+              <View className="flex-1 mr-4">
+                <Text className="text-base font-semibold text-foreground">
                   Leave workspace
-                </Button>
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-0.5">
+                  Leave this workspace. You will lose access to its projects
+                  and data.
+                </Text>
               </View>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  wsAll.length <= 1 ||
+                  (isOwner &&
+                    !workspaceMembers.some(
+                      (m: any) => m.role === "owner" && m.userId !== user?.id
+                    ))
+                }
+                onPress={() => setIsLeaveDialogOpen(true)}
+              >
+                Leave workspace
+              </Button>
+            </View>
+          </CardContent>
+        </Card>
+      )}
 
-              {canDeleteWorkspace && (
-                <>
-                  <Separator />
-                  <View className="px-6 py-5 flex-row items-center justify-between">
-                    <View className="flex-1 mr-4">
-                      <Text className="text-base font-semibold text-destructive">
-                        Delete workspace
-                      </Text>
-                      <Text className="text-sm text-muted-foreground mt-0.5">
-                        {canDelete
-                          ? "Permanently delete this workspace and all its data."
-                          : isPersonalWorkspace
-                          ? "Your personal workspace cannot be deleted."
-                          : "You cannot delete your only workspace."}
-                      </Text>
-                    </View>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      disabled={!canDelete}
-                      onPress={() => setIsDeleteDialogOpen(true)}
-                    >
-                      Delete
-                    </Button>
-                  </View>
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </>
+      {/* Also shown in local mode: a desktop user can now have several
+          workspaces, and deleting one is the only way back out. */}
+      {canDeleteWorkspace && (
+        <Card>
+          <CardContent className="p-0">
+            <View className="px-6 py-5 flex-row items-center justify-between">
+              <View className="flex-1 mr-4">
+                <Text className="text-base font-semibold text-destructive">
+                  Delete workspace
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-0.5">
+                  {canDelete
+                    ? localMode
+                      ? "Permanently delete this workspace, its projects and their files."
+                      : "Permanently delete this workspace and all its data."
+                    : isPersonalWorkspace
+                    ? "Your personal workspace cannot be deleted."
+                    : "You cannot delete your only workspace."}
+                </Text>
+              </View>
+              <Button
+                variant="destructive"
+                size="sm"
+                accessibilityLabel="Delete workspace"
+                disabled={!canDelete}
+                onPress={() => void openDeleteDialog()}
+              >
+                Delete
+              </Button>
+            </View>
+          </CardContent>
+        </Card>
       )}
 
       {/* Leave Workspace Confirmation Modal */}
@@ -922,8 +1008,52 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
             </View>
             <Text className="text-sm text-muted-foreground">
               This action cannot be undone. This will permanently delete the
-              workspace "{currentWorkspace?.name}".
+              workspace "{currentWorkspace?.name}"
+              {localMode ? " and the project files listed below." : "."}
             </Text>
+            {isLoadingPreview && (
+              <Text className="text-xs text-muted-foreground">
+                Checking what will be removed…
+              </Text>
+            )}
+            {deletePreviewError && (
+              <Text className="text-xs text-destructive">{deletePreviewError}</Text>
+            )}
+            {deletePreview && (
+              <View className="gap-1">
+                {deletePreview.projects.map((project) => (
+                  <View key={project.id} className="flex-row items-start justify-between gap-2">
+                    <Text className="flex-1 text-xs text-muted-foreground" numberOfLines={2}>
+                      {project.path ?? project.folderPath ?? project.name}
+                    </Text>
+                    <Text className="text-xs text-muted-foreground">
+                      {project.folderLinked
+                        ? "your folder, kept"
+                        : project.sizeBytes === null
+                        ? ""
+                        : formatBytes(project.sizeBytes)}
+                    </Text>
+                  </View>
+                ))}
+                {deletePreview.removedDirs.length > 0 && (
+                  <Text className="text-xs text-muted-foreground">
+                    {deletePreview.removedDirs.length}{" "}
+                    {deletePreview.removedDirs.length === 1 ? "directory" : "directories"}
+                    {deletePreview.totalBytes !== null
+                      ? `, ${formatBytes(deletePreview.totalBytes)}`
+                      : ""}
+                    {" · "}
+                    {deletePreview.channelCount} channels, {deletePreview.boardCount} boards,{" "}
+                    {deletePreview.chatCount} chats
+                  </Text>
+                )}
+                {deletePreview.projects.some((project) => project.folderLinked) && (
+                  <Text className="text-xs text-muted-foreground">
+                    Folder-linked projects keep their own files on disk.
+                  </Text>
+                )}
+              </View>
+            )}
             <Text className="text-sm text-muted-foreground">
               Please type "{deleteConfirmRequired}" to confirm.
             </Text>
@@ -932,6 +1062,9 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               onChangeText={setDeleteConfirmText}
               placeholder={`Type "${deleteConfirmRequired}" to confirm`}
             />
+            {deleteError && (
+              <Text className="text-sm text-destructive">{deleteError}</Text>
+            )}
             <View className="flex-row gap-2 justify-end">
               <Button
                 variant="outline"
@@ -947,6 +1080,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               <Button
                 variant="destructive"
                 size="sm"
+                accessibilityLabel="Confirm delete workspace"
                 onPress={handleDeleteWorkspace}
                 disabled={!isDeleteConfirmed || isDeleting}
               >
@@ -3912,31 +4046,32 @@ export function WorkspaceAccountActions({
   );
 
   const createWorkspace = useCallback(() => {
-    if (pooledWorkspaceParent) {
+    // Local mode: no billing gate, so the name modal always (never the paid
+    // `/(app)/new-workspace` checkout page).
+    if (pooledWorkspaceParent || localMode || !hasTeamWorkspace) {
       setCreateWorkspaceOpen(true);
-    } else if (hasTeamWorkspace) {
-      router.push("/(app)/new-workspace" as any);
       return;
-    } else {
-      setCreateWorkspaceOpen(true);
     }
-  }, [hasTeamWorkspace, pooledWorkspaceParent, router]);
+    router.push("/(app)/new-workspace" as any);
+  }, [hasTeamWorkspace, localMode, pooledWorkspaceParent, router]);
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
       if (pooledWorkspaceParent) return createPooledWorkspace(name);
-      if (!user?.id) return;
+      if (!user?.id) return false;
       try {
         const created = await actions.createWorkspace(name, undefined, user.id);
         if (created?.id) {
           trackEvent(posthog, EVENTS.WORKSPACE_CREATED);
           setActiveWorkspaceId(created.id);
           await workspaces.loadAll();
-          projects.clear();
-          await projects.loadAll({ workspaceId: created.id });
+          // Same path as switching to an existing workspace: rebind the shell to
+          // the new workspace's data and runtime, don't just highlight it.
+          scheduleWorkspaceSwitch(created.id, projects, reloadAfterWorkspaceSwitch);
         }
       } catch (err) {
         console.warn("Failed to create workspace:", err);
+        return workspaceErrorMessage(err);
       }
     },
     [

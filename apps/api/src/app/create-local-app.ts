@@ -132,7 +132,7 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', localTerminalRoutes({ runtimeManager, workspacesDir }))
   app.route('/api', localIdeRoutes())
   app.route('/api', localPreviewRoutes({ runtimeManager }))
-  app.route('/api', localWorkspaceRoutes())
+  app.route('/api', localWorkspaceRoutes({ runtimeManager, workspacesDir }))
   app.route('/api', localThumbnailRoutes())
   app.route('/api', localProjectMetadataRoutes())
   app.route('/api', localHeartbeatRoutes())

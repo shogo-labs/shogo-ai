@@ -1672,7 +1672,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
     const existing = this.runtimes.get(key)
     if (existing && existing.status === 'running' && existing.agentPort) {
-      if (this.isAgentAlive(key, existing)) return this.toPublicRuntime(existing)
+      if (this.isAgentAlive(key, existing)) {
+        // Switching back to a workspace whose runtime is still warm counts as
+        // an open: keep it warmest and let the shared cap bound the rest.
+        this.recordWorkspaceMru(key)
+        return this.toPublicRuntime(existing)
+      }
       await this.dropStaleRuntime(key, 'stale-agent')
     }
 
@@ -1701,7 +1706,15 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     })
     this.startingPromises.set(key, promise)
     try {
-      return await promise
+      const result = await promise
+      // A workspace-session runtime is a foreground open, exactly like a
+      // project-anchored preview: record it in the shared MRU and apply the
+      // same warm cap, so N open workspaces can't pile up unbounded processes.
+      // A runtime with an in-flight turn is never evicted (`hasActiveWork`), so
+      // switching away keeps its work running (Decision 3).
+      this.recordWorkspaceMru(key)
+      await this.enforceWorkspacePreviewCap().catch(() => {})
+      return result
     } finally {
       this.startingPromises.delete(key)
     }
@@ -2873,14 +2886,16 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
-   * Move an anchored workspace key to the front of the warm-preview MRU.
-   * No-ops for background (heartbeat) runtimes so a heartbeat-triggered agent
-   * turn — whose AI-proxy calls flow through {@link touch} — can't quietly pull
-   * a background runtime into the foreground preview set and count it against
-   * the cap.
+   * Move a warm-preview key to the front of the MRU. Covers both runtime
+   * flavours the cap protects: a project-anchored preview (`ws:proj:<id>`) and
+   * a workspace-session runtime (`ws:<id>` — one per open workspace, see
+   * {@link startWorkspace}). No-ops for background (heartbeat) runtimes so a
+   * heartbeat-triggered agent turn — whose AI-proxy calls flow through
+   * {@link touch} — can't quietly pull a background runtime into the foreground
+   * preview set and count it against the cap.
    */
   private recordWorkspaceMru(key: string): void {
-    if (!key.startsWith('ws:proj:')) return
+    if (!key.startsWith('ws:')) return
     if (this.runtimes.get(key)?.background) return
     const i = this.workspacePreviewMru.indexOf(key)
     if (i >= 0) this.workspacePreviewMru.splice(i, 1)
@@ -3108,6 +3123,22 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   /** Public status of a workspace runtime, or null when not running. */
   workspaceStatus(workspaceId: string): IProjectRuntime | null {
     return this.status(workspaceRuntimeKey(workspaceId))
+  }
+
+  /**
+   * Is this workspace's runtime up, and is it mid-turn?
+   *
+   * Switching workspaces deliberately leaves runtimes warm (Decision 3), so the
+   * switcher asks this to show "Working in N other workspaces" — otherwise the
+   * agent keeps working somewhere the user can't see.
+   */
+  async workspaceActivity(
+    workspaceId: string,
+  ): Promise<{ running: boolean; inFlight: boolean }> {
+    const key = workspaceRuntimeKey(workspaceId)
+    const running = this.runtimes.get(key)?.status === 'running'
+    if (!running) return { running: false, inFlight: false }
+    return { running, inFlight: await this.hasActiveWork(key) }
   }
 
   async restart(projectId: string): Promise<IProjectRuntime> {

@@ -30,6 +30,7 @@ import { useWorkspacePlans } from "../../hooks/useWorkspacePlans"
 import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation"
 import { EVENTS, trackEvent } from "../../lib/analytics"
 import { api } from "../../lib/api"
+import { workspaceErrorMessage } from "../../lib/workspace-errors"
 import { nativePhoneCanvas, NATIVE_ACCOUNT_SCROLL_EXTRA_PAD, NATIVE_ACCOUNT_TITLE_CLASS, NATIVE_PHONE_CONTROL_SIZE } from "../../lib/native-phone-layout"
 import { PHONE_DENSITY } from "../../lib/phone-density"
 import { usePlatformConfig } from "../../lib/platform-config"
@@ -124,31 +125,32 @@ export default observer(function AccountPage() {
   )
 
   const handleCreateWorkspace = useCallback(() => {
-    if (pooledWorkspaceParent) {
+    // Local mode has no billing gate — always the name modal, never the paid
+    // `/(app)/new-workspace` checkout page (its billing route 404s locally).
+    if (pooledWorkspaceParent || localMode || !hasTeamWorkspace) {
       setCreateWorkspaceOpen(true)
-    } else if (hasTeamWorkspace) {
-      router.push("/(app)/new-workspace" as never)
-      return
     } else {
-      setCreateWorkspaceOpen(true)
+      router.push("/(app)/new-workspace" as never)
     }
-  }, [hasTeamWorkspace, pooledWorkspaceParent, router])
+  }, [hasTeamWorkspace, localMode, pooledWorkspaceParent, router])
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
       if (pooledWorkspaceParent) return createPooledWorkspace(name)
-      if (!user?.id) return
+      if (!user?.id) return false
       try {
         const created = await actions.createWorkspace(name, undefined, user.id)
         if (created?.id) {
           trackEvent(posthog, EVENTS.WORKSPACE_CREATED)
           setActiveWorkspaceId(created.id)
           await workspaces.loadAll()
-          projects.clear()
-          await projects.loadAll({ workspaceId: created.id })
+          // Same path as switching to an existing workspace: rebind the shell to
+          // the new workspace's data and runtime, don't just highlight it.
+          scheduleWorkspaceSwitch(created.id, projects, reloadAfterWorkspaceSwitch)
         }
       } catch (err) {
         console.warn("Failed to create workspace:", err)
+        return workspaceErrorMessage(err)
       }
     },
     [actions, createPooledWorkspace, pooledWorkspaceParent, posthog, projects, user?.id, workspaces],
