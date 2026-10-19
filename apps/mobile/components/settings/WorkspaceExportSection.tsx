@@ -157,7 +157,7 @@ export const WorkspaceExportSection = observer(function WorkspaceExportSection()
       } else {
         const { cacheDirectory, downloadAsync } = await import('expo-file-system/legacy')
         if (!cacheDirectory) throw new Error('Could not reach app storage.')
-        const url = api.getWorkspaceExportUrl(workspaceId, { includeAllDms, includeAttachments })
+        const url = api.getWorkspaceExportUrl(workspaceId)
         const target = `${cacheDirectory}${Date.now()}-workspace.zip`
         const result = await downloadAsync(url, target, {
           headers: api.getWorkspaceExportHeaders({

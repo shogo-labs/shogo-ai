@@ -155,16 +155,15 @@ export function workspaceExportRoutes(): Hono {
   })
 
   // GET /:workspaceId/export — for native clients, whose download manager
-  // (`expo-file-system`) can only stream a GET. Options ride in headers for the
-  // same reason the POST keeps them out of the query string.
+  // (`expo-file-system`) can only stream a GET. Every option rides in a header
+  // (never the query string): a password in a URL ends up in access logs, proxy
+  // logs and the archive's own download history.
   app.get('/:workspaceId/export', async (c) => {
     const header = (name: string) => c.req.header(name) || undefined
-    const query = (name: string) => c.req.query(name) || undefined
     return runExport(c, {
-      includeAllDms: header('x-workspace-export-all-dms') === 'true' || query('allDms') === 'true',
-      includeAttachments:
-        header('x-workspace-export-attachments') !== 'false' && query('attachments') !== 'false',
-      password: header('x-workspace-export-password') || query('password'),
+      includeAllDms: header('x-workspace-export-all-dms') === 'true',
+      includeAttachments: header('x-workspace-export-attachments') !== 'false',
+      password: header('x-workspace-export-password'),
     })
   })
 

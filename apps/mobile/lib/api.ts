@@ -6,6 +6,7 @@ import type { Permission, ProjectRole, WorkspaceRole } from '@shogo/authz'
 import { API_URL } from './api-url'
 import { authClient } from './auth-client'
 import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
+import { routeUrl } from './workspace-route'
 
 export { API_URL } from './api-url'
 
@@ -869,16 +870,15 @@ export const api = {
   },
 
   // ─── Workspace export / import ─────────────────────────────────
-  /** Absolute download URL for the whole-workspace archive (native streams this with `downloadAsync`). */
-  getWorkspaceExportUrl(
-    workspaceId: string,
-    options: { includeAllDms?: boolean; includeAttachments?: boolean } = {},
-  ): string {
-    const qs = new URLSearchParams()
-    if (options.includeAllDms) qs.set('allDms', 'true')
-    if (options.includeAttachments === false) qs.set('attachments', 'false')
-    const suffix = qs.toString()
-    return `${API_URL}/api/workspaces/${workspaceId}/export${suffix ? `?${suffix}` : ''}`
+  /**
+   * Absolute download URL for the whole-workspace archive (native streams this
+   * with `downloadAsync`). Routed so a cloud workspace's archive goes through
+   * the desktop relay, and kept query-free so the password never lands in a URL:
+   * every option rides in `getWorkspaceExportHeaders`.
+   */
+  getWorkspaceExportUrl(workspaceId: string): string {
+    const url = `${API_URL}/api/workspaces/${workspaceId}/export`
+    return API_URL ? routeUrl(url, API_URL) : url
   },
 
   /**
