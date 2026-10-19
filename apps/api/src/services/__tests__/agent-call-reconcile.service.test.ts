@@ -4,9 +4,14 @@
  * Repair on read: opening a call chat whose reply never landed writes the
  * missing assistant row from the durable call record — once.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { _testing as agentCallStoreTesting } from '../../lib/agent-call-store'
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { rmSync } from 'fs'
+import { setupChannelsTestDb } from '../../__tests__/helpers/channels-test-db'
 import { reconcileCallReplyOnRead } from '../agent-call-reconcile.service'
+
+const { dir } = setupChannelsTestDb()
+const { prisma } = await import('../../lib/prisma')
+const callDb = prisma as any
 
 const SESSION = 'chat-reconcile-1'
 const PROMPT_AT = new Date('2026-10-18T18:00:00.000Z')
@@ -61,30 +66,50 @@ function replyRow(text = 'the answer') {
   }
 }
 
-function seedCall(record: any) {
-  agentCallStoreTesting.records.set(`agent-call:proj-1:run-1`, {
-    record: { runId: 'run-1', sessionId: SESSION, chatSessionId: SESSION, startedAt: PROMPT_AT.getTime(), updatedAt: PROMPT_AT.getTime(), ...record },
-    expiresAt: Date.now() + 60_000,
+async function seedCall(record: any) {
+  const data = {
+    status: record.status,
+    reply: record.reply ?? null,
+    error: record.error ? JSON.stringify(record.error) : null,
+    sessionId: SESSION,
+    chatSessionId: SESSION,
+    startedAt: new Date(PROMPT_AT),
+    // Fresh unless a test says otherwise: a running call is only failed once
+    // its heartbeat is older than the staleness window.
+    updatedAt: new Date(),
+    expiresAt: new Date(Date.now() + 60_000),
+  }
+  await callDb.agentCall.upsert({
+    where: { projectId_runId: { projectId: 'proj-1', runId: 'run-1' } },
+    create: { projectId: 'proj-1', runId: 'run-1', ...data },
+    update: data,
   })
-  agentCallStoreTesting.sessionLinks.set(`agent-call-session:${SESSION}`, {
-    link: { projectId: 'proj-1', runId: 'run-1', startedAt: PROMPT_AT.getTime() },
-    expiresAt: Date.now() + 60_000,
+  await callDb.agentCallSessionLink.upsert({
+    where: { chatSessionId: SESSION },
+    create: { chatSessionId: SESSION, projectId: 'proj-1', runId: 'run-1', startedAt: new Date(PROMPT_AT), expiresAt: new Date(Date.now() + 60_000) },
+    update: { projectId: 'proj-1', runId: 'run-1', expiresAt: new Date(Date.now() + 60_000) },
   })
 }
 
-beforeEach(() => {
-  agentCallStoreTesting.records.clear()
-  agentCallStoreTesting.sessionLinks.clear()
+beforeEach(async () => {
+  await callDb.agentCall.deleteMany({})
+  await callDb.agentCallSessionLink.deleteMany({})
 })
-afterEach(() => {
-  agentCallStoreTesting.records.clear()
-  agentCallStoreTesting.sessionLinks.clear()
+afterEach(async () => {
+  await callDb.agentCall.deleteMany({})
+  await callDb.agentCallSessionLink.deleteMany({})
+})
+afterAll(async () => {
+  await callDb.agentCall.deleteMany({})
+  await callDb.agentCallSessionLink.deleteMany({})
+  await callDb.$disconnect?.()
+  rmSync(dir, { recursive: true, force: true })
 })
 
 describe('reconcileCallReplyOnRead', () => {
   it('writes the reply of a terminal call whose chat only has the prompt', async () => {
     const db = fakeDb([promptRow()])
-    seedCall({ status: 'completed', reply: 'PONG' })
+    await seedCall({ status: 'completed', reply: 'PONG' })
 
     expect(await reconcileCallReplyOnRead(db, SESSION)).toBe(true)
 
@@ -96,7 +121,7 @@ describe('reconcileCallReplyOnRead', () => {
 
   it('is idempotent: a chat that already has its reply is not written again', async () => {
     const db = fakeDb([promptRow(), replyRow()])
-    seedCall({ status: 'completed', reply: 'PONG' })
+    await seedCall({ status: 'completed', reply: 'PONG' })
 
     expect(await reconcileCallReplyOnRead(db, SESSION)).toBe(false)
     expect(db.state.rows.filter((r) => r.role === 'assistant')).toHaveLength(1)
@@ -104,7 +129,7 @@ describe('reconcileCallReplyOnRead', () => {
 
   it('does nothing while the call is still running', async () => {
     const db = fakeDb([promptRow()])
-    seedCall({ status: 'running' })
+    await seedCall({ status: 'running' })
 
     expect(await reconcileCallReplyOnRead(db, SESSION)).toBe(false)
     expect(db.state.rows).toHaveLength(1)
@@ -112,7 +137,7 @@ describe('reconcileCallReplyOnRead', () => {
 
   it('writes an explicit failure row for a terminal call that has no reply text', async () => {
     const db = fakeDb([promptRow()])
-    seedCall({ status: 'failed', reply: null, error: { code: 'callee_turn_lost', message: 'lost' } })
+    await seedCall({ status: 'failed', reply: null, error: { code: 'callee_turn_lost', message: 'lost' } })
 
     expect(await reconcileCallReplyOnRead(db, SESSION)).toBe(true)
     const replies = db.state.rows.filter((r) => r.role === 'assistant')
@@ -126,7 +151,7 @@ describe('reconcileCallReplyOnRead', () => {
       replyRow(),
       { sessionId: SESSION, role: 'user', agent: 'technical', content: 'hi', createdAt: new Date() },
     ])
-    seedCall({ status: 'completed', reply: 'PONG' })
+    await seedCall({ status: 'completed', reply: 'PONG' })
 
     expect(await reconcileCallReplyOnRead(db, SESSION)).toBe(false)
     expect(db.state.rows.filter((r) => r.role === 'assistant')).toHaveLength(1)
@@ -148,7 +173,7 @@ describe('reconcileCallReplyOnRead', () => {
       },
       chatSession: { update: async () => ({}) },
     }
-    seedCall({ status: 'completed', reply: 'PONG' })
+    await seedCall({ status: 'completed', reply: 'PONG' })
     expect(await reconcileCallReplyOnRead(db, SESSION)).toBe(false)
   })
 })

@@ -4942,3 +4942,46 @@ model ProblemOccurrence {
   @@index([workspaceId, fingerprint])
   @@map("problem_occurrences")
 }
+
+// =============================================================================
+// Tracked `project_call` store
+//
+// One record per call plus one link per callee chat session, so a call in
+// flight outlives the API process that is writing it (restart, crash, pod
+// roll). `updatedAt` is the liveness signal: the owning process refreshes it
+// while the call runs, and a `running` record that has not moved for
+// AGENT_CALL_STALE_MS (apps/api/src/lib/agent-call-store.ts) is failed as
+// `interrupted`. Identical in prisma/schema.local.prisma — desktop and cloud
+// run the same store against this schema.
+// =============================================================================
+
+model AgentCall {
+  projectId     String
+  runId         String
+  /// running | completed | failed
+  status        String
+  reply         String?
+  /// JSON-encoded { code?, message }
+  error         String?
+  sessionId     String?
+  chatSessionId String?
+  startedAt     DateTime
+  updatedAt     DateTime @updatedAt
+  expiresAt     DateTime
+
+  @@id([projectId, runId])
+  @@index([status, updatedAt])
+  @@index([expiresAt])
+  @@map("agent_calls")
+}
+
+model AgentCallSessionLink {
+  chatSessionId String   @id
+  projectId     String
+  runId         String
+  startedAt     DateTime
+  expiresAt     DateTime
+
+  @@index([expiresAt])
+  @@map("agent_call_session_links")
+}

@@ -2439,6 +2439,49 @@ model LocalConfig {
 }
 
 // =============================================================================
+// Tracked `project_call` store
+//
+// One record per call plus one link per callee chat session, so a call in
+// flight outlives the process that is writing it (the desktop API restarts on
+// app update, quit/relaunch and the SIGKILL recovery in
+// apps/desktop/src/local-server.ts; the cloud rolls pods). `updatedAt` is the
+// liveness signal, see AGENT_CALL_STALE_MS in
+// apps/api/src/lib/agent-call-store.ts. Identical to prisma/schema.prisma —
+// desktop and cloud run the same store code.
+// =============================================================================
+
+model AgentCall {
+  projectId     String
+  runId         String
+  /// running | completed | failed
+  status        String
+  reply         String?
+  /// JSON-encoded { code?, message }
+  error         String?
+  sessionId     String?
+  chatSessionId String?
+  startedAt     DateTime
+  updatedAt     DateTime @updatedAt
+  expiresAt     DateTime
+
+  @@id([projectId, runId])
+  @@index([status, updatedAt])
+  @@index([expiresAt])
+  @@map("agent_calls")
+}
+
+model AgentCallSessionLink {
+  chatSessionId String   @id
+  projectId     String
+  runId         String
+  startedAt     DateTime
+  expiresAt     DateTime
+
+  @@index([expiresAt])
+  @@map("agent_call_session_links")
+}
+
+// =============================================================================
 // MARKETPLACE (Agent Marketplace & Creator Economy)
 // SQLite: enums → String, String[] → String (JSON), Json? → String?, no @db.Text
 // =============================================================================

@@ -147,6 +147,14 @@ const IN_PROCESS_E2E_SUITES: readonly InProcessE2ESuite[] = [
     files: ['e2e/invitations/join-notifications.integration.test.ts'],
     env: {},
   },
+  // SHO-39: spawns its own writer processes against its own throwaway SQLite
+  // file, so it needs no prepared database and must not share a bun process
+  // with the suites above.
+  {
+    name: 'agent-call restart e2e',
+    files: ['e2e/agent-call-restart.test.ts'],
+    env: {},
+  },
   ...['enterprise-onboarding', 'restricted-project-lifecycle', 'api-key-lifecycle'].map((name) => ({
     name: `rbac e2e: ${name}`,
     files: [`e2e/rbac/${name}.e2e.test.ts`],

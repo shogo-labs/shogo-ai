@@ -25,7 +25,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from 'hono'
 import { PROJECT_CALL_MESSAGE_AGENT, runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
-import { linkAgentCallSession, putAgentCall, type AgentCallSessionLink } from '../lib/agent-call-store'
+import { linkAgentCallSession, putAgentCall, startAgentCallHeartbeat, type AgentCallSessionLink } from '../lib/agent-call-store'
 import type { TrackedStreamResult } from '../routes/project-chat'
 
 export { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
@@ -382,6 +382,7 @@ async function startTrackedCall(
   }
 
   const detached = detachedContext(c)
+  const stopCallHeartbeat = startAgentCallHeartbeat(projectId, runId)
   void callProjectAgent(detached, projectId, workspaceId, {
     ...req,
     runId,
@@ -425,6 +426,7 @@ async function startTrackedCall(
         updatedAt: Date.now(),
       }).catch(() => {})
     })
+    .finally(stopCallHeartbeat)
 
   return accepted
 }
@@ -582,6 +584,10 @@ async function followCallTurn(
     return null
   })
   const stopHeartbeat = turnId ? deps.startTurnHeartbeat(chatSessionId, turnId) : () => {}
+  // Keeps the call record's `updatedAt` moving while this process follows the
+  // turn, so another replica (or the next boot) can tell a live call from one
+  // whose follower died.
+  const stopCallHeartbeat = link ? startAgentCallHeartbeat(link.projectId, link.runId) : () => {}
   let result: TrackedStreamResult | null = null
   try {
     if (await waitForCalleeTurn(projectId, chatSessionId, startedAt, deps)) {
@@ -590,6 +596,7 @@ async function followCallTurn(
       console.warn(`[AgentCall] callee turn for ${chatSessionId} never started`)
     }
   } finally {
+    stopCallHeartbeat()
     stopHeartbeat()
     if (link) await settleAgentCallFromTurn(link, chatSessionId, result).catch(() => {})
     if (turnId) await deps.markTurnEnded(chatSessionId, turnId).catch(() => {})

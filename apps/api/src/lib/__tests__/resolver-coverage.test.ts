@@ -48,6 +48,8 @@ const EXEMPT: Record<string, string> = {
   // always carry workspaceId/projectId in the path or query, which the router
   // resolves (steps 2-5) BEFORE the lookup table — so they're already pinned to
   // the workspace's home region.
+  agentCall: 'Mutated only via /api/internal/projects/:id/agent-call/... (internal runtime routes) — resolved by path projectId; no standalone REST row mutation.',
+  agentCallSessionLink: 'Written and deleted alongside its agentCall (same request, onDelete: Cascade) — resolved by the projectId in that internal agent-call path.',
   agentConfig: 'Mutated via /api/projects/:projectId/... — resolved by path projectId.',
   agentCostMetric: 'Written via project/workspace-scoped agent routes — resolved by path params.',
   agentEvalResult: 'Mutated via workspace/project-scoped eval routes — resolved by path params.',

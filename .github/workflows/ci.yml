@@ -914,6 +914,13 @@ jobs:
             echo "::endgroup::"
           done
 
+      # SHO-39: the tracked-call store has to behave identically on both
+      # tracks. The `test` job runs this same file on SQLite; here it runs on
+      # Postgres, which is the half an API restart in the cloud depends on.
+      - name: Agent-call store across a restart (Postgres)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/agent-call-restart.integration.test.ts
+
   # Thin aggregator so branch protection's required status check keeps its
   # original name/context ("Lint, Typecheck, Test") no matter how the real
   # work above gets split or resharded. `if: always()` makes this run even
