@@ -368,5 +368,100 @@ describe('runtime-trust', () => {
     expect(r.ok).toBe(true)
   })
 })
+
+describe('runtime-trust: other projects on a metal workspace runtime', () => {
+  const ANCHOR = '11111111-1111-4111-8111-111111111111'
+  const OTHER = '22222222-2222-4222-8222-222222222222'
+  const UNLISTED = '33333333-3333-4333-8333-333333333333'
+  const ENV_KEYS = [
+    'WORKSPACE_RUNTIME',
+    'WORKSPACE_ANCHOR_PROJECT_ID',
+    'WORKSPACE_AVAILABLE_PROJECTS',
+    'WORKSPACE_PROJECTS',
+    'WORKSPACE_MOUNTS',
+    'SHOGO_RUNTIME_SUBSTRATE',
+  ]
+  let saved: Record<string, string | undefined>
+  let workspaceDir: string
+
+  beforeEach(() => {
+    clearTrustState()
+    saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
+    workspaceDir = mkdtempSync(join(tmpdir(), 'shogo-trust-metal-'))
+    mkdirSync(join(workspaceDir, ANCHOR), { recursive: true })
+    process.env.WORKSPACE_RUNTIME = 'true'
+    process.env.SHOGO_RUNTIME_SUBSTRATE = 'metal'
+    process.env.WORKSPACE_ANCHOR_PROJECT_ID = ANCHOR
+    process.env.WORKSPACE_AVAILABLE_PROJECTS = JSON.stringify([
+      { id: ANCHOR, name: 'Anchor' },
+      { id: OTHER, name: 'Other' },
+      { id: 'proj-short', name: 'Short id' },
+    ])
+    process.env.WORKSPACE_MOUNTS = JSON.stringify([
+      { mount: 'linked-docs', path: '/somewhere/docs', projectId: ANCHOR, kind: 'folder' },
+    ])
+    __setTrustForTests({
+      workingMode: 'managed',
+      trustLevel: 'trusted',
+      workspaceDir,
+      linkedFolders: [],
+      readonlyRoots: [],
+      initialized: true,
+    })
+  })
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    rmSync(workspaceDir, { recursive: true, force: true })
+    clearTrustState()
+  })
+
+  test('a catalog project other than the anchor is refused for read, write and exec', () => {
+    for (const mode of ['read', 'write', 'exec'] as const) {
+      const r = assertAllowedPath(join(workspaceDir, OTHER, 'public', 'CAB_PLAN.md'), mode)
+      expect(r.ok).toBe(false)
+      expect(r.reason).toBe('other_project_path')
+      expect(r.message).toContain(OTHER)
+      expect(r.message).toContain(`project: "${OTHER}"`)
+      expect(r.message).not.toContain('copy_to_project')
+    }
+    expect(assertAllowedPath(join(workspaceDir, 'proj-short', 'x.txt'), 'write').reason).toBe('other_project_path')
+  })
+
+  test('the workspace agent (no anchor) refuses every project folder and points at copy_to_project', () => {
+    delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    for (const id of [ANCHOR, OTHER]) {
+      const r = assertAllowedPath(join(workspaceDir, id, 'CAB_PLAN.md'), 'write')
+      expect(r.reason).toBe('other_project_path')
+      expect(r.message).toContain('copy_to_project')
+    }
+    expect(assertAllowedPath(join(workspaceDir, 'drafts', 'a.md'), 'write').ok).toBe(true)
+  })
+
+  test('a UUID-shaped folder missing from the catalog is refused too', () => {
+    expect(assertAllowedPath(join(workspaceDir, UNLISTED, 'x.txt'), 'write').reason).toBe('other_project_path')
+  })
+
+  test('the anchor, linked-folder mounts, the root and ordinary folders still pass', () => {
+    expect(assertAllowedPath(join(workspaceDir, ANCHOR, 'src', 'App.tsx'), 'write').ok).toBe(true)
+    expect(assertAllowedPath(join(workspaceDir, 'linked-docs', 'a.md'), 'write').ok).toBe(true)
+    expect(assertAllowedPath(join(workspaceDir, 'WORKSPACE.md'), 'read').ok).toBe(true)
+    expect(assertAllowedPath(join(workspaceDir, '.tmp', 'scratch.txt'), 'write').ok).toBe(true)
+    expect(assertAllowedPath(workspaceDir, 'exec').ok).toBe(true)
+  })
+
+  test('non-metal workspace runtimes are unaffected', () => {
+    process.env.SHOGO_RUNTIME_SUBSTRATE = 'k8s'
+    expect(assertAllowedPath(join(workspaceDir, OTHER, 'x.txt'), 'write').ok).toBe(true)
+  })
+
+  test('single-project runtimes are unaffected', () => {
+    delete process.env.WORKSPACE_RUNTIME
+    expect(assertAllowedPath(join(workspaceDir, OTHER, 'x.txt'), 'write').ok).toBe(true)
+  })
+})
 // Silence "imported but unused" complaints when sep import is needed later.
 void sep

@@ -685,15 +685,75 @@ export async function callProjectRemoteTool(
   req: RemoteToolRequest,
 ): Promise<AgentCallOutcome> {
   const timeoutMs = Math.min(Math.max(req.timeoutMs ?? 5 * 60_000, 10_000), 20 * 60_000)
-  let runtimeUrl: string
+  const resolved = await wakeRemoteTarget(projectId, 'RemoteTool')
+  if ('status' in resolved) return resolved
+
+  return forwardToProjectRuntime(
+    c,
+    projectId,
+    workspaceId,
+    '/agent/remote/tool',
+    JSON.stringify({ tool: req.tool, args: req.args, callerProjectId: req.callerProjectId }),
+    {
+      runtimeUrl: resolved.url,
+      timeoutMs,
+      ...(req.requesterTicket ? { headers: { 'X-Requester-Ticket': req.requesterTicket } } : {}),
+      timeoutMessage: `The target project did not finish ${req.tool} within ${Math.round(timeoutMs / 1000)}s.`,
+    },
+  )
+}
+
+export interface RemoteImportRequest {
+  /** Base64 tar.gz built by the caller runtime (packages/agent-runtime/src/project-transfer.ts). */
+  archive: string
+  dest?: string
+  overwrite?: boolean
+  callerProjectId?: string
+  requesterTicket?: string
+}
+
+/**
+ * Unpack an archive inside the target project's own runtime
+ * (`/agent/remote/import`, `copy_to_project`). Wakes it like
+ * callProjectRemoteTool. Never throws.
+ */
+export async function callProjectRemoteImport(
+  c: Context,
+  projectId: string,
+  workspaceId: string,
+  req: RemoteImportRequest,
+): Promise<AgentCallOutcome> {
+  const timeoutMs = 3 * 60_000
+  const resolved = await wakeRemoteTarget(projectId, 'RemoteImport')
+  if ('status' in resolved) return resolved
+
+  return forwardToProjectRuntime(
+    c,
+    projectId,
+    workspaceId,
+    '/agent/remote/import',
+    JSON.stringify({
+      archive: req.archive,
+      ...(req.dest !== undefined ? { dest: req.dest } : {}),
+      ...(req.overwrite ? { overwrite: true } : {}),
+      callerProjectId: req.callerProjectId,
+    }),
+    {
+      runtimeUrl: resolved.url,
+      timeoutMs,
+      ...(req.requesterTicket ? { headers: { 'X-Requester-Ticket': req.requesterTicket } } : {}),
+      timeoutMessage: `The target project did not finish importing files within ${Math.round(timeoutMs / 1000)}s.`,
+    },
+  )
+}
+
+/** Resolve (and so wake) the target project's own runtime, or the outcome to return instead. */
+async function wakeRemoteTarget(projectId: string, logTag: string): Promise<{ url: string } | AgentCallOutcome> {
   try {
     const overridden = runtimeUrlOverride ? await runtimeUrlOverride(projectId) : null
-    if (overridden) {
-      runtimeUrl = overridden
-    } else {
-      const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
-      runtimeUrl = (await resolveProjectPodUrl(projectId, { logTag: 'RemoteTool' })).url
-    }
+    if (overridden) return { url: overridden }
+    const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
+    return { url: (await resolveProjectPodUrl(projectId, { logTag })).url }
   } catch (err: any) {
     const { WorkspaceCapacityError, describeCapacityRefusal } = await import('../lib/workspace-compute-budget')
     if (err instanceof WorkspaceCapacityError) {
@@ -709,26 +769,12 @@ export async function callProjectRemoteTool(
         },
       }
     }
-    console.warn(`[RemoteTool] could not resolve runtime for ${projectId}: ${err?.message ?? err}`)
+    console.warn(`[${logTag}] could not resolve runtime for ${projectId}: ${err?.message ?? err}`)
     return {
       status: 502,
       body: { error: { code: 'target_unavailable', message: `Project ${projectId} runtime is unavailable: ${err?.message ?? err}` } },
     }
   }
-
-  return forwardToProjectRuntime(
-    c,
-    projectId,
-    workspaceId,
-    '/agent/remote/tool',
-    JSON.stringify({ tool: req.tool, args: req.args, callerProjectId: req.callerProjectId }),
-    {
-      runtimeUrl,
-      timeoutMs,
-      ...(req.requesterTicket ? { headers: { 'X-Requester-Ticket': req.requesterTicket } } : {}),
-      timeoutMessage: `The target project did not finish ${req.tool} within ${Math.round(timeoutMs / 1000)}s.`,
-    },
-  )
 }
 
 let runtimeUrlOverride: ((projectId: string) => Promise<string | null> | string | null) | null = null

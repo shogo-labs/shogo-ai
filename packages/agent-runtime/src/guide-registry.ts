@@ -163,6 +163,12 @@ export interface CapabilitiesIndexFlags {
    * instead of pointing at an `agent_spawn` call the model can't make.
    */
   mediaDelegated?: boolean
+  /**
+   * Whether this runtime can spawn subagents at all (default: true). False
+   * for personal workspaces and the workspace agent: the subagent and
+   * browser lines go, and the rest name the directly callable tools.
+   */
+  subagents?: boolean
 }
 
 /**
@@ -175,7 +181,8 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
   const integrations = flags.integrations !== false
   const channels = flags.channels !== false
   const media = flags.media !== false
-  const mediaDelegated = flags.mediaDelegated !== false
+  const subagents = flags.subagents !== false
+  const mediaDelegated = subagents && flags.mediaDelegated !== false
   const devops = flags.devops !== false
 
   // The subagent line advertises delegated agent types; only list the ones
@@ -204,9 +211,13 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
       '- **integrations**: Discovery and lifecycle for managed OAuth integrations (Google, Slack, GitHub, etc.), bundled skills, and MCP protocol servers via the unified `search_integrations` / `connect` / `disconnect` surface. Also covers CLI-first tools when the user provides a token. Read before installing or searching for tools.',
     )
   }
+  if (subagents) {
+    lines.push(
+      `- **subagent**: Agent orchestration — ${subagentTypes}. Read before delegating tasks.`,
+      '- **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use `agent_spawn({ type: "browser", prompt: "..." })`. The `web` tool for HTTP fetching is available directly. Read the guide before first browser delegation.',
+    )
+  }
   lines.push(
-    `- **subagent**: Agent orchestration — ${subagentTypes}. Read before delegating tasks.`,
-    '- **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use `agent_spawn({ type: "browser", prompt: "..." })`. The `web` tool for HTTP fetching is available directly. Read the guide before first browser delegation.',
     '- **constraint-awareness**: Track and enforce user constraints (budgets, dates, requirements). Read when user states explicit constraints.',
     '- **personality**: Rules for updating AGENTS.md identity/personality. Read before modifying personality, tone, or role.',
     '- **skill-matching**: Skill discovery, trigger matching, and management in .shogo/skills/. Read before skill operations.',
@@ -229,12 +240,16 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
   }
   if (channels) {
     lines.push(
-      '- **channel**: Channel connection and messaging (Telegram, Discord, webchat). Delegated — use `agent_spawn({ type: "channel", prompt: "..." })`.',
+      subagents
+        ? '- **channel**: Channel connection and messaging (Telegram, Discord, webchat). Delegated — use `agent_spawn({ type: "channel", prompt: "..." })`.'
+        : '- **channel**: Channel connection and messaging (Telegram, Discord, webchat). Call `channel_connect` / `channel_list` / `send_message` directly.',
     )
   }
   if (devops) {
     lines.push(
-      '- **devops**: Heartbeat scheduling, monitoring, and skill server sync. Delegated — use `agent_spawn({ type: "devops", prompt: "..." })`.',
+      subagents
+        ? '- **devops**: Heartbeat scheduling, monitoring, and skill server sync. Delegated — use `agent_spawn({ type: "devops", prompt: "..." })`.'
+        : '- **devops**: Heartbeat scheduling and monitoring. Call `heartbeat_configure` / `heartbeat_status` directly.',
     )
   }
 

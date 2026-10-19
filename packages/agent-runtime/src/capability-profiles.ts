@@ -106,7 +106,7 @@ export const CORE_TOOL_NAMES = [
   // Background tasks: every async source (shell, subagents, project_call, team chat, boards) shares these.
   'wait', 'task_list', 'task_cancel',
   'search_history', 'read_history', 'read_guide', 'worktree_list',
-  'project_list', 'project_create', 'project_call', 'project_configure', 'capabilities_configure', 'connect_project', 'list_models',
+  'project_list', 'project_create', 'project_call', 'project_configure', 'capabilities_configure', 'connect_project', 'copy_to_project', 'list_models',
   'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list',
   'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'set_status',
   'trigger_types_list', 'trigger_create', 'trigger_list', 'trigger_update', 'trigger_delete', 'trigger_test',

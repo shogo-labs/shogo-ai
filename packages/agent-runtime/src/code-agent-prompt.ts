@@ -25,6 +25,7 @@
 
 import { MOBILE_FIRST_LAYOUT_RULES } from './canvas-v2-prompt'
 import { isSearchEnabled } from './search-flag'
+import { isWorkspaceAgentRuntime } from './workspace-runtime-mode'
 
 export { buildCodeAgentGeneralGuide, OUTPUT_CONTRACT_GUIDE }
 
@@ -96,12 +97,22 @@ const RG_SEARCH_SECTION = `### Searching the workspace
 Use \`exec\` with ripgrep: \`exec({ command: 'rg -n "pattern" src' })\` for content, \`exec({ command: 'rg --files | rg name' })\` for file names. Uploaded files live under \`files/\` — search them the same way (\`rg -n "revenue" files\`). Follow up with \`read_file\` to see full context.
 `
 
+const CODE_REVIEW_SUBAGENT_SECTION = `### Code Analysis & Review
+
+The code-graph tools (\`impact_radius\`, \`detect_changes\`, \`review_context\`) are bound to the \`explore\` and \`code-reviewer\` subagents, not to you. To find the blast radius of a change before editing, or for a detailed review (risk scoring, test gap analysis, execution flow tracing), spawn one:
+\`agent_spawn({ type: "code-reviewer", prompt: "Review the recent changes and check for risks and test gaps" })\`
+
+`
+
 /**
  * The general coding guide. `search` is only registered when
  * SHOGO_SEARCH_ENABLED=1, so its section and mentions are gated on the same
  * flag; otherwise the guide points at `exec` + ripgrep.
  */
-function buildCodeAgentGeneralGuide(searchEnabled: boolean = isSearchEnabled()): string {
+function buildCodeAgentGeneralGuide(
+  searchEnabled: boolean = isSearchEnabled(),
+  subagents: boolean = !isWorkspaceAgentRuntime(),
+): string {
   const exploreTools = searchEnabled ? '\`search\`, \`read_file\`, or \`exec\`' : '\`read_file\` or \`exec\` (e.g. \`rg\`)'
   const exploreToolsAnd = searchEnabled ? '\`search\`, \`read_file\`, and \`exec\`' : '\`read_file\` and \`exec\` (\`rg\`, \`ls\`)'
   const enumerateTools = searchEnabled ? '\`search\`/\`exec rg\`' : '\`exec rg\`'
@@ -159,12 +170,7 @@ Before your first edit, you MUST run at least one exploratory command (${explore
 - Read the files involved in the bug or feature before making changes.
 
 ${searchEnabled ? SEARCH_TOOL_SECTION : RG_SEARCH_SECTION}
-### Code Analysis & Review
-
-The code-graph tools (\`impact_radius\`, \`detect_changes\`, \`review_context\`) are bound to the \`explore\` and \`code-reviewer\` subagents, not to you. To find the blast radius of a change before editing, or for a detailed review (risk scoring, test gap analysis, execution flow tracing), spawn one:
-\`agent_spawn({ type: "code-reviewer", prompt: "Review the recent changes and check for risks and test gaps" })\`
-
-### Debugging and Bug Fixing
+${subagents ? CODE_REVIEW_SUBAGENT_SECTION : ''}### Debugging and Bug Fixing
 
 - Follow the traceback — error messages, class names, and function names mentioned in the error are your search terms. Use \`exec({ command: 'rg ...' })\` to locate them in the codebase.
 - Read the failing test or test file to understand expected behavior — tests often describe the correct behavior more precisely than the issue description.
@@ -309,7 +315,7 @@ When you write and run tests:
 
 Managed integrations (Jira, Slack, Gmail, Google Calendar, Meta Ads, etc.) are exposed two places: as **tools bound to YOU** (callable directly by name like \`JIRA_LIST_BOARDS\`), and to the user's app via \`@shogo-ai/sdk/tools\`.
 
-**Step 0 — check what's already bound.** Before reaching for \`search_integrations\` / \`connect\` / \`agent_spawn\`, scan your own tool list. If a \`<TOOLKIT>_<ACTION>\` tool is already there, just call it. Don't search for what you already have. Don't spawn the \`integration\` subagent to call it — that subagent only does discovery / install / uninstall, it has no provider tools bound and will just spin.
+**Step 0 — check what's already bound.** Before reaching for \`search_integrations\` / \`connect\`${subagents ? ' / `agent_spawn`' : ''}, scan your own tool list. If a \`<TOOLKIT>_<ACTION>\` tool is already there, just call it. Don't search for what you already have.${subagents ? " Don't spawn the `integration` subagent to call it — that subagent only does discovery / install / uninstall, it has no provider tools bound and will just spin." : ''}
 
 **Calling a bound tool.** Just call it like any other tool:
 

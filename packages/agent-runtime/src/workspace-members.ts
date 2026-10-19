@@ -22,6 +22,7 @@ import {
 } from 'node:fs'
 import { join, resolve } from 'node:path'
 import {
+  copyToProjectAvailable,
   isWorkspaceRuntimeMode,
   workspaceAttachedProjectIds,
   workspaceAvailableProjectsManifest,
@@ -114,7 +115,7 @@ function writeManifest(): void {
       '',
       `This is a multi-project workspace runtime (workspace \`${state.workspaceId}\`).`,
       ...(metal
-        ? ['You are a meta-agent.', remoteProjectsGuidance()]
+        ? ['You are a meta-agent.', remoteProjectsGuidance({ copyToProject: copyToProjectAvailable() })]
         : [
             'You are a meta-agent. Keep the runtime empty until a request requires',
             'project files or commands, then use `mount_project` for the smallest',

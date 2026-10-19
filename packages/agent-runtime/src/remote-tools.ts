@@ -16,7 +16,7 @@
  * Read-only subset (`REMOTE_READONLY_TOOLS`; the API keeps its own copy for RBAC):
  *   read_file, search, exec_list, exec_wait
  *
- * Never remotable: mount/unmount, connect_project, the project lifecycle tools
+ * Never remotable: mount/unmount, connect_project, copy_to_project, the project lifecycle tools
  * (project_attach, project_create, project_call, …) and anything that spawns
  * agents. The runtime route strips `project` from the args it receives, so a
  * call can never hop on to a third runtime.
@@ -49,6 +49,7 @@ export const REMOTE_DENIED_TOOLS = [
   'mount_project',
   'unmount_project',
   'connect_project',
+  'copy_to_project',
   'list_projects',
   'preview_project',
   'project_list',
@@ -106,12 +107,17 @@ export function clampRemoteArgs(tool: string, args: Record<string, unknown>): Re
 }
 
 /** Prompt/WORKSPACE.md text for runtimes that reach other projects remotely. */
-export function remoteProjectsGuidance(): string {
+export function remoteProjectsGuidance(opts: { copyToProject?: boolean } = {}): string {
   return (
     'Other projects in this workspace are not mounted here: each one runs in its own runtime. ' +
     'Call `connect_project` to check that one is reachable, then pass `project: "<id or name>"` to ' +
     `${REMOTE_TOOL_ALLOWLIST.map((name) => `\`${name}\``).join(', ')} to run that tool inside the other project ` +
-    "(paths are relative to that project's root). Use `project_call` to hand work to that project's agent."
+    "(paths are relative to that project's root). " +
+    (opts.copyToProject
+      ? 'To move several files or any binary files into another project, use `copy_to_project`: never copy into a folder ' +
+        'named after another project here (it lands only on this runtime), and never use `share_file` for this. '
+      : 'Never copy into a folder named after another project here: it lands only on this runtime. ') +
+    "Use `project_call` to hand work to that project's agent."
   )
 }
 

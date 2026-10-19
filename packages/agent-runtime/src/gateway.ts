@@ -34,7 +34,7 @@ import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
 import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import type { ToolContext } from './gateway-tools'
-import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, type RestrictedMode } from './gateway-tools'
+import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, subagentOrchestrationDisabled, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { buildExposedPortsPrompt } from './exposed-ports-prompt'
 import { buildConcurrentChatsPrompt, concurrentChatLabel, type ConcurrentChat } from './concurrent-chats-prompt'
@@ -4427,7 +4427,7 @@ export class AgentGateway {
       parts.push(BROWSER_TOOL_GUIDE)
     }
     parts.push(BACKGROUND_TASKS_GUIDE)
-    parts.push(SUBAGENT_GUIDE)
+    if (!subagentOrchestrationDisabled(this.config)) parts.push(SUBAGENT_GUIDE)
     if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
     if (sessionId) {
@@ -4490,7 +4490,7 @@ export class AgentGateway {
     }
 
     parts.push(BACKGROUND_TASKS_GUIDE)
-    parts.push(SUBAGENT_GUIDE)
+    if (!subagentOrchestrationDisabled(this.config)) parts.push(SUBAGENT_GUIDE)
     if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
     if (sessionId) {
@@ -4617,10 +4617,10 @@ export class AgentGateway {
       channels: channelsGuideOn,
       media: mediaGuideOn,
       video: this.config.videoGenEnabled === true,
-      // Personal workspaces have no subagent orchestration at all, so
-      // generate_image/transcribe_audio are kept directly callable (see the
-      // SUBAGENT_ONLY_TOOLS carve-out above) rather than delegated.
-      mediaDelegated: this.config.capabilityProfile !== 'personal',
+      // Personal workspaces and the workspace agent have no subagent
+      // orchestration at all, so generate_image/transcribe_audio are kept
+      // directly callable (see the SUBAGENT_ONLY_TOOLS carve-out above).
+      subagents: !subagentOrchestrationDisabled(this.config),
       devops: devopsGuideOn,
     }))
 
@@ -5126,12 +5126,16 @@ export class AgentGateway {
       'Saving that file triggers a fast restart (no regenerate, no db push)',
       'so changes are live in under a second.',
       '',
-      'If you ever see a route 404 or need to force a refresh, delegate to the `devops` subagent, which has the `server_sync` tool:',
-      '```',
-      'agent_spawn({ type: "devops", prompt: "Run server_sync and report the phase, active routes, and schema models" })',
-      '```',
-      'It reports the current phase, active routes, and schema models.',
-      '',
+      ...(subagentOrchestrationDisabled(this.config)
+        ? []
+        : [
+            'If you ever see a route 404 or need to force a refresh, delegate to the `devops` subagent, which has the `server_sync` tool:',
+            '```',
+            'agent_spawn({ type: "devops", prompt: "Run server_sync and report the phase, active routes, and schema models" })',
+            '```',
+            'It reports the current phase, active routes, and schema models.',
+            '',
+          ]),
       '**Do NOT** manually run `prisma generate`, `shogo generate`, or `npm run db:generate` — it is all automatic.',
     ].join('\n')
 

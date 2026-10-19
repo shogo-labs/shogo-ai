@@ -168,6 +168,7 @@ import {
 } from './github-workspace-git'
 import { isHostMediatedDurability } from './host-durability'
 import { executeRemoteTool } from './remote-tools'
+import { executeRemoteImport } from './project-transfer'
 import { clearGitHubCliEnvCache } from './github-cli-credentials'
 import { HistoryIndex } from './history-index'
 import { WORKTREE_BRANCH_PREFIX } from '@shogo/shared-runtime'
@@ -189,6 +190,7 @@ import {
   parseWorkspaceMounts,
   shouldAutoStartAnchorPreview,
   userOwnedTrustGroups,
+  defaultShellCwd,
 } from './workspace-runtime-mode'
 import {
   workspaceFileRoutes,
@@ -4749,6 +4751,14 @@ app.post('/agent/remote/tool', async (c) => {
   }
   const body = await c.req.json().catch(() => null)
   const outcome = await executeRemoteTool(agentGateway.getRemoteTools(), body)
+  return c.json(outcome.body, outcome.status)
+})
+
+// Bulk counterpart (project-transfer.ts, `copy_to_project`): unpack another
+// project's tar.gz under the same root the remote tools use.
+app.post('/agent/remote/import', async (c) => {
+  const body = await c.req.json().catch(() => null)
+  const outcome = await executeRemoteImport(defaultShellCwd(WORKSPACE_DIR), body, notifyCanvasWorkspaceWrite)
   return c.json(outcome.body, outcome.status)
 })
 

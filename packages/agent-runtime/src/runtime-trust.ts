@@ -33,6 +33,7 @@
 import { existsSync, realpathSync } from 'fs'
 import { resolve } from 'path'
 import { isWithinAnyRoot } from './path-boundary'
+import { otherProjectForPath, otherProjectPathMessage } from './workspace-runtime-mode'
 
 import {
   getResolvedTrust,
@@ -154,6 +155,7 @@ export interface PathCheckResult {
     | 'restricted_mode_exec'
     | 'readonly_root_write'
     | 'readonly_root_exec'
+    | 'other_project_path'
     | 'invalid_path'
   /**
    * Human-readable error suitable for surfacing to the agent (so it
@@ -248,6 +250,11 @@ export function assertAllowedPath(targetPath: string, mode: PathMode): PathCheck
         `Requested: ${real}\nAllowed roots:\n  - ${roots.join('\n  - ')}\n` +
         `Add the parent folder via the "Folders" panel if the agent needs access there.`,
     }
+  }
+
+  const otherProject = trust.workspaceDir ? otherProjectForPath(realpathRoots([trust.workspaceDir])[0], real) : null
+  if (otherProject) {
+    return { ok: false, reason: 'other_project_path', resolved: real, message: otherProjectPathMessage(otherProject) }
   }
 
   // A shell started anywhere in the merged root can `cd` into a mounted

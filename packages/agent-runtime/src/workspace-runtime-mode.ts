@@ -29,7 +29,7 @@
  */
 
 import { existsSync } from 'fs'
-import { join } from 'path'
+import { isAbsolute, join, relative, sep } from 'path'
 import { isMetalRuntime, remoteProjectsGuidance } from './remote-tools'
 
 export type WorkingMode = 'managed' | 'external'
@@ -37,6 +37,16 @@ export type WorkingMode = 'managed' | 'external'
 /** True when the runtime was booted as a multi-project workspace runtime. */
 export function isWorkspaceRuntimeMode(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.WORKSPACE_RUNTIME === 'true'
+}
+
+/** The workspace agent: a workspace runtime not anchored on a project. */
+export function isWorkspaceAgentRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isWorkspaceRuntimeMode(env) && !env.WORKSPACE_ANCHOR_PROJECT_ID
+}
+
+/** `copy_to_project` exists only for the workspace agent on metal. */
+export function copyToProjectAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isWorkspaceAgentRuntime(env) && isMetalRuntime(env)
 }
 
 /** The workspace id this runtime serves, if any (workspace mode only). */
@@ -313,7 +323,7 @@ export function renderWorkspaceManifestMarkdown(
     '',
     `This is a **multi-project workspace** runtime (workspace \`${workspaceId}\`).`,
     ...(metal
-      ? ['The folder below is the current project.', remoteProjectsGuidance()]
+      ? ['The folder below is the current project.', remoteProjectsGuidance({ copyToProject: copyToProjectAvailable() })]
       : [
           'Each top-level UUID-named folder below is a separate project you can',
           'read and edit. Treat them as sibling repos under one root.',
@@ -377,6 +387,43 @@ export function renderWorkspaceManifestMarkdown(
     '',
   )
   return lines.join('\n')
+}
+
+const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * On a metal workspace runtime, the other project a path under
+ * `workspaceDir` would land in, or null. Other projects are never on this
+ * runtime there, so a `<workspaceDir>/<otherId>/...` path is a folder only
+ * this runtime sees. Both paths must already be resolved the same way
+ * (realpath vs. not). A top-level segment counts as another project when it
+ * is a catalog project id other than the anchor, or UUID-shaped and not one
+ * of this runtime's mounts (projects created after boot are not in the env
+ * catalog).
+ */
+export function otherProjectForPath(
+  workspaceDir: string,
+  targetPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!isWorkspaceRuntimeMode(env) || !isMetalRuntime(env)) return null
+  const rel = relative(workspaceDir, targetPath)
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null
+  const first = rel.split(sep)[0]
+  if (!first || first === env.WORKSPACE_ANCHOR_PROJECT_ID) return null
+  if (parseWorkspaceMounts(env).some((m) => m.mount === first)) return null
+  const catalog = [...workspaceAvailableProjectsManifest(env), ...workspaceProjectsManifest(env)]
+  if (catalog.some((p) => p.id === first)) return first
+  return UUID_SEGMENT.test(first) ? first : null
+}
+
+/** Tool-facing explanation for a path that `otherProjectForPath` flagged. */
+export function otherProjectPathMessage(projectId: string, env: NodeJS.ProcessEnv = process.env): string {
+  const remote = `pass \`project: "${projectId}"\` to read_file, write_file, edit_file, or exec`
+  return (
+    `\`${projectId}\` is another project and is not on this runtime: files here are never seen by it. ` +
+    (copyToProjectAvailable(env) ? `Use \`copy_to_project\` to send files to it, or ${remote}.` : `Instead, ${remote}.`)
+  )
 }
 
 /**

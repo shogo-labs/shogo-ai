@@ -16,15 +16,12 @@ import {
   type CapabilitySettings,
 } from '@shogo/shared-runtime/capability-settings'
 import { CAPABILITY_PROFILES, type CapabilityProfileName } from './capability-profiles'
-import { isWorkspaceRuntimeMode } from './workspace-runtime-mode'
+import { isWorkspaceAgentRuntime } from './workspace-runtime-mode'
+
+export { isWorkspaceAgentRuntime }
 
 /** Personal workspaces have no team channels, so these stay off there. */
 const PERSONAL_LOCKED_OFF: CapabilityKey[] = ['teamChatEnabled', 'boardAdminEnabled', 'companyOpsEnabled']
-
-/** The workspace agent: a workspace runtime not anchored on a project. */
-export function isWorkspaceAgentRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isWorkspaceRuntimeMode(env) && !env.WORKSPACE_ANCHOR_PROJECT_ID
-}
 
 /**
  * Capability toggles as this runtime applies them: stored values, the

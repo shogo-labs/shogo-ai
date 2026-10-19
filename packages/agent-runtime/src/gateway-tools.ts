@@ -27,6 +27,7 @@ import {
   isRemotableTool,
   remoteProjectsGuidance,
 } from './remote-tools'
+import { TransferError, callRemoteImport, packPaths } from './project-transfer'
 import { availableModelsHint, isAvailableModel } from './available-models'
 import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
@@ -37,10 +38,18 @@ import { createAgentRunTools, createChannelTools } from './channel-tools'
 import { createBoardTools } from './board-tools'
 import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
 import { resolveRuntimeCapabilities } from './capability-status-prompt'
-import { isWorkspaceRuntimeMode, resolveRuntimeIdentity, workspaceAttachedProjectIds } from './workspace-runtime-mode'
+import {
+  copyToProjectAvailable,
+  isWorkspaceAgentRuntime,
+  isWorkspaceRuntimeMode,
+  otherProjectForPath,
+  otherProjectPathMessage,
+  resolveRuntimeIdentity,
+  workspaceAttachedProjectIds,
+} from './workspace-runtime-mode'
 import { isSearchEnabled } from './search-flag'
 import { isInQuietHours } from './quiet-hours'
-import { disabledToolNamesForProfile } from './capability-profiles'
+import { PROFILE_TOOL_GROUPS, disabledToolNamesForProfile } from './capability-profiles'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
@@ -656,7 +665,7 @@ function createListProjectsTool(ctx: ToolContext): AgentTool {
       })
       const result = await workspaceMetaFetch(ctx, `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/projects?${qs}`)
       if (!metal || !result || typeof result !== 'object' || Array.isArray(result)) return textResult(result)
-      return textResult({ ...result, remoteAccess: remoteProjectsGuidance() })
+      return textResult({ ...result, remoteAccess: remoteProjectsGuidance({ copyToProject: copyToProjectAvailable() }) })
     },
   }
 }
@@ -902,6 +911,9 @@ async function connectRemoteProject(ctx: ToolContext, ref: string, signal?: Abor
   const text = [
     `Connected to project "${target.name}" (${target.id}); it is reachable${readOnly ? ' (read-only)' : ''}.`,
     `Pass \`project: "${target.id}"\` to ${tools} to run them inside it. Paths are relative to its root, and each remote exec starts at that root.`,
+    ...(!readOnly && copyToProjectAvailable()
+      ? [`To send it several files or any binary files, use \`copy_to_project\` with \`project: "${target.id}"\`.`]
+      : []),
     ...(listing ? ['', listing] : []),
   ].join('\n')
   return {
@@ -922,6 +934,81 @@ function createConnectProjectTool(ctx: ToolContext): AgentTool {
       project: Type.String({ description: 'Project id or exact name (see project_list / list_projects).' }),
     }),
     execute: async (_toolCallId, params: any, signal) => connectRemoteProject(ctx, String(params?.project ?? ''), signal),
+  }
+}
+
+/** Manifest entries shown to the model; the counts always cover everything. */
+const COPY_MANIFEST_PREVIEW = 100
+
+function createCopyToProjectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'copy_to_project',
+    label: 'Copy To Project',
+    description:
+      'Copy files or folders from here into another project of this workspace, in one call. Use this for several files or any ' +
+      'binary files (images, fonts, JSON packs, builds); never copy into a path named after another project, and never use ' +
+      "share_file to move files between projects. Each path lands inside `dest` under its own name, like `cp -r`: copying " +
+      '`site/public/cab2` with dest `public/assets` creates `public/assets/cab2/...` in the target. Symlinks, node_modules and ' +
+      '.git are skipped. Existing files are refused unless overwrite is true. Returns every copied path with its size and sha256.',
+    parameters: Type.Object({
+      project: Type.String({ description: 'Target project id or exact name (see project_list / list_projects).' }),
+      paths: Type.Array(Type.String(), {
+        description: 'Files or folders to copy, relative to the workspace like read_file paths. "." copies everything.',
+        minItems: 1,
+      }),
+      dest: Type.Optional(Type.String({ description: "Folder in the target, relative to its root (default: its root)." })),
+      overwrite: Type.Optional(Type.Boolean({ description: 'Replace files that already exist in the target (default: false).' })),
+    }),
+    execute: async (_toolCallId, params: any, signal) => {
+      const ref = typeof params?.project === 'string' ? params.project : ''
+      if (!ref.trim()) return textResult({ error: 'project is required' })
+      const paths: unknown = params?.paths
+      if (!Array.isArray(paths) || paths.length === 0 || !paths.every((p) => typeof p === 'string')) {
+        return textResult({ error: 'paths must be a non-empty array of file or folder paths' })
+      }
+      const target = await resolveRemoteTarget(ctx, ref)
+      if ('error' in target) return textResult({ error: target.error, code: target.code })
+      if (target.local) {
+        return textResult({ error: 'That is the current project. Use exec (cp) or write_file to copy files within it.' })
+      }
+      const project = { id: target.id, name: target.name }
+
+      let packed: Awaited<ReturnType<typeof packPaths>>
+      try {
+        packed = await packPaths(ctx.workspaceDir, paths as string[])
+      } catch (err) {
+        if (err instanceof TransferError) return textResult({ error: err.message, code: err.code, ...err.extra, project })
+        throw err
+      }
+      try {
+        const manifest = await callRemoteImport(
+          target.id,
+          {
+            archive: packed.archive.toString('base64'),
+            ...(typeof params?.dest === 'string' && params.dest.trim() ? { dest: params.dest } : {}),
+            ...(params?.overwrite === true ? { overwrite: true } : {}),
+          },
+          signal,
+        )
+        return textResult({
+          ok: true,
+          project,
+          dest: manifest.dest,
+          fileCount: manifest.fileCount,
+          totalBytes: manifest.totalBytes,
+          files: manifest.files.slice(0, COPY_MANIFEST_PREVIEW),
+          ...(manifest.files.length > COPY_MANIFEST_PREVIEW
+            ? { filesTruncated: manifest.files.length - COPY_MANIFEST_PREVIEW }
+            : {}),
+          ...(packed.skipped.length > 0 ? { skipped: packed.skipped.slice(0, 50) } : {}),
+          note: `Paths are relative to ${target.name}'s root. Verify there with read_file or exec and project: "${target.id}".`,
+        })
+      } catch (err) {
+        const conflicts = (err as { conflicts?: string[] })?.conflicts
+        const failure = remoteFailure(err, project)
+        return conflicts ? textResult({ ...(failure.details as object), conflicts }) : failure
+      }
+    },
   }
 }
 
@@ -1304,6 +1391,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       const githubEnv = await Promise.race([githubCliEnvForProject(ctx.projectId), stoppedBeforeSpawn.promise])
       stoppedBeforeSpawn.dispose()
       if (githubEnv === STOPPED) return textResult({ error: 'Stopped before the command started.' })
+      const topLevelBefore = snapshotWorkspaceTopLevel(ctx.workspaceDir)
       // The baseline must predate the first command, or what it creates is never reported.
       if (!isSandboxed) {
         try {
@@ -1358,9 +1446,49 @@ function createExecTool(ctx: ToolContext): AgentTool {
         return buildSoftTimeoutResult(ctx, entry, winner === STOPPED ? null : softTimeoutMs)
       }
 
-      return buildCompletedExecResult({ ctx, entry, finalResult: winner })
+      return withOtherProjectFolderWarning(ctx.workspaceDir, topLevelBefore, buildCompletedExecResult({ ctx, entry, finalResult: winner }))
     },
   }
+}
+
+/**
+ * Metal workspace runtimes: top-level entries of the workspace root before a
+ * command, so a folder it creates for another project (`cp -r x ../<id>/`)
+ * can be reported. The path guard cannot see inside a shell command.
+ */
+function snapshotWorkspaceTopLevel(workspaceDir: string): Set<string> | null {
+  if (!isWorkspaceRuntimeMode() || !isMetalRuntime()) return null
+  try {
+    return new Set(readdirSync(workspaceDir))
+  } catch {
+    return null
+  }
+}
+
+function withOtherProjectFolderWarning(
+  workspaceDir: string,
+  before: Set<string> | null,
+  result: AgentToolResult<any>,
+): AgentToolResult<any> {
+  if (!before) return result
+  let created: string[]
+  try {
+    created = readdirSync(workspaceDir).filter(
+      (name) => !before.has(name) && otherProjectForPath(workspaceDir, join(workspaceDir, name)) !== null,
+    )
+  } catch {
+    return result
+  }
+  if (created.length === 0) return result
+  const warning = created
+    .map(
+      (id) =>
+        `This command created \`${id}/\` at the workspace root. ${otherProjectPathMessage(id)} ` +
+        `Nothing in that folder reached the project: delete it and redo the work ${copyToProjectAvailable() ? 'with copy_to_project' : `with project: "${id}"`}.`,
+    )
+    .join('\n')
+  const details = result.details && typeof result.details === 'object' ? result.details : { output: result.details }
+  return textResult({ ...details, warning })
 }
 
 function currentGitHubRepository(workspaceDir: string): { owner: string; repo: string } | null {
@@ -2373,6 +2501,8 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
         offset = coerceNum(raw.offset)
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      const readTrust = assertAllowedPath(resolved, 'read', ctx.workspaceDir)
+      if (!readTrust.ok && readTrust.reason === 'other_project_path') return textResult({ error: readTrust.message })
       if (!existsSync(resolved)) {
         const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
         return textResult({
@@ -8731,6 +8861,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     tools.push(...projectTools.readonly)
     for (const t of projectTools.mutating) tools.push(g(t, 'project'))
     tools.push(createConnectProjectTool(ctx))
+    if (copyToProjectAvailable()) tools.push(g(createCopyToProjectTool(ctx), 'file_write'))
   }
 
   // Workspace runtimes expose universal profile/goal primitives. Project
@@ -9372,6 +9503,7 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   if (config.capabilityProfile === 'personal') {
     for (const name of disabledToolNamesForProfile('personal')) disabled.add(name)
   }
+  if (isWorkspaceAgentRuntime()) for (const n of PROFILE_TOOL_GROUPS.orchestration) disabled.add(n)
   if (config.webEnabled === false) for (const n of TOOL_GROUP_MAP.web) disabled.add(n)
   if (config.browserEnabled === false) disabled.add('browser')
   if (config.shellEnabled === false) for (const n of TOOL_GROUP_MAP.shell) disabled.add(n)
@@ -9421,10 +9553,21 @@ export const SUBAGENT_ONLY_TOOLS = new Set([
 ])
 
 /**
- * Remove `SUBAGENT_ONLY_TOOLS` from the main agent's tool list — EXCEPT on
- * personal-companion workspaces, which have the entire `orchestration`
- * capability group disabled (see `disabledToolNamesForProfile('personal')`
- * above: no `agent_spawn`, no subagents of any kind). Stripping
+ * No subagents or teams: personal workspaces, and the workspace agent, which
+ * hands work to projects (`project_call`) instead of spawning agents.
+ */
+export function subagentOrchestrationDisabled(
+  config: Pick<import('./gateway').GatewayConfig, 'capabilityProfile'>,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return config.capabilityProfile === 'personal' || isWorkspaceAgentRuntime(env)
+}
+
+/**
+ * Remove `SUBAGENT_ONLY_TOOLS` from the main agent's tool list — EXCEPT where
+ * `subagentOrchestrationDisabled` (personal-companion workspaces and the
+ * workspace agent have the entire `orchestration` group disabled: no
+ * `agent_spawn`, no subagents of any kind). Stripping
  * `generate_image`/`transcribe_audio` there would leave the companion with
  * literally no way to generate images — despite its own AGENTS.md
  * instructing it to call `generate_image` directly for avatar changes — and
@@ -9433,7 +9576,7 @@ export const SUBAGENT_ONLY_TOOLS = new Set([
  * only the media tools need this carve-out.
  */
 export function filterSubagentOnlyTools(tools: AgentTool[], config: import('./gateway').GatewayConfig): AgentTool[] {
-  const exempt = config.capabilityProfile === 'personal' ? new Set<string>([...MEDIA_TOOL_NAMES, 'transcribe_audio']) : new Set<string>()
+  const exempt = subagentOrchestrationDisabled(config) ? new Set<string>([...MEDIA_TOOL_NAMES, 'transcribe_audio']) : new Set<string>()
   return tools.filter((t) => exempt.has(t.name) || !SUBAGENT_ONLY_TOOLS.has(t.name))
 }
 
