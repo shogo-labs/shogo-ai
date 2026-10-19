@@ -27,6 +27,7 @@ import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-re
 import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
+import { workspaceExportRoutes } from './routes/workspace-export'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
@@ -1602,6 +1603,10 @@ app.route('/api', workspaceAgentRoutes({
   authorize: sessionAuthorize(getAuthUserId),
   saveAgentAvatar: cloud.saveAgentAvatar,
 }))
+// Workspace-level export/import (one archive of every model + every project's
+// files). Mounted before the rest of the `/api/workspaces` routes so
+// `POST /api/workspaces/import` is never shadowed by a `:workspaceId` route.
+app.route('/api/workspaces', workspaceExportRoutes())
 app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
 app.route('/api', sharedMeetingRoutes())
 // Workspace channels (team chat with @mentionable agents).

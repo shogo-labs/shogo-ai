@@ -20,6 +20,7 @@ import { projectExportImportRoutes } from '../routes/project-export-import'
 import { projectChatRoutes } from '../routes/project-chat'
 import { workspaceChatRoutes } from '../routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from '../routes/workspace-agent'
+import { workspaceExportRoutes } from '../routes/workspace-export'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from '../routes/workspace-meetings'
 import { conversationRoutes } from '../routes/conversations'
 import { workBoardRoutes } from '../routes/work-boards'
@@ -145,6 +146,9 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', projectChatRoutes({ runtimeManager }))
   app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager }))
   app.route('/api', workspaceAgentRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
+  // Workspace-level export/import — the desktop must answer this too, or the
+  // "Backup & export" tab works in the cloud and 404s locally.
+  app.route('/api/workspaces', workspaceExportRoutes())
   app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
   app.route('/api', sharedMeetingRoutes())
   const scriptedChannelAgents = scriptedAgentInvokeFromEnv()

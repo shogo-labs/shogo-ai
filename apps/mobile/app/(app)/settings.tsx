@@ -110,6 +110,7 @@ import { UpdatesTab } from "../../components/settings/UpdatesTab";
 import { EnvironmentVersionTrigger } from "../../components/settings/EnvironmentPicker";
 import { IntegrationsTab } from "../../components/settings/IntegrationsTab";
 import { AutomationsTab } from "../../components/settings/AutomationsTab";
+import { WorkspaceExportView } from "../../components/settings/WorkspaceExportView";
 import { WorkspaceModelsTab } from "../../components/settings/WorkspaceModelsTab";
 import { RemoteControlTab } from "../../components/settings/RemoteControlTab";
 import { SetSpendLimitDialog } from "../../components/billing/SetSpendLimitDialog";
@@ -4207,6 +4208,7 @@ export const SettingsContent = observer(function SettingsContent({
           onLeaveSettings={onClose}
         />
       )}
+      {activeTab === "data" && <WorkspaceExportView />}
       {activeTab === "remote-control" && <RemoteControlTab />}
       {activeTab === "account" && <AccountTab />}
       {activeTab === "appearance" && <AppearanceTab />}

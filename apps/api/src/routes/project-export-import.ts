@@ -3,25 +3,31 @@
 import { AgentClient, type WorkspaceBundle } from '@shogo-ai/sdk/agent'
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import {
-  existsSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-  rmSync,
-  statSync,
-} from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
 import { spawn } from '@shogo/shared-runtime/child-process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
-import { createS3SyncForProject, isMacOSJunkName, getMinimumInstanceSize } from '@shogo/shared-runtime'
+import { createS3SyncForProject, getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 import { prisma } from '../lib/prisma'
 import { decide, loadAccess, type Principal } from '../lib/authz'
 import * as billingService from '../services/billing.service'
 import type { AuthContext } from '../middleware/auth'
 import { parseEnvFile } from '../lib/bundle-crypto'
+import {
+  isSecretKey,
+  sanitizeChannelsForExport,
+  type RequiredCredential,
+} from '../lib/export-secrets'
+import {
+  collectExportWorkspaceFiles,
+  isExcludedRelPath,
+  workspacesDir,
+} from '../services/workspace-export/files'
+
+// Kept here so existing callers (and the export tests) keep their entry point
+// after the collection logic moved into the shared workspace-export service.
+export { _setRuntimeBundleRetryDelaysForTests } from '../services/workspace-export/files'
 import {
   isEncryptedZip,
   encryptZipCrypto,
@@ -38,8 +44,16 @@ import {
   exportChatParts,
 } from '../lib/chat-attachments'
 
-const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
-const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+// Bundle format. Bumped to 1.1 with: manifest.json, requiredCredentials,
+// sanitized (secret-stripped) channels, defensive path normalisation, and
+// volatile-file exclusion. Importer accepts both 1.0 and 1.1.
+const BUNDLE_FORMAT_VERSION = '1.1'
+const SUPPORTED_BUNDLE_VERSIONS = new Set(['1.0', '1.1'])
+
+// Total import bundle caps, gated by plan tier. Pro+ (pro/business/enterprise)
+// may import large projects; Free/Basic are limited to a much smaller bundle.
+const MAX_TOTAL_SIZE_PRO = 500 * 1024 * 1024 // 500 MB total bundle (pro+)
+const MAX_TOTAL_SIZE_FREE = 50 * 1024 * 1024 // 50 MB total bundle (free/basic)
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
 /**
@@ -72,324 +86,6 @@ async function fromPortableModelName(value?: string | null): Promise<string | un
     // Best-effort: fall through to the original value.
   }
   return value
-}
-
-// `dist/` and `build/` are intentionally NOT excluded here — we want the prebuilt
-// app output in the bundle so an imported project can serve its preview
-// immediately (preview-manager treats `project/dist/index.html` as "ready").
-const EXCLUDED_DIRS = new Set([
-  'node_modules',
-  '.git',
-  '.cache',
-  '.next',
-  '.turbo',
-  '.expo',
-])
-
-// Volatile, per-machine, or generated files we never want in a portable bundle:
-//   *-wal / *-shm  — SQLite write-ahead log + shared memory; volatile and may be
-//                    inconsistent if the writer hadn't checkpointed (`PRAGMA
-//                    wal_checkpoint`). The main `.db` is shipped on its own.
-//   .install-ok*   — per-machine install-state markers.
-//   .shogo-cwd-*   — transient shell-cwd markers leaked from preview tooling.
-const EXCLUDED_FILE_PATTERNS: RegExp[] = [
-  /-wal$/i,
-  /-shm$/i,
-  /^\.install-ok/,
-  /^\.shogo-cwd-/,
-]
-
-// Per-workspace-relative paths that must NEVER round-trip through a
-// bundle. These are install/build markers whose meaning is bound to
-// the EXPORTING machine's `node_modules/`; trusting them on a fresh
-// machine causes silent dependency-state mismatches.
-//
-//   .shogo/install-marker — sha256(package.json) recorded after the
-//     exporter's last successful `bun install`. If we let it ride
-//     into the cloud, `ensureWorkspaceDeps` and
-//     `PreviewManager.installDepsIfNeeded` both find it matches the
-//     (also-imported) package.json hash, conclude "deps are good",
-//     and skip install — leaving the cloud pod's pre-seeded Vite
-//     `node_modules/` in place for what's actually an Expo workspace.
-//     Surfaced as the 2026-05-12 "imported Expo never rebuilds"
-//     report (project 5a9304ff in staging).
-const EXCLUDED_RELATIVE_PATHS = new Set<string>([
-  '.shogo/install-marker',
-])
-
-const isExcludedFile = (name: string): boolean =>
-  EXCLUDED_FILE_PATTERNS.some((re) => re.test(name))
-
-/**
- * Path-aware exclusion check. Use for the workspace bundle's relative
- * paths (e.g. `.shogo/install-marker`, `prisma/dev.db-wal`); falls
- * back to basename matching for the legacy `EXCLUDED_FILE_PATTERNS`
- * list so callers don't need to remember to check both.
- */
-const isExcludedRelPath = (relPath: string): boolean => {
-  if (EXCLUDED_RELATIVE_PATHS.has(relPath)) return true
-  const baseName = relPath.split('/').pop() || ''
-  return isExcludedFile(baseName)
-}
-
-// Bundle format. Bumped to 1.1 with: manifest.json, requiredCredentials,
-// sanitized (secret-stripped) channels, defensive path normalisation, and
-// volatile-file exclusion. Importer accepts both 1.0 and 1.1.
-const BUNDLE_FORMAT_VERSION = '1.1'
-const SUPPORTED_BUNDLE_VERSIONS = new Set(['1.0', '1.1'])
-
-const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB per file (export-only)
-// Total import bundle caps, gated by plan tier. Pro+ (pro/business/enterprise)
-// may import large projects; Free/Basic are limited to a much smaller bundle.
-const MAX_TOTAL_SIZE_PRO = 500 * 1024 * 1024 // 500 MB total bundle (pro+)
-const MAX_TOTAL_SIZE_FREE = 50 * 1024 * 1024 // 50 MB total bundle (free/basic)
-
-// Heuristic: any object key matching this pattern in `agentConfig.channels`
-// or any `.env*` file is treated as a secret — redacted from the export and
-// surfaced through `requiredCredentials` so the importer can fill it in
-// post-import. The pattern covers:
-//   - explicit secret words: token / secret / apikey / api_key / password / passwd
-//   - personal access tokens: PAT, GITHUB_PAT, ACCOUNT_PAT (anchored on word boundary)
-//   - OAuth flow tokens: bearer / client_secret / refresh_token / access_token
-//   - connection strings that typically embed credentials:
-//       DATABASE_URL, REDIS_URL, MONGO_URL, *_CONNECTION_STRING
-//   - private keys & SSH:  private_key / ssh_key / pem
-//   - signing & encryption: signing_secret / encryption_key
-const SECRET_KEY_PATTERN =
-  /token|secret|apikey|api_key|password|passwd|(^|_)pat$|webhook.*url|bearer|client[_-]?secret|refresh[_-]?token|access[_-]?token|database[_-]?url|redis[_-]?url|mongo[_-]?url|connection[_-]?string|private[_-]?key|ssh[_-]?key|signing[_-]?secret|encryption[_-]?key|\.pem$/i
-
-const isSecretKey = (key: string): boolean => SECRET_KEY_PATTERN.test(key)
-
-interface RequiredCredential {
-  channel: string
-  field: string
-  label: string
-}
-
-/**
- * Returns a copy of `rawChannels` with all secret-looking string values
- * replaced with `null`, plus a flat list of credentials the importer must
- * provide post-import. Accepts the channels JSON in either parsed (array)
- * or stringified form (Prisma SQLite returns Json columns as strings).
- */
-function sanitizeChannelsForExport(rawChannels: unknown): {
-  sanitized: any[]
-  required: RequiredCredential[]
-} {
-  let parsed: any = rawChannels
-  if (typeof parsed === 'string') {
-    try {
-      parsed = JSON.parse(parsed)
-    } catch {
-      parsed = []
-    }
-  }
-  if (!Array.isArray(parsed)) return { sanitized: [], required: [] }
-
-  const required: RequiredCredential[] = []
-  const sanitized = parsed.map((entry, idx) => {
-    if (!entry || typeof entry !== 'object') return entry
-    const channelType = entry.type || entry.channel || `channel-${idx}`
-    const out: Record<string, any> = {}
-    for (const [k, v] of Object.entries(entry)) {
-      if (typeof v === 'string' && v.length > 0 && isSecretKey(k)) {
-        out[k] = null
-        required.push({
-          channel: String(channelType),
-          field: k,
-          label: `${channelType}.${k}`,
-        })
-      } else {
-        out[k] = v
-      }
-    }
-    return out
-  })
-  return { sanitized, required }
-}
-
-function collectWorkspaceFiles(
-  dir: string,
-  baseDir: string,
-  skipped: Array<{ path: string; reason: string }> = [],
-  extraExcludedDirs?: Set<string>,
-): Record<string, Uint8Array> {
-  const files: Record<string, Uint8Array> = {}
-  if (!existsSync(dir)) return files
-
-  const entries = readdirSync(dir, { withFileTypes: true })
-  for (const entry of entries) {
-    if (EXCLUDED_DIRS.has(entry.name)) continue
-    // Caller-supplied extra exclusions (e.g. build dirs for source-only ZIP).
-    if (extraExcludedDirs?.has(entry.name)) continue
-    // macOS detritus: `._*` AppleDouble sidecars crash Metro's Babel parser
-    // on import. Drop the whole subtree for junk dirs like `__MACOSX/`.
-    if (isMacOSJunkName(entry.name)) continue
-
-    const fullPath = join(dir, entry.name)
-    const relPath = relative(baseDir, fullPath).replace(/\\/g, '/')
-
-    if (entry.isDirectory()) {
-      Object.assign(
-        files,
-        collectWorkspaceFiles(fullPath, baseDir, skipped, extraExcludedDirs),
-      )
-    } else if (entry.isFile()) {
-      if (isExcludedRelPath(relPath)) {
-        skipped.push({ path: relPath, reason: 'excluded-pattern' })
-        continue
-      }
-      try {
-        const stat = statSync(fullPath)
-        if (stat.size > MAX_FILE_SIZE) {
-          skipped.push({ path: relPath, reason: `size>${MAX_FILE_SIZE}` })
-          continue
-        }
-        files[relPath] = new Uint8Array(readFileSync(fullPath))
-      } catch (err: any) {
-        skipped.push({
-          path: relPath,
-          reason: `read-error:${err?.message || 'unknown'}`,
-        })
-      }
-    }
-  }
-  return files
-}
-
-// Retries against a freshly resolved runtime URL. On metal the controller
-// caches a runtime's URL for a few seconds, and a microVM that suspended or
-// moved in that window refuses connections until the cache is dropped.
-const DEFAULT_RUNTIME_BUNDLE_RETRY_DELAYS_MS = [500, 1500, 3000]
-let runtimeBundleRetryDelaysMs = DEFAULT_RUNTIME_BUNDLE_RETRY_DELAYS_MS
-
-export function _setRuntimeBundleRetryDelaysForTests(delays: number[] | null): void {
-  runtimeBundleRetryDelaysMs = delays ?? DEFAULT_RUNTIME_BUNDLE_RETRY_DELAYS_MS
-}
-
-async function invalidateMetalRuntimeUrl(projectId: string): Promise<void> {
-  const { isMetalEnabled } = await import('../lib/metal-eligibility')
-  if (!isMetalEnabled()) return
-  const { getMetalWarmPoolController, workspaceRuntimeKey } =
-    await importCloudModule<typeof import('../lib/metal-warm-pool-controller')>('./metal-warm-pool-controller')
-  getMetalWarmPoolController().invalidateUrlCache(workspaceRuntimeKey('', projectId))
-}
-
-async function fetchRuntimeWorkspaceBundle(projectId: string): Promise<WorkspaceBundle> {
-  // Kubernetes-only: load through importCloudModule so the desktop bundle
-  // (which mounts this router) doesn't pull in the Knative/warm-pool graph.
-  const { getProjectPodUrl } =
-    await importCloudModule<typeof import('../lib/knative-project-manager')>(
-      './knative-project-manager',
-    )
-  let lastError: unknown
-  for (let attempt = 0; attempt <= runtimeBundleRetryDelaysMs.length; attempt++) {
-    if (attempt > 0) {
-      await invalidateMetalRuntimeUrl(projectId).catch(() => {})
-      await new Promise((r) => setTimeout(r, runtimeBundleRetryDelaysMs[attempt - 1]))
-    }
-    try {
-      const podUrl = await getProjectPodUrl(projectId)
-      // Pod-side workspace endpoints require the per-project runtime token.
-      // `project` scope bundles the project's own folder rather than a
-      // workspace runtime's merged root.
-      const agent = new AgentClient({
-        baseUrl: podUrl,
-        headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
-        workspaceScope: 'project',
-      })
-      return await agent.getWorkspaceBundle()
-    } catch (err) {
-      lastError = err
-      console.warn(
-        `[Export] Workspace bundle attempt ${attempt + 1} for ${projectId} failed: ${(err as any)?.message ?? err}`,
-      )
-    }
-  }
-  throw lastError
-}
-
-/**
- * Collect a project's workspace files for export, transparently sourcing them
- * from the live agent pod (Kubernetes, via `/agent/workspace/bundle`) or from
- * local disk (`WORKSPACES_DIR`). Returns flat workspace-relative paths (no
- * `workspace/` prefix). Shared by both the `.shogo` export and the source-only
- * ZIP so they always agree on provenance, exclusions, and k8s behaviour.
- */
-async function collectExportWorkspaceFiles(
-  projectId: string,
-  opts: { extraExcludedDirs?: Set<string> } = {},
-): Promise<{
-  files: Record<string, Uint8Array>
-  sourceMode: 'k8s' | 'k8s-fallback-empty' | 'local'
-  fileSkipped: Array<{ path: string; reason: string }>
-  warnings: string[]
-}> {
-  const files: Record<string, Uint8Array> = {}
-  const fileSkipped: Array<{ path: string; reason: string }> = []
-  const warnings: string[] = []
-  let sourceMode: 'k8s' | 'k8s-fallback-empty' | 'local' = 'local'
-
-  const extra = opts.extraExcludedDirs
-  const hasExcludedSegment = (relPath: string): boolean =>
-    !!extra && extra.size > 0 && relPath.split('/').some((seg) => extra.has(seg))
-
-  if (isKubernetes()) {
-    sourceMode = 'k8s'
-    try {
-      const bundle = await fetchRuntimeWorkspaceBundle(projectId)
-      const bundleFiles =
-        bundle && typeof bundle === 'object' && bundle.files && typeof bundle.files === 'object'
-          ? bundle.files
-          : {}
-      if (Object.keys(bundleFiles).length === 0) {
-        warnings.push(
-          'Runtime pod returned an empty workspace bundle; the agent may be cold-starting or have no files yet.',
-        )
-      }
-
-      // Defensive normalisation: older runtime pods returned Windows-style
-      // backslash paths which, when zipped verbatim, became literal-backslash
-      // filenames after extraction.
-      let backslashCount = 0
-      for (const [rawRelPath, base64Data] of Object.entries(bundleFiles)) {
-        const relPath = rawRelPath.replace(/\\/g, '/')
-        if (relPath !== rawRelPath) backslashCount++
-
-        if (isExcludedRelPath(relPath) || hasExcludedSegment(relPath)) {
-          fileSkipped.push({ path: relPath, reason: 'excluded-pattern' })
-          continue
-        }
-        files[relPath] = new Uint8Array(Buffer.from(base64Data, 'base64'))
-      }
-      if (backslashCount > 0) {
-        warnings.push(
-          `Runtime pod returned ${backslashCount} workspace path(s) with backslash separators; normalised on the API side. The pod build may be outdated.`,
-        )
-      }
-    } catch (err: any) {
-      sourceMode = 'k8s-fallback-empty'
-      warnings.push(
-        `Could not reach agent pod for workspace files: ${err?.message || 'unknown error'}`,
-      )
-      console.warn(
-        `[Export] Could not reach agent pod for workspace files: ${err.message}`,
-      )
-    }
-  } else {
-    const workspaceDir = join(WORKSPACES_DIR, projectId)
-    const workspaceFiles = collectWorkspaceFiles(
-      workspaceDir,
-      workspaceDir,
-      fileSkipped,
-      opts.extraExcludedDirs,
-    )
-    for (const [relPath, data] of Object.entries(workspaceFiles)) {
-      files[relPath] = data
-    }
-  }
-
-  return { files, sourceMode, fileSkipped, warnings }
 }
 
 // ─── Import internals ──────────────────────────────────────────
@@ -699,7 +395,7 @@ export async function runImport(
   await emit({ phase: 'createProject' })
 
   // Extract workspace files
-  const projectDir = join(WORKSPACES_DIR, project.id)
+  const projectDir = join(workspacesDir(), project.id)
   mkdirSync(projectDir, { recursive: true })
 
   const workspaceEntries = Object.entries(unzipped).filter(([path]) =>

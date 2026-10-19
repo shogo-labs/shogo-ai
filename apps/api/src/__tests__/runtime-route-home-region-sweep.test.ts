@@ -240,13 +240,13 @@ const RESOLVER_FILES: Record<string, string> = {
   'routes/local-projects.ts': 'local-only',
   'routes/local-terminal.ts': 'local-only',
   'routes/project-chat.ts': 'route-pin: pinChatToHomeRegion at the top of every chat forwarder',
-  'routes/project-export-import.ts': 'route-pin: mounted under /api/projects/:projectId/',
   'routes/publish.ts': 'route-pin: publish routes under /api/projects/:projectId/ (#1237 proxies bodies to home)',
   'routes/runtime.ts': 'route-pin: runtime routes under /api/projects/:projectId/runtime',
   'routes/shared-files.ts': 'route-pin: workspace-scoped links call pinWorkspaceToHomeRegion first; resolveWorkspaceRuntimeUrl guard backstops',
   'routes/slack-agent.ts': 'guard: background resolve via resolveWorkspaceRuntimeUrl',
   'routes/workspace-chat.ts': 'route-pin: pinWorkspaceRoutesToHomeRegion on every route (asserted below)',
   'services/agent-call.service.ts': 'guard: agent-to-agent calls resolve via the resolver layer',
+  'services/workspace-export/files.ts': 'route-pin: pinWorkspaceRoutesToHomeRegion on every workspace export route; only reads pod files',
   'services/github-workspace.ts': 'guard: resolves via the resolver layer',
 }
 
