@@ -64,6 +64,7 @@ import {
   projectChatLabel,
   type ProjectChatListItem,
 } from "../../lib/project-chat-sessions";
+import { sortSideChats, type SideChatItem } from "../../lib/side-chats";
 import { NotificationBell } from "../notifications/NotificationBell";
 import { ChatTreeItem } from "./sidebar/ChatTreeItem";
 import {
@@ -139,16 +140,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
   const drawerProgress = useRef(new Animated.Value(0)).current;
-  const [sessions, setSessions] = useState<
-    Array<{
-      id: string;
-      name?: string | null;
-      inferredName?: string | null;
-      isPrimary?: boolean;
-      isPinned?: boolean;
-      isArchived?: boolean;
-    }>
-  >([]);
+  const [sessions, setSessions] = useState<SideChatItem[]>([]);
   const [sessionSearch, setSessionSearch] = useState("");
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
@@ -180,22 +172,12 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
     const label = session.name || session.inferredName || "Untitled side chat";
     return label.toLowerCase().includes(sessionSearch.trim().toLowerCase());
   });
-  const sideChats = filteredSessions
-    .filter((session) => !session.isArchived)
-    .sort((a, b) => {
-      return (
-        Number(!!b.isPinned) - Number(!!a.isPinned) ||
-        String(b.id).localeCompare(String(a.id))
-      );
-    });
-  const archivedSideChats = filteredSessions
-    .filter((session) => session.isArchived)
-    .sort((a, b) => {
-      return (
-        Number(!!b.isPinned) - Number(!!a.isPinned) ||
-        String(b.id).localeCompare(String(a.id))
-      );
-    });
+  const sideChats = sortSideChats(
+    filteredSessions.filter((session) => !session.isArchived)
+  );
+  const archivedSideChats = sortSideChats(
+    filteredSessions.filter((session) => session.isArchived)
+  );
   const showArchivedSideChats =
     archivedSideChatsExpanded || sessionSearch.trim().length > 0;
   const workspaceProjects = projects.all
@@ -370,7 +352,17 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
     try {
       setCreatingSession(true);
       const session = await api.createWorkspaceSession(http, workspace.id);
-      setSessions((current) => [...current, session]);
+      // Stamp the row so it ranks as the most recent chat even if the server
+      // response omits timestamps; sortSideChats would otherwise push it last.
+      const now = new Date().toISOString();
+      setSessions((current) => [
+        ...current,
+        {
+          ...session,
+          createdAt: session.createdAt ?? now,
+          lastActiveAt: session.lastActiveAt ?? now,
+        },
+      ]);
       drawerProgress.setValue(0);
       setSessionsOpen(false);
       router.push({
