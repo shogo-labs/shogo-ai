@@ -70,6 +70,13 @@ export interface DockPanelDescriptor {
   collapsible?: boolean
   /** Drops the body's inset padding so full-width rows can own their own spacing and hover fill. */
   flushBody?: boolean
+  /**
+   * Bump when the panel's *body* changed in a way the header fields above do
+   * not show (e.g. a row started its exit animation). `panelsObservablyEqual`
+   * ignores `render`, so without this the dock would keep the previous body
+   * until something else forced a re-render.
+   */
+  revision?: number
   /** `expanded` lets costly panels (e.g. a live browser screencast) suspend work while collapsed. */
   render: (ctx: { expanded: boolean; bodyMaxHeight?: number }) => ReactNode
 }
@@ -171,7 +178,8 @@ export function createChatDockStore(): ChatDockStore {
       (a.autoShow !== false) === (b.autoShow !== false) &&
       !!a.defaultExpanded === !!b.defaultExpanded &&
       !!a.onDismiss === !!b.onDismiss &&
-      !!a.collapsible === !!b.collapsible
+      !!a.collapsible === !!b.collapsible &&
+      (a.revision ?? 0) === (b.revision ?? 0)
     )
   }
 

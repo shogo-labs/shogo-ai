@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The chat dock keeps a background task across navigation and reload (SHO-25).
+ * The chat dock keeps a background task across navigation and reload (SHO-25),
+ * and clears a settled one a few seconds after it settles (SHO-46).
  *
  * The dock used to be fed by live `data-task-update` frames only: for a
  * workspace chat (the landing chat — `workspaceId` + `chatScope`, no
@@ -101,6 +102,48 @@ async function expectCommandInDock(page: Page, command: string, timeout = 90_000
   await expect(page.getByText(command, { exact: false }).first()).toBeVisible({ timeout })
 }
 
+/**
+ * Follow one dock row's DOM until it leaves and report the height/opacity of
+ * its ancestors, so a test can tell an animated exit from a pop: a pop goes
+ * from full size to gone with nothing in between.
+ */
+async function sampleRowExit(page: Page, text: string) {
+  return page.evaluate(async (label) => {
+    const samples: Array<{ depth: number; height: number; opacity: number; t: number }> = []
+    const findRow = () =>
+      Array.from(document.querySelectorAll<HTMLElement>("div, span")).find(
+        (el) => el.childElementCount === 0 && el.textContent === label,
+      )
+    const deadline = Date.now() + 25_000
+    let chain: HTMLElement[] | null = null
+    while (Date.now() < deadline) {
+      if (!chain) {
+        const row = findRow()
+        if (!row) {
+          await new Promise((r) => setTimeout(r, 20))
+          continue
+        }
+        chain = []
+        for (let node: HTMLElement | null = row; node && chain.length < 6; node = node.parentElement) {
+          chain.push(node)
+        }
+      }
+      chain.forEach((el, depth) => {
+        if (!el.isConnected) return
+        samples.push({
+          depth,
+          height: el.getBoundingClientRect().height,
+          opacity: Number(getComputedStyle(el).opacity),
+          t: Date.now(),
+        })
+      })
+      if (chain[0] && !chain[0].isConnected) break
+      await new Promise((r) => setTimeout(r, 40))
+    }
+    return samples
+  }, text)
+}
+
 test.describe("chat dock background tasks", () => {
   test("a background task survives navigating away and a reload", async () => {
     const page = await context.newPage()
@@ -133,13 +176,20 @@ test.describe("chat dock background tasks", () => {
     await page.close()
   })
 
-  test("a finished task stays as a completed row, with Output and no Cancel", async () => {
+  test("a finished task clears itself from the dock a few seconds after it settles", async () => {
     const page = await context.newPage()
+    // The dock's 5 s process poll; it must stop once no row is left to update.
+    const taskPolls: number[] = []
+    page.on("request", (req) => {
+      if (/\/agent\/chat\/[^/]+\/tasks(\?|$)/.test(req.url())) taskPolls.push(Date.now())
+    })
     await openWorkspaceChat(page)
 
+    // Start watching the row's DOM before it settles, so the exit is recorded.
+    const exitSamples = sampleRowExit(page, "completed")
     await send(page, `${marker("bg", "dock2", 20, { ms: 5, cmd: "sleep 2" })} and a short one too`)
 
-    // It settles on its own, and the runtime keeps it as a terminal row.
+    // It settles on its own and stays readable long enough to see the outcome.
     await expect(page.getByText("completed", { exact: true }).first()).toBeVisible({ timeout: 120_000 })
     // Output still opens on a finished row; it is not cancellable.
     await expect(page.getByRole("button", { name: "Show output" }).first()).toBeVisible({ timeout: 15_000 })
@@ -147,11 +197,46 @@ test.describe("chat dock background tasks", () => {
       throw new Error("a finished task must not be announced as one the agent is waiting on")
     }
 
-    // Still there after a remount, with the same outcome.
-    await page.reload()
-    await expect(composer(page)).toBeVisible({ timeout: 120_000 })
-    await expect(page.getByText("completed", { exact: true }).first()).toBeVisible({ timeout: 60_000 })
-    await expect(runningChip(page).or(page.getByLabel("Finished", { exact: true })).first()).toBeVisible({ timeout: 30_000 })
+    const samples = await exitSamples
+    // The exit is animated, not a pop: it fades through the halfway point.
+    expect(
+      samples.some((s) => s.opacity > 0.05 && s.opacity < 0.95),
+      `no mid-transition frame was sampled while the row left: ${JSON.stringify(samples.slice(-12))}`,
+    ).toBe(true)
+
+    // Criterion 1: the row is readable for a beat from when it *appears* as
+    // settled — the linger is anchored to the server's `finishedAt`, which the
+    // poll can deliver up to 5 s late, so from first sight it is floored.
+    const row = samples.filter((s) => s.depth === 0)
+    const visibleMs = row[row.length - 1].t - row[0].t
+    expect(
+      visibleMs,
+      `the settled row was only on screen for ${visibleMs} ms`,
+    ).toBeGreaterThanOrEqual(1_200)
+
+    // Then it retires itself (DOCK_FINISHED_LINGER_MS + DOCK_FINISHED_EXIT_MS)
+    // and the chip goes with it — no ten-minute row, no empty Finished chip.
+    await expect(page.getByText("completed", { exact: true })).toHaveCount(0, { timeout: 8_000 })
+    const clearedAt = Date.now()
+    await expect(
+      runningChip(page).or(page.getByLabel("Finished", { exact: true })),
+    ).toHaveCount(0, { timeout: 15_000 })
+    await expect(cancelButtons(page)).toHaveCount(0, { timeout: 5_000 })
+
+    // No ten-minute row: first sight → gone stays inside linger + exit + slack.
+    expect(clearedAt - row[0].t).toBeLessThanOrEqual(8_000)
+
+    // Two full poll intervals later it has not come back, and the dock has
+    // stopped polling for it (nothing on screen needs an update any more).
+    await page.waitForTimeout(12_000)
+    await expect(page.getByText("completed", { exact: true })).toHaveCount(0)
+    await expect(
+      runningChip(page).or(page.getByLabel("Finished", { exact: true })),
+    ).toHaveCount(0)
+    expect(
+      taskPolls.filter((at) => at > clearedAt + 2_000),
+      "the dock kept polling /tasks after the last row retired",
+    ).toHaveLength(0)
 
     await page.close()
   })

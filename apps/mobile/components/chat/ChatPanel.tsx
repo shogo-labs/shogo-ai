@@ -227,6 +227,7 @@ import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
 import { PendingPlanComposerBar } from "./PendingPlanComposerBar"
 import { ChecklistDockPanel } from "./dock/panels/ChecklistDockPanel"
 import { RunningDockPanel, type TaskWaitState } from "./dock/panels/RunningDockPanel"
+import { isFinishedProcess } from "./dock/finished-rows"
 import { BrowserDockPanel } from "./dock/panels/BrowserDockPanel"
 import { WorktreeDockPanel } from "./dock/panels/WorktreeDockPanel"
 import { ChangesDockPanel } from "./dock/panels/ChangesDockPanel"
@@ -4054,9 +4055,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
     )
     return () => timers.forEach(clearTimeout)
   }, [notifyTaskIds, isStreaming, isActive])
-  // Poll while any row is on screen — running ones so a wake turn is noticed,
-  // finished ones so they leave the dock when their retention window ends.
-  const dockRowCount = runningProcesses.length
+  // Poll while a task is still running — a finished row leaves the dock on its
+  // own (the runtime keeps listing it for ten minutes, so polling for it would
+  // keep this alive long after nothing is on screen).
+  const dockRowCount = runningProcesses.filter((p) => !isFinishedProcess(p)).length
   useEffect(() => {
     if (isStreaming || !isActive || dockRowCount === 0) return
     const timer = setInterval(() => void fetchRunningProcesses(), 5000)
