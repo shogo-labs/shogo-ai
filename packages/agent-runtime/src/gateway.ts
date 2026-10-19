@@ -2828,8 +2828,8 @@ export class AgentGateway {
     // Haiku reliably used them directly in the persona/agentic pipelines, but
     // often fails to infer that a subagent should be spawned for simple "connect
     // my email" or "set up a reminder" requests.
-    // (Personal-companion workspaces are exempted for generate_image/
-    // transcribe_audio — see `filterSubagentOnlyTools`'s docstring.)
+    // (Media tools are not delegated: the project's own agent calls them, gated
+    // by imageGenEnabled / videoGenEnabled / threeDGenEnabled.)
     assembledTools = filterSubagentOnlyTools(assembledTools, this.config)
 
     // Snapshot the full agent-mode tool set BEFORE any read-only mode
@@ -4607,7 +4607,9 @@ export class AgentGateway {
     // integration, and heartbeat guidance from the cached prefix.
     const integrationsGuideOn = this.config.integrationsEnabled !== false
     const channelsGuideOn = this.config.channelsEnabled !== false
-    const mediaGuideOn = this.config.imageGenEnabled !== false || this.config.videoGenEnabled === true
+    const imageGuideOn = this.config.imageGenEnabled !== false
+    const videoGuideOn = this.config.videoGenEnabled === true
+    const threeDGuideOn = this.config.threeDGenEnabled === true
     const devopsGuideOn = this.config.heartbeatToolsEnabled !== false
 
     this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
@@ -4615,11 +4617,11 @@ export class AgentGateway {
     pushStable('capabilities-index', buildCapabilitiesIndex({
       integrations: integrationsGuideOn,
       channels: channelsGuideOn,
-      media: mediaGuideOn,
-      video: this.config.videoGenEnabled === true,
+      media: imageGuideOn,
+      video: videoGuideOn,
+      threeD: threeDGuideOn,
       // Personal workspaces and the workspace agent have no subagent
-      // orchestration at all, so generate_image/transcribe_audio are kept
-      // directly callable (see the SUBAGENT_ONLY_TOOLS carve-out above).
+      // orchestration at all; the media tools are direct on every profile.
       subagents: !subagentOrchestrationDisabled(this.config),
       devops: devopsGuideOn,
     }))

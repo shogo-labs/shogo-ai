@@ -59,14 +59,15 @@ describe('workspace agent has no subagent orchestration', () => {
     expect(names(filterDisabledCapabilityTools(all, {} as any))).toEqual([...ORCHESTRATION])
   })
 
-  test('media tools stay directly callable instead of being subagent-only', () => {
+  test('media tools are never subagent-only — the main agent calls them directly', () => {
     expect(subagentOrchestrationDisabled({})).toBe(true)
-    expect(SUBAGENT_ONLY_TOOLS.has('generate_image')).toBe(true)
-    const kept = names(filterSubagentOnlyTools(fakeTools(['generate_image', 'transcribe_audio', 'browser']), {} as any))
+    expect(SUBAGENT_ONLY_TOOLS.has('generate_image')).toBe(false)
+    expect(SUBAGENT_ONLY_TOOLS.has('transcribe_audio')).toBe(false)
+    const kept = names(filterSubagentOnlyTools(fakeTools(['generate_image', 'transcribe_audio', 'browser', 'server_sync']), {} as any))
     expect(kept).toEqual(['generate_image', 'transcribe_audio'])
     process.env.WORKSPACE_ANCHOR_PROJECT_ID = 'p1'
     expect(subagentOrchestrationDisabled({})).toBe(false)
-    expect(names(filterSubagentOnlyTools(fakeTools(['generate_image']), {} as any))).toEqual([])
+    expect(names(filterSubagentOnlyTools(fakeTools(['generate_image']), {} as any))).toEqual(['generate_image'])
   })
 
   test('the capabilities index and coding guide do not advertise agent_spawn', () => {

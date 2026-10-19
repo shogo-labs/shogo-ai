@@ -301,30 +301,54 @@ describe('work capabilities', () => {
 })
 
 describe('filterSubagentOnlyTools', () => {
-  // Regression test for a Sep 2026 bug: personal-companion workspaces have
-  // the entire `orchestration` group disabled (no `agent_spawn`), so if
-  // generate_image/transcribe_audio are also stripped as "subagent only"
-  // tools, the companion has NO way to generate images at all — despite its
-  // own AGENTS.md instructing it to call `generate_image` directly for
-  // avatar changes. Confirmed live on staging: the model correctly (but
-  // unhelpfully) reported "I don't have an image generation tool."
-  test('team profile delegates media tools to the subagent (removes them from the main agent)', () => {
-    const tools = createTools(makeCtx(makeConfig()))
-    const n = new Set(filterSubagentOnlyTools(tools, makeConfig()).map(t => t.name))
-    expect(n.has('generate_image')).toBe(false)
-    expect(n.has('transcribe_audio')).toBe(false)
+  // Media tools are called directly by the project's own agent (SHO-49).
+  // `browser` and `server_sync` stay delegated to their subagents. The image
+  // tools' gate is the capability flag, applied by
+  // filterDisabledCapabilityTools — not the subagent-only set.
+  function mainAgentTools(config: GatewayConfig): Set<string> {
+    const ctx = makeCtx(config)
+    const tools = filterDisabledCapabilityTools(createTools(ctx), config)
+    return new Set(filterSubagentOnlyTools(tools, config).map(t => t.name))
+  }
+
+  test('team profile keeps the media tools on the main agent and still strips browser/server_sync', () => {
+    const n = mainAgentTools(makeConfig())
+    expect(n.has('generate_image')).toBe(true)
+    expect(n.has('upscale_image')).toBe(true)
+    expect(n.has('remove_background')).toBe(true)
+    expect(n.has('list_media_models')).toBe(true)
+    expect(n.has('transcribe_audio')).toBe(true)
     expect(n.has('browser')).toBe(false)
     expect(n.has('server_sync')).toBe(false)
   })
 
-  test('personal profile keeps generate_image/transcribe_audio directly callable (no subagent path exists)', () => {
+  test('imageGenEnabled: false still removes the image tools from the main agent', () => {
+    const n = mainAgentTools(makeConfig({ imageGenEnabled: false }))
+    expect(n.has('generate_image')).toBe(false)
+    expect(n.has('upscale_image')).toBe(false)
+    expect(n.has('remove_background')).toBe(false)
+  })
+
+  test('generate_video appears only with videoGenEnabled: true', () => {
+    expect(mainAgentTools(makeConfig()).has('generate_video')).toBe(false)
+    expect(mainAgentTools(makeConfig({ videoGenEnabled: true })).has('generate_video')).toBe(true)
+  })
+
+  test('the 3D tools appear only with threeDGenEnabled: true', () => {
+    const off = mainAgentTools(makeConfig())
+    expect(off.has('generate_3d_model')).toBe(false)
+    expect(off.has('edit_3d_model')).toBe(false)
+    const on = mainAgentTools(makeConfig({ threeDGenEnabled: true }))
+    expect(on.has('generate_3d_model')).toBe(true)
+    expect(on.has('edit_3d_model')).toBe(true)
+  })
+
+  test('personal profile is unchanged: media tools direct, browser delegated-only', () => {
     const config = makeConfig({ capabilityProfile: 'personal' })
-    const tools = createTools({ ...makeCtx(config), workspaceId: 'workspace-1' })
-    const n = new Set(filterSubagentOnlyTools(tools, config).map(t => t.name))
+    const n = mainAgentTools(config)
     expect(n.has('generate_image')).toBe(true)
     expect(n.has('transcribe_audio')).toBe(true)
-    // browser/server_sync stay delegated-only; personal workspaces just don't
-    // have a subagent to delegate to, which is unrelated to this bug.
+    expect(n.has('list_media_models')).toBe(true)
     expect(n.has('browser')).toBe(false)
     expect(n.has('server_sync')).toBe(false)
   })

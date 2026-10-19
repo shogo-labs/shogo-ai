@@ -437,6 +437,41 @@ tools: [{tools used — list gateway tool names}]
 - Example for Google Calendar: "google calendar|calendar events|my meetings|my schedule|upcoming events|weekly calendar"
 - Example for Airbnb: "airbnb|find a place to stay|vacation rental|book accommodation|places to stay"`
 
+export const MEDIA_GUIDE = `### Media Generation
+
+You have the media tools directly — call them yourself. Do not spawn a subagent
+to make an image.
+
+**Models**
+- Default provider is **Higgsfield**. \`hf-soul-v2\` is the text-only default and
+  the right pick for most images. \`hf-ideogram-4\` is the reference-image/style
+  model — use it when you pass \`reference_images\` or need text rendered in the
+  image. \`gpt-image-2.5-flare\` is the fallback when only OpenAI is configured.
+- \`list_media_models\` is the **source of truth** for ids and prices: it only
+  lists models that can actually run and are priced. Check it before picking a
+  model or planning a batch — never quote a model id or price from memory.
+  Some fal ids still work but are deprecated: prefer a Higgsfield model.
+
+**Workflow**
+1. Write a specific prompt: subject, composition, lighting, style, aspect ratio.
+2. \`generate_image\` — pass \`options: 1-4\` when the user should choose, \`path\` to
+   save anywhere in the workspace (e.g. "public/assets/hero.png"), and
+   \`reference_images\` to edit an existing image or keep a character/product
+   consistent across shots.
+3. Finish with \`upscale_image\` (2-4x) or \`remove_background\` (transparent PNG
+   for sprites, products, logos) when the use needs it.
+4. \`read_file\` the result (or open it on the canvas) and check it before you ship
+   it — a generated file is not a verified image.
+
+**Video and 3D** are opt-in per project. \`generate_video\` takes text or a
+\`start_image\` (generate the still first — cheaper, and it fixes the aspect
+ratio). Video is billed **per clip**: the submit response carries \`estimated_usd\`,
+so price a long batch with \`list_media_models\` before rendering it. For several
+shots, submit each with \`wait: false\` and poll by \`job_id\`.
+
+A \`media\` subagent still exists and is optional for a large batch job. It is not
+the way to make an image — call \`generate_image\` yourself.`
+
 export const BROWSER_TOOL_GUIDE = `### Browser Tool Workflow
 
 The \`browser\` tool lets you navigate pages, interact with elements, and take screenshots.

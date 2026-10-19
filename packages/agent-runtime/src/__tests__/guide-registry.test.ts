@@ -21,7 +21,7 @@ describe('Guide Registry', () => {
   test('buildGuideRegistry returns all expected guides', () => {
     const registry = buildGuideRegistry()
     const expectedKeys = [
-      'integrations', 'subagent', 'browser', 'constraint-awareness',
+      'integrations', 'subagent', 'browser', 'media', 'constraint-awareness',
       'personality', 'skill-matching', 'self-evolution', 'tool-planning', 'memory',
     ]
     for (const key of expectedKeys) {
@@ -35,6 +35,9 @@ describe('Guide Registry', () => {
     expect(registry.get('integrations')).toContain('search_integrations')
     expect(registry.get('subagent')).toContain('agent_spawn')
     expect(registry.get('browser')).toContain('snapshot')
+    expect(registry.get('media')).toContain('generate_image')
+    expect(registry.get('media')).toContain('list_media_models')
+    expect(registry.get('media')).toContain('Higgsfield')
     expect(registry.get('personality')).toContain('AGENTS.md')
     expect(registry.get('skill-matching')).toContain('SKILL.md')
   })
@@ -68,8 +71,36 @@ describe('buildCapabilitiesIndex flags', () => {
     expect(idx).toContain('- **channel**')
     expect(idx).toContain('- **media**')
     expect(idx).toContain('- **devops**')
-    // subagent line still advertises the delegated types
-    expect(idx).toContain('integration, channel, media, devops')
+    // subagent line still advertises the delegated types — media is not one
+    // of them: the project's own agent calls the media tools.
+    expect(idx).toContain('integration, channel, devops')
+  })
+
+  test('the media line calls the tools directly and never delegates', () => {
+    const idx = buildCapabilitiesIndex()
+    const line = idx.split('\n').find((l) => l.startsWith('- **media**'))!
+    expect(line).toContain('directly')
+    for (const tool of ['generate_image', 'upscale_image', 'remove_background', 'list_media_models', 'transcribe_audio']) {
+      expect(line).toContain(tool)
+    }
+    expect(line).not.toContain('agent_spawn')
+    expect(idx).not.toContain('agent_spawn({ type: "media"')
+  })
+
+  test('video and 3D tools are named only when their capability is on', () => {
+    expect(buildCapabilitiesIndex()).not.toContain('generate_video')
+    expect(buildCapabilitiesIndex()).not.toContain('generate_3d_model')
+    const video = buildCapabilitiesIndex({ video: true })
+    expect(video).toContain('`generate_video`')
+    expect(video).toContain('video generation')
+    const threeD = buildCapabilitiesIndex({ threeD: true })
+    expect(threeD).toContain('`generate_3d_model`')
+    expect(threeD).toContain('`edit_3d_model`')
+    // image tools off, video on: a video-only line, no generate_image
+    const videoOnly = buildCapabilitiesIndex({ media: false, video: true })
+    expect(videoOnly).toContain('- **media**')
+    expect(videoOnly).toContain('`generate_video`')
+    expect(videoOnly).not.toContain('generate_image')
   })
 
   test('channels: false drops the channel line and subagent mention', () => {
@@ -137,6 +168,21 @@ describe('read_guide tool', () => {
     const text = (result.content[0] as any).text
     expect(text).toContain('snapshot')
     expect(text).toContain('navigate')
+  })
+
+  test('returns the media guide instead of "Unknown guide"', async () => {
+    const registry = buildGuideRegistry()
+    const ctx = createCtx({ guideRegistry: registry })
+    const tools = createTools(ctx)
+    const tool = tools.find(t => t.name === 'read_guide')!
+    const result = await tool.execute('test-id', { name: 'media' })
+    const text = (result.content[0] as any).text
+    expect(text).not.toContain('Unknown guide')
+    expect(text.length).toBeGreaterThan(50)
+    expect(text).toContain('generate_image')
+    expect(text).toContain('list_media_models')
+    expect(text).toContain('Higgsfield')
+    expect(text).not.toContain('agent_spawn')
   })
 
   test('returns error for unknown guide name', async () => {

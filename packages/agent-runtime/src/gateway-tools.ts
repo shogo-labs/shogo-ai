@@ -33,7 +33,7 @@ import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
 import { createGenerateImageTool, createMediaTools } from './media-tools'
-import { IMAGE_TOOL_NAMES, MEDIA_TOOL_NAMES, THREE_D_TOOL_NAMES } from './media-tool-names'
+import { IMAGE_TOOL_NAMES, THREE_D_TOOL_NAMES } from './media-tool-names'
 import { createAgentRunTools, createChannelTools } from './channel-tools'
 import { createBoardTools } from './board-tools'
 import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
@@ -9541,14 +9541,17 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
 }
 
 /**
- * Tools delegated to dedicated subagents on team workspaces — removed from
- * the main agent's tool list to reduce per-request token cost. The main
- * agent is expected to reach them via `agent_spawn({ type: "browser"|"media"|"devops", ... })`.
+ * Tools delegated to dedicated subagents — removed from the main agent's tool
+ * list to reduce per-request token cost. The main agent is expected to reach
+ * them via `agent_spawn({ type: "browser"|"devops", ... })`.
+ *
+ * Media tools are deliberately NOT here: the project's own agent calls
+ * `generate_image` and friends directly. Their gate is the capability itself
+ * (`imageGenEnabled` / `videoGenEnabled` / `threeDGenEnabled`), applied by
+ * `filterDisabledCapabilityTools` above.
  */
 export const SUBAGENT_ONLY_TOOLS = new Set([
   'browser', // -> browser subagent
-  ...MEDIA_TOOL_NAMES,
-  'transcribe_audio', // -> media subagent
   'server_sync', // -> devops subagent
 ])
 
@@ -9564,20 +9567,18 @@ export function subagentOrchestrationDisabled(
 }
 
 /**
- * Remove `SUBAGENT_ONLY_TOOLS` from the main agent's tool list — EXCEPT where
- * `subagentOrchestrationDisabled` (personal-companion workspaces and the
- * workspace agent have the entire `orchestration` group disabled: no
- * `agent_spawn`, no subagents of any kind). Stripping
- * `generate_image`/`transcribe_audio` there would leave the companion with
- * literally no way to generate images — despite its own AGENTS.md
- * instructing it to call `generate_image` directly for avatar changes — and
- * it will correctly (if unhelpfully) tell the user it has no image tool.
- * `browser`/`server_sync` stay delegated-only on personal workspaces too;
- * only the media tools need this carve-out.
+ * Remove `SUBAGENT_ONLY_TOOLS` from the main agent's tool list. Today that is
+ * `browser` and `server_sync` only, on every profile — including personal
+ * workspaces and the workspace agent, which have no subagents to delegate to.
+ *
+ * Media tools are intentionally not part of the set: the main agent calls
+ * them directly, and `filterDisabledCapabilityTools` is what removes them
+ * when their capability is off. The `config` parameter is kept because the
+ * filtering chokepoint is shared with the profile logic above and callers
+ * should not have to change if a future tool needs a profile carve-out.
  */
-export function filterSubagentOnlyTools(tools: AgentTool[], config: import('./gateway').GatewayConfig): AgentTool[] {
-  const exempt = subagentOrchestrationDisabled(config) ? new Set<string>([...MEDIA_TOOL_NAMES, 'transcribe_audio']) : new Set<string>()
-  return tools.filter((t) => exempt.has(t.name) || !SUBAGENT_ONLY_TOOLS.has(t.name))
+export function filterSubagentOnlyTools(tools: AgentTool[], _config: import('./gateway').GatewayConfig): AgentTool[] {
+  return tools.filter((t) => !SUBAGENT_ONLY_TOOLS.has(t.name))
 }
 
 // ---------------------------------------------------------------------------
