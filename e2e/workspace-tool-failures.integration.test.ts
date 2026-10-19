@@ -32,7 +32,7 @@ mock.module('../packages/agent-runtime/src/composio-auto-bind', () => ({
   fetchComposioToolSchemas: async () => mockedSchemas,
 }))
 
-import { createTools, type ToolContext } from '../packages/agent-runtime/src/gateway-tools'
+import { createTools, projectNotAttachedMessage, type ToolContext } from '../packages/agent-runtime/src/gateway-tools'
 import { FileStateCache } from '../packages/agent-runtime/src/file-state-cache'
 import { runSubagent } from '../packages/agent-runtime/src/subagent'
 import { createMockStreamFn, buildTextResponse, buildToolUseResponse } from '../packages/agent-runtime/src/__tests__/helpers/mock-anthropic'
@@ -123,6 +123,16 @@ beforeAll(async () => {
     if (mode === 'preview' && url.includes('/members') && req.method === 'POST') {
       mountAttempts++
       return send(res, 200, { ok: true, mounted: true })
+    }
+
+    if (mode === 'remote' && url.includes('/projects/graph')) {
+      return send(res, 200, {
+        workspaceId: 'ws-int',
+        projects: [{ id: 'proj-other', name: 'Other', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null }],
+      })
+    }
+    if (mode === 'remote' && url.includes('/remote-tool')) {
+      return send(res, 404, { error: 'project_not_attached', message: "Project proj-other is not attached to this runtime" })
     }
 
     if (url.includes('/shared-files') && req.method === 'POST') {
@@ -282,6 +292,37 @@ describe('mount and preview against the workspace API', () => {
     expect(mountAttempts).toBe(1)
     expect(result.details.ready).toBe(true)
     expect(result.details.url).toBe(`http://localhost:${port}/p/proj-anchor/`)
+  })
+
+  test('every file and shell tool aimed at an unreachable project returns the attach remedy', async () => {
+    armWorkspaceEnv()
+    mode = 'remote'
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ['read_file', { path: 'src/App.tsx' }],
+      ['write_file', { path: 'src/App.tsx', content: 'export {}\n' }],
+      ['edit_file', { path: 'src/App.tsx', old_string: 'a', new_string: 'b' }],
+      ['delete_file', { path: 'src/App.tsx' }],
+      ['search', { query: 'useEffect' }],
+      ['exec', { command: 'ls' }],
+    ]
+    const ctx = workspace(tempDir('ws-unattached-'), 'proj-anchor')
+    const registered = createTools(ctx)
+    const checked: string[] = []
+    for (const [name, args] of calls) {
+      const found = registered.find((t) => t.name === name)
+      // `search` is only registered when local indexing is on.
+      if (!found) continue
+      const result = await found.execute('t', { ...args, project: 'proj-other' })
+      expect(result.details.code).toBe('project_not_attached')
+      expect(result.details.error).toBe(projectNotAttachedMessage('proj-other'))
+      // The remedy, not the raw code the API answered with.
+      expect(result.details.error).toContain('project_attach')
+      expect(result.details.error).toContain('project_call')
+      expect(JSON.stringify(result.details)).not.toContain('HTTP 404')
+      checked.push(name)
+    }
+    expect(checked).toContain('read_file')
+    expect(checked).toContain('exec')
   })
 })
 

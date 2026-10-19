@@ -1810,6 +1810,24 @@ export async function createProject(
   })
 }
 
+/**
+ * Every project in the workspace the caller can reach, without the
+ * attachment graph. `system_apply` uses it to resolve a locked project id
+ * that the live graph does not return (the project exists, it simply is not
+ * visible/mounted to this runtime) — so it becomes a configure, never a
+ * duplicate create.
+ */
+export async function listWorkspaceProjects(
+  workspaceId: string,
+  opts: { userId?: string } = {},
+): Promise<CheckpointCallResult<ProjectSummary[]>> {
+  const qs = opts.userId ? `?userId=${encodeURIComponent(opts.userId)}` : ''
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/projects${qs}`, {
+    method: 'GET',
+    parse: (j) => (j?.projects ?? []) as ProjectSummary[],
+  })
+}
+
 export interface ProjectGraphNode {
   id: string
   name: string

@@ -777,10 +777,30 @@ async function resolveRemoteTarget(ctx: ToolContext, ref: string): Promise<Remot
   return target
 }
 
+/**
+ * One actionable message for every tool aimed at a project this runtime cannot
+ * reach, instead of the raw `project_not_attached` code the API answers with.
+ * Shared by all remoted file/shell tools so `read_file`, `write_file`,
+ * `edit_file`, `delete_file`, `exec` and `search` say the same thing.
+ */
+export function projectNotAttachedMessage(projectId: string): string {
+  return (
+    `Project ${projectId} isn't attached to this runtime. ` +
+    'Attach it with project_attach (readwrite to edit), or call its agent with project_call.'
+  )
+}
+
 function remoteFailure(err: unknown, project: { id: string; name: string }): AgentToolResult<any> {
   const message = err instanceof Error ? err.message : String(err)
   const code = err instanceof RemoteToolError ? err.code : undefined
   const status = err instanceof RemoteToolError ? err.status : undefined
+  if (code === 'project_not_attached' || /project_not_attached/.test(message)) {
+    return textResult({
+      error: projectNotAttachedMessage(project.id),
+      code: 'project_not_attached',
+      project,
+    })
+  }
   return textResult({
     error: message,
     ...(code ? { code } : {}),

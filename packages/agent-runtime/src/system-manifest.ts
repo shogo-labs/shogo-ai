@@ -427,7 +427,18 @@ export interface AttachOp {
   changeMode: boolean
 }
 export interface DetachOp { kind: 'detach'; anchorKey: string; anchorId: string; targetKey: string; targetId: string }
-export interface FileOp { kind: 'file'; key: string; projectId: string | null; path: string; action: 'create' | 'update' | 'unchanged' }
+export interface FileOp {
+  kind: 'file'
+  key: string
+  projectId: string | null
+  path: string
+  /**
+   * `skip` means the project's folder is not on this runtime, so the file was
+   * neither read nor written — never `create` for a file we cannot reach.
+   */
+  action: 'create' | 'update' | 'unchanged' | 'skip'
+  reason?: 'project_not_mounted'
+}
 
 /** Live team chat channel, as returned by the agent-channels `team-channels` route. */
 export interface LiveTeamChannel {
@@ -556,6 +567,13 @@ export interface SystemDiff {
   triggers: TriggerOp[]
   /** Things `system_apply` cannot do without credentials — surfaced for the user. */
   manual: string[]
+  /**
+   * Things the apply left undone for a reason that needs no error and will
+   * clear on its own (a project not mounted in this runtime yet, the implicit
+   * caller edge skipped for the workspace agent). `ok` stays true; the same
+   * apply converges when re-run.
+   */
+  warnings: string[]
   /** True when nothing needs to change. */
   empty: boolean
 }
@@ -563,8 +581,24 @@ export interface SystemDiff {
 export interface DiffOptions {
   /** Project id of the runtime running the apply. Binds to `manifest.anchor`. */
   callerProjectId: string
-  /** Reader for current file contents inside a bound project; `null` = missing / unreadable. */
-  readFile?: (projectId: string, path: string) => string | null
+  /**
+   * Reader for current file contents inside a bound project. `unmounted` when
+   * the project's folder is not on this runtime — distinct from `missing`, so
+   * an unreachable file is never reported as a create.
+   */
+  readFile?: (projectId: string, path: string) => FileProbe
+  /**
+   * Ids this workspace knows about, even when the caller cannot see them in
+   * the live graph. A lock entry matching one of these resolves (configure /
+   * update) instead of reporting `inaccessible`.
+   */
+  knownProjectIds?: Iterable<string>
+  /**
+   * True when the apply runs as the workspace agent. That runtime has no
+   * project identity to attach *from*, so the implicit-anchor edges are
+   * skipped instead of failing one `Unauthorized` per manifest project.
+   */
+  callerIsWorkspaceAgent?: boolean
   /** Current team chat channels; when omitted, `teamChannels` are reported as manual steps. */
   teamChannels?: LiveTeamChannels
   /** Current boards (archived included); when omitted, declared boards are reported as manual steps. */
@@ -576,22 +610,40 @@ export interface DiffOptions {
   triggersUnavailable?: string
 }
 
+/**
+ * What a project file looks like right now. `unmounted` is deliberately not
+ * `missing`: when the project's folder is not on this runtime, "absent" and
+ * "unreachable" cannot be told apart, and a file we cannot reach must never
+ * be reported — or attempted — as a create.
+ */
+export type FileProbe =
+  | { status: 'ok'; content: string }
+  | { status: 'missing' }
+  | { status: 'unmounted' }
+
 const IMPLICIT_ANCHOR_KEY = '__caller__'
 
 /**
  * Resolve manifest key → live id using, in order: the anchor rule, the lock,
  * exact-name match against live projects. Keys left unbound are creates.
+ *
+ * A locked id that is not in `live` is still bound when the workspace knows
+ * the id at all (`knownProjectIds`, e.g. the workspace project list): the
+ * project exists and is simply not visible/mounted to this caller, which is a
+ * `configure`/`update` — never a second copy of the project.
  */
 export function resolveBindings(
   manifest: SystemManifest,
   live: LiveProject[],
   lock: SystemLock | null,
   callerProjectId: string,
+  knownProjectIds: Iterable<string> = [],
 ): { bindings: Record<string, string>; adopt: AdoptOp[]; inaccessible: InaccessibleOp[] } {
   const bindings: Record<string, string> = {}
   const adopt: AdoptOp[] = []
   const inaccessible: InaccessibleOp[] = []
   const liveIds = new Set(live.map((p) => p.id))
+  const knownIds = new Set(knownProjectIds)
   const byName = new Map<string, LiveProject[]>()
   for (const p of live) {
     const arr = byName.get(p.name) ?? []
@@ -606,7 +658,7 @@ export function resolveBindings(
       continue
     }
     const locked = lock?.bindings[spec.key]
-    if (locked && liveIds.has(locked)) {
+    if (locked && (liveIds.has(locked) || knownIds.has(locked))) {
       bindings[spec.key] = locked
       continue
     }
@@ -662,7 +714,7 @@ export function computeSystemDiff(
   lock: SystemLock | null,
   opts: DiffOptions,
 ): SystemDiff {
-  const { bindings, adopt, inaccessible } = resolveBindings(manifest, live, lock, opts.callerProjectId)
+  const { bindings, adopt, inaccessible } = resolveBindings(manifest, live, lock, opts.callerProjectId, opts.knownProjectIds)
   const liveById = new Map(live.map((p) => [p.id, p]))
   const blocked = new Set(inaccessible.map((op) => op.key))
 
@@ -672,6 +724,7 @@ export function computeSystemDiff(
   const detach: DetachOp[] = []
   const files: FileOp[] = []
   const manual: string[] = []
+  const warnings: string[] = []
 
   for (const spec of manifest.projects) {
     if (blocked.has(spec.key)) continue
@@ -734,8 +787,18 @@ export function computeSystemDiff(
     }
 
     for (const [path, content] of Object.entries(spec.files)) {
-      const current = id && opts.readFile ? opts.readFile(id, path) : null
-      const action: FileOp['action'] = current === null ? 'create' : current === content ? 'unchanged' : 'update'
+      if (!id) {
+        // No binding yet — created earlier in this same apply.
+        files.push({ kind: 'file', key: spec.key, projectId: null, path, action: 'create' })
+        continue
+      }
+      const probe: FileProbe = opts.readFile ? opts.readFile(id, path) : { status: 'missing' }
+      if (probe.status === 'unmounted') {
+        files.push({ kind: 'file', key: spec.key, projectId: id, path, action: 'skip', reason: 'project_not_mounted' })
+        continue
+      }
+      const action: FileOp['action'] =
+        probe.status === 'missing' ? 'create' : probe.content === content ? 'unchanged' : 'update'
       files.push({ kind: 'file', key: spec.key, projectId: id, path, action })
     }
 
@@ -744,22 +807,29 @@ export function computeSystemDiff(
   }
 
   // Implicit anchor: the caller manages every manifest project read-write.
+  // The workspace agent has no project identity to attach *from* — its id is
+  // the workspace anchor, which the attach authorizes as someone else — so
+  // every edge would come back `Unauthorized`. Skip the block and say so once.
   if (!manifest.anchor) {
-    const caller = liveById.get(opts.callerProjectId) ?? null
-    for (const spec of manifest.projects) {
-      if (blocked.has(spec.key)) continue
-      const targetId = bindings[spec.key] ?? null
-      const existing = caller?.attachments.find((e) => e.attachedProjectId === targetId)
-      if (existing && existing.attachMode === 'readwrite') continue
-      attach.push({
-        kind: 'attach',
-        anchorKey: IMPLICIT_ANCHOR_KEY,
-        anchorId: opts.callerProjectId,
-        targetKey: spec.key,
-        targetId,
-        mode: 'readwrite',
-        changeMode: Boolean(existing),
-      })
+    if (opts.callerIsWorkspaceAgent) {
+      warnings.push('attach: skipped for the workspace agent — no project identity to attach')
+    } else {
+      const caller = liveById.get(opts.callerProjectId) ?? null
+      for (const spec of manifest.projects) {
+        if (blocked.has(spec.key)) continue
+        const targetId = bindings[spec.key] ?? null
+        const existing = caller?.attachments.find((e) => e.attachedProjectId === targetId)
+        if (existing && existing.attachMode === 'readwrite') continue
+        attach.push({
+          kind: 'attach',
+          anchorKey: IMPLICIT_ANCHOR_KEY,
+          anchorId: opts.callerProjectId,
+          targetKey: spec.key,
+          targetId,
+          mode: 'readwrite',
+          changeMode: Boolean(existing),
+        })
+      }
     }
   }
 
@@ -781,6 +851,10 @@ export function computeSystemDiff(
     manual.push(`triggers: ${opts.triggersUnavailable ?? 'triggers are not reachable from this runtime'}; create ${manifest.triggers.map((t) => t.name).join(', ')} by hand`)
   }
 
+  for (const f of files) {
+    if (f.action === 'skip') warnings.push(fileSkipWarning(f.key, f.path))
+  }
+
   const empty =
     teamChannels.length === 0 &&
     boards.length === 0 &&
@@ -791,7 +865,16 @@ export function computeSystemDiff(
     detach.length === 0 &&
     files.every((f) => f.action === 'unchanged')
 
-  return { adopt, inaccessible, create, configure, attach, detach, files, teamChannels, boards, triggers, manual, empty }
+  return { adopt, inaccessible, create, configure, attach, detach, files, teamChannels, boards, triggers, manual, warnings, empty }
+}
+
+/**
+ * Why a manifest file was left alone: its project's folder is not on this
+ * runtime. Not an error — re-running the same apply after the project mounts
+ * converges.
+ */
+export function fileSkipWarning(key: string, path: string): string {
+  return `files ${key}/${path}: skipped — project not mounted in this runtime; re-run after it mounts`
 }
 
 function capabilityPatch(spec: ProjectSpec, live: LiveProject | null): Record<string, boolean> | undefined {
@@ -1093,7 +1176,11 @@ export function summarizeDiff(diff: SystemDiff): string[] {
   }
   for (const a of diff.attach) lines.push(`${a.changeMode ? 'remode' : 'attach'} ${a.anchorKey === IMPLICIT_ANCHOR_KEY ? '(caller)' : a.anchorKey} → ${a.targetKey} [${a.mode}]`)
   for (const d of diff.detach) lines.push(`detach ${d.anchorKey} → ${d.targetKey}`)
-  for (const f of diff.files) if (f.action !== 'unchanged') lines.push(`${f.action} ${f.key}/${f.path}`)
+  for (const f of diff.files) {
+    if (f.action === 'unchanged') continue
+    if (f.action === 'skip') lines.push(fileSkipWarning(f.key, f.path))
+    else lines.push(`${f.action} ${f.key}/${f.path}`)
+  }
   for (const ch of diff.teamChannels ?? []) {
     lines.push(ch.action === 'create'
       ? `create channel #${ch.name}${ch.changes.length ? `: ${ch.changes.join(', ')}` : ''}`

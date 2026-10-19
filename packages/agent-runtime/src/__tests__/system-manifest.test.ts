@@ -13,6 +13,7 @@ import {
   computeSystemDiff,
   summarizeDiff,
   IMPLICIT_ANCHOR,
+  type FileProbe,
   type LiveProject,
   type SystemLock,
 } from '../system-manifest'
@@ -420,15 +421,87 @@ describe('computeSystemDiff', () => {
       projects: [{ key: 'a', name: 'A', files: { 'AGENTS.md': 'new content', 'SAME.md': 'same' } }],
     }).manifest!
     const liveProjects = [live({ id: 'id-a', name: 'A' })]
-    const readFile = (projectId: string, path: string) => {
-      if (path === 'AGENTS.md') return 'old content'
-      if (path === 'SAME.md') return 'same'
-      return null
+    const readFile = (projectId: string, path: string): FileProbe => {
+      if (path === 'AGENTS.md') return { status: 'ok', content: 'old content' }
+      if (path === 'SAME.md') return { status: 'ok', content: 'same' }
+      return { status: 'missing' }
     }
     const diff = computeSystemDiff(manifest, liveProjects, null, { callerProjectId: 'caller-1', readFile })
     const byPath = new Map(diff.files.map((f) => [f.path, f.action]))
     expect(byPath.get('AGENTS.md')).toBe('update')
     expect(byPath.get('SAME.md')).toBe('unchanged')
+  })
+
+  test('a project whose folder is not on this runtime is skipped, never a create, and warns once per file', () => {
+    const manifest = parseSystemManifest({
+      version: 1,
+      name: 'm',
+      projects: [{ key: 'app', name: 'App', files: { 'AGENTS.md': 'content' } }],
+    }).manifest!
+    const diff = computeSystemDiff(manifest, [live({ id: 'id-app', name: 'App' })], null, {
+      callerProjectId: 'caller-1',
+      readFile: () => ({ status: 'unmounted' }),
+    })
+    expect(diff.files).toEqual([
+      { kind: 'file', key: 'app', projectId: 'id-app', path: 'AGENTS.md', action: 'skip', reason: 'project_not_mounted' },
+    ])
+    expect(diff.warnings).toEqual(['files app/AGENTS.md: skipped — project not mounted in this runtime; re-run after it mounts'])
+    // Still pending work: the file is written once the project mounts.
+    expect(diff.empty).toBe(false)
+    expect(summarizeDiff(diff)).toContain('files app/AGENTS.md: skipped — project not mounted in this runtime; re-run after it mounts')
+  })
+
+  test('the workspace agent emits no implicit caller attach, and says so once', () => {
+    const manifest = parseSystemManifest(MINIMAL_YAML).manifest!
+    const diff = computeSystemDiff(manifest, [], null, { callerProjectId: 'caller-1', callerIsWorkspaceAgent: true })
+    expect(diff.attach.filter((a) => a.anchorKey === IMPLICIT_ANCHOR)).toHaveLength(0)
+    expect(diff.warnings).toEqual(['attach: skipped for the workspace agent — no project identity to attach'])
+  })
+
+  test('declared project-to-project attaches survive the workspace-agent skip', () => {
+    const manifest = parseSystemManifest({
+      version: 1,
+      name: 'm',
+      projects: [
+        { key: 'intake', name: 'Intake', attachments: [{ project: 'planner' }] },
+        { key: 'planner', name: 'Planner' },
+      ],
+    }).manifest!
+    const liveProjects = [
+      live({ id: 'id-intake', name: 'Intake' }),
+      live({ id: 'id-planner', name: 'Planner' }),
+    ]
+    const diff = computeSystemDiff(manifest, liveProjects, null, { callerProjectId: 'caller-1', callerIsWorkspaceAgent: true })
+    expect(diff.attach).toEqual([
+      { kind: 'attach', anchorKey: 'intake', anchorId: 'id-intake', targetKey: 'planner', targetId: 'id-planner', mode: 'readwrite', changeMode: false },
+    ])
+  })
+
+  test('a locked id the workspace knows but the graph does not is a configure, not a create', () => {
+    const manifest = parseSystemManifest({
+      version: 1,
+      name: 'm',
+      projects: [{ key: 'hidden', name: 'Hidden', description: 'still here' }],
+    }).manifest!
+    const lock = { version: 1 as const, name: 'm', bindings: { hidden: 'id-hidden' } }
+    const diff = computeSystemDiff(manifest, [], lock, { callerProjectId: 'caller-1', knownProjectIds: ['id-hidden'] })
+    expect(diff.create).toHaveLength(0)
+    expect(diff.inaccessible).toHaveLength(0)
+    expect(diff.configure).toEqual([
+      { kind: 'configure', key: 'hidden', projectId: 'id-hidden', patch: { description: 'still here' } },
+    ])
+  })
+
+  test('a locked id no one can see is still inaccessible and creates nothing', () => {
+    const manifest = parseSystemManifest({
+      version: 1,
+      name: 'm',
+      projects: [{ key: 'gone', name: 'Gone' }],
+    }).manifest!
+    const lock = { version: 1 as const, name: 'm', bindings: { gone: 'id-gone' } }
+    const diff = computeSystemDiff(manifest, [], lock, { callerProjectId: 'caller-1', knownProjectIds: ['some-other-id'] })
+    expect(diff.create).toHaveLength(0)
+    expect(diff.inaccessible).toEqual([{ kind: 'inaccessible', key: 'gone', projectId: 'id-gone' }])
   })
 })
 

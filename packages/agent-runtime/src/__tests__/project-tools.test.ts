@@ -28,6 +28,7 @@ const api = {
   configure: { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } } as any,
   call: { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } } as any,
   teamChannels: { ok: true, status: 200, data: { channels: [], groups: {} } } as any,
+  workspaceProjects: { ok: true, status: 200, data: [] as any[] } as any,
   upsertChannel: { ok: true, status: 201, data: { created: true, changes: ['created'], channel: { id: 'conv-1', name: 'ops' } } } as any,
   ownership: { ok: true, status: 200, data: { claimed: [], released: [] } } as any,
   boards: { ok: true, status: 200, data: { boards: [] } } as any,
@@ -68,6 +69,10 @@ mock.module('../internal-api', () => ({
   listTeamChannels: (workspaceId: string) => {
     calls.push({ fn: 'listTeamChannels', args: [workspaceId] })
     return api.teamChannels
+  },
+  listWorkspaceProjects: (workspaceId: string, opts: unknown) => {
+    calls.push({ fn: 'listWorkspaceProjects', args: [workspaceId, opts] })
+    return api.workspaceProjects
   },
   upsertTeamChannel: (workspaceId: string, name: string, input: any) => {
     calls.push({ fn: 'upsertTeamChannel', args: [workspaceId, name, input] })
@@ -150,6 +155,7 @@ beforeEach(() => {
   api.configure = { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } }
   api.call = { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } }
   api.teamChannels = { ok: true, status: 200, data: { channels: [], groups: {} } }
+  api.workspaceProjects = { ok: true, status: 200, data: [] }
   api.upsertChannel = { ok: true, status: 201, data: { created: true, changes: ['created'], channel: { id: 'conv-1', name: 'ops' } } }
   api.ownership = { ok: true, status: 200, data: { claimed: [], released: [] } }
   api.boards = { ok: true, status: 200, data: { boards: [] } }
@@ -613,13 +619,83 @@ projects:
     expect(out.ok).toBe(false)
   })
 
-  test('skips writing files for a project not yet reachable on disk, and reports it instead of erroring', async () => {
+  test('a project created in this apply but not reachable on disk is skipped, warns, and still reports ok:true', async () => {
     api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
     const ctx = baseCtx()
     // Do not create the sibling dir for proj-intake — it "isn't mounted yet".
     const out = await run(createSystemApplyTool(ctx), { manifest: MANIFEST_YAML })
     expect(out.ok).toBe(true)
-    expect(out.skipped.some((l: string) => l.includes('not reachable on disk'))).toBe(true)
+    expect(out.errors).toEqual([])
+    expect(out.warnings).toEqual(['files intake/AGENTS.md: skipped — project not mounted in this runtime; re-run after it mounts'])
+    expect(out.applied.some((l: string) => l.startsWith('create intake/'))).toBe(false)
+    expect(existsSync(join(workspaceDir, 'proj-intake/AGENTS.md'))).toBe(false)
+  })
+
+  test('a bound project that is not on this disk is a skip in the plan, never a create', async () => {
+    mkdirSync(join(workspaceDir, '.shogo'), { recursive: true })
+    writeFileSync(join(workspaceDir, '.shogo/system.lock.json'), JSON.stringify({
+      version: 1, name: 'issue-pipeline', bindings: { intake: 'proj-intake' },
+    }))
+    api.graph.data = [
+      { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest: MANIFEST_YAML, dryRun: true })
+    expect(out.plan).toContain('files intake/AGENTS.md: skipped — project not mounted in this runtime; re-run after it mounts')
+    expect(out.plan.some((l: string) => l.startsWith('create intake/'))).toBe(false)
+    expect(out.warnings).toEqual(['files intake/AGENTS.md: skipped — project not mounted in this runtime; re-run after it mounts'])
+  })
+
+  test('a lock binding the graph does not show but the workspace does is a configure, not a duplicate create', async () => {
+    mkdirSync(join(workspaceDir, '.shogo'), { recursive: true })
+    writeFileSync(join(workspaceDir, '.shogo/system.lock.json'), JSON.stringify({
+      version: 1, name: 'issue-pipeline', bindings: { intake: 'proj-intake' },
+    }))
+    api.graph.data = []
+    api.workspaceProjects = { ok: true, status: 200, data: [{ id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null }] }
+    const manifest = `version: 1
+name: issue-pipeline
+projects:
+  - key: intake
+    name: Intake
+    description: Triage incoming issues.
+`
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest })
+    expect(calls.find((c) => c.fn === 'listWorkspaceProjects')).toBeDefined()
+    expect(calls.find((c) => c.fn === 'createProject')).toBeUndefined()
+    expect(out.applied).toContain('configure intake')
+    expect(out.plan.join('\n')).not.toContain('not_accessible')
+    expect(out.bindings.intake).toBe('proj-intake')
+  })
+
+  test('a lock binding no one can see stays inaccessible and creates nothing', async () => {
+    mkdirSync(join(workspaceDir, '.shogo'), { recursive: true })
+    writeFileSync(join(workspaceDir, '.shogo/system.lock.json'), JSON.stringify({
+      version: 1, name: 'issue-pipeline', bindings: { intake: 'proj-gone' },
+    }))
+    api.graph.data = []
+    api.workspaceProjects = { ok: true, status: 200, data: [{ id: 'proj-other', name: 'Other', description: null, workingMode: 'managed', settings: null }] }
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest: MANIFEST_YAML })
+    expect(calls.find((c) => c.fn === 'createProject')).toBeUndefined()
+    expect(out.errors.join('\n')).toContain('not_accessible')
+  })
+
+  test('the workspace agent gets no implicit caller attach and a clean warning instead of six Unauthorized errors', async () => {
+    api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
+    const prev = { runtime: process.env.WORKSPACE_RUNTIME, anchor: process.env.WORKSPACE_ANCHOR_PROJECT_ID }
+    process.env.WORKSPACE_RUNTIME = 'true'
+    delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    try {
+      const out = await run(createSystemApplyTool(baseCtx()), { manifest: MANIFEST_YAML })
+      expect(calls.find((c) => c.fn === 'attachProject')).toBeUndefined()
+      expect(out.ok).toBe(true)
+      expect(out.warnings).toContain('attach: skipped for the workspace agent — no project identity to attach')
+      expect(out.plan.join('\n')).not.toContain('attach (caller)')
+    } finally {
+      if (prev.runtime === undefined) delete process.env.WORKSPACE_RUNTIME
+      else process.env.WORKSPACE_RUNTIME = prev.runtime
+      if (prev.anchor === undefined) delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+      else process.env.WORKSPACE_ANCHOR_PROJECT_ID = prev.anchor
+    }
   })
 
   test('collects per-op errors without throwing when create fails, and still reports ok:false', async () => {
