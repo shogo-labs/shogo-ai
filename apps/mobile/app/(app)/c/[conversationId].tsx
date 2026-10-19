@@ -572,7 +572,7 @@ export default function ConversationScreen() {
               onResizeEnd={docPane.commit}
               onReset={docPane.reset}
             />
-            <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} />
+            <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} onOpenProfile={openProfile} />
           </View>
         )}
         {showDocFull && (
@@ -583,7 +583,7 @@ export default function ConversationScreen() {
                 {tabs}
               </>
             )}
-            <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} />
+            <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} onOpenProfile={openProfile} />
           </View>
         )}
         {showProfilePane && profilePaneId && (

@@ -20,6 +20,7 @@ import {
 } from "./file-links"
 import { MarkdownMedia } from "./MarkdownMedia.web"
 import { FileTypeIcon } from "./FileTypeIcon.web"
+import { withHardBreaks } from "../../lib/markdown-breaks"
 
 export interface MarkdownTextProps {
   children: string
@@ -167,7 +168,7 @@ export const MarkdownText = memo(
     const cls = className ? `${baseClassName} ${className}` : baseClassName
     const source = children || ""
     const body = useMemo(() => {
-      const normalized = rewriteWorkspaceMedia(normalizeRichTextPaste(source))
+      const normalized = withHardBreaks(rewriteWorkspaceMedia(normalizeRichTextPaste(source)))
       const fileLinked = onFilePress ? linkifyFilePaths(normalized) : normalized
       return linkifyBareUrls(fileLinked)
     }, [onFilePress, source])

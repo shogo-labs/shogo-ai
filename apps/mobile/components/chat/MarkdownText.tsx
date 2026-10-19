@@ -26,6 +26,7 @@ import {
   type MentionTarget,
 } from "./file-links";
 import { MarkdownMediaNative } from "./MarkdownMediaNative";
+import { withHardBreaks } from "../../lib/markdown-breaks";
 import { normalizeRichTextPaste } from "../../lib/rich-text-paste";
 import { usePhoneLayout } from "../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
@@ -484,7 +485,7 @@ export const MarkdownText = memo(function MarkdownText({
   );
 
   const value = useMemo(() => {
-    const normalized = rewriteWorkspaceMedia(normalizeRichTextPaste(children || ""));
+    const normalized = withHardBreaks(rewriteWorkspaceMedia(normalizeRichTextPaste(children || "")));
     const fileLinked = onFilePress ? linkifyFilePaths(normalized) : normalized;
     return linkifyBareUrls(fileLinked);
   }, [children, onFilePress]);

@@ -10,7 +10,21 @@ export interface Selection {
   end: number
 }
 
-export type DocFormat = 'h1' | 'h2' | 'h3' | 'bold' | 'italic' | 'strike' | 'code' | 'bullet' | 'numbered' | 'task' | 'quote' | 'link'
+export type DocFormat =
+  | 'h1'
+  | 'h2'
+  | 'h3'
+  | 'bold'
+  | 'italic'
+  | 'strike'
+  | 'code'
+  | 'bullet'
+  | 'numbered'
+  | 'task'
+  | 'quote'
+  | 'link'
+  | 'table'
+  | 'divider'
 
 export interface FormatResult {
   text: string
@@ -87,8 +101,34 @@ function toggleWrap(text: string, sel: Selection, marker: string, placeholder: s
   }
 }
 
+/** Blank-line separation so markdown parses the inserted block on its own. */
+function blockSeparators(text: string, sel: Selection): { lead: string; trail: string } {
+  const before = text.slice(0, sel.start)
+  const after = text.slice(sel.end)
+  const lead = before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n'
+  const trail = after === '' || after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '' : '\n\n'
+  return { lead, trail }
+}
+
+const DIVIDER = '---'
+const TABLE_SKELETON = '| Column | Column |\n| --- | --- |\n| Text | Text |'
+const TABLE_FIRST_CELL = '| '.length
+
+/** Insert a block at the selection. `selectLength` selects text inside it. */
+function insertBlock(text: string, sel: Selection, block: string, selectOffset = 0, selectLength = 0): FormatResult {
+  const { lead, trail } = blockSeparators(text, sel)
+  const base = sel.start + lead.length
+  return {
+    text: text.slice(0, sel.start) + lead + block + trail + text.slice(sel.end),
+    selection: { start: base + selectOffset, end: base + selectOffset + selectLength },
+  }
+}
+
 export function applyFormat(text: string, selection: Selection, format: DocFormat): FormatResult {
   const sel = clamp(selection, text.length)
+  if (format === 'divider') return insertBlock(text, sel, DIVIDER, DIVIDER.length)
+  // Select the placeholder in the first header cell so typing replaces it.
+  if (format === 'table') return insertBlock(text, sel, TABLE_SKELETON, TABLE_FIRST_CELL, 'Column'.length)
   const prefix = LINE_PREFIX[format]
   if (prefix) return toggleLinePrefix(text, sel, prefix)
   const marker = WRAP[format]

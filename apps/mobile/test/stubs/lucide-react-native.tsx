@@ -340,5 +340,15 @@ export {
   Icon as Y,
   Icon as Zap,
   Icon as KanbanSquare,
+  Icon as Bold,
+  Icon as Heading1,
+  Icon as Heading2,
+  Icon as Heading3,
+  Icon as Italic,
+  Icon as LockOpen,
+  Icon as Quote,
+  Icon as SeparatorHorizontal,
+  Icon as SquareCheck,
+  Icon as Strikethrough,
 }
 export default Icon

@@ -6,9 +6,10 @@
  * markdown with tappable task items; edit mode is a markdown editor with a
  * formatting toolbar that autosaves. Unrelated to project canvases.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
+import { useRouter } from 'expo-router'
 import {
   AtSign,
   Bold,
@@ -18,6 +19,7 @@ import {
   FileText,
   Heading1,
   Heading2,
+  Heading3,
   History,
   Italic,
   Link2,
@@ -28,13 +30,16 @@ import {
   LockOpen,
   Pencil,
   Quote,
+  SeparatorHorizontal,
   Square,
   SquareCheck,
   Strikethrough,
+  Table2,
   X,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
+import type { MentionTarget } from '../chat/file-links'
 import { useConversationDoc } from '../../hooks/useConversationDoc'
 import { describeAuthor } from '../../lib/channel-doc-state'
 import { applyFormat, insertAt, splitTaskSegments, toggleTask, type DocFormat, type Selection } from '../../lib/doc-markdown'
@@ -50,11 +55,14 @@ export interface DocPaneProps {
   workspaceId: string
   mentionables: Mentionables | null
   onClose: () => void
+  /** Opens a person's profile. Absent hosts leave mentions as plain highlights. */
+  onOpenProfile?: (userId: string) => void
 }
 
 const TOOLBAR: Array<{ format: DocFormat; label: string; Icon: typeof Bold }> = [
   { format: 'h1', label: 'Heading', Icon: Heading1 },
   { format: 'h2', label: 'Subheading', Icon: Heading2 },
+  { format: 'h3', label: 'Minor heading', Icon: Heading3 },
   { format: 'bold', label: 'Bold', Icon: Bold },
   { format: 'italic', label: 'Italic', Icon: Italic },
   { format: 'strike', label: 'Strikethrough', Icon: Strikethrough },
@@ -63,10 +71,13 @@ const TOOLBAR: Array<{ format: DocFormat; label: string; Icon: typeof Bold }> = 
   { format: 'task', label: 'Checklist', Icon: ListTodo },
   { format: 'quote', label: 'Quote', Icon: Quote },
   { format: 'code', label: 'Code', Icon: Code },
+  { format: 'table', label: 'Table', Icon: Table2 },
+  { format: 'divider', label: 'Divider', Icon: SeparatorHorizontal },
   { format: 'link', label: 'Link', Icon: Link2 },
 ]
 
-export function DocPane({ conversation, workspaceId, mentionables, onClose }: DocPaneProps) {
+export function DocPane({ conversation, workspaceId, mentionables, onClose, onOpenProfile }: DocPaneProps) {
+  const router = useRouter()
   const { state, doc, dirty, edit, flush, resolve, setLocked, restore } = useConversationDoc(workspaceId, conversation.id)
   const [editing, setEditing] = useState(false)
   const [selection, setSelection] = useState<Selection>({ start: 0, end: 0 })
@@ -76,6 +87,20 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose }: Do
   const [actionError, setActionError] = useState<string | null>(null)
   const pendingSelection = useRef<Selection | null>(null)
   const names = mentionNames(mentionables)
+  /**
+   * What tapping an @-mention in the doc does — identical to the timeline: a
+   * person opens their profile through the host, an agent opens its own profile
+   * page. A host that offers no profile leaves mentions as plain highlights.
+   */
+  const mentionPress = useMemo(() => {
+    if (!onOpenProfile) return undefined
+    return (target: MentionTarget) => {
+      if (target.kind === 'u') return onOpenProfile(target.id)
+      if (target.kind === 'a') {
+        router.push({ pathname: '/(app)/agents/[key]', params: { key: target.id } } as any)
+      }
+    }
+  }, [onOpenProfile, router])
   const exists = !!state.server
   const canEdit = state.canEdit && !conversation.archivedAt
 
@@ -95,8 +120,8 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose }: Do
     setSelection(result.selection)
     edit({ content: result.text })
   }
-  const insertMention = (name: string) => {
-    const result = insertAt(doc.content, selection, `@${name} `)
+  const insertMention = (key: string) => {
+    const result = insertAt(doc.content, selection, `<@${key}> `)
     pendingSelection.current = result.selection
     setSelection(result.selection)
     edit({ content: result.text })
@@ -265,7 +290,13 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose }: Do
         </View>
       ) : (
         <ScrollView className="flex-1" contentContainerClassName="px-4 py-3">
-          <DocView content={doc.content} names={names} canToggle={canEdit} onToggle={toggle} />
+          <DocView
+            content={doc.content}
+            names={names}
+            canToggle={canEdit}
+            onToggle={toggle}
+            onMentionPress={mentionPress}
+          />
         </ScrollView>
       )}
 
@@ -293,18 +324,22 @@ function DocView({
   names,
   canToggle,
   onToggle,
+  onMentionPress,
 }: {
   content: string
   names: ReturnType<typeof mentionNames>
   canToggle: boolean
   onToggle: (line: number) => void
+  onMentionPress?: (target: MentionTarget) => void
 }) {
   const segments = splitTaskSegments(content)
   return (
     <View className="gap-1" testID="doc-view">
       {segments.map((s, i) =>
         s.type === 'markdown' ? (
-          <MarkdownText key={`m${i}`}>{renderMentionsMarkdown(s.text, names)}</MarkdownText>
+          <MarkdownText key={`m${i}`} onMentionPress={onMentionPress}>
+            {renderMentionsMarkdown(s.text, names)}
+          </MarkdownText>
         ) : (
           <Pressable
             key={`t${s.line}`}
@@ -320,7 +355,9 @@ function DocView({
               {s.checked ? <SquareCheck size={16} className="text-primary" /> : <Square size={16} className="text-muted-foreground" />}
             </View>
             <View className={cn('min-w-0 flex-1', s.checked && 'opacity-60')}>
-              <MarkdownText>{renderMentionsMarkdown(s.checked ? `~~${s.text}~~` : s.text, names)}</MarkdownText>
+              <MarkdownText onMentionPress={onMentionPress}>
+                {renderMentionsMarkdown(s.checked ? `~~${s.text}~~` : s.text, names)}
+              </MarkdownText>
             </View>
           </Pressable>
         ),
@@ -410,7 +447,7 @@ function HistoryModal({
   )
 }
 
-function MentionModal({ mentionables, onPick, onClose }: { mentionables: Mentionables | null; onPick: (name: string) => void; onClose: () => void }) {
+function MentionModal({ mentionables, onPick, onClose }: { mentionables: Mentionables | null; onPick: (key: string) => void; onClose: () => void }) {
   const [filter, setFilter] = useState('')
   const q = filter.trim().toLowerCase()
   const entries = [
@@ -431,7 +468,7 @@ function MentionModal({ mentionables, onPick, onClose }: { mentionables: Mention
           />
           <ScrollView>
             {entries.map((e) => (
-              <Pressable key={e.key} onPress={() => onPick(e.name)} className="rounded-md px-2 py-1.5 active:bg-muted hover:bg-muted">
+              <Pressable key={e.key} onPress={() => onPick(e.key)} className="rounded-md px-2 py-1.5 active:bg-muted hover:bg-muted">
                 <Text className="text-sm text-foreground">{e.name}</Text>
               </Pressable>
             ))}
