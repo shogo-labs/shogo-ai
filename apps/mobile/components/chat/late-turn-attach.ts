@@ -103,6 +103,43 @@ export function externalPromptHasResponse(messages: readonly any[], promptIndex:
   return messages.some((message, index) => index > promptIndex && message?.role === 'assistant')
 }
 
+/** The newest saved row of a chat, as the one-shot refocus check reads it. */
+export interface PersistedTail {
+  id?: string | null
+  role?: string | null
+}
+
+/**
+ * Whether saved history holds a row this panel never rendered: the newest
+ * persisted message is not the newest one on screen (SHO-53).
+ *
+ * A window that was not in front when a turn ran somewhere else watches
+ * nothing (the wake watch only runs for an active panel), and its refocus
+ * probe sees a turn that is already `completed` — the reply was saved while
+ * nobody here was looking. This one comparison is what tells that apart from a
+ * chat that is simply up to date, so a refocus costs one cheap read of the
+ * newest row instead of a transcript reload.
+ */
+export function persistedTailIsUnseen(
+  tail: PersistedTail | null | undefined,
+  messages: readonly any[],
+): boolean {
+  const persistedId = tail?.id
+  if (!persistedId) return false
+  const newest = messages[messages.length - 1]
+  if (!newest) return true
+  return String(newest?.id ?? '') !== String(persistedId)
+}
+
+/**
+ * The newest saved row is a user row, so its reply is still being written — or
+ * is queued behind the API's drain tick. A repaint may paint it before the
+ * reply exists: the panel's late-turn probe is what picks the reply up then.
+ */
+export function persistedTailAwaitsReply(tail: PersistedTail | null | undefined): boolean {
+  return tail?.role === 'user'
+}
+
 export interface LateTurnPollOptions {
   probe: () => Promise<ChatTurnStatus>
   /** The turn is active. Attach to its stream. Called at most once. */

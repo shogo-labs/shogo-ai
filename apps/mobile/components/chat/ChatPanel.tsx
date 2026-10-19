@@ -118,8 +118,11 @@ import {
   LATE_TURN_MAX_WAIT_MS,
   LATE_TURN_POLL_INTERVAL_MS,
   pendingExternalPromptIndex,
+  persistedTailAwaitsReply,
+  persistedTailIsUnseen,
   pollForLateTurn,
   taskWakeHasResponse,
+  type PersistedTail,
 } from "./late-turn-attach"
 import {
   lastTurnStartedBackgroundWork,
@@ -3933,6 +3936,46 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [projectId, localAgentUrl, chatWorkspaceId, expoFetch, nativeHeaders],
   )
 
+  /**
+   * The newest saved row for this chat, one row wide. A refocus has to tell
+   * "this chat is up to date" from "a turn was written while this window was
+   * in the background" without pulling the transcript (SHO-53), and the id of
+   * the newest row is enough: if it is not the row on screen, history moved.
+   */
+  const probePersistedTail = useCallback(
+    async (sessionId: string): Promise<PersistedTail | null> => {
+      if (!API_URL) return null
+      const params = new URLSearchParams({
+        sessionId,
+        agent: "technical",
+        limit: "1",
+        offset: "0",
+      })
+      try {
+        const fetchFn = expoFetch ?? globalThis.fetch
+        const response = await fetchFn(
+          `${API_URL}/api/chat-messages?${params.toString()}`,
+          {
+            headers: nativeHeaders ? nativeHeaders() : {},
+            credentials: Platform.OS === "web" ? "include" : undefined,
+          } as any,
+        )
+        if (!response.ok) return null
+        const body = await response.json().catch(() => null)
+        const newest = Array.isArray(body?.items) ? body.items[0] : null
+        if (!newest?.id) return null
+        return {
+          id: String(newest.id),
+          role: typeof newest.role === "string" ? newest.role : null,
+        }
+      } catch {
+        // A failed read is not evidence of a missed turn: leave the panel be.
+        return null
+      }
+    },
+    [expoFetch, nativeHeaders],
+  )
+
   // A turn this panel is not attached to (started in another window, by
   // another member, by a schedule, or dispatched from a queue another window
   // filled) streams to nobody here until something attaches to it. Nothing
@@ -3994,33 +4037,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     return true
   }, [probeLiveTurn, reloadAndAttachLiveTurn])
 
-  useEffect(() => {
-    if (!isActive || !currentSessionId) return
-    const recheck = () => {
-      // Focus fires on every click back into the window.
-      if (Date.now() - lastLiveTurnCheckAtRef.current < 3000) return
-      void attachToLiveTurnIfAny()
-    }
-    if (Platform.OS === "web") {
-      if (typeof window === "undefined" || typeof document === "undefined") {
-        return
-      }
-      const onVisibility = () => {
-        if (document.visibilityState === "visible") recheck()
-      }
-      window.addEventListener("focus", recheck)
-      document.addEventListener("visibilitychange", onVisibility)
-      return () => {
-        window.removeEventListener("focus", recheck)
-        document.removeEventListener("visibilitychange", onVisibility)
-      }
-    }
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") recheck()
-    })
-    return () => subscription.remove()
-  }, [isActive, currentSessionId, attachToLiveTurnIfAny])
-
   const attachToLiveTurnIfAnyRef = useRef(attachToLiveTurnIfAny)
   attachToLiveTurnIfAnyRef.current = attachToLiveTurnIfAny
 
@@ -4077,6 +4093,67 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
     [sessionMessages, setMessages],
   )
+
+  /**
+   * Catch up after the window was not in front (SHO-53). The wake watch only
+   * runs for an active panel, so a wake that ran while this chat sat behind
+   * another chat tab, another browser tab or another app left nothing armed
+   * here. By the time the person comes back the turn reads `completed`, which
+   * the attach path sends to "history is enough" — but this window has never
+   * seen that history. One row-wide read of the newest saved message decides
+   * it, so a chat that is already up to date still costs a single `/turn`
+   * probe and no transcript reload.
+   */
+  const repaintIfBehindPersistedTail = useCallback(async () => {
+    const sessionId = currentSessionIdRef.current
+    if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return
+    const tail = await probePersistedTail(sessionId)
+    if (currentSessionIdRef.current !== sessionId) return
+    if (!persistedTailIsUnseen(tail, messagesRef.current)) return
+    // A repaint that requires the reply keeps SHO-31's rule: another window's
+    // ordinary turn is not this window's to overwrite. A tail that is still a
+    // user row is a prompt answered elsewhere (the queue's `[Task update]`
+    // wake), so paint it and let the late-turn probe fetch the reply.
+    await reloadPersistedResponse({ requireReply: !persistedTailAwaitsReply(tail) })
+  }, [probePersistedTail, reloadPersistedResponse])
+
+  useEffect(() => {
+    if (!isActive || !currentSessionId) return
+    let cancelled = false
+    const recheck = () => {
+      // Focus fires on every click back into the window.
+      if (Date.now() - lastLiveTurnCheckAtRef.current < 3000) return
+      // Both halves are one-shot per focus event: a live turn is attached to,
+      // and a turn that finished elsewhere is repainted from saved history.
+      // Nothing here polls.
+      void attachToLiveTurnIfAny().then((attached) => {
+        if (attached || cancelled) return
+        void repaintIfBehindPersistedTail()
+      })
+    }
+    if (Platform.OS === "web") {
+      if (typeof window === "undefined" || typeof document === "undefined") {
+        return
+      }
+      const onVisibility = () => {
+        if (document.visibilityState === "visible") recheck()
+      }
+      window.addEventListener("focus", recheck)
+      document.addEventListener("visibilitychange", onVisibility)
+      return () => {
+        cancelled = true
+        window.removeEventListener("focus", recheck)
+        document.removeEventListener("visibilitychange", onVisibility)
+      }
+    }
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") recheck()
+    })
+    return () => {
+      cancelled = true
+      subscription.remove()
+    }
+  }, [isActive, currentSessionId, attachToLiveTurnIfAny, repaintIfBehindPersistedTail])
 
   const wasTransportStreamingRef = useRef(false)
   // A window that followed a turn must keep following: the next message in the

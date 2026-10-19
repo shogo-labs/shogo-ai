@@ -470,7 +470,9 @@ jobs:
           # it opens (its log, never blank) without leaving the chat.
           # chat-task-wake-live-attach asserts the other half of the wake: the
           # window that did NOT post the turn renders it with no reload.
-          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks chat-task-thread-pane chat-task-wake-live-attach' }
+          # chat-task-wake-refocus covers the window that was in the background
+          # while the wake ran: one catch-up on refocus, then quiet again.
+          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks chat-task-thread-pane chat-task-wake-live-attach chat-task-wake-refocus' }
     permissions:
       contents: read
     timeout-minutes: 60
