@@ -182,8 +182,18 @@ export async function higgsfieldEstimate(
     signal,
   })
   if (!response.ok) await throwForResponse(response)
-  const estimate = parseHiggsfieldEstimate(await response.json().catch(() => null))
-  if (!estimate) throw new HiggsfieldError('Higgsfield returned no usable price estimate', 'validation')
+  const body = await response.json().catch(() => null)
+  const estimate = parseHiggsfieldEstimate(body)
+  if (!estimate) {
+    // Token-priced endpoints (Marketing Studio 2.5 Flare/Sunburst, Ads Studio)
+    // answer with a rate-card description — `image output $30/1M` — instead of
+    // an amount. There is no per-request figure to bill, so say that rather
+    // than a generic "no estimate" the caller can only retry forever.
+    if ((body as { type?: string } | null)?.type === 'description') {
+      throw new HiggsfieldError('Higgsfield prices this model per token and returned no per-request amount', 'unavailable')
+    }
+    throw new HiggsfieldError('Higgsfield returned no usable price estimate', 'validation')
+  }
   return estimate
 }
 
@@ -456,8 +466,101 @@ export function nearestHiggsfieldAspectRatio(size: string | undefined, allowed: 
 
 export const SOUL_ASPECT_RATIOS = ['1:1', '9:16', '16:9', '4:3', '3:4', '2:3', '3:2'] as const
 export const IDEOGRAM_ASPECT_RATIOS = ['1:1', '9:16', '16:9', '4:3', '3:4', '2:3', '3:2'] as const
-/** SOUL V2's resolution tiers; `quality: "hd"` maps to the higher one. */
+export const QWEN_ASPECT_RATIOS = ['1:1', '2:3', '3:2', '3:4', '4:3', '7:9', '9:7', '9:16', '16:9', '21:9'] as const
+export const Z_IMAGE_ASPECT_RATIOS = QWEN_ASPECT_RATIOS
+export const RECRAFT_ASPECT_RATIOS = [
+  '1:1', '2:1', '1:2', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5',
+  '6:10', '14:10', '10:14', '16:9', '9:16',
+] as const
+export const MARKETING_ASPECT_RATIOS = ['auto', '1:1', '3:2', '2:3', '4:3', '3:4', '16:9', '9:16', '21:9'] as const
+export const GROK_ASPECT_RATIOS = ['auto', '1:1', '1:2', '2:1', '3:2', '2:3', '4:3', '3:4', '16:9', '9:16'] as const
+export const ADS_STUDIO_ASPECT_RATIOS = [
+  '1:1', '4:5', '5:4', '16:9', '9:16', '4:3', '3:4', '21:9',
+  '3:2', '2:3', '2:1', '1:2', '3:1', '1:3',
+] as const
+
+/** Resolution tiers as `[standard, hd]`. SOUL calls them 720p/1080p. */
 export const SOUL_RESOLUTIONS = ['720p', '1080p'] as const
+export const IMAGE_RESOLUTIONS = ['1k', '2k'] as const
+export const RECRAFT_1K_RESOLUTIONS = ['1k', '1k'] as const
+export const RECRAFT_2K_RESOLUTIONS = ['2k', '2k'] as const
+
+/**
+ * How one Higgsfield image endpoint takes its documented body. This is a
+ * table, not a branch: `buildHiggsfieldImageRequest` throws away the idea of
+ * per-model if/else, and `check:higgsfield-docs` fails when a catalog entry is
+ * missing from it, so a new model cannot ship without someone reading its
+ * schema.
+ */
+export interface HiggsfieldImageShape {
+  /** Documented `aspect_ratio` values, in the vendor's order. */
+  aspectRatios: readonly string[]
+  /** `[standard, hd]` resolution tiers. Omitted when the endpoint takes none. */
+  resolutions?: readonly [string, string]
+  /** `[standard, hd]` `quality` values. Omitted when the endpoint takes none. */
+  qualities?: readonly [string, string]
+  /** Extra quality tiers a caller may send and we pass through (flare/sunburst). */
+  extendedQualities?: readonly string[]
+  /** Documented reference-image field and whether it is an array. */
+  references?: { field: string; multiple: boolean }
+  /** Send `enhance_prompt: false` (SOUL family). */
+  enhancePrompt?: boolean
+  /** Send `batch_size: 1` (SOUL family). */
+  batchSize?: boolean
+  /** Send `rendering_speed` instead of `quality` (Ideogram). */
+  renderingSpeed?: boolean
+  /** Submit the entry's `editApiModel` when references are present (Qwen). */
+  editWhenReferenced?: boolean
+}
+
+export const HIGGSFIELD_IMAGE_SHAPES: Record<string, HiggsfieldImageShape> = {
+  'hf-soul-v2': {
+    aspectRatios: SOUL_ASPECT_RATIOS, resolutions: SOUL_RESOLUTIONS, enhancePrompt: true, batchSize: true,
+  },
+  'hf-soul-standard': {
+    aspectRatios: SOUL_ASPECT_RATIOS, resolutions: SOUL_RESOLUTIONS, enhancePrompt: true, batchSize: true,
+    references: { field: 'image_reference_url', multiple: false },
+  },
+  'hf-soul-cinema': {
+    aspectRatios: SOUL_ASPECT_RATIOS, resolutions: SOUL_RESOLUTIONS, enhancePrompt: true, batchSize: true,
+  },
+  'hf-ideogram-4': {
+    aspectRatios: IDEOGRAM_ASPECT_RATIOS, renderingSpeed: true,
+    references: { field: 'image_url', multiple: false },
+  },
+  'hf-qwen-image-3': {
+    aspectRatios: QWEN_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS,
+    references: { field: 'image_urls', multiple: true }, editWhenReferenced: true,
+  },
+  'hf-recraft-v4.1': { aspectRatios: RECRAFT_ASPECT_RATIOS, resolutions: RECRAFT_1K_RESOLUTIONS },
+  'hf-recraft-v4.1-pro': { aspectRatios: RECRAFT_ASPECT_RATIOS, resolutions: RECRAFT_2K_RESOLUTIONS },
+  'hf-recraft-v4.1-utility': { aspectRatios: RECRAFT_ASPECT_RATIOS, resolutions: RECRAFT_1K_RESOLUTIONS },
+  'hf-recraft-v4.1-utility-pro': { aspectRatios: RECRAFT_ASPECT_RATIOS, resolutions: RECRAFT_2K_RESOLUTIONS },
+  'hf-z-image-turbo': { aspectRatios: Z_IMAGE_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS },
+  'hf-marketing-studio': {
+    aspectRatios: MARKETING_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS, qualities: ['medium', 'high'],
+    references: { field: 'image_urls', multiple: true },
+  },
+  'hf-marketing-studio-flare': {
+    aspectRatios: MARKETING_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS, qualities: ['medium', 'high'],
+    extendedQualities: ['xhigh', 'max'],
+    references: { field: 'image_urls', multiple: true },
+  },
+  'hf-marketing-studio-sunburst': {
+    aspectRatios: MARKETING_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS, qualities: ['medium', 'high'],
+    extendedQualities: ['xhigh', 'max'],
+    references: { field: 'image_urls', multiple: true },
+  },
+  'hf-grok-image-2': {
+    // Grok only accepts low|medium, so both of our tiers send medium.
+    aspectRatios: GROK_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS, qualities: ['medium', 'medium'],
+    references: { field: 'image_urls', multiple: true },
+  },
+  'hf-ads-studio': {
+    aspectRatios: ADS_STUDIO_ASPECT_RATIOS,
+    references: { field: 'image_urls', multiple: true },
+  },
+}
 
 export interface HiggsfieldImageParams {
   prompt: string
@@ -467,37 +570,48 @@ export interface HiggsfieldImageParams {
   referenceUrls?: string[]
 }
 
-/** One submission per image: the proxy fans out `n` copies and sums the estimates. */
+/** `hd`/`high`/`xhigh`/`max` pick the higher documented tier; the rest the lower. */
+function imageQualityTier(quality: string | undefined): 0 | 1 {
+  return quality && ['hd', 'high', 'xhigh', 'max'].includes(quality) ? 1 : 0
+}
+
+/**
+ * One submission per image: the proxy fans out `n` copies and sums the
+ * estimates. Every field sent here is one the vendor documents for that
+ * endpoint — an undocumented extra is a 422, so the shape table decides.
+ */
 export function buildHiggsfieldImageRequest(
   entry: ImageModelEntry,
   params: HiggsfieldImageParams,
 ): { endpoint: string; input: Record<string, unknown> } {
-  const resolution = params.quality === 'hd' || params.quality === 'high' ? '1080p' : '720p'
-  if (entry.id === 'hf-soul-v2') {
-    return {
-      endpoint: entry.apiModel,
-      input: {
-        prompt: params.prompt,
-        aspect_ratio: nearestHiggsfieldAspectRatio(params.size, SOUL_ASPECT_RATIOS),
-        resolution,
-        enhance_prompt: false,
-        batch_size: 1,
-      },
-    }
+  const shape = HIGGSFIELD_IMAGE_SHAPES[entry.id]
+  const referenceUrls = params.referenceUrls ?? []
+  const endpoint = shape?.editWhenReferenced && referenceUrls.length > 0 && entry.editApiModel
+    ? entry.editApiModel
+    : entry.apiModel
+
+  // `prompt` is the only field every endpoint requires: a catalog entry with no
+  // documented shape still produces a valid request instead of rejecting the
+  // whole `list_media_models` call.
+  if (!shape) return { endpoint, input: { prompt: params.prompt } }
+
+  const tier = imageQualityTier(params.quality)
+  const input: Record<string, unknown> = {
+    prompt: params.prompt,
+    aspect_ratio: nearestHiggsfieldAspectRatio(params.size, shape.aspectRatios),
   }
-  if (entry.id === 'hf-ideogram-4') {
-    const ref = params.referenceUrls?.[0]
-    return {
-      endpoint: entry.apiModel,
-      input: {
-        prompt: params.prompt,
-        aspect_ratio: nearestHiggsfieldAspectRatio(params.size, IDEOGRAM_ASPECT_RATIOS),
-        rendering_speed: params.quality === 'hd' || params.quality === 'high' ? 'QUALITY' : 'DEFAULT',
-        ...(ref ? { image_url: ref } : {}),
-      },
-    }
+  if (shape.resolutions) input.resolution = shape.resolutions[tier]
+  if (shape.qualities) {
+    const extended = params.quality && shape.extendedQualities?.includes(params.quality)
+    input.quality = extended ? params.quality : shape.qualities[tier]
   }
-  throw new HiggsfieldError(`Higgsfield has no image request shape for '${entry.id}'`, 'validation')
+  if (shape.renderingSpeed) input.rendering_speed = tier === 1 ? 'QUALITY' : 'DEFAULT'
+  if (shape.enhancePrompt) input.enhance_prompt = false
+  if (shape.batchSize) input.batch_size = 1
+  if (shape.references && referenceUrls.length > 0) {
+    input[shape.references.field] = shape.references.multiple ? referenceUrls : referenceUrls[0]
+  }
+  return { endpoint, input }
 }
 
 export interface HiggsfieldVideoParams {

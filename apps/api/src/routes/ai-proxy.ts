@@ -3265,30 +3265,45 @@ export async function listMediaModels(signal?: AbortSignal) {
           ...(entry.deprecated ? { deprecated: true, replacement: entry.replacement } : {}),
         }
         if (entry.provider === 'higgsfield' && higgsfieldKey) {
-          const estimate = await cachedHiggsfieldEstimate(
-            higgsfieldKey,
-            entry,
-            buildHiggsfieldImageRequest(entry, { prompt: 'a product photo on a plain background', size: '1024x1024', quality: 'standard' }),
-            signal,
-          )
+          // A catalog entry whose request shape is unknown (or whose estimate
+          // throws) must never blank the whole listing: one bad model falls back
+          // to its catalog price and the other fifteen still list.
+          let request: { endpoint: string; input: Record<string, unknown> } | null = null
+          try {
+            request = buildHiggsfieldImageRequest(entry, { prompt: 'a product photo on a plain background', size: '1024x1024', quality: 'standard' })
+          } catch (error) {
+            console.warn(`[AI Proxy] No image request shape for ${entry.id}; listing it from its catalog price only:`, error)
+          }
+          const estimate = request
+            ? await cachedHiggsfieldEstimate(higgsfieldKey, entry, request, signal)
+            : null
           const rawUsd = estimate?.rawUsd ?? entry.usdPerRequest
           return {
             ...base,
             price: {
               unit: 'image',
               usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
-              source: estimate ? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
+              source: estimate?.rawUsd !== undefined ? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
             },
           }
         }
-        const standard = calculateImageUsageCost(entry.id, 'standard', '1024x1024')
-        const hd = calculateImageUsageCost(entry.id, 'hd', '1024x1024')
+        // The price ladder is model × quality × size, so publish the marked-up
+        // numbers an agent needs to budget: `usd`/`hd_usd`/`low_usd` at 1024²
+        // (the keys agents already read) plus the standard price per size.
+        const priceAt = (quality: string, size: string) =>
+          roundUsd(calculateImageUsageCost(entry.id, quality, size).billedUsd)
         return {
           ...base,
           price: {
             unit: 'image',
-            usd: roundUsd(standard.billedUsd),
-            hd_usd: roundUsd(hd.billedUsd),
+            usd: priceAt('standard', '1024x1024'),
+            hd_usd: priceAt('hd', '1024x1024'),
+            low_usd: priceAt('low', '1024x1024'),
+            usd_by_size: {
+              '1024x1024': priceAt('standard', '1024x1024'),
+              '1024x1536': priceAt('standard', '1024x1536'),
+              '1536x1024': priceAt('standard', '1536x1024'),
+            },
           },
         }
       }),

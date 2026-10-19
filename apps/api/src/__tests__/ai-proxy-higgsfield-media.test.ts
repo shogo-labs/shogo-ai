@@ -226,6 +226,73 @@ describe('helpers', () => {
     })
   })
 
+  // ---- per-family image request table ----------------------------------
+  const shape = (id: string, params: any) =>
+    buildHiggsfieldImageRequest((IMAGE_MODEL_CATALOG as any)[id], { prompt: 'a can', ...params })
+
+  test('every Higgsfield image catalog entry builds a request and never throws', () => {
+    const entries = Object.values(IMAGE_MODEL_CATALOG).filter((e: any) => e.provider === 'higgsfield')
+    expect(entries.length).toBe(15)
+    for (const entry of entries as any[]) {
+      const withRefs = shape(entry.id, { referenceUrls: ['https://cdn.test/a.png'] })
+      expect(withRefs.endpoint).toBeTruthy()
+      expect(withRefs.input.prompt).toBe('a can')
+      expect(() => shape(entry.id, { size: '1792x1024', quality: 'max' })).not.toThrow()
+    }
+  })
+
+  test('SOUL standard takes one style reference on image_reference_url', () => {
+    const req = shape('hf-soul-standard', { quality: 'standard', size: '1024x1024', referenceUrls: ['https://cdn.test/a.png', 'https://cdn.test/b.png'] })
+    expect(req.endpoint).toBe('higgsfield-ai/soul/standard')
+    expect(req.input).toMatchObject({ resolution: '720p', enhance_prompt: false, image_reference_url: 'https://cdn.test/a.png' })
+  })
+
+  test('Qwen switches to the edit endpoint only when references are present', () => {
+    const t2i = shape('hf-qwen-image-3', { quality: 'hd' })
+    expect(t2i.endpoint).toBe('alibaba/qwen-image-3/text-to-image')
+    expect(t2i.input).toMatchObject({ resolution: '2k', aspect_ratio: '1:1' })
+    expect(t2i.input.image_urls).toBeUndefined()
+
+    const edit = shape('hf-qwen-image-3', { referenceUrls: ['https://cdn.test/a.png', 'https://cdn.test/b.png'] })
+    expect(edit.endpoint).toBe('alibaba/qwen-image-3/edit')
+    expect(edit.input.image_urls).toEqual(['https://cdn.test/a.png', 'https://cdn.test/b.png'])
+  })
+
+  test('Recraft sends the resolution its variant is fixed at', () => {
+    expect(shape('hf-recraft-v4.1', { quality: 'hd' }).input).toMatchObject({ resolution: '1k', aspect_ratio: '1:1' })
+    expect(shape('hf-recraft-v4.1-pro', { quality: 'standard' }).input).toMatchObject({ resolution: '2k' })
+    expect(shape('hf-recraft-v4.1-utility-pro', { quality: 'standard' }).input).toMatchObject({ resolution: '2k' })
+    // 14 documented ratios, including the ones only Recraft accepts.
+    expect(shape('hf-recraft-v4.1', { size: '1400x1000' }).input.aspect_ratio).toBe('14:10')
+  })
+
+  test('Z-Image accepts the wide 21:9 ratio', () => {
+    expect(shape('hf-z-image-turbo', { size: '2520x1080' }).input).toMatchObject({ aspect_ratio: '21:9', resolution: '1k' })
+  })
+
+  test('Marketing Studio maps standard→medium/1k and hd→high/2k, and passes xhigh through', () => {
+    expect(shape('hf-marketing-studio', { quality: 'standard' }).input).toMatchObject({ quality: 'medium', resolution: '1k' })
+    expect(shape('hf-marketing-studio', { quality: 'hd' }).input).toMatchObject({ quality: 'high', resolution: '2k' })
+    expect(shape('hf-marketing-studio-flare', { quality: 'xhigh' }).input).toMatchObject({ quality: 'xhigh' })
+    // 2.0 Alpha only takes low/medium/high, so xhigh is not forwarded there.
+    expect(shape('hf-marketing-studio', { quality: 'xhigh' }).input).toMatchObject({ quality: 'high' })
+  })
+
+  test('Grok sends medium for both tiers — it has no high', () => {
+    expect(shape('hf-grok-image-2', { quality: 'standard' }).input).toMatchObject({ quality: 'medium', resolution: '1k' })
+    expect(shape('hf-grok-image-2', { quality: 'hd' }).input).toMatchObject({ quality: 'medium', resolution: '2k' })
+  })
+
+  test('Ads Studio sends the prompt, ratio and references only', () => {
+    const req = shape('hf-ads-studio', { size: '1080x1350', referenceUrls: ['https://cdn.test/product.png'] })
+    expect(req.endpoint).toBe('higgsfield/ads-studio/v1.0')
+    expect(req.input).toEqual({
+      prompt: 'a can',
+      aspect_ratio: '4:5',
+      image_urls: ['https://cdn.test/product.png'],
+    })
+  })
+
   test('hailuo text-to-video sends duration only; image-to-video switches endpoint', () => {
     const entry = VIDEO_MODEL_CATALOG['hf-hailuo-2.3'] as any
     const t2v = buildHiggsfieldVideoRequest(entry, { prompt: 'waves', duration: 10 })
@@ -671,6 +738,48 @@ describe('estimate route', () => {
     expect(data.error.code).toBe('missing_source_duration')
   })
 
+  test('a token-priced endpoint is refused with a clear message, never a generic error', async () => {
+    // Marketing Studio 2.5 Flare / Sunburst and Ads Studio answer with a rate
+    // card instead of a `usd`.
+    on('https://hf.test/estimate/marketing-studio/image/flare', () => json({
+      type: 'description',
+      pricing_description: 'Per 1M tokens: … image output $30.',
+    }))
+    const res = await call('/ai/v1/media/estimate', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'hf-marketing-studio-flare' }),
+    })
+    const data = await res.json() as any
+    expect(res.status).toBe(503)
+    expect(data.error.message).toContain('per token')
+  })
+
+  test('prices an OpenAI image off the quality × size ladder', async () => {
+    process.env.OPENAI_API_KEY = 'sk-test'
+    try {
+      const res = await call('/ai/v1/media/estimate', {
+        method: 'POST',
+        body: JSON.stringify({ model: 'gpt-image-2.5-flare', quality: 'hd', size: '1024x1536' }),
+      })
+      const data = await res.json() as any
+      expect(res.status).toBe(200)
+      expect(data.unit).toBe('image')
+      // High portrait on the flare ladder: $0.165 raw, marked up 1.2×.
+      expect(data.raw_usd).toBeCloseTo(0.165, 4)
+      expect(data.usd).toBeCloseTo(0.198, 4)
+
+      const medium = await call('/ai/v1/media/estimate', {
+        method: 'POST',
+        body: JSON.stringify({ model: 'gpt-image-1', quality: 'standard', size: '1024x1024' }),
+      })
+      const mediumData = await medium.json() as any
+      expect(mediumData.raw_usd).toBeCloseTo(0.042, 4)
+      expect(mediumData.usd).toBeCloseTo(0.0504, 4)
+    } finally {
+      delete process.env.OPENAI_API_KEY
+    }
+  })
+
   test('Genjutsu prices off the source-second rate card', async () => {
     const at = async (resolution: string, seconds: number) => {
       const res = await call('/ai/v1/media/estimate', {
@@ -756,9 +865,82 @@ describe('list_media_models', () => {
     const ids = [...data.images, ...data.videos].map((m: any) => m.id)
     // fal entries are hidden without a FAL_KEY, so check the catalog itself.
     const { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG } = await import('@shogo/model-catalog')
-    expect((IMAGE_MODEL_CATALOG as any)['nano-banana-pro']).toMatchObject({ deprecated: true, replacement: 'hf-soul-v2' })
+    // Each fal model points at the Higgsfield model that does the same job.
+    expect((IMAGE_MODEL_CATALOG as any)['nano-banana-pro']).toMatchObject({ deprecated: true, replacement: 'hf-qwen-image-3' })
+    expect((IMAGE_MODEL_CATALOG as any)['nano-banana-2']).toMatchObject({ deprecated: true, replacement: 'hf-qwen-image-3' })
+    expect((IMAGE_MODEL_CATALOG as any)['seedream-5-pro']).toMatchObject({ deprecated: true, replacement: 'hf-qwen-image-3' })
+    expect((IMAGE_MODEL_CATALOG as any)['recraft-3']).toMatchObject({ deprecated: true, replacement: 'hf-recraft-v4.1' })
+    expect((IMAGE_MODEL_CATALOG as any)['flux-pro-ultra']).toMatchObject({ deprecated: true, replacement: 'hf-marketing-studio-flare' })
+    expect((IMAGE_MODEL_CATALOG as any)['ideogram-3']).toMatchObject({ deprecated: true, replacement: 'hf-ideogram-4' })
     expect((VIDEO_MODEL_CATALOG as any)['kling-2.5-turbo-pro']).toMatchObject({ deprecated: true, replacement: 'hf-hailuo-2.3' })
     expect(ids).not.toContain('kling-2.5-turbo-pro')
+  })
+
+  test('lists all 15 Higgsfield image models with a non-null price, best_for and reference limit', async () => {
+    // No /estimate routes are mocked: every quote fails, so each price has to
+    // come from the catalog instead of blanking the listing.
+    const data = await listMediaModels() as any
+    const higgsfield = data.images.filter((m: any) => m.provider === 'higgsfield')
+    expect(higgsfield.length).toBe(15)
+    for (const model of higgsfield) {
+      expect(model.price.usd).toBeGreaterThan(0)
+      expect(['estimate', 'catalog']).toContain(model.price.source)
+      expect(typeof model.best_for).toBe('string')
+      expect(model.best_for.length).toBeGreaterThan(0)
+      expect(typeof model.max_reference_images).toBe('number')
+      expect(model.price.unit).toBe('image')
+    }
+    // The three token-priced endpoints have no per-request quote: documented
+    // catalog figure, never null.
+    const flare = higgsfield.find((m: any) => m.id === 'hf-marketing-studio-flare')
+    expect(flare.price.source).toBe('catalog')
+    expect(flare.price.usd).toBeCloseTo(0.084 * 1.2, 4)
+  })
+
+  test('a model whose /estimate throws does not blank or 500 the listing', async () => {
+    mockEstimate('higgsfield-ai/soul/v2/standard', '0.0940')
+    on('https://hf.test/estimate/z-image/turbo', () => json({ detail: 'boom' }, 500))
+    const data = await listMediaModels() as any
+    const ids = data.images.map((m: any) => m.id)
+    expect(ids).toContain('hf-z-image-turbo')
+    expect(ids).toContain('hf-soul-v2')
+    // The estimate succeeded for SOUL V2 and failed for Z-Image.
+    expect(data.images.find((m: any) => m.id === 'hf-soul-v2').price.source).toBe('estimate')
+    expect(data.images.find((m: any) => m.id === 'hf-z-image-turbo').price.source).toBe('catalog')
+  })
+
+  test('a catalog entry with no request shape still lists, and never rejects the listing', async () => {
+    // The pre-fix failure mode: `buildHiggsfieldImageRequest` threw for any id
+    // it did not know, and that throw rejected the whole `list_media_models`.
+    const catalog = IMAGE_MODEL_CATALOG as unknown as Record<string, any>
+    catalog['hf-qa-unshaped'] = {
+      id: 'hf-qa-unshaped', provider: 'higgsfield', apiModel: 'qa/unshaped',
+      displayName: 'QA Unshaped', capabilities: { textToImage: true, imageToImage: false, maxReferenceImages: 0 },
+      usdPerRequest: 0.02, bestFor: 'the no-shape fallback',
+    }
+    try {
+      const data = await listMediaModels() as any
+      const ids = data.images.map((m: any) => m.id)
+      expect(ids).toContain('hf-qa-unshaped')
+      expect(ids).toContain('hf-ideogram-4')
+      expect(data.images.find((m: any) => m.id === 'hf-qa-unshaped').price.usd).toBeCloseTo(0.02 * 1.2, 4)
+    } finally {
+      delete catalog['hf-qa-unshaped']
+    }
+  })
+
+  test('publishes low/hd and per-size prices for a non-Higgsfield image model', async () => {
+    process.env.OPENAI_API_KEY = 'sk-test'
+    try {
+      const data = await listMediaModels() as any
+      const gpt = data.images.find((m: any) => m.id === 'gpt-image-2')
+      expect(gpt.price.usd).toBeCloseTo(0.053 * 1.2, 4)
+      expect(gpt.price.hd_usd).toBeCloseTo(0.211 * 1.2, 4)
+      expect(gpt.price.low_usd).toBeCloseTo(0.006 * 1.2, 4)
+      expect(gpt.price.usd_by_size['1024x1536']).toBeCloseTo(0.041 * 1.2, 4)
+    } finally {
+      delete process.env.OPENAI_API_KEY
+    }
   })
 
   test('cross-workspace tokens get their own (empty) job view', async () => {

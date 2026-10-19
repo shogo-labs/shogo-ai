@@ -138,6 +138,21 @@ test("health and the model listing report Higgsfield as the default", async ({ r
   }
 })
 
+test("every listed image model carries a price, and the catalog is complete", async ({ request }) => {
+  const res = await request.fetch(`${LOCAL_API_BASE}/api/ai/v1/media/models`, { headers: proxyHeaders(proxy) })
+  expect(res.ok()).toBe(true)
+  const listing = await res.json()
+  const higgsfield = (listing.images ?? []).filter((m: any) => m.provider === "higgsfield")
+  expect(higgsfield.length, "all Higgsfield image endpoints should be listed").toBe(15)
+  for (const model of listing.images ?? []) {
+    // A listed model with no price cannot be budgeted, and a Higgsfield model
+    // that cannot be quoted will refuse to run — neither may show up here.
+    expect(model.price?.usd, `${model.id} lists no price`).toBeGreaterThan(0)
+    expect(model.best_for, `${model.id} has no best_for`).toBeTruthy()
+    expect(typeof model.max_reference_images, `${model.id} has no reference limit`).toBe("number")
+  }
+})
+
 test("prices come back for an image and a clip", async ({ request }) => {
   const image = await estimate(request, proxy, { model: "hf-soul-v2", size: "1024x1024" })
   expect(image).toBeGreaterThan(0)

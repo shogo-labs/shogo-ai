@@ -703,10 +703,105 @@ export const IMAGE_MODEL_CATALOG = {
     displayName: 'SOUL V2', capabilities: TEXT_ONLY, usdPerRequest: 0.004,
     bestFor: 'General-purpose default: fast, cheap editorial and product images',
   },
+  // SOUL standard/cinema are the same family as V2 (7 aspect ratios,
+  // 720p/1080p) but a different look; standard takes one style reference.
+  // Estimates 2026-10-19 at 1024²/720p: $0.094 (standard), $0.004 (cinema).
+  'hf-soul-standard': {
+    id: 'hf-soul-standard', provider: 'higgsfield', apiModel: 'higgsfield-ai/soul/standard',
+    displayName: 'SOUL Standard', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 },
+    usdPerRequest: 0.094,
+    bestFor: "SOUL's classic editorial look with one style reference",
+  },
+  'hf-soul-cinema': {
+    id: 'hf-soul-cinema', provider: 'higgsfield', apiModel: 'higgsfield-ai/soul/cinema',
+    displayName: 'SOUL Cinema', capabilities: TEXT_ONLY, usdPerRequest: 0.004,
+    bestFor: 'Cinematic film-still portraits',
+  },
   'hf-ideogram-4': {
     id: 'hf-ideogram-4', provider: 'higgsfield', apiModel: 'ideogram/v4.0',
     displayName: 'Ideogram 4.0', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 },
+    // Estimate 2026-10-19 at 1:1 / DEFAULT rendering: $0.060.
+    usdPerRequest: 0.060,
     bestFor: 'Posters, logos and anything with legible text (one style reference)',
+  },
+  // Qwen Image 3 runs a separate edit endpoint for references. Estimate
+  // 2026-10-19 at 1024²/1k: $0.040.
+  'hf-qwen-image-3': {
+    id: 'hf-qwen-image-3', provider: 'higgsfield',
+    apiModel: 'alibaba/qwen-image-3/text-to-image', editApiModel: 'alibaba/qwen-image-3/edit',
+    displayName: 'Qwen Image 3',
+    capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 4 },
+    usdPerRequest: 0.040,
+    bestFor: 'Legible in-image text and multi-reference edits at 2K (reference handling differs from Nano Banana: the edit endpoint takes image_urls)',
+  },
+  // Recraft v4.1 — four variants over one family; the pro variants are 2k only,
+  // the standard ones 1k only. Estimates 2026-10-19 at 1024²: $0.035 (1k),
+  // $0.210 (2k).
+  'hf-recraft-v4.1': {
+    id: 'hf-recraft-v4.1', provider: 'higgsfield', apiModel: 'recraft/v4.1/text-to-image',
+    displayName: 'Recraft v4.1', capabilities: TEXT_ONLY, usdPerRequest: 0.035,
+    bestFor: 'Vector and brand illustration',
+  },
+  'hf-recraft-v4.1-pro': {
+    id: 'hf-recraft-v4.1-pro', provider: 'higgsfield', apiModel: 'recraft/v4.1/pro/text-to-image',
+    displayName: 'Recraft v4.1 Pro', capabilities: TEXT_ONLY, usdPerRequest: 0.210,
+    bestFor: 'Vector and brand illustration at 2K',
+  },
+  'hf-recraft-v4.1-utility': {
+    id: 'hf-recraft-v4.1-utility', provider: 'higgsfield', apiModel: 'recraft/v4.1/utility/text-to-image',
+    displayName: 'Recraft v4.1 Utility', capabilities: TEXT_ONLY, usdPerRequest: 0.035,
+    bestFor: 'Flat icons, UI and utility art',
+  },
+  'hf-recraft-v4.1-utility-pro': {
+    id: 'hf-recraft-v4.1-utility-pro', provider: 'higgsfield', apiModel: 'recraft/v4.1/utility/pro/text-to-image',
+    displayName: 'Recraft v4.1 Utility Pro', capabilities: TEXT_ONLY, usdPerRequest: 0.210,
+    bestFor: 'Utility art at 2K',
+  },
+  // Estimate 2026-10-19 at 1024²/1k: $0.015.
+  'hf-z-image-turbo': {
+    id: 'hf-z-image-turbo', provider: 'higgsfield', apiModel: 'z-image/turbo',
+    displayName: 'Z-Image Turbo', capabilities: TEXT_ONLY, usdPerRequest: 0.015,
+    bestFor: 'Fastest, cheapest drafts',
+  },
+  // Marketing Studio. 2.0 Alpha returns a real estimate ($0.054 at 1k/medium on
+  // 2026-10-19); the 2.5 Flare/Sunburst endpoints answer `/estimate` with a
+  // token rate card instead of a `usd`, so their figure is the vendor's own
+  // documented per-image budget for the same engine at 2k/high ("approximately
+  // $0.084 per image", docs/models/ads-studio, read 2026-10-19).
+  'hf-marketing-studio': {
+    id: 'hf-marketing-studio', provider: 'higgsfield', apiModel: 'marketing-studio/image',
+    displayName: 'Marketing Studio Image', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 4 },
+    usdPerRequest: 0.054,
+    bestFor: 'Marketing and ad creative (2.0 Alpha)',
+  },
+  'hf-marketing-studio-flare': {
+    id: 'hf-marketing-studio-flare', provider: 'higgsfield', apiModel: 'marketing-studio/image/flare',
+    displayName: 'Marketing Studio Flare', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 4 },
+    usdPerRequest: 0.084,
+    bestFor: 'Ad creative on GPT Image 2.5 Flare',
+  },
+  'hf-marketing-studio-sunburst': {
+    id: 'hf-marketing-studio-sunburst', provider: 'higgsfield', apiModel: 'marketing-studio/image/sunburst',
+    displayName: 'Marketing Studio Sunburst', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 4 },
+    usdPerRequest: 0.084,
+    bestFor: 'Ad creative where edit precision matters',
+  },
+  // Estimate 2026-10-19 at 1024²/1k medium: $0.060.
+  'hf-grok-image-2': {
+    id: 'hf-grok-image-2', provider: 'higgsfield', apiModel: 'xai/grok-imagine-image-2.0',
+    displayName: 'Grok Imagine Image 2', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 4 },
+    usdPerRequest: 0.060,
+    bestFor: 'Generate and edit in one endpoint',
+  },
+  // Ads Studio renders on GPT Image 2.5 Flare at a fixed 2k/high; its
+  // `/estimate` is a token rate card, so the figure is the vendor's documented
+  // budget ("approximately $0.084 per image", docs/models/ads-studio, read
+  // 2026-10-19).
+  'hf-ads-studio': {
+    id: 'hf-ads-studio', provider: 'higgsfield', apiModel: 'higgsfield/ads-studio/v1.0',
+    displayName: 'Ads Studio', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 4 },
+    usdPerRequest: 0.084,
+    bestFor: 'Ad variants by audience and niche',
   },
   'dall-e-3':       { id: 'dall-e-3',       provider: 'openai',  apiModel: 'dall-e-3',                          displayName: 'DALL-E 3', capabilities: TEXT_ONLY, retired: true },
   'dall-e-2':       { id: 'dall-e-2',       provider: 'openai',  apiModel: 'dall-e-2',                          displayName: 'DALL-E 2', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 }, retired: true },
@@ -721,25 +816,25 @@ export const IMAGE_MODEL_CATALOG = {
     id: 'nano-banana-pro', provider: 'fal', apiModel: 'fal-ai/nano-banana-pro', editApiModel: 'fal-ai/nano-banana-pro/edit',
     displayName: 'Nano Banana Pro', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 14 },
     bestFor: 'Keeping a character consistent across images, edits, and legible text',
-    deprecated: true, replacement: 'hf-soul-v2',
+    deprecated: true, replacement: 'hf-qwen-image-3',
   },
   'nano-banana-2': {
     id: 'nano-banana-2', provider: 'fal', apiModel: 'fal-ai/nano-banana-2', editApiModel: 'fal-ai/nano-banana-2/edit',
     displayName: 'Nano Banana 2', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 14 },
     bestFor: 'Cheaper, faster character-consistent images and edits',
-    deprecated: true, replacement: 'hf-soul-v2',
+    deprecated: true, replacement: 'hf-qwen-image-3',
   },
   'seedream-5-pro': {
     id: 'seedream-5-pro', provider: 'fal', apiModel: 'bytedance/seedream/v5/pro/text-to-image', editApiModel: 'bytedance/seedream/v5/pro/edit',
     displayName: 'Seedream 5 Pro', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 10 },
     bestFor: 'Stylized art, composites from several references, and in-image text',
-    deprecated: true, replacement: 'hf-soul-v2',
+    deprecated: true, replacement: 'hf-qwen-image-3',
   },
   'flux-pro-ultra': {
     id: 'flux-pro-ultra', provider: 'fal', apiModel: 'fal-ai/flux-pro/v1.1-ultra',
     displayName: 'FLUX1.1 Pro Ultra', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 },
     bestFor: 'Photorealism',
-    deprecated: true, replacement: 'hf-soul-v2',
+    deprecated: true, replacement: 'hf-marketing-studio-flare',
   },
   'ideogram-3': {
     id: 'ideogram-3', provider: 'fal', apiModel: 'fal-ai/ideogram/v3',
@@ -751,7 +846,7 @@ export const IMAGE_MODEL_CATALOG = {
     id: 'recraft-3', provider: 'fal', apiModel: 'fal-ai/recraft/v3/text-to-image',
     displayName: 'Recraft 3', capabilities: TEXT_ONLY,
     bestFor: 'Vector-style illustration and brand graphics',
-    deprecated: true, replacement: 'gpt-image-2.5-flare',
+    deprecated: true, replacement: 'hf-recraft-v4.1',
   },
 } as const satisfies Record<string, ImageModelEntry>
 

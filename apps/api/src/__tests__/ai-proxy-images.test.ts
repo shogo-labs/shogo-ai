@@ -22,13 +22,13 @@ import {
 import { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG } from '@shogo/model-catalog'
 
 describe('Image Usage Cost (USD)', () => {
-  test('dall-e-3 standard 1024x1024 → raw = config base, billed = raw * markup', () => {
+  test('dall-e-3 standard 1024x1024 → ladder price, billed = raw * markup', () => {
     const { rawUsd, billedUsd } = calculateImageUsageCost(
       'dall-e-3',
       'standard',
       '1024x1024',
     )
-    expect(rawUsd).toBe(IMAGE_USD_CONFIG['dall-e-3'].base)
+    expect(rawUsd).toBe(IMAGE_USD_CONFIG['dall-e-3'].prices.square.medium)
     expect(billedUsd).toBeCloseTo(rawUsd * MARKUP_MULTIPLIER, 10)
   })
 
@@ -45,23 +45,21 @@ describe('Image Usage Cost (USD)', () => {
     expect(large.rawUsd).toBeGreaterThan(normal.rawUsd)
   })
 
-  test('dall-e-3 hd + large size stacks both multipliers', () => {
+  test('dall-e-3 hd + large size stacks quality and size', () => {
     const base = calculateImageUsageCost('dall-e-3', 'standard', '1024x1024')
     const hdLarge = calculateImageUsageCost('dall-e-3', 'hd', '1792x1024')
-    const cfg = IMAGE_USD_CONFIG['dall-e-3']
-    expect(hdLarge.rawUsd).toBeCloseTo(
-      base.rawUsd * cfg.hdMultiplier * cfg.largeSizeMultiplier,
-      10,
-    )
+    const cfg = IMAGE_USD_CONFIG['dall-e-3'].prices
+    expect(hdLarge.rawUsd).toBeCloseTo(cfg.landscape.high, 10)
+    expect(hdLarge.rawUsd).toBeGreaterThan(base.rawUsd)
   })
 
-  test('gpt-image-1 standard → non-zero raw and billed', () => {
+  test('gpt-image-1 standard → the medium tier, non-zero raw and billed', () => {
     const { rawUsd, billedUsd } = calculateImageUsageCost(
       'gpt-image-1',
       'standard',
       '1024x1024',
     )
-    expect(rawUsd).toBeGreaterThan(0)
+    expect(rawUsd).toBeCloseTo(0.042, 8)
     expect(billedUsd).toBeCloseTo(rawUsd * MARKUP_MULTIPLIER, 10)
   })
 
@@ -104,7 +102,11 @@ describe('Image Usage Cost (USD)', () => {
 
   test('billed = raw * MARKUP_MULTIPLIER for every registered model', () => {
     for (const [model, cfg] of Object.entries(IMAGE_USD_CONFIG)) {
-      expect(cfg.base).toBeGreaterThan(0)
+      for (const sizeClass of ['square', 'portrait', 'landscape'] as const) {
+        for (const quality of ['low', 'medium', 'high'] as const) {
+          expect(cfg.prices[sizeClass][quality]).toBeGreaterThan(0)
+        }
+      }
       const { rawUsd, billedUsd } = calculateImageUsageCost(
         model,
         'standard',

@@ -149,57 +149,190 @@ export function calculateUsageCost(
 // Image Generation Usage Costs
 // =============================================================================
 
+export type ImageSizeClass = 'square' | 'portrait' | 'landscape'
+export type ImageQuality = 'low' | 'medium' | 'high'
+export type ImagePriceTable = Record<ImageSizeClass, Record<ImageQuality, number>>
+
 /**
- * Raw provider costs per image in USD (approximate list price).
- * Derived from previous credit-based config at $0.10/credit.
+ * Raw provider cost per image in USD, per model × quality × size class.
+ *
+ * A single base + multipliers cannot express these ladders: GPT Image 1.5 is
+ * 3.9× from medium to high, and non-square sizes are not a constant multiple
+ * of square (GPT Image 2 low: $0.006 square, $0.005 landscape).
  */
-export const IMAGE_USD_CONFIG: Record<string, { base: number; hdMultiplier: number; largeSizeMultiplier: number }> = {
-  'dall-e-3':       { base: 0.26, hdMultiplier: 2.0, largeSizeMultiplier: 1.5 },
-  'dall-e-2':       { base: 0.13, hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
-  'gpt-image-1':    { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
-  'gpt-image-1.5':  { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
-  'gpt-image-2':    { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
-  'gpt-image-2.5-flare': { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
-  'imagen-4':       { base: 0.20, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
-  'imagen-4-ultra': { base: 0.39, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
-  'imagen-4-fast':  { base: 0.13, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+export const IMAGE_USD_CONFIG: Record<string, { prices: ImagePriceTable }> = {
+  // OpenAI, from the image-generation guide's cost tables ("Calculating
+  // costs", read 2026-10-19). These are the real vendor prices; the previous
+  // flat $0.39/$0.585 table advertised 7-11× the vendor price.
+  'gpt-image-1': {
+    prices: {
+      square: { low: 0.011, medium: 0.042, high: 0.167 },
+      portrait: { low: 0.016, medium: 0.063, high: 0.25 },
+      landscape: { low: 0.016, medium: 0.063, high: 0.25 },
+    },
+  },
+  'gpt-image-1.5': {
+    prices: {
+      square: { low: 0.009, medium: 0.034, high: 0.133 },
+      portrait: { low: 0.013, medium: 0.05, high: 0.20 },
+      landscape: { low: 0.013, medium: 0.05, high: 0.20 },
+    },
+  },
+  'gpt-image-2': {
+    prices: {
+      square: { low: 0.006, medium: 0.053, high: 0.211 },
+      portrait: { low: 0.005, medium: 0.041, high: 0.165 },
+      landscape: { low: 0.005, medium: 0.041, high: 0.165 },
+    },
+  },
+  // GPT Image 2.5 flare is billed per image-output token ($30/1M image output,
+  // $8/1M image input), not per image. Low 1024² = 196 output tokens =
+  // $0.00588 as read from the guide's calculator (2026-10-19). Its
+  // medium/high token counts are not published anywhere we can read — the
+  // calculator is client-side only — so those follow the GPT Image 2 row.
+  // approximate — see https://platform.openai.com/docs/guides/image-generation#calculating-costs
+  'gpt-image-2.5-flare': {
+    prices: {
+      square: { low: 0.00588, medium: 0.053, high: 0.211 },
+      portrait: { low: 0.005, medium: 0.041, high: 0.165 },
+      landscape: { low: 0.005, medium: 0.041, high: 0.165 },
+    },
+  },
+  // Retired DALL·E ladders, kept in the same shape so old usage still bills.
+  'dall-e-3': {
+    prices: {
+      square: { low: 0.26, medium: 0.26, high: 0.52 },
+      portrait: { low: 0.39, medium: 0.39, high: 0.78 },
+      landscape: { low: 0.39, medium: 0.39, high: 0.78 },
+    },
+  },
+  'dall-e-2': {
+    prices: {
+      square: { low: 0.13, medium: 0.13, high: 0.13 },
+      portrait: { low: 0.13, medium: 0.13, high: 0.13 },
+      landscape: { low: 0.13, medium: 0.13, high: 0.13 },
+    },
+  },
+  'imagen-4': {
+    prices: {
+      square: { low: 0.20, medium: 0.20, high: 0.20 },
+      portrait: { low: 0.30, medium: 0.30, high: 0.30 },
+      landscape: { low: 0.30, medium: 0.30, high: 0.30 },
+    },
+  },
+  'imagen-4-ultra': {
+    prices: {
+      square: { low: 0.39, medium: 0.39, high: 0.39 },
+      portrait: { low: 0.585, medium: 0.585, high: 0.585 },
+      landscape: { low: 0.585, medium: 0.585, high: 0.585 },
+    },
+  },
+  'imagen-4-fast': {
+    prices: {
+      square: { low: 0.13, medium: 0.13, high: 0.13 },
+      portrait: { low: 0.195, medium: 0.195, high: 0.195 },
+      landscape: { low: 0.195, medium: 0.195, high: 0.195 },
+    },
+  },
   // fal list prices (fal.ai model pages, 2026-10). "hd" maps to 2K output for
   // Nano Banana (same price as 1K) and QUALITY rendering for Ideogram.
-  'nano-banana-pro': { base: 0.15,   hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
-  'nano-banana-2':   { base: 0.08,   hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
-  'seedream-5-pro':  { base: 0.0675, hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
-  'flux-pro-ultra':  { base: 0.06,   hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
-  'ideogram-3':      { base: 0.06,   hdMultiplier: 1.5, largeSizeMultiplier: 1.0 },
-  'recraft-3':       { base: 0.04,   hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
+  'nano-banana-pro': {
+    prices: {
+      square: { low: 0.15, medium: 0.15, high: 0.15 },
+      portrait: { low: 0.15, medium: 0.15, high: 0.15 },
+      landscape: { low: 0.15, medium: 0.15, high: 0.15 },
+    },
+  },
+  'nano-banana-2': {
+    prices: {
+      square: { low: 0.08, medium: 0.08, high: 0.08 },
+      portrait: { low: 0.08, medium: 0.08, high: 0.08 },
+      landscape: { low: 0.08, medium: 0.08, high: 0.08 },
+    },
+  },
+  'seedream-5-pro': {
+    prices: {
+      square: { low: 0.0675, medium: 0.0675, high: 0.0675 },
+      portrait: { low: 0.0675, medium: 0.0675, high: 0.0675 },
+      landscape: { low: 0.0675, medium: 0.0675, high: 0.0675 },
+    },
+  },
+  'flux-pro-ultra': {
+    prices: {
+      square: { low: 0.06, medium: 0.06, high: 0.06 },
+      portrait: { low: 0.06, medium: 0.06, high: 0.06 },
+      landscape: { low: 0.06, medium: 0.06, high: 0.06 },
+    },
+  },
+  'ideogram-3': {
+    prices: {
+      square: { low: 0.06, medium: 0.06, high: 0.09 },
+      portrait: { low: 0.06, medium: 0.06, high: 0.09 },
+      landscape: { low: 0.06, medium: 0.06, high: 0.09 },
+    },
+  },
+  'recraft-3': {
+    prices: {
+      square: { low: 0.04, medium: 0.04, high: 0.04 },
+      portrait: { low: 0.04, medium: 0.04, high: 0.04 },
+      landscape: { low: 0.04, medium: 0.04, high: 0.04 },
+    },
+  },
   // Higgsfield fallbacks, only for displaying a price when `/estimate` is
   // unavailable — a request that cannot be priced is refused, never billed from
   // these numbers. SOUL V2 is $0.004 at 720p and $0.006 at 1080p.
-  'hf-soul-v2':      { base: 0.004,  hdMultiplier: 1.5, largeSizeMultiplier: 1.0 },
+  'hf-soul-v2': {
+    prices: {
+      square: { low: 0.004, medium: 0.004, high: 0.006 },
+      portrait: { low: 0.004, medium: 0.004, high: 0.006 },
+      landscape: { low: 0.004, medium: 0.004, high: 0.006 },
+    },
+  },
 }
 
-const LARGE_IMAGE_SIZES = new Set(['1792x1024', '1024x1792', '1536x1024', '1024x1536'])
+/**
+ * The tool vocabulary is dall-e-3's ("standard" | "hd"), but every current
+ * model prices five tiers. `xhigh`/`max` (Marketing Studio flare/sunburst) are
+ * priced as high.
+ */
+const IMAGE_QUALITY_CLASS: Record<string, ImageQuality> = {
+  low: 'low',
+  medium: 'medium',
+  standard: 'medium',
+  auto: 'medium',
+  high: 'high',
+  hd: 'high',
+  xhigh: 'high',
+  max: 'high',
+}
+
+/** 1024x1024 → square; taller than wide → portrait; wider than tall → landscape. */
+export function imageSizeClass(size: string): ImageSizeClass {
+  const [width, height] = size.split('x').map(Number)
+  if (!width || !height || width === height) return 'square'
+  return height > width ? 'portrait' : 'landscape'
+}
+
+export function imageQualityClass(quality?: string): ImageQuality {
+  return IMAGE_QUALITY_CLASS[quality ?? ''] ?? 'medium'
+}
 
 /**
  * Calculate USD cost for image generation (flat per-image, not token-based).
+ *
+ * The quality vocabulary is normalized *here*, not only at the request edge:
+ * `recordImageUsage` passes the raw tool quality (`standard`/`hd`) while OpenAI
+ * receives the normalized one, so both have to land on the same ladder.
  */
 export function calculateImageUsageCost(
   model: string,
   quality: string = 'standard',
   size: string = '1024x1024',
 ): UsageCostResult {
-  // dall-e-3 (the old fallback) is retired (OpenAI, 2026-09) — fall back to
-  // the current gpt-image-1 pricing profile for an unrecognized model id.
+  // gpt-image-1 (the current default) prices an unrecognized model id, so a
+  // model that has no ladder of its own is never free.
   const config = IMAGE_USD_CONFIG[model] || IMAGE_USD_CONFIG['gpt-image-1']
-  let rawUsd = config.base
-
-  if (quality === 'hd' || quality === 'high') {
-    rawUsd *= config.hdMultiplier
-  }
-
-  if (LARGE_IMAGE_SIZES.has(size)) {
-    rawUsd *= config.largeSizeMultiplier
-  }
-
+  const rawUsd = config.prices[imageSizeClass(size)][imageQualityClass(quality)]
   return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
 }
 

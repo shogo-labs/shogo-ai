@@ -30,10 +30,8 @@ import { readFileSync } from 'fs'
 import { join, resolve } from 'path'
 import { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG, type ImageModelEntry, type VideoModelEntry } from '../packages/agent/src/model-catalog/models'
 import {
+  HIGGSFIELD_IMAGE_SHAPES,
   HIGGSFIELD_RESTYLE_PRESETS_PATH,
-  IDEOGRAM_ASPECT_RATIOS,
-  SOUL_ASPECT_RATIOS,
-  SOUL_RESOLUTIONS,
 } from '../apps/api/src/lib/higgsfield-media'
 import { deriveCatalog, renderCatalog, type HiggsfieldCatalog } from './derive-higgsfield-catalog'
 
@@ -111,6 +109,8 @@ function checkEndpoint(label: string, endpoint: string | undefined, kind: string
 for (const entry of Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[]) {
   if (entry.provider !== 'higgsfield') continue
   checkEndpoint(entry.id, entry.apiModel, 'image')
+  // The reference/edit endpoint is an image endpoint too.
+  checkEndpoint(`${entry.id} edit`, entry.editApiModel, 'image')
 }
 
 for (const entry of Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[]) {
@@ -144,11 +144,35 @@ for (const entry of Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[]) {
 // 4. Request shaping in the client
 // ---------------------------------------------------------------------------
 
-const soul = (IMAGE_MODEL_CATALOG as Record<string, ImageModelEntry>)['hf-soul-v2'].apiModel
-const ideogram = (IMAGE_MODEL_CATALOG as Record<string, ImageModelEntry>)['hf-ideogram-4'].apiModel
-checkParams('hf-soul-v2 aspect ratios', soul, 'aspect_ratio', SOUL_ASPECT_RATIOS)
-checkParams('hf-soul-v2 resolutions', soul, 'resolution', SOUL_RESOLUTIONS)
-checkParams('hf-ideogram-4 aspect ratios', ideogram, 'aspect_ratio', IDEOGRAM_ASPECT_RATIOS)
+// Every wired image model builds its body from HIGGSFIELD_IMAGE_SHAPES, and
+// every value in that table has to be one the endpoint documents.
+for (const entry of Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[]) {
+  if (entry.provider !== 'higgsfield') continue
+  const shape = HIGGSFIELD_IMAGE_SHAPES[entry.id]
+  if (!shape) {
+    fail(`${entry.id}: has no entry in HIGGSFIELD_IMAGE_SHAPES (apps/api/src/lib/higgsfield-media.ts) — add its documented request shape.`)
+    continue
+  }
+  const endpoints = [entry.apiModel, ...(shape.editWhenReferenced && entry.editApiModel ? [entry.editApiModel] : [])]
+  for (const endpoint of endpoints) {
+    checkParams(`${entry.id} aspect ratios`, endpoint, 'aspect_ratio', shape.aspectRatios)
+    checkParams(`${entry.id} resolutions`, endpoint, 'resolution', shape.resolutions)
+    checkParams(`${entry.id} quality`, endpoint, 'quality', [
+      ...(shape.qualities ?? []),
+      ...(shape.extendedQualities ?? []),
+    ])
+  }
+  // References go to whichever endpoint will actually receive them.
+  if (shape.references) {
+    const target = shape.editWhenReferenced && entry.editApiModel ? entry.editApiModel : entry.apiModel
+    const spec = known[target]?.fields[shape.references.field]
+    if (!spec) {
+      fail(`${entry.id}: sends '${shape.references.field}' to ${target}, which the docs' schema does not define.`)
+    } else if (shape.references.multiple !== (spec.type === 'array')) {
+      fail(`${entry.id}: '${shape.references.field}' on ${target} is documented as ${spec.type}, so references must be sent as ${spec.type === 'array' ? 'an array' : 'a single value'}.`)
+    }
+  }
+}
 
 const presetsDocumented = llmsFull.includes(HIGGSFIELD_RESTYLE_PRESETS_PATH)
 if (!presetsDocumented) {
