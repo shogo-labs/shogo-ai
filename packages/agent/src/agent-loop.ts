@@ -47,6 +47,14 @@ import {
 } from './inference-retry'
 import { waitForConnectivity, type ConnectivityWaitInfo } from './connectivity'
 import type { RetryReason } from './retry-classifier'
+import {
+  createVisionDescriber,
+  resolveVisionFallbackOptions,
+  type ImageDescription,
+  type VisionDescriber,
+  type VisionFallbackOptions,
+  type VisionSkipReason,
+} from './vision-fallback'
 
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { OrchestrationOptions }
@@ -241,6 +249,14 @@ export interface AgentLoopOptions {
    * independently.
    */
   extraHeaders?: Record<string, string>
+  /**
+   * How to let a model that cannot accept images still *inspect* one: a
+   * catalog-picked vision model describes the image and the description takes
+   * its place in the request. Enabled by default on models without `image`
+   * input; `false` (or `SHOGO_VISION_FALLBACK=0`) restores SHO-41's note-only
+   * behaviour. Ignored entirely on a vision model — those get the pixels.
+   */
+  visionFallback?: VisionFallbackOptions | false
 }
 
 export interface ToolCallRecord {
@@ -376,16 +392,54 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   const modelAcceptsImages =
     Array.isArray((model as any).input) && ((model as any).input as string[]).includes('image')
 
-  // Same rule for images attached to the prompt itself: say so in the text
-  // rather than let the provider converter bin them.
+  // A model with no `image` input still has to *see* a screenshot, not just be
+  // told it cannot. Route those images through a catalog-picked vision model
+  // once per distinct image; anything that cannot be described (no vision
+  // model, no key, over the per-run cap, provider error) falls back to
+  // SHO-41's note, so the failure mode is never worse than before.
+  const visionConfig = modelAcceptsImages ? false : resolveVisionFallbackOptions(options.visionFallback)
+  const vision: VisionDescriber | null = visionConfig
+    ? createVisionDescriber({
+        ...visionConfig,
+        log: (line) => console.warn(`[AgentLoop] ${line}`),
+      })
+    : null
+  const visionContext = (signal?: AbortSignal) => ({
+    provider,
+    modelId,
+    apiKey,
+    extraHeaders: options.extraHeaders,
+    signal: signal ?? options.signal,
+  })
+
+  // Same rule for images attached to the prompt itself: fold a description
+  // into the text rather than let the provider converter bin them.
   let promptText = prompt
   let promptImages = images
   if (images && images.length > 0 && !modelAcceptsImages) {
-    promptText = `${prompt}\n\n[${images.length} image(s) were attached but ${modelId} cannot accept image input, so they were not sent.]`
+    let described = 0
+    const parts: string[] = []
+    for (const image of images) {
+      const outcome = vision ? await vision.describe(image, visionContext()) : null
+      if (outcome?.ok) {
+        described += 1
+        parts.push(formatDescribedImage({ description: outcome.description, modelId }))
+      } else {
+        parts.push(
+          buildImageOmittedNote({
+            modelId,
+            reason: outcome ? skipReasonText(outcome.reason) : 'this model only accepts text input',
+          }),
+        )
+      }
+    }
+    promptText = `${prompt}\n\n${parts.join('\n\n')}`
     promptImages = undefined
-    console.warn(
-      `[AgentLoop] MODEL_NO_IMAGE_INPUT model=${modelId} — ${images.length} attached image(s) not sent`,
-    )
+    if (described === 0) {
+      console.warn(
+        `[AgentLoop] MODEL_NO_IMAGE_INPUT model=${modelId} — ${images.length} attached image(s) not sent`,
+      )
+    }
   }
 
   const loopDetector = options.loopDetection !== false
@@ -436,15 +490,33 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // `path`. Replacing those blocks with a note keeps the fact — and the path —
   // in the transcript instead of dropping it on the floor.
   let warnedNoImageInput = false
-  const applyModelImageSupport = (msgs: Message[]): Message[] => {
+  const omittedNote = (msg: Message, reason: string) =>
+    buildImageOmittedNote({
+      modelId,
+      toolName: msg.role === 'toolResult' ? msg.toolName : undefined,
+      pathHint: extractPathHint(msg),
+      reason,
+    })
+  const applyModelImageSupport = async (msgs: Message[], signal?: AbortSignal): Promise<Message[]> => {
     if (modelAcceptsImages) return msgs
+
+    if (vision) {
+      return replaceImageBlocksAsync(msgs, async (image, msg) => {
+        const outcome = await vision.describe(image, visionContext(signal))
+        const text = outcome.ok
+          ? formatDescribedImage({
+              description: outcome.description,
+              modelId,
+              toolName: msg.role === 'toolResult' ? msg.toolName : undefined,
+              pathHint: extractPathHint(msg),
+            })
+          : omittedNote(msg, skipReasonText(outcome.reason))
+        return [{ type: 'text', text }]
+      })
+    }
+
     const stripped = replaceImageBlocks(msgs, () => true, (msg) =>
-      buildImageOmittedNote({
-        modelId,
-        toolName: msg.role === 'toolResult' ? msg.toolName : undefined,
-        pathHint: extractPathHint(msg),
-        reason: 'this model only accepts text input',
-      }),
+      omittedNote(msg, 'this model only accepts text input'),
     )
     if (stripped !== msgs && !warnedNoImageInput) {
       warnedNoImageInput = true
@@ -465,7 +537,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         next = msgs
       }
     }
-    return applyModelImageSupport(next)
+    return await applyModelImageSupport(next, signal)
   }
 
   // Resolve the effective stream function. Tests/mocks pass an explicit
@@ -1365,6 +1437,78 @@ function buildImageOmittedNote(opts: {
     `[Image omitted — ${source}] This image was not sent to ${opts.modelId} (${opts.reason}).${where} ` +
     'Do not describe or guess what it shows; tell the user the image could not be viewed and where it is saved.'
   )
+}
+
+/**
+ * What the model reads instead of an image that could not be described. Same
+ * shape as SHO-41's note, so the agent still learns where the file is — but it
+ * says which fallback failed rather than "do not describe".
+ */
+function formatDescribedImage(opts: {
+  description: ImageDescription
+  modelId: string
+  toolName?: string
+  pathHint?: string
+}): string {
+  const source = opts.toolName ? `from ${opts.toolName}` : 'attached here'
+  const where = opts.pathHint
+    ? `\nThe image file is still at "${opts.pathHint}". Ask for a re-read if you need a second look.`
+    : ''
+  return (
+    `[Image ${source}, described by ${opts.description.modelId} because ${opts.modelId} only accepts text input]\n` +
+    `${opts.description.text}${where}`
+  )
+}
+
+function skipReasonText(reason: VisionSkipReason): string {
+  switch (reason) {
+    case 'no-vision-model':
+      return 'no vision model is available to describe it'
+    case 'no-api-key':
+      return 'no API key is available for the vision model'
+    case 'cap-reached':
+      return 'this run already used its image-description budget'
+    case 'too-large':
+      return 'the image is too large to send to another model'
+    case 'unsupported-format':
+      return 'the image format is not supported'
+    case 'describe-failed':
+      return 'another model could not describe it'
+  }
+}
+
+/**
+ * Async sibling of `replaceImageBlocks` for the describe path: each image block
+ * becomes one or more text blocks, in place, keeping the block order the model
+ * sees stable across transform passes.
+ */
+async function replaceImageBlocksAsync(
+  messages: ReadonlyArray<Message>,
+  buildBlocks: (image: ImageContent, msg: Message) => Promise<Array<{ type: 'text'; text: string }>>,
+): Promise<Message[]> {
+  let mutated = false
+  const out: Message[] = []
+  for (const msg of messages) {
+    const carriesImages =
+      (msg.role === 'user' || msg.role === 'toolResult') &&
+      Array.isArray(msg.content) &&
+      msg.content.some((block) => block.type === 'image')
+    if (!carriesImages) {
+      out.push(msg)
+      continue
+    }
+    const next: Array<{ type: string; text?: string;[key: string]: unknown }> = []
+    for (const block of msg.content as Array<{ type: string }>) {
+      if (block.type !== 'image') {
+        next.push(block)
+        continue
+      }
+      next.push(...(await buildBlocks(block as ImageContent, msg)))
+      mutated = true
+    }
+    out.push({ ...msg, content: next } as Message)
+  }
+  return mutated ? out : (messages as Message[])
 }
 
 /**

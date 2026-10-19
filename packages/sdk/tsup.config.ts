@@ -58,6 +58,7 @@ export default defineConfig({
     'src/model-router/index.ts',
     'src/pi-adapter.ts',
     'src/agent-loop.ts',
+    'src/vision-fallback.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,

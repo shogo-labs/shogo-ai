@@ -6,6 +6,7 @@ export default defineConfig({
   entry: [
     'src/index.ts',
     'src/agent-loop.ts',
+    'src/vision-fallback.ts',
     'src/pi-adapter.ts',
     'src/model-catalog/index.ts',
     'src/model-router/index.ts',

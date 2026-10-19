@@ -27,6 +27,12 @@
       "import": "./dist/pi-adapter.js",
       "require": "./dist/pi-adapter.cjs"
     },
+    "./vision-fallback": {
+      "types": "./dist/vision-fallback.d.ts",
+      "development": "./src/vision-fallback.ts",
+      "import": "./dist/vision-fallback.js",
+      "require": "./dist/vision-fallback.cjs"
+    },
     "./model-catalog": {
       "types": "./dist/model-catalog/index.d.ts",
       "development": "./src/model-catalog/index.ts",

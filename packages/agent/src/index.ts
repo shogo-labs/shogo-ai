@@ -6,6 +6,7 @@
 // tree-shaking; this exists for the rare case a consumer wants the
 // whole agent surface in one import.
 export * from './agent-loop'
+export * from './vision-fallback'
 export * from './pi-adapter'
 export * from './model-catalog'
 export * from './model-router'

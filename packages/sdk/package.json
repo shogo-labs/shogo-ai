@@ -271,6 +271,12 @@
       "import": "./dist/agent-loop.js",
       "require": "./dist/agent-loop.cjs"
     },
+    "./vision-fallback": {
+      "types": "./dist/vision-fallback.d.ts",
+      "development": "./src/vision-fallback.ts",
+      "import": "./dist/vision-fallback.js",
+      "require": "./dist/vision-fallback.cjs"
+    },
     "./ai-client": {
       "types": "./dist/ai-client.d.ts",
       "development": "./src/ai-client.ts",

@@ -233,6 +233,10 @@ describe.skipIf(!HAS_CHROMIUM)('browser screenshot → model request', () => {
       tools: [browserTool],
       streamFn,
       maxIterations: 4,
+      // SHO-58 describes such images through a vision model by default; this
+      // spec pins the note-only path (what `SHOGO_VISION_FALLBACK=0` restores),
+      // so it stays deterministic and never reaches a provider.
+      visionFallback: false,
     })
 
     expect(result.text).toContain('cannot view images')
