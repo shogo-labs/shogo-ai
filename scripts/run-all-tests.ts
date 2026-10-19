@@ -148,6 +148,15 @@ const IN_PROCESS_E2E_SUITES: readonly InProcessE2ESuite[] = [
     files: ['e2e/system-apply-loud.integration.test.ts'],
     env: {},
   },
+  // SHO-65: a Video Editor project is a Remotion project, and the stack switch
+  // that used to half-apply is refused. The fast half is real files on disk;
+  // the build/MP4 half is opt-in (`RUN_HEAVY=1`) because it installs the
+  // starter and renders 150 frames.
+  {
+    name: 'video-editor stack e2e',
+    files: ['e2e/video-editor-stack.integration.test.ts'],
+    env: {},
+  },
   // One join, one email (SHO-51). Mocked at the `email.service` module, so it
   // counts a send from *any* caller — a hook that mails directly is caught here
   // even though `join-notifications.test.ts` only records through the seam.

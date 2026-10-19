@@ -118,13 +118,18 @@ import {
   ensureWorkspaceDeps,
   seedTechStack,
   runTechStackSetup,
-  wipeProjectFiles,
   getTechStackPath,
   workspaceUsesVite,
   resolveWorkspaceTechStackId,
   applyEnvTechStackMarker,
   refreshTechStackMarker,
 } from './workspace-defaults'
+import {
+  applyTechStackChange,
+  setTechStackPreviewRestarter,
+  syncTechStackEnv,
+  type PreviewRestartRequest,
+} from './tech-stack-switch'
 import {
   archiveNeedsSidecarClear,
   clearSqliteSidecars,
@@ -4055,29 +4060,38 @@ app.post('/agent/workspace/reset-stack', async (c) => {
     console.warn(`[reset-stack] Preview stop failed (continuing): ${err?.message ?? err}`)
   }
 
-  const removed = wipeProjectFiles(WORKSPACE_DIR)
-
-  const seeded = seedTechStack(WORKSPACE_DIR, stackId)
-  if (!seeded) {
-    return c.json({ error: `Failed to seed tech stack ${stackId}` }, 500)
-  }
-
-  // Vite-based stacks share the bundled runtime-template (vite + react +
-  // tailwind + shadcn/ui). Mirrors the boot-time logic in `ensureWorkspaceFiles`.
-  const viteStacks = new Set(['react-app', 'threejs-game', 'phaser-game'])
-  if (viteStacks.has(stackId)) {
-    seedRuntimeTemplate(WORKSPACE_DIR)
-  }
-
-  // Kick off a preview restart but don't block the HTTP response on it —
-  // `bun install` for a fresh stack can take 30s+ and the client only needs
-  // to know the wipe + seed is done so it can refresh the iframe.
-  void getPreviewManager().restart().catch((err: any) => {
-    console.error(`[reset-stack] Preview restart failed: ${err?.message ?? err}`)
+  // Same helper the `project_configure` tool uses: wipe → seed → env → restart.
+  // The response stays fire-and-forget on the restart (`bun install` for a
+  // fresh stack can take 30s+) — the client only needs to know the wipe + seed
+  // is done so it can refresh the iframe.
+  const applied = applyTechStackChange({
+    projectDir: WORKSPACE_DIR,
+    projectId: process.env.WORKSPACE_ANCHOR_PROJECT_ID || basename(WORKSPACE_DIR),
+    stackId,
+    scope: 'root',
+    resetFiles: true,
   })
+  if (!applied.ok) {
+    return c.json(
+      {
+        error: applied.error ?? `Failed to seed tech stack ${stackId}`,
+        ...(applied.code ? { code: applied.code } : {}),
+        ...(applied.hint ? { hint: applied.hint } : {}),
+        collisions: applied.collisions,
+      },
+      applied.code === 'stack_change_needs_reset' ? 409 : 500,
+    )
+  }
 
-  console.log(`[reset-stack] Reset complete (stack=${stackId}, wiped=${removed} entries)`)
-  return c.json({ ok: true, stackId, wiped: removed })
+  console.log(`[reset-stack] Reset complete (stack=${stackId}, wiped=${applied.wiped ?? 0} entries)`)
+  return c.json({
+    ok: true,
+    stackId,
+    wiped: applied.wiped ?? 0,
+    stackDocUpdated: applied.stackDocUpdated,
+    leftInPlace: applied.leftInPlace,
+    previewRestarted: applied.previewRestarted,
+  })
 })
 
 // Heartbeat trigger (called by external HeartbeatScheduler).
@@ -6002,7 +6016,14 @@ app.post('/agent/github/git', async (c) => {
     if (result.ok && (body.op === 'connect' || body.op === 'checkout')) {
       const stack = refreshTechStackMarker(projectDir)
       result.techStackId = stack.techStackId
-      if (stack.changed) restartPreviewForStack(projectDir, stack.techStackId)
+      if (stack.changed) {
+        restartPreviewForStack({
+          projectDir,
+          projectId: projectDir === WORKSPACE_DIR ? '' : basename(projectDir),
+          stackId: stack.techStackId,
+          scope: IS_WORKSPACE_RUNTIME && projectDir !== WORKSPACE_DIR ? 'member' : 'root',
+        })
+      }
     }
     return c.json(result, result.ok ? 200 : 422)
   } finally {
@@ -6018,28 +6039,35 @@ app.post('/agent/github/git', async (c) => {
  * member's preview manager is rebuilt from scratch (its dev server kind is
  * fixed at creation), and the member's entry in WORKSPACE_TECH_STACKS is
  * updated so re-stamping doesn't put the old stack back.
+ *
+ * The one place a preview is restarted for a stack change: registered with
+ * `tech-stack-switch` so `project_configure` (and anything else that applies a
+ * stack change through `applyTechStackChange`) lands here too, and called
+ * directly by the GitHub import path.
  */
-function restartPreviewForStack(projectDir: string, techStackId: string): void {
-  console.log(`[github] ${projectDir} is a ${techStackId} project now; restarting its preview`)
-  if (!IS_WORKSPACE_RUNTIME || projectDir === WORKSPACE_DIR) {
-    if (process.env.TECH_STACK_ID) process.env.TECH_STACK_ID = techStackId
-    getRootPreviewManager().restart().catch((e: any) => console.error('[github] preview restart failed:', e?.message ?? e))
+export function restartPreviewForStack(req: PreviewRestartRequest): void {
+  const { projectDir, projectId, stackId } = req
+  const isMember = IS_WORKSPACE_RUNTIME && projectDir !== WORKSPACE_DIR
+  syncTechStackEnv(projectId || basename(projectDir), stackId, isMember ? 'member' : 'root')
+  console.log(`[tech-stack] ${projectDir} is a ${stackId} project now; restarting its preview`)
+  if (!isMember) {
+    getRootPreviewManager().restart().catch((e: any) => console.error('[tech-stack] preview restart failed:', e?.message ?? e))
     return
   }
-  const projectId = basename(projectDir)
-  try {
-    const stacks = JSON.parse(process.env.WORKSPACE_TECH_STACKS || '{}') as Record<string, string>
-    process.env.WORKSPACE_TECH_STACKS = JSON.stringify({ ...stacks, [projectId]: techStackId })
-  } catch {
-    process.env.WORKSPACE_TECH_STACKS = JSON.stringify({ [projectId]: techStackId })
-  }
-  const previous = workspacePreviewManagers.get(projectId)
+  const memberId = projectId || basename(projectDir)
+  const previous = workspacePreviewManagers.get(memberId)
   if (previous) {
     previous.stop()
-    workspacePreviewManagers.delete(projectId)
+    workspacePreviewManagers.delete(memberId)
   }
-  getWorkspacePreviewManager(projectId)?.start().catch((e: any) => console.error('[github] preview start failed:', e?.message ?? e))
+  getWorkspacePreviewManager(memberId)?.start().catch((e: any) => console.error('[tech-stack] preview start failed:', e?.message ?? e))
 }
+
+// `project_configure` (and anything else that applies a stack change through
+// `applyTechStackChange`) restarts the preview through the function above. The
+// helper is a leaf module so it can be imported by the tools; the preview
+// managers live here, so we hand it the restart.
+setTechStackPreviewRestarter(restartPreviewForStack)
 
 /**
  * Phases during which a build is plausibly in flight and `dist/` may

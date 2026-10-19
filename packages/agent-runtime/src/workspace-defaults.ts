@@ -1170,6 +1170,55 @@ export function wipeProjectFiles(dir: string): number {
 }
 
 /**
+ * Write a stack's `.shogo/STACK.md` into `dir` — the doc the agent reads to
+ * learn what kind of project it is in.
+ *
+ * Non-destructive by default (files that already exist are kept), because the
+ * agent may have tailored it. A stack *switch* passes `overwrite: true`: a doc
+ * describing the stack the marker says you left is worse than no doc at all,
+ * and `.shogo/` survives `wipeProjectFiles()` so nothing else will replace it.
+ *
+ * `AGENTS.md` in the same directory is agent identity and is never touched.
+ */
+export function writeTechStackDoc(
+  dir: string,
+  stackId: string,
+  opts: { overwrite?: boolean } = {},
+): boolean {
+  const stackPath = getTechStackPath(stackId)
+  if (!stackPath) return false
+  const source = join(stackPath, '.shogo', 'STACK.md')
+  if (!existsSync(source)) return false
+  const destShogo = join(dir, '.shogo')
+  const dest = join(destShogo, 'STACK.md')
+  if (!opts.overwrite && existsSync(dest)) return false
+  try {
+    mkdirSync(destShogo, { recursive: true })
+    copyFileSync(source, dest)
+    return true
+  } catch (err: any) {
+    console.warn(`[workspace-defaults] Failed to write .shogo/STACK.md for "${stackId}": ${err?.message ?? err}`)
+    return false
+  }
+}
+
+/**
+ * Top-level entries a fresh workspace of a Vite-family stack gets from the
+ * bundled runtime-template (what `seedRuntimeTemplate()` copies when the
+ * workspace has no `package.json` yet). Filtered by the same skip list the copy
+ * uses, so the caller sees exactly the files the template would have written.
+ */
+export function runtimeTemplateTopLevelEntries(): string[] {
+  const templatePath = getRuntimeTemplatePath()
+  if (!templatePath) return []
+  try {
+    return readdirSync(templatePath).filter((entry) => !RUNTIME_TEMPLATE_SKIP.has(entry))
+  } catch {
+    return []
+  }
+}
+
+/**
  * Seed tech stack files into a workspace.
  * Copies .shogo/STACK.md and starter/ files from the tech stack.
  * Only writes files that don't already exist (preserves customizations).
@@ -1182,15 +1231,7 @@ export function seedTechStack(dir: string, stackId: string): boolean {
     return false
   }
 
-  const stackMd = join(stackPath, '.shogo', 'STACK.md')
-  if (existsSync(stackMd)) {
-    const destShogo = join(dir, '.shogo')
-    mkdirSync(destShogo, { recursive: true })
-    const destStackMd = join(destShogo, 'STACK.md')
-    if (!existsSync(destStackMd)) {
-      copyFileSync(stackMd, destStackMd)
-    }
-  }
+  writeTechStackDoc(dir, stackId)
 
   const starterDir = join(stackPath, 'starter')
   if (existsSync(starterDir)) {
@@ -1341,11 +1382,15 @@ function inferStackFromWorkspaceFiles(dir: string): string | null {
   const threeish =
     has('three') || has('@react-three/fiber') || has('expo-gl') || has('expo-three')
   if (expoish) return threeish ? 'expo-three' : 'expo-app'
+  // A Remotion project is a video project, whatever else its package.json
+  // says. Checked before the `custom` line so a Remotion app that also has
+  // an Astro/Eleventy-style static config still previews as a video editor.
+  if (has('remotion') || has('@remotion/player')) return 'video-editor'
   if (has('astro') || has('@11ty/eleventy') || existsSync(join(dir, 'shogo.preview.json'))) return 'custom'
   return null
 }
 
-function readTechStackMarker(dir: string): string {
+export function readTechStackMarker(dir: string): string {
   try {
     const markerPath = join(dir, '.tech-stack')
     if (!existsSync(markerPath)) return ''

@@ -35,9 +35,17 @@ import type { ToolContext } from './gateway-tools'
 import { BACKGROUND_TASK_HINT, textResult } from './gateway-tools'
 import { trackRemoteTask } from './remote-tasks'
 import { capabilityState, effectiveCapabilityValue, lockedCapabilityKeys, resolveRuntimeCapabilities } from './capability-status-prompt'
-import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { isMetalRuntime } from './remote-tools'
+import {
+  applyTechStackChange,
+  planTechStackChange,
+  seedEntries,
+  stackChangeRefusalHint,
+  type ApplyTechStackChangeResult,
+} from './tech-stack-switch'
+import { listTechStacks, loadTechStackMeta, resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { isWorkspaceAgentRuntime } from './workspace-runtime-mode'
+import { TECH_STACK_REGISTRY } from '@shogo/shared-runtime'
 import { availableModelsHint, isAvailableModel } from './available-models'
 import { channelIdentity } from './channel-tools'
 import {
@@ -232,6 +240,56 @@ function triggerBody(spec: TriggerSpec, idOf: (key: string) => string | null) {
 }
 
 // ---------------------------------------------------------------------------
+// tech-stack catalogue helpers
+// ---------------------------------------------------------------------------
+
+interface StackOption {
+  id: string
+  name: string
+  description: string
+}
+
+/**
+ * The project types an agent can pick. Read from the stack files on disk (the
+ * same list `GET /api/tech-stacks` serves, so the tool can never invent an id
+ * the runtime doesn't ship); a packaged runtime without the `tech-stacks/`
+ * directory falls back to the registry ids.
+ */
+export function techStackOptions(): StackOption[] {
+  const stacks = listTechStacks()
+  if (stacks.length > 0) {
+    return stacks
+      .map((s) => ({ id: s.id, name: s.name, description: s.description ?? '' }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }
+  return Object.values(TECH_STACK_REGISTRY)
+    .map((s) => ({ id: s.id, name: s.id, description: '' }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function techStackCatalogueText(): string {
+  return techStackOptions()
+    .map((s) => `- "${s.id}" — ${s.name}${s.description ? `: ${s.description}` : ''}`)
+    .join('\n')
+}
+
+/** `techStackId` stored in `Project.settings`, if any. */
+function readStackId(settings: unknown): string | null {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return null
+  const id = (settings as Record<string, unknown>).techStackId
+  return typeof id === 'string' && id.trim() ? id.trim() : null
+}
+
+function unknownStackResult(id: string) {
+  return textResult({
+    error: `Unknown tech stack "${id}". Pick one of the ids below (or omit techStackId for a chat/agent-only project).`,
+    code: 'unknown_tech_stack',
+    validTechStackIds: techStackOptions().map((s) => s.id),
+    stacks: techStackCatalogueText(),
+  })
+}
+
+// ---------------------------------------------------------------------------
 // project_list
 // ---------------------------------------------------------------------------
 
@@ -240,7 +298,7 @@ export function createProjectListTool(ctx: ToolContext): AgentTool {
     name: 'project_list',
     label: 'List Workspace Projects',
     description:
-      'List the projects you can access in this workspace, with attachments (which projects it can see/edit), agent config (heartbeat, model) and whether it is the current project. Use before project_attach / project_call to find ids.',
+      'List the projects you can access in this workspace, with each one\'s tech stack (project type), attachments (which projects it can see/edit), agent config (heartbeat, model) and whether it is the current project. Use before project_attach / project_call to find ids.',
     parameters: Type.Object({}),
     execute: async () => {
       const workspaceId = workspaceIdOf(ctx)
@@ -256,6 +314,7 @@ export function createProjectListTool(ctx: ToolContext): AgentTool {
           id: p.id,
           name: p.name,
           description: p.description,
+          techStackId: readStackId(p.settings),
           manifestKey: keyById.get(p.id) ?? null,
           isCurrent: p.id === ctx.projectId,
           onDisk: resolveProjectDir(ctx, p.id) !== null,
@@ -278,13 +337,16 @@ export function createProjectCreateTool(ctx: ToolContext): AgentTool {
     description: [
       'Create a new Shogo project in this workspace. Each project is a module: its own AGENTS.md, .shogo/agents/*.md, skills, database, canvas UI, heartbeat and history.',
       'By default the new project is attached read-write to the current one so you can write its prompt files and call its agent with project_call.',
-      'Pass `techStackId` (e.g. "react-app") for a project that needs a UI/dashboard; omit it for a prompt-only agent project.',
+      'Pass `techStackId` to choose the project type — it decides the starter files and the preview; omit it for a prompt-only agent project. The project types this runtime ships:\n' +
+        techStackCatalogueText(),
       'In the AGENTS.md you write for it, do not tell it to tag you (or any agent) when it finishes: cards it moves and calls it answers already notify you, and agents that are told to tag back tend to loop.',
-    ].join(' '),
+    ].join('\n\n'),
     parameters: Type.Object({
       name: Type.String({ description: 'Display name (unique within the workspace is strongly recommended).' }),
       description: Type.Optional(Type.String({ description: 'One or two sentences on what this project/agent is for.' })),
-      techStackId: Type.Optional(Type.String({ description: 'Tech stack id from the registry (e.g. "react-app"). Omit for a chat/agent-only project.' })),
+      techStackId: Type.Optional(Type.String({
+        description: `Project type — one of: ${techStackOptions().map((s) => s.id).join(', ')}. Omit for a chat/agent-only project.`,
+      })),
       templateId: Type.Optional(Type.String({ description: 'Agent template id to seed heartbeat/model from.' })),
       attach: Type.Optional(Type.Boolean({ description: 'Attach the new project to the current one (default true).' })),
       attachMode: Type.Optional(Type.Union([Type.Literal('readwrite'), Type.Literal('readonly')], { description: 'Attachment mode when attaching (default readwrite).' })),
@@ -294,10 +356,18 @@ export function createProjectCreateTool(ctx: ToolContext): AgentTool {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
 
+      // An unknown id used to be accepted silently: `stackSeedsItself()` is
+      // false for it, so apps/api copied the default Vite template and the
+      // project came up as something nobody asked for.
+      const techStackId = p.techStackId?.trim() || undefined
+      if (techStackId && !techStackOptions().some((s) => s.id === techStackId)) {
+        return unknownStackResult(techStackId)
+      }
+
       const created = await apiCreateProject(workspaceId, {
         name: p.name,
         description: p.description,
-        techStackId: p.techStackId,
+        techStackId,
         templateId: p.templateId,
         hidden: ctx.config.capabilityProfile === 'personal',
         userId: ctx.userId,
@@ -394,7 +464,9 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
     name: 'project_configure',
     label: 'Configure Project',
     description:
-      'Read or change a project\'s agent configuration: heartbeat (enabled/interval/quiet hours), default model, name, description and working mode. Defaults to the current project. Call with no changes to read the current config. `workingMode: "external"` makes an existing managed project folder-linked (one-way: it gains a primary folder row pointing at the workspace it already uses, and Shogo stops managing its git). An external project cannot become managed again. Heartbeats require a paid plan: on a free plan the other changes are still applied and the result includes a `heartbeatError`.',
+      `Read or change a project's agent configuration: heartbeat (enabled/interval/quiet hours), default model, name, description, working mode and project type (\`techStackId\`). Defaults to the current project. Call with no changes to read the current config. \`workingMode: "external"\` makes an existing managed project folder-linked (one-way: it gains a primary folder row pointing at the workspace it already uses, and Shogo stops managing its git). An external project cannot become managed again. Heartbeats require a paid plan: on a free plan the other changes are still applied and the result includes a \`heartbeatError\`.\n\n` +
+      `\`techStackId\` switches the project type. A switch that collides with files the project already has is **refused**: nothing is written, and the result carries \`code: "stack_change_needs_reset"\` with the \`collisions\` list and a \`hint\`. Pass \`resetFiles: true\` to delete the current project code first (agent identity, memory, git history and canvas state survive) — that is the only thing that deletes files. A switch into an empty project seeds the new stack and reports what it \`leftInPlace\`. Project types this runtime ships:\n` +
+      techStackCatalogueText(),
     parameters: Type.Object({
       project: Type.Optional(Type.String({ description: 'Project id, name, or manifest key. Default: current project.' })),
       name: Type.Optional(Type.String()),
@@ -409,12 +481,19 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
       quietHoursStart: Type.Optional(Type.String({ description: 'HH:MM' })),
       quietHoursEnd: Type.Optional(Type.String({ description: 'HH:MM' })),
       quietHoursTimezone: Type.Optional(Type.String({ description: 'IANA timezone.' })),
+      techStackId: Type.Optional(Type.String({
+        description: `Project type — one of: ${techStackOptions().map((s) => s.id).join(', ')}. Switches the stack without deleting files unless resetFiles is true.`,
+      })),
+      resetFiles: Type.Optional(Type.Boolean({
+        description: 'With techStackId (or alone, to reset the current stack): delete the project code before seeding. Keeps .shogo/, memory/, .git/ and canvas state. Default false.',
+      })),
     }),
     execute: async (_id, params) => {
       const p = params as {
         project?: string; name?: string; description?: string; workingMode?: string; model?: string; provider?: string
         heartbeatEnabled?: boolean; heartbeatInterval?: number
         quietHoursStart?: string; quietHoursEnd?: string; quietHoursTimezone?: string
+        techStackId?: string; resetFiles?: boolean
       }
       if (p.workingMode !== undefined && p.workingMode !== 'managed' && p.workingMode !== 'external') {
         return textResult({ error: 'workingMode must be "managed" or "external"' })
@@ -432,6 +511,97 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `Model "${p.model}" is not available in this workspace. ${availableModelsHint()}` })
       }
 
+      // ── tech stack ────────────────────────────────────────────────────
+      // Resolved before the patch so "already on that stack" can be a no-op
+      // instead of a pointless write, and so resetFiles alone (reset the
+      // current stack) knows which stack that is.
+      const wantsStack = p.techStackId !== undefined || p.resetFiles === true
+      let stackFrom: string | null = null
+      let stackTo: string | null = null
+      let stackNoop = false
+      if (wantsStack) {
+        const requested = p.techStackId?.trim()
+        if (requested && !techStackOptions().some((s) => s.id === requested)) {
+          return unknownStackResult(requested)
+        }
+        const current = await apiGetProjectConfig(targetId)
+        if (!current.ok || !current.data) return apiFailure(current)
+        stackFrom = readStackId(current.data.settings)
+        stackTo = requested || stackFrom
+        if (!stackTo) {
+          return textResult({
+            error: 'This project has no project type yet — pass techStackId to pick one.',
+            code: 'tech_stack_unknown',
+            validTechStackIds: techStackOptions().map((s) => s.id),
+          })
+        }
+        if (stackTo === stackFrom && p.resetFiles !== true) {
+          // Already on that stack — nothing to seed. Fall through so any other
+          // field in the same call (name, model, heartbeat) still applies.
+          stackNoop = true
+          stackTo = null
+        }
+      }
+
+      // ── decide the stack change before writing anything ───────────────
+      // A colliding switch is refused with nothing written, so this runs before
+      // the settings PATCH: a refusal must not persist `techStackId` (or any
+      // other field in the same call) for a project whose files did not change.
+      const stackTarget = stackTo
+      const stackProjectDir = stackTarget ? resolveProjectDir(ctx, targetId) : null
+      let local: ApplyTechStackChangeResult | null = null
+      let appliesOnNextStart: { appliesOnNextStart: true; note: string } | null = null
+      if (stackTarget) {
+        if (stackProjectDir) {
+          const plan = planTechStackChange({
+            projectDir: stackProjectDir,
+            stackId: stackTarget,
+            resetFiles: p.resetFiles === true,
+          })
+          if (plan.needsReset) {
+            return textResult({
+              ok: false,
+              changed: false,
+              code: 'stack_change_needs_reset',
+              error:
+                `Switching to "${stackTarget}" would overwrite ${plan.collisions.length} existing ` +
+                `entr${plan.collisions.length === 1 ? 'y' : 'ies'}: ${plan.collisions.join(', ')}. ` +
+                `Nothing was changed — settings included.`,
+              from: plan.from,
+              to: plan.to,
+              collisions: plan.collisions,
+              leftInPlace: plan.leftInPlace,
+              hint: stackChangeRefusalHint(plan),
+            })
+          }
+          local = applyTechStackChange({
+            projectDir: stackProjectDir,
+            projectId: targetId,
+            stackId: stackTarget,
+            resetFiles: p.resetFiles === true,
+          })
+          if (!local.ok) {
+            return textResult({
+              ok: false,
+              changed: false,
+              code: local.code,
+              error: local.error ?? `Failed to apply project type "${stackTarget}"`,
+              collisions: local.collisions,
+              leftInPlace: local.leftInPlace,
+              ...(local.hint ? { hint: local.hint } : {}),
+            })
+          }
+        } else {
+          appliesOnNextStart = {
+            appliesOnNextStart: true,
+            note:
+              `The project's files are not mounted on this runtime, so only its settings changed. ` +
+              `They apply when it next starts. If it is a cloud/delegated project, run project_configure again ` +
+              `inside it (or ask its agent) to seed "${stackTarget}" into its folder.`,
+          }
+        }
+      }
+
       const agent: Record<string, unknown> = {}
       if (p.model !== undefined) agent.modelName = p.model
       if (p.provider !== undefined) agent.modelProvider = p.provider
@@ -441,25 +611,86 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
       if (p.quietHoursEnd !== undefined) agent.quietHoursEnd = p.quietHoursEnd
       if (p.quietHoursTimezone !== undefined) agent.quietHoursTimezone = p.quietHoursTimezone
 
+      // The new stack's capability defaults ride along in the same PATCH: a
+      // video project with the browser/shell turned off is not a video project.
+      const settings: Record<string, unknown> = {}
+      if (stackTo && stackTo !== stackFrom) {
+        settings.techStackId = stackTo
+        const caps = loadTechStackMeta(stackTo)?.capabilities ?? {}
+        for (const [key, value] of Object.entries(caps)) {
+          if (key in CAPABILITY_INFO && typeof value === 'boolean') settings[key] = value
+        }
+      }
+
       const hasChanges =
         p.name !== undefined ||
         p.description !== undefined ||
         p.workingMode !== undefined ||
-        Object.keys(agent).length > 0
+        Object.keys(agent).length > 0 ||
+        Object.keys(settings).length > 0
       const res = hasChanges
         ? await apiConfigureProject(targetId, {
             name: p.name,
             description: p.description,
             workingMode: p.workingMode as 'managed' | 'external' | undefined,
             agent: Object.keys(agent).length > 0 ? (agent as any) : undefined,
+            ...(Object.keys(settings).length > 0 ? { settings } : {}),
           })
         : await apiGetProjectConfig(targetId)
       if (!res.ok || !res.data) return apiFailure(res)
       const heartbeatError = res.data.heartbeatError
+
+      // The files were already changed before the PATCH; this only decides what
+      // the caller is told about them.
+      const stackResult = stackTarget
+        ? { from: stackFrom, to: stackTarget, resetFiles: p.resetFiles === true }
+        : null
+
       return textResult({
         ok: true,
-        changed: hasChanges,
+        changed: hasChanges || !!stackResult,
         project: res.data,
+        ...(stackNoop
+          ? {
+              techStackId: stackFrom,
+              stackNote: `Already on "${stackFrom}" — nothing to re-seed. Pass resetFiles: true to replace the project code with the starter.`,
+            }
+          : {}),
+        ...(stackResult
+          ? {
+              stack: {
+                from: stackResult.from,
+                to: stackResult.to,
+                resetFiles: stackResult.resetFiles,
+                applied: local ? 'local' : 'next-start',
+                ...(local
+                  ? {
+                      seeded: local.seeded,
+                      wiped: local.wiped,
+                      collisions: local.collisions,
+                      leftInPlace: local.leftInPlace,
+                      stackDocUpdated: local.stackDocUpdated,
+                      previewRestarted: local.previewRestarted,
+                      ...(seedEntries(stackResult.to).length === 0
+                        ? {
+                            note:
+                              `"${stackResult.to}" ships no files of its own, so nothing was added or overwritten — ` +
+                              `the current project files are untouched and remain the project's code (see leftInPlace). ` +
+                              `Pass resetFiles: true to delete them and start from an empty project.`,
+                          }
+                        : local.leftInPlace.length > 0
+                          ? {
+                              note:
+                                `Left ${local.leftInPlace.length} entr${local.leftInPlace.length === 1 ? 'y' : 'ies'} in place that ` +
+                                `"${stackResult.to}" does not write: ${local.leftInPlace.join(', ')}. Pass resetFiles: true to delete them first.`,
+                            }
+                          : {}),
+                    }
+                  : {}),
+                ...(appliesOnNextStart ?? {}),
+              },
+            }
+          : {}),
         // Partial success: everything but the heartbeat change was applied.
         ...(heartbeatError
           ? { heartbeatError, warning: `Heartbeat settings were not applied: ${heartbeatError.message}` }

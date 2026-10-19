@@ -34,6 +34,12 @@ export const FALLBACK_TECH_STACKS: TechStackSummary[] = [
     tags: ['python', 'data'],
   },
   {
+    id: 'video-editor',
+    name: 'Video Editor',
+    description: 'Programmatic video with Remotion — Player preview, MP4 renders',
+    tags: ['video', 'remotion', 'mp4'],
+  },
+  {
     id: 'threejs-game',
     name: 'Three.js Game Builder',
     description: '3D browser games with Three.js and Vite',

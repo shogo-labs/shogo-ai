@@ -128,6 +128,41 @@ describe('PreviewManager with the custom stack', () => {
     }
   }, 60_000)
 
+  test('the video-editor stack previews through the same static build', async () => {
+    // The Remotion starter declares devServer: static-build — the canvas is a
+    // Vite build of the Player shell, so the preview pipeline is the static one
+    // and no Hono/Prisma sidecar is ever spawned.
+    const dir = project({
+      '.tech-stack': 'video-editor',
+      'build.cjs': BUILD_SCRIPT,
+      'src/page.txt': 'first',
+      'package.json': '{"scripts":{"build":"bun build.cjs"}}',
+    })
+    let builds = 0
+    const pm = new PreviewManager({
+      workspaceDir: dir,
+      runtimePort: 0,
+      basePath: '/p/video-1/',
+      onBuildComplete: () => void builds++,
+    })
+    try {
+      expect((pm as any).resolveDevServer()).toBe('static-build')
+      const started = await pm.start()
+      expect(started.mode).toBe('static-build (background)')
+      const page = () => (existsSync(join(dir, 'dist/index.html')) ? readFileSync(join(dir, 'dist/index.html'), 'utf8') : '')
+      await waitFor(() => page() === '<p>first|/p/video-1/</p>')
+      expect((pm as any).hasApiServer).toBe(false)
+      expect(builds).toBe(1)
+
+      // One source edit → one rebuild (the watcher debounces the file event).
+      writeFileSync(join(dir, 'src/page.txt'), 'second')
+      await waitFor(() => page() === '<p>second|/p/video-1/</p>')
+      expect(builds).toBe(2)
+    } finally {
+      pm.stop()
+    }
+  }, 60_000)
+
   test('a broken build marks the preview failed, and fixing it recovers', async () => {
     const dir = project({
       '.tech-stack': 'custom',
