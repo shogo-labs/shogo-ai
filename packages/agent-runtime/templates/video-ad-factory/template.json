@@ -1,7 +1,7 @@
 {
   "id": "video-ad-factory",
   "name": "Video Ad Factory",
-  "description": "Script, storyboard, and render short-form video ads with automatic voiceover and b-roll composition. Powered by AI video models (Sora 2, Veo 3.1, Kling 3.0, Seedance 2.0) via the Arcads API.",
+  "description": "Script, storyboard, and render short-form video ads with automatic voiceover and b-roll composition. Powered by Higgsfield video and image models (Hailuo 2.3, Kling 2.5, Wan 2.6, LTX-2.5, SOUL V2) and Genjutsu clip editing.",
   "category": "marketing",
   "icon": "Video",
   "tags": [
@@ -10,10 +10,10 @@
     "marketing",
     "ugc",
     "creative",
-    "sora",
-    "veo",
+    "higgsfield",
+    "hailuo",
     "kling",
-    "arcads",
+    "genjutsu",
     "b-roll",
     "storyboard"
   ],

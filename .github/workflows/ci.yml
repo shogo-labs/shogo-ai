@@ -237,6 +237,13 @@ jobs:
           TYPECHECK_EXCLUDE: apps/mobile
         run: bun run typecheck
 
+      - name: Higgsfield docs drift
+        if: needs.queue-verified.outputs.verified != 'true'
+        # The committed vendor snapshot is the contract for every media endpoint
+        # we call; fail when a model id, duration, resolution or aspect ratio we
+        # send is not in the docs (or the snapshot was edited, not re-derived).
+        run: bun run check:higgsfield-docs
+
       - name: Save TypeScript build info
         if: (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-cache.outputs.cache-hit != 'true') && needs.queue-verified.outputs.verified != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4

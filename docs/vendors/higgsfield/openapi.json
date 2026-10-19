@@ -1,0 +1,618 @@
+{
+    "info": {
+        "title": "Higgsfield API",
+        "version": "2.0.0",
+        "description": "Submit generation requests and retrieve their status and outputs."
+    },
+    "servers": [
+        {
+            "url": "https://api.higgsfield.ai"
+        }
+    ],
+    "x-mcp": {
+        "enabled": true
+    },
+    "paths": {
+        "/higgsfield-ai/soul/standard": {
+            "post": {
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {
+                                        "type": "string",
+                                        "title": "Prompt"
+                                    },
+                                    "num_images": {
+                                        "type": "integer",
+                                        "default": 1,
+                                        "maximum": 4,
+                                        "minimum": 1
+                                    },
+                                    "resolution": {
+                                        "enum": [
+                                            "2K",
+                                            "4K"
+                                        ],
+                                        "default": "2K"
+                                    },
+                                    "aspect_ratio": {
+                                        "enum": [
+                                            "1:1",
+                                            "4:3",
+                                            "3:4",
+                                            "3:2",
+                                            "2:3",
+                                            "5:4",
+                                            "4:5",
+                                            "16:9",
+                                            "9:16",
+                                            "21:9"
+                                        ],
+                                        "type": "string",
+                                        "title": "Aspect Ratio",
+                                        "default": "4:3"
+                                    }
+                                },
+                                "required": [
+                                    "prompt"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The request status",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RequestStatus"
+                                }
+                            }
+                        }
+                    }
+                },
+                "operationId": "post_higgsfield_ai_soul_standard",
+                "summary": "Create higgsfield-ai soul standard",
+                "tags": [
+                    "Soul"
+                ],
+                "description": "Submit an asynchronous generation request to `/higgsfield-ai/soul/standard`. The response includes request metadata for status tracking and cancellation."
+            }
+        },
+        "/requests/{request_id}/status": {
+            "get": {
+                "summary": "Get request status",
+                "operationId": "get_request_status",
+                "parameters": [
+                    {
+                        "name": "request_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "title": "Request Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Current request state and output, when available.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RequestStatus"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid API credentials.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "The request does not exist or belongs to another account.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                },
+                "tags": [
+                    "Requests"
+                ],
+                "description": "Retrieve the current state and output of a generation request."
+            }
+        },
+        "/requests/{request_id}/cancel": {
+            "post": {
+                "summary": "Cancel a queued request",
+                "operationId": "cancel_request",
+                "parameters": [
+                    {
+                        "name": "request_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "title": "Request Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "The request was canceled."
+                    },
+                    "400": {
+                        "description": "The request has already started and can no longer be canceled.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid API credentials.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "The request does not exist or belongs to another account.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                },
+                "tags": [
+                    "Requests"
+                ],
+                "description": "Cancel a request that has not started processing. A successful response has no body."
+            }
+        },
+        "/kling-video/v2.5-turbo/pro/image-to-video": {
+            "post": {
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {
+                                        "type": "string",
+                                        "title": "Prompt"
+                                    },
+                                    "duration": {
+                                        "enum": [
+                                            5,
+                                            10
+                                        ],
+                                        "type": "integer",
+                                        "title": "Duration",
+                                        "default": 5
+                                    },
+                                    "cfg_scale": {
+                                        "type": "number",
+                                        "title": "CFG Scale",
+                                        "default": 0.5,
+                                        "maximum": 1,
+                                        "minimum": 0,
+                                        "multipleOf": 0.01
+                                    },
+                                    "image_url": {
+                                        "type": "string",
+                                        "title": "Image URL",
+                                        "format": "uri"
+                                    },
+                                    "negative_prompt": {
+                                        "type": "string",
+                                        "title": "Negative Prompt",
+                                        "default": ""
+                                    }
+                                },
+                                "required": [
+                                    "prompt",
+                                    "image_url"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The request status",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RequestStatus"
+                                }
+                            }
+                        }
+                    }
+                },
+                "operationId": "post_kling_video_v2_5_turbo_pro_image_to_video",
+                "summary": "Create kling-video v2.5-turbo pro image-to-video",
+                "tags": [
+                    "Kling Video"
+                ],
+                "description": "Submit an asynchronous generation request to `/kling-video/v2.5-turbo/pro/image-to-video`. The response includes request metadata for status tracking and cancellation."
+            }
+        },
+        "/kling-video/v2.5-turbo/pro/text-to-video": {
+            "post": {
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {
+                                        "type": "string",
+                                        "title": "Prompt"
+                                    },
+                                    "duration": {
+                                        "enum": [
+                                            5,
+                                            10
+                                        ],
+                                        "type": "integer",
+                                        "title": "Duration",
+                                        "default": 5
+                                    },
+                                    "cfg_scale": {
+                                        "type": "number",
+                                        "title": "CFG Scale",
+                                        "default": 0.5,
+                                        "maximum": 1,
+                                        "minimum": 0,
+                                        "multipleOf": 0.01
+                                    },
+                                    "negative_prompt": {
+                                        "type": "string",
+                                        "title": "Negative Prompt",
+                                        "default": ""
+                                    }
+                                },
+                                "required": [
+                                    "prompt"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The request status",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RequestStatus"
+                                }
+                            }
+                        }
+                    }
+                },
+                "operationId": "post_kling_video_v2_5_turbo_pro_text_to_video",
+                "summary": "Create kling-video v2.5-turbo pro text-to-video",
+                "tags": [
+                    "Kling Video"
+                ],
+                "description": "Submit an asynchronous generation request to `/kling-video/v2.5-turbo/pro/text-to-video`. The response includes request metadata for status tracking and cancellation."
+            }
+        },
+        "/kling-video/v2.5-turbo/standard/image-to-video": {
+            "post": {
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {
+                                        "type": "string",
+                                        "title": "Prompt"
+                                    },
+                                    "duration": {
+                                        "enum": [
+                                            5,
+                                            10
+                                        ],
+                                        "type": "integer",
+                                        "title": "Duration",
+                                        "default": 5
+                                    },
+                                    "cfg_scale": {
+                                        "type": "number",
+                                        "title": "CFG Scale",
+                                        "default": 0.5,
+                                        "maximum": 1,
+                                        "minimum": 0,
+                                        "multipleOf": 0.01
+                                    },
+                                    "image_url": {
+                                        "type": "string",
+                                        "title": "Image URL",
+                                        "format": "uri"
+                                    },
+                                    "negative_prompt": {
+                                        "type": "string",
+                                        "title": "Negative Prompt",
+                                        "default": ""
+                                    }
+                                },
+                                "required": [
+                                    "prompt",
+                                    "image_url"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The request status",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RequestStatus"
+                                }
+                            }
+                        }
+                    }
+                },
+                "operationId": "post_kling_video_v2_5_turbo_standard_image_to_video",
+                "summary": "Create kling-video v2.5-turbo standard image-to-video",
+                "tags": [
+                    "Kling Video"
+                ],
+                "description": "Submit an asynchronous generation request to `/kling-video/v2.5-turbo/standard/image-to-video`. The response includes request metadata for status tracking and cancellation."
+            }
+        },
+        "/minimax/hailuo-2.3/standard/image-to-video": {
+            "post": {
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {
+                                        "type": "string",
+                                        "title": "Prompt"
+                                    },
+                                    "duration": {
+                                        "enum": [
+                                            6,
+                                            10
+                                        ],
+                                        "type": "integer",
+                                        "title": "Duration",
+                                        "default": 6
+                                    },
+                                    "image_url": {
+                                        "type": "string",
+                                        "title": "Image URL",
+                                        "format": "uri"
+                                    },
+                                    "prompt_optimizer": {
+                                        "type": "boolean",
+                                        "title": "Prompt optimizer",
+                                        "default": true
+                                    }
+                                },
+                                "required": [
+                                    "prompt",
+                                    "image_url"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The request status",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RequestStatus"
+                                }
+                            }
+                        }
+                    }
+                },
+                "operationId": "post_minimax_hailuo_2_3_standard_image_to_video",
+                "summary": "Create minimax hailuo-2.3 standard image-to-video",
+                "tags": [
+                    "Minimax"
+                ],
+                "description": "Submit an asynchronous generation request to `/minimax/hailuo-2.3/standard/image-to-video`. The response includes request metadata for status tracking and cancellation."
+            }
+        },
+        "/minimax/hailuo-2.3/standard/text-to-video": {
+            "post": {
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {
+                                        "type": "string",
+                                        "title": "Prompt"
+                                    },
+                                    "duration": {
+                                        "enum": [
+                                            6,
+                                            10
+                                        ],
+                                        "type": "integer",
+                                        "title": "Duration",
+                                        "default": 6
+                                    },
+                                    "prompt_optimizer": {
+                                        "type": "boolean",
+                                        "title": "Prompt optimizer",
+                                        "default": true
+                                    }
+                                },
+                                "required": [
+                                    "prompt"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The request status",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RequestStatus"
+                                }
+                            }
+                        }
+                    }
+                },
+                "operationId": "post_minimax_hailuo_2_3_standard_text_to_video",
+                "summary": "Create minimax hailuo-2.3 standard text-to-video",
+                "tags": [
+                    "Minimax"
+                ],
+                "description": "Submit an asynchronous generation request to `/minimax/hailuo-2.3/standard/text-to-video`. The response includes request metadata for status tracking and cancellation."
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "RequestStatus": {
+                "title": "Request",
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "enum": [
+                            "queued",
+                            "in_progress",
+                            "nsfw",
+                            "failed",
+                            "completed",
+                            "canceled"
+                        ],
+                        "title": "Status",
+                        "type": "string"
+                    },
+                    "request_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "status_url": {
+                        "type": "string",
+                        "format": "uri"
+                    },
+                    "cancel_url": {
+                        "type": "string",
+                        "format": "uri"
+                    },
+                    "error": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "images": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/MediaOutput"
+                        }
+                    },
+                    "video": {
+                        "$ref": "#/components/schemas/MediaOutput"
+                    },
+                    "audio": {
+                        "$ref": "#/components/schemas/MediaOutput"
+                    },
+                    "audios": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/MediaOutput"
+                        }
+                    }
+                },
+                "required": [
+                    "status",
+                    "request_id"
+                ]
+            },
+            "MediaOutput": {
+                "title": "Media output",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "format": "uri"
+                    }
+                },
+                "required": [
+                    "url"
+                ]
+            },
+            "ErrorResponse": {
+                "title": "Error response",
+                "type": "object",
+                "properties": {
+                    "detail": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "detail"
+                ]
+            }
+        },
+        "securitySchemes": {
+            "authKey": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "Authorization",
+                "description": "Use `Key {api_key_id}:{api_key_secret}`."
+            }
+        }
+    },
+    "security": [
+        {
+            "authKey": []
+        }
+    ],
+    "openapi": "3.1.0"
+}

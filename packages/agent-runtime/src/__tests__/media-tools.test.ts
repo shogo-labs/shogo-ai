@@ -12,11 +12,37 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { createTools, filterDisabledCapabilityTools, type ToolContext } from '../gateway-tools'
-import { VIDEO_POLL, _testing } from '../media-tools'
+import { VIDEO_POLL, _testing, readMp4DurationSeconds } from '../media-tools'
 
 const TEST_DIR = '/tmp/test-media-tools'
 const PROXY = 'http://proxy.test/api/ai/v1'
 const B64_PNG = Buffer.from([137, 80, 78, 71]).toString('base64')
+
+/**
+ * A minimal but real MP4: `ftyp` + `moov`/`mvhd` with the given duration, which
+ * is all `readMp4DurationSeconds` needs and all the provider checks before a
+ * Genjutsu edit.
+ */
+function mp4Fixture(seconds: number): Buffer {
+  const mvhd = Buffer.alloc(108)
+  mvhd.writeUInt32BE(108, 0)
+  mvhd.write('mvhd', 4, 'ascii')
+  mvhd[8] = 0 // version 0
+  mvhd.writeUInt32BE(1000, 20) // timescale (payload starts at 8 + 4 version/flags + 4 + 4)
+  mvhd.writeUInt32BE(Math.round(seconds * 1000), 24) // duration
+
+  const ftyp = Buffer.alloc(24)
+  ftyp.writeUInt32BE(24, 0)
+  ftyp.write('ftyp', 4, 'ascii')
+  ftyp.write('isom', 8, 'ascii')
+
+  const moov = Buffer.alloc(8 + mvhd.length)
+  moov.writeUInt32BE(8 + mvhd.length, 0)
+  moov.write('moov', 4, 'ascii')
+  mvhd.copy(moov, 8)
+
+  return Buffer.concat([ftyp, moov])
+}
 
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>
 const realFetch = globalThis.fetch
@@ -176,6 +202,13 @@ describe('list_media_models', () => {
     expect(r.videos).toHaveLength(1)
     expect(r.images).toBeUndefined()
   })
+
+  test('kind "presets" lists the restyle styles instead of models', async () => {
+    on(`${PROXY}/media/presets`, () => json({ presets: [{ id: 'preset-1', name: 'Anime' }] }))
+    const r = await run('list_media_models', { kind: 'presets' })
+    expect(r.presets).toEqual([{ id: 'preset-1', name: 'Anime' }])
+    expect(r.images).toBeUndefined()
+  })
 })
 
 // =========================================================================
@@ -261,6 +294,65 @@ describe('generate_video', () => {
       json({ error: { message: 'Veo 3.1 Fast supports durations 4, 6, 8 seconds; got 5.' } }, 400))
     const r = await run('generate_video', { prompt: 'x', model: 'veo-3.1-fast', duration: 5 })
     expect(r.error).toContain('durations 4, 6, 8')
+  })
+
+  test('passes no model when the caller did not pick one, so the proxy default applies', async () => {
+    const flow = mockVideoFlow(['completed'])
+    await run('generate_video', { prompt: 'a fox runs' })
+    // Hardcoding a Higgsfield id here would 503 on an install without its key.
+    expect(flow.submitBody().model).toBeUndefined()
+  })
+
+  test('a Genjutsu edit uploads the source clip, measures it, and submits both', async () => {
+    writeFileSync(join(TEST_DIR, 'refs/clip.mp4'), mp4Fixture(8))
+    on(`${PROXY}/media/uploads`, () => json({ url: 'https://cdn.hf/in.mp4' }))
+    const flow = mockVideoFlow(['completed'])
+
+    const r = await run('generate_video', {
+      source_video: 'refs/clip.mp4',
+      genjutsu: 'restyle',
+      preset_id: 'preset-1',
+      prompt: 'make it anime',
+      path: 'videos/restyled.mp4',
+    })
+    expect(r.error).toBeUndefined()
+
+    const upload = calls.find((c) => c.url === `${PROXY}/media/uploads`)
+    expect(upload).toBeDefined()
+    expect((upload!.init?.headers as any)['Content-Type']).toBe('video/mp4')
+
+    expect(flow.submitBody()).toMatchObject({
+      model: 'hf-genjutsu-restyle',
+      source_video_url: 'https://cdn.hf/in.mp4',
+      source_duration_seconds: 8,
+      preset_id: 'preset-1',
+      prompt: 'make it anime',
+    })
+  })
+
+  test('readMp4DurationSeconds reads the mvhd box', () => {
+    expect(readMp4DurationSeconds(mp4Fixture(8))).toBeCloseTo(8, 3)
+    expect(readMp4DurationSeconds(mp4Fixture(12.5))).toBeCloseTo(12.5, 3)
+    expect(readMp4DurationSeconds(Buffer.from([1, 2, 3]))).toBeNull()
+  })
+
+  test('a source clip shorter than 4 s is refused before upload', async () => {
+    writeFileSync(join(TEST_DIR, 'refs/short.mp4'), mp4Fixture(2))
+    const r = await run('generate_video', { source_video: 'refs/short.mp4', genjutsu: 'object_swap', prompt: 'x' })
+    expect(r.error).toContain('at least 4 s')
+    expect(calls.some((c) => c.url.includes('/media/uploads'))).toBe(false)
+  })
+
+  test('genjutsu without a source clip is refused before anything is uploaded', async () => {
+    const r = await run('generate_video', { genjutsu: 'motion_transfer', prompt: 'x' })
+    expect(r.error).toContain('source_video')
+    expect(calls.some((c) => c.url.includes('/media/uploads'))).toBe(false)
+  })
+
+  test('a non-MP4 source clip is refused with the reason', async () => {
+    writeFileSync(join(TEST_DIR, 'refs/clip.mov'), 'mov')
+    const r = await run('generate_video', { source_video: 'refs/clip.mov', genjutsu: 'object_swap', prompt: 'x' })
+    expect(r.error).toContain('must be an .mp4')
   })
 })
 

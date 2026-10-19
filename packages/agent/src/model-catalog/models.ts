@@ -21,8 +21,8 @@ export type Provider = 'anthropic' | 'openai' | 'google' | 'local' | 'openrouter
  * `inferProviderFromModel` route requests without colliding with native
  * Anthropic/OpenAI model names. */
 export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
-export type ImageProvider = 'openai' | 'google' | 'local' | 'fal'
-export type VideoProvider = 'fal'
+export type ImageProvider = 'openai' | 'google' | 'local' | 'fal' | 'higgsfield'
+export type VideoProvider = 'fal' | 'higgsfield'
 export type ModelTier = 'economy' | 'standard' | 'premium'
 export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
@@ -136,6 +136,19 @@ export interface ImageModelEntry {
   bestFor?: string
   /** Retired upstream: kept so old ids still resolve and bill, hidden from model lists. */
   retired?: boolean
+  /**
+   * Still routable but superseded: dropped from the tool descriptions agents
+   * read, still listed (flagged) by `list_media_models`. `replacement` names
+   * the model to use instead.
+   */
+  deprecated?: boolean
+  replacement?: string
+  /**
+   * Upstream list price for one generation, in USD, for providers that price
+   * per request (Higgsfield). The exact amount billed is the `/estimate`
+   * captured at submit time; this is the display fallback.
+   */
+  usdPerRequest?: number
 }
 
 export interface VideoModelEntry {
@@ -146,17 +159,48 @@ export interface VideoModelEntry {
   textToVideoApiModel: string
   /** Image-to-video endpoint (animates `start_image`). */
   imageToVideoApiModel?: string
-  /** Durations in seconds the model accepts. */
+  /** Durations in seconds the model accepts. Empty when the clip follows a source video. */
   durations: readonly number[]
   defaultDuration: number
+  /** Aspect ratios the model takes as a parameter. Empty: output framing is fixed or follows the start image. */
   aspectRatios: readonly string[]
-  /** Upstream list price per generated second, in USD. */
-  usdPerSecond: number
+  /** Upstream list price per generated second, in USD (per-second priced providers). */
+  usdPerSecond?: number
   /** Price per second when native audio is on. Absent when the model has no audio. */
   usdPerSecondWithAudio?: number
+  /** Upstream list price for one clip, in USD (per-request priced providers: Higgsfield). */
+  usdPerRequest?: number
+  /**
+   * Price per source second by resolution tier (Genjutsu). These workflows
+   * quote no `usd` from `/estimate` — the vendor answers with a prose
+   * description of the rate card — so the numbers here are the vendor's
+   * published rates and the proxy bills `rate(resolution) × source seconds`.
+   */
+  usdPerSecondByResolution?: Record<string, number>
   /** Most reference images (character/object elements) one request accepts. */
   maxReferenceImages: number
   bestFor?: string
+  /** Still routable but superseded — see `ImageModelEntry.deprecated`. */
+  deprecated?: boolean
+  replacement?: string
+  /** Resolution tiers the model accepts (`480p` / `720p` / `1080p`). Empty when fixed. */
+  resolutions?: readonly string[]
+  defaultResolution?: string
+  /** Takes a source video and edits it (Genjutsu workflows) instead of generating from scratch. */
+  sourceVideo?: boolean
+  /**
+   * Genjutsu workflow this entry runs. `restyle` additionally requires a
+   * `preset_id` from the restyle preset catalog.
+   */
+  genjutsu?: 'motion_transfer' | 'object_swap' | 'restyle'
+  /** Minimum source-video duration in seconds (Genjutsu). */
+  minSourceSeconds?: number
+  /** Maximum source-video duration in seconds before the provider trims it (Genjutsu). */
+  maxSourceSeconds?: number
+  /** Minimum source pixels per frame (width × height), when the workflow requires it. */
+  minSourcePixels?: number
+  /** Maximum source-video size in bytes (Genjutsu restyle caps this at 200 MiB). */
+  maxSourceBytes?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -647,6 +691,23 @@ const TEXT_ONLY = { textToImage: true, imageToImage: false, maxReferenceImages: 
 const GPT_IMAGE = { textToImage: true, imageToImage: true, maxReferenceImages: 16 } as const
 
 export const IMAGE_MODEL_CATALOG = {
+  // Higgsfield — the default image provider. Every call is asynchronous
+  // (submit → poll), so the proxy polls inside the OpenAI-shaped route.
+  // `usdPerRequest` is the 720p list price, used only for display/fallback:
+  // the amount billed is always the `/estimate` captured before submit, and a
+  // request that cannot be priced is refused rather than run for free.
+  // (SOUL V2: $0.004 at 720p, $0.006 at 1080p — measured on the live account,
+  // which is 23× below the worked example in the vendor's prose.)
+  'hf-soul-v2': {
+    id: 'hf-soul-v2', provider: 'higgsfield', apiModel: 'higgsfield-ai/soul/v2/standard',
+    displayName: 'SOUL V2', capabilities: TEXT_ONLY, usdPerRequest: 0.004,
+    bestFor: 'General-purpose default: fast, cheap editorial and product images',
+  },
+  'hf-ideogram-4': {
+    id: 'hf-ideogram-4', provider: 'higgsfield', apiModel: 'ideogram/v4.0',
+    displayName: 'Ideogram 4.0', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 },
+    bestFor: 'Posters, logos and anything with legible text (one style reference)',
+  },
   'dall-e-3':       { id: 'dall-e-3',       provider: 'openai',  apiModel: 'dall-e-3',                          displayName: 'DALL-E 3', capabilities: TEXT_ONLY, retired: true },
   'dall-e-2':       { id: 'dall-e-2',       provider: 'openai',  apiModel: 'dall-e-2',                          displayName: 'DALL-E 2', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 }, retired: true },
   'gpt-image-1':    { id: 'gpt-image-1',    provider: 'openai',  apiModel: 'gpt-image-1',                      displayName: 'GPT Image 1', capabilities: GPT_IMAGE },
@@ -660,31 +721,37 @@ export const IMAGE_MODEL_CATALOG = {
     id: 'nano-banana-pro', provider: 'fal', apiModel: 'fal-ai/nano-banana-pro', editApiModel: 'fal-ai/nano-banana-pro/edit',
     displayName: 'Nano Banana Pro', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 14 },
     bestFor: 'Keeping a character consistent across images, edits, and legible text',
+    deprecated: true, replacement: 'hf-soul-v2',
   },
   'nano-banana-2': {
     id: 'nano-banana-2', provider: 'fal', apiModel: 'fal-ai/nano-banana-2', editApiModel: 'fal-ai/nano-banana-2/edit',
     displayName: 'Nano Banana 2', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 14 },
     bestFor: 'Cheaper, faster character-consistent images and edits',
+    deprecated: true, replacement: 'hf-soul-v2',
   },
   'seedream-5-pro': {
     id: 'seedream-5-pro', provider: 'fal', apiModel: 'bytedance/seedream/v5/pro/text-to-image', editApiModel: 'bytedance/seedream/v5/pro/edit',
     displayName: 'Seedream 5 Pro', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 10 },
     bestFor: 'Stylized art, composites from several references, and in-image text',
+    deprecated: true, replacement: 'hf-soul-v2',
   },
   'flux-pro-ultra': {
     id: 'flux-pro-ultra', provider: 'fal', apiModel: 'fal-ai/flux-pro/v1.1-ultra',
     displayName: 'FLUX1.1 Pro Ultra', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 },
     bestFor: 'Photorealism',
+    deprecated: true, replacement: 'hf-soul-v2',
   },
   'ideogram-3': {
     id: 'ideogram-3', provider: 'fal', apiModel: 'fal-ai/ideogram/v3',
     displayName: 'Ideogram 3', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 3 },
     bestFor: 'Posters, logos, and anything with text in the image (references set the style)',
+    deprecated: true, replacement: 'hf-ideogram-4',
   },
   'recraft-3': {
     id: 'recraft-3', provider: 'fal', apiModel: 'fal-ai/recraft/v3/text-to-image',
     displayName: 'Recraft 3', capabilities: TEXT_ONLY,
     bestFor: 'Vector-style illustration and brand graphics',
+    deprecated: true, replacement: 'gpt-image-2.5-flare',
   },
 } as const satisfies Record<string, ImageModelEntry>
 
@@ -694,7 +761,102 @@ export type ImageModelId = keyof typeof IMAGE_MODEL_CATALOG
 // Video Model Catalog
 // ---------------------------------------------------------------------------
 
+/**
+ * Genjutsu's published rate card, per source second, in USD.
+ *
+ * `/estimate` answers these three endpoints with a prose description of the
+ * rate card (`{"type":"description", …$0.318/s at 480p…}`) instead of a `usd`
+ * value, so there is nothing to parse: the proxy bills this table × the source
+ * clip's length and refuses a job whose length it was not told.
+ */
+export const GENJUTSU_USD_PER_SECOND: Record<string, number> = {
+  '480p': 0.318,
+  '720p': 0.681,
+  '1080p': 1.632,
+}
+
 export const VIDEO_MODEL_CATALOG = {
+  // Higgsfield — the default video provider. Priced per clip (`usdPerRequest`,
+  // approximate) rather than per second; the proxy captures the free
+  // `/estimate` at submit and bills exactly that. Hailuo/Wan/Kling take no
+  // aspect_ratio: the frame follows the start image (or the fixed size), so a
+  // vertical ad starts from a 9:16 still (`start_image`).
+  'hf-hailuo-2.3': {
+    id: 'hf-hailuo-2.3', provider: 'higgsfield', displayName: 'Hailuo 2.3 Standard',
+    textToVideoApiModel: 'minimax/hailuo-2.3/standard/text-to-video',
+    imageToVideoApiModel: 'minimax/hailuo-2.3/standard/image-to-video',
+    durations: [6, 10], defaultDuration: 6,
+    aspectRatios: [],
+    usdPerRequest: 0.07, maxReferenceImages: 0,
+    bestFor: 'The default: cheapest clips for drafts, storyboards and b-roll (fixed 768p)',
+  },
+  'hf-kling-2.5-pro': {
+    id: 'hf-kling-2.5-pro', provider: 'higgsfield', displayName: 'Kling 2.5 Turbo Pro',
+    textToVideoApiModel: 'kling-video/v2.5-turbo/pro/text-to-video',
+    imageToVideoApiModel: 'kling-video/v2.5-turbo/pro/image-to-video',
+    durations: [5, 10], defaultDuration: 5,
+    aspectRatios: [],
+    usdPerRequest: 0.35, maxReferenceImages: 0,
+    bestFor: 'Fluid motion and strong image-to-video when a shot needs more polish than Hailuo',
+  },
+  'hf-wan-2.6': {
+    id: 'hf-wan-2.6', provider: 'higgsfield', displayName: 'Wan 2.6',
+    textToVideoApiModel: 'wan/v2.6/text-to-video',
+    imageToVideoApiModel: 'wan/v2.6/image-to-video',
+    durations: [5, 10, 15], defaultDuration: 5,
+    aspectRatios: [],
+    resolutions: ['720p', '1080p'], defaultResolution: '720p',
+    usdPerRequest: 0.4, maxReferenceImages: 0,
+    bestFor: 'Stylized and animated looks up to 15 s, with an explicit resolution tier',
+  },
+  'hf-ltx-2.5-fast': {
+    id: 'hf-ltx-2.5-fast', provider: 'higgsfield', displayName: 'LTX-2.5 Fast',
+    textToVideoApiModel: 'lightricks/ltx-2.5/text-to-video/fast',
+    imageToVideoApiModel: 'lightricks/ltx-2.5/image-to-video/fast',
+    durations: [6, 8, 10], defaultDuration: 6,
+    aspectRatios: ['16:9', '9:16'],
+    resolutions: ['720p', '1080p'], defaultResolution: '720p',
+    usdPerRequest: 0.2, maxReferenceImages: 0,
+    bestFor: 'The one Higgsfield text-to-video that takes an aspect_ratio, and generates audio',
+  },
+  // Genjutsu — video editing. Source video is a public URL the proxy uploads
+  // to; duration follows the source (4 s minimum, trimmed to 30 s). These
+  // endpoints quote a prose rate card instead of a `usd` figure, so billing
+  // uses `usdPerSecondByResolution` × source seconds and refuses to run a job
+  // whose source duration it was not told.
+  'hf-genjutsu-motion-transfer': {
+    id: 'hf-genjutsu-motion-transfer', provider: 'higgsfield', displayName: 'Genjutsu Motion Transfer',
+    textToVideoApiModel: 'higgsfield/genjutsu/motion-transfer/v1.0',
+    durations: [], defaultDuration: 4,
+    aspectRatios: [],
+    resolutions: ['480p', '720p', '1080p'], defaultResolution: '720p',
+    usdPerSecondByResolution: GENJUTSU_USD_PER_SECOND,
+    maxReferenceImages: 8, sourceVideo: true, genjutsu: 'motion_transfer',
+    minSourceSeconds: 4, maxSourceSeconds: 30,
+    bestFor: 'Drive a photo or character image with the motion of an existing clip',
+  },
+  'hf-genjutsu-object-swap': {
+    id: 'hf-genjutsu-object-swap', provider: 'higgsfield', displayName: 'Genjutsu Object Swap',
+    textToVideoApiModel: 'higgsfield/genjutsu/object-swap/v1.0',
+    durations: [], defaultDuration: 4,
+    aspectRatios: [],
+    resolutions: ['480p', '720p', '1080p'], defaultResolution: '720p',
+    usdPerSecondByResolution: GENJUTSU_USD_PER_SECOND,
+    maxReferenceImages: 8, sourceVideo: true, genjutsu: 'object_swap',
+    minSourceSeconds: 4, maxSourceSeconds: 30, minSourcePixels: 409_600,
+    bestFor: 'Replace an object in a clip with a product or prop from a reference image',
+  },
+  'hf-genjutsu-restyle': {
+    id: 'hf-genjutsu-restyle', provider: 'higgsfield', displayName: 'Genjutsu Restyle',
+    textToVideoApiModel: 'higgsfield/genjutsu/restyle/v1.0',
+    durations: [], defaultDuration: 4,
+    aspectRatios: [],
+    resolutions: ['480p', '720p', '1080p'], defaultResolution: '720p',
+    usdPerSecondByResolution: GENJUTSU_USD_PER_SECOND,
+    maxReferenceImages: 5, sourceVideo: true, genjutsu: 'restyle',
+    minSourceSeconds: 4, maxSourceSeconds: 30, maxSourceBytes: 200 * 1024 * 1024,
+    bestFor: 'Restyle a clip into another look while keeping its motion and audio (needs a preset_id)',
+  },
   'kling-3-pro': {
     id: 'kling-3-pro', provider: 'fal', displayName: 'Kling 3 Pro',
     textToVideoApiModel: 'fal-ai/kling-video/v3/pro/text-to-video',
@@ -703,6 +865,7 @@ export const VIDEO_MODEL_CATALOG = {
     aspectRatios: ['16:9', '9:16', '1:1'],
     usdPerSecond: 0.112, usdPerSecondWithAudio: 0.168, maxReferenceImages: 4,
     bestFor: 'Fluid motion and keeping characters consistent via reference images',
+    deprecated: true, replacement: 'hf-kling-2.5-pro',
   },
   'kling-2.5-turbo-pro': {
     id: 'kling-2.5-turbo-pro', provider: 'fal', displayName: 'Kling 2.5 Turbo Pro',
@@ -712,6 +875,7 @@ export const VIDEO_MODEL_CATALOG = {
     aspectRatios: ['16:9', '9:16', '1:1'],
     usdPerSecond: 0.07, maxReferenceImages: 0,
     bestFor: 'Cheap, silent clips for drafts and storyboard animatics',
+    deprecated: true, replacement: 'hf-hailuo-2.3',
   },
   'veo-3.1-fast': {
     id: 'veo-3.1-fast', provider: 'fal', displayName: 'Veo 3.1 Fast',
@@ -721,6 +885,7 @@ export const VIDEO_MODEL_CATALOG = {
     aspectRatios: ['16:9', '9:16'],
     usdPerSecond: 0.10, usdPerSecondWithAudio: 0.15, maxReferenceImages: 0,
     bestFor: 'Cinematic shots with synced dialogue and sound',
+    deprecated: true, replacement: 'hf-ltx-2.5-fast',
   },
   'minimax-h3-max': {
     id: 'minimax-h3-max', provider: 'fal', displayName: 'MiniMax H3 Max',
@@ -730,6 +895,7 @@ export const VIDEO_MODEL_CATALOG = {
     aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
     usdPerSecond: 0.08, maxReferenceImages: 0,
     bestFor: 'Stylized and animated looks at a low price',
+    deprecated: true, replacement: 'hf-wan-2.6',
   },
 } as const satisfies Record<string, VideoModelEntry>
 

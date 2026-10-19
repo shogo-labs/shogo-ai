@@ -72,6 +72,7 @@ function typeAndBlur(placeholder: string, value: string) {
 }
 
 const TRIPO_PLACEHOLDER = 'Tripo (3D) API key (tsk_…)'
+const HIGGSFIELD_PLACEHOLDER = 'Higgsfield (video, images, Genjutsu) API key (key_id:key_secret)'
 
 describe('provider-key rows', () => {
   test('renders the Tripo (3D) row next to the existing providers (cloud)', async () => {
@@ -79,11 +80,22 @@ describe('provider-key rows', () => {
     render(createElement(ModelsCard, { platform, localMode: false }))
 
     await waitFor(() => expect(screen.getByText('Tripo (3D)')).toBeInTheDocument())
-    for (const name of ['Anthropic', 'OpenAI', 'OpenRouter', 'fal.ai (images and video)']) {
+    for (const name of ['Anthropic', 'OpenAI', 'OpenRouter', 'fal.ai (images and video)', 'Higgsfield (video, images, Genjutsu)']) {
       expect(screen.getByText(name)).toBeInTheDocument()
     }
-    // One "Not configured" per key row (5 providers), none of them pre-set.
-    expect(screen.getAllByText('Not configured')).toHaveLength(5)
+    // One "Not configured" per key row (6 providers), none of them pre-set.
+    expect(screen.getAllByText('Not configured')).toHaveLength(6)
+  })
+
+  test('cloud mode saves the Higgsfield key through the admin route', async () => {
+    const platform = fakePlatform()
+    render(createElement(ModelsCard, { platform, localMode: false }))
+
+    await waitFor(() => expect(screen.getByText('Higgsfield (video, images, Genjutsu)')).toBeInTheDocument())
+    // The default media provider's key must round-trip like every other row.
+    typeAndBlur(HIGGSFIELD_PLACEHOLDER, 'hf_id:hf_secret')
+
+    await waitFor(() => expect(platform.putAdminProviderKeys).toHaveBeenCalledWith({ higgsfield: 'hf_id:hf_secret' }))
   })
 
   test('cloud mode saves the Tripo key through the admin route', async () => {

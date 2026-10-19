@@ -18,17 +18,28 @@ import { getSharedRedis } from './tunnel-redis'
 
 export interface VideoJobRecord {
   id: string
+  /** Which vendor owns the job; the status route dispatches on it. */
+  provider: 'fal' | 'higgsfield'
   workspaceId: string
   projectId: string
   userId?: string
   chatSessionId?: string | null
   model: string
   endpoint: string
+  /** Where to poll. Provider-specific; checked against the provider's base on read. */
   statusUrl: string
-  responseUrl: string
+  /** fal's result URL. Absent for Higgsfield, whose status body carries the output. */
+  responseUrl?: string
+  /** Higgsfield request id, for cancel and support. */
+  requestId?: string
+  /** Price captured from `/estimate` at submit — what the completion is billed. */
+  estimate?: { rawUsd: number; billedUsd: number; credits?: number }
   duration: number
   audio: boolean
   aspectRatio?: string
+  resolution?: string
+  /** True when a source clip is being edited (Genjutsu) rather than generated. */
+  sourceVideo?: boolean
   imageToVideo: boolean
   createdAt: number
 }

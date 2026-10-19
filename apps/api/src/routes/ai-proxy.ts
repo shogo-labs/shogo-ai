@@ -74,13 +74,14 @@ import { randomUUID } from 'node:crypto'
 import {
   generateImageFal,
   processImageFal,
+  fetchAsBase64,
   buildFalVideoRequest,
   falQueueSubmit,
   falQueueStatus,
   falQueueVideoResult,
   type ImageProcessOperation,
 } from '../lib/fal-media'
-import { putVideoJob, getVideoJob, claimVideoCharge } from '../lib/video-job-store'
+import { putVideoJob, getVideoJob, claimVideoCharge, type VideoJobRecord } from '../lib/video-job-store'
 import { put3dJob, get3dJob, claim3dCharge } from '../lib/3d-job-store'
 import {
   DEFAULT_TRIPO_MODEL,
@@ -2771,6 +2772,7 @@ function getImageProviderApiKey(provider: ImageProvider): string | null {
     case 'openai': return getNativeProviderApiKeySync('openai')
     case 'google': return getNativeProviderApiKeySync('google')
     case 'fal': return getNativeProviderApiKeySync('fal')
+    case 'higgsfield': return getNativeProviderApiKeySync('higgsfield')
     case 'local': return 'local'
     default: return null
   }
@@ -2803,6 +2805,118 @@ export function normalizeSizeForModel(model: string, size: string): string {
   if (size === '1024x1792') return '1024x1536'
   if (size === '1792x1024') return '1536x1024'
   return size
+}
+
+const HIGGSFIELD_IMAGE_POLL_DEADLINE_MS = 5 * 60_000
+
+/**
+ * Charge for one Higgsfield request: the estimate captured at submit, marked
+ * up. Returns `null` when no estimate came back — the caller then refuses the
+ * request instead of running it unpriced, because a catalog guess is off by up
+ * to 23× and "no price" must never mean "free".
+ */
+function higgsfieldCharge(
+  estimateRawUsd: number | null,
+): { rawUsd: number; billedUsd: number } | null {
+  if (estimateRawUsd === null) return null
+  return calculateHiggsfieldUsageCost({ rawUsd: estimateRawUsd })
+}
+
+function recordHiggsfieldImageUsage(
+  tokenPayload: ProxyTokenPayload,
+  entry: ImageModelEntry,
+  charge: { rawUsd: number; billedUsd: number },
+  n: number,
+  chatSessionId?: string | null,
+) {
+  return recordMediaUsage(tokenPayload, {
+    kind: 'image',
+    model: entry.id,
+    rawUsd: charge.rawUsd,
+    billedUsd: charge.billedUsd,
+    actionType: 'ai_image_generation',
+    metadata: { n, provider: 'higgsfield', priceSource: 'estimate' },
+  }, chatSessionId)
+}
+
+/**
+ * Run a Higgsfield image model: price it, submit one request per output image,
+ * poll each to a terminal state, then download the outputs. Pricing happens
+ * *before* submitting, so a model whose price we cannot get never runs. A
+ * `failed`, `nsfw` or `canceled` request surfaces a readable error and is never
+ * billed.
+ */
+async function generateImageHiggsfield(
+  apiKey: string,
+  entry: ImageModelEntry,
+  params: { prompt: string; size?: string; quality?: string; n?: number; referenceImages?: string[] },
+  signal?: AbortSignal,
+): Promise<{ result: ImageGenerationResponse; charge: { rawUsd: number; billedUsd: number } }> {
+  const n = Math.max(1, Math.min(4, params.n || 1))
+  const referenceUrls = await Promise.all(
+    (params.referenceImages ?? []).map((ref) => higgsfieldEnsurePublicUrl(apiKey, ref, signal)),
+  )
+  const request = buildHiggsfieldImageRequest(entry, { ...params, referenceUrls })
+
+  const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, signal).catch((err) => {
+    throw new HiggsfieldError(
+      `Could not get a price for this image (${err?.message ?? 'no estimate'}). Nothing was generated or charged; try again.`,
+      'unavailable',
+    )
+  })
+  const charge = higgsfieldCharge(estimate.rawUsd * n)
+  if (!charge) {
+    throw new HiggsfieldError('Higgsfield returned no price for this image. Nothing was generated or charged; try again.', 'unavailable')
+  }
+
+  const submissions = await Promise.all(
+    Array.from({ length: n }, () =>
+      higgsfieldSubmit(apiKey, request.endpoint, request.input, {
+        idempotencyKey: `img_${randomUUID()}`,
+        signal,
+      }),
+    ),
+  )
+
+  let settled: Awaited<ReturnType<typeof pollHiggsfieldRequest>>[]
+  try {
+    settled = await Promise.all(
+      submissions.map((submission) =>
+        pollHiggsfieldRequest(apiKey, submission.statusUrl, {
+          deadlineMs: Date.now() + HIGGSFIELD_IMAGE_POLL_DEADLINE_MS,
+          signal,
+        }),
+      ),
+    )
+  } catch (err) {
+    // The caller went away mid-render: cancel upstream so we don't pay for an
+    // image nobody is waiting for. Best effort — a started request may refuse.
+    if (signal?.aborted) {
+      await Promise.allSettled(submissions.map((submission) => higgsfieldCancel(apiKey, submission.requestId)))
+    }
+    throw err
+  }
+
+  const failed = settled.find((outcome) => outcome.status !== 'completed')
+  if (failed) {
+    const reason = failed.error ?? `the request ended ${failed.status}`
+    throw new HiggsfieldError(`Image generation failed: ${reason}`, 'validation')
+  }
+
+  const urls = settled.flatMap((outcome) => outcome.imageUrls)
+  if (urls.length === 0) throw new HiggsfieldError('Higgsfield returned no images', 'http')
+
+  const data = await Promise.all(
+    urls.map(async (url) => {
+      const { b64, contentType } = await fetchAsBase64(url, signal)
+      return { b64_json: b64, revised_prompt: params.prompt, content_type: contentType }
+    }),
+  )
+
+  return {
+    result: { created: Math.floor(Date.now() / 1000), data },
+    charge,
+  }
 }
 
 async function generateImageOpenAI(
@@ -2930,6 +3044,8 @@ async function generateImageLocal(
 }
 
 import {
+  calculateGenjutsuUsageCost,
+  calculateHiggsfieldUsageCost,
   calculateImageUsageCost,
   calculateImageProcessUsageCost,
   calculateTranscriptionUsageCost,
@@ -2938,6 +3054,23 @@ import {
   estimateTripoTaskCost,
   TRIPO_USD_PER_CREDIT,
 } from '../lib/usage-cost'
+import {
+  HiggsfieldError,
+  HIGGSFIELD_UPLOAD_CONTENT_TYPES,
+  buildHiggsfieldEstimateBody,
+  buildHiggsfieldImageRequest,
+  buildHiggsfieldVideoRequest,
+  higgsfieldEnsurePublicUrl,
+  higgsfieldEstimate,
+  higgsfieldCancel,
+  higgsfieldPresets,
+  higgsfieldStatus,
+  higgsfieldSubmit,
+  higgsfieldUpload,
+  pollHiggsfieldRequest,
+  parseHiggsfieldEstimate,
+  type HiggsfieldEstimate,
+} from '../lib/higgsfield-media'
 
 /**
  * One billable media output. Images (including upscale / background removal)
@@ -3020,58 +3153,222 @@ function recordImageUsage(
   }, chatSessionId)
 }
 
-const DEFAULT_VIDEO_MODEL = 'kling-2.5-turbo-pro'
+const DEFAULT_VIDEO_MODEL = 'hf-hailuo-2.3'
+
+/**
+ * Defaults follow whichever provider is configured: Higgsfield when its key is
+ * present (the product default), otherwise the previous fal/OpenAI model so a
+ * self-hosted install without a Higgsfield key keeps working.
+ */
+function defaultVideoModel(): string {
+  return getImageProviderApiKey('higgsfield') ? DEFAULT_VIDEO_MODEL : 'kling-2.5-turbo-pro'
+}
+
+const DEFAULT_IMAGE_MODEL = 'hf-soul-v2'
+const FALLBACK_IMAGE_MODEL = 'gpt-image-2.5-flare'
+
+function defaultImageModel(): string {
+  return getImageProviderApiKey('higgsfield') ? DEFAULT_IMAGE_MODEL : FALLBACK_IMAGE_MODEL
+}
+
+/** `genjutsu` workflow → model, so a caller can name the edit instead of the model id. */
+const GENJUTSU_MODEL_BY_WORKFLOW: Record<string, string> = {
+  motion_transfer: 'hf-genjutsu-motion-transfer',
+  object_swap: 'hf-genjutsu-object-swap',
+  restyle: 'hf-genjutsu-restyle',
+}
 
 function roundUsd(usd: number): number {
   return Math.round(usd * 10_000) / 10_000
 }
 
-/** Response body of `GET /ai/v1/media/models`. Exported for tests. */
-export function listMediaModels() {
-  const images = (Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[])
-    .filter((entry) => !entry.retired && !!getImageProviderApiKey(entry.provider))
-    .map((entry) => {
-      const standard = calculateImageUsageCost(entry.id, 'standard', '1024x1024')
-      const hd = calculateImageUsageCost(entry.id, 'hd', '1024x1024')
-      return {
-        id: entry.id,
-        name: entry.displayName,
-        provider: entry.provider,
-        best_for: entry.bestFor,
-        text_to_image: entry.capabilities.textToImage,
-        image_to_image: entry.capabilities.imageToImage,
-        max_reference_images: entry.capabilities.maxReferenceImages,
-        parameters: {
-          size: entry.provider === 'openai'
-            ? '1024x1024, 1024x1792, 1792x1024'
-            : 'any WxH; mapped to the closest supported aspect ratio',
-          quality: ['standard', 'hd'],
-          options: '1-4',
-        },
-        price: {
-          unit: 'image',
-          usd: roundUsd(standard.billedUsd),
-          hd_usd: roundUsd(hd.billedUsd),
-        },
-      }
-    })
+/** HTTP status for a media failure: Higgsfield's own semantics first, then the legacy string match. */
+type MediaErrorStatus = 400 | 402 | 429 | 502 | 503 | 504
 
-  const falConfigured = !!getImageProviderApiKey('fal')
-  const videos = falConfigured
-    ? (Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[]).map((entry) => ({
+function mediaErrorStatus(error: any): MediaErrorStatus | 0 {
+  if (error instanceof HiggsfieldError) {
+    switch (error.code) {
+      case 'provider_busy': return 429
+      case 'credits': return 402
+      case 'validation': return 400
+      case 'auth': case 'blocked': case 'unavailable': return 503
+      case 'timeout': return 504
+      default: return 502
+    }
+  }
+  if (error?.message?.includes('429')) return 429
+  if (error?.message?.includes('503')) return 503
+  return 0
+}
+
+/** Error code for the OpenAI-shaped error body. */
+function mediaErrorCode(error: any, fallback: string): string {
+  return error instanceof HiggsfieldError ? error.code : fallback
+}
+
+/**
+ * Free `/estimate` lookups backing the listing's per-clip prices. Higgsfield
+ * prices per request and the amount depends on parameters, so the catalog's
+ * list price is only a fallback; the estimates are cached (they cost nothing
+ * but are still a round trip) and a failure degrades to the catalog value.
+ */
+const higgsfieldEstimateCache = new Map<string, { value: HiggsfieldEstimate | null; expiresAt: number }>()
+const HIGGSFIELD_LIST_ESTIMATE_TTL_MS = 10 * 60_000
+
+async function cachedHiggsfieldEstimate(
+  apiKey: string,
+  entry: ImageModelEntry | VideoModelEntry,
+  request: { endpoint: string; input: Record<string, unknown> },
+  signal?: AbortSignal,
+): Promise<HiggsfieldEstimate | null> {
+  const key = `${entry.id}:${JSON.stringify(request.input)}`
+  const hit = higgsfieldEstimateCache.get(key)
+  if (hit && hit.expiresAt > Date.now()) return hit.value
+  const body = buildHiggsfieldEstimateBody(entry, request.input)
+  if (!body) return null
+  let value: HiggsfieldEstimate | null = null
+  try {
+    value = await higgsfieldEstimate(apiKey, request.endpoint, body, signal)
+  } catch {
+    value = null
+  }
+  higgsfieldEstimateCache.set(key, { value, expiresAt: Date.now() + HIGGSFIELD_LIST_ESTIMATE_TTL_MS })
+  return value
+}
+
+/** Test seam — drops cached estimates between cases. */
+export const _resetHiggsfieldEstimateCache = () => higgsfieldEstimateCache.clear()
+
+/** Response body of `GET /ai/v1/media/models`. Exported for tests. */
+export async function listMediaModels(signal?: AbortSignal) {
+  const higgsfieldKey = getImageProviderApiKey('higgsfield')
+
+  const images = await Promise.all(
+    (Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[])
+      .filter((entry) => !entry.retired && !!getImageProviderApiKey(entry.provider))
+      .map(async (entry) => {
+        const base = {
+          id: entry.id,
+          name: entry.displayName,
+          provider: entry.provider,
+          best_for: entry.bestFor,
+          text_to_image: entry.capabilities.textToImage,
+          image_to_image: entry.capabilities.imageToImage,
+          max_reference_images: entry.capabilities.maxReferenceImages,
+          parameters: {
+            size: entry.provider === 'openai'
+              ? '1024x1024, 1024x1792, 1792x1024'
+              : 'any WxH; mapped to the closest supported aspect ratio',
+            quality: ['standard', 'hd'],
+            options: '1-4',
+          },
+          ...(entry.deprecated ? { deprecated: true, replacement: entry.replacement } : {}),
+        }
+        if (entry.provider === 'higgsfield' && higgsfieldKey) {
+          const estimate = await cachedHiggsfieldEstimate(
+            higgsfieldKey,
+            entry,
+            buildHiggsfieldImageRequest(entry, { prompt: 'a product photo on a plain background', size: '1024x1024', quality: 'standard' }),
+            signal,
+          )
+          const rawUsd = estimate?.rawUsd ?? entry.usdPerRequest
+          return {
+            ...base,
+            price: {
+              unit: 'image',
+              usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
+              source: estimate ? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
+            },
+          }
+        }
+        const standard = calculateImageUsageCost(entry.id, 'standard', '1024x1024')
+        const hd = calculateImageUsageCost(entry.id, 'hd', '1024x1024')
+        return {
+          ...base,
+          price: {
+            unit: 'image',
+            usd: roundUsd(standard.billedUsd),
+            hd_usd: roundUsd(hd.billedUsd),
+          },
+        }
+      }),
+  )
+
+  const videoEntries = (Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[])
+    .filter((entry) => !!getImageProviderApiKey(entry.provider))
+  const videos = await Promise.all(
+    videoEntries.map(async (entry) => {
+      const base = {
         id: entry.id,
         name: entry.displayName,
         provider: entry.provider,
         best_for: entry.bestFor,
         text_to_video: true,
         image_to_video: !!entry.imageToVideoApiModel,
+        source_video: !!entry.sourceVideo,
         max_reference_images: entry.maxReferenceImages,
         audio: entry.usdPerSecondWithAudio !== undefined,
         parameters: {
           durations: entry.durations,
           default_duration: entry.defaultDuration,
           aspect_ratios: entry.aspectRatios,
+          ...(entry.resolutions ? { resolutions: entry.resolutions, default_resolution: entry.defaultResolution } : {}),
+          ...(entry.sourceVideo
+            ? { source_video: `workspace .mp4, ${entry.minSourceSeconds ?? 4}–${entry.maxSourceSeconds ?? 30} s` }
+            : {}),
+          ...(entry.genjutsu === 'restyle' ? { preset_id: 'required (see presets)' } : {}),
         },
+        ...(entry.deprecated ? { deprecated: true, replacement: entry.replacement } : {}),
+      }
+      if (entry.provider === 'higgsfield' && higgsfieldKey) {
+        // Genjutsu bills per source second, so its price is a rate, not a clip
+        // total: show the marked-up per-second rate for each resolution.
+        if (entry.usdPerSecondByResolution) {
+          const byResolution: Record<string, number> = {}
+          for (const resolution of Object.keys(entry.usdPerSecondByResolution).sort()) {
+            const rate = calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, resolution, 1)
+            if (rate) byResolution[resolution] = roundUsd(rate.billedUsd)
+          }
+          const at = entry.defaultResolution ?? Object.keys(byResolution)[0]
+          return {
+            ...base,
+            price: {
+              unit: 'second',
+              usd: byResolution[at] ?? null,
+              by_resolution: byResolution,
+              source: 'rate_card',
+            },
+          }
+        }
+        const estimate = await cachedHiggsfieldEstimate(
+          higgsfieldKey,
+          entry,
+          buildHiggsfieldVideoRequest(entry, {
+            prompt: 'a product rotating on a table, soft studio light',
+            duration: entry.defaultDuration,
+            resolution: entry.defaultResolution,
+          }),
+          signal,
+        )
+        const rawUsd = estimate?.rawUsd ?? entry.usdPerRequest
+        return {
+          ...base,
+          price: {
+            unit: 'clip',
+            usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
+            ...(estimate?.rawUsd !== undefined ? { default_clip_usd: roundUsd(calculateHiggsfieldUsageCost({ rawUsd: estimate.rawUsd }).billedUsd), default_duration: entry.defaultDuration } : {}),
+            source: estimate ? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
+          },
+        }
+      }
+      if (entry.usdPerRequest !== undefined) {
+        return {
+          ...base,
+          price: { unit: 'clip', usd: roundUsd(calculateVideoUsageCost(entry, entry.defaultDuration, false).billedUsd) },
+        }
+      }
+      return {
+        ...base,
         price: {
           unit: 'second',
           usd: roundUsd(calculateVideoUsageCost(entry, 1, false).billedUsd),
@@ -3080,9 +3377,11 @@ export function listMediaModels() {
             : {}),
           default_clip_usd: roundUsd(calculateVideoUsageCost(entry, entry.defaultDuration, false).billedUsd),
         },
-      }))
-    : []
+      }
+    }),
+  )
 
+  const falConfigured = !!getImageProviderApiKey('fal')
   const utilities = falConfigured
     ? [
         { id: 'upscale', tool: 'upscale_image', price: { unit: 'output megapixel', usd: roundUsd(calculateImageProcessUsageCost('upscale', { width: 1000, height: 1000 }).billedUsd) } },
@@ -3090,7 +3389,15 @@ export function listMediaModels() {
       ]
     : []
 
-  return { images, videos, utilities, currency: 'USD', note: 'Prices include the Shogo markup and are what the workspace is charged.' }
+  return {
+    images,
+    videos,
+    utilities,
+    currency: 'USD',
+    default_image_model: defaultImageModel(),
+    default_video_model: defaultVideoModel(),
+    note: 'Prices include the Shogo markup and are what the workspace is charged. Higgsfield prices are quoted by its free /estimate for the default parameters; a `null` price means the vendor must be asked at submit time (Genjutsu prices depend on the source clip).',
+  }
 }
 
 function recordVideoUsage(
@@ -3110,6 +3417,41 @@ function recordVideoUsage(
     seconds,
     actionType: 'ai_video_generation',
     metadata: { seconds, audio, ...metadata },
+  }, chatSessionId)
+}
+
+/**
+ * Bill a completed Higgsfield video job exactly once, at the estimate captured
+ * when it was submitted. `failed` / `nsfw` / `canceled` never reach here — the
+ * provider refunds them.
+ */
+function recordHiggsfieldVideoUsage(
+  tokenPayload: ProxyTokenPayload,
+  job: VideoJobRecord,
+  chatSessionId?: string | null,
+) {
+  const estimate = job.estimate
+  if (!estimate || estimate.billedUsd === 0) {
+    console.warn(`[AI Proxy] ⚠️ Higgsfield job ${job.id} completed without a captured price — not charged`)
+    return
+  }
+  return recordMediaUsage(tokenPayload, {
+    kind: 'video',
+    model: job.model,
+    rawUsd: estimate.rawUsd,
+    billedUsd: estimate.billedUsd,
+    seconds: job.duration,
+    actionType: 'ai_video_generation',
+    metadata: {
+      jobId: job.id,
+      endpoint: job.endpoint,
+      provider: 'higgsfield',
+      ...(job.requestId ? { requestId: job.requestId } : {}),
+      ...(job.resolution ? { resolution: job.resolution } : {}),
+      ...(job.sourceVideo ? { sourceVideo: true } : {}),
+      imageToVideo: job.imageToVideo,
+      priceSource: 'estimate',
+    },
   }, chatSessionId)
 }
 
@@ -4789,8 +5131,9 @@ export function aiProxyRoutes() {
       }
 
       // dall-e-3 is retired (OpenAI, 2026-09) — "The model 'dall-e-3' does
-      // not exist." gpt-image-2.5-flare is the current default.
-      const model = body.model || 'gpt-image-2.5-flare'
+      // not exist." Higgsfield's SOUL V2 is the default; without a Higgsfield
+      // key the route falls back to gpt-image-2.5-flare.
+      const model = body.model || defaultImageModel()
       const imageModel = resolveImageModel(model)
       if (!imageModel) {
         return c.json(
@@ -4824,6 +5167,7 @@ export function aiProxyRoutes() {
 
       const signal = c.req.raw.signal
       let result: ImageGenerationResponse
+      let billed = false
       if (imageModel.provider === 'openai') {
         result = await generateImageOpenAI(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'google') {
@@ -4832,6 +5176,17 @@ export function aiProxyRoutes() {
         result = await generateImageLocal(imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'fal' && imageModel.entry) {
         result = await generateImageFal(apiKey, imageModel.entry, body, signal)
+      } else if (imageModel.provider === 'higgsfield' && imageModel.entry) {
+        const generated = await generateImageHiggsfield(apiKey, imageModel.entry, body, signal)
+        result = generated.result
+        recordHiggsfieldImageUsage(
+          tokenPayload,
+          imageModel.entry,
+          generated.charge,
+          body.n || 1,
+          c.req.header('x-chat-session-id') || null,
+        )
+        billed = true
       } else {
         return c.json(
           { error: { message: `Unsupported image provider: ${imageModel.provider}`, type: 'server_error', code: 'unsupported_provider' } },
@@ -4839,23 +5194,25 @@ export function aiProxyRoutes() {
         )
       }
 
-      recordImageUsage(
-        tokenPayload,
-        imageModel.entry?.id ?? model,
-        body.quality || 'standard',
-        body.size || '1024x1024',
-        body.n || 1,
-        c.req.header('x-chat-session-id') || null,
-      )
+      if (!billed) {
+        recordImageUsage(
+          tokenPayload,
+          imageModel.entry?.id ?? model,
+          body.quality || 'standard',
+          body.size || '1024x1024',
+          body.n || 1,
+          c.req.header('x-chat-session-id') || null,
+        )
+      }
 
       capture?.recordResponse({ status: 200, body: result, format: 'json' })
       return c.json(result)
     } catch (error: any) {
       capture?.finish({ errorType: 'generation_error' })
       console.error('[AI Proxy] Image generation error:', error.message)
-      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      const statusCode = mediaErrorStatus(error) || 500
       return c.json(
-        { error: { message: error.message || 'Image generation failed', type: 'server_error', code: 'generation_error' } },
+        { error: { message: error.message || 'Image generation failed', type: 'server_error', code: mediaErrorCode(error, 'generation_error') } },
         statusCode
       )
     }
@@ -4923,7 +5280,7 @@ export function aiProxyRoutes() {
         )
       }
       const maxRefs = imageModel.entry?.capabilities.imageToImage ? imageModel.entry.capabilities.maxReferenceImages : 0
-      if (maxRefs === 0 || (imageModel.provider !== 'openai' && imageModel.provider !== 'fal')) {
+      if (maxRefs === 0 || (imageModel.provider !== 'openai' && imageModel.provider !== 'fal' && imageModel.provider !== 'higgsfield')) {
         return c.json(
           { error: { message: `Image model '${model}' does not accept reference images. Call list_media_models to find one that does.`, type: 'invalid_request_error', code: 'reference_images_unsupported' } },
           400
@@ -4964,6 +5321,7 @@ export function aiProxyRoutes() {
       })
 
       let result: ImageGenerationResponse
+      let billed = false
       if (imageModel.provider === 'fal') {
         result = await generateImageFal(
           apiKey,
@@ -4971,6 +5329,22 @@ export function aiProxyRoutes() {
           { prompt, size, quality, n, referenceImages: imageDataUris },
           c.req.raw.signal,
         )
+      } else if (imageModel.provider === 'higgsfield') {
+        const generated = await generateImageHiggsfield(
+          apiKey,
+          imageModel.entry!,
+          { prompt, size, quality, n, referenceImages: imageDataUris },
+          c.req.raw.signal,
+        )
+        result = generated.result
+        recordHiggsfieldImageUsage(
+          tokenPayload,
+          imageModel.entry!,
+          generated.charge,
+          n,
+          c.req.header('x-chat-session-id') || null,
+        )
+        billed = true
       } else {
         // gpt-image models reject `response_format` (400 unknown_parameter)
         // and use different size tokens, same as the generations path above.
@@ -5004,16 +5378,18 @@ export function aiProxyRoutes() {
         result = await response.json() as ImageGenerationResponse
       }
 
-      recordImageUsage(tokenPayload, imageModel.entry?.id ?? model, quality, size, n, c.req.header('x-chat-session-id') || null)
+      if (!billed) {
+        recordImageUsage(tokenPayload, imageModel.entry?.id ?? model, quality, size, n, c.req.header('x-chat-session-id') || null)
+      }
 
       capture?.recordResponse({ status: 200, body: result, format: 'json' })
       return c.json(result)
     } catch (error: any) {
       capture?.finish({ errorType: 'edit_error' })
       console.error('[AI Proxy] Image edit error:', error.message)
-      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      const statusCode = mediaErrorStatus(error) || 500
       return c.json(
-        { error: { message: error.message || 'Image edit failed', type: 'server_error', code: 'edit_error' } },
+        { error: { message: error.message || 'Image edit failed', type: 'server_error', code: mediaErrorCode(error, 'edit_error') } },
         statusCode
       )
     }
@@ -5033,7 +5409,215 @@ export function aiProxyRoutes() {
         401
       )
     }
-    return c.json(listMediaModels())
+    return c.json(await listMediaModels(c.req.raw.signal))
+  })
+
+  /**
+   * GET /ai/v1/media/presets - Genjutsu Restyle style presets (id, name,
+   * preview). Restyle requires one of these ids as `preset_id`; they are
+   * fetched live because the catalog changes.
+   */
+  router.get('/ai/v1/media/presets', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+    const apiKey = getImageProviderApiKey('higgsfield')
+    if (!apiKey) {
+      return c.json(
+        { error: { message: "Media provider 'higgsfield' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+        503
+      )
+    }
+    try {
+      return c.json({ presets: await higgsfieldPresets(apiKey, c.req.raw.signal) })
+    } catch (error: any) {
+      console.error('[AI Proxy] Preset listing error:', error.message)
+      return c.json(
+        { error: { message: error.message || 'Listing presets failed', type: 'server_error', code: mediaErrorCode(error, 'presets_error') } },
+        mediaErrorStatus(error) || 502
+      )
+    }
+  })
+
+  /**
+   * POST /ai/v1/media/estimate - What a generation would cost, without
+   * generating it. Free on both providers (Higgsfield's `/estimate` is free and
+   * fal prices are per second), and never creates a job or a charge. Agents and
+   * the live tests use this to budget before spending.
+   */
+  router.post('/ai/v1/media/estimate', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+    const invalid = (message: string, code: string) =>
+      c.json({ error: { message, type: 'invalid_request_error', code } }, 400)
+    try {
+      const body = await c.req.json() as {
+        model?: string
+        kind?: 'image' | 'video'
+        duration?: number
+        resolution?: string
+        aspect_ratio?: string
+        size?: string
+        quality?: string
+        prompt?: string
+        source_video_url?: string
+        source_duration_seconds?: number
+        preset_id?: string
+      }
+      const videoEntry = body.kind !== 'image' && body.model ? getVideoModelEntry(body.model) : undefined
+      const imageEntry = body.kind !== 'video' && body.model ? resolveImageModel(body.model)?.entry : undefined
+      if (!body.model) return invalid('model is required', 'missing_model')
+      if (!videoEntry && !imageEntry) return invalid(`Unknown or retired model '${body.model}'.`, 'model_not_found')
+
+      if (videoEntry) {
+        const apiKey = getImageProviderApiKey(videoEntry.provider)
+        if (!apiKey) {
+          return c.json({ error: { message: `Video provider '${videoEntry.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } }, 503)
+        }
+        const duration = body.duration ?? videoEntry.defaultDuration
+        if (videoEntry.durations.length > 0 && !videoEntry.durations.includes(duration)) {
+          return invalid(`${videoEntry.displayName} supports durations ${videoEntry.durations.join(', ')} seconds; got ${duration}.`, 'invalid_duration')
+        }
+        if (videoEntry.provider === 'fal') {
+          const charge = calculateVideoUsageCost(videoEntry, duration, false)
+          return c.json({ model: videoEntry.id, provider: 'fal', unit: 'second', duration, raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), source: 'catalog' })
+        }
+        if (videoEntry.sourceVideo) {
+          // Genjutsu quotes a prose rate card rather than a `usd` figure, so
+          // price it from the vendor's per-second table times the clip length.
+          const seconds = body.source_duration_seconds
+          if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+            return invalid(
+              `${videoEntry.displayName} is billed per source second: pass source_duration_seconds (the clip's length).`,
+              'missing_source_duration',
+            )
+          }
+          const resolution = body.resolution ?? videoEntry.defaultResolution ?? '720p'
+          const billedSeconds = Math.min(seconds, videoEntry.maxSourceSeconds ?? 30)
+          const charge = calculateGenjutsuUsageCost(videoEntry.usdPerSecondByResolution, resolution, billedSeconds)
+          if (!charge) {
+            return invalid(`Cannot price ${videoEntry.displayName} at ${resolution}.`, 'estimate_unavailable')
+          }
+          return c.json({
+            model: videoEntry.id,
+            provider: 'higgsfield',
+            unit: 'second',
+            duration: billedSeconds,
+            resolution,
+            raw_usd: roundUsd(charge.rawUsd),
+            usd: roundUsd(charge.billedUsd),
+            source: 'rate_card',
+          })
+        }
+        // The vendor's schema requires a prompt even to quote a price; its
+        // content does not change the number.
+        const request = buildHiggsfieldVideoRequest(videoEntry, {
+          prompt: body.prompt || 'a product rotating on a table, studio light',
+          duration,
+          resolution: body.resolution,
+          aspectRatio: body.aspect_ratio,
+        })
+        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal)
+        const charge = higgsfieldCharge(estimate.rawUsd)
+        if (!charge) {
+          return c.json({ error: { message: 'Higgsfield returned no price for this request.', type: 'server_error', code: 'estimate_unavailable' } }, 503)
+        }
+        return c.json({ model: videoEntry.id, provider: 'higgsfield', unit: 'clip', duration, raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), credits: estimate.credits, source: 'estimate' })
+      }
+
+      const entry = imageEntry!
+      const apiKey = getImageProviderApiKey(entry.provider)
+      if (!apiKey) {
+        return c.json({ error: { message: `Image provider '${entry.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } }, 503)
+      }
+      if (entry.provider === 'higgsfield') {
+        const request = buildHiggsfieldImageRequest(entry, { prompt: 'a product photo', size: body.size, quality: body.quality })
+        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal)
+        const charge = higgsfieldCharge(estimate.rawUsd)
+        if (!charge) {
+          return c.json({ error: { message: 'Higgsfield returned no price for this image.', type: 'server_error', code: 'estimate_unavailable' } }, 503)
+        }
+        return c.json({ model: entry.id, provider: 'higgsfield', unit: 'image', raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), credits: estimate.credits, source: 'estimate' })
+      }
+      const charge = calculateImageUsageCost(entry.id, body.quality || 'standard', body.size || '1024x1024')
+      return c.json({ model: entry.id, provider: entry.provider, unit: 'image', raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), source: 'catalog' })
+    } catch (error: any) {
+      console.error('[AI Proxy] Media estimate error:', error.message)
+      return c.json(
+        { error: { message: error.message || 'Estimate failed', type: 'server_error', code: mediaErrorCode(error, 'estimate_error') } },
+        mediaErrorStatus(error) || 502
+      )
+    }
+  })
+
+  /**
+   * POST /ai/v1/media/uploads - Put bytes on the media provider's storage and
+   * return the public URL the generation endpoints require. Raw body (not
+   * multipart) with the real `Content-Type`; cap is the provider's 200 MiB
+   * input limit. Used for Genjutsu source clips, which are too large to base64
+   * through the JSON routes.
+   */
+  router.post('/ai/v1/media/uploads', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+    const apiKey = getImageProviderApiKey('higgsfield')
+    if (!apiKey) {
+      return c.json(
+        { error: { message: "Media provider 'higgsfield' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+        503
+      )
+    }
+    const contentType = (c.req.header('content-type') || '').split(';')[0].trim().toLowerCase()
+    if (!HIGGSFIELD_UPLOAD_CONTENT_TYPES.has(contentType)) {
+      return c.json(
+        { error: { message: `Unsupported upload type '${contentType || 'unknown'}'. Use one of: ${[...HIGGSFIELD_UPLOAD_CONTENT_TYPES].join(', ')}.`, type: 'invalid_request_error', code: 'unsupported_content_type' } },
+        400
+      )
+    }
+    try {
+      // The provider caps input media at 200 MiB; refuse before buffering a
+      // larger body, and never let an unbounded upload into memory.
+      const MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+      const declaredLength = Number(c.req.header('content-length') || 0)
+      if (declaredLength > MAX_UPLOAD_BYTES) {
+        return c.json(
+          { error: { message: `Upload is ${(declaredLength / (1024 * 1024)).toFixed(1)} MB; the limit is 200 MB.`, type: 'invalid_request_error', code: 'upload_too_large' } },
+          413
+        )
+      }
+      const bytes = new Uint8Array(await c.req.arrayBuffer())
+      if (bytes.byteLength === 0) {
+        return c.json({ error: { message: 'Upload body is empty.', type: 'invalid_request_error', code: 'empty_body' } }, 400)
+      }
+      if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+        return c.json(
+          { error: { message: `Upload is ${(bytes.byteLength / (1024 * 1024)).toFixed(1)} MB; the limit is 200 MB.`, type: 'invalid_request_error', code: 'upload_too_large' } },
+          413
+        )
+      }
+      const { publicUrl } = await higgsfieldUpload(apiKey, bytes, contentType, c.req.raw.signal)
+      return c.json({ url: publicUrl, content_type: contentType, bytes: bytes.byteLength })
+    } catch (error: any) {
+      console.error('[AI Proxy] Media upload error:', error.message)
+      return c.json(
+        { error: { message: error.message || 'Upload failed', type: 'server_error', code: mediaErrorCode(error, 'upload_error') } },
+        mediaErrorStatus(error) || 502
+      )
+    }
   })
 
   /**
@@ -5117,10 +5701,11 @@ export function aiProxyRoutes() {
   /**
    * POST /ai/v1/videos/generations - Submit a video job.
    *
-   * Body: `{ prompt, model, duration?, aspect_ratio?, audio?, start_image?,
-   * reference_images? }` with images as data URIs. Returns `{ id }` right
-   * away; poll `GET /ai/v1/videos/:id`. Nothing is charged until the job
-   * completes.
+   * Body: `{ prompt, model, duration?, aspect_ratio?, resolution?, audio?,
+   * start_image?, reference_images?, source_video_url?, preset_id? }` with
+   * images as data URIs (or public URLs). Returns `{ id }` right away; poll
+   * `GET /ai/v1/videos/:id`. Nothing is charged until the job completes, and a
+   * failed / NSFW / canceled job is never charged.
    */
   router.post('/ai/v1/videos/generations', async (c) => {
     const tokenPayload = await validateProxyAuth(c)
@@ -5149,32 +5734,92 @@ export function aiProxyRoutes() {
         model?: string
         duration?: number
         aspect_ratio?: string
+        resolution?: string
         audio?: boolean
         start_image?: string
         reference_images?: string[]
+        source_video_url?: string
+        source_duration_seconds?: number
+        preset_id?: string
+        genjutsu?: string
       }
-      if (!body.prompt) return invalid('prompt is required', 'missing_prompt')
-
-      const modelId = body.model || DEFAULT_VIDEO_MODEL
+      if (body.genjutsu && !GENJUTSU_MODEL_BY_WORKFLOW[body.genjutsu]) {
+        return invalid(`genjutsu must be one of ${Object.keys(GENJUTSU_MODEL_BY_WORKFLOW).join(', ')}; got '${body.genjutsu}'.`, 'invalid_genjutsu')
+      }
+      const modelId = body.model || (body.genjutsu ? GENJUTSU_MODEL_BY_WORKFLOW[body.genjutsu] : defaultVideoModel())
       const entry = getVideoModelEntry(modelId)
       if (!entry) return invalid(`Video model '${modelId}' is not supported. Call list_media_models for the list.`, 'model_not_found')
+      if (body.genjutsu && entry.genjutsu !== body.genjutsu) {
+        return invalid(
+          `${entry.displayName} is not the '${body.genjutsu}' workflow${entry.genjutsu ? ` (it is '${entry.genjutsu}')` : ''}.`,
+          'genjutsu_model_mismatch',
+        )
+      }
 
-      const duration = body.duration ?? entry.defaultDuration
-      if (!entry.durations.includes(duration)) {
+      const prompt = (body.prompt ?? '').trim()
+      if (!prompt && !entry.sourceVideo) return invalid('prompt is required', 'missing_prompt')
+
+      // A Genjutsu edit's length is the source clip's; everything else has a
+      // fixed duration menu the model documents.
+      const duration = entry.sourceVideo ? 0 : body.duration ?? entry.defaultDuration
+      /** Billed length of a Genjutsu source clip, in seconds. */
+      let sourceSeconds: number | undefined
+      if (!entry.sourceVideo && !entry.durations.includes(duration)) {
         return invalid(`${entry.displayName} supports durations ${entry.durations.join(', ')} seconds; got ${duration}.`, 'invalid_duration')
       }
-      if (body.aspect_ratio && !entry.aspectRatios.includes(body.aspect_ratio)) {
-        return invalid(`${entry.displayName} supports aspect ratios ${entry.aspectRatios.join(', ')}; got ${body.aspect_ratio}.`, 'invalid_aspect_ratio')
-      }
-      if (body.start_image !== undefined) {
-        if (typeof body.start_image !== 'string' || !body.start_image.startsWith('data:image/')) {
-          return invalid('start_image must be an image data URI', 'invalid_start_image')
+      if (body.aspect_ratio) {
+        if (entry.aspectRatios.length === 0) {
+          return invalid(`${entry.displayName} has no aspect_ratio parameter${entry.sourceVideo ? '' : '; output framing follows the start image'}.`, 'invalid_aspect_ratio')
         }
+        if (!entry.aspectRatios.includes(body.aspect_ratio)) {
+          return invalid(`${entry.displayName} supports aspect ratios ${entry.aspectRatios.join(', ')}; got ${body.aspect_ratio}.`, 'invalid_aspect_ratio')
+        }
+      }
+      if (body.resolution && !(entry.resolutions ?? []).includes(body.resolution)) {
+        return invalid(
+          entry.resolutions?.length
+            ? `${entry.displayName} supports resolutions ${entry.resolutions.join(', ')}; got ${body.resolution}.`
+            : `${entry.displayName} has a fixed resolution; drop resolution.`,
+          'invalid_resolution',
+        )
+      }
+      if (entry.sourceVideo) {
+        if (!body.source_video_url) {
+          return invalid(`${entry.displayName} edits a clip: pass source_video (a workspace video) or source_video_url.`, 'missing_source_video')
+        }
+        if (!/^https:\/\//i.test(body.source_video_url)) {
+          return invalid('source_video_url must be a public https URL.', 'invalid_source_video')
+        }
+        if (entry.genjutsu === 'restyle' && !body.preset_id) {
+          return invalid('Genjutsu Restyle needs a preset_id from GET /ai/v1/media/presets.', 'missing_preset_id')
+        }
+        // These workflows are billed per source second, and the vendor quotes
+        // no usable number up front, so the length has to come from the caller.
+        // Without it we would bill zero — refuse instead.
+        const declared = body.source_duration_seconds
+        if (typeof declared !== 'number' || !Number.isFinite(declared) || declared <= 0) {
+          return invalid(
+            `${entry.displayName} is billed per source second: pass source_duration_seconds (the clip's length).`,
+            'missing_source_duration',
+          )
+        }
+        const minSeconds = entry.minSourceSeconds ?? 4
+        if (declared < minSeconds) {
+          return invalid(`The source clip is ${declared.toFixed(1)} s; ${entry.displayName} needs at least ${minSeconds} s.`, 'source_too_short')
+        }
+        // The provider trims anything longer than its max, so bill the trimmed length.
+        sourceSeconds = Math.min(declared, entry.maxSourceSeconds ?? 30)
+      }
+      const resolution = body.resolution ?? entry.defaultResolution ?? '720p'
+      if (body.start_image !== undefined) {
+        const acceptable = typeof body.start_image === 'string'
+          && (body.start_image.startsWith('data:image/') || /^https:\/\//i.test(body.start_image))
+        if (!acceptable) return invalid('start_image must be an image data URI or an https URL', 'invalid_start_image')
         if (!entry.imageToVideoApiModel) return invalid(`${entry.displayName} does not support image-to-video.`, 'image_to_video_unsupported')
       }
       const refs = body.reference_images ?? []
-      if (!Array.isArray(refs) || refs.some((r) => typeof r !== 'string' || !r.startsWith('data:image/'))) {
-        return invalid('reference_images must be image data URIs', 'invalid_reference_images')
+      if (!Array.isArray(refs) || refs.some((r) => typeof r !== 'string' || !(r.startsWith('data:image/') || /^https:\/\//i.test(r)))) {
+        return invalid('reference_images must be image data URIs or https URLs', 'invalid_reference_images')
       }
       if (refs.length > entry.maxReferenceImages) {
         return invalid(
@@ -5184,29 +5829,104 @@ export function aiProxyRoutes() {
           'too_many_reference_images',
         )
       }
+      if (entry.sourceVideo && entry.genjutsu !== 'restyle' && refs.length === 0) {
+        return invalid(`${entry.displayName} needs at least 1 reference image (the subject to drive or swap in).`, 'missing_reference_images')
+      }
 
-      const apiKey = getImageProviderApiKey('fal')
+      const apiKey = getImageProviderApiKey(entry.provider)
       if (!apiKey) {
         return c.json(
-          { error: { message: "Video provider 'fal' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+          { error: { message: `Video provider '${entry.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
           503
         )
       }
 
-      const audio = entry.usdPerSecondWithAudio !== undefined && body.audio === true
-      const request = buildFalVideoRequest(entry, {
-        prompt: body.prompt,
+      const signal = c.req.raw.signal
+      const id = `vid_${randomUUID()}`
+
+      if (entry.provider === 'fal') {
+        const audio = entry.usdPerSecondWithAudio !== undefined && body.audio === true
+        const request = buildFalVideoRequest(entry, {
+          prompt,
+          duration,
+          aspectRatio: body.aspect_ratio,
+          audio,
+          startImage: body.start_image,
+          referenceImages: refs,
+        })
+        const submission = await falQueueSubmit(apiKey, request, signal)
+
+        await putVideoJob({
+          id,
+          provider: 'fal',
+          workspaceId: tokenPayload.workspaceId,
+          projectId: tokenPayload.projectId,
+          userId: tokenPayload.userId,
+          chatSessionId: c.req.header('x-chat-session-id') || null,
+          model: entry.id,
+          endpoint: request.endpoint,
+          statusUrl: submission.statusUrl,
+          responseUrl: submission.responseUrl,
+          duration,
+          audio,
+          aspectRatio: body.aspect_ratio,
+          imageToVideo: !!body.start_image,
+          createdAt: Date.now(),
+        })
+        console.log(`[AI Proxy] 🎬 Video job ${id}: ${tokenPayload.projectId} → fal/${request.endpoint} (${duration}s${audio ? ', audio' : ''})`)
+
+        const estimate = calculateVideoUsageCost(entry, duration, audio)
+        return c.json({ id, status: 'queued', model: entry.id, duration, audio, provider: 'fal', estimated_usd: roundUsd(estimate.billedUsd) })
+      }
+
+      // Higgsfield: input media must be public URLs, so data URIs are uploaded
+      // first (the API key stays server-side). The price is settled before we
+      // submit: a job we cannot price is refused, never run for free.
+      const referenceUrls = await Promise.all(refs.map((ref) => higgsfieldEnsurePublicUrl(apiKey, ref, signal)))
+      const startImageUrl = body.start_image
+        ? await higgsfieldEnsurePublicUrl(apiKey, body.start_image, signal)
+        : undefined
+      const request = buildHiggsfieldVideoRequest(entry, {
+        prompt: prompt || undefined,
         duration,
         aspectRatio: body.aspect_ratio,
-        audio,
-        startImage: body.start_image,
-        referenceImages: refs,
+        resolution,
+        startImageUrl,
+        referenceUrls,
+        sourceVideoUrl: body.source_video_url,
+        presetId: body.preset_id,
       })
-      const submission = await falQueueSubmit(apiKey, request, c.req.raw.signal)
 
-      const id = `vid_${randomUUID()}`
+      let charge: { rawUsd: number; billedUsd: number } | null
+      let credits: number | undefined
+      if (entry.genjutsu) {
+        // Genjutsu answers `/estimate` with a prose rate card, not a `usd`
+        // figure, so price it from the vendor's per-second table instead.
+        charge = calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, resolution, sourceSeconds!)
+        if (!charge) {
+          return invalid(
+            `Cannot price ${entry.displayName} at ${resolution}; supported resolutions are ${(entry.resolutions ?? []).join(', ')}.`,
+            'estimate_unavailable',
+          )
+        }
+      } else {
+        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, signal).catch(() => null)
+        charge = higgsfieldCharge(estimate?.rawUsd ?? null)
+        credits = estimate?.credits
+        if (!charge) {
+          return c.json(
+            { error: { message: 'Higgsfield did not return a price for this request. Nothing was submitted or charged; try again.', type: 'server_error', code: 'estimate_unavailable' } },
+            503,
+          )
+        }
+      }
+
+      const submission = await higgsfieldSubmit(apiKey, request.endpoint, request.input, { idempotencyKey: id, signal })
+      const billedDuration = entry.sourceVideo ? sourceSeconds! : duration
+
       await putVideoJob({
         id,
+        provider: 'higgsfield',
         workspaceId: tokenPayload.workspaceId,
         projectId: tokenPayload.projectId,
         userId: tokenPayload.userId,
@@ -5214,22 +5934,33 @@ export function aiProxyRoutes() {
         model: entry.id,
         endpoint: request.endpoint,
         statusUrl: submission.statusUrl,
-        responseUrl: submission.responseUrl,
-        duration,
-        audio,
+        requestId: submission.requestId,
+        estimate: { rawUsd: charge.rawUsd, billedUsd: charge.billedUsd, ...(credits !== undefined ? { credits } : {}) },
+        duration: billedDuration,
+        audio: false,
         aspectRatio: body.aspect_ratio,
+        resolution,
+        ...(entry.sourceVideo ? { sourceVideo: true } : {}),
         imageToVideo: !!body.start_image,
         createdAt: Date.now(),
       })
-      console.log(`[AI Proxy] 🎬 Video job ${id}: ${tokenPayload.projectId} → fal/${request.endpoint} (${duration}s${audio ? ', audio' : ''})`)
+      console.log(`[AI Proxy] 🎬 Video job ${id}: ${tokenPayload.projectId} → ${request.endpoint} (${billedDuration}s${entry.sourceVideo ? ', source clip' : ''}, $${charge.billedUsd.toFixed(3)})`)
 
-      const estimate = calculateVideoUsageCost(entry, duration, audio)
-      return c.json({ id, status: 'queued', model: entry.id, duration, audio, estimated_usd: roundUsd(estimate.billedUsd) })
+      return c.json({
+        id,
+        status: 'queued',
+        model: entry.id,
+        duration: billedDuration,
+        audio: false,
+        provider: 'higgsfield',
+        estimated_usd: roundUsd(charge.billedUsd),
+        price_source: entry.genjutsu ? 'rate_card' : 'estimate',
+      })
     } catch (error: any) {
       console.error('[AI Proxy] Video submit error:', error.message)
-      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('422') ? 400 : 502
+      const statusCode = mediaErrorStatus(error) || (error.message?.includes('422') ? 400 : 502)
       return c.json(
-        { error: { message: error.message || 'Video submission failed', type: 'server_error', code: 'video_submit_error' } },
+        { error: { message: error.message || 'Video submission failed', type: 'server_error', code: mediaErrorCode(error, 'video_submit_error') } },
         statusCode
       )
     }
@@ -5255,15 +5986,53 @@ export function aiProxyRoutes() {
       return c.json({ error: { message: `Video job '${id}' not found.`, type: 'invalid_request_error', code: 'job_not_found' } }, 404)
     }
     const entry = getVideoModelEntry(job.model)
-    const apiKey = getImageProviderApiKey('fal')
+    const apiKey = getImageProviderApiKey(entry?.provider ?? job.provider)
     if (!entry || !apiKey) {
       return c.json(
-        { error: { message: "Video provider 'fal' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+        { error: { message: `Video provider '${job.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
         503
       )
     }
 
     const base = { id, model: job.model, duration: job.duration, audio: job.audio, created_at: job.createdAt }
+
+    if (job.provider === 'higgsfield') {
+      try {
+        const status = await higgsfieldStatus(apiKey, job.statusUrl, c.req.raw.signal)
+        if (status.status === 'completed') {
+          if (!status.videoUrl) {
+            return c.json({ ...base, status: 'failed', error: 'The provider finished without returning a video.' })
+          }
+          if (await claimVideoCharge(id)) {
+            recordHiggsfieldVideoUsage(
+              tokenPayload,
+              job,
+              c.req.header('x-chat-session-id') || job.chatSessionId || null,
+            )
+          }
+          return c.json({
+            ...base,
+            status: 'completed',
+            video: { url: status.videoUrl, content_type: 'video/mp4' },
+          })
+        }
+        if (status.status === 'failed' || status.status === 'nsfw' || status.status === 'canceled') {
+          // Not charged: the provider refunds these, so billing them would overcharge.
+          const reason = status.error
+            ?? (status.status === 'nsfw' ? 'The provider blocked this clip (content policy).' : `The provider ${status.status} the request.`)
+          return c.json({ ...base, status: 'failed', error: reason })
+        }
+        return c.json({ ...base, status: status.status === 'queued' ? 'queued' : 'in_progress' })
+      } catch (error: any) {
+        const message: string = error.message || 'Video status check failed'
+        if (error instanceof HiggsfieldError && (error.code === 'validation' || error.code === 'timeout')) {
+          return c.json({ ...base, status: 'failed', error: message })
+        }
+        console.error(`[AI Proxy] Video status error for ${id}:`, message)
+        return c.json({ error: { message, type: 'server_error', code: mediaErrorCode(error, 'video_status_error') } }, mediaErrorStatus(error) || 502)
+      }
+    }
+
     try {
       const status = await falQueueStatus(apiKey, job.statusUrl, c.req.raw.signal)
       if (status.status !== 'COMPLETED') {
@@ -5277,7 +6046,7 @@ export function aiProxyRoutes() {
         return c.json({ ...base, status: 'failed', error: status.error })
       }
 
-      const video = await falQueueVideoResult(apiKey, job.responseUrl, c.req.raw.signal)
+      const video = await falQueueVideoResult(apiKey, job.responseUrl!, c.req.raw.signal)
       if (await claimVideoCharge(id)) {
         recordVideoUsage(
           tokenPayload,
@@ -6008,16 +6777,22 @@ export function aiProxyRoutes() {
   // GET /ai/proxy/health - Health check for the AI proxy
   // =========================================================================
   router.get('/ai/proxy/health', (c) => {
+    // Read through the credential resolver, not raw env: an admin-stored key
+    // (cloud) or a desktop BYOK file also counts as configured.
     const providers: Record<string, boolean> = {
-      anthropic: !!process.env.ANTHROPIC_API_KEY,
-      openai: !!process.env.OPENAI_API_KEY,
-      google: !!process.env.GOOGLE_API_KEY,
-      fal: !!process.env.FAL_KEY,
+      anthropic: !!getNativeProviderApiKeySync('anthropic'),
+      openai: !!getNativeProviderApiKeySync('openai'),
+      google: !!getNativeProviderApiKeySync('google'),
+      fal: !!getNativeProviderApiKeySync('fal'),
+      higgsfield: !!getNativeProviderApiKeySync('higgsfield'),
+      tripo: !!getNativeProviderApiKeySync('tripo'),
     }
 
     return c.json({
       status: 'ok',
       providers,
+      defaultImageModel: defaultImageModel(),
+      defaultVideoModel: defaultVideoModel(),
       modelCount: Object.keys(MODEL_REGISTRY).length,
       imageModelCount: Object.keys(IMAGE_MODEL_REGISTRY).length,
       videoModelCount: Object.keys(VIDEO_MODEL_CATALOG).length,

@@ -297,11 +297,11 @@ describe('GET /ai/v1/media/models', () => {
     expect(data.utilities.map((u: any) => u.tool)).toEqual(['upscale_image', 'remove_background'])
   })
 
-  test('omits fal models when no fal key is configured', () => {
+  test('omits fal models when no fal key is configured', async () => {
     const saved = process.env.FAL_KEY
     delete process.env.FAL_KEY
     try {
-      const data = listMediaModels()
+      const data = await listMediaModels()
       expect(data.images.some((m) => m.provider === 'fal')).toBe(false)
       expect(data.videos).toEqual([])
     } finally {

@@ -383,10 +383,11 @@ read_file, write_file — read inputs and save results to the workspace
 
 ## Guidelines
 - For image generation: provide detailed, specific descriptions for best results
-- To keep a character, product or style consistent, pass the existing images as reference_images on every shot and pick a model that accepts references (e.g. nano-banana-pro)
+- Higgsfield is the default provider (hf-soul-v2 for images, hf-hailuo-2.3 for video). hf-soul-v2 is text-only; for reference images use hf-ideogram-4 (one style reference) or, for many references, a fal model flagged in the catalog
 - Save files where the parent asked (the path parameter accepts any workspace path, e.g. public/assets/hero.png); otherwise images/ and videos/ are the defaults
-- For video, generate a still with generate_image first, then animate it with generate_video using start_image. It is cheaper, and the result matches the approved look
-- Video is billed per second: use the shortest duration that works and do not regenerate without a reason
+- For video, generate a still with generate_image first, then animate it with generate_video using start_image. It is cheaper, the result matches the approved look, and the frame (and so the aspect ratio) follows that still
+- Video is billed per clip on Higgsfield: the submit response carries estimated_usd, so check it before rendering a long batch and do not regenerate without a reason
+- To edit an existing clip, pass source_video (.mp4, 200 MB max, 4 s minimum) with genjutsu: motion_transfer (drive a subject image with the clip's motion), object_swap (swap a product in) or restyle (needs a preset_id from list_media_models kind "presets")
 - For several shots at once, submit each generate_video with wait: false, then check them with generate_video({ job_id })
 - For transcription: read the audio file path from the prompt, transcribe, and save the text output
 - Always save results to the workspace so the parent agent can access them

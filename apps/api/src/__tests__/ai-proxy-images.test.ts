@@ -120,8 +120,25 @@ describe('fal and new catalog image pricing', () => {
   test('every non-retired catalog image model has an explicit price', () => {
     for (const entry of Object.values(IMAGE_MODEL_CATALOG)) {
       if ('retired' in entry && entry.retired) continue
+      // Higgsfield prices are quoted per request by the vendor's free
+      // `/estimate` and that quote is what gets billed, so an entry can be
+      // legitimately unpriced here (the listing then shows `usd: null`). Where
+      // we do carry a figure it must be a real one.
+      if (entry.provider === 'higgsfield') {
+        if (entry.usdPerRequest !== undefined) expect(entry.usdPerRequest).toBeGreaterThan(0)
+        continue
+      }
       expect(IMAGE_USD_CONFIG[entry.id]).toBeDefined()
     }
+  })
+
+  test('SOUL V2 fallback matches the live account: $0.004 at 720p, $0.006 at 1080p', () => {
+    const standard = calculateImageUsageCost('hf-soul-v2', 'standard', '1024x1024')
+    const hd = calculateImageUsageCost('hf-soul-v2', 'hd', '1024x1024')
+    expect(standard.rawUsd).toBeCloseTo(0.004, 5)
+    expect(hd.rawUsd).toBeCloseTo(0.006, 5)
+    // The vendor's prose worked example says $0.094; the account says 23× less.
+    expect(standard.rawUsd).toBeLessThan(0.01)
   })
 
   test('fal list prices', () => {
