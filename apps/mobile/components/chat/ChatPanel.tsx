@@ -86,6 +86,7 @@ import {
 import {
   useChatTransportConfig,
   buildChatTurnUrl,
+  buildChatTasksUrl,
   truncateMessagesFrom,
   getPrecedingCheckpoint,
   rollbackProjectToCheckpoint,
@@ -118,7 +119,14 @@ import {
   LATE_TURN_POLL_INTERVAL_MS,
   pendingExternalPromptIndex,
   pollForLateTurn,
+  taskWakeHasResponse,
 } from "./late-turn-attach"
+import {
+  lastTurnStartedBackgroundWork,
+  NOTIFY_WAKE_MAX_WAIT_MS,
+  NOTIFY_WAKE_POLL_INTERVAL_MS,
+  watchForNotifyWake,
+} from "./notify-task-watch"
 import {
   decideRetryAction,
   lastAssistantHasResumableWork,
@@ -1790,9 +1798,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
     new Set(),
   )
 
-  const fetchRunningProcesses = useCallback(async () => {
-    const base = agentBaseUrl
-    if (!base || !currentSessionId) return
+  const fetchRunningProcesses = useCallback(async (): Promise<RunningProcess[] | null> => {
+    if (!currentSessionId) return null
+    const tasksUrl = buildChatTasksUrl(
+      API_URL!,
+      projectId,
+      localAgentUrl,
+      currentSessionId,
+      chatWorkspaceId,
+    )
+    if (!tasksUrl) return null
     try {
       const fetchFn = expoFetch ?? globalThis.fetch
       const headers: Record<string, string> = nativeHeaders
@@ -1802,23 +1817,31 @@ const ChatPanelContent = observer(function ChatPanelContent({
         headers,
         credentials: Platform.OS === "web" ? "include" : undefined,
       } as any
-      let res = await fetchFn(`${base}/agent/chat/${currentSessionId}/tasks`, init)
+      let res = await fetchFn(tasksUrl, init)
       // Runtimes that predate tasks only list shell processes.
       if (res.status === 404) {
-        res = await fetchFn(`${base}/agent/chat/${currentSessionId}/processes`, init)
+        res = await fetchFn(tasksUrl.replace(/\/tasks$/, "/processes"), init)
       }
-      if (res.ok) {
-        const data = await res.json()
-        const list = data?.tasks ?? data?.processes
-        if (Array.isArray(list))
-          setRunningProcesses((prev) =>
-            keepDroppedAsFinished(prev, list as RunningProcess[]),
-          )
-      }
+      if (!res.ok) return null
+      const data = await res.json()
+      const list = data?.tasks ?? data?.processes
+      if (!Array.isArray(list)) return null
+      setRunningProcesses((prev) =>
+        keepDroppedAsFinished(prev, list as RunningProcess[]),
+      )
+      return list as RunningProcess[]
     } catch {
       // Non-critical — the panel just won't seed until the next live frame.
+      return null
     }
-  }, [agentBaseUrl, currentSessionId, nativeHeaders, expoFetch])
+  }, [
+    localAgentUrl,
+    projectId,
+    chatWorkspaceId,
+    currentSessionId,
+    nativeHeaders,
+    expoFetch,
+  ])
 
   const handleKillProcess = useCallback(
     async (runId: string) => {
@@ -4000,6 +4023,61 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const attachToLiveTurnIfAnyRef = useRef(attachToLiveTurnIfAny)
   attachToLiveTurnIfAnyRef.current = attachToLiveTurnIfAny
+
+  // Repaint the transcript from saved history. A turn this window did not run
+  // — a delegated task, a channel dispatch, a project call, or the wake a
+  // finished background task produces — has its reply written by the server,
+  // so reloading is the only way it lands here (SHO-31).
+  const reloadPersistedResponse = useCallback(
+    async (options: { requireReply?: boolean } = {}) => {
+      if (!sessionMessages || isStreamingRef.current) return
+      const sessionId = currentSessionIdRef.current
+      if (!sessionId) return
+      await sessionMessages.loadPage(
+        { sessionId, agent: "technical" },
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+      )
+      if (isStreamingRef.current || currentSessionIdRef.current !== sessionId) return
+
+      const loaded = [...sessionMessages.all].sort(
+        (a: any, b: any) =>
+          messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt),
+      )
+      if (options.requireReply !== false) {
+        const promptIndex = pendingExternalPromptIndex(loaded)
+        if (promptIndex < 0 || !externalPromptHasResponse(loaded, promptIndex)) return
+      }
+
+      const aiMessages = loaded.map((message: any) => {
+        const next: any = {
+          id: message.id,
+          role: message.role as "user" | "assistant",
+          content: message.content ?? extractTextContent(message),
+          createdAt: message.createdAt,
+        }
+        if (message.parts) {
+          try {
+            next.parts = JSON.parse(message.parts)
+          } catch {
+            // Keep the text content when an older message has malformed parts.
+          }
+        }
+        return next
+      })
+      const cached = cachedMessagesRef.current
+      const unchanged =
+        cached?.length === aiMessages.length &&
+        cached?.[aiMessages.length - 1]?.id === aiMessages[aiMessages.length - 1]?.id &&
+        cached?.[aiMessages.length - 1]?.content === aiMessages[aiMessages.length - 1]?.content
+      if (!unchanged) {
+        cachedMessagesRef.current = aiMessages
+        setMessages(aiMessages)
+      }
+      sessionMessageCache.set(sessionId, aiMessages)
+    },
+    [sessionMessages, setMessages],
+  )
+
   const wasTransportStreamingRef = useRef(false)
   // A window that followed a turn must keep following: the next message in the
   // server queue starts once the API has seen this turn end, which can be a
@@ -4032,44 +4110,95 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!isStreaming) setTaskWait(null)
   }, [isStreaming])
 
-  // While idle with tasks that will wake the agent, keep the list fresh; when
-  // one of them finishes, the API queues a wake turn, so look for it.
-  // Only running rows count: a finished row stays in the dock for ten
-  // minutes, so it must not keep the "waiting for a wake" state alive.
+  // Background work that will wake this chat when it finishes. The wake turn
+  // is produced by the API's queue (a `[Task update]` row plus a turn this
+  // window never posted), and the task list here is the only local signal that
+  // such work exists — it is seeded once per session, i.e. before the turn
+  // that starts the task, so nothing would notice it otherwise.
+  // Only rows that are still running count: a finished row stays in the
+  // runtime's list for ten minutes (and in the dock for a few seconds), so it
+  // must not keep the "waiting for a wake" state alive.
   const notifyTaskIds = runningProcesses
-    .filter(
-      (p) => p.notify && !p.stale && (!p.status || p.status === "running"),
-    )
+    .filter((p) => p.notify && !p.stale && !isFinishedProcess(p))
     .map((p) => p.id ?? p.runId)
     .join("\0")
-  const previousNotifyTaskIdsRef = useRef(notifyTaskIds)
-  useEffect(() => {
-    const previous = previousNotifyTaskIdsRef.current
-    previousNotifyTaskIdsRef.current = notifyTaskIds
-    if (isStreaming || !isActive) return
-    const finished = previous
-      .split("\0")
-      .filter((id) => id && !notifyTaskIds.split("\0").includes(id))
-    if (finished.length === 0) return
-    const timers = [3000, 7000].map((delay) =>
-      setTimeout(() => void attachToLiveTurnIfAnyRef.current(), delay),
-    )
-    return () => timers.forEach(clearTimeout)
-  }, [notifyTaskIds, isStreaming, isActive])
-  // Poll while a task is still running — a finished row leaves the dock on its
-  // own (the runtime keeps listing it for ten minutes, so polling for it would
-  // keep this alive long after nothing is on screen).
-  const dockRowCount = runningProcesses.filter((p) => !isFinishedProcess(p)).length
-  useEffect(() => {
-    if (isStreaming || !isActive || dockRowCount === 0) return
-    const timer = setInterval(() => void fetchRunningProcesses(), 5000)
-    return () => clearInterval(timer)
-  }, [dockRowCount, isStreaming, isActive, fetchRunningProcesses])
+  const backgroundWorkExpected = useMemo(
+    () => lastTurnStartedBackgroundWork(messages),
+    [messages],
+  )
+  const wakeWatchArmed = Boolean(notifyTaskIds) || backgroundWorkExpected
 
-  // A delegated task or a channel mention starts its turn outside this panel.
-  // The first history-load probe can therefore see `unknown` while a slot or
-  // a cold runtime is still in the way. Keep probing so the live reply shows
-  // up here instead of only after the session is opened again.
+  useEffect(() => {
+    if (!wakeWatchArmed || !isActive || !currentSessionId || isStreaming) return
+
+    let cancelled = false
+    // The wake row and its reply both arrive after this arm, so an older
+    // answered wake in history must not end the wait on the first tick.
+    const wakeCountAtArm = messagesRef.current.length
+    const settled = () =>
+      messagesRef.current.length > wakeCountAtArm &&
+      taskWakeHasResponse(messagesRef.current)
+
+    void watchForNotifyWake({
+      probeTasks: async () => {
+        const list = await fetchRunningProcesses()
+        // Unknown (runtime unreachable) is not the same as "nothing running":
+        // hold the wait instead of probing turns for a wake that cannot come.
+        if (!list) return null
+        return list
+          .filter((p) => p.notify && !p.stale && !isFinishedProcess(p))
+          .map((p) => p.id ?? p.runId)
+      },
+      probeTurn: () => {
+        const turnUrl = buildChatTurnUrl(
+          API_URL!,
+          projectId,
+          localAgentUrl,
+          currentSessionId,
+          chatWorkspaceId,
+        )
+        return probeChatTurnStatus({
+          url: turnUrl,
+          fetch: expoFetch,
+          headers: nativeHeaders ? nativeHeaders() : undefined,
+          credentials: Platform.OS === "web" ? "include" : undefined,
+        })
+      },
+      // Reload first: the live stream carries only the reply, and the wake's
+      // `[Task update]` row has to be in place for it to attach to.
+      attach: () => reloadAndAttachLiveTurn(),
+      reload: () => reloadPersistedResponse({ requireReply: false }),
+      isSettled: settled,
+      isCancelled: () => cancelled || isStreamingRef.current,
+      intervalMs: NOTIFY_WAKE_POLL_INTERVAL_MS,
+      maxWaitMs: NOTIFY_WAKE_MAX_WAIT_MS,
+      onError: (error) => {
+        if (!cancelled) console.warn("[ChatPanel] wake watch failed", error)
+      },
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    wakeWatchArmed,
+    isActive,
+    currentSessionId,
+    isStreaming,
+    projectId,
+    localAgentUrl,
+    chatWorkspaceId,
+    expoFetch,
+    nativeHeaders,
+    fetchRunningProcesses,
+    reloadAndAttachLiveTurn,
+    reloadPersistedResponse,
+  ])
+
+  // A delegated task, a channel mention or a `[Task update]` wake starts its
+  // turn outside this panel. The first history-load probe can therefore see
+  // `unknown` while a slot or a cold runtime is still in the way. Keep probing
+  // so the live reply shows up here instead of only after the session is
+  // opened again.
   const externalPromptIndex = useMemo(
     () => pendingExternalPromptIndex(messages),
     [messages],
@@ -4093,39 +4222,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     let cancelled = false
 
     const refreshPersistedResponse = async () => {
-      if (cancelled || isStreamingRef.current) return
-      await sessionMessages.loadPage(
-        { sessionId: currentSessionId, agent: "technical" },
-        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
-      )
-      if (cancelled || isStreamingRef.current) return
-
-      const loaded = [...sessionMessages.all].sort(
-        (a: any, b: any) =>
-          messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt),
-      )
-      const promptIndex = pendingExternalPromptIndex(loaded)
-      if (promptIndex < 0 || !externalPromptHasResponse(loaded, promptIndex)) return
-
-      const aiMessages = loaded.map((message: any) => {
-        const next: any = {
-          id: message.id,
-          role: message.role as "user" | "assistant",
-          content: message.content ?? extractTextContent(message),
-          createdAt: message.createdAt,
-        }
-        if (message.parts) {
-          try {
-            next.parts = JSON.parse(message.parts)
-          } catch {
-            // Keep the text content when an older message has malformed parts.
-          }
-        }
-        return next
-      })
-      cachedMessagesRef.current = aiMessages
-      sessionMessageCache.set(currentSessionId, aiMessages)
-      setMessages(aiMessages)
+      if (cancelled) return
+      await reloadPersistedResponse()
     }
 
     void pollForLateTurn({
@@ -4169,7 +4267,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     expoFetch,
     nativeHeaders,
     guardedAutoResumeStream,
-    setMessages,
+    reloadPersistedResponse,
   ])
 
   // Detect when the AI SDK stream ends but we never observed a

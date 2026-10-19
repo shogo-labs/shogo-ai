@@ -2,33 +2,100 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Whether a loaded session should keep probing /turn. A delegated task, a
- * channel dispatch and a project call all start their turn outside this
- * panel, so the first probe can legitimately see no turn yet.
+ * channel dispatch, a project call and a `[Task update]` wake all start their
+ * turn outside this panel, so the first probe can legitimately see no turn
+ * yet.
  */
 
-import { channelDispatchOf, extractTextContent, projectCallOf } from '@shogo/shared-app/chat'
+import {
+  channelDispatchOf,
+  extractTextContent,
+  projectCallOf,
+  taskNotificationOf,
+} from '@shogo/shared-app/chat'
 import type { ChatTurnStatus } from './probe-turn-status'
 
 export const LATE_TURN_POLL_INTERVAL_MS = 1_000
 export const LATE_TURN_MAX_WAIT_MS = 5 * 60 * 1_000
 
+/**
+ * How long a wake row with no reply is still worth waiting for. The queue
+ * drains within ~15 s of the task finishing, so an unanswered wake older than
+ * this is history that never got a turn — polling it forever would keep an
+ * idle chat busy every time its session is opened.
+ */
+export const TASK_WAKE_PENDING_WINDOW_MS = 10 * 60 * 1_000
+
 const DELEGATED_TASK_PROMPT_PREFIX = "This is a delegated task from the user's task list:"
+const TASK_UPDATE_PREFIX = '[Task update]'
 
 function isDelegatedTaskPrompt(message: any): boolean {
   return message?.role === 'user' && extractTextContent(message).trim().startsWith(DELEGATED_TASK_PROMPT_PREFIX)
 }
 
 /**
- * Latest user message whose reply is produced somewhere else (a delegated
- * task, a channel agent run, or a project call). -1 when the history has none.
+ * The `[Task update]` row the API posts before it wakes the agent. The row is
+ * written when the task finishes; the reply follows once the queue's drain
+ * tick picks it up, which can be seconds later and is not this window's turn
+ * to run.
  */
-export function pendingExternalPromptIndex(messages: readonly any[]): number {
+function isTaskWakeRow(message: any): boolean {
+  if (message?.role !== 'user') return false
+  if (taskNotificationOf(message)) return true
+  return extractTextContent(message).trim().startsWith(TASK_UPDATE_PREFIX)
+}
+
+function ageMs(message: any, now: number): number | null {
+  const raw = message?.createdAt ?? message?.created_at
+  const at =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string'
+        ? Date.parse(raw)
+        : raw instanceof Date
+          ? raw.getTime()
+          : Number.NaN
+  return Number.isFinite(at) ? now - at : null
+}
+
+/**
+ * A wake row that may still get its reply. Without a usable timestamp the row
+ * is treated as recent — a wake is answered within seconds of being written.
+ */
+export function isTaskWakePrompt(message: any, now: number = Date.now()): boolean {
+  if (!isTaskWakeRow(message)) return false
+  const age = ageMs(message, now)
+  return age === null || age <= TASK_WAKE_PENDING_WINDOW_MS
+}
+
+/**
+ * Latest user message whose reply is produced somewhere else (a delegated
+ * task, a channel agent run, a project call, or a background task's wake).
+ * -1 when the history has none.
+ */
+export function pendingExternalPromptIndex(messages: readonly any[], now: number = Date.now()): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message?.role !== 'user') continue
-    if (isDelegatedTaskPrompt(message) || channelDispatchOf(message) || projectCallOf(message)) return index
+    if (
+      isDelegatedTaskPrompt(message) ||
+      channelDispatchOf(message) ||
+      projectCallOf(message) ||
+      isTaskWakePrompt(message, now)
+    ) {
+      return index
+    }
   }
   return -1
+}
+
+/** Whether the newest `[Task update]` row already has a reply, i.e. the wake ran. */
+export function taskWakeHasResponse(messages: readonly any[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (!isTaskWakeRow(messages[index])) continue
+    return messages.some((message, offset) => offset > index && message?.role === 'assistant')
+  }
+  return false
 }
 
 export function externalPromptHasResponse(messages: readonly any[], promptIndex: number): boolean {

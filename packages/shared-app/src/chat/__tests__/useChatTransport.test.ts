@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, it, expect } from 'vitest'
-import { buildChatApiUrl, buildChatTurnUrl } from '../useChatTransport'
+import { buildChatApiUrl, buildChatTasksUrl, buildChatTurnUrl } from '../useChatTransport'
 
 describe('buildChatApiUrl', () => {
   it('returns local agent URL when provided', () => {
@@ -60,5 +60,31 @@ describe('buildChatTurnUrl', () => {
   it('works without projectId or localAgentUrl', () => {
     expect(buildChatTurnUrl('http://api.test', undefined, null, 'sess_1'))
       .toBe('http://api.test/api/chat/sess_1/turn')
+  })
+})
+
+describe('buildChatTasksUrl', () => {
+  it('builds the tasks URL for a project chat through the agent proxy', () => {
+    expect(buildChatTasksUrl('http://localhost:8002', 'proj_1', null, 'sess_1'))
+      .toBe('http://localhost:8002/api/projects/proj_1/agent-proxy/agent/chat/sess_1/tasks')
+  })
+
+  it('builds the tasks URL for a workspace chat, which has no project to hang it on', () => {
+    expect(buildChatTasksUrl('http://localhost:8002', undefined, null, 'sess_1', 'ws_1'))
+      .toBe('http://localhost:8002/api/workspaces/ws_1/chat/sess_1/tasks')
+  })
+
+  it('prefers the local agent runtime', () => {
+    expect(buildChatTasksUrl('http://api.test', 'proj_1', 'http://local:3000', 'sess_1', 'ws_1'))
+      .toBe('http://local:3000/agent/chat/sess_1/tasks')
+  })
+
+  it('encodes special characters in the session ID', () => {
+    expect(buildChatTasksUrl('http://api.test', undefined, null, 'sess/special&id', 'ws_1'))
+      .toBe('http://api.test/api/workspaces/ws_1/chat/sess%2Fspecial%26id/tasks')
+  })
+
+  it('has nothing to poll without a chat scope', () => {
+    expect(buildChatTasksUrl('http://api.test', undefined, null, 'sess_1')).toBeNull()
   })
 })
