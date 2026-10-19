@@ -4357,8 +4357,12 @@ function collectBundleFiles(dir: string, baseDir: string): Record<string, string
   return files
 }
 
+// `?scope=project` bundles the runtime's own project. On a workspace runtime
+// that is `<WORKSPACE_DIR>/<anchorId>/`; the unscoped merged root holds only
+// workspace scaffolding plus one folder per member.
 app.get('/agent/workspace/bundle', (c) => {
-  const files = collectBundleFiles(WORKSPACE_DIR, WORKSPACE_DIR)
+  const root = c.req.query('scope') === 'project' ? projectScopeRoot() : WORKSPACE_DIR
+  const files = collectBundleFiles(root, root)
   return c.json({ files })
 })
 

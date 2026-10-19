@@ -257,6 +257,58 @@ function collectWorkspaceFiles(
   return files
 }
 
+// Retries against a freshly resolved runtime URL. On metal the controller
+// caches a runtime's URL for a few seconds, and a microVM that suspended or
+// moved in that window refuses connections until the cache is dropped.
+const DEFAULT_RUNTIME_BUNDLE_RETRY_DELAYS_MS = [500, 1500, 3000]
+let runtimeBundleRetryDelaysMs = DEFAULT_RUNTIME_BUNDLE_RETRY_DELAYS_MS
+
+export function _setRuntimeBundleRetryDelaysForTests(delays: number[] | null): void {
+  runtimeBundleRetryDelaysMs = delays ?? DEFAULT_RUNTIME_BUNDLE_RETRY_DELAYS_MS
+}
+
+async function invalidateMetalRuntimeUrl(projectId: string): Promise<void> {
+  const { isMetalEnabled } = await import('../lib/metal-eligibility')
+  if (!isMetalEnabled()) return
+  const { getMetalWarmPoolController, workspaceRuntimeKey } =
+    await importCloudModule<typeof import('../lib/metal-warm-pool-controller')>('./metal-warm-pool-controller')
+  getMetalWarmPoolController().invalidateUrlCache(workspaceRuntimeKey('', projectId))
+}
+
+async function fetchRuntimeWorkspaceBundle(projectId: string): Promise<WorkspaceBundle> {
+  // Kubernetes-only: load through importCloudModule so the desktop bundle
+  // (which mounts this router) doesn't pull in the Knative/warm-pool graph.
+  const { getProjectPodUrl } =
+    await importCloudModule<typeof import('../lib/knative-project-manager')>(
+      './knative-project-manager',
+    )
+  let lastError: unknown
+  for (let attempt = 0; attempt <= runtimeBundleRetryDelaysMs.length; attempt++) {
+    if (attempt > 0) {
+      await invalidateMetalRuntimeUrl(projectId).catch(() => {})
+      await new Promise((r) => setTimeout(r, runtimeBundleRetryDelaysMs[attempt - 1]))
+    }
+    try {
+      const podUrl = await getProjectPodUrl(projectId)
+      // Pod-side workspace endpoints require the per-project runtime token.
+      // `project` scope bundles the project's own folder rather than a
+      // workspace runtime's merged root.
+      const agent = new AgentClient({
+        baseUrl: podUrl,
+        headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
+        workspaceScope: 'project',
+      })
+      return await agent.getWorkspaceBundle()
+    } catch (err) {
+      lastError = err
+      console.warn(
+        `[Export] Workspace bundle attempt ${attempt + 1} for ${projectId} failed: ${(err as any)?.message ?? err}`,
+      )
+    }
+  }
+  throw lastError
+}
+
 /**
  * Collect a project's workspace files for export, transparently sourcing them
  * from the live agent pod (Kubernetes, via `/agent/workspace/bundle`) or from
@@ -285,21 +337,7 @@ async function collectExportWorkspaceFiles(
   if (isKubernetes()) {
     sourceMode = 'k8s'
     try {
-      // Kubernetes-only: load through importCloudModule so the desktop bundle
-      // (which mounts this router) doesn't pull in the Knative/warm-pool graph.
-      const { getProjectPodUrl } =
-        await importCloudModule<typeof import('../lib/knative-project-manager')>(
-          './knative-project-manager',
-        )
-      const podUrl = await getProjectPodUrl(projectId)
-      // Pod-side workspace endpoints require the per-project runtime token —
-      // without it the pod returns 401, we flip to `k8s-fallback-empty`, and
-      // the export ships with no workspace/* entries.
-      const agent = new AgentClient({
-        baseUrl: podUrl,
-        headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
-      })
-      const bundle: WorkspaceBundle = await agent.getWorkspaceBundle()
+      const bundle = await fetchRuntimeWorkspaceBundle(projectId)
       const bundleFiles =
         bundle && typeof bundle === 'object' && bundle.files && typeof bundle.files === 'object'
           ? bundle.files
@@ -1042,6 +1080,23 @@ export async function runImport(
   }
 }
 
+function runtimeUnavailableResponse(c: any, warnings: string[]): Response {
+  return c.json(
+    {
+      error: {
+        code: 'runtime_unavailable',
+        message:
+          "Couldn't read this project's files from its runtime, so the export was stopped. " +
+          'Open the project, wait for it to finish loading, and try again.',
+        retryable: true,
+        details: warnings,
+      },
+    },
+    503,
+    { 'Retry-After': '5' },
+  )
+}
+
 export function projectExportImportRoutes() {
   const app = new Hono()
 
@@ -1088,9 +1143,13 @@ export function projectExportImportRoutes() {
     // /agent/workspace/bundle) where the old `GET /download` tar.gz route 404s.
     if (sourceOnly) {
       const BUILD_DIRS = new Set(['dist', 'build'])
-      const { files } = await collectExportWorkspaceFiles(projectId, {
-        extraExcludedDirs: BUILD_DIRS,
-      })
+      const { files, sourceMode: sourceOnlyMode, warnings: sourceOnlyWarnings } =
+        await collectExportWorkspaceFiles(projectId, {
+          extraExcludedDirs: BUILD_DIRS,
+        })
+      if (sourceOnlyMode === 'k8s-fallback-empty') {
+        return runtimeUnavailableResponse(c, sourceOnlyWarnings)
+      }
       const sourceZip: Record<string, Uint8Array> = {}
       for (const [relPath, data] of Object.entries(files)) {
         sourceZip[relPath] = data
@@ -1116,6 +1175,22 @@ export function projectExportImportRoutes() {
           'Content-Length': String(zippedSource.byteLength),
         },
       })
+    }
+
+    // Track export hygiene for the manifest (and so `done`/import can surface
+    // it). `sourceMode` records whether files came from the live agent pod
+    // (k8s) or directly from disk (local), and `fileSkipped` lists what we
+    // intentionally dropped.
+    const {
+      files: collectedFiles,
+      sourceMode,
+      fileSkipped,
+      warnings: exportWarnings,
+    } = await collectExportWorkspaceFiles(projectId)
+    // Chats come from the database, so without this an unreachable runtime
+    // still yields a "successful" archive holding nothing but conversations.
+    if (sourceMode === 'k8s-fallback-empty') {
+      return runtimeUnavailableResponse(c, exportWarnings)
     }
 
     const chatSessions = includeChats
@@ -1200,16 +1275,6 @@ export function projectExportImportRoutes() {
 
     zipContents['project.json'] = strToU8(JSON.stringify(projectJson, null, 2))
 
-    // Track export hygiene for the manifest (and so `done`/import can surface
-    // it). `sourceMode` records whether files came from the live agent pod
-    // (k8s) or directly from disk (local), and `fileSkipped` lists what we
-    // intentionally dropped.
-    const {
-      files: collectedFiles,
-      sourceMode,
-      fileSkipped,
-      warnings: exportWarnings,
-    } = await collectExportWorkspaceFiles(projectId)
     for (const [relPath, data] of Object.entries(collectedFiles)) {
       zipContents[`workspace/${relPath}`] = data
     }

@@ -2716,7 +2716,14 @@ export const api = {
     })
     if (!res.ok) {
       const text = await res.text()
-      throw new Error(text || `Export failed with status ${res.status}`)
+      let message = text
+      try {
+        const body = JSON.parse(text)
+        message = body?.error?.message ?? (typeof body?.error === 'string' ? body.error : text)
+      } catch {
+        // Non-JSON body; surface it verbatim.
+      }
+      throw new Error(message || `Export failed with status ${res.status}`)
     }
 
     const disposition = res.headers.get('content-disposition') || ''
