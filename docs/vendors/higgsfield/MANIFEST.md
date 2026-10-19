@@ -5,13 +5,14 @@ endpoint ids, parameter enums and output shapes our media code depends on are
 reviewable in the repo and checkable in CI — not remembered.
 
 `bun run check:higgsfield-docs` fails when this snapshot and the code disagree.
+`.github/workflows/higgsfield-docs-drift.yml` runs `bun run sync:higgsfield-docs --check`
+weekly and opens an issue when the vendor's docs have moved on.
 
 ## Files
 
 | File | What it is | sha256 |
 | --- | --- | --- |
 | `llms-full.txt` | The vendor's full documentation export, verbatim | sha256 `2fad4318604b12daa073b74affaf748b07fa6c62d006c5f0e5fdbb57f9ff995b` |
-| `openapi.json` | The spec published by the docs site | sha256 `0a728531a484f9879c1cfede03bcab16206e487ebb4b63222af761edb03cb1fe` |
 | `catalog.json` | Endpoint ids + schemas derived from `llms-full.txt` | sha256 `b320f543ed9798e5b9ee03b3afce44f2d71d2f63c5cedcadf69113697e626881` |
 
 ## Where they came from
@@ -19,14 +20,13 @@ reviewable in the repo and checkable in CI — not remembered.
 Fetched **2026-10-18**:
 
 ```
-bun run sync:higgsfield-docs          # fetch llms-full.txt + openapi.json, re-derive catalog.json
+bun run sync:higgsfield-docs          # fetch llms-full.txt, re-derive catalog.json
 ```
 
 Equivalent by hand:
 
 ```
 curl -s https://docs.higgsfield.ai/llms-full.txt            -o docs/vendors/higgsfield/llms-full.txt
-curl -s https://docs.higgsfield.ai/docs/openapi.json        -o docs/vendors/higgsfield/openapi.json
 bun run derive:higgsfield-catalog
 ```
 
@@ -35,16 +35,12 @@ Notes:
 - `llms-full.txt` is the source of truth here. It carries one section per model
   with an `**Endpoint ID:**` line and a "Complete JSON schema" block; it lists
   83 documented endpoints.
-- `openapi.json` is what the docs site itself publishes, and it is **partial**
-  (8 paths: submit, status, cancel, estimate, upload, presets, webhooks, …).
-  It is kept for reference and for the shared request/response envelopes; the
-  per-model schemas only exist in `llms-full.txt`.
 - `catalog.json` is generated, never hand-edited. Regenerate it with the command
   above; the check re-derives it and diffs the two.
 
 ## When the vendor changes something
 
-1. Re-fetch `llms-full.txt` (and `openapi.json`) with the commands above.
+1. Re-fetch `llms-full.txt` with the commands above.
 2. `bun run scripts/derive-higgsfield-catalog.ts --write`
 3. Update the sha256 values in this file.
 4. `bun run check:higgsfield-docs` — it names every model or parameter in our

@@ -4,13 +4,16 @@
 /**
  * Refresh the committed Higgsfield docs snapshot, then re-derive the catalog.
  *
- * This is the only script here that touches the network — it runs by hand when
- * the vendor ships a change, never in CI. `check:higgsfield-docs` is the
- * offline gate that fails when the snapshot and the code disagree.
+ * This is the only script here that touches the network. It writes the snapshot
+ * when run by hand after the vendor ships a change; `--check` runs weekly from
+ * `.github/workflows/higgsfield-docs-drift.yml` and fails instead of writing
+ * when the snapshot has drifted. `check:higgsfield-docs` is the offline gate
+ * that fails when the snapshot and our code disagree.
  *
  * Usage:
- *   bun run sync:higgsfield-docs
- *   bun run sync:higgsfield-docs --dry-run   # fetch and diff, write nothing
+ *   bun run sync:higgsfield-docs              # fetch and write the snapshot
+ *   bun run sync:higgsfield-docs --dry-run    # fetch and diff, write nothing
+ *   bun run sync:higgsfield-docs --check      # as --dry-run, exit 1 on drift
  *
  * Afterwards, update the sha256 table in `docs/vendors/higgsfield/MANIFEST.md`
  * with the hashes this prints, then run `bun run check:higgsfield-docs`.
@@ -24,8 +27,7 @@ import { CATALOG_PATH, SOURCE_URL, deriveCatalog, renderCatalog } from './derive
 const REPO_ROOT = resolve(import.meta.dir, '..')
 const DOCS_DIR = join(REPO_ROOT, 'docs/vendors/higgsfield')
 const DRY_RUN = process.argv.includes('--dry-run')
-
-const OPENAPI_URL = 'https://docs.higgsfield.ai/docs/openapi.json'
+const CHECK = process.argv.includes('--check')
 
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
 
@@ -43,38 +45,52 @@ function current(path: string): string | null {
   }
 }
 
-function report(name: string, before: string | null, after: string) {
+/** Print one file's result; true when the committed copy differs from the vendor's. */
+function report(name: string, before: string | null, after: string): boolean {
   const changed = before !== after
   const hash = sha256(after)
   if (!changed) {
     console.log(`  ${name}: unchanged (sha256 ${hash})`)
-    return
+    return false
+  }
+  if (CHECK) {
+    console.log(`  ${name}: ${before ? 'differs from' : 'missing from'} the committed snapshot (vendor sha256 ${hash})`)
+    return true
   }
   const beforeLines = before ? before.split('\n').length : 0
   const afterLines = after.split('\n').length
   console.log(`  ${name}: ${before ? 'updated' : 'added'} — ${beforeLines} → ${afterLines} lines (sha256 ${hash})`)
+  return true
 }
 
 const llmsPath = join(DOCS_DIR, 'llms-full.txt')
-const openapiPath = join(DOCS_DIR, 'openapi.json')
 
-console.log(`Fetching the Higgsfield docs snapshot${DRY_RUN ? ' (dry run)' : ''}…`)
+console.log(`Fetching the Higgsfield docs snapshot${CHECK ? ' (check)' : DRY_RUN ? ' (dry run)' : ''}…`)
 
-const [llmsFull, openapi] = await Promise.all([download(SOURCE_URL), download(OPENAPI_URL)])
+const llmsFull = await download(SOURCE_URL)
 
 const previousLlms = current(llmsPath)
-const previousOpenapi = current(openapiPath)
-report('llms-full.txt', previousLlms, llmsFull)
-report('openapi.json', previousOpenapi, openapi)
+const llmsDrifted = report('llms-full.txt', previousLlms, llmsFull)
 
-// Derive from the text we just fetched, not the file on disk, so a dry run
-// still shows what the catalog would become.
+// Derive from the text we just fetched, not the file on disk, so a dry run or a
+// check still shows what the catalog would become.
 const catalog = renderCatalog(deriveCatalog(llmsFull))
 const previousCatalog = current(CATALOG_PATH)
-report('catalog.json', previousCatalog, catalog)
+const catalogDrifted = report('catalog.json', previousCatalog, catalog)
 
 const endpointCount = Object.keys(JSON.parse(catalog).endpoints).length
 console.log(`\n${endpointCount} documented endpoints.`)
+
+if (CHECK) {
+  const drifted = [llmsDrifted && 'llms-full.txt', catalogDrifted && 'catalog.json'].filter(Boolean)
+  if (drifted.length > 0) {
+    console.error(`\n❌ the committed snapshot has drifted — stale: ${drifted.join(', ')}.`)
+    console.error('   Run `bun run sync:higgsfield-docs` to update it, then update the sha256 table in docs/vendors/higgsfield/MANIFEST.md.')
+    process.exit(1)
+  }
+  console.log('\nsnapshot is current.')
+  process.exit(0)
+}
 
 if (DRY_RUN) {
   console.log('\nDry run: nothing written. Re-run without --dry-run to update the snapshot.')
@@ -82,7 +98,6 @@ if (DRY_RUN) {
 }
 
 writeFileSync(llmsPath, llmsFull)
-writeFileSync(openapiPath, openapi)
 writeFileSync(CATALOG_PATH, catalog)
 
 console.log(`

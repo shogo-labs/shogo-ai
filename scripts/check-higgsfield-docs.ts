@@ -5,7 +5,8 @@
  * Fail CI when our Higgsfield wiring drifts from the vendor's docs.
  *
  * The committed snapshot in `docs/vendors/higgsfield/` is the contract: the
- * docs prose plus the derived `catalog.json`. This checks four things:
+ * docs prose (`llms-full.txt`) plus the derived `catalog.json`. This checks
+ * four things:
  *
  *   1. `catalog.json` still matches what `llms-full.txt` derives (so the
  *      derived file is never hand-edited out of sync).
@@ -57,7 +58,7 @@ if (committed !== derived) {
 }
 
 const manifest = readFileSync(join(DOCS_DIR, 'MANIFEST.md'), 'utf8')
-for (const file of ['llms-full.txt', 'openapi.json', 'catalog.json']) {
+for (const file of ['llms-full.txt', 'catalog.json']) {
   const actual = sha256(join(DOCS_DIR, file))
   // MANIFEST lists each file in a table row: `| `<file>` | … | sha256 `<hash>` |`
   const row = manifest
