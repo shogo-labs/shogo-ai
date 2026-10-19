@@ -146,10 +146,15 @@ mock.module('../../../hooks/useChatItems', () => ({
 mock.module('../../../hooks/useChatPrefs', () => ({
   useUserStatus: () => null,
 }))
+/** What `jumboEmojiCodes` reports, and the bodies it was asked about. */
+const jumboCodes: { value: string[] | null; asked: string[] } = { value: null, asked: [] }
 mock.module('../../../hooks/useCustomEmoji', () => ({
   useCustomEmoji: () => new Map(),
   customEmojiFor: () => null,
-  jumboEmojiCodes: () => null,
+  jumboEmojiCodes: (text: string) => {
+    jumboCodes.asked.push(text)
+    return jumboCodes.value
+  },
 }))
 mock.module('../../../hooks/useChatShortcuts', () => ({
   useEditRequest: () => {},
@@ -441,6 +446,30 @@ const handlers = () => ({
 })
 
 describe('MessageRow', () => {
+  test('an emoji-only message renders large, the way Slack draws it', () => {
+    jumboCodes.value = ['🤗']
+    jumboCodes.asked = []
+    render(<MessageRow message={message({ text: '🤗' })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+
+    // The row hands the body to the jumbo check rather than straight to markdown.
+    expect(jumboCodes.asked).toContain('🤗')
+    expect(document.querySelector('[data-rn-shim="jumbo-emoji"]')).toBeTruthy()
+
+    // Body text is 12px on desktop web; a jumbo glyph must dwarf it.
+    const glyph = screen.getByText('🤗')
+    expect(Number.parseFloat(glyph.style.fontSize)).toBeGreaterThan(24)
+    // A line height is set, or tall glyphs clip on Android.
+    expect(glyph.style.lineHeight).toBeTruthy()
+  })
+
+  test('an emoji sitting next to text keeps the body size', () => {
+    jumboCodes.value = null
+    render(<MessageRow message={message({ text: '🤗 support team has no input there' })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+
+    expect(document.querySelector('[data-rn-shim="jumbo-emoji"]')).toBeNull()
+    expect(screen.getByText(/support team has no input there/)).toBeTruthy()
+  })
+
   test('renders mentions by name, and a running agent reply streams with a Stop control', () => {
     const h = handlers()
     const { rerender } = render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} {...h} />)

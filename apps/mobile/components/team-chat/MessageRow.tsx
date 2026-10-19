@@ -43,6 +43,7 @@ import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { toggleSaved, useIsSaved } from '../../hooks/useChatItems'
 import { customEmojiFor, jumboEmojiCodes, useCustomEmoji } from '../../hooks/useCustomEmoji'
 import { useEditRequest } from '../../hooks/useChatShortcuts'
+import { useMobileWorkspaceChrome } from '../layout/MobileWorkspaceChromeContext'
 
 export const QUICK_REACTIONS = ['👍', '✅', '👀', '🎉', '❤️', '😂']
 
@@ -258,6 +259,33 @@ function ReactionGlyph({ emoji, size = 12 }: { emoji: string; size?: number }) {
 }
 
 /**
+ * A message that is nothing but emoji renders large, as in Slack and Discord.
+ * The body is 16px everywhere except desktop web's 12px (`text-xs` on the
+ * markdown), so the size is derived from it rather than hardcoded — otherwise
+ * the same message is 2.5x on a phone and 3.3x in a browser.
+ */
+const JUMBO_EMOJI_SCALE = 2.5
+
+function bodyTextSize(usesMobileWorkspaceChrome: boolean): number {
+  return Platform.OS !== 'web' || usesMobileWorkspaceChrome ? 16 : 12
+}
+
+/** One large emoji: a custom image and a unicode glyph occupy the same box. */
+function JumboEmoji({ code, size }: { code: string; size: number }) {
+  const custom = customEmojiFor(code, useCustomEmoji())
+  if (custom) {
+    return <Image source={{ uri: custom.url }} style={{ width: size, height: size }} accessibilityLabel={code} />
+  }
+  // An explicit line height keeps tall glyphs from clipping on Android, where a
+  // Text's default line box is sized by the font rather than the font size.
+  return (
+    <Text style={{ fontSize: size, lineHeight: Math.round(size * 1.15) }} accessibilityLabel={code}>
+      {code}
+    </Text>
+  )
+}
+
+/**
  * Hover state for a row whose action bar floats half outside it. Wire `hoverIn`/`hoverOut` to the
  * DOM `onPointerEnter`/`onPointerLeave` of the row, not to `Pressable`'s `onHoverIn`/`onHoverOut`:
  * react-native-web's Pressable hover is `contain`ed, so entering any nested Pressable (every
@@ -296,6 +324,7 @@ function MessageRowImpl(props: MessageRowProps) {
   const [profileOpen, setProfileOpen] = useState(false)
   const saved = useIsSaved(message.id)
   const customEmoji = useCustomEmoji()
+  const jumboSize = Math.round(bodyTextSize(useMobileWorkspaceChrome()) * JUMBO_EMOJI_SCALE)
   const [draft, setDraft] = useState(message.text)
   const mine = !!me && message.authorUserId === me
   const deleted = !!message.deletedAt
@@ -727,8 +756,8 @@ function MessageRowImpl(props: MessageRowProps) {
               return (
                 <View className={cn(message.pending && 'opacity-60')}>
                   {jumbo ? (
-                    <View className="flex-row flex-wrap gap-1 py-0.5">
-                      {jumbo.map((code, i) => <ReactionGlyph key={`${code}-${i}`} emoji={code} size={32} />)}
+                    <View className="flex-row flex-wrap items-center gap-1.5 py-1" testID="jumbo-emoji">
+                      {jumbo.map((code, i) => <JumboEmoji key={`${code}-${i}`} code={code} size={jumboSize} />)}
                     </View>
                   ) : (
                     <ChatMarkdown isStreaming={running} onLinkPress={openMessageLinkInApp} onMentionPress={props.onMentionPress}>{renderMentionsMarkdown(body, names)}</ChatMarkdown>
