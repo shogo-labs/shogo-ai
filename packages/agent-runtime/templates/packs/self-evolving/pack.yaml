@@ -1,0 +1,149 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/pack-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/pack-templates-gen.ts
+version: 1
+name: Self Evolving
+description: "A daily retrospective that coaches every agent in this workspace, plus an #ideas channel for the platform gaps the work reveals."
+projects:
+  - key: self-evolving
+    name: Self Evolver
+    description: Reviews the last 24 hours of agent work, writes lessons into each agent’s MEMORY.md, and files platform ideas.
+    agent:
+      model: auto
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+      heartbeat:
+        enabled: true
+        interval: 3600
+        quietHours:
+          start: "{{answers.profile.quiet-hours-start}}"
+          end: "{{answers.profile.quiet-hours-end}}"
+          timezone: "{{answers.profile.timezone}}"
+    files:
+      AGENTS.md: |-
+        # Self Evolver
+
+        You are the workspace's retrospective coach. Once a day you read what the agents and people did, write down what should change, and file the platform gaps you find.
+
+        ## Roster
+        Coach {{answers.profile.roster}}. Read it from `team_directory` on each run; a project added later is coached from then on.
+
+        ## Each daily review
+        1. Read the last 24 hours: cards that moved, their threads, and any pull requests or links on them. Boards come from `board_list` (default: every board in the review channel).
+        2. For each coached agent, write at most six bullets into its `MEMORY.md` between `<!-- reflection:start -->` and `<!-- reflection:end -->`. Replace what is there; do not append forever.
+           - Each bullet must pass the five-point test: specific, observable, about a decision, actionable next time, and not a restatement of the task.
+           - Never edit `AGENTS.md` — it is regenerated from the workspace's configuration, so a lesson written there is lost.
+        3. File at most three **new** platform ideas into #ideas. Each idea: what happened, why the product made it harder than it should be, and the smallest change that would fix it.
+           - Deduplicate against the #ideas channel doc: update an existing idea instead of writing a near-copy.
+           - Never tag a person or an agent in #ideas.
+        4. Post the review in #evolution: what went well, what to change, and the count of ideas filed (`#ideas: N new, M updated`). Update the #ideas doc with the same count.
+
+        ## Monday rollup
+        On Mondays add a section: which lessons repeated, which one the workspace should fix this week, and whether last week's ideas moved.
+
+        ## Workspace profile
+        - **What this team builds**: {{answers.profile.product}}
+        - **Agents to coach**: {{answers.profile.roster}}
+        - **Review time**: {{answers.profile.review-time}} ({{answers.profile.timezone}})
+        - **Quiet hours**: {{answers.profile.quiet-hours-start}}–{{answers.profile.quiet-hours-end}} ({{answers.profile.timezone}})
+      HEARTBEAT.md: |-
+        # Heartbeat
+
+        1. If today's review has not been posted in #evolution yet, write it.
+        2. Check #ideas: any idea with no owner and no reply after a week gets one line in the review, then leave it alone.
+teamChannels:
+  - name: evolution
+    topic: Daily retrospective — what the agents did well, what to change, and why.
+    members:
+      - project: self-evolving
+        agentTrigger: mention
+  - name: ideas
+    topic: Platform shortcomings and improvement ideas found while doing the work.
+    members:
+      - project: self-evolving
+        agentTrigger: mention
+schedules:
+  - key: daily-evolution
+    name: Daily self review
+    project: self-evolving
+    channel: evolution
+    hour: "{{answers.profile.review-time}}"
+    timezone: "{{answers.profile.timezone}}"
+    enabled: true
+    prompt: "Start today’s review with <@a:p:{{agent.self-evolving}}>: read the last 24 hours of work, coach the roster, file ideas in {{channel.ideas}}, and post the review in {{channel.evolution}}."
+  - key: weekly-rollup
+    name: Monday rollup
+    project: self-evolving
+    channel: evolution
+    hour: "{{answers.profile.review-time}}"
+    days: "1"
+    timezone: "{{answers.profile.timezone}}"
+    enabled: true
+    prompt: "Write the Monday rollup in {{channel.evolution}} with <@a:p:{{agent.self-evolving}}>: repeated lessons, the one to fix this week, and movement on last week’s ideas."
+setup:
+  questions:
+    - id: product
+      header: What this team builds
+      question: What does this team build or sell, in one sentence?
+      type: text
+      applies: profile.product
+    - id: roster
+      header: Agents to coach
+      question: Which agents should the daily review coach?
+      type: text
+      default: every agent project in this workspace
+      applies: profile.roster
+    - id: hour
+      header: Review time
+      question: What time should the daily review run?
+      type: choice
+      options:
+        - 06:00
+        - 07:00
+        - 08:00
+        - 12:00
+        - 18:00
+        - 21:00
+      default: 07:00
+      applies: profile.review-time
+    - id: timezone
+      header: Timezone
+      question: Which timezone is that in?
+      type: choice
+      options:
+        - UTC
+        - America/Los_Angeles
+        - America/New_York
+        - Europe/London
+        - Europe/Berlin
+        - Asia/Singapore
+        - Asia/Tokyo
+        - Australia/Sydney
+      default: UTC
+      applies: profile.timezone
+    - id: quiet-hours-start
+      header: Quiet hours start
+      question: From what time should the agent not ping you?
+      type: choice
+      options:
+        - 20:00
+        - 21:00
+        - 22:00
+        - 23:00
+      default: 22:00
+      applies: profile.quiet-hours-start
+    - id: quiet-hours-end
+      header: Quiet hours end
+      question: When may it start pinging you again?
+      type: choice
+      options:
+        - 06:00
+        - 07:00
+        - 08:00
+        - 09:00
+      default: 07:00
+      applies: profile.quiet-hours-end
+  profile:
+    file: AGENTS.md
+    section: "## Workspace profile"

@@ -3199,6 +3199,11 @@ model MarketplaceListingVersion {
   /// Parsed `shogo.app.json` (events, scopes, required toolkits) for this version.
   appManifest Json?
 
+  /// Parsed `pack.yaml` (a `shogo-system.yaml` manifest plus `setup` questions)
+  /// read from the source project root at publish time. A listing without one
+  /// installs exactly as before. See `system-apply.service.ts`.
+  systemPack Json?
+
   createdAt DateTime @default(now())
 
   listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
@@ -3222,6 +3227,12 @@ model MarketplaceInstall {
   // baseline and refuses to overwrite when files diverge unless the user
   // passes { force: true }. See marketplace-manifest.service.ts.
   baselineManifest     Json?
+  /// Answers to the pack's `setup.questions`, kept so a re-install or an
+  /// update can re-render the same profile.
+  answers              Json?
+  /// Ids of everything the pack created: { projects, channels, boards,
+  /// schedules, triggers }. Uninstall deletes exactly these and nothing else.
+  packBindings         Json?
   stripeSubscriptionId String?
   status               InstallStatus @default(active)
   createdAt            DateTime      @default(now())

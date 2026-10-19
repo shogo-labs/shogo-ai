@@ -2619,6 +2619,10 @@ model MarketplaceListingVersion {
   /// Parsed `shogo.app.json` (events, scopes, required toolkits) for this version.
   appManifest String?
 
+  // Parsed pack.yaml (a shogo-system.yaml manifest plus setup questions),
+  // JSON-encoded as usual for the local schema. See schema.prisma.
+  systemPack String?
+
   // S3-backed workspace snapshot — see prisma/schema.prisma for the
   // narrative. Local SQLite stores the JSON snapshot as a String column
   // for backward compatibility; the new S3 fields are mirrored as
@@ -2647,6 +2651,10 @@ model MarketplaceInstall {
   installedVersion     String
   // Phase 6 drift detection. JSON-encoded manifest of relPath -> sha256.
   baselineManifest     String?
+  // Answers to the pack's setup.questions and the ids it created, JSON-encoded
+  // (see schema.prisma). Uninstall deletes exactly packBindings.
+  answers              String?
+  packBindings         String?
   stripeSubscriptionId String?
   status               String   @default("active")
   createdAt            DateTime @default(now())

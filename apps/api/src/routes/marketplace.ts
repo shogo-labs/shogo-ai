@@ -8,6 +8,8 @@ import { authorize, can, denialResponse } from '../lib/authz'
 import { requireMarketplaceFeature } from '../middleware/marketplace-feature'
 import * as marketplaceService from '../services/marketplace.service'
 import * as installService from '../services/marketplace-install.service'
+import * as packService from '../services/marketplace-pack.service'
+import * as systemApply from '../services/system-apply.service'
 import * as grantsService from '../services/app-install-grants.service'
 import { AppConsentError } from '../services/app-install-grants.service'
 import { snapshotProjectWorkspace } from '../services/marketplace-manifest.service'
@@ -17,6 +19,8 @@ import * as stripeConnect from '../services/stripe-connect.service'
 import * as gamification from '../services/creator-gamification.service'
 import * as creatorFollowService from '../services/creator-follow.service'
 import { ensureLocalCreatorForFollow } from '../services/creator-follow.service'
+import { hasWorkspaceAccess } from '../services/workspace.service'
+import { getPackTemplate } from '@shogo/agent-runtime/src/pack-templates'
 import { getShogoCloudUrl, getFrontendUrl } from '../lib/cloud-urls'
 import {
   shouldSkipForwardedHeader,
@@ -25,6 +29,21 @@ import {
 
 const PRICING_MODELS = new Set<string>(['free', 'one_time', 'subscription'])
 const LISTING_SORTS = new Set<string>(['popular', 'rating', 'newest', 'featured'])
+
+function parseAnswers(v: unknown): Record<string, unknown> | undefined {
+  if (typeof v !== 'string' || !v.trim()) return undefined
+  try {
+    const parsed = JSON.parse(v)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function getPackTemplateOr404(id: string) {
+  const pack = getPackTemplate(id)
+  return pack ?? null
+}
 
 function appConsentErrorResponse(c: any, err: AppConsentError) {
   return c.json({ error: err.code, message: err.message, ...(err.details ?? {}) }, err.status)
@@ -849,7 +868,7 @@ export function marketplaceRoutes() {
       if (!profile) {
         return c.json({ error: 'Creator profile not found' }, 404)
       }
-      const listingId = c.req.param('id')
+      const listingId = c.req.param('id') ?? ''
       const body = (await c.req.json()) as {
         version?: string
         changelog?: string | null
@@ -863,6 +882,13 @@ export function marketplaceRoutes() {
       })
       if (!owned) {
         return c.json({ error: 'Listing not found' }, 404)
+      }
+      // A pack is published as part of this snapshot: `pack.yaml` in the
+      // project root is parsed here (never at install time) so an invalid one
+      // is refused while the creator can still fix it.
+      const pack = packService.readProjectPack(owned.projectId)
+      if (pack.status === 'invalid') {
+        return c.json({ error: { code: 'invalid_pack', message: 'pack.yaml is not a valid manifest', issues: pack.errors } }, 400)
       }
       let appManifest: Prisma.InputJsonValue | undefined
       try {
@@ -916,6 +942,7 @@ export function marketplaceRoutes() {
           workspaceSnapshotBytes: snapshotBytes,
           workspaceSnapshotChecksum: snapshotChecksum,
           appManifest,
+          ...(pack.status === 'ok' ? { systemPack: pack.pack as unknown as Prisma.InputJsonValue } : {}),
         },
       })
       await prisma.marketplaceListing.update({
@@ -1059,6 +1086,81 @@ export function marketplaceRoutes() {
     }
   })
 
+  // ── Agent packs ──────────────────────────────────────────────────────
+  //
+  // A pack is an agent plus the channels, boards and schedules it needs. These
+  // routes serve the built-in catalogue (13 packs from
+  // `pack-templates.ts`) and preview what a listing's pack would create.
+  // Registered before `/:slug` so static paths win.
+
+  app.get('/packs', async (c) => {
+    return c.json({ packs: packService.listPackCatalogue() })
+  })
+
+  app.get('/packs/:packId/install-preview', requireMarketplaceFeature, async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) return c.json({ error: 'Unauthorized' }, 401)
+    const pack = getPackTemplateOr404(c.req.param('packId') ?? '')
+    if (!pack) return c.json({ error: 'pack_not_found' }, 404)
+    const workspaceId = c.req.query('workspaceId')
+    if (!workspaceId) return c.json({ error: 'workspaceId is required' }, 400)
+    if (!(await hasWorkspaceAccess(workspaceId, authCtx.userId))) return c.json({ error: 'workspace_access_denied' }, 403)
+    const answers = parseAnswers(c.req.query('answers'))
+    const preview = await systemApply.previewSystemPack({ workspaceId, manifest: pack.manifest as any, answers })
+    return c.json(preview)
+  })
+
+  app.post('/packs/:packId/install', requireMarketplaceFeature, async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) return c.json({ error: 'Unauthorized' }, 401)
+    const pack = getPackTemplateOr404(c.req.param('packId') ?? '')
+    if (!pack) return c.json({ error: 'pack_not_found' }, 404)
+    const body = (await c.req.json().catch(() => ({}))) as { workspaceId?: string; answers?: Record<string, unknown> }
+    if (!body.workspaceId) return c.json({ error: 'workspaceId is required' }, 400)
+    if (!(await hasWorkspaceAccess(body.workspaceId, authCtx.userId))) return c.json({ error: 'workspace_access_denied' }, 403)
+    const manifest = pack.manifest as any
+    const preview = await systemApply.previewSystemPack({ workspaceId: body.workspaceId, manifest, answers: body.answers })
+    const blocking = preview.conflicts.filter((line) => line.includes('already exists'))
+    if (blocking.length) return c.json({ error: { code: 'pack_conflict', message: 'This pack is already installed here', conflicts: blocking } }, 409)
+    const applied = await systemApply.applySystemPack({
+      workspaceId: body.workspaceId,
+      manifest,
+      answers: body.answers,
+      actorUserId: authCtx.userId,
+      channelNames: preview.channelNames,
+    })
+    if (!applied.ok) {
+      await systemApply.uninstallSystemPack({ workspaceId: body.workspaceId, actorUserId: authCtx.userId, bindings: applied.bindings }).catch(() => {})
+      return c.json({ error: { code: 'pack_apply_failed', message: applied.errors.join('; ') }, applied }, 500)
+    }
+    return c.json({ installed: true, projectId: applied.anchorProjectId, created: applied.applied, bindings: applied.bindings, plan: preview.plan })
+  })
+
+  /** What installing this listing would ask and create, before anything is written. */
+  app.post('/listings/:listingId/install-preview', requireMarketplaceFeature, async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) return c.json({ error: 'Unauthorized' }, 401)
+    const listing = await prisma.marketplaceListing.findUnique({
+      where: { id: c.req.param('listingId') },
+      select: { id: true, currentVersion: true, status: true },
+    })
+    if (!listing || listing.status !== 'published') return c.json({ error: 'listing_not_found' }, 404)
+    const body = (await c.req.json().catch(() => ({}))) as { workspaceId?: string; answers?: Record<string, unknown> }
+    if (!body.workspaceId) return c.json({ error: 'workspaceId is required' }, 400)
+    if (!(await hasWorkspaceAccess(body.workspaceId, authCtx.userId))) return c.json({ error: 'workspace_access_denied' }, 403)
+    const pack = await packService.loadVersionPack(listing.id, listing.currentVersion)
+    if (!pack) return c.json({ questions: [], plan: ['installs the project as usual — this listing carries no pack'], conflicts: [], channelNames: {} })
+    const preview = await systemApply.previewSystemPack({ workspaceId: body.workspaceId, manifest: pack, answers: body.answers })
+    const already = await prisma.marketplaceInstall.findFirst({
+      where: { listingId: listing.id, workspaceId: body.workspaceId, status: 'active' },
+      select: { id: true, projectId: true },
+    })
+    return c.json({
+      ...preview,
+      ...(already ? { conflicts: [...preview.conflicts, `Already installed in this workspace (project ${already.projectId})`], installedInstallId: already.id } : {}),
+    })
+  })
+
   app.post('/:slug/install', requireMarketplaceFeature, async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {
@@ -1073,7 +1175,7 @@ export function marketplaceRoutes() {
       if (!listing) {
         return c.json({ error: 'Listing not found' }, 404)
       }
-      const body = (await c.req.json()) as { workspaceId?: string; consent?: { accept: boolean; optionalScopes?: string[] } }
+      const body = (await c.req.json()) as { workspaceId?: string; consent?: { accept: boolean; optionalScopes?: string[] }; answers?: Record<string, unknown> }
       if (!body.workspaceId || typeof body.workspaceId !== 'string') {
         return c.json({ error: 'workspaceId is required' }, 400)
       }
@@ -1088,6 +1190,7 @@ export function marketplaceRoutes() {
           userId: authCtx.userId,
           workspaceId: body.workspaceId,
           consent: body.consent ?? null,
+          answers: body.answers ?? null,
         })
         await gamification.recalculateCreatorStats(listing.creatorId)
         return c.json({ installed: true, ...result })
@@ -1149,6 +1252,16 @@ export function marketplaceRoutes() {
       }
       if (msg === 'listing_not_found' || msg === 'listing_not_published' || msg === 'install_not_found') {
         return c.json({ error: msg }, 404)
+      }
+      if (msg.startsWith('already_installed:')) {
+        const [, installId, projectId] = msg.split(':')
+        return c.json({ error: { code: 'already_installed', message: 'This pack is already installed in this workspace', installId, projectId } }, 409)
+      }
+      if (msg.startsWith('invalid_pack')) {
+        return c.json({ error: { code: 'invalid_pack', message: msg.replace(/^invalid_pack:\s*/, '') } }, 400)
+      }
+      if (msg.startsWith('pack_apply_failed')) {
+        return c.json({ error: { code: 'pack_apply_failed', message: msg.replace(/^pack_apply_failed:\s*/, '') } }, 500)
       }
       if (msg.startsWith('docker_class_disabled')) {
         return c.json({ error: { code: 'docker_class_disabled', message: msg.replace(/^docker_class_disabled:\s*/, '') } }, 403)

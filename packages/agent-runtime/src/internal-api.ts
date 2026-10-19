@@ -771,6 +771,9 @@ export interface AgentSchedule {
   cronExpression: string
   timezone: string
   enabled: boolean
+  /** Team chat channel the result is posted in, when the schedule posts. */
+  notifyConversationId: string | null
+  notifyThreadRootId?: string | null
   nextRunAt: string
   lastRunAt: string | null
   lastRunStatus: string | null

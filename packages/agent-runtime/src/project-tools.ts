@@ -50,9 +50,13 @@ import { availableModelsHint, isAvailableModel } from './available-models'
 import { channelIdentity } from './channel-tools'
 import {
   agentBoardsRequest,
+  createSchedule,
   createTrigger,
+  deleteSchedule,
   deleteTrigger,
+  listSchedules,
   listTriggers,
+  updateSchedule,
   updateTrigger,
   attachProject as apiAttachProject,
   callProjectAgent as apiCallProjectAgent,
@@ -70,18 +74,25 @@ import {
   type ProjectGraphNode,
 } from './internal-api'
 import {
+  applyAnswersToManifest,
+  cardToWorkItemTarget,
   computeSystemDiff,
+  diffSchedules,
   fileSkipWarning,
   IMPLICIT_ANCHOR,
   isSafeRelativePath,
+  mergeProfileSection,
+  normalizeAnswers,
   parseSystemManifest,
   manifestHints,
+  renderProfileSection,
   resolveAgentRef,
   summarizeDiff,
   type BoardOp,
   type FileProbe,
   type LiveBoard,
   type LiveProject,
+  type LiveSchedule,
   type LiveTrigger,
   type TriggerSpec,
   type LiveTeamChannels,
@@ -207,7 +218,6 @@ function toLive(nodes: ProjectGraphNode[]): LiveProject[] {
 
 /** Manifest trigger → the triggers API body. */
 function triggerBody(spec: TriggerSpec, idOf: (key: string) => string | null) {
-  const card = spec.card
   return {
     name: spec.name,
     filter: spec.filter ?? null,
@@ -215,27 +225,7 @@ function triggerBody(spec: TriggerSpec, idOf: (key: string) => string | null) {
     notifyConversationId: spec.notify ?? null,
     enabled: spec.enabled,
     ...(spec.target === 'project' ? { targetProjectId: spec.project ? idOf(spec.project) ?? undefined : undefined, targetMode: spec.mode ?? 'agent' } : {}),
-    ...(card ? {
-      workItemTarget: {
-        board: card.board,
-        channel: card.channel,
-        column: card.column,
-        dedupeKey: card.dedupeKey,
-        mapping: {
-          title: card.title,
-          description: card.description,
-          message: card.description,
-          priority: card.priority,
-          externalRef: card.externalRef,
-          dueAt: card.dueAt,
-          fields: card.fields,
-          stack: card.stack,
-          environment: card.environment,
-          release: card.release,
-          url: card.url,
-        },
-      },
-    } : {}),
+    ...(spec.card ? { workItemTarget: cardToWorkItemTarget(spec.card) } : {}),
   }
 }
 
@@ -970,7 +960,8 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
     name: 'system_apply',
     label: 'Apply System Manifest',
     description: [
-      'Reconcile a `shogo-system.yaml` manifest against the workspace: create missing projects, attach them as declared, set heartbeat/model/capabilities, write each project\'s prompt files (AGENTS.md, HEARTBEAT.md, .shogo/agents/*.md), create the `teamChannels` the agents work in with their members and `boards`, and set up `triggers` (including ones that turn events into cards).',
+      'Reconcile a `shogo-system.yaml` manifest against the workspace: create missing projects, attach them as declared, set heartbeat/model/capabilities, write each project\'s prompt files (AGENTS.md, HEARTBEAT.md, .shogo/agents/*.md), create the `teamChannels` the agents work in with their members and `boards`, set up `triggers` (including ones that turn events into cards), and create the `schedules` (cron + channel + agent prompt) the system runs on.',
+      'A schedule takes `cron` (`0 7 * * 1-5`) or `hour` (+ optional `minute`/`days`) and a `timezone`; `cron`, `hour` and `timezone` accept `{{answers.profile.<key>}}`, so a run happens at the hour and zone the install answered rather than at a fixed UTC time. A schedule whose answers are missing is reported in `errors` and not written.',
       'Idempotent: a second run reports an empty diff. Bindings from manifest key to project id are recorded in .shogo/system.lock.json so renames do not create duplicates.',
       'This is also how you create a team channel or change one (privacy, topic, members): edit its `teamChannels` entry and apply.',
       'Run with `dryRun: true` first. If the plan does only what the person asked for, apply it; if it changes more, show the plan and ask before applying. Chat integrations and external channels are listed under `manual` because they need credentials.',
@@ -979,10 +970,11 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
     parameters: Type.Object({
       manifestPath: Type.Optional(Type.String({ description: `Path relative to the project root (default "${DEFAULT_MANIFEST_PATH}").` })),
       manifest: Type.Optional(Type.String({ description: 'Inline YAML. When given it is used instead of the file and also written to manifestPath.' })),
+      answers: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: 'Answers to the manifest\'s `setup.questions`, substituted as `{{answers.<path>}}` in files, topics and prompts. Install wizards pass these; a hand-written manifest normally needs none.' })),
       dryRun: Type.Optional(Type.Boolean({ description: 'Compute and return the plan without changing anything.' })),
     }),
     execute: async (_id, params) => {
-      const p = params as { manifestPath?: string; manifest?: string; dryRun?: boolean }
+      const p = params as { manifestPath?: string; manifest?: string; answers?: Record<string, unknown>; dryRun?: boolean }
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
 
@@ -1002,6 +994,10 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
       const parsed = parseSystemManifest(source)
       if (!parsed.ok || !parsed.manifest) return textResult({ error: 'Manifest is invalid', issues: parsed.errors, hints: manifestHints(parsed.errors) })
       const manifest = parsed.manifest
+      // Answers are keyed by question id, by `applies` path, flat or nested;
+      // one canonical set means the file, the prompt and the schedule that read
+      // the same answer all see the same value.
+      const answers = normalizeAnswers(manifest.setup, p.answers)
 
       const unavailable = manifest.projects
         .filter((pr) => pr.agent?.model !== undefined && !isAvailableModel(pr.agent.model))
@@ -1071,6 +1067,16 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
           else triggersUnavailable = `triggers could not be read (${res.error ?? 'failed'})`
         }
       }
+      let schedules: LiveSchedule[] | undefined
+      let schedulesUnavailable: string | undefined
+      if (manifest.schedules.length || Object.keys(lock?.schedules ?? {}).length) {
+        if (!ctx.userId) schedulesUnavailable = 'schedules run as a person, and no one started this run'
+        else {
+          const res = await listSchedules(workspaceId)
+          if (res.ok && res.data) schedules = res.data
+          else schedulesUnavailable = `schedules could not be read (${res.error ?? 'failed'})`
+        }
+      }
 
       const diff = computeSystemDiff(manifest, live, lock, {
         callerProjectId: ctx.projectId,
@@ -1082,6 +1088,9 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         boardsUnavailable,
         triggers,
         triggersUnavailable,
+        schedules,
+        schedulesUnavailable,
+        answers,
       })
       const report: ApplyReport = {
         ok: true,
@@ -1199,8 +1208,9 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
       // 4. Files. Only projects reachable on disk; the rest are skipped with a
       //    warning so the agent re-runs system_apply after the runtime mounts
       //    them — an unreachable file is never reported as a create.
+      const effective = applyAnswersToManifest(manifest, p.answers)
       const warnedFile = new Set(diff.warnings)
-      for (const spec of manifest.projects) {
+      for (const spec of effective.projects) {
         const id = idOf(spec.key)
         if (!id) continue
         const entries = Object.entries(spec.files)
@@ -1232,6 +1242,9 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
       }
 
       // 5. Team chat channels (after creates, so new projects can be members).
+      const channelIds: Record<string, string> = Object.fromEntries(
+        (teamChannels?.channels ?? []).filter((c) => c.id).map((c) => [c.name, c.id!]),
+      )
       for (const op of diff.teamChannels) {
         const agents: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null; agentContextMode: string }> = []
         for (const a of op.agents) {
@@ -1250,7 +1263,10 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
           ...(ctx.userId ? { onBehalfOfUserId: ctx.userId } : {}),
         })
         if (!res.ok) report.errors.push(`channel #${op.name}: ${res.error ?? 'failed'}${res.code ? ` (${res.code})` : ''}`)
-        else report.applied.push(`${res.data?.created ? 'create' : 'update'} channel #${op.name}`)
+        else {
+          if (res.data?.channel?.id) channelIds[op.name] = res.data.channel.id
+          report.applied.push(`${res.data?.created ? 'create' : 'update'} channel #${op.name}`)
+        }
       }
       // Declared channels can't be deleted out from under the system; ones this
       // manifest no longer declares can be again. Protection is bookkeeping, so
@@ -1312,7 +1328,92 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         report.applied.push(`${op.action} trigger ${op.key}`)
       }
 
-      // 8. Lock.
+      // 8. Schedules. Resolved with the bindings that exist *after* the
+      //    creates/channels above, so a prompt carries the real agent tag.
+      const scheduleLock: Record<string, { id: string; hash: string }> = { ...(lock?.schedules ?? {}) }
+      const scheduleBindings: Record<string, string> = {}
+      for (const spec of manifest.projects) {
+        const id = idOf(spec.key)
+        if (id) scheduleBindings[spec.key] = id
+      }
+      const scheduleOps = ctx.userId
+        ? diffSchedules(manifest, schedules ?? [], lock, { bindings: scheduleBindings, answers, channelIds })
+        : diff.schedules
+      for (const op of scheduleOps) {
+        if (!ctx.userId) break
+        if (op.action === 'delete') {
+          const res = await deleteSchedule(workspaceId, op.scheduleId!, ctx.userId)
+          if (!res.ok) report.errors.push(`schedule ${op.key}: ${res.error ?? 'delete failed'}`)
+          else {
+            delete scheduleLock[op.key]
+            report.applied.push(`delete schedule ${op.key}`)
+          }
+          continue
+        }
+        // `values` come from the one resolver both apply paths use; the spec is
+        // never re-resolved here, so the runtime and the marketplace engine
+        // cannot disagree about what a schedule becomes.
+        if (op.error || !op.values) {
+          report.errors.push(`schedule ${op.key}: ${op.error ?? 'the spec could not be resolved'}`)
+          continue
+        }
+        const values = op.values
+        const notifyConversationId = values.channel ? channelIds[values.channel] ?? null : null
+        if (values.channel && !notifyConversationId) {
+          report.skipped.push(`schedule ${op.key}: channel #${values.channel} has no conversation id; results will not post anywhere`)
+        }
+        const body = {
+          name: values.name,
+          prompt: values.prompt,
+          cronExpression: values.cronExpression,
+          timezone: values.timezone,
+          enabled: values.enabled,
+          userId: ctx.userId,
+          ...(values.channel ? { notifyConversationId } : {}),
+        }
+        if (op.action === 'update') {
+          const res = await updateSchedule(workspaceId, op.scheduleId!, body)
+          if (!res.ok) { report.errors.push(`schedule ${op.key}: ${res.error ?? 'update failed'}${res.code ? ` (${res.code})` : ''}`); continue }
+          scheduleLock[op.key] = { id: op.scheduleId!, hash: op.hash! }
+          report.applied.push(`update schedule ${op.key}`)
+          continue
+        }
+        const res = await createSchedule(workspaceId, body)
+        if (!res.ok || !res.data) {
+          report.errors.push(`schedule ${op.key}: ${res.error ?? 'create failed'}${res.code ? ` (${res.code})` : ''}`)
+          continue
+        }
+        scheduleLock[op.key] = { id: res.data.id, hash: op.hash! }
+        report.applied.push(`create schedule ${op.key}`)
+      }
+
+      // 9. Workspace profile: answers from the install wizard land in one
+      //    `## section` of the anchor's file, leaving its other sections alone.
+      const profileAnswers = Object.keys(answers).length ? answers : null
+      const anchorId = manifest.anchor ? idOf(manifest.anchor) : ctx.projectId
+      if (profileAnswers && manifest.setup?.profile && anchorId && manifest.setup.questions.length) {
+        const rendered = renderProfileSection(manifest.setup, profileAnswers)
+        const rel = manifest.setup.profile.file
+        const dir = resolveProjectDir(ctx, anchorId)
+        if (rendered && dir) {
+          const abs = resolve(dir, rel)
+          if (abs.startsWith(resolve(dir))) {
+            try {
+              const before = existsSync(abs) ? readFileSync(abs, 'utf-8') : ''
+              const after = mergeProfileSection(before, manifest.setup.profile.section, rendered)
+              if (after !== before) {
+                mkdirSync(dirname(abs), { recursive: true })
+                writeFileSync(abs, after, 'utf-8')
+                report.applied.push(`update ${manifest.anchor ?? 'anchor'}/${rel} (workspace profile)`)
+              }
+            } catch (err: any) {
+              report.errors.push(`workspace profile ${rel}: ${err?.message ?? err}`)
+            }
+          }
+        }
+      }
+
+      // 10. Lock.
       const finalBindings: Record<string, string> = {}
       for (const spec of manifest.projects) {
         const id = idOf(spec.key)
@@ -1324,6 +1425,7 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         name: manifest.name,
         bindings: finalBindings,
         ...(Object.keys(triggerLock).length ? { triggers: triggerLock } : {}),
+        ...(Object.keys(scheduleLock).length ? { schedules: scheduleLock } : {}),
       })
       report.bindings = finalBindings
       report.ok = report.errors.length === 0

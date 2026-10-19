@@ -76,6 +76,11 @@ const JSON_OBJECT_FIELDS = new Set([
   'origin',
   // Work boards
   'fieldsSchema', 'fields', 'eventData', 'occurrenceContext', 'workItemTarget',
+  // Marketplace agent packs (Json? on PG, JSON String on SQLite): the parsed
+  // pack.yaml on a listing version, the answers an install collected, and the
+  // ids it created. Missing these made publishing and installing a pack throw
+  // PrismaClientValidationError on the desktop/SQLite client while PG was fine.
+  'systemPack', 'answers', 'packBindings',
   // Background task destination (Json? on PG, JSON String on SQLite): where the
   // dock opens the agent's thread for a task that handed work off.
   'link',

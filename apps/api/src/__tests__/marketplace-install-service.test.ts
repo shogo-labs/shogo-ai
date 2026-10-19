@@ -52,6 +52,12 @@ const fsMock = {
   rmSync: (p: string, opts: any) => {
     fsCalls.push({ kind: 'rmSync', args: [p, opts] })
   },
+  // Installs read the pack from the listing version row, not disk, but
+  // `marketplace-pack.service` imports this at module load.
+  readFileSync: (p: string) => {
+    fsCalls.push({ kind: 'readFileSync', args: [p] })
+    return ''
+  },
 }
 mock.module('node:fs', () => fsMock)
 mock.module('fs', () => fsMock)
