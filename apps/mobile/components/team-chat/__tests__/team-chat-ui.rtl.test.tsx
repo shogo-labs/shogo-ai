@@ -199,6 +199,23 @@ mock.module('@/components/ui/popover', () => ({
   PopoverBackdrop: () => null,
   PopoverContent: ({ children }: any) => createElement(Fragment, null, children),
 }))
+// The add-to-channel confirmation hosts gluestack dialog chrome, which pulls in
+// react-native's real entrypoint. These cases are about the flow around it.
+mock.module('@/components/ui/alert-dialog', () => ({
+  AlertDialog: ({ children }: any) => createElement(Fragment, null, children),
+  AlertDialogBackdrop: () => null,
+  AlertDialogContent: ({ children }: any) => createElement(Fragment, null, children),
+  AlertDialogHeader: ({ children }: any) => createElement(Fragment, null, children),
+  AlertDialogBody: ({ children }: any) => createElement(Fragment, null, children),
+  AlertDialogFooter: ({ children }: any) => createElement(Fragment, null, children),
+}))
+mock.module('@/components/ui/heading', () => ({ Heading: ({ children }: any) => createElement('div', null, children) }))
+mock.module('@/components/ui/text', () => ({ Text: ({ children }: any) => createElement('div', null, children) }))
+mock.module('@/components/ui/button', () => ({
+  Button: ({ children, onPress, accessibilityLabel }: any) =>
+    createElement('div', { role: 'button', 'aria-label': accessibilityLabel, onClick: onPress }, children),
+  ButtonText: ({ children }: any) => createElement('div', null, children),
+}))
 mock.module('../../../lib/platform-config', () => ({ usePlatformConfig: () => ({ features: { billing: false, ezMode: false } }) }))
 mock.module('../../chat/useVoiceInput', () => ({
   useVoiceInput: () => ({ isBusy: false, isRecording: false, liveTranscript: '', canRecord: false, error: null, clearError() {}, toggleRecording: async () => {} }),
