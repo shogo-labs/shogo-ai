@@ -11,7 +11,7 @@ import { eventTypeMatches, getEventDefinition, validateEventPayload } from '@sho
 import { prisma } from '../lib/prisma'
 import type { EventActor } from './event-identity'
 
-const db = prisma as any
+const moduleDb = prisma as any
 
 export interface EmitWorkspaceEventInput {
   workspaceId: string
@@ -61,7 +61,8 @@ function isUniqueViolation(error: unknown): boolean {
   return (error as { code?: string } | null)?.code === 'P2002'
 }
 
-export async function emitWorkspaceEvent(input: EmitWorkspaceEventInput): Promise<EmitResult | null> {
+export async function emitWorkspaceEvent(input: EmitWorkspaceEventInput, dbArg?: any): Promise<EmitResult | null> {
+  const db: any = dbArg ?? moduleDb
   const def = getEventDefinition(input.type, input.version)
   if (def) {
     const valid = validateEventPayload(def, input.payload)
@@ -143,7 +144,12 @@ export async function onWorkspaceMemberJoined(input: {
   memberId: string
   role?: string | null
   source: 'invitation' | 'invite_link'
+  /** The invitation's sender / link creator, when the caller knows it. */
+  invitedBy?: string | null
+  /** The caller's DB handle (hooks pass `ctx.prisma`); defaults to the app client. */
+  prisma?: any
 }): Promise<void> {
+  const db: any = input.prisma ?? moduleDb
   void import('./conversation-activity')
     .then((m) => m.recordMemberJoined(input.workspaceId, input.userId))
     .catch(() => {})
@@ -154,7 +160,7 @@ export async function onWorkspaceMemberJoined(input: {
     .catch(() => {})
   try {
     const user = await db.user.findUnique({ where: { id: input.userId }, select: { name: true, email: true } })
-    await emitWorkspaceEvent({
+    const emitted = await emitWorkspaceEvent({
       workspaceId: input.workspaceId,
       type: 'member.joined',
       source: 'shogo',
@@ -169,7 +175,17 @@ export async function onWorkspaceMemberJoined(input: {
       },
       dedupeKey: `member.joined:${input.memberId}`,
       actor: { source: 'shogo', externalId: input.userId, trust: 'platform' },
-    })
+    }, db)
+    // One join, one email: only the emit that created the event notifies, so a
+    // retried accept (double PATCH, queued replay) stays silent.
+    if (emitted?.duplicate) return
+    const { notifyWorkspaceJoined } = await import('./join-notifications')
+    await notifyWorkspaceJoined({
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      role: input.role,
+      invitedBy: input.invitedBy,
+    }, db)
   } catch (error) {
     console.error('[WorkspaceEvents] member.joined emit failed:', error instanceof Error ? error.message : error)
   }

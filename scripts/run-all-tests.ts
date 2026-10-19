@@ -139,6 +139,14 @@ const IN_PROCESS_E2E_SUITES: readonly InProcessE2ESuite[] = [
     files: ['e2e/workspace-tool-failures.integration.test.ts'],
     env: {},
   },
+  // One join, one email (SHO-51). Mocked at the `email.service` module, so it
+  // counts a send from *any* caller — a hook that mails directly is caught here
+  // even though `join-notifications.test.ts` only records through the seam.
+  {
+    name: 'invitations e2e: join notifications',
+    files: ['e2e/invitations/join-notifications.integration.test.ts'],
+    env: {},
+  },
   ...['enterprise-onboarding', 'restricted-project-lifecycle', 'api-key-lifecycle'].map((name) => ({
     name: `rbac e2e: ${name}`,
     files: [`e2e/rbac/${name}.e2e.test.ts`],
