@@ -3596,8 +3596,11 @@ export class AgentGateway {
       // their own queued wake, whose message carries the task. Injecting them
       // here would mark them consumed and the dispatcher would drop that wake
       // as already seen — so only notes that finish *during* the turn are
-      // injected.
+      // injected. A runtime with no internal API credentials can never queue
+      // that wake, so there the turn sweeps every pending note instead; see
+      // takeInjectedMessages below.
       const turnStartedAt = Date.now()
+      const canQueueTaskWake = hasInternalApiCredentials()
 
       // --- Prefix-cache debug: turn-start snapshot ---
       // Emits short hashes of the three inputs Anthropic keys its prompt
@@ -3697,11 +3700,16 @@ export class AgentGateway {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
         },
         takeInjectedMessages: () => {
-          const notes = commandRegistry?.consumeCompletionNotes(
-            (note) => (note.finishedAt ?? 0) >= turnStartedAt,
-          ) ?? []
           // One message per finished task: the agent acts on each result as its
           // own note, not on a batch joined into one message.
+          //
+          // Without credentials the API cannot queue a wake for a note that
+          // settled before this turn, so filtering by finishedAt would mean the
+          // finished task's result is never delivered to anyone: take every
+          // pending note there (its own message each, as before SHO-33).
+          const notes = commandRegistry?.consumeCompletionNotes(
+            canQueueTaskWake ? (note) => (note.finishedAt ?? 0) >= turnStartedAt : undefined,
+          ) ?? []
           return notes.map((text) => ({
             role: 'user',
             content: text,
