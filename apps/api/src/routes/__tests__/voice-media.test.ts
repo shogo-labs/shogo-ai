@@ -22,7 +22,11 @@ function stubFetch(respond: (call: Call) => Response): Call[] {
   const calls: Call[] = []
   globalThis.fetch = (async (input: any, init: any = {}) => {
     const headers: Record<string, string> = {}
-    for (const [k, v] of Object.entries(init?.headers ?? {})) headers[k.toLowerCase()] = String(v)
+    // `init.headers` can be a plain object or a `Headers` instance (the cloud
+    // forwarder passes the latter), which `Object.entries` would report empty.
+    new Headers(init?.headers).forEach((value, name) => {
+      headers[name.toLowerCase()] = value
+    })
     let body: unknown
     if (typeof init?.body === 'string') {
       try {
@@ -252,5 +256,100 @@ describe('POST /voice/music', () => {
     expect(res.status).toBe(502)
     const body = (await res.json()) as { elBody?: string }
     expect(body.elBody ?? '').toContain('bad plan')
+  })
+})
+
+/**
+ * SHO-74: on a cloud-authed desktop there is no local `ELEVENLABS_API_KEY` —
+ * the pooled key lives in Shogo Cloud — so `/voice/tts` and `/voice/music`
+ * forwarded nothing and answered 503 `voice_unavailable`. They now forward to
+ * the cloud's own handlers under the AI proxy's gate.
+ */
+describe('cloud-authed desktop forwards hosted voice', () => {
+  const saved = {
+    localMode: process.env.SHOGO_LOCAL_MODE,
+    apiKey: process.env.SHOGO_API_KEY,
+    cloudUrl: process.env.SHOGO_CLOUD_URL,
+    aiMode: process.env.AI_MODE,
+    elevenKey: process.env.ELEVENLABS_API_KEY,
+  }
+
+  beforeEach(() => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    process.env.SHOGO_API_KEY = 'shogo_sk_cloud'
+    process.env.SHOGO_CLOUD_URL = 'https://cloud.example'
+    delete process.env.AI_MODE
+    // The whole point: no local ElevenLabs key.
+    delete process.env.ELEVENLABS_API_KEY
+  })
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries({
+      SHOGO_LOCAL_MODE: saved.localMode,
+      SHOGO_API_KEY: saved.apiKey,
+      SHOGO_CLOUD_URL: saved.cloudUrl,
+      AI_MODE: saved.aiMode,
+      ELEVENLABS_API_KEY: saved.elevenKey,
+    })) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+
+  it('forwards /voice/tts to the cloud and returns its audio', async () => {
+    const calls = stubFetch(
+      () =>
+        new Response(new Uint8Array([7, 8, 9]), {
+          status: 200,
+          headers: { 'content-type': 'audio/mpeg' },
+        }),
+    )
+    const app = makeApp()
+    const res = await post(app, '/voice/tts?projectId=proj_1', { text: 'hello', modelId: 'eleven_v4' })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('audio/mpeg')
+    expect(Array.from(new Uint8Array(await res.arrayBuffer()))).toEqual([7, 8, 9])
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toBe('https://cloud.example/api/voice/tts?projectId=proj_1')
+    expect(calls[0]!.headers['authorization']).toBe('Bearer shogo_sk_cloud')
+    expect(calls[0]!.body).toEqual({ text: 'hello', modelId: 'eleven_v4' })
+  })
+
+  it('forwards /voice/music to the cloud with the composition request intact', async () => {
+    const calls = stubFetch(
+      () => new Response(new Uint8Array([1]), { status: 200, headers: { 'content-type': 'audio/mpeg' } }),
+    )
+    const app = makeApp()
+    const res = await post(app, '/voice/music?projectId=proj_1', { prompt: 'synthwave', musicLengthMs: 5000 })
+
+    expect(res.status).toBe(200)
+    expect(calls[0]!.url).toBe('https://cloud.example/api/voice/music?projectId=proj_1')
+    expect(calls[0]!.body).toEqual({ prompt: 'synthwave', musicLengthMs: 5000 })
+  })
+
+  it('still rejects an invalid body locally instead of forwarding it', async () => {
+    const calls = stubFetch(() => new Response('{}', { status: 200 }))
+    const app = makeApp()
+
+    const music = await post(app, '/voice/music?projectId=proj_1', { prompt: 'a', compositionPlan: {} })
+    expect(music.status).toBe(400)
+
+    const tts = await post(app, '/voice/tts?projectId=proj_1', { text: 'hi', modelId: 'nope' })
+    expect(tts.status).toBe(400)
+
+    expect(calls).toHaveLength(0)
+  })
+
+  it('keeps the local 503 under AI_MODE=api-keys', async () => {
+    process.env.AI_MODE = 'api-keys'
+    const calls = stubFetch(() => new Response('{}', { status: 200 }))
+    const app = makeApp()
+    const res = await post(app, '/voice/tts?projectId=proj_1', { text: 'hi' })
+
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as { error: string }).error).toBe('voice_unavailable')
+    expect(calls).toHaveLength(0)
   })
 })
