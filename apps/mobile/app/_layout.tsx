@@ -77,6 +77,7 @@ import { BuddyLookProvider } from "../contexts/buddy-look";
 import { BuddySnapshotHost } from "../components/team-chat/BuddySnapshotHost";
 import { RootErrorBoundary } from "../components/RootErrorBoundary";
 import { UpdateBanner } from "../components/UpdateBanner";
+import { LocalApiStatusBanner } from "../components/LocalApiStatusBanner";
 import { GlobalDictationListener } from "../components/dictation/GlobalDictationListener";
 import { captureAttribution } from "../lib/attribution";
 import { safeSetItem } from "../lib/safe-storage";
@@ -205,6 +206,7 @@ function AuthenticatedAppShell({
           <InstanceOfflineWatcher />
           <GlobalDictationListener />
           <UpdateBanner />
+          <LocalApiStatusBanner />
           <WhatsNewModal
             release={whatsNew.release}
             visible={whatsNew.visible}

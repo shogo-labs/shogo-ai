@@ -343,6 +343,26 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.on('local-server:unavailable', listener)
     return () => ipcRenderer.removeListener('local-server:unavailable', listener)
   },
+  // SHO-60: a wedged API (alive but not serving) is now detected by the
+  // supervisor's `/health` watchdog and recovered through the same restart
+  // loop, so the banner needs the attempt that is under way, and the user
+  // needs a way out when the loop gives up.
+  onLocalServerRestarting: (
+    callback: (info: { attempt: number; maxAttempts: number; delayMs: number }) => void,
+  ): (() => void) => {
+    const listener = (
+      _event: unknown,
+      info: { attempt: number; maxAttempts: number; delayMs: number },
+    ) => callback(info)
+    ipcRenderer.on('local-server:restarting', listener)
+    return () => ipcRenderer.removeListener('local-server:restarting', listener)
+  },
+  /** Start a fresh API child without relaunching the app (banner's Retry). */
+  restartLocalServer: (): Promise<{ ok: boolean; pid?: number; error?: string }> =>
+    ipcRenderer.invoke('local-server:restart-now'),
+  /** Reveal `api-supervisor.log` in the OS file manager (banner's Open log). */
+  openLocalServerLog: (): Promise<{ ok: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('local-server:open-log'),
 
   // Local filesystem fast-path for the IDE Monaco file tree + file reads.
   // Bypasses the loopback HTTP round-trip to per-project agent-runtimes so

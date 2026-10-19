@@ -31,13 +31,31 @@ const BUN = process.execPath
 const HEALTH_BUDGET_MS = 10_000
 
 const FAKE_API_SOURCE = `
+import { existsSync, readFileSync } from 'node:fs'
+
 const port = Number(process.argv[2])
+// SHO-60: a pid written here makes *that* child answer /health with a promise
+// that never resolves — alive, serving nothing. The replacement has a
+// different pid, so only the wedged child stays muted.
+const muteFile = process.argv[3]
+
+function muted() {
+  try {
+    return !!muteFile && existsSync(muteFile) && readFileSync(muteFile, 'utf8').trim() === String(process.pid)
+  } catch {
+    return false
+  }
+}
+
 Bun.serve({
   port,
   hostname: '127.0.0.1',
   fetch: (req) => {
     const url = new URL(req.url)
-    if (url.pathname === '/health') return Response.json({ ok: true, pid: process.pid })
+    if (url.pathname === '/health') {
+      if (muted()) return new Promise(() => {})
+      return Response.json({ ok: true, pid: process.pid })
+    }
     return new Response('not found', { status: 404 })
   },
 })
@@ -107,7 +125,13 @@ interface Rig {
 function makeRig(
   port: number,
   overrides: Partial<LocalApiSupervisorOptions> = {},
-  boot: { restartHealthBudgetMs?: number; restartPort?: number } = {},
+  boot: {
+    restartHealthBudgetMs?: number
+    restartPort?: number
+    muteFile?: string
+    /** Wire the child's own `exit` to the supervisor, like local-server.ts. */
+    autoRestartOnExit?: boolean
+  } = {},
 ): Rig {
   const restartHealthBudgetMs = boot.restartHealthBudgetMs ?? 3_000
   const dir = mkdtempSync(join(tmpdir(), 'shogo-desktop-respawn-'))
@@ -125,7 +149,9 @@ function makeRig(
     // is how the give-up test keeps every attempt unhealthy without racing on
     // the first boot's port.
     const targetPort = attempt === 0 ? port : (boot.restartPort ?? port)
-    const child = Bun.spawn([BUN, script, String(targetPort)], {
+    const args = [BUN, script, String(targetPort)]
+    if (boot.muteFile) args.push(boot.muteFile)
+    const child = Bun.spawn(args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       // Same reason as local-server.ts: its own process group, so cleanup can
       // signal the whole tree without touching the app.
@@ -136,7 +162,7 @@ function makeRig(
     current = entry
     writeFileSync(pidFile, String(child.pid))
 
-    void child.exited.then(() => {
+    void child.exited.then((code) => {
       // A stale child's exit must never clobber the pid of its replacement.
       if (current === entry) {
         current = null
@@ -146,6 +172,9 @@ function makeRig(
           // already gone
         }
       }
+      // local-server.ts wires this same event to `notifyExit()`. The tests
+      // below that want to drive the exit themselves leave it off.
+      if (boot.autoRestartOnExit) void supervisor.notifyExit(code, null)
     })
 
     try {
@@ -161,6 +190,20 @@ function makeRig(
   const supervisor = new LocalApiSupervisor({
     ...overrides,
     start: startImpl,
+    // The watchdog's kill, mirroring `terminateApiChild()`: signal the child
+    // this rig currently owns, and let its `exit` drive the restart.
+    kill:
+      overrides.kill ??
+      (async () => {
+        const entry = current
+        if (!entry) return
+        try {
+          process.kill(entry.pid, 'SIGTERM')
+        } catch {
+          // already gone
+        }
+      }),
+    fetchHealth: overrides.fetchHealth,
     onRestarted: (info) => restarts.push(info),
     onGiveUp: (error) => giveUps.push(error),
     log: () => {},
@@ -220,6 +263,56 @@ describe('desktop local API respawn (real processes)', () => {
     expect(rig.restarts).toEqual([{ attempt: 1, pid: secondPid }])
     expect(recoveredInMs).toBeLessThan(HEALTH_BUDGET_MS)
   }, 30_000)
+
+  test('a child that is alive but stops answering /health is killed and restarted once', async () => {
+    const port = await freePort()
+    const muteDir = mkdtempSync(join(tmpdir(), 'shogo-desktop-mute-'))
+    cleanups.push(() => rmSync(muteDir, { recursive: true, force: true }))
+    const muteFile = join(muteDir, 'mute.pid')
+
+    // The production probe: 100 ms socket budget stands in for the 3 s one so
+    // three misses land well inside the test's patience.
+    const rig = makeRig(
+      port,
+      {
+        watchdog: { intervalMs: 50, timeoutMs: 150, failureThreshold: 3 },
+        fetchHealth: async () => {
+          try {
+            const res = await fetch(`http://127.0.0.1:${port}/health`, {
+              signal: AbortSignal.timeout(100),
+            })
+            return res.ok
+          } catch {
+            return false
+          }
+        },
+      },
+      { muteFile, autoRestartOnExit: true },
+    )
+    rigs.push(rig)
+
+    await rig.supervisor.start()
+    const firstPid = Number(readFileSync(rig.pidFile, 'utf8'))
+    expect(isAlive(firstPid)).toBe(true)
+
+    // The wedged API: the process is up and holds the port, but /health never
+    // answers. Nothing fires `exit`, so only the watchdog can notice.
+    writeFileSync(muteFile, String(firstPid))
+    expect(await healthOk(port)).toBe(false)
+
+    await waitUntil(() => rig.restarts.length === 1, 20_000, 'the watchdog to restart the wedged API')
+
+    const secondPid = Number(readFileSync(rig.pidFile, 'utf8'))
+    expect(secondPid).not.toBe(firstPid)
+    expect(isAlive(firstPid)).toBe(false)
+    expect(await healthOk(port)).toBe(true)
+
+    // Exactly one recovery: one respawn, and so exactly one
+    // `local-server:restarted` broadcast for the banner to dismiss on.
+    expect(rig.restarts).toEqual([{ attempt: 1, pid: secondPid }])
+    expect(rig.giveUps).toEqual([])
+    expect(rig.spawned).toHaveLength(2)
+  }, 40_000)
 
   test('after stop() the API is not respawned — quitting stays quit', async () => {
     const port = await freePort()
@@ -282,6 +375,41 @@ describe('desktop local API respawn (real processes)', () => {
       }
     }
   }, 60_000)
+
+  // AC3: after the policy has given up the owner of the machine can still get
+  // back to a working API — that is the banner's Retry, not a relaunch.
+  test('after giving up, restartNow() boots a fresh child on the real port', async () => {
+    const port = await freePort()
+    const blockedPort = await freePort()
+    const squatter = Bun.serve({
+      port: blockedPort,
+      hostname: '127.0.0.1',
+      fetch: () => new Response('squatter', { status: 503 }),
+    })
+    cleanups.push(() => void squatter.stop(true))
+
+    const rig = makeRig(port, {}, { restartHealthBudgetMs: 500, restartPort: blockedPort })
+    rigs.push(rig)
+
+    await rig.supervisor.start()
+    const firstPid = Number(readFileSync(rig.pidFile, 'utf8'))
+    process.kill(firstPid, 'SIGKILL')
+    await waitUntil(() => !isAlive(firstPid), 2_000, 'the old API to die')
+    await rig.supervisor.notifyExit(1, null)
+    expect(rig.supervisor.hasGivenUp).toBe(true)
+
+    // RestartNow is a cold boot (attempt 0), so it goes back to the real port,
+    // which the failed attempts never touched.
+    const { pid } = await rig.supervisor.restartNow()
+
+    expect(rig.supervisor.hasGivenUp).toBe(false)
+    expect(pid).not.toBe(firstPid)
+    expect(isAlive(pid!)).toBe(true)
+    expect(await healthOk(port)).toBe(true)
+    // The next launch reads this file, so it has to name the new child.
+    expect(Number(readFileSync(rig.pidFile, 'utf8'))).toBe(pid!)
+    expect(rig.restarts.at(-1)).toEqual({ attempt: 0, pid })
+  }, 60_000)
 })
 
 /**
@@ -313,5 +441,36 @@ describe('local-server wiring (source contract)', () => {
     expect(source).toContain(
       'start: ({ attempt }) =>\n    bootApiServer(attempt === 0 ? MAX_HEALTH_RETRIES : RESTART_HEALTH_RETRIES)',
     )
+  })
+
+  test('SHO-60: the watchdog, the crash log and Retry are wired to real paths', () => {
+    // The probe is the supervisor's, and the kill reuses the shutdown path so
+    // a wedged child recovers through `exit` → `notifyExit()`.
+    expect(source).toContain('fetchHealth: () => probeApiHealth()')
+    expect(source).toContain('await terminateApiChild(child)')
+    expect(source).toContain("logApiEvent('health_watchdog_tripped'")
+    // The renderer needs the attempt under way, and the dismissal.
+    expect(source).toContain("broadcastApiEvent('local-server:restarting'")
+    expect(source).toContain("broadcastApiEvent('local-server:restarted'")
+    expect(source).toContain("broadcastApiEvent('local-server:unavailable'")
+    // Every supervisor event lands on disk, stderr included.
+    expect(source).toContain("logApiEvent('spawn'")
+    expect(source).toContain("logApiEvent('exit', { pid: child.pid, code, signal, stderr: apiStderrTail() })")
+    expect(source).toContain('appendApiStderr(text)')
+    expect(source).toContain("logApiEvent('gave_up'")
+    // The Retry button.
+    expect(source).toContain('export async function restartLocalApiNow(')
+    expect(source).toContain('await apiSupervisor.restartNow()')
+  })
+
+  test('SHO-60: the preload and main process expose Retry and the log', () => {
+    const preload = readFileSync(join(import.meta.dir, '..', 'preload.ts'), 'utf8')
+    const main = readFileSync(join(import.meta.dir, '..', 'main.ts'), 'utf8')
+
+    expect(preload).toContain("ipcRenderer.invoke('local-server:restart-now')")
+    expect(preload).toContain("ipcRenderer.invoke('local-server:open-log')")
+    expect(preload).toContain("ipcRenderer.on('local-server:restarting'")
+    expect(main).toContain("ipcMain.handle('local-server:restart-now', () => restartLocalApiNow())")
+    expect(main).toContain("ipcMain.handle('local-server:open-log', () => openApiCrashLog())")
   })
 })

@@ -9,6 +9,14 @@ import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
 import { resolveHostTier } from './runtime-memory'
 import { resolveDesktopPath } from './login-shell-path'
 import { LocalApiSupervisor } from './local-api-supervisor'
+import {
+  appendApiCrashLog,
+  appendApiStderr,
+  apiStderrTail,
+  getApiCrashLogPath,
+  type ApiSupervisorEvent,
+} from './api-crash-log'
+import { addLocalApiBreadcrumb } from './sentry'
 
 // Shogo-reserved port range — chosen to avoid conflicts with common dev tools
 const PREFERRED_PORT = 39100
@@ -22,6 +30,9 @@ const MAX_HEALTH_RETRIES = 60
 const RESTART_HEALTH_RETRIES = 20
 const HEALTH_RETRY_DELAY_MS = 500
 const SHUTDOWN_TIMEOUT_MS = 5000
+// One watchdog probe's socket budget. The supervisor bounds the whole call as
+// well (see `DEFAULT_HEALTH_WATCHDOG.timeoutMs`), in case `fetch` itself hangs.
+const HEALTH_PROBE_TIMEOUT_MS = 3000
 
 let apiProcess: ChildProcess | null = null
 let apiPort: number = PREFERRED_PORT
@@ -49,28 +60,52 @@ let intentionalStop = false
  * (SHO-26: an agent shell that inherited `API_PORT` ran `bun dev:all`, whose
  * port-clearing step `kill -9`s whatever listens on it). Before this, a
  * SIGKILL left the app with no API until the user quit and relaunched.
+ *
+ * SHO-60 adds the watchdog: a child that stays alive but stops answering
+ * `/health` never fires `exit`, so the respawn policy below would never see it.
+ * The probe trips after three misses and `kill` turns that into the same
+ * `exit` → `notifyExit()` path — one restart loop, two ways in.
  */
 const apiSupervisor = new LocalApiSupervisor({
   start: ({ attempt }) =>
     bootApiServer(attempt === 0 ? MAX_HEALTH_RETRIES : RESTART_HEALTH_RETRIES),
+  fetchHealth: () => probeApiHealth(),
+  kill: async () => {
+    const child = apiProcess
+    if (child) await terminateApiChild(child)
+  },
+  onHealthFailure: ({ failures, maxFailures }) => {
+    console.warn(`[Desktop] Local API failed health probe ${failures}/${maxFailures}`)
+  },
+  onWatchdogTripped: ({ failures }) => {
+    console.error(
+      `[Desktop] Local API is not serving — ${failures} health probes failed in a row, restarting it`,
+    )
+    logApiEvent('health_watchdog_tripped', { failures, stderr: apiStderrTail() })
+  },
   onRestartAttempt: ({ attempt, maxAttempts, delayMs }) => {
     console.warn(
       `[Desktop] Local API server went away — restarting (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms`,
     )
+    logApiEvent('restart_attempt', { attempt, maxAttempts, delayMs })
+    broadcastApiEvent('local-server:restarting', { attempt, maxAttempts, delayMs })
   },
   onRestarted: ({ attempt, pid }) => {
+    logApiEvent('restarted', { attempt, pid })
     broadcastApiEvent('local-server:restarted', { attempt, pid })
   },
   onGiveUp: (error) => {
     console.error(`[Desktop] ${error.message}`)
+    logApiEvent('gave_up', { error: error.message, stderr: apiStderrTail() })
     broadcastApiEvent('local-server:unavailable', { error: error.message })
+    notifyLocalApiGaveUp(error)
     try {
       const { dialog } = require('electron') as typeof import('electron')
       dialog.showErrorBox(
         'Shogo lost its local server',
         `Shogo's local server stopped and could not be restarted automatically.\n\n` +
           `Details: ${error.message}\n\n` +
-          `Quit and relaunch Shogo to recover. Logs are in the app's main.log.`,
+          `Press Retry in the app to start it again, or check the API log.`,
       )
     } catch {
       // Headless (e2e) run: the log + IPC event are the surface.
@@ -78,8 +113,53 @@ const apiSupervisor = new LocalApiSupervisor({
   },
 })
 
+/**
+ * One liveness probe for the watchdog. A non-2xx answer counts as down: the
+ * API is up but not serving, which is exactly the failure this watches for.
+ */
+async function probeApiHealth(): Promise<boolean> {
+  try {
+    const res = await fetch(`${getApiUrl()}/health`, {
+      signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Persist one supervisor event (SHO-60) and leave a Sentry breadcrumb behind
+ * it, so a later crash report carries the API's recent lifecycle instead of
+ * arriving with no context. See `addLocalApiBreadcrumb` in `sentry.ts`.
+ */
+function logApiEvent(event: ApiSupervisorEvent, data: Record<string, unknown> = {}): void {
+  appendApiCrashLog(event, data)
+  addLocalApiBreadcrumb(event, data)
+}
+
+/**
+ * Give-up is otherwise invisible once the app is in the background — the
+ * renderer may not even be listening yet. A tray notification is the same
+ * plumbing the cloud-key warning uses.
+ */
+function notifyLocalApiGaveUp(error: Error): void {
+  try {
+    const { Notification } = require('electron') as typeof import('electron')
+    if (!Notification.isSupported()) return
+    new Notification({
+      title: "Shogo's local API is down",
+      body: 'It could not be restarted automatically. Open Shogo and press Retry in the banner.',
+      silent: false,
+    }).show()
+  } catch {
+    // Headless: the banner and the log carry it.
+  }
+  console.error(`[Desktop] Local API gave up: ${error.message}`)
+}
+
 function broadcastApiEvent(
-  channel: 'local-server:restarted' | 'local-server:unavailable',
+  channel: 'local-server:restarting' | 'local-server:restarted' | 'local-server:unavailable',
   payload: Record<string, unknown>,
 ): void {
   try {
@@ -533,6 +613,7 @@ function spawnApiServer(spec: ApiLaunchSpec): ChildProcess {
 
   apiProcess = child
   console.log(`[Desktop] API process spawned: pid=${child.pid}`)
+  logApiEvent('spawn', { pid: child.pid, port: apiPort })
 
   if (child.pid) {
     writePidFile(child.pid)
@@ -543,7 +624,11 @@ function spawnApiServer(spec: ApiLaunchSpec): ChildProcess {
   })
 
   child.stderr?.on('data', (data: Buffer) => {
-    console.error(`[API] ${data.toString().trim()}`)
+    const text = data.toString()
+    // The last lines before a crash are the only explanation of it, and they
+    // used to die with the process (SHO-60).
+    appendApiStderr(text)
+    console.error(`[API] ${text.trim()}`)
   })
 
   child.on('error', (err) => {
@@ -552,13 +637,22 @@ function spawnApiServer(spec: ApiLaunchSpec): ChildProcess {
 
   child.on('exit', (code, signal) => {
     console.log(`[Desktop] API server exited: code=${code}, signal=${signal}`)
+    logApiEvent('exit', { pid: child.pid, code, signal, stderr: apiStderrTail() })
     // A stale child's exit must never clobber the pid/handle of its replacement.
-    if (apiProcess === child) {
+    const wasCurrent = apiProcess === child
+    if (wasCurrent) {
       apiProcess = null
       removePidFile()
     }
     if (intentionalStop) {
       console.log('[Desktop] API server exited after a stop request — not restarting')
+      return
+    }
+    // A replacement already owns the port (a manual restart whose SIGKILL
+    // landed after its deadline). Respawning off this exit would spawn a
+    // third child on a taken port.
+    if (!wasCurrent && apiProcess !== null) {
+      console.log('[Desktop] Stale API child exited after a replacement was spawned — ignoring')
       return
     }
     void apiSupervisor.notifyExit(code, signal)
@@ -669,6 +763,66 @@ export async function stopLocalServer(): Promise<void> {
 
   apiProcess = null
   removePidFile()
+}
+
+/**
+ * The banner's Retry button (SHO-60). Kills whatever is left of the old child,
+ * clears the give-up state and boots a fresh one — no relaunch, no backoff
+ * wait. Runs through the supervisor so the watchdog/attempt counter stay
+ * consistent and the renderer still gets `local-server:restarted` on success.
+ */
+export async function restartLocalApiNow(): Promise<{
+  ok: boolean
+  pid?: number
+  error?: string
+}> {
+  logApiEvent('manual_restart', {})
+  if (!launchSpec) {
+    const error = 'The local API has not been launched yet in this session'
+    console.error(`[Desktop] Manual API restart failed: ${error}`)
+    return { ok: false, error }
+  }
+
+  try {
+    const { pid } = await apiSupervisor.restartNow()
+    console.log(`[Desktop] Local API restarted on user request (pid=${pid ?? 'unknown'})`)
+    return { ok: true, pid }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    console.error(`[Desktop] Manual API restart failed: ${error}`)
+    logApiEvent('gave_up', { error, trigger: 'manual_restart', stderr: apiStderrTail() })
+    broadcastApiEvent('local-server:unavailable', { error })
+    return { ok: false, error }
+  }
+}
+
+/**
+ * Reveal `api-supervisor.log` in the OS file manager — what the banner's
+ * "Open log" button calls. Returns the path so a headless caller can log it.
+ */
+export function openApiCrashLog(): { ok: boolean; path?: string; error?: string } {
+  let logPath: string
+  try {
+    logPath = getApiCrashLogPath()
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+
+  if (!existsSync(logPath)) {
+    return { ok: false, path: logPath, error: `No API supervisor log at ${logPath}` }
+  }
+
+  try {
+    const { shell } = require('electron') as typeof import('electron')
+    shell.showItemInFolder(logPath)
+    return { ok: true, path: logPath }
+  } catch (err) {
+    return {
+      ok: false,
+      path: logPath,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
 }
 
 function ensureDatabase(bunPath: string): void {

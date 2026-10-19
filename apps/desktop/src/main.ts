@@ -35,7 +35,14 @@ import fs from 'fs'
 import crypto from 'crypto'
 import http, { type Server as HttpServer } from 'http'
 import https from 'https'
-import { startLocalServer, stopLocalServer, getApiUrl, setExternalApiPort } from './local-server'
+import {
+  startLocalServer,
+  stopLocalServer,
+  getApiUrl,
+  setExternalApiPort,
+  restartLocalApiNow,
+  openApiCrashLog,
+} from './local-server'
 import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter, type DesktopLogLevel } from './signoz-log-exporter'
 import { getWebDir, getBunPath, getDbPath } from './paths'
 import {
@@ -1348,6 +1355,10 @@ function registerIpcHandlers(): void {
     app.relaunch()
     app.exit(0)
   })
+  // SHO-60: the local API's own recovery surface. Before this the only way back
+  // from a wedged/dead API was quitting and relaunching the whole app.
+  ipcMain.handle('local-server:restart-now', () => restartLocalApiNow())
+  ipcMain.handle('local-server:open-log', () => openApiCrashLog())
   ipcMain.handle('media:open-mic-settings', async () => {
     if (process.platform !== 'darwin') return { ok: false }
     await shell.openExternal(MAC_MIC_SETTINGS_URL)
