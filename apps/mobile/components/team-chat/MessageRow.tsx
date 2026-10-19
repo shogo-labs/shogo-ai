@@ -12,6 +12,7 @@ import * as Clipboard from 'expo-clipboard'
 import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, ExternalLink, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2, UserPlus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
+import type { MentionTarget } from '../chat/file-links'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
@@ -87,6 +88,10 @@ export interface MessageRowProps {
   onOpenSession?: (message: ChatMessage) => void
   /** Show an agent's project beside the conversation (wide screens only). */
   onOpenProjectPane?: (projectId: string, name: string) => void
+  /** Open a person's profile — from their name, their photo, or a mention of them. */
+  onOpenProfile?: (userId: string) => void
+  /** What an @-mention in the message points at (an agent is opened by the host). */
+  onMentionPress?: (target: MentionTarget) => void
   /** Move the read line back to just before this message. */
   onMarkUnread?: (message: ChatMessage) => void
   /** Turn this message into a card on one of the channel's boards. */
@@ -169,7 +174,7 @@ function Avatar({ message, onPress }: { message: ChatMessage; onPress?: () => vo
     return <ShogoAvatar workspaceId={message.workspaceId} />
   }
   const name = message.author?.name ?? 'Someone'
-  return (
+  const photo = (
     <View className="relative">
       {message.author?.image ? (
         <Image source={{ uri: resolveAvatarUrl(message.author.image) ?? undefined }} className="h-8 w-8 rounded-lg" accessibilityIgnoresInvertColors />
@@ -180,6 +185,12 @@ function Avatar({ message, onPress }: { message: ChatMessage; onPress?: () => vo
       )}
       <PresenceDot userId={message.authorUserId} size={10} badge />
     </View>
+  )
+  if (!onPress) return photo
+  return (
+    <Pressable onPress={onPress} accessibilityLabel={`${name} avatar`} accessibilityRole="button">
+      {photo}
+    </Pressable>
   )
 }
 
@@ -288,6 +299,20 @@ function MessageRowImpl(props: MessageRowProps) {
   const [draft, setDraft] = useState(message.text)
   const mine = !!me && message.authorUserId === me
   const deleted = !!message.deletedAt
+  /**
+   * An author's name and photo open their profile. An agent gets the quick
+   * card; a person gets whatever the host presents (the side pane on wide
+   * screens, the full page on a phone).
+   */
+  const opensProfile =
+    !deleted && (message.authorType === 'agent' || (message.authorType === 'user' && !!props.onOpenProfile && !!message.authorUserId))
+  const openAuthorProfile = useCallback(() => {
+    if (message.authorType === 'user') {
+      if (message.authorUserId) props.onOpenProfile?.(message.authorUserId)
+      return
+    }
+    setProfileOpen(true)
+  }, [message.authorType, message.authorUserId, props.onOpenProfile])
   const running = message.authorType === 'agent' && message.agentStatus === 'running'
   const body = running ? streaming?.text ?? '' : message.text
   const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
@@ -552,14 +577,14 @@ function MessageRowImpl(props: MessageRowProps) {
             </TimeTooltip>
           ) : null
         ) : (
-          <Avatar message={message} onPress={message.authorType === 'agent' && !deleted ? () => setProfileOpen(true) : undefined} />
+          <Avatar message={message} onPress={opensProfile ? openAuthorProfile : undefined} />
         )}
       </View>
       <View className="min-w-0 flex-1">
         {!grouped && (
           <View className="flex-row items-baseline gap-2">
-            {message.authorType === 'agent' && !deleted ? (
-              <Pressable onPress={() => setProfileOpen(true)} accessibilityLabel={`${authorName(message)} profile`}>
+            {opensProfile ? (
+              <Pressable onPress={openAuthorProfile} accessibilityRole="button" accessibilityLabel={`${authorName(message)} profile`}>
                 <Text className="text-sm font-semibold text-foreground">{authorName(message)}</Text>
               </Pressable>
             ) : (
@@ -706,7 +731,7 @@ function MessageRowImpl(props: MessageRowProps) {
                       {jumbo.map((code, i) => <ReactionGlyph key={`${code}-${i}`} emoji={code} size={32} />)}
                     </View>
                   ) : (
-                    <ChatMarkdown isStreaming={running} onLinkPress={openMessageLinkInApp}>{renderMentionsMarkdown(body, names)}</ChatMarkdown>
+                    <ChatMarkdown isStreaming={running} onLinkPress={openMessageLinkInApp} onMentionPress={props.onMentionPress}>{renderMentionsMarkdown(body, names)}</ChatMarkdown>
                   )}
                 </View>
               )

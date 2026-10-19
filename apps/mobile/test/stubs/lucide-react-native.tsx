@@ -322,6 +322,7 @@ export {
   Icon as UserCircle,
   Icon as UserMinus,
   Icon as UserPlus,
+  Icon as UserRound,
   Icon as Users,
   Icon as Video,
   Icon as VideoIcon,

@@ -7,9 +7,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Platform, Pressable, ScrollView, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { useRouter } from 'expo-router'
 import { ChevronLeft, Upload, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
+import type { MentionTarget } from '../chat/file-links'
 import { mentionNames, newestReadableSeq } from '../../lib/team-chat-state'
 import { runningAgentTypists, typingLabel } from '../../lib/team-chat-typing'
 import { useComposerColumnStyle } from '../chat/composer/useComposerColumnStyle'
@@ -51,6 +53,8 @@ export interface TimelinePaneProps {
   onOpenThread?: (message: ChatMessage) => void
   onOpenSession?: (message: ChatMessage) => void
   onOpenProjectPane?: (projectId: string, name: string) => void
+  /** Open a person's profile — from their name, their photo, or a mention of them. */
+  onOpenProfile?: (userId: string) => void
   onClose?: () => void
   onJoin?: () => void
   /** Scroll to and emphasize this message (from a message link or search). */
@@ -121,8 +125,25 @@ function confirmDelete(): Promise<boolean> {
 
 export function TimelinePane(props: TimelinePaneProps) {
   const { workspaceId, conversation, threadRootId = null, me, mentionables, visible, floating = false, topInset = 0 } = props
+  const router = useRouter()
   const chrome = usePhoneChromeOverlay()
   const insets = useSafeAreaInsets()
+  /**
+   * What tapping an @-mention does. A person opens their profile through the
+   * host (`onOpenProfile`), an agent opens its own profile page, and the
+   * broadcast/channel/group targets stay plain highlights — so a host that
+   * offers no profile gets exactly today's behaviour.
+   */
+  const mentionPress = useMemo(() => {
+    if (!props.onOpenProfile) return undefined
+    const openProfile = props.onOpenProfile
+    return (target: MentionTarget) => {
+      if (target.kind === 'u') return openProfile(target.id)
+      if (target.kind === 'a') {
+        router.push({ pathname: '/(app)/agents/[key]', params: { key: target.id } } as any)
+      }
+    }
+  }, [props.onOpenProfile, router])
   const [threadHeaderHeight, setThreadHeaderHeight] = useState(0)
   const [footerHeight, setFooterHeight] = useState(0)
   const [cardFrom, setCardFrom] = useState<ChatMessage | null>(null)
@@ -353,6 +374,8 @@ export function TimelinePane(props: TimelinePaneProps) {
       onDiscard={timeline.discard}
       onOpenSession={props.onOpenSession}
       onOpenProjectPane={props.onOpenProjectPane}
+      onOpenProfile={props.onOpenProfile}
+      onMentionPress={mentionPress}
       onMarkUnread={threadRootId || !conversation.joined ? undefined : onMarkUnread}
       onMakeCard={canMakeCards ? setCardFrom : undefined}
       unreadAfterSeq={filtering ? null : unread?.afterSeq ?? null}
@@ -421,6 +444,7 @@ export function TimelinePane(props: TimelinePaneProps) {
           createdAt={mentionNudge.createdAt}
           busy={mentionNudge.busy}
           error={mentionNudge.error}
+          onMentionPress={mentionPress}
           onAdd={() => void addMentioned()}
           onDismiss={() => setMentionNudge(null)}
           onDontShowAgain={() => {
@@ -436,6 +460,7 @@ export function TimelinePane(props: TimelinePaneProps) {
           names={names}
           createdAt={channelsAdded.createdAt}
           workspaceId={workspaceId}
+          onMentionPress={mentionPress}
         />
       )}
       <AddToChannelConfirmHost />

@@ -20,8 +20,10 @@ import {
   isMentionHref,
   linkifyBareUrls,
   linkifyFilePaths,
+  mentionTargetFromHref,
   pathFromFileHref,
   rewriteWorkspaceMedia,
+  type MentionTarget,
 } from "./file-links";
 import { MarkdownMediaNative } from "./MarkdownMediaNative";
 import { normalizeRichTextPaste } from "../../lib/rich-text-paste";
@@ -60,6 +62,8 @@ export interface MarkdownTextProps {
   fileExists?: (path: string) => boolean;
   /** Return true to handle a link in the app instead of opening it in a browser. */
   onLinkPress?: (href: string) => boolean;
+  /** Opens a person's or agent's profile when their @-mention is tapped. */
+  onMentionPress?: (target: MentionTarget) => void;
 }
 
 const baseStyles: MarkedStyles = {
@@ -234,6 +238,7 @@ class NativePhoneMarkdownRenderer extends Renderer {
     private readonly onFilePress?: (path: string) => void,
     private readonly onLinkPress?: (href: string) => boolean,
     private readonly fileExists?: (path: string) => boolean,
+    private readonly onMentionPress?: (target: MentionTarget) => void,
   ) {
     super();
   }
@@ -245,21 +250,34 @@ class NativePhoneMarkdownRenderer extends Renderer {
     title?: string,
   ): ReactNode {
     if (isMentionHref(href)) {
+      const mentionStyle = [
+        styles,
+        {
+          textDecorationLine: "none" as const,
+          fontWeight: "600" as const,
+          color: this.mentionColors.text,
+          backgroundColor: this.mentionColors.bg,
+          borderRadius: 4,
+        },
+      ];
+      const target = this.onMentionPress ? mentionTargetFromHref(href) : null;
+      const openMention = this.onMentionPress;
+      if (!target || !openMention) {
+        return (
+          <Text selectable testID="chat-mention" key={this.getKey()} style={mentionStyle}>
+            {children}
+          </Text>
+        );
+      }
       return (
         <Text
           selectable
           testID="chat-mention"
+          accessibilityRole="button"
+          accessibilityLabel={typeof children === "string" ? children : undefined}
           key={this.getKey()}
-          style={[
-            styles,
-            {
-              textDecorationLine: "none",
-              fontWeight: "600",
-              color: this.mentionColors.text,
-              backgroundColor: this.mentionColors.bg,
-              borderRadius: 4,
-            },
-          ]}
+          onPress={() => openMention(target)}
+          style={mentionStyle}
         >
           {children}
         </Text>
@@ -415,6 +433,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.onFilePress !== next.onFilePress) return false;
   if (prev.fileExists !== next.fileExists) return false;
   if (prev.onLinkPress !== next.onLinkPress) return false;
+  if (prev.onMentionPress !== next.onMentionPress) return false;
   const a = prev.children || "";
   const b = next.children || "";
   return a.length === b.length && a === b;
@@ -426,6 +445,7 @@ export const MarkdownText = memo(function MarkdownText({
   onFilePress,
   fileExists,
   onLinkPress,
+  onMentionPress,
 }: MarkdownTextProps) {
   const { colorScheme } = useColorScheme();
   const { width } = useWindowDimensions();
@@ -486,8 +506,18 @@ export const MarkdownText = memo(function MarkdownText({
         onFilePress,
         onLinkPress,
         fileExists,
+        onMentionPress,
       ),
-    [width, colors.tableHeaderBg, mentionColors, chipColors, onFilePress, onLinkPress, fileExists],
+    [
+      width,
+      colors.tableHeaderBg,
+      mentionColors,
+      chipColors,
+      onFilePress,
+      onLinkPress,
+      fileExists,
+      onMentionPress,
+    ],
   );
 
   return (

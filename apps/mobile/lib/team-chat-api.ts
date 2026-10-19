@@ -249,6 +249,23 @@ export interface AgentCard {
   channels: Array<{ conversationId: string; kind: string; name: string | null; slug: string | null; agentTrigger: string; muted: boolean }>
 }
 
+/** A person's profile: who they are, their local time, and their status. */
+export interface UserCard {
+  id: string
+  name: string
+  email: string
+  /** Email local part — the exact token search's `in:@` / `from:@` resolves. */
+  handle: string
+  image: string | null
+  role: string
+  isSelf: boolean
+  timezone: string | null
+  /** `HH:MM` on their clock. */
+  localTime: string | null
+  localTimeLabel: string | null
+  status: UserStatus | null
+}
+
 export interface UserGroup {
   id: string
   handle: string
@@ -733,6 +750,9 @@ export function teamChatApi() {
     async agentCard(workspaceId: string, projectId: string | null): Promise<AgentCard> {
       const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
       return (await http.get<{ card: AgentCard }>(`${ws(workspaceId)}/agent-card${qs}`)).data.card
+    },
+    async userCard(workspaceId: string, userId: string): Promise<UserCard> {
+      return (await http.get<{ card: UserCard }>(`${ws(workspaceId)}/user-card?userId=${encodeURIComponent(userId)}`)).data.card
     },
     /** Save an agent's buddy look; `null` goes back to the look generated from its id. */
     async setAgentBuddyLook(workspaceId: string, projectId: string | null, look: BuddyLook | null): Promise<BuddyLook | null> {

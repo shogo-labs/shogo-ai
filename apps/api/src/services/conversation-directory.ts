@@ -9,6 +9,7 @@
 import { prisma } from '../lib/prisma'
 import { loadAccess } from '../lib/authz'
 import { agentIconUrl, ConversationError, storedAgentBuddyLook } from './conversation.service'
+import { serializeSettings, getSettingsRow, timeInZone, toStatus, type UserStatus } from './chat-settings'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { resolveAgentRunModelLabel } from './agent-run-model.service'
 import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
@@ -182,6 +183,59 @@ export async function loadAgentCard(workspaceId: string, projectId: string | nul
     }))
   const model = await resolveAgentRunModelLabel(projectId, workspaceId)
   return { projectId, name, iconUrl: await agentIconUrl(workspaceId, projectId), buddyLook, canEdit, role, model, owner, channels }
+}
+
+export interface UserCard {
+  id: string
+  /** Never empty: falls back to the local part of the email. */
+  name: string
+  email: string
+  /** Email local part — the exact token search's `in:@` / `from:@` resolves. */
+  handle: string
+  image: string | null
+  role: string
+  isSelf: boolean
+  /** Null when the person has not set one; the local time is then unknown too. */
+  timezone: string | null
+  /** `HH:MM` on their clock, computed server-side. */
+  localTime: string | null
+  localTimeLabel: string | null
+  status: UserStatus | null
+}
+
+/**
+ * Profile card for a person in a workspace: who they are, their local time,
+ * and their status.
+ *
+ * Scoped to the workspace: a user who is not a member here gets null, so one
+ * workspace's member list can never be used to read another's emails. Callers
+ * must resolve the id from their own session, never from a client-supplied
+ * workspace.
+ */
+export async function loadUserCard(workspaceId: string, userId: string, viewerId: string): Promise<UserCard | null> {
+  const member = await db.member.findFirst({
+    where: { workspaceId, projectId: null, userId },
+    select: { role: true, user: { select: { id: true, name: true, email: true, image: true } } },
+  })
+  const user = member?.user
+  if (!user?.email) return null
+  const now = new Date()
+  const row = await getSettingsRow(workspaceId, userId)
+  const timezone = serializeSettings(row, now).timezone
+  const localTime = timeInZone(now, timezone)
+  return {
+    id: user.id,
+    name: user.name?.trim() || user.email.split('@')[0]!,
+    email: user.email,
+    handle: user.email.split('@')[0]!.toLowerCase(),
+    image: user.image ?? null,
+    role: member.role,
+    isSelf: user.id === viewerId,
+    timezone,
+    localTime,
+    localTimeLabel: localTime ? `${localTime} local time` : null,
+    status: toStatus(row, now),
+  }
 }
 
 /** `ws` for the workspace agent; a project id, optionally written as the mention key `p:<id>`. */

@@ -1746,3 +1746,123 @@ describe('MessageRow image attachments', () => {
     expect(screen.queryByTestId('image-lightbox')).toBeNull()
   })
 })
+
+describe('opening a person’s profile from a message', () => {
+  const profileOpener = () => mock((_userId: string) => {})
+  const channelConversation = {
+    id: 'c-eng', workspaceId: 'ws', kind: 'public', name: 'eng', slug: 'eng',
+    topic: null, lastSeq: 2, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
+    joined: true, starred: false, muted: false, notifyLevel: 'all', lastReadSeq: 2,
+    canPost: true, canReply: true, canManage: false, members: [],
+  }
+  const renderChannel = (onOpenProfile?: (userId: string) => void) =>
+    render(
+      <TimelinePane
+        workspaceId="ws"
+        conversation={{ ...channelConversation } as any}
+        me="u-me"
+        mentionables={{ ...mentionables, agents: [] }}
+        visible
+        onOpenProfile={onOpenProfile}
+      />,
+    )
+  const mentions = () => document.querySelectorAll('[data-testid="chat-mention"]')
+
+  beforeEach(() => {
+    activityTimeline.messages = []
+  })
+  afterEach(() => {
+    cleanup()
+    routed.length = 0
+    activityTimeline.messages = []
+  })
+
+  test('their name opens their profile', () => {
+    const onOpenProfile = profileOpener()
+    render(
+      <MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} onOpenProfile={onOpenProfile} {...handlers()} />,
+    )
+    fireEvent.click(screen.getByLabelText('Ana Lopez profile'))
+    expect(onOpenProfile).toHaveBeenCalledWith('u-ana')
+  })
+
+  test('their photo opens it too', () => {
+    const onOpenProfile = profileOpener()
+    render(
+      <MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} onOpenProfile={onOpenProfile} {...handlers()} />,
+    )
+    fireEvent.click(screen.getByLabelText('Ana Lopez avatar'))
+    expect(onOpenProfile).toHaveBeenCalledWith('u-ana')
+  })
+
+  test('is inert in a host that has nowhere to show one', () => {
+    render(
+      <MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+    // No handler, so the name is plain text rather than a dead button.
+    expect(screen.queryByLabelText('Ana Lopez profile')).toBeNull()
+    expect(screen.getByText('Ana Lopez')).toBeTruthy()
+  })
+
+  test('an agent author still gets its own card', async () => {
+    const onOpenProfile = profileOpener()
+    render(
+      <MessageRow
+        message={message({
+          authorType: 'agent', author: null, authorUserId: null,
+          authorAgent: { projectId: 'proj-1', name: 'Billing Bot' }, text: 'hello',
+        })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        onOpenProfile={onOpenProfile}
+        {...handlers()}
+      />,
+    )
+    fireEvent.click(screen.getAllByLabelText('Billing Bot profile')[0]!)
+    await screen.findByText('Sends invoices')
+    expect(onOpenProfile).not.toHaveBeenCalled()
+  })
+
+  test('a deleted message opens nothing', () => {
+    const onOpenProfile = profileOpener()
+    render(
+      <MessageRow
+        message={message({ deletedAt: '2026-09-29T11:00:00.000Z' })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        onOpenProfile={onOpenProfile}
+        {...handlers()}
+      />,
+    )
+    expect(screen.queryByLabelText('Ana Lopez profile')).toBeNull()
+    expect(onOpenProfile).not.toHaveBeenCalled()
+  })
+
+  test('tapping their mention in the text opens it too', () => {
+    const onOpenProfile = profileOpener()
+    activityTimeline.messages = [message({ text: 'ping <@u:u-ana> about the deck' })]
+    renderChannel(onOpenProfile)
+    fireEvent.click(mentions()[0]!)
+    expect(onOpenProfile).toHaveBeenCalledWith('u-ana')
+  })
+
+  test('an agent mention opens the agent profile page instead', () => {
+    routed.length = 0
+    activityTimeline.messages = [message({ text: 'thanks <@a:p:proj-1>' })]
+    renderChannel(mock(() => {}))
+    fireEvent.click(mentions()[0]!)
+    expect(routed).toEqual([{ pathname: '/(app)/agents/[key]', params: { key: 'p:proj-1' } }])
+  })
+
+  test('mentions stay plain highlights when the host offers no profile', () => {
+    const onOpenProfile = profileOpener()
+    activityTimeline.messages = [message({ text: 'ping <@u:u-ana>' })]
+    renderChannel()
+    expect(mentions()).toHaveLength(1)
+    expect(onOpenProfile).not.toHaveBeenCalled()
+  })
+})

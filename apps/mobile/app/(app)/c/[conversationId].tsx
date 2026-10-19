@@ -11,7 +11,9 @@
  * `?files=1` lists the conversation's files in the same pane.
  * `?board=<id>` shows one of the channel's boards in place of the timeline;
  * `?card=<id>` opens a card beside it on wide screens (taking over from the
- * other panes) and in its place on narrow ones.
+ * other panes) and in its place on narrow ones. `?profile=<userId>` shows a
+ * person's profile in that same pane; narrow screens push `/(app)/people/[userId]`
+ * instead, and closing it brings back a thread it was shown over.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
@@ -19,6 +21,7 @@ import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from '
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type ConversationFile } from '../../../lib/team-chat-api'
 import { sessionRoute } from '../../../lib/team-chat-nav'
+import { resolvePanes } from '../../../lib/team-chat-panes'
 import { useTeamChatEvents } from '../../../lib/team-chat-connection'
 import {
   invalidateConversationList,
@@ -38,6 +41,7 @@ import { ProjectSidePane } from '../../../components/team-chat/ProjectSidePane'
 import { FilesPane } from '../../../components/team-chat/FilesPane'
 import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/team-chat/SidePaneResizer'
 import { DocPane } from '../../../components/team-chat/DocPane'
+import { UserProfilePane } from '../../../components/team-chat/UserProfilePane'
 import { ChannelTabs, channelSupportsDoc } from '../../../components/team-chat/ChannelTabs'
 import { BoardKanban } from '../../../components/boards/BoardKanban'
 import { CardPane } from '../../../components/boards/CardPane'
@@ -55,6 +59,8 @@ const THREAD_PANE_MIN = 320
 const PROJECT_PANE_MIN = 420
 const DOC_PANE_MIN = 380
 const CARD_PANE_DEFAULT = 460
+/** Slack-style fixed profile card; it has no resizer. */
+const PROFILE_PANE_WIDTH = 380
 /** Room left for the main timeline so a pane can never cover the conversation. */
 const MAIN_TIMELINE_MIN = 480
 
@@ -72,6 +78,7 @@ export default function ConversationScreen() {
     doc?: string
     board?: string
     card?: string
+    profile?: string
   }>()
   const conversationId = first(params.conversationId) ?? null
   const threadRootId = first(params.thread) ?? null
@@ -81,6 +88,7 @@ export default function ConversationScreen() {
   const docParam = first(params.doc) === '1'
   const boardParam = first(params.board) ?? null
   const cardId = first(params.card) ?? null
+  const profilePaneId = first(params.profile) ?? null
   const router = useRouter()
   const navigation = useNavigation()
   const activeToken = useRef({}).current
@@ -254,6 +262,25 @@ export default function ConversationScreen() {
     [router],
   )
   const closeCard = useCallback(() => router.setParams({ card: undefined } as any), [router])
+  /**
+   * Open a person's profile. Wide screens get the side pane and narrow ones
+   * push the full page, the same split every other pane uses.
+   *
+   * Unlike the other panes this deliberately leaves `thread` in the URL: tapping
+   * a name while reading a thread shows the profile over it, and closing the
+   * profile brings the thread back instead of dropping you into the timeline.
+   */
+  const openProfile = useCallback(
+    (userId: string) => {
+      if (width >= THREAD_SIDE_PANE_MIN_WIDTH) {
+        router.setParams({ profile: userId, project: undefined, files: undefined, doc: undefined, card: undefined } as any)
+      } else {
+        router.push({ pathname: '/(app)/people/[userId]', params: { userId } } as any)
+      }
+    },
+    [router, width],
+  )
+  const closeProfile = useCallback(() => router.setParams({ profile: undefined } as any), [router])
   const openSession = useCallback(
     (message: ChatMessage) => {
       // The workspace agent has no project; its session opens in the workspace agent chat.
@@ -309,14 +336,17 @@ export default function ConversationScreen() {
   const supportsDoc = channelSupportsDoc(conversation)
   const boardId = supportsDoc && boardsOn ? boardParam : null
   const docOpen = supportsDoc && docParam && !boardId
-  const showDocPane = sidePane && docOpen
-  const showDocFull = !sidePane && docOpen
-  const showFilesPane = sidePane && filesOpen
-  const showFilesFull = !sidePane && filesOpen
-  const showCardPane = !!cardId && !showDocFull && !showFilesFull
-  const showProjectPane = sidePane && !!projectPaneId && !showDocPane && !showFilesPane && !showCardPane
-  const showThreadPane = !!threadRootId && !showCardPane && !showProjectPane && !showDocPane && !showDocFull && !showFilesPane && !showFilesFull
-  const showMain = !showDocFull && !showFilesFull && (sidePane || (!threadRootId && !cardId))
+  const {
+    showDocPane,
+    showDocFull,
+    showFilesPane,
+    showFilesFull,
+    showCardPane,
+    showProfilePane,
+    showProjectPane,
+    showThreadPane,
+    showMain,
+  } = resolvePanes({ sidePane, threadRootId, projectPaneId, filesOpen, docOpen, cardId, profilePaneId })
   const projectPaneName =
     (projectPaneId &&
       (conversation.members.find((m) => m.type === 'agent' && m.projectId === projectPaneId)?.name ??
@@ -426,6 +456,7 @@ export default function ConversationScreen() {
                 onOpenThread={openThread}
                 onOpenSession={openSession}
                 onOpenProjectPane={openProjectPaneCb}
+                onOpenProfile={openProfile}
                 onJoin={onJoin}
                 onOpenCard={boardsOn ? openCard : undefined}
                 floating={floating}
@@ -459,6 +490,7 @@ export default function ConversationScreen() {
               visible={visible}
               highlightMessageId={linkedMessageId}
               onOpenSession={openSession}
+              onOpenProfile={openProfile}
               onOpenCard={boardsOn ? openCard : undefined}
               onClose={closeThread}
               floating={floating}
@@ -552,6 +584,20 @@ export default function ConversationScreen() {
               </>
             )}
             <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} />
+          </View>
+        )}
+        {showProfilePane && profilePaneId && (
+          <View
+            className="relative shrink-0 border-l border-border bg-background"
+            style={{ width: PROFILE_PANE_WIDTH }}
+            testID="user-profile-pane"
+          >
+            <UserProfilePane
+              key={profilePaneId}
+              workspaceId={workspaceId}
+              userId={profilePaneId}
+              onClose={closeProfile}
+            />
           </View>
         )}
       </View>

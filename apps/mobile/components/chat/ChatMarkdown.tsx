@@ -8,6 +8,7 @@
 import type { ReactElement } from "react"
 import { Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import type { MentionTarget } from "./file-links"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 
 export interface ChatMarkdownProps {
@@ -19,6 +20,8 @@ export interface ChatMarkdownProps {
   fileExists?: (path: string) => boolean
   /** Return true to handle a link in the app instead of opening it in a browser. */
   onLinkPress?: (href: string) => boolean
+  /** Opens a person's or agent's profile when their @-mention is tapped. */
+  onMentionPress?: (target: MentionTarget) => void
   /** Extra classes. A color class such as `text-white` overrides the default. */
   className?: string
 }
@@ -37,6 +40,7 @@ export function ChatMarkdown({
   onFilePress,
   fileExists,
   onLinkPress,
+  onMentionPress,
   className,
 }: ChatMarkdownProps) {
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
@@ -52,6 +56,7 @@ export function ChatMarkdown({
       onFilePress={onFilePress}
       fileExists={fileExists}
       onLinkPress={onLinkPress}
+      onMentionPress={onMentionPress}
     >
       {children}
     </MarkdownText>

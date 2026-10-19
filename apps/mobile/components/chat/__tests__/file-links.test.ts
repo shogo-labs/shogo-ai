@@ -4,8 +4,11 @@ import { describe, expect, test } from "bun:test"
 import {
   fileHref,
   fileIndexHas,
+  isMentionHref,
   linkifyBareUrls,
   linkifyFilePaths,
+  mentionHref,
+  mentionTargetFromHref,
   pathFromFileHref,
   resolveChatFilePath,
 } from "../file-links"
@@ -145,5 +148,39 @@ describe("resolveChatFilePath", () => {
       relPath: "src/app.tsx",
     })
     expect(resolveChatFilePath("src/app.tsx", null)).toBeNull()
+  })
+})
+
+describe("mention targets", () => {
+  test("round-trips every mention kind, escaping keys that hold punctuation", () => {
+    expect(mentionHref("u", "user-1")).toBe("/shogo-mention/u/user-1")
+    // The workspace agent's key is `ws`; a project agent's is `p:<projectId>`.
+    expect(mentionHref("a", "ws")).toBe("/shogo-mention/a/ws")
+    expect(mentionHref("a", "p:proj-1")).toBe("/shogo-mention/a/p%3Aproj-1")
+    expect(mentionTargetFromHref("/shogo-mention/a/p%3Aproj-1")).toEqual({ kind: "a", id: "p:proj-1" })
+    expect(mentionTargetFromHref(mentionHref("g", "g1"))).toEqual({ kind: "g", id: "g1" })
+  })
+
+  test("a bare prefix has no target, so old and target-less mentions stay plain", () => {
+    // `@here`, `@channel`, `#channel` and every message stored before mentions
+    // carried an id render with the prefix alone.
+    expect(mentionTargetFromHref("/shogo-mention")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/u")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/u/u1/extra")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/x/u1")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/u/u1?q=1")).toBeNull()
+  })
+
+  test("is not confused by other hrefs or bad encoding", () => {
+    expect(mentionTargetFromHref(undefined)).toBeNull()
+    expect(mentionTargetFromHref(null)).toBeNull()
+    expect(mentionTargetFromHref("https://example.com/u/u1")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-file?path=src%2Fapp.tsx")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/u/%")).toBeNull()
+    // A bare prefix is still recognised as a mention, which is what the
+    // renderer keys the highlight off.
+    expect(isMentionHref("/shogo-mention")).toBe(true)
+    expect(isMentionHref("/shogo-mention/u/u1")).toBe(true)
   })
 })
