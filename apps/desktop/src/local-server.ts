@@ -8,6 +8,7 @@ import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } f
 import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
 import { resolveHostTier } from './runtime-memory'
 import { resolveDesktopPath } from './login-shell-path'
+import { getOrCreateSecretsEncryptionKey } from './local-secrets'
 import { LocalApiSupervisor } from './local-api-supervisor'
 import {
   appendApiCrashLog,
@@ -502,6 +503,11 @@ export async function startLocalServer(): Promise<void> {
     RUNTIME_BASE_PORT: String(RUNTIME_BASE_PORT),
     NODE_ENV: 'development',
     BETTER_AUTH_SECRET: getOrCreateAuthSecret(),
+    // Cloud supplies this from its environment; a packaged desktop never did,
+    // and `secret-crypto.ts` fails closed, so every at-rest credential write
+    // (provider keys, GitHub, Slack, integrations) threw on a fresh install
+    // (SHO-75). Generated once beside `.auth-secret` and reused forever.
+    SECRETS_ENCRYPTION_KEY: getOrCreateSecretsEncryptionKey(getDataDir()),
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
     SHOGO_BUN_PATH: bunPath,

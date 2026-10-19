@@ -28,12 +28,22 @@ import { stopAllPrismaStudios } from './routes/database'
 import { startLocalBackgroundWorkers, stopLocalBackgroundWorkers } from './lib/local-background-workers'
 import { resolveLocalApiPort } from './lib/local-api-port'
 import { prisma } from './lib/prisma'
+import { isSecretCryptoConfigured } from './lib/secret-crypto'
 import { ensureTranscriptionEngine } from './services/transcription-install.service'
 import { startCloudWorkspaceSync } from './services/cloud-workspaces'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 import { cloudSocketRelayHandlers, isCloudSocketRelayData } from './routes/local-cloud-proxy'
 
 const API_PORT = resolveLocalApiPort()
+// Desktop provisions SECRETS_ENCRYPTION_KEY at API-bootstrap time; docker and
+// self-host local mode do not (docker-compose.yml never sets it and
+// .env.local.template leaves it blank), where it used to surface only as a UI
+// error on the first credential write. Never log the key itself.
+console.log(
+  `[LocalAPI] secrets encryption: ${isSecretCryptoConfigured()
+    ? 'configured'
+    : 'NOT configured (SECRETS_ENCRYPTION_KEY unset or malformed) — provider keys, GitHub, Slack and integration credentials cannot be stored'}`,
+)
 const { app, runtimeManager, resetCaches: resetLocalCaches } = createLocalApp()
 
 await bootstrapLocalDatabase()
