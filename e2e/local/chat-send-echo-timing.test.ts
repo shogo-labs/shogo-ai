@@ -28,8 +28,13 @@ const TURN_URL_GLOB = "**/api/{projects,workspaces}/*/chat/*/turn"
 
 /** How long the live-turn probe is held open — the freeze the echo must not sit behind. */
 const PROBE_DELAY_MS = 1_500
-/** How long the bubble may take to paint, measured from the Enter keypress. */
-const ECHO_BUDGET_MS = Number(process.env.E2E_ECHO_BUDGET_MS || 100)
+/**
+ * How long the bubble may take to paint, measured from the Enter keypress.
+ * ~15–40 ms on an idle local machine, 106–126 ms on a loaded PR runner (3 shards
+ * in parallel, measured on #1525), so 250 ms is the default. The property under
+ * test is only "well under `PROBE_DELAY_MS`" — 250 ms is 6× under it.
+ */
+const ECHO_BUDGET_MS = Number(process.env.E2E_ECHO_BUDGET_MS || 250)
 const REPLY_TEXT = "Echo timing reply."
 
 // ─── SSE frames (AI SDK `UIMessageChunk`s, one JSON object per `data:` line) ─
@@ -205,7 +210,7 @@ test.describe("sent message paints before the live-turn probe — E2E (mocked)",
     const elapsed = await sendAndTimeEcho(page, second)
 
     // The probe is still in flight at this point: the bubble cannot be gated on it.
-    expect(elapsed).toBeLessThan(ECHO_BUDGET_MS)
+    expect(elapsed, `echo painted ${elapsed.toFixed(1)}ms after Enter`).toBeLessThan(ECHO_BUDGET_MS)
 
     const order = await transcriptOrder(page, second, REPLY_TEXT)
     // Composer cleared synchronously, bubble already at the bottom of the transcript.
