@@ -6,6 +6,7 @@ import {
   resetStuckDispatching,
 } from '../services/chat-queue-dispatcher.service'
 import { reconcileStuckTasks, sweepUnnotifiedWakes } from '../services/background-tasks.service'
+import { sweepPendingAgentWakes } from '../services/conversation-agent-dispatcher'
 
 const CHAT_QUEUE_DISPATCH_INTERVAL_MS = 15_000
 
@@ -22,6 +23,7 @@ const CHAT_QUEUE_DISPATCH_INTERVAL_MS = 15_000
 export async function runChatQueueDrain(): Promise<void> {
   await reconcileStuckTasks()
   await sweepUnnotifiedWakes()
+  await sweepPendingAgentWakes()
   await resetStuckDispatching()
   await dispatchPendingSessions()
 }

@@ -13,7 +13,7 @@
  *      per month, and a wallet that refuses must be retried rather than skipped.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, setSystemTime, test } from 'bun:test'
 import { setupChannelsTestDb } from '../../__tests__/helpers/channels-test-db'
 
 setupChannelsTestDb()
@@ -78,6 +78,11 @@ async function resetMonth() {
 }
 
 beforeAll(async () => {
+  // Every tick below passes a fixed October `now`, while `connectedAt` (and the
+  // rows reconcile adopts) default to the wall clock. Pin the wall clock before
+  // those ticks, or an account "connected" after the tick prorates to 0 and the
+  // suite starts failing the moment real time passes 2026-10-20T12:00Z.
+  setSystemTime(new Date('2026-10-15T00:00:00.000Z'))
   const workspace = await db.workspace.create({
     data: { name: 'Monthly Co', slug: `monthly-${crypto.randomUUID().slice(0, 8)}`, kind: 'team' },
   })
@@ -111,6 +116,7 @@ beforeEach(async () => {
 })
 
 afterAll(() => {
+  setSystemTime()
   setSocialUsageWallet(null)
   setSocialClient(null)
 })
