@@ -59,7 +59,7 @@ import {
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
-import { buildCapabilityStatusSection, resolveRuntimeCapabilities } from './capability-status-prompt'
+import { buildCapabilityStatusSection, resolveCapabilitiesForScope, resolveRuntimeCapabilities } from './capability-status-prompt'
 import { buildWakeStatusSection } from './wake-status-prompt'
 import { BOARDS_GUIDE, COMPANY_OPS_GUIDE } from './board-tools'
 import { TASK_WAKE_RETRY_MS } from './remote-tasks'
@@ -100,13 +100,14 @@ import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/
 import {
   isWorkspaceRuntimeMode,
   workspaceAttachedProjectIds,
+  workspaceAvailableProjectsManifest,
   workspaceExternalProjectIds,
   workspaceProjectsManifest,
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, getSessionWakeState, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, type SessionWakeState } from './internal-api'
-import { mergeCapabilitySettingsIntoConfig } from '@shogo/shared-runtime/capability-settings'
+import { deriveApiUrl, getInternalHeaders, getProjectConfig, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, type SessionWakeState } from './internal-api'
+import { mergeCapabilitySettingsIntoConfig, parseWorkspaceSettings } from '@shogo/shared-runtime/capability-settings'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
 import type { FilePart } from './file-attachment-utils'
@@ -463,6 +464,14 @@ export function describeTurnFailure(
 
 export type VisualMode = 'canvas' | 'app' | 'none'
 
+/**
+ * Which surface a chat turn belongs to. A workspace runtime serves both: the
+ * workspace agent (meta-agent) gets `workspace`, a project's own chat gets
+ * `project`. Capability toggles, the prompt block and `capabilities_configure`
+ * all resolve against the surface, so a workspace toggle can never gate a
+ * project chat or vice versa.
+ */
+export type ChatContext = 'workspace' | 'project'
 /** Separator between two prompt sections in the system prompt. */
 const SECTION_SEPARATOR = '\n\n---\n\n'
 
@@ -807,6 +816,21 @@ export class AgentGateway {
    */
   private contentReplacementStates = new Map<string, ContentReplacementState>()
   /**
+   * The workspace agent's own capability toggles (`Workspace.settings`), held
+   * separately from `this.config` (which caches the anchor project's
+   * `Project.settings`). A workspace runtime serves both surfaces, so one flat
+   * set of keys cannot answer for both. Mirrored into `config.json` under
+   * `workspaceCapabilities` as a last-known cache; the DB is the source of
+   * truth (see `syncCapabilitiesFromApi`).
+   */
+  private workspaceCapabilitySettings: Record<string, unknown> = {}
+  /**
+   * Surface each chat session belongs to. The message payload normally says
+   * (`chatContext`), but prompt builders and tools also ask per session, and
+   * a turn that did not say must not silently inherit the other surface.
+   */
+  private sessionChatContexts = new Map<string, ChatContext>()
+  /**
    * Per-session user-turn counter, incremented once on entry to `runTurn` and
    * reported as `prefix.turn` so a turn's cache numbers can be lined up with
    * the `[cache-prefix]` log line and the previous turn's hashes.
@@ -912,6 +936,7 @@ export class AgentGateway {
     this.workspaceDir = workspaceDir
     this._constructedProjectId = projectId
     this.config = this.loadConfig()
+    this.workspaceCapabilitySettings = this.loadWorkspaceCapabilitySettings()
     this.sessionManager = new SessionManager(this.config.session)
     this.fileStateCache.setWorkspaceDir(workspaceDir)
     this.mcpClientManager.setWorkspaceDir(workspaceDir)
@@ -1277,6 +1302,81 @@ export class AgentGateway {
   }
 
   /**
+   * Read the raw `config.json` object (empty when absent or unparseable).
+   * Shared by `loadConfig()` and the workspace-capabilities cache.
+   */
+  private readConfigFile(): Record<string, unknown> {
+    const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
+    if (!configPath) return {}
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+
+  /**
+   * Load the cached copy of the workspace agent's own settings. The DB
+   * (`Workspace.settings`) is the source of truth; this is the last-known
+   * cache, exactly like `config.json`'s capability keys for a project.
+   */
+  private loadWorkspaceCapabilitySettings(): Record<string, unknown> {
+    const raw = this.readConfigFile()
+    return parseWorkspaceSettings(raw.workspaceCapabilities)
+  }
+
+  /**
+   * Which surface this turn belongs to. Explicit `chatContext` wins; then the
+   * surface recorded for the session when it last ran; then the boot mode.
+   *
+   * Only a runtime with NO anchor project is unambiguously the workspace agent.
+   * A pinned runtime (`ws:proj:<anchor>`) serves both surfaces, so an
+   * unlabelled turn there (a channel message, a heartbeat) is treated as a
+   * project chat — the pre-split behaviour, and the safer default, because a
+   * project chat must never be gated by workspace toggles.
+   */
+  resolveChatContext(sessionId?: string, chatContext?: ChatContext): ChatContext {
+    const explicit = chatContext ?? (sessionId ? this.sessionChatContexts.get(sessionId) : undefined)
+    if (explicit) return explicit
+    return isWorkspaceRuntimeMode() && !process.env.WORKSPACE_ANCHOR_PROJECT_ID ? 'workspace' : 'project'
+  }
+
+  /** Record which surface a session runs in (the runtime told us per message). */
+  rememberChatContext(sessionId: string, chatContext: ChatContext): void {
+    if (sessionId) this.sessionChatContexts.set(sessionId, chatContext)
+  }
+
+  /**
+   * Capability config for a turn's surface. `project` uses `this.config`
+   * (cached from the anchor/own project's `Project.settings`); `workspace`
+   * overlays the workspace agent's own toggles, with the workspace-scope
+   * defaults applied for keys it has never stored.
+   *
+   * Everything else in the returned config is the runtime's: model, sandbox,
+   * mode. Only capability decisions differ per surface.
+   */
+  configForTurn(sessionId?: string, chatContext?: ChatContext): GatewayConfig {
+    if (this.resolveChatContext(sessionId, chatContext) !== 'workspace') return this.config
+    const caps = resolveCapabilitiesForScope(
+      {
+        ...this.workspaceCapabilitySettings,
+        capabilityProfile: this.config.capabilityProfile,
+        activeMode: this.config.activeMode,
+      },
+      'workspace',
+    )
+    return { ...this.config, ...caps }
+  }
+
+  /** Name of a project in this runtime's catalog, for prompt titles. */
+  private projectDisplayName(projectId: string | undefined): string | undefined {
+    if (!projectId) return undefined
+    const entry = [...workspaceProjectsManifest(), ...workspaceAvailableProjectsManifest()].find((p) => p.id === projectId)
+    return entry?.name
+  }
+
+  /**
    * Register `.shogo/agents/*.md` types from the workspace root and, in a
    * workspace runtime, from every attached project. Idempotent; cheap enough
    * to run per turn.
@@ -1318,10 +1418,11 @@ export class AgentGateway {
     console.log('[AgentGateway] Starting...')
     this.running = true
 
-    // Project.settings is the source of truth for capability toggles. Pull
-    // them before the first turn so a stale config.json cannot override the
-    // database. A failed pull keeps the last-known cache; opt-in tools stay
-    // off when there is no cache yet.
+    // The database is the source of truth for capability toggles — the
+    // project's `Project.settings`, and in a workspace runtime the workspace
+    // agent's `Workspace.settings` too. Pull them before the first turn so a
+    // stale config.json cannot override it. A failed pull keeps the last-known
+    // cache; opt-in tools stay off when there is no cache yet.
     try {
       await this.syncCapabilitiesFromApi()
     } catch (err: any) {
@@ -2163,6 +2264,8 @@ export class AgentGateway {
       confirmedPlan?: { name: string; overview: string; plan: string; todos?: Array<{ id: string; content: string }>; filepath?: string }
       dualPlan?: boolean
       chatSessionId?: string
+      /** Surface this chat belongs to (workspace agent vs a project's own chat). */
+      chatContext?: ChatContext
     },
   ): Promise<void> {
     // chatSessionId is REQUIRED. The runtime's HTTP layer enforces this
@@ -2264,7 +2367,7 @@ export class AgentGateway {
     const interactionMode = options?.confirmedPlan ? 'agent' : (options?.interactionMode || 'agent')
     const dualPlan = options?.dualPlan === true
     console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), dualPlan: ${dualPlan}, sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
-    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode, dualPlan, options?.requesterTicket)
+    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode, dualPlan, options?.requesterTicket, options?.chatContext)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -2664,6 +2767,8 @@ export class AgentGateway {
     dualPlan: boolean = false,
     /** Only chat turns a person started carry one; see integration-credentials.ts. */
     requesterTicket?: string,
+    /** Surface this turn belongs to (workspace agent vs a project's own chat). */
+    chatContext?: ChatContext,
   ): Promise<string> {
     // Wait for any in-flight turn on this session to finish so the new turn
     // reads a fully-updated session history (important for "continue" after a
@@ -2676,7 +2781,7 @@ export class AgentGateway {
     }
 
     this._currentTask = isHeartbeat ? 'heartbeat' : prompt.slice(0, 120)
-    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode, dualPlan, requesterTicket)
+    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode, dualPlan, requesterTicket, chatContext)
     this.turnLocks.set(sessionId, turnPromise)
     try {
       return await turnPromise
@@ -2700,7 +2805,15 @@ export class AgentGateway {
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
     dualPlan: boolean = false,
     requesterTicket?: string,
+    chatContext?: ChatContext,
   ): Promise<string> {
+    // Resolve the surface up front and remember it for the session, so every
+    // capability decision this turn makes — tools, prompt block, the
+    // capabilities_configure tool — reads the same config.
+    const resolvedChatContext = this.resolveChatContext(sessionId, chatContext)
+    this.rememberChatContext(sessionId, resolvedChatContext)
+    const turnConfig = this.configForTurn(sessionId, resolvedChatContext)
+
     // Reload skills and quick actions from disk so any files created/edited/deleted by file tools are picked up
     this.skills = loadAllSkills(this.workspaceDir)
     this.quickActions = loadQuickActions(this.workspaceDir)
@@ -2730,7 +2843,7 @@ export class AgentGateway {
       if (wt) sessionWorkspaceDir = wt
     }
 
-    let systemPrompt = this.loadBootstrapContext(sessionId)
+    let systemPrompt = this.loadBootstrapContext(sessionId, turnConfig, resolvedChatContext)
 
     console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
     // Interaction mode system prompt injection
@@ -2855,7 +2968,15 @@ export class AgentGateway {
     const toolContext: ToolContext = {
       workspaceDir: sessionWorkspaceDir,
       channels: this.channels,
-      config: this.config,
+      // The surface's config: a workspace chat reads the workspace agent's own
+      // toggles, a project chat its project's. `capabilities_configure` writes
+      // to whichever scope this names.
+      config: turnConfig,
+      capabilityScope: resolvedChatContext === 'workspace' ? 'workspace' : 'project',
+      capabilityConfigs: {
+        workspace: this.configForTurn(sessionId, 'workspace'),
+        project: this.config,
+      },
       projectId: this.projectId,
       workspaceId: process.env.WORKSPACE_ID,
       sessionId,
@@ -2999,7 +3120,7 @@ export class AgentGateway {
     // Capability toggles (independent of mode). Shared with the subagent
     // parent-tool path (allToolsGetter) so disabling a capability removes its
     // tools everywhere, not just from the main agent.
-    assembledTools = filterDisabledCapabilityTools(assembledTools, this.config)
+    assembledTools = filterDisabledCapabilityTools(assembledTools, turnConfig)
     // Code analysis tools are only available via subagents (code-reviewer, explore)
     const CODE_REVIEW_ONLY_TOOLS = new Set(['detect_changes', 'review_context', 'impact_radius'])
     assembledTools = assembledTools.filter(t => !CODE_REVIEW_ONLY_TOOLS.has(t.name))
@@ -3012,7 +3133,7 @@ export class AgentGateway {
     // my email" or "set up a reminder" requests.
     // (Media tools are not delegated: the project's own agent calls them, gated
     // by imageGenEnabled / videoGenEnabled / threeDGenEnabled.)
-    assembledTools = filterSubagentOnlyTools(assembledTools, this.config)
+    assembledTools = filterSubagentOnlyTools(assembledTools, turnConfig)
 
     // Snapshot the full agent-mode tool set BEFORE any read-only mode
     // restriction. Used to (a) guarantee core tools survive in agent mode and
@@ -3047,7 +3168,7 @@ export class AgentGateway {
     // exec/edit_file/write_file, surfacing as "Tool not found" mid-session.
     if (!restrictedMode) {
       const present = new Set(assembledTools.map(t => t.name))
-      for (const name of expectedCoreToolsForAgentMode(this.config)) {
+      for (const name of expectedCoreToolsForAgentMode(turnConfig)) {
         if (present.has(name)) continue
         const recovered = baseTools.find(t => t.name === name)
         if (recovered) {
@@ -4599,7 +4720,13 @@ export class AgentGateway {
     ]
   }
 
-  private buildSWEPrompt(sessionId?: string): string {
+  private buildSWEPrompt(
+    sessionId?: string,
+    cfg: GatewayConfig = this.config,
+    // Production always passes the turn's surface; the default is `project` so
+    // a direct call cannot silently pick up a boot-env workspace mode.
+    chatContext: ChatContext = 'project',
+  ): string {
     const parts: string[] = []
     const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
 
@@ -4628,15 +4755,19 @@ export class AgentGateway {
     }
 
     parts.push(buildCodeAgentGeneralGuide())
-    if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
-    parts.push(buildCapabilityStatusSection(this.config))
+    if (cfg.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    parts.push(buildCapabilityStatusSection(cfg, {
+      scope: chatContext === 'workspace' ? 'workspace' : 'project',
+      projectName: chatContext === 'workspace' ? undefined : this.projectDisplayName(this.projectId),
+      anchorProjectName: chatContext === 'workspace' ? this.projectDisplayName(process.env.WORKSPACE_ANCHOR_PROJECT_ID) : undefined,
+    }))
     parts.push(OUTPUT_CONTRACT_GUIDE)
-    if (this.config.browserEnabled !== false) {
+    if (cfg.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
     parts.push(BACKGROUND_TASKS_GUIDE)
     if (!subagentOrchestrationDisabled(this.config)) parts.push(SUBAGENT_GUIDE)
-    if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
+    if (cfg.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
@@ -4654,7 +4785,11 @@ export class AgentGateway {
    * Includes workspace context, coding guide, and skills — but skips personality,
    * canvas, templates, memory, and other Shogo-specific sections.
    */
-  private buildGeneralPrompt(sessionId?: string): string {
+  private buildGeneralPrompt(
+    sessionId?: string,
+    cfg: GatewayConfig = this.config,
+    chatContext: ChatContext = 'project',
+  ): string {
     const parts: string[] = []
     const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
 
@@ -4675,9 +4810,13 @@ export class AgentGateway {
     }
 
     parts.push(buildCodeAgentGeneralGuide())
-    if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
-    parts.push(buildCapabilityStatusSection(this.config))
-    if (this.config.browserEnabled !== false) {
+    if (cfg.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    parts.push(buildCapabilityStatusSection(cfg, {
+      scope: chatContext === 'workspace' ? 'workspace' : 'project',
+      projectName: chatContext === 'workspace' ? undefined : this.projectDisplayName(this.projectId),
+      anchorProjectName: chatContext === 'workspace' ? this.projectDisplayName(process.env.WORKSPACE_ANCHOR_PROJECT_ID) : undefined,
+    }))
+    if (cfg.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
     parts.push(SELF_EVOLUTION_GUIDE)
@@ -4689,7 +4828,7 @@ export class AgentGateway {
       }
     }
 
-    if (this.config.quickActionsEnabled !== false) {
+    if (cfg.quickActionsEnabled !== false) {
       parts.push(QUICK_ACTION_GUIDE)
       if (this.quickActions.length > 0) {
         const qaSection = buildQuickActionsPromptSection(this.quickActions)
@@ -4699,7 +4838,7 @@ export class AgentGateway {
 
     parts.push(BACKGROUND_TASKS_GUIDE)
     if (!subagentOrchestrationDisabled(this.config)) parts.push(SUBAGENT_GUIDE)
-    if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
+    if (cfg.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
@@ -4712,12 +4851,22 @@ export class AgentGateway {
     return parts.join('\n\n---\n\n')
   }
 
-  private loadBootstrapContext(sessionId?: string): string {
-    if (this.config.promptProfile === 'swe') {
-      return this.buildSWEPrompt(sessionId)
+  /**
+   * Build the system prompt for one turn. `cfg` is the turn's surface config
+   * (`configForTurn`), so capability guidance and gates match the surface the
+   * turn runs in; it defaults to the runtime's project config for callers with
+   * no turn context.
+   */
+  private loadBootstrapContext(
+    sessionId?: string,
+    cfg: GatewayConfig = this.config,
+    chatContext: ChatContext = this.resolveChatContext(sessionId),
+  ): string {
+    if (cfg.promptProfile === 'swe') {
+      return this.buildSWEPrompt(sessionId, cfg, chatContext)
     }
-    if (this.config.promptProfile === 'general') {
-      return this.buildGeneralPrompt(sessionId)
+    if (cfg.promptProfile === 'general') {
+      return this.buildGeneralPrompt(sessionId, cfg, chatContext)
     }
 
     // =========================================================================
@@ -4787,8 +4936,8 @@ export class AgentGateway {
     }
 
     // 1. Mode-specific canvas/tool guides (changes only on mode switch)
-    const activeMode = this.config.activeMode || 'canvas'
-    if (this.config.canvasEnabled !== false) {
+    const activeMode = cfg.activeMode || 'canvas'
+    if (cfg.canvasEnabled !== false) {
       for (const [id, text] of canvasModeStableGuides(activeMode)) {
         pushStable(id, text)
       }
@@ -4797,14 +4946,14 @@ export class AgentGateway {
     // 2. General coding guide (always the same)
     pushStable('code-agent-guide', buildCodeAgentGeneralGuide())
     pushStable('background-tasks-guide', BACKGROUND_TASKS_GUIDE)
-    if (this.config.capabilityProfile === 'personal') {
+    if (cfg.capabilityProfile === 'personal') {
       pushStable('personal-companion-mode', PERSONAL_COMPANION_GUIDE)
     }
 
     // 2b. Shogo SDK guide — when/how to reach for @shogo-ai/sdk in user apps.
     // Toggleable so projects that don't ship a Shogo app (pure-chat agents,
     // SWE benches, etc.) can drop ~2k tokens from the cached prefix.
-    if (this.config.sdkGuideEnabled !== false) {
+    if (cfg.sdkGuideEnabled !== false) {
       pushStable('shogo-sdk-guide', getShogoSdkGuide())
     }
 
@@ -4813,15 +4962,21 @@ export class AgentGateway {
     // saving ~4,600 tokens per turn compared to inlining all guides.
     // Shogo-platform surfaces — gated so code-only agents can drop messaging,
     // integration, and heartbeat guidance from the cached prefix.
-    const integrationsGuideOn = this.config.integrationsEnabled !== false
-    const channelsGuideOn = this.config.channelsEnabled !== false
-    const imageGuideOn = this.config.imageGenEnabled !== false
-    const videoGuideOn = this.config.videoGenEnabled === true
-    const threeDGuideOn = this.config.threeDGenEnabled === true
-    const devopsGuideOn = this.config.heartbeatToolsEnabled !== false
+    const integrationsGuideOn = cfg.integrationsEnabled !== false
+    const channelsGuideOn = cfg.channelsEnabled !== false
+    const imageGuideOn = cfg.imageGenEnabled !== false
+    const videoGuideOn = cfg.videoGenEnabled === true
+    const threeDGuideOn = cfg.threeDGenEnabled === true
+    const devopsGuideOn = cfg.heartbeatToolsEnabled !== false
 
     this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
-    pushStable('capability-status', buildCapabilityStatusSection(this.config))
+    pushStable('capability-status', buildCapabilityStatusSection(cfg, {
+      scope: chatContext === 'workspace' ? 'workspace' : 'project',
+      // Only the surface's own name: the anchor project's toggles are a
+      // separate, labelled pointer inside a workspace block, never the title.
+      projectName: chatContext === 'workspace' ? undefined : this.projectDisplayName(this.projectId),
+      anchorProjectName: chatContext === 'workspace' ? this.projectDisplayName(process.env.WORKSPACE_ANCHOR_PROJECT_ID) : undefined,
+    }))
     pushStable('capabilities-index', buildCapabilitiesIndex({
       integrations: integrationsGuideOn,
       channels: channelsGuideOn,
@@ -4885,12 +5040,12 @@ export class AgentGateway {
       ].join('\n'))
     }
 
-    if (this.config.quickActionsEnabled !== false) {
+    if (cfg.quickActionsEnabled !== false) {
       pushStable('quick-action-guide', QUICK_ACTION_GUIDE)
     }
 
-    const workCaps = resolveRuntimeCapabilities(this.config as unknown as Record<string, unknown>)
-    if (teamChatToolsAvailable(this.config.capabilityProfile)) {
+    const workCaps = resolveCapabilitiesForScope(cfg as unknown as Record<string, unknown>, chatContext === 'workspace' ? 'workspace' : 'project')
+    if (teamChatToolsAvailable(cfg.capabilityProfile)) {
       if (workCaps.teamChatEnabled) pushStable('team-chat-guide', TEAM_CHAT_GUIDE)
       if (workCaps.boardsEnabled) pushStable('boards-guide', BOARDS_GUIDE)
       if (workCaps.companyOpsEnabled && workCaps.boardsEnabled && workCaps.heartbeatToolsEnabled) {
@@ -5094,7 +5249,7 @@ export class AgentGateway {
     }
 
     // 11b. Quick actions (can change when agent registers new ones)
-    if (this.config.quickActionsEnabled !== false && this.quickActions.length > 0) {
+    if (cfg.quickActionsEnabled !== false && this.quickActions.length > 0) {
       const qaSection = buildQuickActionsPromptSection(this.quickActions)
       if (qaSection) {
         pushDynamic('quick-actions', qaSection)
@@ -5833,6 +5988,7 @@ export class AgentGateway {
       workspaceDir: defaultShellCwd(this.workspaceDir),
       channels: this.channels,
       config: this.config,
+      capabilityScope: 'project',
       projectId: process.env.WORKSPACE_ANCHOR_PROJECT_ID || this.projectId,
       workspaceId: process.env.WORKSPACE_ID,
       sandbox: this.config.sandbox,
@@ -6044,6 +6200,7 @@ export class AgentGateway {
 
   reloadConfig(): void {
     this.config = this.loadConfig()
+    this.workspaceCapabilitySettings = this.loadWorkspaceCapabilitySettings()
     this.skills = loadAllSkills(this.workspaceDir)
     this.quickActions = loadQuickActions(this.workspaceDir)
     setLoadedSkills(this.skills)
@@ -6052,57 +6209,74 @@ export class AgentGateway {
   }
 
   /**
-   * Pull capability toggles from `Project.settings` and write them into
-   * `config.json`. The database wins over a stale cache. When the API can't
-   * be reached, the file is left as-is.
+   * Pull capability toggles from the database into `config.json`: the
+   * project's `Project.settings` (flat, as before) and, in a workspace
+   * runtime, the workspace agent's own `Workspace.settings` (under
+   * `workspaceCapabilities`). The database wins over a stale cache; when the
+   * API can't be reached the file is left as-is.
    *
-   * Workspace runtimes (no project id) and processes without internal-API
-   * credentials skip the pull. Tests pass `fetchConfig` to skip the
-   * credential check and the network.
+   * Both pulls are independent: a workspace runtime with no anchor project
+   * (`ws:<workspaceId>`, no `PROJECT_ID`) still syncs the workspace agent's
+   * toggles, which is the whole point — its capabilities are the workspace's,
+   * not a project's. Processes without internal-API credentials skip the pull.
+   * Tests pass `fetchConfig` / `fetchWorkspaceConfig` to skip the credential
+   * check and the network.
    *
-   * Returns true when the database was applied.
+   * Returns true when at least one database read was applied.
    */
   async syncCapabilitiesFromApi(
     fetchConfig?: (projectId: string) => Promise<{ ok: boolean; data?: { settings?: unknown } | null }>,
+    fetchWorkspaceConfig?: (workspaceId: string) => Promise<{ ok: boolean; data?: { settings?: unknown } | null }>,
   ): Promise<boolean> {
-    const projectId = projectScopedId(this.projectId)
-    if (!projectId) return false
-    if (!fetchConfig && !hasInternalApiCredentials()) return false
+    if (!fetchConfig && !fetchWorkspaceConfig && !hasInternalApiCredentials()) return false
 
-    let result: { ok: boolean; data?: { settings?: unknown } | null }
-    try {
-      result = fetchConfig
-        ? await fetchConfig(projectId)
-        : await getProjectConfig(projectId, 3_000)
-    } catch (err: any) {
-      console.warn(`[AgentGateway] capability sync failed: ${err?.message ?? err}`)
-      return false
-    }
-    if (!result.ok || !result.data) {
-      console.warn('[AgentGateway] capability sync skipped; keeping the last-known config.json')
-      return false
-    }
+    const projectId = projectScopedId(this.projectId)
+    const workspaceId = isWorkspaceRuntimeMode() ? (process.env.WORKSPACE_ID || null) : null
+    if (!projectId && !workspaceId) return false
 
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
       ?? join(this.workspaceDir, 'config.json')
-    let fileConfig: Record<string, unknown> = {}
-    if (existsSync(configPath)) {
+    const fileConfig = this.readConfigFile()
+    let next: Record<string, unknown> = { ...fileConfig }
+    let applied = false
+
+    if (projectId) {
+      let result: { ok: boolean; data?: { settings?: unknown } | null } | undefined
       try {
-        const parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          fileConfig = parsed
-        }
-      } catch {
-        fileConfig = {}
+        result = fetchConfig ? await fetchConfig(projectId) : await getProjectConfig(projectId, 3_000)
+      } catch (err: any) {
+        console.warn(`[AgentGateway] capability sync failed: ${err?.message ?? err}`)
+      }
+      if (result?.ok && result.data) {
+        next = mergeCapabilitySettingsIntoConfig(next, result.data.settings).config
+        applied = true
+      } else if (result) {
+        console.warn('[AgentGateway] capability sync skipped; keeping the last-known config.json')
       }
     }
 
-    const { config, changed } = mergeCapabilitySettingsIntoConfig(fileConfig, result.data.settings)
-    if (changed) {
-      writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    if (workspaceId) {
+      let result: { ok: boolean; data?: { settings?: unknown } | null } | undefined
+      try {
+        result = fetchWorkspaceConfig
+          ? await fetchWorkspaceConfig(workspaceId)
+          : await getWorkspaceConfig(workspaceId, 3_000)
+      } catch (err: any) {
+        console.warn(`[AgentGateway] workspace capability sync failed: ${err?.message ?? err}`)
+      }
+      if (result?.ok && result.data) {
+        next = { ...next, workspaceCapabilities: parseWorkspaceSettings(result.data.settings) }
+        applied = true
+      } else if (result) {
+        console.warn('[AgentGateway] workspace capability sync skipped; keeping the last-known config.json')
+      }
     }
-    this.reloadConfig()
-    return true
+
+    if (applied && JSON.stringify(next) !== JSON.stringify(fileConfig)) {
+      writeFileSync(configPath, JSON.stringify(next, null, 2), 'utf-8')
+    }
+    if (applied) this.reloadConfig()
+    return applied
   }
 
   // ── BETA: per-chat git worktrees ──────────────────────────────────────────

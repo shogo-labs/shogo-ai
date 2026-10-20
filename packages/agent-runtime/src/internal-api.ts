@@ -2031,6 +2031,44 @@ export async function configureProject(
   })
 }
 
+/**
+ * The workspace agent's own settings (`Workspace.settings`), not a project's.
+ * A workspace runtime serves both surfaces, so its capability toggles live
+ * here while a project chat keeps `Project.settings`.
+ */
+export interface WorkspaceConfigSnapshot {
+  id: string
+  name: string
+  kind: string
+  settings: unknown
+}
+
+export interface WorkspaceConfigPatch {
+  settings?: Record<string, unknown>
+}
+
+export async function getWorkspaceConfig(
+  workspaceId: string,
+  timeoutMs?: number,
+): Promise<CheckpointCallResult<WorkspaceConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/config`, {
+    method: 'GET',
+    timeoutMs,
+    parse: (j) => j?.workspace as WorkspaceConfigSnapshot,
+  })
+}
+
+export async function configureWorkspace(
+  workspaceId: string,
+  patch: WorkspaceConfigPatch,
+): Promise<CheckpointCallResult<WorkspaceConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/config`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+    parse: (j) => j?.workspace as WorkspaceConfigSnapshot,
+  })
+}
+
 export interface AgentCallRequest {
   message: string
   /** Pipeline correlation id, threaded into the callee's AgentCostMetric.metadata. */

@@ -17,6 +17,7 @@ export interface WorkspaceType {
   slug: string
   description?: string
   ssoSettings?: Record<string, unknown>
+  settings?: Record<string, unknown>
   instanceSize: InstanceSize
   composioScope: string
   trainingDataMode: string
@@ -34,6 +35,7 @@ export interface WorkspaceCreateInput {
   slug: string
   description?: string
   ssoSettings?: Record<string, unknown>
+  settings?: Record<string, unknown>
   instanceSize?: InstanceSize
   composioScope?: string
   trainingDataMode?: string
@@ -49,6 +51,7 @@ export interface WorkspaceUpdateInput {
   slug?: string
   description?: string
   ssoSettings?: Record<string, unknown>
+  settings?: Record<string, unknown>
   instanceSize?: InstanceSize
   composioScope?: string
   trainingDataMode?: string
