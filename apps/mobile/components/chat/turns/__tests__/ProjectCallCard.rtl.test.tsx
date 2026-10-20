@@ -11,7 +11,7 @@
  *   - a runtime-internal session key is never offered as an openable chat
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import * as React from "react"
 import { createReactNativeMock } from "../../../../test/react-native-mock"
 
@@ -67,6 +67,23 @@ mock.module("../../../team-chat/AgentAvatar", () => ({
 let chatContext: any = null
 mock.module("../../ChatContext", () => ({ useChatContextSafe: () => chatContext }))
 
+// The card hands its bodies to ChatMarkdown; the markdown renderer itself is
+// covered by ProjectCallCard.markdown.test.tsx against the real component.
+mock.module("../../ChatMarkdown", () => ({
+  ChatMarkdown: ({
+    children,
+    variant,
+  }: {
+    children: string
+    variant?: string
+  }) =>
+    React.createElement(
+      "div",
+      { "data-testid": "chat-markdown", "data-variant": variant },
+      children,
+    ),
+}))
+
 const { ProjectCallCard, parseProjectCall } = await import("../ProjectCallCard")
 
 const CHAT_ID = "9b1c2d3e-0000-5000-8000-000000000001"
@@ -110,6 +127,48 @@ describe("ProjectCallCard", () => {
     expect(screen.getByText("Done. Preview: https://demo.shogo.one")).toBeTruthy()
     fireEvent.click(screen.getByLabelText("Open https://demo.shogo.one"))
     expect(openURL).toHaveBeenCalledWith("https://demo.shogo.one")
+  })
+
+  test("renders the request and reply through ChatMarkdown at the card type scale", () => {
+    render(<ProjectCallCard tool={tool({ args: { project: "Worker", message: "**Build** the landing page" }, result: { project: { id: "proj-2", name: "Worker" }, reply: "**Done.** Ran `bun x tsc`" } })} />)
+
+    const request = within(screen.getByTestId("project-call-request")).getByTestId("chat-markdown")
+    const reply = within(screen.getByTestId("project-call-reply")).getByTestId("chat-markdown")
+    // Raw markdown, not a plain <Text>: the renderer needs the source to format it.
+    expect(request.textContent).toBe("**Build** the landing page")
+    expect(reply.textContent).toBe("**Done.** Ran `bun x tsc`")
+    expect(request.getAttribute("data-variant")).toBe("card")
+    expect(reply.getAttribute("data-variant")).toBe("card")
+  })
+
+  test("clamps a long request and reply behind their own Show more toggle", () => {
+    const longRequest = ["Brief:", "- wire the side pane", "- keep the tests green"].join("\n")
+    render(
+      <ProjectCallCard
+        tool={tool({
+          args: { project: "Worker", message: longRequest },
+          result: { project: { id: "proj-2", name: "Worker" }, reply: "short reply" },
+        })}
+      />,
+    )
+
+    const reply = screen.getByTestId("project-call-reply")
+    expect(within(reply).queryByText("Show more")).toBeNull()
+
+    const request = screen.getByTestId("project-call-request")
+    fireEvent.click(within(request).getByText("Show more"))
+    expect(within(request).getByText("Show less")).toBeTruthy()
+    fireEvent.click(within(request).getByText("Show less"))
+    expect(within(request).getByText("Show more")).toBeTruthy()
+  })
+
+  test("offers Show more on a long reply and collapses it again", () => {
+    const longReply = ["**Done.**", "", "- auth", "- billing", "- e2e", "", "Pushed."].join("\n")
+    render(<ProjectCallCard tool={tool({ result: { project: { id: "proj-2", name: "Worker" }, reply: longReply } })} />)
+
+    const reply = screen.getByTestId("project-call-reply")
+    fireEvent.click(within(reply).getByText("Show more"))
+    expect(within(reply).getByText("Show less")).toBeTruthy()
   })
 
   test("shows calling while the call is in flight, and cannot open before the project is known", () => {
@@ -178,6 +237,25 @@ describe("ProjectCallCard", () => {
     expect(screen.getByTestId("project-call-status").textContent).toBe("Failed")
     expect(screen.getByText("timed out")).toBeTruthy()
     expect(screen.getByText("The callee is still working.")).toBeTruthy()
+  })
+
+  test("keeps the error plain text — nothing markdown-rendered on that path", () => {
+    render(
+      <ProjectCallCard
+        tool={tool({
+          result: {
+            error: "**timed out** after `90s`",
+            project: { id: "proj-2", name: "Worker" },
+            hint: "The callee is still working.",
+          },
+        })}
+      />,
+    )
+    const error = screen.getByTestId("project-call-error")
+    expect(error.textContent).toBe("**timed out** after `90s`")
+    expect(error.className).toContain("text-destructive")
+    expect(screen.queryByTestId("project-call-reply")).toBeNull()
+    expect(error.querySelector('[data-testid="chat-markdown"]')).toBeNull()
   })
 
   test("opens the chat and the project in the side pane when the host provides one", () => {
