@@ -339,3 +339,86 @@ FROM tool_call_logs
 WHERE "createdAt" >= now() - interval '21 days'
 GROUP BY 1
 ORDER BY 1;
+
+
+-- ===========================================================================
+-- Cache efficiency — prompt-cache hit ratio per model  [track: cache-efficiency]
+--
+-- The question this answers: "are we caching well?" as a number, per model,
+-- per day. The formula is the one place a ratio is defined on the API side —
+-- `promptCacheHitRatio` in analytics.service.ts:
+--
+--     hit ratio = cached / (uncached + cached + cache-write)
+--
+-- Watch `hoshi-2-0`. It runs on DeepSeek, which caches implicitly (complete,
+-- persisted prefix units of tools + system + messages, best effort, hours-to-
+-- days TTL) and has no breakpoint for us to set — so a ratio drop there means
+-- the prompt LAYOUT moved (something volatile got into the cached zone), not
+-- that we lost a cache_control marker. `cache-write` is Anthropic-only and
+-- always 0 on hoshi.
+--
+-- The release gate is a 5-point drop week over week, or a 10% growth in the
+-- turn-1 prompt: scripts/cache-baseline.ts applies exactly those thresholds to
+-- the `cache-efficiency` eval suite.
+-- ===========================================================================
+
+-- A) Daily ratio per model.
+SELECT
+  date_trunc('day', "createdAt")                                             AS day,
+  coalesce("actionMetadata"->>'model', "actionMetadata"->>'modelUsed', 'unknown') AS model,
+  count(*)                                                                   AS events,
+  sum(coalesce(("actionMetadata"->>'cachedInputTokens')::numeric, 0))         AS cached_tokens,
+  sum(coalesce(("actionMetadata"->>'inputTokens')::numeric, 0))               AS uncached_tokens,
+  sum(coalesce(("actionMetadata"->>'cacheWriteTokens')::numeric, 0))          AS cache_write_tokens,
+  round(
+    100.0 * sum(coalesce(("actionMetadata"->>'cachedInputTokens')::numeric, 0))
+      / nullif(
+          sum(coalesce(("actionMetadata"->>'cachedInputTokens')::numeric, 0))
+        + sum(coalesce(("actionMetadata"->>'inputTokens')::numeric, 0))
+        + sum(coalesce(("actionMetadata"->>'cacheWriteTokens')::numeric, 0)),
+        0)
+  , 2)                                                                       AS pct_cache_hit
+FROM usage_events
+WHERE "createdAt" >= now() - interval '21 days'
+  AND "actionType" IN ('ai_proxy_completion', 'chat_message')
+GROUP BY 1, 2
+HAVING sum(coalesce(("actionMetadata"->>'cachedInputTokens')::numeric, 0)
+         + coalesce(("actionMetadata"->>'inputTokens')::numeric, 0)) > 0
+ORDER BY 1, 4 DESC;
+
+-- B) Week-over-week regression flag (the release gate, in SQL).
+--    Any row here is a model whose cache got worse by more than 5 points.
+WITH weekly AS (
+  SELECT
+    coalesce("actionMetadata"->>'model', "actionMetadata"->>'modelUsed', 'unknown') AS model,
+    sum(coalesce(("actionMetadata"->>'cachedInputTokens')::numeric, 0)) FILTER (
+      WHERE "createdAt" >= now() - interval '7 days'
+    )                                                                        AS cached_this,
+    sum(coalesce(("actionMetadata"->>'inputTokens')::numeric, 0)) FILTER (
+      WHERE "createdAt" >= now() - interval '7 days'
+    )                                                                        AS uncached_this,
+    sum(coalesce(("actionMetadata"->>'cachedInputTokens')::numeric, 0)) FILTER (
+      WHERE "createdAt" >= now() - interval '14 days'
+        AND "createdAt" <  now() - interval '7 days'
+    )                                                                        AS cached_last,
+    sum(coalesce(("actionMetadata"->>'inputTokens')::numeric, 0)) FILTER (
+      WHERE "createdAt" >= now() - interval '14 days'
+        AND "createdAt" <  now() - interval '7 days'
+    )                                                                        AS uncached_last
+  FROM usage_events
+  WHERE "createdAt" >= now() - interval '14 days'
+    AND "actionType" IN ('ai_proxy_completion', 'chat_message')
+  GROUP BY 1
+)
+SELECT
+  model,
+  round(100.0 * cached_this / nullif(cached_this + uncached_this, 0), 2)      AS pct_this_week,
+  round(100.0 * cached_last / nullif(cached_last + uncached_last, 0), 2)      AS pct_last_week,
+  round(
+    100.0 * cached_this / nullif(cached_this + uncached_this, 0)
+    - 100.0 * cached_last / nullif(cached_last + uncached_last, 0)
+  , 2)                                                                        AS delta_points
+FROM weekly
+WHERE cached_last + uncached_last > 0
+  AND cached_this + uncached_this > 0
+ORDER BY delta_points ASC;

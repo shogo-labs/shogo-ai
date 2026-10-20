@@ -131,6 +131,10 @@ interface UsageModelAggregate {
   totalBilledUsd: number
   totalRawUsd: number
   totalDurationMs: number
+  /** Prompt tokens served from the provider's cache (per model, per user). */
+  totalCachedInputTokens: number
+  /** Prompt tokens written to the cache — Anthropic only; 0 elsewhere. */
+  totalCacheWriteTokens: number
   /** Desktop events recorded without rates for their model (cost 0, not a guess). */
   unpricedRequests: number
 }
@@ -141,6 +145,19 @@ interface UsageAggregateEvent {
   rawUsd?: number | null
   actionMetadata: unknown
   actionType?: string
+}
+
+/**
+ * Prompt-cache hit ratio: cached / (uncached + cached + cache-write).
+ *
+ * One definition for every surface that reports it — the org-wide daily series,
+ * the per-model usage row, and the `cache-efficiency` eval report all use this
+ * shape, so a drop means the same thing everywhere. 0 when there was no prompt
+ * at all (a run with no model call has no ratio to report).
+ */
+export function promptCacheHitRatio(cached: number, uncached: number, cacheWrite: number): number {
+  const total = cached + uncached + cacheWrite
+  return total > 0 ? cached / total : 0
 }
 
 function aggregateUsageByModel(
@@ -167,6 +184,8 @@ function aggregateUsageByModel(
     const key = `${event.memberId}::${model}`
     const inputTokens = Number(meta.inputTokens || 0)
     const outputTokens = Number(meta.outputTokens || 0)
+    const cachedInputTokens = Number(meta.cachedInputTokens || 0)
+    const cacheWriteTokens = Number(meta.cacheWriteTokens || 0)
     const totalTokens = Number(
       meta.totalTokens ||
         inputTokens + outputTokens + Number(meta.cachedInputTokens || 0) + Number(meta.cacheWriteTokens || 0),
@@ -183,6 +202,8 @@ function aggregateUsageByModel(
       existing.totalBilledUsd += Number(event.billedUsd || 0)
       existing.totalRawUsd += Number(rawForEvent || 0)
       existing.totalDurationMs += Number(meta.durationMs || 0)
+      existing.totalCachedInputTokens += cachedInputTokens
+      existing.totalCacheWriteTokens += cacheWriteTokens
       existing.unpricedRequests += unpriced
     } else {
       aggregateMap.set(key, {
@@ -200,6 +221,8 @@ function aggregateUsageByModel(
         totalBilledUsd: Number(event.billedUsd || 0),
         totalRawUsd: Number(rawForEvent || 0),
         totalDurationMs: Number(meta.durationMs || 0),
+        totalCachedInputTokens: cachedInputTokens,
+        totalCacheWriteTokens: cacheWriteTokens,
         unpricedRequests: unpriced,
       })
     }
@@ -1715,7 +1738,7 @@ export async function getQualityTimeseries(
     const activeUsers = a?.activeUsers.size ?? 0
     days.push({
       date: key,
-      cacheHitRatio: a ? pct(a.cached, a.cached + a.cacheWrite + a.input) : 0,
+      cacheHitRatio: a ? promptCacheHitRatio(a.cached, a.input, a.cacheWrite) : 0,
       costPerMessage: a && a.messages > 0 ? a.spend / a.messages : 0,
       costPerActiveUser: a && activeUsers > 0 ? a.spend / activeUsers : 0,
       agentEscalatedRate: a ? pct(a.escalated, a.runs) : 0,
@@ -1775,6 +1798,15 @@ export interface UsageSummaryEntry {
   totalBilledUsd: number
   totalRawUsd: number
   avgDurationMs: number
+  /** Prompt tokens served from the provider's cache. */
+  totalCachedInputTokens: number
+  /**
+   * Cache-hit ratio for this model: cached / (uncached + cached + cache-write).
+   * Same formula as the org-wide daily figure in `getQualityTimeseries`, but per
+   * model — `hoshi-2-0` is the one to watch, because DeepSeek caches implicitly
+   * and gives us no breakpoint to set (SHO-82).
+   */
+  cacheHitRatio: number
   unpricedRequests: number
 }
 
@@ -1972,6 +2004,12 @@ export async function getUsageSummary(
         totalBilledUsd: agg.totalBilledUsd,
         totalRawUsd: agg.totalRawUsd,
         avgDurationMs: agg.requestCount > 0 ? Math.round(agg.totalDurationMs / agg.requestCount) : 0,
+        totalCachedInputTokens: agg.totalCachedInputTokens,
+        cacheHitRatio: promptCacheHitRatio(
+          agg.totalCachedInputTokens,
+          agg.totalInputTokens,
+          agg.totalCacheWriteTokens,
+        ),
         unpricedRequests: agg.unpricedRequests,
       }
     })

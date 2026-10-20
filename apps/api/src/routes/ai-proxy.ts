@@ -1322,7 +1322,7 @@ function convertAnthropicResponseToOpenAI(anthropicResponse: any, model: string)
  * reverses it. Top-level `cache_creation_input_tokens` stays for clients that
  * read the older shape.
  */
-function anthropicUsageToOpenAI(
+export function anthropicUsageToOpenAI(
   inputTokens: number,
   cacheReadTokens: number,
   cacheWriteTokens: number,
@@ -1937,15 +1937,46 @@ function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): R
  * understand `max_tokens`, so leave those untouched.
  */
 /**
- * Drop Anthropic `cache_control` markers from a chat-completions message.
- * pi-ai's anthropic compat turns string content into a single marked text
- * part; collapse that back to a string so strict upstreams see plain content.
+ * Remove the runtime's `<|CACHE_BOUNDARY|>` canary from wire text.
+ *
+ * The canary exists so the Anthropic request builder can split the system
+ * prompt into a cached stable block and an uncached dynamic block. Every other
+ * provider caches implicitly (OpenAI and DeepSeek by prefix, Gemini implicitly)
+ * so there is no breakpoint to place — the marker would just ride along inside
+ * the system message as literal prompt text, costing tokens and making the
+ * boundary useless as a canary. Stripping it here, at the proxy boundary, keeps
+ * that decision in one place instead of in every converter.
+ */
+const CACHE_BOUNDARY_RE = /\s*<\|CACHE_BOUNDARY\|>\s*/g
+
+export function stripCacheBoundaryText(text: string): string {
+  return text.includes(CACHE_BOUNDARY) ? text.replace(CACHE_BOUNDARY_RE, '\n\n') : text
+}
+
+/**
+ * Drop cache hints a chat-completions upstream has no use for: the Anthropic
+ * `cache_control` markers pi-ai's compat layer adds, and the
+ * `<|CACHE_BOUNDARY|>` canary described above. Collapses a single marked text
+ * part back to a plain string so strict upstreams see plain content.
  */
 function stripCacheMarkersFromMessage(
   message: ChatCompletionRequest['messages'][number],
 ): ChatCompletionRequest['messages'][number] {
-  if (!Array.isArray(message.content) || !message.content.some(p => p.cache_control)) return message
-  const parts = message.content.map(({ cache_control: _cc, ...part }) => part)
+  if (typeof message.content === 'string') {
+    if (!message.content.includes(CACHE_BOUNDARY)) return message
+    return { ...message, content: stripCacheBoundaryText(message.content) }
+  }
+  if (!Array.isArray(message.content)) return message
+  const hasCacheControl = message.content.some(p => p.cache_control)
+  const hasBoundary = message.content.some(
+    p => typeof (p as { text?: string }).text === 'string' && (p as { text: string }).text.includes(CACHE_BOUNDARY),
+  )
+  if (!hasCacheControl && !hasBoundary) return message
+  const parts = message.content.map(({ cache_control: _cc, ...part }) => (
+    part.type === 'text' && typeof part.text === 'string'
+      ? { ...part, text: stripCacheBoundaryText(part.text) }
+      : part
+  ))
   const only = parts.length === 1 ? parts[0] : undefined
   const content = only?.type === 'text' && Object.keys(only).length === 2 && typeof only.text === 'string'
     ? only.text
@@ -2027,7 +2058,7 @@ function buildOpenAICompatibleBody(
     }
     if (Array.isArray(body.messages)) {
       body.messages = body.messages.map((message: any) => {
-        const normalized = { ...message }
+        const normalized: any = { ...stripCacheMarkersFromMessage(message) }
         if (normalized.role === 'developer') normalized.role = 'system'
         if (normalized.role === 'assistant') {
           const text = typeof normalized.reasoning === 'string'
