@@ -13,7 +13,7 @@ import React, { useCallback, useState } from "react"
 import { ActivityIndicator, Pressable, Text, View } from "react-native"
 import { Scissors } from "lucide-react-native"
 import { formatTokenCount } from "./ContextTracker"
-import { requestContextCompaction } from "../../../lib/compact-context"
+import { requestContextCompaction } from "../../lib/compact-context"
 
 type Status = { kind: "idle" } | { kind: "working" } | { kind: "done" | "info" | "error"; text: string }
 

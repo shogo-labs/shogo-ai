@@ -3221,7 +3221,12 @@ export class AgentGateway {
     // budgeted at 200k while the provider accepted 400k, and summarization —
     // which could only run at a turn boundary anyway — never fired mid-turn.
     const modelContextWindow = getContextWindowTokens(modelId)
-    this.sessionManager.setContextWindowTokens(modelContextWindow)
+    // The catalog is only the *default* source: a window the caller set
+    // explicitly (config, or a test pinning a 2k window to force compaction)
+    // always wins, and overriding it silently changed what the cap derived from.
+    if (!this.config.session?.contextWindowTokens) {
+      this.sessionManager.setContextWindowTokens(modelContextWindow)
+    }
     const autoCompactTokens = this.sessionManager.autocompactThreshold
     const contextBudgetChars = autoCompactTokens * 4
     const inLoopBudgetTokens = resolveInLoopContextBudgetTokens(autoCompactTokens)
