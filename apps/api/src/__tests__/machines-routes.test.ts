@@ -370,4 +370,32 @@ describe('machine workspace relay', () => {
     // The desktop gets the full desktop path, not the cloud's cloud-shaped one.
     expect(frame.path).toBe('/api/projects/p-1/agent-proxy/agent/chat')
   })
+
+  // A workspace agent turn (the personal companion, or a paired desktop's own
+  // workspace) is the same SSE surface. Before SHO-87 the workspace wrapper was
+  // not normalized, so this took the buffered branch and the turn only arrived
+  // when it ended — or never.
+  test('streams a workspace agent chat SSE back through the relay', async () => {
+    seedInstance()
+    let frame: any
+    attachTunnel('i-1', (req, conn) => {
+      frame = req
+      const send = conn.streamHandlers.get(req.requestId)
+      send?.({ type: 'stream-chunk', requestId: req.requestId, data: '{"delta":"hello"}' })
+      send?.({ type: 'stream-end', requestId: req.requestId })
+    })
+
+    const res = await buildApp().request(
+      '/api/machines/i-1/w/lw-1/workspaces/lw-1/agent-proxy/agent/chat',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: 'hello' }),
+      },
+    )
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/event-stream')
+    expect(await res.text()).toBe('{"delta":"hello"}')
+    expect(frame.path).toBe('/api/workspaces/lw-1/agent-proxy/agent/chat')
+  })
 })

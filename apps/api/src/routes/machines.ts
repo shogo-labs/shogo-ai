@@ -21,13 +21,15 @@ import { prisma } from '../lib/prisma'
 import {
   ensureTunnelConnected,
   generateRequestId,
-  getInstanceTunnelStatus,
+  getMachineGroupStatus,
+  getMachineLiveStatus,
   isStreamingRequest,
   normalizeTransparentProxyPath,
   sendTunnelRequest,
   sendTunnelStreamRequest,
 } from './instances'
 import { classifyAction, logRemoteAction } from './remote-audit'
+import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 
 /** How long a cold machine gets to open its tunnel before we call it offline. */
 const DEFAULT_WAKE_DEADLINE_MS = 10_000
@@ -111,8 +113,14 @@ export function machineRoutes() {
       orderBy: { lastSeenAt: 'desc' },
     })) as MachineRow[]
 
+    // One machine per hostname, not one per workspace it registered in: the
+    // desktop opens a tunnel per stored device key, so a machine signed into
+    // three workspaces has three rows here.
+    const names = await workspaceNamesById(rows.map((row) => row.workspaceId))
+    const grouped = groupMachinesByHostname(rows, { nameFor: (id) => names.get(id) })
+
     const machines = await Promise.all(
-      rows.map(async (row) => ({
+      grouped.map(async ({ row, workspaces, rows: machineRows }) => ({
         id: row.id,
         name: row.name,
         hostname: row.hostname,
@@ -120,7 +128,8 @@ export function machineRoutes() {
         arch: row.arch,
         kind: row.kind,
         workspaceId: row.workspaceId,
-        status: await getInstanceTunnelStatus(row.id, row.lastSeenAt),
+        workspaces,
+        status: await getMachineGroupStatus(machineRows),
         lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
         snapshot: cachedSnapshot(row),
       })),
@@ -198,7 +207,7 @@ export function machineRoutes() {
         },
         workspaces: cached.workspaces ?? [],
         activity: cached.activity ?? null,
-        status: await getInstanceTunnelStatus(instance.id, instance.lastSeenAt),
+        status: await getMachineLiveStatus(instance.id, instance.lastSeenAt),
         stale: true,
         lastSeenAt: instance.lastSeenAt ? instance.lastSeenAt.toISOString() : null,
       })

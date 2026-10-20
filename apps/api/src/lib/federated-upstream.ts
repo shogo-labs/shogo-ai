@@ -339,16 +339,24 @@ export async function fetchUpstream(
  */
 export async function listCloudInstancesForWorkspace(
   _localWorkspaceId: string,
+  opts: { ownerScope?: boolean } = {},
 ): Promise<CloudInstance[]> {
   if (!(await isFederatedEnabled())) return []
 
   const cloudWorkspaceId = await getUpstreamWorkspaceId()
-  if (!cloudWorkspaceId) return []
+  if (!cloudWorkspaceId && !opts.ownerScope) return []
+
+  // Settings → Remote control asks for every machine the signed-in user
+  // registered, not only the ones filed under the workspace the local API is
+  // signed in to; the cloud endpoint answers that with `?scope=owner`.
+  const search = opts.ownerScope
+    ? '?scope=owner'
+    : `?workspaceId=${encodeURIComponent(cloudWorkspaceId as string)}`
 
   try {
     const resp = await fetchUpstream(
       '/api/instances',
-      { method: 'GET', search: `?workspaceId=${encodeURIComponent(cloudWorkspaceId)}` },
+      { method: 'GET', search },
     )
     if (!resp.ok) return []
     const body = (await resp.json().catch(() => null)) as { instances?: CloudInstance[] } | null

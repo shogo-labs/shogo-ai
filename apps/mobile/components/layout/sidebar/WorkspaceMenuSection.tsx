@@ -19,6 +19,7 @@ import { MachineWorkspacesGroup, type MachineGroupData, type MachineWorkspaceRow
 import { isCloudWorkspace, useCloudWorkspaces } from "../../../lib/workspace-route";
 import { workspaceColor, workspaceInitial } from "../../../lib/workspace-color";
 import { useCloudSession } from "../../../hooks/useCloudSession";
+import { useActiveInstance } from "../../../contexts/active-instance";
 import { getDomainHttpClient, useDomainHttpOptional } from "../../../contexts/domain";
 import { isPhoneLayout } from "../../../lib/native-phone-layout";
 
@@ -153,7 +154,14 @@ export function WorkspaceMenuSection({
     };
   }, [http, localMode, currentWorkspace?.id]);
 
-  const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? "W";
+  // While one of a paired desktop's own workspaces is open, the identity header
+  // names *that* workspace. Ids, billing and settings stay the cloud
+  // workspace's — only the label follows what the user is looking at.
+  const { instance: activeInstance } = useActiveInstance()
+  const workspaceLabel =
+    (activeInstance?.source === "machine" ? activeInstance.localWorkspaceName : undefined) ??
+    currentWorkspace?.name
+  const wsInitial = workspaceLabel?.[0]?.toUpperCase() ?? "W";
   const resolvedPlanId =
     (billingData.hasActiveSubscription && billingData.subscription?.planId) ||
     workspacePlan?.planId ||
@@ -204,7 +212,7 @@ export function WorkspaceMenuSection({
             )}
             numberOfLines={1}
           >
-            {currentWorkspace.name}
+            {workspaceLabel}
           </Text>
           {currentIsCloud ? (
             <View className="mt-0.5 flex-row items-center gap-1">

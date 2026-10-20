@@ -102,6 +102,7 @@ import {
   useDomainActions,
   useChatMessageCollectionForSession,
   useProjectCollection,
+  useSDKHttpOptional,
 } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
 import { useResolvedTheme } from "../../contexts/theme"
@@ -1057,6 +1058,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // so the agent can read its files. AppSidebar already loads the collection
   // app-wide; we loadAll() defensively in case the panel mounts first.
   const projectCollection = useProjectCollection()
+  // Routing insert point: a workspace-scoped request goes through the domain
+  // client, so a paired desktop's own workspace gets its history from that
+  // machine (the SDK interceptor rewrites the path and the workspace id).
+  const domainHttp = useSDKHttpOptional()
   useEffect(() => {
     projectCollection
       .loadAll(workspaceProjectFilter(workspaceId))
@@ -1148,17 +1153,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const workspaceHistorySearch = useCallback(
     async (query: string): Promise<AgentHistoryResult[]> => {
       if (!workspaceId) return []
+      const search = {
+        q: query,
+        kind: "all",
+        limit: "12",
+        exclude: chatSessionId || "",
+      }
       try {
+        if (domainHttp) {
+          const response = await domainHttp.get<{ results?: AgentHistoryResult[] }>(
+            `/api/workspaces/${encodeURIComponent(workspaceId)}/history/search`,
+            search,
+          )
+          return Array.isArray(response.data?.results) ? response.data.results : []
+        }
         const fetchFn = expoFetch ?? globalThis.fetch
         const headers: Record<string, string> = nativeHeaders
           ? nativeHeaders()
           : {}
-        const params = new URLSearchParams({
-          q: query,
-          kind: "all",
-          limit: "12",
-          exclude: chatSessionId || "",
-        })
+        const params = new URLSearchParams(search)
         const response = await fetchFn(
           `${API_URL}/api/workspaces/${encodeURIComponent(
             workspaceId,
@@ -1175,7 +1188,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return []
       }
     },
-    [workspaceId, chatSessionId, nativeHeaders, expoFetch],
+    [workspaceId, chatSessionId, nativeHeaders, expoFetch, domainHttp],
   )
 
   /**
@@ -3991,16 +4004,26 @@ const ChatPanelContent = observer(function ChatPanelContent({
         offset: "0",
       })
       try {
-        const fetchFn = expoFetch ?? globalThis.fetch
-        const response = await fetchFn(
-          `${API_URL}/api/chat-messages?${params.toString()}`,
-          {
-            headers: nativeHeaders ? nativeHeaders() : {},
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          } as any,
-        )
-        if (!response.ok) return null
-        const body = await response.json().catch(() => null)
+        // Same insert point as the transcript itself (`/api/chat-messages` is
+        // routed by the SDK interceptor): read the row from the same places the
+        // messages come from, or a machine workspace would compare its
+        // transcript against a cloud chat and think history moved.
+        const body = domainHttp
+          ? (await domainHttp.get<{ items?: any[] }>("/api/chat-messages", {
+              sessionId,
+              agent: "technical",
+              limit: "1",
+              offset: "0",
+            })).data
+          : await (expoFetch ?? globalThis.fetch)(
+              `${API_URL}/api/chat-messages?${params.toString()}`,
+              {
+                headers: nativeHeaders ? nativeHeaders() : {},
+                credentials: Platform.OS === "web" ? "include" : undefined,
+              } as any,
+            )
+              .then((response) => (response.ok ? response.json().catch(() => null) : null))
+              .catch(() => null)
         const newest = Array.isArray(body?.items) ? body.items[0] : null
         if (!newest?.id) return null
         return {
@@ -4012,7 +4035,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return null
       }
     },
-    [expoFetch, nativeHeaders],
+    [expoFetch, nativeHeaders, domainHttp],
   )
 
   // A turn this panel is not attached to (started in another window, by
