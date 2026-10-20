@@ -157,6 +157,7 @@ import {
 } from "@shogo/shared-ui/primitives";
 import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from "../../lib/notifications/preferences";
 import { useNotificationPermission } from "../../lib/notifications/useNotificationPermission";
+import { getNotificationDiagnostics } from "../../lib/notifications/notification-diagnostics";
 import type { NotificationPermissionState } from "../../lib/notifications/chat-notifier";
 import { useRequireBiometricApproval } from "../../lib/approval-lock";
 import { useDualPlan } from "../../lib/dual-plan-preference";
@@ -1132,6 +1133,13 @@ function NotificationsCard() {
   const [requireBiometric, setRequireBiometric] = useRequireBiometricApproval();
   const permission = useNotificationPermission();
   const copy = notificationPermissionCopy(permission.state);
+  // Alerts we had to drop, so "I never get notifications" has an answer here
+  // instead of only in the console.
+  const diagnostics = getNotificationDiagnostics();
+  const dropHint =
+    permission.state !== "granted" && diagnostics.lastDrop
+      ? `${diagnostics.dropped} alert${diagnostics.dropped === 1 ? "" : "s"} couldn't be shown this session — ${diagnostics.lastDrop.message}.`
+      : null;
   return (
     <Card>
       <CardContent className="p-0">
@@ -1143,6 +1151,9 @@ function NotificationsCard() {
             <Text className="text-sm text-muted-foreground mt-0.5">
               {copy.status}
             </Text>
+            {dropHint ? (
+              <Text className="text-xs text-muted-foreground mt-1">{dropHint}</Text>
+            ) : null}
           </View>
           {copy.action === "request" ? (
             <Button size="sm" onPress={() => void permission.request()}>

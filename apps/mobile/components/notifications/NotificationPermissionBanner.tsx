@@ -10,16 +10,18 @@ import { Platform, Pressable, Text, View } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 
 import { useNotificationPermission } from '../../lib/notifications/useNotificationPermission'
-
-const DISMISSED_KEY = 'shogo:notification-banner-dismissed'
+import {
+  BANNER_DISMISSED_KEY,
+  isBannerDismissed,
+} from '../../lib/notifications/notification-banner'
 
 export function NotificationPermissionBanner() {
   const { state, request } = useNotificationPermission()
   const [dismissed, setDismissed] = useState<boolean | null>(null)
 
   useEffect(() => {
-    void AsyncStorage.getItem(DISMISSED_KEY)
-      .then((v) => setDismissed(v === 'true'))
+    void AsyncStorage.getItem(BANNER_DISMISSED_KEY)
+      .then((v) => setDismissed(isBannerDismissed(v)))
       .catch(() => setDismissed(false))
   }, [])
 
@@ -27,7 +29,8 @@ export function NotificationPermissionBanner() {
 
   const dismiss = () => {
     setDismissed(true)
-    void AsyncStorage.setItem(DISMISSED_KEY, 'true').catch(() => {})
+    // A timestamp, not `'true'`: the dismissal lapses so the offer returns.
+    void AsyncStorage.setItem(BANNER_DISMISSED_KEY, String(Date.now())).catch(() => {})
   }
 
   return (
