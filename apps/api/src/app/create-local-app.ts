@@ -35,6 +35,7 @@ import { checkpointRoutes } from '../routes/checkpoints'
 import { aiProxyRoutes } from '../routes/ai-proxy'
 import { aiLiveRoutes } from '../routes/ai-live'
 import { voiceRoutes } from '../routes/voice'
+import { voiceMediaRoutes } from '../routes/voice-media'
 import { rbacRoutes } from '../routes/rbac'
 import { chatRoutes } from '../routes/chat'
 import { createChatMessageEditRoutes } from '../routes/chat-message-edits'
@@ -183,6 +184,12 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', aiProxyRoutes())
   app.route('/api', aiLiveRoutes())
   app.route('/api', voiceRoutes())
+  // The desktop composer must serve TTS too. `server.ts` (cloud) mounts this
+  // next to `voiceRoutes()`, but this composer is the one desktop boots
+  // (`entry.ts` → `local-server.ts` → `createLocalApp()`), so without it
+  // `POST /api/voice/tts` — and with it every pod-shaped TTS call that the SDK
+  // proxy forwards here — 404s on desktop.
+  app.route('/api', voiceMediaRoutes())
   app.route('/api', rbacRoutes())
   app.route('/api', chatRoutes())
   app.route('/api', toolsProxyRoutes())

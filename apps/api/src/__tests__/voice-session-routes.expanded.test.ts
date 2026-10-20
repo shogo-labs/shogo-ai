@@ -88,7 +88,10 @@ class MockElevenLabsClient {
   }
 }
 
-mock.module('@shogo-ai/sdk/voice', () => ({ ElevenLabsClient: MockElevenLabsClient }))
+// routes/voice.ts pulls in voice-media.ts, which uses the real helpers
+// (model table, normalizers); keep everything except the client class.
+const voiceActualExports = await import('@shogo-ai/voice')
+mock.module('@shogo-ai/sdk/voice', () => ({ ...voiceActualExports, ElevenLabsClient: MockElevenLabsClient }))
 
 // Translator model resolution flows through the shared resolver now. This
 // suite only exercises the resolved (200) path, so return a sentinel model.

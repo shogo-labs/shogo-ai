@@ -74,6 +74,11 @@ const REQUIRED_LOCAL_ROUTES = [
   'POST /api/local/remote-hosts/:id/askpass',
   'GET /api/local/remote-hosts/:id/browse',
   'POST /api/local/projects/from-remote-folder',
+  // Voice TTS: the hosted route lives in `routes/voice-media.ts`, which only
+  // `server.ts` (cloud) mounted — desktop 404'd on TTS until it was added to
+  // `createLocalApp()`. `music` comes along with it (voiceRoutes delegates).
+  'POST /api/voice/tts',
+  'POST /api/voice/music',
 ] as const
 
 /** Runtime → API paths that intentionally only exist in the cloud API. */

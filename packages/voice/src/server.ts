@@ -55,6 +55,7 @@ import {
 } from './audioTags.js'
 import {
   CONVAI_TTS_MODEL_FALLBACK,
+  DEFAULT_TTS_MODEL,
   ElevenLabsApiError,
   ElevenLabsClient,
   MEMORY_CLIENT_TOOLS,
@@ -62,6 +63,8 @@ import {
   type ComposeMusicParams,
   type ConvaiClientTool,
   type ElevenLabsClientConfig,
+  type TextToSpeechParams,
+  type TextToSpeechResult,
 } from './elevenlabs.js'
 import { extractBasePrompt } from './prompt.js'
 import type {
@@ -85,15 +88,34 @@ export type GetVoiceUser = (req: Request) => Promise<VoiceUser | null> | VoiceUs
  * Auto-detection looks for:
  *   - `process.env.RUNTIME_AUTH_SECRET` (pod-injected runtime token)
  *   - `process.env.PROJECT_ID` (pod-injected project scope)
- *   - `process.env.SHOGO_API_URL` (defaults to `http://localhost:8002`)
+ *   - `process.env.SHOGO_API_URL` (falls back to `SHOGO_CLOUD_URL`)
+ *
+ * The API host is resolved per request, not at construction, so a pod
+ * that sets the token without a host still gets every local-only
+ * handler (body validation, 405s, the static audio-tags catalog) and
+ * only the call that actually leaves the process refuses to guess.
  */
 export interface VoiceProxyOptions {
   runtimeToken: string
   projectId: string
+  /**
+   * Base URL of the Shogo API. Empty string when the proxy was derived
+   * from env: the host is then re-read from `SHOGO_API_URL` /
+   * `SHOGO_CLOUD_URL` on each proxied call.
+   */
   apiUrl: string
   /** Custom fetch impl (forwarded to the proxy fetches). */
   fetch?: typeof fetch
 }
+
+/**
+ * How the handlers should reach ElevenLabs:
+ *   - `'byo'`   — always use the supplied `apiKey`, even inside a pod
+ *   - `'proxy'` — always go through the Shogo API with the runtime token
+ *   - `'auto'`  — (default) an explicit `apiKey` wins, otherwise use the
+ *                 ambient pod runtime token when present
+ */
+export type VoiceHandlerMode = 'proxy' | 'byo' | 'auto'
 
 export interface VoiceHandlersConfig {
   /**
@@ -103,16 +125,23 @@ export interface VoiceHandlersConfig {
   apiKey?: string
   /**
    * Resolve the authenticated user from a request, or `null` for
-   * unauthenticated. Required in BYO-EL mode; optional in proxy mode —
-   * the Shogo API handles user-less project-scoped auth via the runtime
-   * token, and per-user memory is out of scope for pod apps.
+   * unauthenticated. Required for the user-scoped handlers (`signedUrl`,
+   * `agent.*`); optional for `tts` / `music`, which are project-scoped and
+   * work without a user context.
    */
   getUser?: GetVoiceUser
   /**
-   * Consumer-owned persistence layer for Companion records. Required
-   * in BYO-EL mode; unused in proxy mode.
+   * Consumer-owned persistence layer for Companion records. Required for
+   * the user-scoped handlers (`signedUrl`, `agent.*`); unused by `tts` /
+   * `music` and by proxy mode.
    */
   companionStore?: CompanionStore
+  /**
+   * Force a transport: `'byo'` always uses `apiKey`, `'proxy'` always uses
+   * the runtime token, `'auto'` (default) prefers an explicit `apiKey` and
+   * falls back to the ambient pod runtime token.
+   */
+  mode?: VoiceHandlerMode
   /** Optional memory store — when present, `signedUrl` preloads context bullets. */
   memoryStore?: (userId: string) => VoiceMemoryStore
   /**
@@ -219,30 +248,77 @@ function parseMusicBody(raw: unknown): { params: ComposeMusicParams } | { error:
 /**
  * Resolve the runtime-token proxy options — explicit `config.proxy` wins,
  * else read from env vars that every Shogo-managed pod has injected.
+ *
+ * `config.mode` gates auto-detection: `'byo'` never proxies, and an
+ * explicit `apiKey` in `'auto'` mode wins over the ambient runtime token
+ * so BYO keeps working inside a pod.
  */
+const MISSING_API_HOST_MESSAGE =
+  'createVoiceHandlers: runtime-token proxy mode needs SHOGO_API_URL (or SHOGO_CLOUD_URL) in env; refusing to guess an API host'
+
+/** The Shogo API host from pod env, if the pod injected one. */
+function envApiUrl(): string | undefined {
+  if (typeof process === 'undefined' || !process.env) return undefined
+  return process.env.SHOGO_API_URL ?? process.env.SHOGO_CLOUD_URL
+}
+
 function resolveProxyOptions(
   config: VoiceHandlersConfig,
 ): VoiceProxyOptions | null {
+  if (config.mode === 'byo') {
+    if (config.proxy) {
+      throw new Error(
+        "createVoiceHandlers: mode 'byo' cannot be combined with an explicit proxy",
+      )
+    }
+    return null
+  }
+  const envProxy = () => {
+    if (config.mode === 'proxy' && config.apiKey) {
+      // Explicit proxy mode: the key really is unused; say so once.
+      LOG_WARN_CACHE.apiKeyIgnored(config.logger)
+    }
+    if (typeof process === 'undefined' || !process.env) return null
+    const runtimeToken = process.env.RUNTIME_AUTH_SECRET
+    const projectId = process.env.PROJECT_ID
+    if (!runtimeToken || !projectId) return null
+    return {
+      runtimeToken,
+      projectId,
+      // Deliberately not required here: see `resolveApiBase`. Throwing at
+      // construction made every local-only handler (400 validation, 405s,
+      // the static audio-tags catalog) unusable on a host with a token but
+      // no URL — which is exactly CI's env.
+      apiUrl: envApiUrl() ?? '',
+      ...(config.fetch ? { fetch: config.fetch } : {}),
+    }
+  }
   if (config.proxy) {
     if (!config.proxy.runtimeToken || !config.proxy.projectId || !config.proxy.apiUrl) {
       throw new Error(
         'createVoiceHandlers: proxy requires runtimeToken, projectId, and apiUrl',
       )
     }
+    if (config.apiKey) LOG_WARN_CACHE.apiKeyIgnored(config.logger)
     return config.proxy
   }
-  if (typeof process === 'undefined' || !process.env) return null
-  const runtimeToken = process.env.RUNTIME_AUTH_SECRET
-  const projectId = process.env.PROJECT_ID
-  if (!runtimeToken || !projectId) return null
-  const apiUrl =
-    process.env.SHOGO_API_URL ?? process.env.SHOGO_CLOUD_URL ?? 'http://localhost:8002'
-  return {
-    runtimeToken,
-    projectId,
-    apiUrl,
-    ...(config.fetch ? { fetch: config.fetch } : {}),
-  }
+  if (config.mode === 'proxy') return envProxy()
+  // 'auto': an explicit apiKey means the caller brought their own key.
+  if (config.apiKey) return null
+  return envProxy()
+}
+
+/** Emit the "apiKey is ignored" warning at most once per process. */
+const LOG_WARN_CACHE = {
+  warned: false,
+  apiKeyIgnored(logger: VoiceHandlersConfig['logger']) {
+    if (LOG_WARN_CACHE.warned) return
+    LOG_WARN_CACHE.warned = true
+    ;(logger ?? NOOP_LOGGER)(
+      'warn',
+      'createVoiceHandlers: apiKey provided but runtime-token proxy mode is active; apiKey is ignored (pass mode: "byo" to use it)',
+    )
+  },
 }
 
 /**
@@ -272,7 +348,19 @@ function createProxyHandlers(
       'createVoiceHandlers proxy: global fetch is unavailable; pass proxy.fetch',
     )
   }
-  const apiBase = proxy.apiUrl.replace(/\/+$/, '')
+
+  /**
+   * The API host for one proxied call. Resolved per call, never at
+   * construction: a pod may inject the runtime token before (or without)
+   * a host, and the local-only handlers — body validation, 405s, the
+   * static audio-tags catalog — must not depend on one. Only a request
+   * that actually leaves the process gets the loud refusal.
+   */
+  function resolveApiBase(): string {
+    const raw = proxy.apiUrl || envApiUrl()
+    if (!raw) throw new Error(MISSING_API_HOST_MESSAGE)
+    return raw.replace(/\/+$/, '')
+  }
 
   /**
    * Build an upstream URL with the project id pinned by the runtime
@@ -282,7 +370,11 @@ function createProxyHandlers(
    * unknown params risks privilege confusion if the upstream API
    * grows new auth-relevant flags.
    */
-  function proxyUrl(path: string, forward: Record<string, string | null>): string {
+  function proxyUrl(
+    base: string,
+    path: string,
+    forward: Record<string, string | null>,
+  ): string {
     const tail: string[] = [`projectId=${encodeURIComponent(proxy.projectId)}`]
     for (const [k, v] of Object.entries(forward)) {
       if (typeof v === 'string' && v.length > 0) {
@@ -290,7 +382,7 @@ function createProxyHandlers(
       }
     }
     const sep = path.includes('?') ? '&' : '?'
-    return `${apiBase}${path}${sep}${tail.join('&')}`
+    return `${base}${path}${sep}${tail.join('&')}`
   }
 
   /** Allowlist of query params forwarded from the incoming request. */
@@ -298,6 +390,9 @@ function createProxyHandlers(
 
   async function doSignedUrl(req: Request): Promise<Response> {
     if (req.method !== 'GET') return json({ error: 'Method Not Allowed' }, 405)
+    // Resolved before the try so a missing host surfaces as the real
+    // error, not a generic 502 "signedUrl proxy failed".
+    const base = resolveApiBase()
     try {
       let incomingUrl: URL | null = null
       try {
@@ -314,7 +409,7 @@ function createProxyHandlers(
           if (v != null) forward[key] = v
         }
       }
-      const upstream = await fetchImpl(proxyUrl('/api/voice/signed-url', forward), {
+      const upstream = await fetchImpl(proxyUrl(base, '/api/voice/signed-url', forward), {
         method: 'GET',
         headers: { 'x-runtime-token': proxy.runtimeToken },
         credentials: 'omit',
@@ -358,8 +453,9 @@ function createProxyHandlers(
     const raw = await readJson(req)
     const parsed = parseMusicBody(raw)
     if ('error' in parsed) return json({ error: parsed.error }, 400)
+    const base = resolveApiBase()
     try {
-      const upstream = await fetchImpl(proxyUrl('/api/voice/music', {}), {
+      const upstream = await fetchImpl(proxyUrl(base, '/api/voice/music', {}), {
         method: 'POST',
         headers: {
           'x-runtime-token': proxy.runtimeToken,
@@ -369,6 +465,16 @@ function createProxyHandlers(
         body: JSON.stringify(parsed.params),
         credentials: 'omit',
       })
+      if (upstream.status === 404) {
+        return json(
+          {
+            error: 'Not Implemented',
+            detail:
+              'this Shogo API has no voice routes (desktop without ELEVENLABS_API_KEY?) — /api/voice/music returned 404 upstream',
+          },
+          501,
+        )
+      }
       const buf = await upstream.arrayBuffer()
       const headers: Record<string, string> = {}
       const ct = upstream.headers.get('content-type')
@@ -393,9 +499,162 @@ function createProxyHandlers(
       )
   }
 
+  /**
+   * One-shot TTS through the Shogo API's `/voice/tts`. Project-scoped
+   * (not per-end-user), so this works in runtime-token mode. The hosted
+   * route owns the pooled EL key, model validation and character caps;
+   * we forward the body and pass the audio + model headers straight back.
+   */
+  async function doTts(req: Request): Promise<Response> {
+    if (req.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405)
+    const raw = await readJson(req)
+    if (raw === null || typeof raw !== 'object') return json({ error: 'Invalid JSON body' }, 400)
+    const body = raw as Partial<TtsPreviewBody> & { voiceId?: string }
+    const text = typeof body.text === 'string' ? body.text : ''
+    if (!text.trim()) return json({ error: 'Missing text' }, 400)
+
+    const base = resolveApiBase()
+    try {
+      const upstream = await fetchImpl(proxyUrl(base, '/api/voice/tts', {}), {
+        method: 'POST',
+        headers: {
+          'x-runtime-token': proxy.runtimeToken,
+          'content-type': 'application/json',
+          accept: 'audio/mpeg',
+        },
+        body: JSON.stringify({
+          text,
+          ...(typeof body.voiceId === 'string' && body.voiceId
+            ? { voiceId: body.voiceId }
+            : {}),
+          ...(typeof body.modelId === 'string' && body.modelId
+            ? { modelId: body.modelId }
+            : {}),
+          ...(body.voiceSettings ? { voiceSettings: body.voiceSettings } : {}),
+          ...(Array.isArray(body.audioTags) ? { audioTags: body.audioTags } : {}),
+        }),
+        credentials: 'omit',
+      })
+      if (upstream.status === 404) {
+        return json(
+          {
+            error: 'Not Implemented',
+            detail:
+              'this Shogo API has no voice routes (desktop without ELEVENLABS_API_KEY?) — /api/voice/tts returned 404 upstream',
+          },
+          501,
+        )
+      }
+      const buf = await upstream.arrayBuffer()
+      const headers: Record<string, string> = {}
+      const ct = upstream.headers.get('content-type')
+      if (ct) headers['content-type'] = ct
+      for (const h of ['x-tts-model-used', 'x-tts-model-requested', 'warning']) {
+        const v = upstream.headers.get(h)
+        if (v) headers[h] = v
+      }
+      return new Response(buf, { status: upstream.status, headers })
+    } catch (err) {
+      log('error', 'proxy tts failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return json({ error: 'tts proxy failed' }, 502)
+    }
+  }
+
+  /**
+   * The proxy-mode `elevenLabs` client. Media methods that the Shogo API
+   * serves go through it; everything else (agent provisioning, phone
+   * numbers, …) needs a BYO key and throws loudly.
+   */
+  function createProxyElevenLabs(): ElevenLabsClient {
+    const unsupported = (prop: string): never => {
+      throw new Error(
+        `createVoiceHandlers: elevenLabs.${prop} is not available in runtime-token proxy mode (only textToSpeech and composeMusic are hosted); pass mode: 'byo' with an apiKey`,
+      )
+    }
+
+    const textToSpeech = async (params: TextToSpeechParams): Promise<TextToSpeechResult> => {
+      const upstream = await fetchImpl(proxyUrl(resolveApiBase(), '/api/voice/tts', {}), {
+        method: 'POST',
+        headers: {
+          'x-runtime-token': proxy.runtimeToken,
+          'content-type': 'application/json',
+          accept: params.accept ?? 'audio/mpeg',
+        },
+        body: JSON.stringify({
+          text: params.text,
+          voiceId: params.voiceId,
+          ...(params.modelId ? { modelId: params.modelId } : {}),
+          ...(params.voiceSettings ? { voiceSettings: params.voiceSettings } : {}),
+        }),
+        credentials: 'omit',
+      })
+      if (upstream.status === 404) {
+        throw new Error(
+          'this Shogo API has no voice routes (desktop without ELEVENLABS_API_KEY?) — /api/voice/tts returned 404 upstream',
+        )
+      }
+      if (!upstream.ok) {
+        throw new ElevenLabsApiError(
+          `textToSpeech failed: ${upstream.status}`,
+          upstream.status,
+          await upstream.text(),
+        )
+      }
+      const requestedModel = params.modelId ?? DEFAULT_TTS_MODEL
+      const usedModel = upstream.headers.get('x-tts-model-used') ?? requestedModel
+      const requestedHeader = upstream.headers.get('x-tts-model-requested') ?? requestedModel
+      return {
+        audio: await upstream.arrayBuffer(),
+        modelId: usedModel,
+        requestedModel: requestedHeader,
+        fellBack: usedModel !== requestedHeader,
+        contentType: upstream.headers.get('content-type') ?? params.accept ?? 'audio/mpeg',
+      }
+    }
+
+    const composeMusic = async (params: ComposeMusicParams) => {
+      const upstream = await fetchImpl(proxyUrl(resolveApiBase(), '/api/voice/music', {}), {
+        method: 'POST',
+        headers: {
+          'x-runtime-token': proxy.runtimeToken,
+          'content-type': 'application/json',
+          accept: 'audio/mpeg',
+        },
+        body: JSON.stringify(params),
+        credentials: 'omit',
+      })
+      if (upstream.status === 404) {
+        throw new Error(
+          'this Shogo API has no voice routes (desktop without ELEVENLABS_API_KEY?) — /api/voice/music returned 404 upstream',
+        )
+      }
+      if (!upstream.ok) {
+        throw new ElevenLabsApiError(
+          `composeMusic failed: ${upstream.status}`,
+          upstream.status,
+          await upstream.text(),
+        )
+      }
+      return {
+        audio: await upstream.arrayBuffer(),
+        contentType: upstream.headers.get('content-type') ?? 'audio/mpeg',
+      }
+    }
+
+    return new Proxy({} as ElevenLabsClient, {
+      get(_t, prop) {
+        if (prop === 'textToSpeech') return textToSpeech
+        if (prop === 'composeMusic') return composeMusic
+        return unsupported(String(prop))
+      },
+    })
+  }
+
   return {
     signedUrl: doSignedUrl,
-    tts: notImplemented('tts'),
+    tts: doTts,
     music: doMusic,
     agent: {
       create: notImplemented('agent.create'),
@@ -403,16 +662,9 @@ function createProxyHandlers(
       delete: notImplemented('agent.delete'),
     },
     audioTags: doAudioTags,
-    // In proxy mode we don't own an EL client. Expose a throwing stub so
-    // accidental use is loud instead of silently passing around a
-    // half-configured client.
-    elevenLabs: new Proxy({} as ElevenLabsClient, {
-      get(_t, prop) {
-        throw new Error(
-          `createVoiceHandlers: elevenLabs.${String(prop)} is not available in runtime-token proxy mode`,
-        )
-      },
-    }),
+    // In proxy mode we don't own an EL client: media calls go through the
+    // Shogo API, anything else is a loud error.
+    elevenLabs: createProxyElevenLabs(),
   }
 }
 
@@ -420,18 +672,20 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
   const log = config.logger ?? NOOP_LOGGER
 
   // Proxy mode short-circuit — skips every BYO-EL requirement. A pod
-  // started with RUNTIME_AUTH_SECRET + PROJECT_ID in env just works.
+  // started with RUNTIME_AUTH_SECRET + PROJECT_ID in env just works,
+  // unless the caller supplied an apiKey (auto) or asked for 'byo'.
   const proxy = resolveProxyOptions(config)
   if (proxy) {
-    if (config.apiKey) {
-      log('warn', 'createVoiceHandlers: apiKey provided but runtime-token proxy mode is active; apiKey is ignored')
-    }
     return createProxyHandlers(proxy, log)
   }
 
-  if (!config.apiKey) throw new Error('createVoiceHandlers: apiKey is required')
-  if (!config.getUser) throw new Error('createVoiceHandlers: getUser is required')
-  if (!config.companionStore) throw new Error('createVoiceHandlers: companionStore is required')
+  if (!config.apiKey) {
+    throw new Error(
+      config.mode === 'proxy'
+        ? 'createVoiceHandlers: mode "proxy" needs RUNTIME_AUTH_SECRET + PROJECT_ID (+ SHOGO_API_URL) in env'
+        : 'createVoiceHandlers: apiKey is required (or run in a pod with RUNTIME_AUTH_SECRET + PROJECT_ID for proxy mode)',
+    )
+  }
 
   // TypeScript narrowing — alias post-guard so closures can use them.
   const getUser = config.getUser
@@ -449,9 +703,30 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
   const el = new ElevenLabsClient(elConfig)
 
   async function resolveUser(req: Request): Promise<VoiceUser | Response> {
+    if (!getUser) {
+      return json(
+        {
+          error: 'Voice handler misconfigured',
+          detail:
+            'signedUrl / agent.* need getUser (and companionStore); tts and music do not.',
+        },
+        500,
+      )
+    }
     const u = await getUser(req)
     if (!u) return json({ error: 'Unauthorized' }, 401)
     return u
+  }
+
+  /** 500 when a user-scoped handler ran without a companion store. */
+  function missingCompanionStore(): Response {
+    return json(
+      {
+        error: 'Voice handler misconfigured',
+        detail: 'companionStore is required for signedUrl / agent.*; tts and music do not need it.',
+      },
+      500,
+    )
   }
 
   function handleElError(e: unknown, fallbackLabel: string): Response {
@@ -469,6 +744,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     const u = await resolveUser(req)
     if (u instanceof Response) return u
 
+    if (!companionStore) return missingCompanionStore()
     const companion = await companionStore.findByUserId(u.id)
     if (!companion || !companion.agentId) return json({ error: 'No companion' }, 404)
 
@@ -530,8 +806,12 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
 
   async function doTts(req: Request): Promise<Response> {
     if (req.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405)
-    const u = await resolveUser(req)
-    if (u instanceof Response) return u
+    // TTS is project-scoped: only resolve a user when the consumer wired
+    // one, so `createVoiceHandlers({ apiKey })` works without stores.
+    if (getUser) {
+      const u = await resolveUser(req)
+      if (u instanceof Response) return u
+    }
 
     const raw = await readJson(req)
     if (raw === null || typeof raw !== 'object') return json({ error: 'Invalid JSON body' }, 400)
@@ -551,19 +831,27 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     }
 
     try {
-      const { audio, modelId, contentType } = await el.textToSpeech({
+      const result = await el.textToSpeech({
         voiceId,
         text,
         ...(body.modelId ? { modelId: body.modelId } : {}),
         voiceSettings,
       })
-      return new Response(audio, {
-        headers: {
-          'content-type': contentType,
-          'cache-control': 'private, max-age=3600',
-          'x-tts-model-used': modelId,
-        },
-      })
+      const headers: Record<string, string> = {
+        'content-type': result.contentType,
+        'cache-control': 'private, max-age=3600',
+        'x-tts-model-used': result.modelId,
+        'x-tts-model-requested': result.requestedModel,
+      }
+      if (result.fellBack) {
+        headers.warning = `199 - "model ${result.requestedModel} not available, used ${result.modelId}"`
+        log('warn', 'tts fell back to another model', {
+          requested: result.requestedModel,
+          used: result.modelId,
+          reason: result.fallbackReason,
+        })
+      }
+      return new Response(result.audio, { headers })
     } catch (e) {
       return handleElError(e, 'TTS failed')
     }
@@ -571,8 +859,10 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
 
   async function doMusic(req: Request): Promise<Response> {
     if (req.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405)
-    const u = await resolveUser(req)
-    if (u instanceof Response) return u
+    if (getUser) {
+      const u = await resolveUser(req)
+      if (u instanceof Response) return u
+    }
 
     const raw = await readJson(req)
     const parsed = parseMusicBody(raw)
@@ -596,6 +886,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     const u = await resolveUser(req)
     if (u instanceof Response) return u
 
+    if (!companionStore) return missingCompanionStore()
     const existing = await companionStore.findByUserId(u.id)
     if (existing) return json({ error: 'Companion already exists' }, 409)
 
@@ -658,6 +949,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     const u = await resolveUser(req)
     if (u instanceof Response) return u
 
+    if (!companionStore) return missingCompanionStore()
     const existing = await companionStore.findByUserId(u.id)
     if (!existing) return json({ error: 'No companion' }, 404)
 
@@ -743,6 +1035,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     const u = await resolveUser(req)
     if (u instanceof Response) return u
 
+    if (!companionStore) return missingCompanionStore()
     const existing = await companionStore.findByUserId(u.id)
     if (!existing) return json({ ok: true })
 

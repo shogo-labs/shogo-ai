@@ -49,11 +49,18 @@ mock.module('../lib/prisma', () => withPrismaExports({
 
 const elClientLastArgs: Array<{ apiKey: string }> = []
 const createAgentLog: Array<Record<string, unknown>> = []
+// Keep every real helper (model table, audio-tag normalizers, …) and swap
+// only the client so agent creation is recorded instead of hitting EL.
+// Extending the real client matters: module mocks are process-global in bun,
+// so every other module under test (voice-media's hosted routes included)
+// must still get a working `textToSpeech` / `composeMusic`.
+const actualVoice = await import('@shogo-ai/voice')
+const RealElevenLabsClient = actualVoice.ElevenLabsClient as any
 mock.module('@shogo-ai/sdk/voice', () => ({
-  ElevenLabsClient: class ElevenLabsClient {
-    apiKey: string
+  ...actualVoice,
+  ElevenLabsClient: class ElevenLabsClient extends RealElevenLabsClient {
     constructor(opts: { apiKey: string }) {
-      this.apiKey = opts.apiKey
+      super(opts)
       elClientLastArgs.push(opts)
     }
     async createAgent(args: Record<string, unknown>): Promise<string> {
@@ -145,7 +152,7 @@ describe('ensureProjectElevenLabsAgent', () => {
     expect(created.displayName).toBe('shogo-project-proj-fre')
     expect(created.characterName).toBe('Shogo')
     expect(created.voiceId).toBe('EXAVITQu4vr4xnSDxMaL')
-    expect(created.ttsModelId).toBe('eleven_turbo_v2')
+    expect(created.ttsModelId).toBe('eleven_v4_turbo')
     expect(created.language).toBe('en')
     expect(created.memoryBlock).toBeNull()
     expect((created.systemPrompt as string).length).toBeGreaterThan(0)

@@ -151,6 +151,9 @@ import {
 } from './lib/workspace-compute-budget'
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { historyRoutes } from './routes/history'
+// Hosted voice media — imported directly (not via the cloud-only island) so
+// desktop/local mode serves /api/voice/tts and /api/voice/music too.
+import { voiceMediaRoutes } from './routes/voice-media'
 import { chatMentionRoutes } from './routes/chat-mentions'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
 import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
@@ -8594,6 +8597,13 @@ app.route('/api', toolsProxy)
 // above). Keeps ELEVENLABS_API_KEY on the server and serves the shared
 // translator persona for both voice (signed URL) and text (streaming chat).
 app.route('/api', voiceRoutes())
+
+// Hosted voice media (`/api/voice/tts`, `/api/voice/music`). Mounted
+// unconditionally — unlike `voiceRoutes()` this module has no cloud-only
+// imports, so desktop (`SHOGO_LOCAL_MODE`) serves the same endpoints and the
+// SDK's runtime-token proxy works there too. Without ELEVENLABS_API_KEY the
+// handlers answer 503 with a specific message.
+app.route('/api', voiceMediaRoutes())
 
 // Public streaming chat route — text-only sibling of the voice signed-
 // URL endpoint. Lets external SDK consumers (`useShogoChat`) drive the
