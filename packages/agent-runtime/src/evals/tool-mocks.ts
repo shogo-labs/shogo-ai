@@ -4379,6 +4379,28 @@ export const ADVERSARIAL_MOCKS: ToolMockMap = {
 }
 
 // ---------------------------------------------------------------------------
+// Deferred tool discovery (SHO-97): `publish` is NOT in CORE_TOOL_NAMES, so the
+// agent only knows its schema after finding it in the Deferred Tools catalog and
+// calling read_guide({ tool: 'publish' }) — or by calling it directly.
+// ---------------------------------------------------------------------------
+
+export const DEFERRED_PUBLISH_MOCKS: ToolMockMap = {
+  publish: {
+    type: 'static',
+    description: 'Publish the web app to a public, persistent URL.',
+    paramKeys: ['subdomain', 'access_level', 'project_id'],
+    response: {
+      ok: true,
+      published: true,
+      url: 'https://sho-eval-deferred.shogo.one',
+      subdomain: 'sho-eval-deferred',
+      republished: false,
+      verified: true,
+    },
+  },
+}
+
+// ---------------------------------------------------------------------------
 // Cross-cutting track — meta-behavior evals (delegation, memory, terse input)
 // ---------------------------------------------------------------------------
 

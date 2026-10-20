@@ -18,6 +18,7 @@ import {
   CANVAS_API_BIND_MOCKS,
   TOOL_LIFECYCLE_FULL_MOCKS,
   TOOL_BIND_AT_INSTALL_MOCKS,
+  DEFERRED_PUBLISH_MOCKS,
 } from './tool-mocks'
 import {
   usedTool,
@@ -587,6 +588,62 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
     ],
     antiPatterns: [
       'Agent used fabricated sample data instead of fetching from Google Calendar',
+    ],
+  },
+
+  // =========================================================================
+  // Case 7: a task whose only route to done is a DEFERRED tool (SHO-97)
+  // Level 2 | `publish` is not in CORE_TOOL_NAMES, so its schema is only sent
+  // after the agent finds it in the Deferred Tools catalog and calls
+  // read_guide({ tool: 'publish' }) — or calls it directly, which auto-activates.
+  // Scores 0 on `published` if deferral ever drops a tool the task needs.
+  // =========================================================================
+  {
+    id: 'tool-deferred-discovery-completes',
+    name: 'Tool System: a deferred tool the task needs is discoverable and completes the task',
+    category: 'tool-system',
+    level: 2,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
+    input: 'Publish this app to the subdomain sho-eval-deferred, then give me the live URL.',
+    maxScore: 100,
+    toolMocks: DEFERRED_PUBLISH_MOCKS,
+    validationCriteria: [
+      {
+        id: 'published',
+        description: 'Called publish (a deferred, non-core tool) — the task cannot complete without it',
+        points: 45,
+        phase: 'intention',
+        validate: (r) => usedToolAnywhere(r, 'publish'),
+      },
+      {
+        id: 'discovered-before-use',
+        description: 'Learned the tool from the catalog via read_guide({ tool }) or called it directly',
+        points: 20,
+        phase: 'intention',
+        validate: (r) =>
+          usedToolAnywhere(r, 'publish') ||
+          r.toolCalls.some(t => t.name === 'read_guide' && JSON.stringify(t.input ?? {}).includes('publish')),
+      },
+      {
+        id: 'subdomain-verbatim',
+        description: 'Passed the subdomain the user named, unchanged',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => toolCallArgsContain(r, 'publish', 'sho-eval-deferred'),
+      },
+      {
+        id: 'shared-live-url',
+        description: 'Told the user the live https://sho-eval-deferred.shogo.one URL',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'sho-eval-deferred.shogo.one'),
+      },
+    ],
+    antiPatterns: [
+      'Agent said it had no publish tool or asked the user to publish manually',
+      'Agent invented a URL instead of using the one publish returned',
     ],
   },
 ]

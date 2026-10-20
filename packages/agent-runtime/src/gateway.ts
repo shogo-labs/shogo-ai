@@ -108,7 +108,14 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, type SessionWakeState } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, type SessionWakeState } from './internal-api'
+import {
+  createToolProfile,
+  deferredToolsEnabled,
+  resolveLearnedToolOrder,
+  withActivationOnCall,
+  type ToolProfile,
+} from './tool-profile'
 import { mergeCapabilitySettingsIntoConfig, parseWorkspaceSettings } from '@shogo/shared-runtime/capability-settings'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
@@ -478,6 +485,22 @@ export type ChatContext = 'workspace' | 'project'
 const SECTION_SEPARATOR = '\n\n---\n\n'
 
 /**
+ * Append a section to the *stable* (cached) zone of an already-built system
+ * prompt, just before `<|CACHE_BOUNDARY|>`.
+ *
+ * Some prompt content can only be rendered after the tool set is assembled —
+ * the deferred-tools catalog (SHO-97) is the first of those — and the prompt is
+ * built before the tools are. Inserting before the boundary keeps that content
+ * in the cached prefix instead of re-billing it on every request.
+ */
+function insertStablePromptSection(prompt: string, section: string): string {
+  if (!section) return prompt
+  const idx = prompt.indexOf(CACHE_BOUNDARY)
+  if (idx === -1) return `${prompt}${SECTION_SEPARATOR}${section}`
+  return `${prompt.slice(0, idx)}${SECTION_SEPARATOR}${section}${prompt.slice(idx)}`
+}
+
+/**
  * The prompt-cache prefix a turn was sent with, as short hashes.
  *
  * Cache layout is the only lever we have on providers that cache implicitly
@@ -548,6 +571,12 @@ export interface GatewayConfig {
    * config.json is read as a fallback for projects that predate this field.
    */
   heartbeatToolsEnabled?: boolean
+  /**
+   * Advertise a core tool set plus this agent's most-used tools, and defer the
+   * rest behind the Deferred Tools catalog (SHO-97). Same default on both
+   * tracks: on, unless a config or `SHOGO_DEFERRED_TOOLS=0` turns it off.
+   */
+  deferredToolsEnabled?: boolean
   channels: Array<{ type: string; config: Record<string, string>; model?: string }>
   /** Model configuration: provider + name (e.g. { provider: 'anthropic', name: 'auto' }).
    *  `thinkingLevel` is the admin-configured reasoning effort for the selected
@@ -725,6 +754,13 @@ export class AgentGateway {
   private currentGuideRegistry?: Map<string, string>
   /** Per-section prompt breakdown from the last loadBootstrapContext() call */
   lastPromptBreakdown?: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }>
+  /**
+   * Advertised tool sets, one per session (SHO-97). Computed once and reused so
+   * the tools block stays byte-identical across the API calls of a turn; a
+   * changed registration (an MCP server connected mid-session) rebuilds it and
+   * re-applies whatever the model had activated.
+   */
+  private toolProfiles = new Map<string, { signature: string; toolCount: number; profile: ToolProfile; activated: Set<string> }>()
   /** Tool execute overrides for eval mocking (tool name -> mock fn) */
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
@@ -1011,6 +1047,43 @@ export class AgentGateway {
   /** Inject a custom streamFn (used in tests to mock the LLM) */
   setStreamFn(fn: StreamFn): void {
     this._streamFn = fn
+  }
+
+  /**
+   * This session's advertised tool set (SHO-97). Reused while the registration
+   * is unchanged — that is what keeps the tools block byte-identical across the
+   * API calls of a turn — and rebuilt (with the model's activations re-applied)
+   * when a tool is added or removed mid-session.
+   */
+  private toolProfileFor(sessionId: string, tools: AgentTool[], learned: readonly string[]): ToolProfile {
+    const signature = tools.map(t => t.name).sort().join(',')
+    const cached = this.toolProfiles.get(sessionId)
+    if (cached && cached.signature === signature) return cached.profile
+
+    const activated = cached?.activated ?? new Set<string>()
+    const base = createToolProfile(tools, { learned })
+    for (const name of activated) base.advertise(name)
+
+    const profile: ToolProfile = {
+      ...base,
+      advertise: (name: string) => {
+        const wasDeferred = base.advertise(name)
+        if (wasDeferred) activated.add(name)
+        return wasDeferred
+      },
+      isAdvertised: (name: string) => base.isAdvertised(name),
+      isDeferred: (name: string) => base.isDeferred(name),
+      describe: (name: string) => base.describe(name),
+      deferredNames: () => base.deferredNames(),
+      advertisedNames: () => base.advertisedNames(),
+    }
+
+    if (!this.toolProfiles.has(sessionId) && this.toolProfiles.size >= 200) {
+      const oldest = this.toolProfiles.keys().next().value
+      if (oldest !== undefined) this.toolProfiles.delete(oldest)
+    }
+    this.toolProfiles.set(sessionId, { signature, toolCount: tools.length, profile, activated })
+    return profile
   }
 
   /** Set a log callback for forwarding gateway events to the UI Logs tab */
@@ -3215,6 +3288,44 @@ export class AgentGateway {
       }
     }
 
+    // Deferred tool definitions (SHO-97). Advertise a core set plus this
+    // agent's learned top tools; everything else keeps a one-line catalog entry
+    // in the system prompt and no schema in the request. Applied here — after
+    // capability, subagent-only, mode and permission filtering — so nothing a
+    // filter removed can sneak back in. Both the filter and this step read
+    // `turnConfig`, i.e. the capabilities RESOLVED for this turn's surface
+    // (workspace agent vs project, SHO-77), never the raw config: a deferred
+    // tool must not become reachable because the workspace scope defaults a
+    // toggle the project had explicitly off. Computed once per session: the
+    // tools block is the first segment of the provider cache prefix, so
+    // re-deriving it per turn would invalidate every cache hit.
+    let isAdvertisedTool: ((tool: AgentTool) => boolean) | undefined
+    if (deferredToolsEnabled(turnConfig) && assembledTools.some(t => t.name === 'read_guide')) {
+      const learned = await resolveLearnedToolOrder({
+        projectId: projectScopedId(this.projectId),
+        load: async (id) => {
+          const usage = await getProjectToolUsage(id)
+          return usage ? { order: usage.order, totalCalls: usage.totalCalls } : null
+        },
+      })
+      const profile = this.toolProfileFor(sessionId, assembledTools, learned)
+      // read_guide was created from this same object, so it sees the profile.
+      toolContext.toolProfileRef = { current: profile }
+      assembledTools = assembledTools.map(t =>
+        profile.isDeferred(t.name) ? withActivationOnCall(t, profile) : t,
+      )
+      isAdvertisedTool = (tool) => profile.isAdvertised(tool.name)
+      if (profile.catalog) {
+        systemPrompt = insertStablePromptSection(systemPrompt, profile.catalog)
+        this.lastPromptBreakdown?.push({
+          label: 'deferred-tools-catalog',
+          zone: 'stable',
+          chars: profile.catalog.length,
+          estTokens: Math.ceil(profile.catalog.length / 4),
+        })
+      }
+    }
+
     let staticTools = assembledTools
     if (this.toolMocks.size > 0) {
       const existingNames = new Set(assembledTools.map(t => t.name))
@@ -3616,7 +3727,11 @@ export class AgentGateway {
       // Prompt breakdown: compute tool schema size and emit per-section breakdown
       if (this.lastPromptBreakdown) {
         // ---- 1) Per-tool schema sizing ----
-        const toolSizes = tools.map(t => {
+        // Only the advertised set is sent (SHO-97). Deferred tools are counted,
+        // not sized: their cost per request is zero, which is the whole point.
+        const advertisedTools = isAdvertisedTool ? tools.filter(t => isAdvertisedTool(t)) : [...tools]
+        const deferredToolCount = tools.length - advertisedTools.length
+        const toolSizes = advertisedTools.map(t => {
           const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
           return { name: t.name, chars: schema.length }
         })
@@ -3752,7 +3867,8 @@ export class AgentGateway {
         const candidateLabels = [
           ...breakdown.map(s => s.label.length),
           'tool-schemas (XX)'.length,
-          `Tool schemas (${tools.length})`.length,
+          `Tool schemas (${advertisedTools.length})`.length,
+          `deferred (${deferredToolCount} tools, not sent)`.length + 2,
           `Chat context (${history.length} msgs)`.length,
           'assistant-tool-calls (XXX)'.length + 2, // children sit 2 chars deeper
           'compacted-summary'.length + 2,
@@ -3786,8 +3902,8 @@ export class AgentGateway {
         const fmtSubChild = (label: string, chars: number) =>
           `      ${label.padEnd(subChildLabelWidth)}    : ${chars.toLocaleString().padStart(7)} chars ~${Math.ceil(chars / 4).toLocaleString().padStart(6)} tok`
 
-        // Tool schemas: parent + per-tool top 10 + other
-        lines.push(fmtParent(`Tool schemas (${tools.length})`, toolSchemaChars, toolSchemaEstTokens))
+        // Tool schemas: parent (advertised) + per-tool top 10 + other + deferred
+        lines.push(fmtParent(`Tool schemas (${advertisedTools.length})`, toolSchemaChars, toolSchemaEstTokens))
         const TOP_SCHEMAS = 10
         const topSchemas = toolSchemasPerTool.slice(0, TOP_SCHEMAS)
         const restSchemas = toolSchemasPerTool.slice(TOP_SCHEMAS)
@@ -3797,6 +3913,9 @@ export class AgentGateway {
         if (restSchemas.length > 0) {
           const rChars = restSchemas.reduce((s, t) => s + t.chars, 0)
           lines.push(fmtChild(`other (${restSchemas.length} tools)`, rChars))
+        }
+        if (deferredToolCount > 0) {
+          lines.push(fmtChild(`deferred (${deferredToolCount} tools, not sent)`, 0))
         }
 
         // Chat context: parent + per-category children, with per-tool sub-children
@@ -3914,7 +4033,9 @@ export class AgentGateway {
           totalEstTokens,
           toolSchemaChars,
           toolSchemaEstTokens,
-          toolCount: tools.length,
+          toolCount: advertisedTools.length,
+          registeredToolCount: tools.length,
+          deferredToolCount,
           toolSchemasPerTool,
           chatContext: {
             totalChars: chatContextChars,
@@ -4049,6 +4170,9 @@ export class AgentGateway {
         images,
         tools,
         maxIterations,
+        // Deferred tool schemas stay out of every provider request until the
+        // model asks for them by name (SHO-97). Read per API call by the loop.
+        isAdvertisedTool,
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
         thinkingLevel: resolveThinkingLevel(
