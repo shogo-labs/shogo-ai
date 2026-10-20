@@ -109,7 +109,7 @@ describe('shared file routes', () => {
       const response = await retryingApp([]).fetch(new Request(`http://api.test/api/f/${token('report.pdf')}`))
 
       expect(response.status).toBe(404)
-      expect((await response.json()).error.code).toBe('not_found')
+      expect((await response.json()).error.code).toBe('file_not_found')
       expect(warnings).toHaveLength(3)
       expect(warnings[0]).toContain('project project-1')
       expect(warnings[0]).toContain('at project-1/report.pdf')
