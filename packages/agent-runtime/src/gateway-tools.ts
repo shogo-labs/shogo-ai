@@ -8386,7 +8386,7 @@ function createQuickActionTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createReadGuideTool(ctx: ToolContext): AgentTool {
+export function createReadGuideTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_guide',
     description:

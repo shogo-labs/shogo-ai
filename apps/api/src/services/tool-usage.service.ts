@@ -5,6 +5,12 @@
  * holds every call. This ranks that history (last 30 days, recency-weighted)
  * so the agent runtime can keep each project's own most-used tool definitions
  * advertised and defer the rest. No new table, no new telemetry.
+ *
+ * Scope: only `contextType = 'project'` sessions count, because they are the
+ * ones that carry a `contextId` to rank a project's own history by. Locally
+ * that is ~85% of logged calls (39,881 of 46,936); the rest are workspace- or
+ * chat-scoped (`contextId` null) and fall back to the static ranking. Widening
+ * this would mix unrelated workspaces' habits into one project's keep-set.
  */
 
 import { prisma } from '../lib/prisma'

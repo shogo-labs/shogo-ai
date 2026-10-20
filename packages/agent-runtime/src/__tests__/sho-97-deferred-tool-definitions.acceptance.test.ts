@@ -211,3 +211,47 @@ describe('SHO-97: deferred tool definitions', () => {
     expect(calls[0].systemPrompt).not.toContain('## Deferred Tools')
   })
 })
+
+/**
+ * Criterion 9's scenario half, without a live model: a task whose only route to
+ * done is a deferred tool. `publish` is not in CORE_TOOL_NAMES, so discovery via
+ * `read_guide({ tool })` is what makes the second call able to reach it.
+ */
+describe('SHO-97: a task that needs a deferred tool still completes', () => {
+  test('discovery → advertisement → execution → result', async () => {
+    setupWorkspace({})
+    const publishCalls: Record<string, any>[] = []
+    const capture = capturingStream([
+      buildToolUseResponse([{ name: 'read_guide', arguments: { tool: 'publish' } }]),
+      buildToolUseResponse([{ name: 'publish', arguments: { subdomain: 'sho-eval-deferred' } }]),
+      buildTextResponse('published'),
+    ])
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(capture.streamFn)
+    gateway.setToolMocks({
+      publish: params => {
+        publishCalls.push(params)
+        return {
+          ok: true,
+          published: true,
+          url: 'https://sho-eval-deferred.shogo.one',
+          subdomain: 'sho-eval-deferred',
+          verified: true,
+        }
+      },
+    })
+    await gateway.start()
+    await gateway.processChatMessage('publish this app to sho-eval-deferred')
+
+    expect(capture.calls.length).toBe(3)
+    // Deferred at session start, advertised on the next call after discovery.
+    expect(capture.calls[0].tools).not.toContain('publish')
+    expect(toolResultText(capture.calls[1])).toContain('Input schema')
+    expect(capture.calls[1].tools).toContain('publish')
+    // The call actually ran, with the subdomain the task named...
+    expect(publishCalls).toHaveLength(1)
+    expect(publishCalls[0].subdomain).toBe('sho-eval-deferred')
+    // ...and its result reached the model.
+    expect(toolResultText(capture.calls[2])).toContain('sho-eval-deferred.shogo.one')
+  })
+})

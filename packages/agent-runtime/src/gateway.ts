@@ -1053,11 +1053,6 @@ export class AgentGateway {
     return profile
   }
 
-  /** Forget a session's advertised set (its registration changed for good). */
-  resetToolProfile(sessionId: string): void {
-    this.toolProfiles.delete(sessionId)
-  }
-
   /** Set a log callback for forwarding gateway events to the UI Logs tab */
   setLogCallback(fn: (line: string) => void): void {
     this._onLog = fn
