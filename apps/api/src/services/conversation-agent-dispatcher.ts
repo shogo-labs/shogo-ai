@@ -70,7 +70,8 @@ const DEFAULT_START_RETRY_BUDGET_MS = 3 * 60_000
 /** Safety cap so a zero delay cannot spin for the whole budget. */
 const MAX_START_RETRIES = 20
 const CONTEXT_MESSAGES = 20
-const DELTA_THROTTLE_MS = 350
+/** Each streamed-reply update is a database write plus a broadcast; once a second reads as live. */
+const DELTA_THROTTLE_MS = 1_000
 /** A workspace file read for a reply's media; a slow runtime must not hold the reply. */
 const REPLY_MEDIA_FETCH_TIMEOUT_MS = 10_000
 export { AGENT_REPLY_TIMEOUT_MS }

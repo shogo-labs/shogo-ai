@@ -9,7 +9,7 @@ import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
 import { resolveHostTier } from './runtime-memory'
 import { resolveDesktopPath } from './login-shell-path'
 import { getOrCreateSecretsEncryptionKey } from './local-secrets'
-import { LocalApiSupervisor } from './local-api-supervisor'
+import { DEFAULT_HEALTH_WATCHDOG, LocalApiSupervisor } from './local-api-supervisor'
 import {
   appendApiCrashLog,
   appendApiStderr,
@@ -32,8 +32,8 @@ const RESTART_HEALTH_RETRIES = 20
 const HEALTH_RETRY_DELAY_MS = 500
 const SHUTDOWN_TIMEOUT_MS = 5000
 // One watchdog probe's socket budget. The supervisor bounds the whole call as
-// well (see `DEFAULT_HEALTH_WATCHDOG.timeoutMs`), in case `fetch` itself hangs.
-const HEALTH_PROBE_TIMEOUT_MS = 3000
+// well, in case `fetch` itself hangs.
+const HEALTH_PROBE_TIMEOUT_MS = DEFAULT_HEALTH_WATCHDOG.timeoutMs
 
 let apiProcess: ChildProcess | null = null
 let apiPort: number = PREFERRED_PORT
@@ -64,7 +64,7 @@ let intentionalStop = false
  *
  * SHO-60 adds the watchdog: a child that stays alive but stops answering
  * `/health` never fires `exit`, so the respawn policy below would never see it.
- * The probe trips after three misses and `kill` turns that into the same
+ * The probe trips after three unanswered probes and `kill` turns that into the same
  * `exit` → `notifyExit()` path — one restart loop, two ways in.
  */
 const apiSupervisor = new LocalApiSupervisor({
@@ -77,6 +77,9 @@ const apiSupervisor = new LocalApiSupervisor({
   },
   onHealthFailure: ({ failures, maxFailures }) => {
     console.warn(`[Desktop] Local API failed health probe ${failures}/${maxFailures}`)
+  },
+  onSlowHealth: ({ elapsedMs }) => {
+    console.warn(`[Desktop] Local API is slow: health probe answered after ${elapsedMs}ms`)
   },
   onWatchdogTripped: ({ failures }) => {
     console.error(
