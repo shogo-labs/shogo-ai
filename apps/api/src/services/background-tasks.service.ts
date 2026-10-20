@@ -53,12 +53,15 @@ export const MAX_CONSECUTIVE_CARD_WAKES = 40
  * usually a busy runtime); repeats back off up to five minutes.
  */
 const WAKE_RETRY_BACKOFF_MS = [0, 15_000, 30_000, 60_000, 120_000, 300_000]
-/**
- * The longest a released wake waits before its next attempt. A paused session
- * is retried on this same schedule, so this is also how long a person's message
- * can take to revive a paused wake.
- */
+/** The longest a released wake waits before its next attempt. */
 export const MAX_WAKE_BACKOFF_MS = WAKE_RETRY_BACKOFF_MS[WAKE_RETRY_BACKOFF_MS.length - 1]!
+/**
+ * How many times one wake is re-queued after a dispatch that never ran. A wake
+ * the runtime will not take would otherwise be retried on the same backoff for
+ * the task's whole 24 h TTL; past this the task is held until it expires and
+ * the queue keeps one row saying why it never arrived.
+ */
+export const MAX_WAKE_ATTEMPTS = 5
 /** An `agent_reply` task whose run never reports back is given up this long after its timeout. */
 export const AGENT_REPLY_RECONCILE_MS = AGENT_REPLY_TIMEOUT_MS + 5 * 60_000
 /**
@@ -999,6 +1002,10 @@ export async function sessionWakeState(chatSessionId: string): Promise<SessionWa
  */
 export async function sweepUnnotifiedWakes(limit = 50): Promise<number> {
   const now = new Date()
+  // A pause lifts when a person writes, so the updates it held are handed back
+  // here rather than only on the turn that ended the pause.
+  await releaseLiftedPauseHolds(now).catch((error) =>
+    console.warn('[BackgroundTasks] releasing pause-held wakes failed:', (error as Error).message))
   const sessions: Array<{ chatSessionId: string }> = await db.backgroundTask.findMany({
     where: {
       status: { not: 'running' },
@@ -1025,21 +1032,34 @@ export async function sweepUnnotifiedWakes(limit = 50): Promise<number> {
   return queued
 }
 
+export interface WakeRelease {
+  /** Tasks handed back to the sweep for another attempt. */
+  released: number
+  /** Tasks that just hit `MAX_WAKE_ATTEMPTS`: held until they expire instead. */
+  capped: string[]
+}
+
 /**
  * A wake claimed these tasks but never ran: hand them back so the sweep can
  * queue them again once the runtime is healthy. Repeated failures back off
- * instead of hot-looping, and `expiresAt` still bounds the whole thing.
+ * instead of hot-looping, and a wake still failing after `MAX_WAKE_ATTEMPTS`
+ * stops being retried at all.
  */
-export async function releaseTaskWakes(taskIds: string[]): Promise<number> {
+export async function releaseTaskWakes(taskIds: string[]): Promise<WakeRelease> {
   const ids = taskIds.filter((id) => typeof id === 'string' && id.length <= 64).slice(0, 200)
-  if (!ids.length) return 0
-  const rows: Array<{ id: string; attempts: number }> = await db.backgroundTask.findMany({
+  if (!ids.length) return { released: 0, capped: [] }
+  const rows: Array<{ id: string; attempts: number; expiresAt: Date }> = await db.backgroundTask.findMany({
     where: { id: { in: ids }, consumed: false, notifiedAt: { not: null } },
-    select: { id: true, attempts: true },
+    select: { id: true, attempts: true, expiresAt: true },
   })
-  if (!rows.length) return 0
+  if (!rows.length) return { released: 0, capped: [] }
   const byAttempts = new Map<number, string[]>()
+  const capped: Array<{ id: string; expiresAt: Date }> = []
   for (const row of rows) {
+    if (row.attempts + 1 >= MAX_WAKE_ATTEMPTS) {
+      capped.push(row)
+      continue
+    }
     const group = byAttempts.get(row.attempts) ?? []
     group.push(row.id)
     byAttempts.set(row.attempts, group)
@@ -1048,10 +1068,105 @@ export async function releaseTaskWakes(taskIds: string[]): Promise<number> {
     const delay = WAKE_RETRY_BACKOFF_MS[Math.min(attempts, WAKE_RETRY_BACKOFF_MS.length - 1)]!
     await db.backgroundTask.updateMany({
       where: { id: { in: group }, consumed: false, notifiedAt: { not: null } },
-      data: { notifiedAt: null, attempts: { increment: 1 }, nextAttemptAt: new Date(Date.now() + delay) },
+      data: { notifiedAt: null, heldUntil: null, attempts: { increment: 1 }, nextAttemptAt: new Date(Date.now() + delay) },
+    })
+  }
+  for (const row of capped) {
+    // Its last attempt is behind it: keep `notifiedAt` so nothing queues it
+    // again, and hold it to its own expiry. The queue keeps the failed row that
+    // says it could not be delivered.
+    await db.backgroundTask.updateMany({
+      where: { id: row.id, consumed: false },
+      data: { attempts: { increment: 1 }, heldUntil: row.expiresAt },
+    })
+  }
+  return { released: rows.length - capped.length, capped: capped.map((row) => row.id) }
+}
+
+/**
+ * A wake cannot be delivered because the session's wakes are paused: hold the
+ * tasks instead of handing them back.
+ *
+ * Releasing them re-armed the same wake on the retry backoff, so a session left
+ * paused accumulated one failed row per attempt for the task's whole 24 h TTL
+ * (1,150 of them across 9 chats on 2026-10-20). Held tasks are out of the
+ * sweep's reach until a person writes, and then `releaseLiftedPauseHolds` hands
+ * them back once.
+ *
+ * A pause hold is `heldUntil = expiresAt` — the card hold in `holdTasks` is
+ * `now + CARD_HOLD_MS`, so the two never look alike. `notifiedAt` stays: the
+ * wake was claimed, and only the release puts it back in the sweep's reach.
+ */
+export async function holdTaskWakes(taskIds: string[]): Promise<number> {
+  const ids = taskIds.filter((id) => typeof id === 'string' && id.length <= 64).slice(0, 200)
+  if (!ids.length) return 0
+  const rows: Array<{ id: string; expiresAt: Date }> = await db.backgroundTask.findMany({
+    where: { id: { in: ids }, consumed: false, notifiedAt: { not: null } },
+    select: { id: true, expiresAt: true },
+  })
+  for (const row of rows) {
+    await db.backgroundTask.updateMany({
+      where: { id: row.id, consumed: false },
+      data: { heldUntil: row.expiresAt },
+    })
+  }
+  // One attempt was made. The counter records that and then stops climbing.
+  if (rows.length) {
+    await db.backgroundTask.updateMany({
+      where: { id: { in: rows.map((row) => row.id) }, attempts: { lt: 1 } },
+      data: { attempts: 1 },
     })
   }
   return rows.length
+}
+
+/** Tasks held by a pause, as opposed to a card hold. Capped wakes are left out on purpose. */
+async function pauseHeldTasks(now: Date): Promise<Array<{ id: string; chatSessionId: string; source: string }>> {
+  const rows: Array<{ id: string; chatSessionId: string; source: string; heldUntil: Date | null; expiresAt: Date }> =
+    await db.backgroundTask.findMany({
+      where: {
+        status: { not: 'running' },
+        notify: true,
+        consumed: false,
+        notifiedAt: { not: null },
+        heldUntil: { gt: now },
+        expiresAt: { gt: now },
+        attempts: { lt: MAX_WAKE_ATTEMPTS },
+      },
+      select: { id: true, chatSessionId: true, source: true, heldUntil: true, expiresAt: true },
+      take: 500,
+    })
+  return rows
+    .filter((row) => row.heldUntil?.getTime() === row.expiresAt.getTime())
+    .map(({ id, chatSessionId, source }) => ({ id, chatSessionId, source }))
+}
+
+/**
+ * The pause lifted (a person wrote, or a resumed wake ran): the tasks it held
+ * are handed back to the sweep, which queues each waiting update once.
+ * `consecutiveWakeWaits` stays the only definition of "paused" — this does not
+ * re-implement the cap.
+ */
+async function releaseLiftedPauseHolds(now: Date): Promise<number> {
+  const held = await pauseHeldTasks(now)
+  if (!held.length) return 0
+  const bySession = new Map<string, Array<{ id: string; source: string }>>()
+  for (const row of held) {
+    const group = bySession.get(row.chatSessionId) ?? []
+    group.push({ id: row.id, source: row.source })
+    bySession.set(row.chatSessionId, group)
+  }
+  let released = 0
+  for (const [chatSessionId, rows] of bySession) {
+    const limit = rows.every((row) => row.source === 'work_item') ? MAX_CONSECUTIVE_CARD_WAKES : MAX_CONSECUTIVE_WAKES
+    if ((await consecutiveWakeWaits(chatSessionId, limit)) >= limit) continue
+    const cleared = await db.backgroundTask.updateMany({
+      where: { id: { in: rows.map((row) => row.id) }, consumed: false },
+      data: { heldUntil: null, notifiedAt: null },
+    })
+    released += cleared.count
+  }
+  return released
 }
 
 /**
