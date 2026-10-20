@@ -56,8 +56,11 @@ mock.module("lucide-react-native", () => {
 })
 
 mock.module(resolve(import.meta.dir, "../../../../contexts/posthog"), () => ({ usePostHogSafe: () => null }))
+const authUser = { id: "user-invitee", email: "invitee@example.com" }
 mock.module(resolve(import.meta.dir, "../../../../contexts/auth"), () => ({
-  useAuth: () => ({ user: { id: "user-invitee", email: "invitee@example.com" } }),
+  useAuth: () => ({ user: authUser }),
+  useAuthOptional: () => ({ user: authUser }),
+  getAuthUserSnapshot: () => authUser,
 }))
 
 const acceptInvitation = mock(async () => ({}))
@@ -65,11 +68,19 @@ const declineInvitation = mock(async () => ({}))
 const loadAllWorkspaces = mock(async () => {})
 const http = { get: async () => ({ data: { items: [] } }) }
 
+const domainStore = { workspaceCollection: { all: [], loadAll: loadAllWorkspaces } }
+const domainActions = { acceptInvitation, declineInvitation }
+
 mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
   useDomainHttpOptional: () => http,
   getDomainHttpClient: () => http,
-  useDomainActions: () => ({ acceptInvitation, declineInvitation }),
-  useWorkspaceCollection: () => ({ all: [], loadAll: loadAllWorkspaces }),
+  useDomainOptional: () => domainStore,
+  getDomainStore: () => domainStore,
+  useDomainActions: () => domainActions,
+  useDomainActionsOptional: () => domainActions,
+  getDomainActionsInstance: () => domainActions,
+  useWorkspaceCollection: () => domainStore.workspaceCollection,
+  useWorkspaceCollectionOptional: () => domainStore.workspaceCollection,
 }))
 
 let invitations: any[] = []

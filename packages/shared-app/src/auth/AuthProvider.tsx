@@ -77,6 +77,19 @@ export interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
+/**
+ * Last user the provider rendered, readable without React context.
+ *
+ * Gluestack renders popover content into a portal host mounted **above**
+ * `AuthProvider` (`PortalProvider` sits under `GluestackUIProvider`, the
+ * provider tree is below it), so shell chrome that lives inside a popover
+ * cannot read this context — a context read there throws and takes the whole
+ * shell down. Those surfaces still need to know who is signed in, and the
+ * provider is the only thing that does, so it publishes the current user here
+ * the same way the domain provider publishes its `getSDKHttpClient()`.
+ */
+let moduleAuthUser: AuthUser | null = null
+
 /** Derive the current frontend origin (e.g. `http://localhost:8081`) on web. Returns `/` on native. */
 function getFrontendOrigin(): string {
   if (typeof document !== 'undefined' && window.location?.protocol?.startsWith('http')) {
@@ -104,6 +117,11 @@ export function AuthProvider({ authClient, children, onSignOut }: AuthProviderPr
   const [user, setUser] = useState<AuthUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // Keep the no-context snapshot in step with what the tree sees, including
+  // the sign-out case (user becomes null while the provider stays mounted).
+  moduleAuthUser = user
+  useEffect(() => () => { moduleAuthUser = null }, [])
 
   useEffect(() => {
     authClient.getSession().then(({ data }) => {
@@ -284,3 +302,20 @@ export function useAuth(): AuthContextValue {
   if (!ctx) throw new Error('useAuth must be used within AuthProvider')
   return ctx
 }
+
+/**
+ * `useAuth` for components that also render outside the provider tree, e.g.
+ * anything inside a Gluestack popover portal (see `moduleAuthUser`). Returns
+ * `null` instead of throwing, so a popover that is opened before — or
+ * independently of — the provider renders its empty state instead of taking
+ * the app shell down with a render error.
+ */
+export function useAuthOptional(): AuthContextValue | null {
+  return useContext(AuthContext)
+}
+
+/** The provider's current user without React context, or `null` before it mounts. */
+export function getAuthUserSnapshot(): AuthUser | null {
+  return moduleAuthUser
+}
+

@@ -24,6 +24,8 @@ import { isPhoneLayout } from "../../../lib/native-phone-layout";
 import { isInvitationExpired } from "../../../lib/api";
 import { usePendingInvitations } from "../../../lib/use-pending-invitations";
 
+type PendingInvitations = ReturnType<typeof usePendingInvitations>;
+
 export interface WorkspaceMenuSectionProps {
   workspaces: any[];
   currentWorkspace: any;
@@ -97,20 +99,28 @@ export function workspaceKindBadge(
  * workspace you can join belongs there, not four taps deep in the settings of
  * a workspace you are already in. Project invitations stay in
  * `ProjectAccessPanel` — they do not add a row here.
+ *
+ * Presentational on purpose: the fetch lives in `WorkspaceMenuSection` so one
+ * open of the switcher is one `GET /api/invitations`, no matter how many
+ * branches of the section render the block.
  */
 function PendingInvitationsSection({
+  invitations,
   isNative,
   onSwitchWorkspace,
   onClose,
 }: {
+  invitations: PendingInvitations;
   isNative: boolean;
   onSwitchWorkspace: (workspaceId: string) => void;
   onClose: () => void;
 }) {
   const density = densityFor(isNative);
-  const { pendingInvites, processingInvite, acceptInvite, declineInvite } = usePendingInvitations();
+  const { pendingInvites, processingInvite, acceptInvite, declineInvite } = invitations;
 
-  if (pendingInvites.length === 0) return null;
+  // No domain store above means Accept/Decline have nothing to join with, so
+  // show no block at all rather than a dead one.
+  if (pendingInvites.length === 0 || !invitations.canRespond) return null;
 
   return (
     <View className="border-b border-border pb-1">
@@ -230,6 +240,9 @@ export function WorkspaceMenuSection({
   const posthog = usePostHogSafe();
   const density = densityFor(isNative);
   const cloud = useCloudWorkspaces();
+  // One fetch per open: the block itself is presentational, so the three
+  // branches below that render it share this single load.
+  const invitations = usePendingInvitations({ enabled: presentation !== "workspace-menu" });
   const { width, height } = useWindowDimensions();
   // "Manage workspaces" is a signpost to wherever rename/delete live on this
   // surface. `/account` is the phone/native account page — on wide web it
@@ -442,6 +455,7 @@ export function WorkspaceMenuSection({
 
   const pendingInvitations = (
     <PendingInvitationsSection
+      invitations={invitations}
       isNative={isNative}
       onSwitchWorkspace={onSwitchWorkspace}
       onClose={onClose}
