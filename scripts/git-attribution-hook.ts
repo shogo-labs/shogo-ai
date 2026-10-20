@@ -9,7 +9,14 @@
  *   commit-msg <file>  fold every Shogo co-author into the one canonical
  *                      `Co-authored-by:` trailer (agent-authored commits only)
  *   verify-commit      refuse an author/committer that is not the agent identity
- *   verify-push        refuse to send any commit that is not the agent identity
+ *   verify-push        refuse to send a commit that *claims* to be a Shogo
+ *                      identity but is not the canonical one
+ *
+ * `verify-commit` is strict: in this checkout the commit is authored here, so
+ * anything but the canonical identity is a mistake. `verify-push` cannot be,
+ * because a branch that merged upstream `main` carries commits by every human
+ * contributor in the project — they are not ours to rewrite, and refusing them
+ * blocked the everyday "merge main into my branch" push.
  *
  * Both guards are armed only in an agent checkout — one whose local
  * `user.email` is a Shogo agent address (`agentIdentityFromConfig`). A human's
@@ -110,6 +117,12 @@ const FIX_HINT = [
   'adds the co-author trailer.',
 ].join('\n  ')
 
+const PUSH_FIX_HINT = [
+  'Re-author the offending commit as Shogo Agent <agent@shogo.ai> before pushing',
+  '(`git commit --amend --no-edit --reset-author`, or rebase it); commits by other people need',
+  'no change, so a merged `main` pushes as-is.',
+].join('\n  ')
+
 function commitMsg(file: string): number {
   const author = currentIdent('AUTHOR')
   if (!isShogoIdentity(author)) return 0
@@ -174,21 +187,30 @@ function verifyPush(stdin: string): number {
   const identity = agentCheckout()
   if (!identity) return 0
 
+  // Only a commit that names a Shogo identity which is not the canonical one is
+  // an offence — `dev2@shogo.local`, `noreply@shogo.ai`, a bad committer under a
+  // good author. A human's commit (upstream history, a merged `main`) passes:
+  // it is not ours to rewrite, and it is exactly what a merge brings in.
   const offenders: string[] = []
   for (const sha of commitsBeingPushed(stdin)) {
     const fields = (git(['log', '-1', '--format=%an%x00%ae%x00%cn%x00%ce', sha]) ?? '').split('\0')
-    const author = { name: fields[0] ?? '', email: fields[1] ?? '' }
-    const committer = { name: fields[2] ?? '', email: fields[3] ?? '' }
-    if (isAgent(author) && isAgent(committer)) continue
-    offenders.push(`  ${sha.slice(0, 9)}  ${describe(isAgent(author) ? committer : author)}`)
+    const identities = [
+      { kind: 'author', identity: { name: fields[0] ?? '', email: fields[1] ?? '' } },
+      { kind: 'committer', identity: { name: fields[2] ?? '', email: fields[3] ?? '' } },
+    ]
+    for (const { kind, identity: actual } of identities) {
+      if (!isShogoIdentity(actual) || isAgent(actual)) continue
+      offenders.push(`  ${sha.slice(0, 9)}  ${kind} ${describe(actual)}`)
+      break
+    }
   }
   if (offenders.length === 0) return 0
 
   console.error(
     [
-      `[pre-push] Refusing to push ${offenders.length} commit(s) not authored and committed by ${identity.name} <${identity.email}>:`,
+      `[pre-push] Refusing to push ${offenders.length} commit(s) that name a Shogo identity other than ${identity.name} <${identity.email}>:`,
       ...offenders,
-      `  ${FIX_HINT}`,
+      `  ${PUSH_FIX_HINT}`,
     ].join('\n'),
   )
   return 1

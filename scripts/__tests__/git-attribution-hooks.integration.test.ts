@@ -194,6 +194,69 @@ describe('agent checkout', () => {
     expect(push.stderr).toContain('[pre-push] Refusing to push')
     expect(git(remote, ['for-each-ref']).trim()).toBe('')
   })
+
+  test('pushes a branch that merged upstream human history', () => {
+    const remote = tempDir('attribution-remote')
+    git(remote, ['init', '-q', '--bare'])
+
+    const dir = repo('agent@shogo.ai')
+    git(dir, ['remote', 'add', 'origin', remote])
+    // A non-protected branch name on purpose: pushing to `main`/`staging` also
+    // runs the Prisma client regeneration, which rewrites the commit and has
+    // nothing to do with attribution.
+    git(dir, ['commit', '-q', '-m', 'chore: attributed'])
+    git(dir, ['push', '-q', 'origin', 'HEAD:refs/heads/base'])
+    writeFileSync(join(dir, 'file.txt'), 'two\n')
+    git(dir, ['add', '-A'])
+    git(dir, ['commit', '-q', '-m', 'chore: our pushed work'])
+    git(dir, ['push', '-q', 'origin', 'HEAD:refs/heads/base'])
+
+    // Upstream moves on in someone else's checkout: a real human commit, on a
+    // different branch — so it is not already on the branch being pushed.
+    const human = join(tempDir('attribution-human'), 'clone')
+    execFileSync('git', ['clone', '-q', '-b', 'base', remote, human], { encoding: 'utf-8', env: gitEnv() })
+    git(human, ['config', 'user.name', 'Russell LaCour'])
+    git(human, ['config', 'user.email', 'russelllacour@gmail.com'])
+    writeFileSync(join(human, 'docs.md'), 'human\n')
+    git(human, ['add', '-A'])
+    git(human, ['commit', '-q', '-m', 'docs: a human commit on main'])
+    const humanCommit = git(human, ['rev-parse', 'HEAD']).trim()
+    git(human, ['push', '-q', 'origin', 'HEAD:refs/heads/trunk'])
+
+    // Our own work diverges, then syncs upstream — the everyday step that used
+    // to be unpushable, because the merge puts the human commit in the range.
+    writeFileSync(join(dir, 'file.txt'), 'three\n')
+    git(dir, ['add', '-A'])
+    git(dir, ['commit', '-q', '-m', 'chore: our own work'])
+    git(dir, ['fetch', '-q', 'origin'])
+    const merge = gitResult(dir, ['merge', '-q', '--no-edit', 'origin/trunk'])
+    expect(merge.code).toBe(0)
+    expect(gitResult(dir, ['merge-base', '--is-ancestor', humanCommit, 'HEAD']).code).toBe(0)
+
+    const push = gitResult(dir, ['push', '-q', 'origin', 'HEAD:refs/heads/base'])
+    expect(push.code).toBe(0)
+    expect(git(remote, ['rev-parse', 'refs/heads/base']).trim()).toBe(
+      git(dir, ['rev-parse', 'HEAD']).trim(),
+    )
+  })
+
+  test('still refuses a non-canonical committer under a canonical author', () => {
+    const dir = repo('agent@shogo.ai')
+    const remote = tempDir('attribution-remote')
+    git(remote, ['init', '-q', '--bare'])
+    git(dir, ['remote', 'add', 'origin', remote])
+
+    const bad = gitResult(dir, ['commit', '-q', '-m', 'chore: gray committer', '--no-verify'], {
+      GIT_COMMITTER_EMAIL: 'dev2@shogo.local',
+    })
+    expect(bad.code).toBe(0)
+
+    const push = gitResult(dir, ['push', '-q', 'origin', 'HEAD:refs/heads/committer-test'])
+    expect(push.code).not.toBe(0)
+    expect(push.stderr).toContain('committer')
+    expect(push.stderr).toContain('dev2@shogo.local')
+    expect(git(remote, ['for-each-ref']).trim()).toBe('')
+  })
 })
 
 describe('human checkout', () => {
