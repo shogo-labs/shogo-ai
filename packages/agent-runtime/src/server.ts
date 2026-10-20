@@ -4014,6 +4014,29 @@ app.post('/agent/tool-mocks/sim-next-wake', (c) => {
   return c.json({ ok: true, wake: simWorld.nextWake() })
 })
 
+// Prompt-cache prefix probe — builds the real system prompt twice without
+// calling a model, so `cache-efficiency` can assert that the cached zone is
+// byte-identical across a tick, and that the tool block is stable.
+app.get('/agent/tool-mocks/cache-prefix', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const sessionId = c.req.query('sessionId') || 'chat'
+  const probe = await agentGateway.sampleCachePrefix(sessionId)
+  return c.json(probe)
+})
+
+// Force one compaction pass between eval turns (prefix-rewrite recovery test).
+app.post('/agent/tool-mocks/compact', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const { sessionId } = await c.req.json().catch(() => ({})) as { sessionId?: string }
+  const result = await agentGateway.forceCompaction(sessionId || 'chat')
+  if (!result) return c.json({ ok: false, compacted: false, reason: 'nothing to compact' })
+  return c.json({ ok: true, compacted: true, ...result })
+})
+
 app.post('/agent/workspace/seed', async (c) => {
   const body = await c.req.json<{ files: Record<string, string> }>()
   if (!body?.files || typeof body.files !== 'object') {

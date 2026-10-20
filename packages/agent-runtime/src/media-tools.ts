@@ -2,11 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
- * Media tools: image generation and editing, image utilities (upscale,
- * background removal), video generation, and the model/price listing the
- * agent uses to choose between them. Every call goes through the AI proxy
- * (`/ai/v1/images/*`, `/ai/v1/videos/*`, `/ai/v1/media/models`), which owns
- * provider keys and billing.
+ * Media tools: image generation and editing, video generation, and the
+ * model/price listing the agent uses to choose between them. Every call goes
+ * through the AI proxy (`/ai/v1/images/*`, `/ai/v1/videos/*`,
+ * `/ai/v1/media/models`), which owns provider keys and billing.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
@@ -282,8 +281,8 @@ export function friendlyMediaError(context: string, status: number, rawErrorText
 const IMAGE_MODEL_GUIDE =
   'Image model id. Omit it to use the workspace default (SOUL V2 on Higgsfield; gpt-image-2.5-flare when only OpenAI is configured). Call list_media_models for the full list with prices. ' +
   'Rough guide: "hf-soul-v2" for general editorial/product images, "hf-ideogram-4" for text in images (posters, logos), ' +
-  '"gpt-image-2.5-flare"/"gpt-image-2" for OpenAI prompt following, "imagen-4" for Google text-to-image. ' +
-  'fal ids ("nano-banana-pro", "seedream-5-pro", "flux-pro-ultra", ...) still work but are deprecated — prefer a Higgsfield model.'
+  '"hf-marketing-studio-flare" for ad creative, "gpt-image-2.5-flare"/"gpt-image-2" for OpenAI prompt following. ' +
+  'Every Higgsfield model accepts model-specific fields through `options`; list_media_models shows them.'
 
 export function createGenerateImageTool(ctx: ToolContext): AgentTool {
   return {
@@ -314,11 +313,19 @@ export function createGenerateImageTool(ctx: ToolContext): AgentTool {
         }),
       ),
       options: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          maximum: 4,
-          description: 'Number of image options to generate (1-4, default: 1)',
-        }),
+        Type.Union(
+          [
+            Type.Integer({ minimum: 1, maximum: 4, description: 'Number of image options to generate (1-4, default: 1)' }),
+            Type.Object({}, {
+              additionalProperties: true,
+              description:
+                'Model-specific documented fields for the chosen model (e.g. { "seed": 42, "negative_prompt": "blurry" }). list_media_models lists each model\'s fields with their allowed values. Omit for defaults.',
+            }),
+          ],
+          {
+            description: 'Either the number of image options (1-4) or an object of model-specific fields.',
+          },
+        ),
       ),
       // OpenAI retired the DALL-E 2/3 models (2026-09) — "dall-e-3" now 400s
       // with "The model 'dall-e-3' does not exist."
@@ -350,12 +357,14 @@ export function createGenerateImageTool(ctx: ToolContext): AgentTool {
         quality?: string
         reference_images?: string[]
         reference_image?: string
-        options?: number
+        options?: number | Record<string, unknown>
       }
       // With no explicit model the proxy picks the workspace's configured
-      // default provider (Higgsfield when its key is set, fal otherwise), so a
-      // keyless install still works instead of 503-ing on a hardcoded id.
-      const { prompt, size = '1024x1024', model, quality = 'standard', options = 1 } = p
+      // default provider (Higgsfield when its key is set, OpenAI otherwise), so
+      // a Higgsfield-less install still works instead of 503-ing.
+      const { prompt, size = '1024x1024', model, quality = 'standard' } = p
+      const modelOptions = typeof p.options === 'object' && p.options !== null ? p.options : undefined
+      const options = typeof p.options === 'number' ? p.options : 1
 
       if (!Number.isInteger(options) || options < 1 || options > 4) {
         return textResult({ error: 'The options parameter must be an integer between 1 and 4.' })
@@ -403,6 +412,7 @@ export function createGenerateImageTool(ctx: ToolContext): AgentTool {
           formData.append('size', size)
           formData.append('quality', quality)
           formData.append('n', String(options))
+          if (modelOptions) formData.append('options', JSON.stringify(modelOptions))
           response = await fetch(`${proxy.base}/v1/images/edits`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${proxy.token}` },
@@ -413,7 +423,7 @@ export function createGenerateImageTool(ctx: ToolContext): AgentTool {
           response = await fetch(`${proxy.base}/v1/images/generations`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${proxy.token}` },
-            body: JSON.stringify({ prompt, model, size, quality, n: options }),
+            body: JSON.stringify({ prompt, model, size, quality, n: options, options: modelOptions }),
             signal,
           })
         }
@@ -451,7 +461,7 @@ export function createGenerateImageTool(ctx: ToolContext): AgentTool {
           path: paths[0],
           paths,
           size,
-          model,
+          model: responseData.model ?? model,
           quality,
           bytes: totalBytes,
           revised_prompt: revisedPrompts[0],
@@ -474,8 +484,8 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'list_media_models',
     description:
-      'List the image, video and 3D models you can use, with what each is best for, whether it accepts reference images or a start frame, its main parameters, and its Shogo price (per image, per second of video, or per clip). ' +
-      'Higgsfield models are the default and are listed first; fal entries marked deprecated still work but are being retired, and name their replacement. Check this before choosing a model or planning a batch so you can budget it.',
+      'List the image, video and 3D models you can use: what each is best for, whether it accepts reference images or a start frame, its endpoints, every documented parameter (allowed values, ranges, defaults) and its Shogo price (per image, per second of video, or per clip). ' +
+      'Pass model to see just that model — the best way to check which fields its `options` accepts before calling generate_image or generate_video. Check prices here before planning a batch so you can budget it.',
     label: 'List Media Models',
     parameters: Type.Object({
       kind: Type.Optional(
@@ -483,9 +493,14 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
           description: 'Which models to list (default: "all"); "presets" lists the Genjutsu Restyle style ids',
         }),
       ),
+      model: Type.Optional(
+        Type.String({
+          description: 'Only this model (e.g. "hf-kling-3.0-std"), with its full option list. Retired ids resolve to the model that replaced them.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params, signal) => {
-      const { kind = 'all' } = params as { kind?: 'image' | 'video' | '3d' | 'presets' | 'all' }
+      const { kind = 'all', model } = params as { kind?: 'image' | 'video' | '3d' | 'presets' | 'all'; model?: string }
       const proxy = proxyConfig(ctx)
       if (!proxy) return textResult({ error: 'Media models are not available: AI proxy not configured.' })
 
@@ -508,14 +523,18 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
       }
 
       try {
-        const response = await fetch(`${proxy.base}/v1/media/models`, {
+        const query = new URLSearchParams()
+        if (model) query.set('model', model)
+        if (kind === 'image' || kind === 'video') query.set('kind', kind)
+        const suffix = query.size > 0 ? `?${query.toString()}` : ''
+        const response = await fetch(`${proxy.base}/v1/media/models${suffix}`, {
           headers: { Authorization: `Bearer ${proxy.token}` },
           signal,
         })
         if (!response.ok) {
           return textResult({ error: friendlyMediaError('Listing media models', response.status, await response.text()) })
         }
-        const data = (await response.json()) as { images?: unknown[]; videos?: unknown[]; utilities?: unknown[]; currency?: string; note?: string }
+        const data = (await response.json()) as { images?: unknown[]; videos?: unknown[]; currency?: string; note?: string }
         const imageOn = ctx.config?.imageGenEnabled !== false
         const videoOn = ctx.config?.videoGenEnabled === true
         const threeDOn = ctx.config?.threeDGenEnabled === true
@@ -525,14 +544,19 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
         // 3D models come from their own route, and only when the capability is on:
         // each task is billed, so there is no point advertising them otherwise.
         const models3d = threeDOn && show3d ? await fetchThreeDModels(proxy, signal) : undefined
+        const images = data.images ?? []
+        const videos = data.videos ?? []
         return textResult({
-          ...(showImages && imageOn ? { images: data.images ?? [], utilities: data.utilities ?? [] } : {}),
+          ...(showImages && imageOn ? { images } : {}),
           ...(showVideos
             ? videoOn
-              ? { videos: data.videos ?? [] }
+              ? { videos }
               : { videos: [], videos_note: 'Video generation is off for this project. The user can enable it in Capabilities.' }
             : {}),
           ...(models3d ?? {}),
+          ...(model && images.length === 0 && videos.length === 0 && (kind === 'all' || kind === 'image' || kind === 'video')
+            ? { note: `No model matches '${model}'. Call list_media_models without model for the full list.` }
+            : {}),
           currency: data.currency ?? 'USD',
           note: data.note,
         })
@@ -563,103 +587,6 @@ async function fetchThreeDModels(
     return { models_3d: data.models ?? [] }
   } catch (err: any) {
     return { models_3d: [], models_3d_note: `Listing 3D models failed: ${err.message}` }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// upscale_image / remove_background
-// ---------------------------------------------------------------------------
-
-type ProcessOperation = 'upscale' | 'remove-background'
-
-async function runImageProcess(
-  ctx: ToolContext,
-  operation: ProcessOperation,
-  p: { path: string; output_path?: string; scale?: number },
-  suffix: string,
-  signal?: AbortSignal,
-) {
-  const proxy = proxyConfig(ctx)
-  if (!proxy) return textResult({ error: 'Image tools are not available: AI proxy not configured.' })
-
-  let input: LoadedImage
-  let target: OutputTarget
-  try {
-    const loaded = loadWorkspaceImage(ctx, p.path)
-    if ('error' in loaded) return textResult({ error: loaded.error.replace('Reference image', 'Image') })
-    input = loaded
-    const inputAbs = assertWithinWorkspace(ctx.workspaceDir, p.path)
-    const ext = extname(inputAbs)
-    const defaultOut = toWorkspaceRelative(ctx.workspaceDir, `${ext ? inputAbs.slice(0, -ext.length) : inputAbs}-${suffix}`)
-    target = resolveOutputTarget(ctx, {
-      path: p.output_path || defaultOut,
-      defaultDir: 'images',
-      prefix: suffix,
-      defaultExt: '.png',
-    })
-  } catch (err: any) {
-    return textResult({ error: err.message })
-  }
-
-  const context = operation === 'upscale' ? 'Image upscale' : 'Background removal'
-  try {
-    const response = await fetch(`${proxy.base}/v1/images/process`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${proxy.token}` },
-      body: JSON.stringify({ operation, image: toDataUri(input), scale: p.scale }),
-      signal,
-    })
-    if (!response.ok) {
-      return textResult({ error: friendlyMediaError(context, response.status, await response.text()) })
-    }
-    const data = (await response.json()) as { data?: Array<{ b64_json?: string; content_type?: string; width?: number; height?: number }> }
-    const out = data.data?.[0]
-    if (!out?.b64_json) return textResult({ error: 'No image data received from provider' })
-    const buffer = Buffer.from(out.b64_json, 'base64')
-    const dest = target.pathFor(0, 1, out.content_type)
-    writeFileSync(dest.absolute, buffer)
-    return textResult({
-      path: dest.workspacePath,
-      paths: [dest.workspacePath],
-      source: p.path,
-      operation,
-      width: out.width,
-      height: out.height,
-      bytes: buffer.length,
-    })
-  } catch (err: any) {
-    return textResult({ error: `${context} error: ${err.message}` })
-  }
-}
-
-function createUpscaleImageTool(ctx: ToolContext): AgentTool {
-  return {
-    name: 'upscale_image',
-    description:
-      'Upscale a workspace image (2x by default, up to 4x) while adding detail. Saves next to the original as <name>-upscaled unless output_path is set. Billed per output megapixel.',
-    label: 'Upscale Image',
-    parameters: Type.Object({
-      path: Type.String({ description: 'Workspace path of the image to upscale' }),
-      scale: Type.Optional(Type.Integer({ minimum: 1, maximum: 4, description: 'Upscale factor 1-4 (default: 2)' })),
-      output_path: Type.Optional(Type.String({ description: 'Where to save the result (any workspace path)' })),
-    }),
-    execute: async (_toolCallId, params, signal) =>
-      runImageProcess(ctx, 'upscale', params as { path: string; scale?: number; output_path?: string }, 'upscaled', signal),
-  }
-}
-
-function createRemoveBackgroundTool(ctx: ToolContext): AgentTool {
-  return {
-    name: 'remove_background',
-    description:
-      'Remove the background from a workspace image, producing a transparent PNG (for sprites, product shots, stickers, logos). Saves next to the original as <name>-nobg.png unless output_path is set.',
-    label: 'Remove Background',
-    parameters: Type.Object({
-      path: Type.String({ description: 'Workspace path of the image' }),
-      output_path: Type.Optional(Type.String({ description: 'Where to save the transparent PNG (any workspace path)' })),
-    }),
-    execute: async (_toolCallId, params, signal) =>
-      runImageProcess(ctx, 'remove-background', params as { path: string; output_path?: string }, 'nobg', signal),
   }
 }
 
@@ -819,10 +746,10 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
       model: Type.Optional(
         Type.String({
           description:
-            'Video model id. Omit it to use the workspace default (hf-hailuo-2.3 on Higgsfield; kling-2.5-turbo-pro when only fal is configured). "hf-kling-2.5-pro" for fluid motion, "hf-wan-2.6" for stylized looks up to 15 s, "hf-ltx-2.5-fast" for the only text-to-video that takes an aspect_ratio, "hf-genjutsu-*" to edit a clip. fal ids still work but are deprecated. See list_media_models.',
+            'Video model id. Omit it to use the workspace default (hf-hailuo-2.3). "hf-kling-3.0-std" for 3–15 s clips with native sound, "hf-kling-3.0-pro" for multi-shot plus last-frame control, "hf-wan-2.6" for stylized looks up to 15 s, "hf-ltx-2.5-fast" for the cheapest text-to-video that takes an aspect_ratio, "hf-genjutsu-*" to edit a clip. Retired ids still resolve to the model that replaced them. See list_media_models.',
         }),
       ),
-      duration: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: 'Clip length in seconds; each model allows specific values (see list_media_models). A Genjutsu edit follows its source clip.' })),
+      duration: Type.Optional(Type.Integer({ minimum: 1, maximum: 30, description: 'Clip length in seconds; each model allows specific values (list_media_models shows the range — Kling 3.0 takes 3–15). A Genjutsu edit follows its source clip.' })),
       aspect_ratio: Type.Optional(Type.String({ description: 'e.g. "16:9", "9:16", "1:1". Only models that list one accept it — Hailuo, Kling and Wan follow the start image, so pass a portrait start_image for a 9:16 ad.' })),
       resolution: Type.Optional(Type.String({ description: 'Resolution tier on models that have one: "480p" | "720p" | "1080p" ("720p" default). Cheaper tiers render faster.' })),
       audio: Type.Optional(Type.Boolean({ description: 'Generate sound/dialogue on models that support it (costs more). Default false.' })),
@@ -847,6 +774,13 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
       preset_id: Type.Optional(
         Type.String({ description: 'Restyle style id (required for genjutsu "restyle"); list them with list_media_models kind "presets".' }),
       ),
+      options: Type.Optional(
+        Type.Object({}, {
+          additionalProperties: true,
+          description:
+            'Model-specific documented fields for the chosen model, e.g. { "cfg_scale": 0.5 }, { "multi_shots": true }, { "multi_prompt": [{ "prompt": "…", "duration": 5 }] }, { "last_image_url": "https://…" }, { "seed": 42 }. list_media_models shows each model\'s fields, allowed values and ranges; anything undeclared is rejected.',
+        }),
+      ),
       path: Type.Optional(Type.String({ description: 'Output path anywhere in the workspace (e.g. "public/media/intro.mp4")' })),
       filename: Type.Optional(Type.String({ description: 'Destination filename under videos/ (ignored when path is set)' })),
       wait: Type.Optional(Type.Boolean({ description: 'Wait for the clip to finish (default true). false returns a job_id immediately.' })),
@@ -865,6 +799,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
         source_video?: string
         genjutsu?: 'motion_transfer' | 'object_swap' | 'restyle'
         preset_id?: string
+        options?: Record<string, unknown>
         path?: string
         filename?: string
         wait?: boolean
@@ -938,6 +873,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
             source_video_url: sourceVideoUrl,
             source_duration_seconds: sourceDurationSeconds,
             preset_id: p.preset_id,
+            options: p.options,
           }),
           signal,
         })
@@ -1053,8 +989,6 @@ async function checkVideoJob(
 export function createMediaTools(ctx: ToolContext): AgentTool[] {
   return [
     createListMediaModelsTool(ctx),
-    createUpscaleImageTool(ctx),
-    createRemoveBackgroundTool(ctx),
     createGenerateVideoTool(ctx),
     ...createThreeDTools(ctx),
   ]

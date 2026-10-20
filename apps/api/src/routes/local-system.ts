@@ -40,7 +40,6 @@ const PROVIDER_KEYS = [
   { id: 'openai', envKey: 'OPENAI_API_KEY' },
   { id: 'google', envKey: 'GOOGLE_API_KEY' },
   { id: 'openrouter', envKey: 'OPENROUTER_API_KEY' },
-  { id: 'fal', envKey: 'FAL_KEY' },
   { id: 'tripo', envKey: 'TRIPO_API_KEY' },
   { id: 'higgsfield', envKey: 'HIGGSFIELD_API_KEY' },
 ] as const

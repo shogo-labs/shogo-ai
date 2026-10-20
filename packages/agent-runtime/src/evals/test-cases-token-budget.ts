@@ -33,8 +33,8 @@
  *   17 tools are now delegated to subagents (browser, tool_*, mcp_*, channel_*,
  *   send_message, heartbeat_*, server_sync), saving ~4,000 schema tokens vs the
  *   original 53 tools. The `web` tool stays on the main agent for direct HTTP
- *   fetching. Media tools (`generate_image`, `upscale_image`,
- *   `remove_background`, `list_media_models`, `transcribe_audio`) are NOT
+ *   fetching. Media tools (`generate_image`, `list_media_models`,
+ *   `transcribe_audio`) are NOT
  *   delegated: the project's own agent calls them, gated by `imageGenEnabled`
  *   / `videoGenEnabled` / `threeDGenEnabled`, which costs ~1,050 schema tokens
  *   with the image capability on and nothing when it is off.

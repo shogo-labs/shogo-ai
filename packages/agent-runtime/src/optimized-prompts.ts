@@ -18,6 +18,8 @@ export const OPTIMIZED_MEMORY_GUIDE = `### Memory Decision Examples
 
 To save memory, append with \`edit_file\` — never rewrite MEMORY.md — or write \`memory/YYYY-MM-DD.md\` daily logs.
 
+**The always-on block is budgeted.** Only ~1,500 tokens of \`MEMORY.md\` (\`MEMORY_BUDGET_TOKENS\`, default 1500) reach your prompt: newest \`## \` sections first, the oldest dropped, plus an over-budget notice naming what was not loaded. Nothing is deleted — the file on disk is untouched and \`memory_search\` reaches every chunk of it, including \`memory/*.md\`. Keep durable, always-needed facts inside \`<!-- memory:core:start -->\` … \`<!-- memory:core:end -->\` (that block is what always ships). When you see the over-budget notice, **compact instead of appending**: merge duplicates, delete lessons already encoded in \`AGENTS.md\` or superseded by a later decision, and move long-form detail into a flat \`memory/<slug>.md\` (not a subfolder — the index does not recurse). A deliberate compaction is the one case where \`write_file\` with \`overwrite: true\` is right.
+
 **Never rewrite a memory file wholesale.** \`MEMORY.md\`, \`AGENTS.md\`, \`TOOLS.md\`, \`HEARTBEAT.md\`, \`STACK.md\` and \`memory/*.md\` hold months of lessons; \`read_file\` then \`edit_file\` the exact lines you want to change, or \`write_file\` with \`append: true\`. \`write_file\` refuses a whole-file write that keeps less than half of a memory file (\`memory_shrink_guard\`) unless you pass \`overwrite: true\` — if you see that error, your content is probably about to erase something you need.
 
 Every memory write leaves a copy of the previous version under \`.shogo/memory-history/\` (newest 20 per file). If memory ever looks wrong or truncated, \`read_file\` that folder and restore from the last good copy.
@@ -456,16 +458,19 @@ to make an image.
 - \`list_media_models\` is the **source of truth** for ids and prices: it only
   lists models that can actually run and are priced. Check it before picking a
   model or planning a batch — never quote a model id or price from memory.
-  Some fal ids still work but are deprecated: prefer a Higgsfield model.
+  Higgsfield is the only image/video provider; an id from the retired fal
+  catalog still resolves, and the response names the model that actually ran.
 
 **Workflow**
 1. Write a specific prompt: subject, composition, lighting, style, aspect ratio.
-2. \`generate_image\` — pass \`options: 1-4\` when the user should choose, \`path\` to
-   save anywhere in the workspace (e.g. "public/assets/hero.png"), and
-   \`reference_images\` to edit an existing image or keep a character/product
+2. \`list_media_models\` (optionally with \`model\`) when the job needs a specific
+   look or a non-default model — it lists every model, every parameter it takes
+   and its price, so you can budget before spending.
+3. \`generate_image\` — pass \`options: 1-4\` when the user should choose,
+   \`options: { … }\` for model-specific fields (e.g. \`seed\`, \`negative_prompt\`),
+   \`path\` to save anywhere in the workspace (e.g. "public/assets/hero.png"),
+   and \`reference_images\` to edit an existing image or keep a character/product
    consistent across shots.
-3. Finish with \`upscale_image\` (2-4x) or \`remove_background\` (transparent PNG
-   for sprites, products, logos) when the use needs it.
 4. \`read_file\` the result (or open it on the canvas) and check it before you ship
    it — a generated file is not a verified image.
 

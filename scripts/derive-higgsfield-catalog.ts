@@ -35,8 +35,21 @@ export interface CatalogField {
   required: boolean
   /** Enum values, when the schema restricts them. */
   enum?: string[]
+  /** Numeric bounds and step, when the schema restricts them. */
+  minimum?: number
+  maximum?: number
+  multipleOf?: number
+  /** Vendor default, when the schema declares one. Scalars only. */
+  default?: string | number | boolean
+  /** Human label the vendor shows for the field. */
+  title?: string
   /** Array item type, for `type: "array"`. */
   items?: string
+  /** Item schema, for arrays of objects (`multi_prompt[]`). */
+  itemFields?: Record<string, CatalogField>
+  minItems?: number
+  maxItems?: number
+  maxLength?: number
 }
 
 export interface CatalogEndpoint {
@@ -117,16 +130,47 @@ function fieldsOf(schema: any): Record<string, CatalogField> {
   const required: string[] = Array.isArray(schema?.required) ? schema.required : []
   const fields: Record<string, CatalogField> = {}
   for (const name of Object.keys(properties).sort()) {
-    const spec = properties[name] ?? {}
-    const field: CatalogField = {
-      type: Array.isArray(spec.type) ? spec.type.join('|') : String(spec.type ?? 'any'),
-      required: required.includes(name),
-    }
-    if (Array.isArray(spec.enum)) field.enum = spec.enum.map(String)
-    if (field.type === 'array' && spec.items?.type) field.items = Array.isArray(spec.items.type) ? spec.items.type.join('|') : String(spec.items.type)
-    fields[name] = field
+    fields[name] = fieldOf(properties[name] ?? {}, required.includes(name))
   }
   return fields
+}
+
+/**
+ * One documented field. Everything the vendor's JSON schema states about it is
+ * kept — bounds, step, default and label — because the agent-facing catalog and
+ * the request builder validate against these numbers rather than re-stating
+ * them by hand.
+ */
+function fieldOf(spec: any, required: boolean): CatalogField {
+  const field: CatalogField = {
+    type: Array.isArray(spec.type) ? spec.type.join('|') : String(spec.type ?? 'any'),
+    required,
+  }
+  if (Array.isArray(spec.enum)) field.enum = spec.enum.map(String)
+  if (Number.isFinite(spec.minimum)) field.minimum = spec.minimum
+  if (Number.isFinite(spec.maximum)) field.maximum = spec.maximum
+  if (Number.isFinite(spec.multipleOf)) field.multipleOf = spec.multipleOf
+  if (Number.isFinite(spec.minItems)) field.minItems = spec.minItems
+  if (Number.isFinite(spec.maxItems)) field.maxItems = spec.maxItems
+  if (Number.isFinite(spec.maxLength)) field.maxLength = spec.maxLength
+  if (typeof spec.title === 'string' && spec.title.length > 0) field.title = spec.title
+  const fallback = spec.default
+  if (typeof fallback === 'string' || typeof fallback === 'number' || typeof fallback === 'boolean') {
+    field.default = fallback
+  }
+  if (field.type === 'array') {
+    const items = spec.items ?? {}
+    if (items.type) field.items = Array.isArray(items.type) ? items.type.join('|') : String(items.type)
+    if (items.properties && typeof items.properties === 'object') {
+      const itemRequired: string[] = Array.isArray(items.required) ? items.required : []
+      const itemFields: Record<string, CatalogField> = {}
+      for (const name of Object.keys(items.properties).sort()) {
+        itemFields[name] = fieldOf(items.properties[name] ?? {}, itemRequired.includes(name))
+      }
+      field.itemFields = itemFields
+    }
+  }
+  return field
 }
 
 function outputsOf(kind: EndpointKind, schema: any): string[] {
