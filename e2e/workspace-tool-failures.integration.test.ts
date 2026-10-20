@@ -9,7 +9,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, mock } from 'bun:test'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -75,7 +75,9 @@ let previewStarts = 0
 const tempDirs: string[] = []
 
 function tempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix))
+  // Canonical path: the trust check compares real paths, and on macOS the
+  // tmpdir itself is a symlink (/var → /private/var).
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)))
   tempDirs.push(dir)
   return dir
 }
@@ -208,15 +210,18 @@ function armWorkspaceEnv(extra: Record<string, string | undefined> = {}) {
 }
 
 describe('workspace tools talk to a real API with a real project id', () => {
-  test('share_file and publish send the anchor id, never ws:', async () => {
+  test('publish sends the anchor id, never ws:', async () => {
     armWorkspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: 'proj-anchor', WORKSPACE_PROJECT_IDS: 'proj-anchor,proj-other' })
     const dir = tempDir('ws-tools-')
     writeFileSync(join(dir, 'report.pdf'), 'pdf')
     const ctx = workspace(dir)
     mode = 'share'
+    // `report.pdf` sits at the merged root, outside every mounted project, so
+    // only the workspace route can serve it — a project route reads the same
+    // path from the project root (SHO-67).
     const shared = await tool(ctx, 'share_file').execute('t', { path: 'report.pdf' })
     expect(shared.details.url).toBe('https://files.test/report')
-    expect(hits.some((h) => h.url === '/api/internal/projects/proj-anchor/shared-files')).toBe(true)
+    expect(hits.some((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')).toBe(true)
     expect(hits.some((h) => h.url.includes('/projects/ws:'))).toBe(false)
 
     const timeouts: number[] = []
@@ -268,6 +273,60 @@ describe('workspace tools talk to a real API with a real project id', () => {
     expect(result.details.url).toBe('https://files.test/report')
     expect(hits.some((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')).toBe(true)
     expect(hits.some((h) => h.url.includes('/projects/') && h.url.includes('/shared-files'))).toBe(false)
+  })
+
+  // The runtime's `path` is workspace-relative but a project link is read from
+  // the project root, which is `<workspaceDir>/<projectId>` — signing the
+  // workspace path under the project scope used to 404 (SHO-67).
+  test('share_file signs a project-relative path for a file inside a mounted project', async () => {
+    armWorkspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: undefined, WORKSPACE_PROJECT_IDS: 'proj-a,proj-b' })
+    const dir = tempDir('ws-project-file-')
+    mkdirSync(join(dir, 'proj-b', 'out'), { recursive: true })
+    writeFileSync(join(dir, 'proj-b', 'out', 'report.mp4'), 'video')
+
+    const picked = await tool(workspace(dir), 'share_file').execute('t', {
+      path: 'proj-b/out/report.mp4',
+      project_id: 'proj-b',
+    })
+    expect(picked.details.url).toBe('https://files.test/report')
+    expect(picked.details.path).toBe('out/report.mp4')
+    expect(picked.details.projectId).toBe('proj-b')
+    const projectHit = hits.find((h) => h.url === '/api/internal/projects/proj-b/shared-files')
+    expect(projectHit?.body.path).toBe('out/report.mp4')
+
+    // No project_id: the file's own location still picks the project.
+    hits.length = 0
+    const unpicked = await tool(workspace(dir), 'share_file').execute('t', { path: 'proj-b/out/report.mp4' })
+    expect(unpicked.details.path).toBe('out/report.mp4')
+    expect(hits.find((h) => h.url === '/api/internal/projects/proj-b/shared-files')?.body.path).toBe('out/report.mp4')
+    expect(hits.some((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')).toBe(false)
+  })
+
+  test('share_file mints a workspace link for a workspace-root file even with a project_id', async () => {
+    armWorkspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: undefined, WORKSPACE_PROJECT_IDS: 'proj-a,proj-b' })
+    const dir = tempDir('ws-root-file-')
+    mkdirSync(join(dir, 'proj-b'), { recursive: true })
+    writeFileSync(join(dir, 'summary.csv'), 'a,b')
+
+    const result = await tool(workspace(dir), 'share_file').execute('t', {
+      path: 'summary.csv',
+      project_id: 'proj-b',
+    })
+    expect(result.details.path).toBe('summary.csv')
+    expect(result.details.projectId).toBeUndefined()
+    expect(result.details.note).toContain('not inside any mounted project')
+    const workspaceHit = hits.find((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')
+    expect(workspaceHit?.body.path).toBe('summary.csv')
+    expect(hits.some((h) => h.url.includes('/projects/') && h.url.includes('/shared-files'))).toBe(false)
+  })
+
+  test('share_file reports a missing file instead of handing out a dead URL', async () => {
+    armWorkspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: undefined, WORKSPACE_PROJECT_IDS: 'proj-anchor' })
+    const dir = tempDir('ws-missing-file-')
+    const result = await tool(workspace(dir), 'share_file').execute('t', { path: 'out/nope.mp4' })
+    expect(result.details.url).toBeUndefined()
+    expect(String(result.details.error)).toContain('File not found')
+    expect(hits.some((h) => h.url.includes('/shared-files'))).toBe(false)
   })
 })
 

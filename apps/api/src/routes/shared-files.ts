@@ -160,62 +160,90 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
     const pinned = projectId ? await pinHome(c, projectId) : await pinWorkspaceHome(c, workspaceId)
     if (pinned) return pinned
 
-    const agentPath = `/agent/workspace/download/${encodeRuntimePath(payload.path)}`
-    const fetchRuntime = (url: string, runtimeToken: string) =>
-      fetch(`${url.replace(/\/+$/, '')}${agentPath}`, {
-        method: 'GET',
-        headers: { 'x-runtime-token': runtimeToken },
-        signal: c.req.raw.signal,
-      })
+    // A project-scoped link minted from a workspace runtime can carry a
+    // redundant `<projectId>/` prefix: the runtime's `path` is
+    // workspace-relative while this route reads it from the project root, so
+    // the file lands at `<project>/<projectId>/…` (SHO-67). Retry once with
+    // the prefix stripped so links already handed out keep working.
+    const paths = [payload.path]
+    if (projectId && payload.path.startsWith(`${projectId}/`)) {
+      const stripped = payload.path.slice(projectId.length + 1)
+      if (stripped) paths.push(stripped)
+    }
 
     let lastFailure = ''
-    for (let attempt = 0; attempt <= RUNTIME_RETRY_DELAYS_MS.length; attempt++) {
-      if (attempt > 0) {
-        await (projectId ? invalidateRuntimeUrl(projectId) : invalidateWorkspaceRuntimeUrl(workspaceId)).catch(() => {})
-        await sleep(RUNTIME_RETRY_DELAYS_MS[attempt - 1])
-        if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
-      }
-      try {
-        let upstream: Response
-        if (!projectId) {
-          upstream = await fetchRuntime(await resolveWorkspaceRuntimeUrl(workspaceId), deriveWorkspaceToken(workspaceId))
-        } else {
-          const resolution = await resolveRuntime(projectId)
-          if (!resolution.ok) {
-            lastFailure = `resolve ${resolution.status} ${resolution.body.error.code}`
-            continue
+    let fileNotFound = false
+    let runtimeDown = false
+
+    for (const currentPath of paths) {
+      const agentPath = `/agent/workspace/download/${encodeRuntimePath(currentPath)}`
+      const fetchRuntime = (url: string, runtimeToken: string) =>
+        fetch(`${url.replace(/\/+$/, '')}${agentPath}`, {
+          method: 'GET',
+          headers: { 'x-runtime-token': runtimeToken },
+          signal: c.req.raw.signal,
+        })
+
+      let retryable = true
+      for (let attempt = 0; attempt <= RUNTIME_RETRY_DELAYS_MS.length; attempt++) {
+        if (attempt > 0) {
+          await (projectId ? invalidateRuntimeUrl(projectId) : invalidateWorkspaceRuntimeUrl(workspaceId)).catch(() => {})
+          await sleep(RUNTIME_RETRY_DELAYS_MS[attempt - 1])
+          if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
+        }
+        try {
+          let upstream: Response
+          if (!projectId) {
+            upstream = await fetchRuntime(await resolveWorkspaceRuntimeUrl(workspaceId), deriveWorkspaceToken(workspaceId))
+          } else {
+            const resolution = await resolveRuntime(projectId)
+            if (!resolution.ok) {
+              lastFailure = `resolve ${resolution.status} ${resolution.body.error.code}`
+              continue
+            }
+
+            const runtimeToken = await deriveToken(projectId, { workspaceId })
+            upstream = resolution.kind === 'tunnel'
+              ? await relayTunnel({
+                  c,
+                  instanceId: resolution.instanceId,
+                  workspaceId: resolution.workspaceId,
+                  projectId,
+                  agentPath,
+                  cleanPath: agentPath,
+                  method: 'GET',
+                  headers: { 'x-runtime-token': runtimeToken },
+                })
+              : await fetchRuntime(resolution.url, runtimeToken)
           }
 
-          const runtimeToken = await deriveToken(projectId, { workspaceId })
-          upstream = resolution.kind === 'tunnel'
-            ? await relayTunnel({
-                c,
-                instanceId: resolution.instanceId,
-                workspaceId: resolution.workspaceId,
-                projectId,
-                agentPath,
-                cleanPath: agentPath,
-                method: 'GET',
-                headers: { 'x-runtime-token': runtimeToken },
-              })
-            : await fetchRuntime(resolution.url, runtimeToken)
+          if (upstream.ok) {
+            return new Response(upstream.body, {
+              status: upstream.status,
+              headers: downloadHeaders(currentPath, upstream.headers),
+            })
+          }
+          await upstream.body?.cancel().catch(() => {})
+          if (!isTransientRuntimeStatus(upstream.status)) {
+            // The runtime will not serve this path — try the next shape.
+            retryable = false
+            fileNotFound = true
+            break
+          }
+          lastFailure = `runtime ${upstream.status}`
+        } catch (error: any) {
+          if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
+          lastFailure = error?.message || String(error)
         }
-
-        if (upstream.ok) {
-          return new Response(upstream.body, {
-            status: upstream.status,
-            headers: downloadHeaders(payload.path, upstream.headers),
-          })
-        }
-        await upstream.body?.cancel().catch(() => {})
-        if (!isTransientRuntimeStatus(upstream.status)) {
-          return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
-        }
-        lastFailure = `runtime ${upstream.status}`
-      } catch (error: any) {
-        if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
-        lastFailure = error?.message || String(error)
       }
+      if (retryable) {
+        runtimeDown = true
+        break
+      }
+    }
+
+    if (!runtimeDown && fileNotFound) {
+      return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
     }
 
     console.error(`[SharedFiles] Download failed for ${projectId ?? `workspace ${workspaceId}`}: ${lastFailure}`)

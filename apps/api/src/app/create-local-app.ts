@@ -61,6 +61,7 @@ import { localSystemRoutes } from '../routes/local-system'
 import { cloudWorkspaceListMiddleware, localCloudWorkspaceRoutes } from '../routes/local-cloud-proxy'
 import { localPlatformRoutes } from '../routes/local-platform'
 import { localSharedFileRoutes } from '../routes/local-shared-files'
+import { resolveLocalSharedFileTarget } from '../lib/local-shared-file-target'
 import { marketplaceRoutes } from '../routes/marketplace'
 import { appActionsRoutes } from '../routes/app-actions'
 import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '../lib/federated-upstream'
@@ -121,6 +122,7 @@ export function createLocalApp(): LocalAppBundle {
       authenticate: authenticateRuntimeToken,
       loadProjectLifecycle: () => import('../services/project-lifecycle.service'),
       loadAgentCall: () => import('../services/agent-call.service'),
+      resolveSharedFileTarget: (scope) => resolveLocalSharedFileTarget({ ...scope, workspacesDir }),
     }),
   )
   app.route('/api/local', localLogsRoutes())

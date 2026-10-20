@@ -241,4 +241,50 @@ describe('shared file routes', () => {
     expect(response.status).toBe(200)
     expect(calls).toBe(2)
   })
+
+  // A link minted from a workspace runtime carries a workspace-relative path,
+  // so a project-scoped download can arrive as `<projectId>/reports/…` (SHO-67).
+  it('strips a redundant project prefix when the runtime cannot serve it', async () => {
+    const requested: string[] = []
+    globalThis.fetch = (async (input) => {
+      const url = String(input)
+      requested.push(url)
+      return url.endsWith('/agent/workspace/download/reports/final%20report.pdf')
+        ? new Response('PDF bytes', { status: 200, headers: { 'content-type': 'application/pdf' } })
+        : new Response('{"error":"File not found"}', { status: 404 })
+    }) as typeof fetch
+
+    const app = sharedFileRoutes({
+      pinChatToHomeRegion: async () => null,
+      resolveAgentProxyPodUrl: async () => ({ ok: true, kind: 'pod', url: 'http://runtime' }),
+      deriveProjectRuntimeToken: async () => 'runtime-secret',
+      sleep: async () => {},
+    })
+    const response = await app.fetch(
+      new Request(`http://api.test/api/f/${token('project-1/reports/final report.pdf')}`),
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('PDF bytes')
+    expect(response.headers.get('content-disposition')).toBe('attachment; filename="final report.pdf"')
+    expect(requested).toEqual([
+      'http://runtime/agent/workspace/download/project-1/reports/final%20report.pdf',
+      'http://runtime/agent/workspace/download/reports/final%20report.pdf',
+    ])
+  })
+
+  it('keeps the 404 when the stripped path is missing too', async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response('{"error":"File not found"}', { status: 404 })
+    }) as typeof fetch
+
+    const response = await retryingApp([]).fetch(
+      new Request(`http://api.test/api/f/${token('project-1/reports/missing.pdf')}`),
+    )
+
+    expect(response.status).toBe(404)
+    expect(calls).toBe(2)
+  })
 })

@@ -122,6 +122,14 @@ export interface RuntimeInternalRoutesOptions {
   loadAgentCall?: () => Promise<AgentCallService>
   /** Cloud-only GitHub App operations; omitted from the slim desktop bundle. */
   loadGitHub?: () => Promise<GitHubService>
+  /**
+   * Desktop resolves a shared-file target before signing it, so the link and
+   * the download route cannot disagree about what `path` is relative to.
+   * Omitted in cloud, where the project runtime owns the files.
+   */
+  resolveSharedFileTarget?: (
+    scope: { projectId?: string; workspaceId: string; path: string },
+  ) => Promise<{ target: string; normalizedPath: string } | null>
 }
 
 export function numberOr(value: unknown, fallback: number): number {
@@ -250,6 +258,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     loadProjectLifecycle,
     loadAgentCall,
     loadGitHub,
+    resolveSharedFileTarget,
   } = opts
   const { validateAuth, authorizeWorkspaceScope, authorizeWorkspaceRuntimeRequest } =
     createInternalAuthorizers(authenticate)
@@ -1127,10 +1136,29 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     try {
       const scope = await loadScope()
       if (scope instanceof Response) return scope
+
+      // Sign the path the download route will actually resolve: a project
+      // link is read from the project root, but a workspace runtime's agent
+      // path is workspace-relative. Resolving here (instead of signing
+      // verbatim) means a missing file fails the mint instead of producing a
+      // link that 404s later.
+      let signedPath = path
+      if (resolveSharedFileTarget) {
+        const resolved = await resolveSharedFileTarget({
+          projectId: scope.projectId,
+          workspaceId: scope.workspaceId,
+          path,
+        })
+        if (!resolved) {
+          return c.json({ error: { code: 'file_not_found', message: 'File not found' } }, 400)
+        }
+        signedPath = resolved.normalizedPath
+      }
+
       const token = signSharedFileToken({
         ...(scope.projectId ? { projectId: scope.projectId } : {}),
         workspaceId: scope.workspaceId,
-        path,
+        path: signedPath,
         exp: now + expiresInDays * 24 * 60 * 60,
         now,
       })
@@ -1141,7 +1169,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         ok: true,
         url: `${origin}/api/f/${encodeURIComponent(token)}`,
         expiresAt: new Date((now + expiresInDays * 24 * 60 * 60) * 1000).toISOString(),
-        path,
+        path: signedPath,
       })
     } catch (err: any) {
       console.error(`[Internal] shared file token for ${label} failed:`, err?.message || err)
