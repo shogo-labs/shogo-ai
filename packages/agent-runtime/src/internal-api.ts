@@ -2257,8 +2257,37 @@ export async function consumeBackgroundTasks(ids: string[]): Promise<CheckpointC
   })
 }
 
-export async function listBackgroundTasks(chatSessionId: string): Promise<CheckpointCallResult<{ tasks: BackgroundTaskState[] }>> {
+/** One undelivered background update a paused session is holding. */
+export interface WakingTask {
+  taskId: string
+  source: string
+  title: string
+  finishedAt: string | null
+}
+
+/**
+ * What a session is waiting to be told. `paused` means it woke itself too many
+ * times in a row and is waiting for a person; `waiting` is what the queued
+ * wakes are for.
+ */
+export interface SessionWakeState {
+  paused: boolean
+  wakesInARow: number
+  limit: number
+  waiting: WakingTask[]
+}
+
+export async function listBackgroundTasks(
+  chatSessionId: string,
+): Promise<CheckpointCallResult<{ tasks: BackgroundTaskState[]; wake?: SessionWakeState }>> {
   return lifecycleFetch(`${tasksPath}?chatSessionId=${encodeURIComponent(chatSessionId)}`, { method: 'GET', timeoutMs: 10_000 })
+}
+
+/** The session's wake state on its own; used at turn start to tell the agent what is waiting. */
+export async function getSessionWakeState(chatSessionId: string): Promise<SessionWakeState | null> {
+  const res = await listBackgroundTasks(chatSessionId).catch(() => null)
+  if (!res?.ok) return null
+  return res.data?.wake ?? null
 }
 
 /** Hand finished local tasks to the API so it wakes the (idle) session with one queued message. */

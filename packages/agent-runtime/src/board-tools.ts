@@ -122,16 +122,24 @@ function defineTool(
 /**
  * Event lines (see cardEventLine in the API) that mean a handed-off card needs
  * its assigner: it reached review, waiting, done or dismissed, or the
- * assignee's run ended without moving it.
+ * assignee's run ended without moving it. Each one wakes the assigner; the
+ * watch behind it carries on until the card is closed (see `rearmCardWatch` in
+ * the API), so a lane → QA → Review → Done run wakes it at every step.
  */
 export const HANDOFF_WATCH_UNTIL = 'moved to [^\\n]*\\((review|waiting|done|dismissed)\\)|(^|\\n)agent (stopped|failed)'
 
-const OPEN_CATEGORIES = new Set(['backlog', 'active'])
+/** Columns a card is finished in: nothing is watching it any more. */
+const TERMINAL_CATEGORIES = new Set(['done', 'dismissed'])
 
-/** The card sits with another agent (its assignee, or its column's agent) that still has work to do on it. */
+/**
+ * The card sits with another agent (its assignee, or its column's agent) that
+ * still has work to do on it. A review-category column that binds an agent is a
+ * holder like any other — lacvapps' QA lane is `review` and handing into it must
+ * open a watch — so only a terminal column rules a watch out.
+ */
 export function isHandedOff(item: { assignee_agent?: string | null; column_agent?: string | null; category?: string | null }, selfRef: string): boolean {
   const holder = item.assignee_agent ?? item.column_agent
-  return !!holder && holder !== selfRef && OPEN_CATEGORIES.has(item.category ?? 'backlog')
+  return !!holder && holder !== selfRef && !TERMINAL_CATEGORIES.has(item.category ?? 'backlog')
 }
 
 function selfAgentRef(ctx: ToolContext): string {
