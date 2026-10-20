@@ -275,6 +275,11 @@ export const MODEL_CATALOG = {
     // cheaper on cache reads (see MODEL_DOLLAR_COSTS['claude-opus-5-5']),
     // so it can't reuse the shared 'opus' bucket.
     billingModel: 'claude-opus-5-5',
+    // Same 1M-token window as the rest of the current generation. Without this
+    // the threshold fell back to the 200k *window* (≈168k after reserve) while
+    // the provider happily accepted 400k — one opus-5-5 turn grew that large
+    // with nothing summarized (SHO-96).
+    contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     // Released 2026-09-22. Not yet run through the subagent-smoke eval —
     // unrated until verified (see `ModelCapabilities` doc comment above).

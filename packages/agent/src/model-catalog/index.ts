@@ -66,6 +66,7 @@ export {
   getModelBillingModel,
   getModelFamily,
   getMaxOutputTokens,
+  getContextWindowTokens,
   modelSupportsAudioInput,
   getModelKind,
   isLiveModel,

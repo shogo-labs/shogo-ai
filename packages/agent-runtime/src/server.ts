@@ -1400,6 +1400,40 @@ app.get('/agent/sessions/:sessionId/summary', (c) => {
   return c.json(detail)
 })
 
+// Manually summarize a session's context — the context-usage dock's button.
+// A live turn cannot be summarized synchronously (the request has already been
+// sent), so the flag is queued and consumed at the next step; the caller gets
+// 202 and a reason instead of a fake success. An idle session compacts here and
+// reports the real before/after. Nothing foldable is an honest 200.
+app.post('/agent/sessions/:sessionId/compact', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const result = await agentGateway.compactSession(c.req.param('sessionId'))
+  switch (result.status) {
+    case 'unknown-session':
+      return c.json({ compacted: false, queued: false, reason: result.reason ?? 'session not found' }, 404)
+    case 'queued':
+      return c.json({ compacted: false, queued: true, reason: result.reason }, 202)
+    case 'nothing-to-compact':
+      return c.json({
+        compacted: false,
+        queued: false,
+        reason: result.reason,
+        tokensBefore: result.tokensBefore,
+        tokensAfter: result.tokensAfter,
+      })
+    case 'compacted':
+      return c.json({
+        compacted: true,
+        queued: false,
+        tokensBefore: result.tokensBefore,
+        tokensAfter: result.tokensAfter,
+        messagesBefore: result.messagesBefore,
+        messagesAfter: result.messagesAfter,
+        summaryChars: result.summaryChars,
+      })
+  }
+})
+
 // List the background shell processes still running for a chat thread. Used by
 // the client to seed its process panel on thread load (live updates arrive via
 // `data-process-update` SSE frames during a turn).
