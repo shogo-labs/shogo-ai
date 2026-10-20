@@ -361,6 +361,32 @@ export function getSDKHttpClient(): HttpClient | null {
   return moduleProxiedHttpClient
 }
 
+/**
+ * `useSDKDomain` for components that also render outside the provider (see
+ * `getSDKHttpClient`). Returns `null` instead of throwing.
+ */
+export function useSDKDomainOptional(): IDomainStore | null {
+  return useContext(SDKDomainContext)?.store ?? null
+}
+
+export function useWorkspaceCollectionOptional() {
+  return useSDKDomainOptional()?.workspaceCollection ?? null
+}
+
+/**
+ * The provider's store without React context, or `null` before it mounts.
+ * Same rationale as `getSDKHttpClient`: a popover host mounted above the
+ * provider still has to read and mutate the one real store.
+ */
+export function getSDKDomainStore(): IDomainStore | null {
+  return moduleStore
+}
+
+/** `useDomainActions` without context — `null` until the provider has a store. */
+export function getDomainActions(): ReturnType<typeof createDomainActions> | null {
+  return moduleStore ? createDomainActions(moduleStore) : null
+}
+
 export function useSDKReady() {
   const ctx = useContext(SDKDomainContext)
   if (!ctx) throw new Error('useSDKReady must be used within SDKDomainProvider')
@@ -461,4 +487,10 @@ import { createDomainActions } from '@shogo/domain-stores/domain-actions'
 export function useDomainActions() {
   const store = useSDKDomain() as IDomainStore
   return useMemo(() => createDomainActions(store), [store])
+}
+
+/** `useDomainActions` for trees that may render outside the provider; `null` there. */
+export function useDomainActionsOptional() {
+  const store = useSDKDomainOptional()
+  return useMemo(() => (store ? createDomainActions(store) : null), [store])
 }

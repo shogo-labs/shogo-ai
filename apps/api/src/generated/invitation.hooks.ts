@@ -8,6 +8,9 @@
  */
 
 import { sendInvitationEmail, sendProjectInviteEmail } from "../services/email.service"
+import { createNotification } from "../services/notification.service"
+import { sendPushToUser } from "../lib/push-notifications"
+import { INVITATION_ACCEPT_PATH } from "../lib/invitation-path"
 import { getFrontendUrl } from "../lib/cloud-urls"
 import { canAssignProjectRole, canAssignWorkspaceRole, isWorkspaceRole, toProjectRole } from "@shogo/authz"
 import type { Principal } from "../lib/authz"
@@ -86,6 +89,69 @@ async function canManageInvite(
     return isWorkspaceRole(role) && canAssignWorkspaceRole(access, role)
   }
   return false
+}
+
+/**
+ * Tell an invitee who already has an account: an in-app `invitation_pending`
+ * row for the bell plus one push. An email with no account gets nothing — a
+ * `userId`-keyed notification cannot exist before the user does, and the
+ * invitee lists are email-keyed, so the switcher covers them on first sign-in.
+ * Both writes are best-effort so a notification failure never breaks the
+ * invitation or its email.
+ */
+async function notifyInvitee(args: {
+  ctx: HookContext
+  invitation: {
+    id: string
+    email: string
+    workspaceId?: string | null
+    projectId?: string | null
+    role?: string | null
+  }
+  resourceName: string
+  inviterName: string
+}): Promise<void> {
+  const { ctx, invitation, resourceName, inviterName } = args
+  try {
+    const invitee = await ctx.prisma.user.findFirst({
+      where: { email: invitation.email },
+      select: { id: true },
+    })
+    if (!invitee?.id) return
+
+    const actionUrl = INVITATION_ACCEPT_PATH(invitation.id)
+    const title = `${inviterName} invited you to ${resourceName}`
+    const message = `You were invited to join ${resourceName} as ${invitation.role}`
+
+    await createNotification({
+      userId: invitee.id,
+      type: 'invitation_pending',
+      title,
+      message,
+      metadata: {
+        invitationId: invitation.id,
+        workspaceId: invitation.workspaceId ?? null,
+        projectId: invitation.projectId ?? null,
+        role: invitation.role ?? null,
+      },
+      actionUrl,
+      dedupeKey: invitation.id,
+    })
+
+    await sendPushToUser(invitee.id, {
+      title,
+      body: message,
+      type: 'invitation',
+      channelId: 'chat-complete',
+      data: {
+        notificationType: 'invitation_pending',
+        invitationId: invitation.id,
+        actionUrl,
+      },
+    })
+  } catch (err) {
+    console.error('[Invitation] Failed to notify invitee:', err)
+  }
 }
 
 export const invitationHooks: InvitationHooks = {
@@ -257,7 +323,7 @@ export const invitationHooks: InvitationHooks = {
     if (!resourceName) return
 
     const baseUrl = getFrontendUrl()
-    const acceptUrl = `${baseUrl}/invitations/${invitation.id}/accept`
+    const acceptUrl = `${baseUrl}${INVITATION_ACCEPT_PATH(invitation.id)}`
 
     const inviterName = inviter?.name || inviter?.email || 'A team member'
 
@@ -286,9 +352,27 @@ export const invitationHooks: InvitationHooks = {
         emailError: emailResult.error || null,
       },
     })
+
+    await notifyInvitee({ ctx, invitation, resourceName, inviterName })
   },
 
   afterUpdate: async (record, ctx) => {
+    // The invite is answered: clear the bell entry that pointed at it, so a
+    // stale "you're invited" cannot sit there and dead-end on tap.
+    if (record.status === 'accepted' || record.status === 'declined') {
+      try {
+        await ctx.prisma.notification.updateMany({
+          where: {
+            type: 'invitation_pending',
+            actionUrl: INVITATION_ACCEPT_PATH(record.id),
+          },
+          data: { readAt: new Date() },
+        })
+      } catch (err) {
+        console.error('[Notification] Failed to mark invitation read:', err)
+      }
+    }
+
     if (record.status !== 'accepted' || !record.invitedBy) return
     // Join mail lives in services/join-notifications.ts: workspace joins are
     // notified once from the membership chokepoint (the duplicate SHO-51 fixed),
