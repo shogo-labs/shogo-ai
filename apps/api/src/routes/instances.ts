@@ -22,7 +22,7 @@
 
 import { Hono } from 'hono'
 import { prisma, InstanceKind } from '../lib/prisma'
-import { groupMachinesByHostname } from '../lib/machine-list'
+import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 import { can } from '../lib/authz'
 import { resolveApiKey } from './api-keys'
 import { logRemoteAction, classifyAction } from './remote-audit'
@@ -91,6 +91,13 @@ const TUNNEL_WAIT_POLL_MS = 500
 const STREAMING_POST_PATTERNS = ['/agent/chat', '/agent/logs/stream']
 const STREAMING_GET_PATTERNS = ['/agent/canvas/stream', '/agent/logs/stream']
 const CHAT_RESUME_STREAM_RE = /^\/agent\/chat\/[^/]+\/stream$/
+/**
+ * A workspace's team-chat event stream (SSE). Long-lived by design: it carries
+ * new messages, typing and presence until the client disconnects, so it must go
+ * through the streaming pipeline — buffered, it would sit there until the 30 s
+ * proxy timeout and deliver nothing.
+ */
+const WORKSPACE_EVENT_STREAM_RE = /^\/api\/workspaces\/[^/]+\/conversations\/events$/
 
 // ─── Viewer tracking (Redis-primary, in-memory fallback) ────────────────────
 
@@ -226,26 +233,6 @@ function isWsRequested(wsRequestedAt: Date | null): boolean {
 }
 
 /**
- * Names of the cloud workspaces a set of instance rows were filed under, so a
- * machine list can say where each one is registered. Best-effort: a missing row
- * (deleted workspace, local id the cloud does not know) simply has no name.
- */
-async function workspaceNameMap(workspaceIds: string[]): Promise<Map<string, string>> {
-  const ids = [...new Set(workspaceIds.filter(Boolean))]
-  if (!ids.length) return new Map()
-  try {
-    const rows = await prisma.workspace.findMany({
-      where: { id: { in: ids } },
-      select: { id: true, name: true },
-    })
-    return new Map(rows.map((row) => [row.id, row.name]))
-  } catch {
-    // A machine list is still useful without the workspace label.
-    return new Map()
-  }
-}
-
-/**
  * Strip the agent-proxy wrapper from a tunneled path, returning the clean agent
  * path (e.g. "/agent/quick-actions").
  *
@@ -292,7 +279,7 @@ export function isStreamingRequest(method: string, cleanPath: string): boolean {
   if (method === 'GET') {
     return STREAMING_GET_PATTERNS.some((pattern) =>
       pathOnly === pattern || pathOnly.startsWith(`${pattern}/`),
-    ) || CHAT_RESUME_STREAM_RE.test(pathOnly)
+    ) || CHAT_RESUME_STREAM_RE.test(pathOnly) || WORKSPACE_EVENT_STREAM_RE.test(pathOnly)
   }
 
   return false
@@ -870,7 +857,7 @@ export function instanceRoutes() {
       orderBy: { lastSeenAt: 'desc' },
     })
 
-    const workspaceNames = await workspaceNameMap(instances.map((inst) => inst.workspaceId))
+    const workspaceNames = await workspaceNamesById(instances.map((inst) => inst.workspaceId))
 
     // Owner scope is a machine list, so a machine registered in several
     // workspaces appears once, carrying every workspace it is in — the same
@@ -883,12 +870,12 @@ export function instanceRoutes() {
         })
       : instances.map((inst) => ({ row: inst, workspaces: [], rows: [inst] }))
 
-    const withLiveStatus = await Promise.all(grouped.map(async ({ row: inst, workspaces }) => ({
+    const withLiveStatus = await Promise.all(grouped.map(async ({ row: inst, workspaces, rows: machineRows }) => ({
       ...inst,
       kind: formatInstanceKind(inst.kind),
-      status: tunnels.has(inst.id) || await isTunnelConnectedAnywhere(inst.id)
-        ? 'online'
-        : (isRecentlySeenViaHeartbeat(inst.lastSeenAt) ? 'heartbeat' : 'offline'),
+      // Any live tunnel counts: with one row per workspace, the row picked as the
+      // representative is not necessarily the one that is connected.
+      status: await getMachineGroupStatus(machineRows),
       origin: 'local' as const,
       workspaceName: workspaceNames.get(inst.workspaceId) ?? null,
       workspaces,
@@ -1702,12 +1689,32 @@ function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
  * recently (offline app, or a tunnel that has not been opened yet), `offline`
  * otherwise.
  */
-export async function getInstanceTunnelStatus(
+export async function getMachineLiveStatus(
   instanceId: string,
   lastSeenAt: Date | null,
 ): Promise<'online' | 'heartbeat' | 'offline'> {
   if (tunnels.has(instanceId) || (await isTunnelConnectedAnywhere(instanceId))) return 'online'
   return isRecentlySeenViaHeartbeat(lastSeenAt) ? 'heartbeat' : 'offline'
+}
+
+/**
+ * One status for a machine, across every row it has.
+ *
+ * A machine registered in three workspaces keeps three tunnels; the list shows
+ * one entry, so the entry is online when *any* of them is — reading only the
+ * representative row would call a live machine offline whenever the row that
+ * happened to be picked had not connected yet.
+ */
+export async function getMachineGroupStatus(
+  rows: Array<{ id: string; lastSeenAt: Date | null }>,
+): Promise<'online' | 'heartbeat' | 'offline'> {
+  let sawHeartbeat = false
+  for (const row of rows) {
+    const status = await getMachineLiveStatus(row.id, row.lastSeenAt)
+    if (status === 'online') return 'online'
+    if (status === 'heartbeat') sawHeartbeat = true
+  }
+  return sawHeartbeat ? 'heartbeat' : 'offline'
 }
 
 /**

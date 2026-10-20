@@ -10,12 +10,34 @@
  * that across workspaces, so the switcher and Settings each list `samsra` once
  * with every workspace it appears in.
  */
+import { prisma } from './prisma'
+
 /** The columns grouping needs; both Prisma clients' rows satisfy it. */
 export interface MachineRowLike {
   id: string
   hostname: string
   workspaceId: string
   lastSeenAt: Date | null
+}
+
+/**
+ * Workspace id → display name, best-effort.
+ *
+ * A deleted workspace (or an id this database has never seen) simply has no
+ * name; the row still counts as "registered there".
+ */
+export async function workspaceNamesById(workspaceIds: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(workspaceIds.filter(Boolean))]
+  if (!ids.length) return new Map()
+  try {
+    const rows = await prisma.workspace.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, name: true },
+    })
+    return new Map(rows.map((row) => [row.id, row.name]))
+  } catch {
+    return new Map()
+  }
 }
 
 export interface MachineWorkspaceRef {

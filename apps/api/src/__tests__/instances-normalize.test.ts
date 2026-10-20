@@ -67,4 +67,18 @@ describe('isStreamingRequest', () => {
     expect(isStreamingRequest('GET', '/api/workspaces/ws-1/conversations')).toBe(false)
     expect(isStreamingRequest('POST', '/api/projects/p-1/agent-proxy/agent/quick-actions')).toBe(false)
   })
+
+  test("a workspace's team-chat event stream streams", () => {
+    // The SSE the team chat subscribes to. Buffered, the relay would hold it
+    // until the 30 s proxy timeout and deliver nothing, so a machine
+    // workspace's chat would never receive a live message.
+    expect(isStreamingRequest('GET', '/api/workspaces/ws-1/conversations/events')).toBe(true)
+    expect(
+      isStreamingRequest('GET', normalizeTransparentProxyPath('/api/workspaces/ws-1/conversations/events')),
+    ).toBe(true)
+    // …and only that endpoint under `conversations`: the list itself is a
+    // normal read.
+    expect(isStreamingRequest('GET', '/api/workspaces/ws-1/conversations/events/extra')).toBe(false)
+    expect(isStreamingRequest('POST', '/api/workspaces/ws-1/conversations/events')).toBe(false)
+  })
 })

@@ -81,30 +81,49 @@ const ROUTE_TABLE: RouteEntry[] = [
  * Paths that only belong to the desktop while one of its *own* workspaces is
  * open (`source: 'machine'`).
  *
- * They are deliberately not in ROUTE_TABLE: the same URLs are cloud routes for a
- * cloud workspace, so they are an allow-list consulted only when a machine
- * workspace is open. Every entry is a narrow sub-path, which is what makes it
- * safe to match them before ROUTE_TABLE — their cloud counterparts (the
- * workspace list itself, members, analytics, exports) come through the generic
- * `/api/workspaces` pin and must keep winning for those.
+ * Routing does not need a list of what to send to the machine: everything
+ * workspace-scoped is the machine's while you are looking at the machine's
+ * workspace. What it needs is the opposite — the few families that stay the
+ * *cloud* workspace's, because a machine has no billing account, no cloud
+ * analytics and no Slack/Discord install to read. Those are pinned here and
+ * checked before the machine rule.
+ *
+ * The workspace *collection* (`/api/workspaces`, no id) is not workspace-scoped
+ * and is untouched by the rule below: a machine workspace must never replace
+ * the switcher's own workspace list.
  */
-const MACHINE_WORKSPACE_ROUTE_TABLE: RouteEntry[] = [
-  // The machine's workspace runtime and its agent.
-  { pattern: /^\/api\/workspaces\/[^/]+\/agent-proxy(\/|$)/,   target: 'remote' },
-  { pattern: /^\/api\/workspaces\/[^/]+\/agent-profile/,       target: 'remote' },
-  { pattern: /^\/api\/workspaces\/[^/]+\/agent-avatar/,        target: 'remote' },
-  { pattern: /^\/api\/workspaces\/[^/]+\/agent-card/,          target: 'remote' },
-  // The workspace agent chat itself: session resolution, turns, stop.
-  { pattern: /^\/api\/workspaces\/[^/]+\/(chat|sessions|active-chats)(\/|\?|$)/, target: 'remote' },
-  { pattern: /^\/api\/workspaces\/[^/]+\/history(\/|\?|$)/,    target: 'remote' },
-  // Team chat of the machine's workspace.
-  { pattern: /^\/api\/workspaces\/[^/]+\/(conversations|dms)(\/|\?|$)/, target: 'remote' },
-  { pattern: /^\/api\/conversations(\/|\?|$)/,                 target: 'remote' },
-  { pattern: /^\/api\/conversation-messages(\/|\?|$)/,         target: 'remote' },
-  { pattern: /^\/api\/scheduled-messages(\/|\?|$)/,            target: 'remote' },
-  { pattern: /^\/api\/reminders(\/|\?|$)/,                     target: 'remote' },
-  { pattern: /^\/api\/custom-emoji(\/|\?|$)/,                  target: 'remote' },
-  { pattern: /^\/api\/user-groups(\/|\?|$)/,                   target: 'remote' },
+const MACHINE_WORKSPACE_CLOUD_ONLY: RouteEntry[] = [
+  { pattern: /^\/api\/workspaces\/[^/]+\/analytics(\/|$)/,         target: 'cloud' },
+  { pattern: /^\/api\/workspaces\/[^/]+\/cost-analytics(\/|$)/,    target: 'cloud' },
+  // A Slack/Discord/Teams install is configured cloud-side for a cloud
+  // workspace; a machine workspace has no install to show.
+  { pattern: /^\/api\/workspaces\/[^/]+\/chat-installations(\/|$)/, target: 'cloud' },
+  { pattern: /^\/api\/workspaces\/[^/]+\/redeem-license(\/|$)/,    target: 'cloud' },
+  // Membership and lifecycle of the cloud workspace: leaving it, its deletion
+  // preview and its member activity are all cloud rows.
+  { pattern: /^\/api\/workspaces\/[^/]+\/(deletion-preview|leave|permissions|member-activity)(\/|$)/, target: 'cloud' },
+  // Cloud-account integrations (OAuth credentials live cloud-side).
+  { pattern: /^\/api\/workspaces\/[^/]+\/(social|integrations)(\/|$)/, target: 'cloud' },
+]
+
+/**
+ * A workspace-scoped URL: `/api/workspaces/<id>/…`. The trailing segment is what
+ * separates it from the collection endpoint.
+ */
+const MACHINE_WORKSPACE_SCOPE = /^\/api\/workspaces\/[^/?#]+\//
+
+/**
+ * Team-chat families that name their workspace in the query string or in a
+ * nested id rather than in the path, so they never reach the rule above.
+ */
+const MACHINE_WORKSPACE_FAMILIES: RouteEntry[] = [
+  { pattern: /^\/api\/conversations(\/|$)/,                 target: 'remote' },
+  { pattern: /^\/api\/conversation-messages(\/|$)/,         target: 'remote' },
+  { pattern: /^\/api\/conversation-message-edits(\/|$)/,    target: 'remote' },
+  { pattern: /^\/api\/scheduled-messages(\/|$)/,            target: 'remote' },
+  { pattern: /^\/api\/reminders(\/|$)/,                     target: 'remote' },
+  { pattern: /^\/api\/custom-emoji(\/|$)/,                  target: 'remote' },
+  { pattern: /^\/api\/user-groups(\/|$)/,                   target: 'remote' },
 ]
 
 /**
@@ -234,13 +253,19 @@ export function shouldRouteToRemote(
   // Strip query string for matching — qs is preserved during rewrite.
   const pathOnly = path.split('?')[0] || path
 
-  // A paired desktop's own workspace owns the agent and team chat of that
-  // workspace. These entries are consulted first because their cloud
-  // counterparts are reached through the generic `/api/workspaces` pin, which
-  // must keep sending the workspace *list* and its cloud-only families to
-  // cloud. They are a narrow allow-list, so nothing else can be shadowed.
+  // A paired desktop's own workspace owns everything scoped to it: its agent,
+  // its sessions, its team chat and its records. Deciding it here, once, is
+  // what keeps the screens from each choosing a host — a new workspace-scoped
+  // call is routed the day it is written instead of the day someone remembers
+  // to add it to a list.
   if (opts?.machineWorkspaceId) {
-    for (const entry of MACHINE_WORKSPACE_ROUTE_TABLE) {
+    // …except the families that are still the *cloud* workspace's (billing,
+    // analytics, membership, installs) — a machine has none of them.
+    for (const entry of MACHINE_WORKSPACE_CLOUD_ONLY) {
+      if (entry.pattern.test(pathOnly)) return false
+    }
+    if (MACHINE_WORKSPACE_SCOPE.test(pathOnly)) return true
+    for (const entry of MACHINE_WORKSPACE_FAMILIES) {
       if (entry.pattern.test(pathOnly)) return true
     }
   }
@@ -408,7 +433,8 @@ export {
   REMOTE_ROUTED_PREFIXES,
   REMOTE_EXCLUDED_PATTERNS,
   ROUTE_TABLE,
-  MACHINE_WORKSPACE_ROUTE_TABLE,
+  MACHINE_WORKSPACE_CLOUD_ONLY,
+  MACHINE_WORKSPACE_FAMILIES,
   type RouteTarget,
   type RouteEntry,
 }

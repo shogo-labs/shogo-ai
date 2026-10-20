@@ -171,6 +171,8 @@ const PRIMARY_TUNNEL = 'primary'
  */
 const activeTunnels = new Map<string, WorkerTunnel>()
 const tunnelNames = new Map<string, string>()
+/** The device key each fan-out tunnel was opened with, so a rotated key can restart it. */
+const tunnelKeys = new Map<string, string>()
 let activeTunnel: WorkerTunnel | null = null
 
 function createTunnel(apiKey: string): WorkerTunnel {
@@ -191,6 +193,7 @@ function getOrCreateTunnel(): WorkerTunnel {
   activeTunnel = createTunnel(process.env.SHOGO_API_KEY ?? '')
   activeTunnels.set(PRIMARY_TUNNEL, activeTunnel)
   tunnelNames.set(PRIMARY_TUNNEL, process.env.SHOGO_INSTANCE_NAME || osHostname())
+  tunnelKeys.set(PRIMARY_TUNNEL, process.env.SHOGO_API_KEY ?? '')
   return activeTunnel
 }
 
@@ -231,6 +234,7 @@ async function startWorkspaceTunnels(): Promise<void> {
         tunnel.start()
         activeTunnels.set(workspace.id, tunnel)
         tunnelNames.set(workspace.id, workspace.name || process.env.SHOGO_INSTANCE_NAME || osHostname())
+        tunnelKeys.set(workspace.id, key)
         console.log(`[InstanceTunnel] Also registered in "${workspace.name}"`)
       } catch (err: any) {
         console.warn(`[InstanceTunnel] tunnel for ${workspace.id} failed to start: ${err?.message ?? err}`)
@@ -259,6 +263,50 @@ export function startInstanceTunnel(): void {
   void startWorkspaceTunnels()
 }
 
+/**
+ * Bring the fan-out in line with the stored key set.
+ *
+ * `syncCloudWorkspaces()` runs every ten minutes and can both gain a workspace
+ * (one joined from another device) and lose one (left, or revoked). Without this
+ * a mid-session join would only register at the next app start, and a left
+ * workspace would keep a heartbeat flowing until then. The primary tunnel is
+ * never touched: its key is the one this process was launched with.
+ */
+export async function syncWorkspaceTunnels(): Promise<void> {
+  if (!process.env.SHOGO_API_KEY) return
+  let stored: Awaited<ReturnType<typeof listCloudWorkspaces>>
+  try {
+    stored = await listCloudWorkspaces()
+  } catch {
+    return
+  }
+  const keep = new Set<string>([PRIMARY_TUNNEL])
+  if (stored.enabled) {
+    for (const workspace of stored.workspaces) keep.add(workspace.id)
+  }
+
+  // A workspace that was left, or whose key was rotated: stop it here so the
+  // start below can re-open it with the current key.
+  for (const [id, tunnel] of [...activeTunnels]) {
+    if (id === PRIMARY_TUNNEL) continue
+    const workspace = stored.workspaces.find((w) => w.id === id)
+    const stale = !keep.has(id) || (workspace && tunnelKeys.get(id) !== workspace.key)
+    if (!stale) continue
+    try {
+      tunnel.stop()
+    } catch {
+      /* nothing to do */
+    }
+    activeTunnels.delete(id)
+    tunnelKeys.delete(id)
+    const name = tunnelNames.get(id)
+    tunnelNames.delete(id)
+    if (name) console.log(`[InstanceTunnel] Unregistered from "${name}"`)
+  }
+
+  await startWorkspaceTunnels()
+}
+
 export function stopInstanceTunnel(): void {
   if (!activeTunnels.size && !activeTunnel) return
   for (const tunnel of activeTunnels.values()) {
@@ -266,6 +314,7 @@ export function stopInstanceTunnel(): void {
   }
   activeTunnels.clear()
   tunnelNames.clear()
+  tunnelKeys.clear()
   activeTunnel = null
   console.log('[InstanceTunnel] Tunnel stopped')
 }
@@ -277,6 +326,7 @@ function stopQuietly(): void {
   }
   activeTunnels.clear()
   tunnelNames.clear()
+  tunnelKeys.clear()
   activeTunnel = null
 }
 

@@ -111,12 +111,14 @@ export default function AdminGeneralPage() {
    */
   // `workspaces` is optional for older local APIs; fall back to the single
   // workspace name so the row is never blank on a machine that is registered.
+  // The fallback has no id (the old API never sent one) — a name-shaped id
+  // would be a key nothing else can match.
   const registeredWorkspaces =
     instanceInfo?.workspaces ??
     (instanceInfo?.workspaceName
       ? [
           {
-            id: instanceInfo.workspaceName,
+            id: "",
             name: instanceInfo.workspaceName,
             state: (instanceInfo.tunnelConnected ? "connected" : "connecting") as
               | "connected"
@@ -692,7 +694,7 @@ export default function AdminGeneralPage() {
                   ) : (
                     registeredWorkspaces.map((workspace) => (
                       <View
-                        key={workspace.id}
+                        key={workspace.id || workspace.name}
                         className="flex-row items-center justify-between gap-2"
                       >
                         <Text className="text-sm text-foreground flex-1" numberOfLines={1}>

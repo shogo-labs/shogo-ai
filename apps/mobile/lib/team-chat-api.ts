@@ -1052,7 +1052,25 @@ export function nativeCookieHeader(): Record<string, string> {
   return cookie ? { Cookie: cookie } : {}
 }
 
-export function realtimeUrls(workspaceId: string): { ws: string; sse: string } {
+/**
+ * Where this workspace's live team-chat traffic comes from.
+ *
+ * A paired desktop's own workspace is served by that desktop: its events come
+ * from the machine relay, and there is no socket URL — the tunnel carries HTTP,
+ * not a WebSocket upgrade — so the connection goes straight to the SSE stream,
+ * which the relay forwards chunk by chunk.
+ */
+export function realtimeUrls(
+  workspaceId: string,
+  machine?: { instanceId: string; localWorkspaceId: string } | null,
+): { ws: string; sse: string } {
+  if (machine?.instanceId && machine.localWorkspaceId) {
+    const localId = encodeURIComponent(machine.localWorkspaceId)
+    return {
+      ws: '',
+      sse: `${API_URL}/api/machines/${encodeURIComponent(machine.instanceId)}/w/${localId}/api/workspaces/${localId}/conversations/events`,
+    }
+  }
   const base = `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}`
   return {
     // WebSockets bypass the fetch router; the desktop API relays this one.
