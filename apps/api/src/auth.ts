@@ -66,7 +66,10 @@ function getSqliteDbPath(): string {
 function createAuthDatabase() {
   if (isLocalMode) {
     const { Database } = require('bun:sqlite')
-    return new Database(getSqliteDbPath())
+    const db = new Database(getSqliteDbPath())
+    // Prisma writes through its own connection; wait out its lock instead of failing with SQLITE_BUSY.
+    db.run('PRAGMA busy_timeout = 5000')
+    return db
   }
   const { Pool } = require('pg')
   return new Pool({
