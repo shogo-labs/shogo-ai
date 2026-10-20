@@ -73,7 +73,7 @@ import { decideApproval, listPendingApprovals } from '../services/conversation-a
 import { liveActivityApprovalAnswered } from '../services/approval-live-activity'
 import { loadWorkLog } from '../services/agent-work-log'
 import { chainForAgentPost, rootChain, setThreadOwner } from '../services/conversation-agent-chain'
-import { loadAgentCard, loadTeamDirectory, loadUserCard, resolveFriendlyMentions, setAgentBuddyLook } from '../services/conversation-directory'
+import { loadAgentCard, loadTeamDirectory, loadUserCard, setAgentBuddyLook } from '../services/conversation-directory'
 import { listTeamChannels, syncTeamChannelOwnership, TeamChannelError, upsertTeamChannel } from '../services/conversation-team-channels'
 import { huddleUserIds } from '../services/huddle.service'
 import { getPresence } from '../services/conversation-presence'
@@ -1383,7 +1383,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       const blocks = blocksForKind({ kind, card })
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: await resolveFriendlyMentions(auth.workspaceId, card ? [cardToMarkdown(card), note.trim()].filter(Boolean).join('\n\n') : note, projectId),
+        // Plain `@Name` is resolved at the insert point (`conversation.service.postMessage`).
+        text: card ? [cardToMarkdown(card), note.trim()].filter(Boolean).join('\n\n') : note,
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         threadRootId,
         agentChain,
@@ -1413,6 +1414,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
           url: `${getFrontendUrl()}/c/${encodeURIComponent(conversation.id)}?thread=${encodeURIComponent(rootId)}`,
           ...(tasks.length ? { tasks } : {}),
         },
+        ...(result.mentionWarnings?.length ? { mention_warnings: result.mentionWarnings } : {}),
       }, 201)
     } catch (err) {
       return errorResponse(c, err)
@@ -1455,7 +1457,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     }
     const questions = normalizeQuestionDrafts(body.questions)
     try {
-      const text = typeof body.text === 'string' ? await resolveFriendlyMentions(auth.workspaceId, body.text, projectId) : undefined
+      // An edit never goes through `postMessage`, so `updateAgentMessage` resolves plain `@Name` for it.
+      const text = typeof body.text === 'string' ? body.text : undefined
       let message: any
       if (text !== undefined || card || normalizeKind(body.kind)) {
         ;({ message } = await updateAgentMessage({
@@ -1556,7 +1559,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       }
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: await resolveFriendlyMentions(auth.workspaceId, String(body.text ?? ''), projectId),
+        // Plain `@Name` is resolved at the insert point (`conversation.service.postMessage`).
+        text: String(body.text ?? ''),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         agentChain: await postChain(auth.workspaceId, projectId, body, null),
         ...(onBehalfOf ? { blocks: { onBehalfOf } } : {}),

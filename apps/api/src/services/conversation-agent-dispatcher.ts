@@ -1250,7 +1250,7 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
       // The run ended on a tool call: nothing more to say than what it did.
       await settle('', 'done')
     } else {
-      const text = await resolveFriendlyMentions(conversation.workspaceId, finalText)
+      const text = (await resolveFriendlyMentions(conversation.workspaceId, finalText)).text
       const mentions = /<[@!]/.test(text) ? await replaceMentions(messageId, conversation.workspaceId, text) : []
       await settle(text, 'done')
       if (mentions.length) await afterReplySettled(reply.conversation, messageId, mentions)

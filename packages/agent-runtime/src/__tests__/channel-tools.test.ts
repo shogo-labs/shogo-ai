@@ -193,6 +193,18 @@ describe('channel tools call the internal agent-channel API', () => {
     })
   })
 
+  test('team_chat_post passes the server’s mention_warnings through to the tool result', async () => {
+    reply = {
+      message: { id: 'warn-1', conversationId: 'c1', threadRootId: 'warn-1', runId: null },
+      mention_warnings: ['@New Project matches 7 people or agents — use the tag from team_directory'],
+    }
+    const posted = payload(await tool('team_chat_post').execute('t', { channel: 'eng', text: '@New Project status?' }))
+    expect(posted.id).toBe('warn-1')
+    expect(posted.mention_warnings).toEqual([
+      '@New Project matches 7 people or agents — use the tag from team_directory',
+    ])
+  })
+
   test('team_chat_post forwards kind and card; a card alone is enough', async () => {
     reply = { message: { id: 'card-1', conversationId: 'c1', threadRootId: 'card-1', runId: null } }
     const card = { title: 'Fix totals', steps: ['Triage', 'Fix'], step: 0, criteria: ['Total is right'] }

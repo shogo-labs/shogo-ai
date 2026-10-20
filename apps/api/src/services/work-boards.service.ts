@@ -1183,7 +1183,11 @@ export async function commentWorkItem(
     })
     void afterMessagePosted(result, { actorUserId: actor.userId ?? null, origin: 'app' })
   }
-  return { messageId: result.row.id, threadRootId: thread.rootId }
+  return {
+    messageId: result.row.id,
+    threadRootId: thread.rootId,
+    ...(result.mentionWarnings?.length ? { mention_warnings: result.mentionWarnings } : {}),
+  }
 }
 
 export async function archiveWorkItem(item: any, archived: boolean, actor: BoardActor) {

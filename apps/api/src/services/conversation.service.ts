@@ -1188,6 +1188,35 @@ export interface PostMessageResult {
   conversation: any
   mentions: ParsedMention[]
   duplicate: boolean
+  /** `mention_warnings` for tool results: plain `@Name`s that could not be resolved. */
+  mentionWarnings?: string[]
+}
+
+/**
+ * Plain `@Name` resolution for the insert point. `postMessage` is the one place
+ * a message row is written — every route, service, script and approval post
+ * lands there — so it is the one place this policy lives, and the mention rows
+ * derived from its result are what `afterMessagePosted` wakes agents from.
+ * Mirrored external channels keep their own text; system notices stay quiet.
+ */
+async function resolveForInsert(
+  input: PostMessageInput,
+  conversation: { workspaceId: string; provider?: string | null },
+  text: string,
+): Promise<{ text: string; warnings: string[] }> {
+  if (conversation.provider !== 'shogo' || input.authorType === 'system' || !text.includes('@')) {
+    return { text, warnings: [] }
+  }
+  try {
+    // Lazy: `conversation-directory` imports this module for the agent display helpers.
+    const { resolveFriendlyMentions, mentionWarnings } = await import('./conversation-directory')
+    const resolved = await resolveFriendlyMentions(conversation.workspaceId, text, input.authorAgentRef?.projectId ?? null)
+    return { text: resolved.text, warnings: mentionWarnings(resolved.ambiguous) }
+  } catch (err) {
+    // A lookup failure must never lose the message: post it as written.
+    console.warn('[Conversations] mention resolution failed:', (err as Error).message)
+    return { text, warnings: [] }
+  }
 }
 
 /** Add a user mention for each member of every mentioned group (members get notified as if mentioned). */
@@ -1255,9 +1284,11 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     data: { lastSeq: { increment: 1 }, lastMessageAt: now },
     select: { lastSeq: true },
   })
+  const resolved = await resolveForInsert(input, conversation, text)
+  const storedText = resolved.text
   const mentions = input.authorType === 'system' && !input.systemMentions
     ? []
-    : await expandGroupMentions(conversation.workspaceId, parseMentions(text))
+    : await expandGroupMentions(conversation.workspaceId, parseMentions(storedText))
 
   const id = crypto.randomUUID()
   const row = await db.conversationMessage.create({
@@ -1272,7 +1303,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
       authorUserId: input.authorUserId ?? null,
       authorAgentRef: input.authorAgentRef ?? undefined,
       botId: input.botId ?? null,
-      text,
+      text: storedText,
       blocks: input.blocks ?? undefined,
       clientMsgId: input.clientMsgId ?? null,
       agentStatus: input.agentStatus ?? null,
@@ -1330,7 +1361,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     await publish(conversation, { type: 'message.updated', message: serializeMessage(updatedRoot) })
   }
 
-  return { message, row: full, conversation, mentions, duplicate: false }
+  return { message, row: full, conversation, mentions, duplicate: false, mentionWarnings: resolved.warnings }
 }
 
 type TextSettledHook = (row: any) => void

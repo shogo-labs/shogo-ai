@@ -355,8 +355,15 @@ export async function updateAgentMessage(input: {
   }
   if (!String(text ?? '').trim()) throw new AgentMessageError(400, 'empty', 'Nothing to update')
 
-  const message = await shogoProvider.updateMessage(row.id, { text, blocks: blocks ?? null })
+  // An edit never goes through the insert point, so plain `@Name` is resolved here — the one
+  // function agent edits go through. Mirrored external channels keep the text they were given.
   const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
+  if (conversation?.provider === 'shogo' && text.includes('@')) {
+    const { resolveFriendlyMentions } = await import('../conversation-directory')
+    text = (await resolveFriendlyMentions(input.workspaceId, text, input.projectId)).text
+  }
+
+  const message = await shogoProvider.updateMessage(row.id, { text, blocks: blocks ?? null })
   const target = conversation ? await conversationRef(conversation, row.threadRootId ?? null) : null
   const ref = parseExternalRef(row.externalRef)
   if (target && ref && target.provider.capabilities.edits) {
