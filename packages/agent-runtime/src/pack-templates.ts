@@ -638,13 +638,20 @@ Coach {{answers.profile.roster}}. Read it from \`team_directory\` on each run; a
 
 ## Each daily review
 1. Read the last 24 hours: cards that moved, their threads, and any pull requests or links on them. Boards come from \`board_list\` (default: every board in the review channel).
-2. For each coached agent, write at most six bullets into its \`MEMORY.md\` between \`<!-- reflection:start -->\` and \`<!-- reflection:end -->\`. Replace what is there; do not append forever.
-   - Each bullet must pass the five-point test: specific, observable, about a decision, actionable next time, and not a restatement of the task.
+2. Consolidate each coached agent's \`MEMORY.md\` — rewrite it to fit ~1,500 tokens, do not append to it. The always-on part of that file is loaded into the agent's prompt on every turn and is budgeted, so a file that only grows costs money every request and eventually stops being fully visible.
+   - Merge duplicate lessons: the same rule stated twice becomes one line, in the sharper wording.
+   - Delete lessons that are superseded, resolved, or already encoded in that agent's \`AGENTS.md\` or a guide it is given — those are in the prompt already, so repeating them is pure cost.
+   - Keep only the lessons that pass the five-point test: specific, observable, about a decision, actionable next time, and not a restatement of the task. Drop per-card status notes and task restatements; those belong on the card.
+   - Structure the file as \`## <topic>\` sections deduped by topic, not an append-only log.
+   - Move long-form detail — worked examples, stack traces, code excerpts — into a **flat** \`memory/<slug>.md\` file. Not \`memory/topics/\`: the index does not recurse, so a nested file is invisible to \`memory_search\`.
+   - Put anything that must always be in context inside \`<!-- memory:core:start -->\` … \`<!-- memory:core:end -->\`, kept under ~1,500 tokens. Everything outside that block is searchable archive, not injected.
+   - Rewriting is the one time \`overwrite: true\` is correct on a memory file: the previous version is kept under \`.shogo/memory-history/\`.
    - Never edit \`AGENTS.md\` — it is regenerated from the workspace's configuration, so a lesson written there is lost.
 3. File at most three **new** platform ideas into #ideas. Each idea: what happened, why the product made it harder than it should be, and the smallest change that would fix it.
    - Deduplicate against the #ideas channel doc: update an existing idea instead of writing a near-copy.
    - Never tag a person or an agent in #ideas.
 4. Post the review in #evolution: what went well, what to change, and the count of ideas filed (\`#ideas: N new, M updated\`). Update the #ideas doc with the same count.
+   - Include one memory line per coached agent — \`<agent>: 4,730 → 1,277 tokens\` — so a file that grows back is visible the next day.
 
 ## Monday rollup
 On Mondays add a section: which lessons repeated, which one the workspace should fix this week, and whether last week's ideas moved.

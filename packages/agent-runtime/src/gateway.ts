@@ -119,6 +119,7 @@ import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { defaultShellCwd, workspaceKind } from './workspace-runtime-mode'
 import { applyCapabilityProfile, CAPABILITY_PROFILES, type CapabilityProfileName } from './capability-profiles'
 import { FileStateCache } from './file-state-cache'
+import { buildMemorySection } from './memory-section'
 import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
 import { BACKGROUND_TASKS_GUIDE } from './background-tasks-guide'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
@@ -779,6 +780,14 @@ export class AgentGateway {
   private workspaceDepsReady?: () => Promise<void>
   /** Tracks files the agent has read across turns for cache-aware compaction */
   private fileStateCache = new FileStateCache()
+  /**
+   * Snapshot of the built `## Memory` prompt section, keyed by `MEMORY.md`'s
+   * `mtimeMs:size` (SHO-78). The memory block now lives in the cached stable
+   * prefix, so rebuilding it on every turn would invalidate that prefix every
+   * turn. Rebuilding when the file actually changes is correct — and costs one
+   * cache write instead of one per turn.
+   */
+  private memorySectionCache: { key: string; content: string } | null = null
   /**
    * Per-session compaction-decision state for the per-API-call transformContext.
    *
@@ -4969,12 +4978,18 @@ export class AgentGateway {
       }
     }
 
-    // 7. Memory (changes frequently)
+    // 7. Memory — budgeted, and deliberately in the STABLE zone (SHO-78).
+    // Unlike STACK.md above (a 200-word preview), MEMORY.md is capped by
+    // MEMORY_BUDGET_TOKENS — default 1,500 tokens, clamped to 400..8000 — and
+    // the block lands before CACHE_BOUNDARY so it joins the cached prefix
+    // instead of being re-billed on every request. Nothing is lost: the file on
+    // disk is untouched and the overflow notice points at memory_search for
+    // what is not loaded. See memory-section.ts.
     const memoryPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'MEMORY.md')
     if (memoryPath) {
-      const memory = readFileSync(memoryPath, 'utf-8').trim()
-      if (memory) {
-        pushDynamic('memory', `## Memory\n${memory}`)
+      const memorySection = this.buildMemoryPromptSection(memoryPath)
+      if (memorySection) {
+        pushStable('memory', memorySection)
       }
     }
 
@@ -5110,6 +5125,40 @@ export class AgentGateway {
     const stableText = stableParts.join(SECTION_SEPARATOR)
     const dynamicText = dynamicParts.join(SECTION_SEPARATOR)
     return dynamicText ? stableText + CACHE_BOUNDARY + dynamicText : stableText
+  }
+
+  /**
+   * The budgeted `## Memory` prompt section for `MEMORY.md` (SHO-78), memoised
+   * on `mtimeMs:size`.
+   *
+   * Returns `null` when the file is missing, unreadable or empty, so the prompt
+   * simply has no memory block — same as before.
+   */
+  private buildMemoryPromptSection(memoryPath: string): string | null {
+    let key: string
+    try {
+      const stat = statSync(memoryPath)
+      key = `${stat.mtimeMs}:${stat.size}`
+    } catch {
+      this.memorySectionCache = null
+      return null
+    }
+
+    if (this.memorySectionCache?.key === key) {
+      return this.memorySectionCache.content || null
+    }
+
+    let markdown: string
+    try {
+      markdown = readFileSync(memoryPath, 'utf-8')
+    } catch {
+      this.memorySectionCache = null
+      return null
+    }
+
+    const content = buildMemorySection({ markdown }).content
+    this.memorySectionCache = content ? { key, content } : null
+    return content || null
   }
 
   /**
