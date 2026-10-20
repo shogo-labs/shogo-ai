@@ -266,12 +266,11 @@ describe('shouldRouteToRemote with a machine workspace', () => {
     expect(shouldRouteToRemote('/api/conversations/conv-1/messages', MACHINE)).toBe(true)
     expect(shouldRouteToRemote('/api/conversation-messages/msg-1', MACHINE)).toBe(true)
     // Every other workspace-scoped surface follows the workspace it names: the
-    // @-mention picker, presence, the inbox and the export are all the machine's
-    // while its workspace is open.
+    // @-mention picker, presence and the inbox are all the machine's while its
+    // workspace is open.
     expect(shouldRouteToRemote('/api/workspaces/ws-cloud/mentionables', MACHINE)).toBe(true)
     expect(shouldRouteToRemote('/api/workspaces/ws-cloud/presence', MACHINE)).toBe(true)
     expect(shouldRouteToRemote('/api/workspaces/ws-cloud/inbox?limit=20', MACHINE)).toBe(true)
-    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/export', MACHINE)).toBe(true)
   })
 
   it('keeps the workspace list, its cloud-only surfaces and this app’s own routes on cloud', () => {
@@ -285,6 +284,14 @@ describe('shouldRouteToRemote with a machine workspace', () => {
       '/api/workspaces/ws-cloud/leave',
       '/api/workspaces/ws-cloud/deletion-preview',
       '/api/workspaces/ws-cloud/member-activity',
+      // Cloud-only API routes (server.ts): the desktop does not mount them.
+      '/api/workspaces/ws-cloud/instance',
+      '/api/workspaces/ws-cloud/metrics?period=24h',
+      '/api/workspaces/ws-cloud/storage',
+      '/api/workspaces/ws-cloud/children',
+      // The export download is a raw fetch to cloud, so its estimate is too.
+      '/api/workspaces/ws-cloud/export',
+      '/api/workspaces/ws-cloud/export/estimate',
       '/api/billing',
       '/api/instances',
       '/api/machines',

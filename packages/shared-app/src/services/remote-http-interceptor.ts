@@ -102,6 +102,11 @@ const MACHINE_WORKSPACE_CLOUD_ONLY: RouteEntry[] = [
   // Membership and lifecycle of the cloud workspace: leaving it, its deletion
   // preview and its member activity are all cloud rows.
   { pattern: /^\/api\/workspaces\/[^/]+\/(deletion-preview|leave|permissions|member-activity)(\/|$)/, target: 'cloud' },
+  // Settings → Compute (instance, metrics, storage) and Billing's pooled child
+  // workspaces are served only by the cloud API; the desktop does not mount
+  // them, so routing them to the machine 404s. Export is the cloud workspace's
+  // too: the download itself is a raw fetch to cloud, so its estimate must be.
+  { pattern: /^\/api\/workspaces\/[^/]+\/(instance|metrics|storage|children|export)(\/|$)/, target: 'cloud' },
   // Cloud-account integrations (OAuth credentials live cloud-side).
   { pattern: /^\/api\/workspaces\/[^/]+\/(social|integrations)(\/|$)/, target: 'cloud' },
 ]
