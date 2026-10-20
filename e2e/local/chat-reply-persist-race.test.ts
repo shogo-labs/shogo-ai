@@ -48,7 +48,11 @@ interface HistoryState {
   replyRowAt: number | null
   /** `/chat-messages` GETs served, so a spec can see the paint actually raced. */
   reads: number
+  /** The turn under test reached the mocked API, so its stream is under way. */
+  turnServed: boolean
 }
+
+const AGENT_STOP_SELECTOR = '[data-testid="stop-streaming"], [aria-label="Stop"]'
 
 function sseFrame(event: Record<string, unknown>): string {
   return `data: ${JSON.stringify(event)}\n\n`
@@ -65,6 +69,29 @@ function completedTurn(messageId: string, text: string): string {
     sseFrame({ type: "finish-step" }),
     sseFrame({ type: "finish" }),
   ].join("")
+}
+
+/**
+ * One saved `/chat-messages` row, in the shape the panel's store expects.
+ * `parts` is the JSON string the API persists (the panel renders the reply from
+ * it, not from `content`), so a row without it is not a row the transcript can
+ * paint.
+ */
+function savedRow(
+  id: string,
+  sessionId: string,
+  role: "user" | "assistant",
+  text: string,
+  createdAt: number,
+): Record<string, unknown> {
+  return {
+    id,
+    sessionId,
+    role,
+    content: text,
+    parts: JSON.stringify([{ type: "text", text }]),
+    createdAt,
+  }
 }
 
 function promptOf(body: string | null): string | null {
@@ -101,13 +128,17 @@ async function installChatMocks(page: Page, persistDelayMs: number): Promise<His
     promptAt: null,
     replyRowAt: null,
     reads: 0,
+    turnServed: false,
   }
-  let turns = 0
-
   await page.route(CHAT_POST_GLOB, async (route: Route) => {
     if (route.request().method() !== "POST") return route.continue()
-    turns += 1
-    if (turns === 1) {
+    const request = route.request()
+    const body = request.postData()
+    const prompt = promptOf(body)
+    // Decide by prompt, not by call order: the project's first turn may be
+    // served on another route entirely, so the counter cannot be trusted.
+    // A streamed POST can also arrive with no readable body.
+    if (prompt === null || prompt === BOOTSTRAP_PROMPT) {
       await route.fulfill({
         status: 200,
         contentType: "text/event-stream",
@@ -116,11 +147,10 @@ async function installChatMocks(page: Page, persistDelayMs: number): Promise<His
       })
       return
     }
-    const request = route.request()
-    const body = request.postData()
     state.sessionId = state.sessionId ?? request.headers()["x-chat-session-id"] ?? null
-    state.prompt = promptOf(body) ?? "second turn"
+    state.prompt = prompt ?? "second turn"
     state.promptAt = Date.now()
+    state.turnServed = true
     // The client finishes the turn as soon as this body ends; the row is not
     // there yet, exactly like the real API behind a slow link.
     state.replyRowAt = Date.now() + persistDelayMs
@@ -154,26 +184,24 @@ async function installChatMocks(page: Page, persistDelayMs: number): Promise<His
     const offset = Number(url.searchParams.get("offset") || 0)
 
     const rows: any[] = [
-      { id: "m-bootstrap-user", sessionId, role: "user", content: BOOTSTRAP_PROMPT, createdAt: base + 1 },
-      { id: "m-bootstrap-reply", sessionId, role: "assistant", content: BOOTSTRAP_REPLY, createdAt: base + 2 },
+      savedRow("m-bootstrap-user", sessionId, "user", BOOTSTRAP_PROMPT, base + 1),
+      savedRow("m-bootstrap-reply", sessionId, "assistant", BOOTSTRAP_REPLY, base + 2),
     ]
     if (state.prompt) {
-      rows.push({
-        id: "m-second-user",
-        sessionId,
-        role: "user",
-        content: state.prompt,
-        createdAt: state.promptAt ?? base + 3,
-      })
+      rows.push(
+        savedRow("m-second-user", sessionId, "user", state.prompt, state.promptAt ?? base + 3),
+      )
     }
     if (state.replyRowAt !== null && Date.now() >= state.replyRowAt) {
-      rows.push({
-        id: "m-second-reply",
-        sessionId,
-        role: "assistant",
-        content: `${REPLY_MARKER}${SAVED_SUFFIX}`,
-        createdAt: (state.replyRowAt ?? base) + 1,
-      })
+      rows.push(
+        savedRow(
+          "m-second-reply",
+          sessionId,
+          "assistant",
+          `${REPLY_MARKER}${SAVED_SUFFIX}`,
+          (state.replyRowAt ?? base) + 1,
+        ),
+      )
     }
     // The API answers newest first; the panel sorts ascending itself.
     const newestFirst = rows.reverse()
@@ -203,11 +231,21 @@ async function waitForReply(page: Page): Promise<void> {
   ).toBeVisible({ timeout: 60_000 })
 }
 
-async function sendSecondTurn(page: Page, prompt: string): Promise<void> {
-  const composer = page.getByTestId("project-composer-input").filter({ visible: true }).first()
+async function sendSecondTurn(page: Page, state: HistoryState, prompt: string): Promise<void> {
+  const composer = page.getByTestId("project-composer-input").first()
+  await composer.waitFor({ state: "visible", timeout: 20_000 })
   await composer.click()
   await composer.fill(prompt)
+  await page.waitForTimeout(150)
   await page.keyboard.press("Enter")
+  // Wait for the send to actually reach the (mocked) API — on `main` the reply
+  // can be wiped again inside the first frame, so "the reply is visible" is not
+  // a reliable way to know the turn started.
+  await expect.poll(() => state.turnServed, { timeout: 30_000 }).toBe(true)
+  // Let the stream finish and the post-stream settle run before asserting.
+  await page
+    .waitForSelector(AGENT_STOP_SELECTOR, { state: "detached", timeout: 30_000 })
+    .catch(() => {})
 }
 
 /** A window focus event, i.e. the person coming back to the app. */
@@ -224,8 +262,7 @@ test("a reply the server has not written yet stays on screen when the turn ends"
   const state = await installChatMocks(page, persistDelayMs)
   await startProjectWithBootstrapTurn(page)
 
-  await sendSecondTurn(page, "Does the reply survive?")
-  await waitForReply(page)
+  await sendSecondTurn(page, state, "Does the reply survive?")
 
   // The mocked API has not reported the row yet, but the panel must not paint a
   // transcript that is behind the screen: the reply stays, and it is the live
@@ -246,11 +283,10 @@ test("a reply the server has not written yet stays on screen when the turn ends"
 test("a refocus while the reply row is still being written does not drop it", async ({ page }) => {
   // Long enough that the refocus happens while the row is definitely missing.
   const persistDelayMs = Number(process.env.E2E_PERSIST_DELAY_MS || 12_000)
-  await installChatMocks(page, persistDelayMs)
+  const state = await installChatMocks(page, persistDelayMs)
   await startProjectWithBootstrapTurn(page)
 
-  await sendSecondTurn(page, "Does a refocus drop the reply?")
-  await waitForReply(page)
+  await sendSecondTurn(page, state, "Does a refocus drop the reply?")
   // The refocus check is rate-limited to one probe per 3s after a load.
   await page.waitForTimeout(3_500)
 
@@ -265,10 +301,10 @@ test("a refocus while the reply row is still being written does not drop it", as
 
 test("the saved row replaces the live reply exactly once when it lands", async ({ page }) => {
   // Lands inside the panel's reconcile window (5 x 400ms), so it takes the row.
-  await installChatMocks(page, 900)
+  const state = await installChatMocks(page, 900)
   await startProjectWithBootstrapTurn(page)
 
-  await sendSecondTurn(page, "Adopt the saved row?")
+  await sendSecondTurn(page, state, "Adopt the saved row?")
   await waitForReply(page)
 
   await expect(
