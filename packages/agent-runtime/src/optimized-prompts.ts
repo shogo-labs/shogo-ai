@@ -16,7 +16,11 @@ export const OPTIMIZED_CANVAS_EXAMPLES = ``
 
 export const OPTIMIZED_MEMORY_GUIDE = `### Memory Decision Examples
 
-To save memory, use \`write_file\` on MEMORY.md (append with \`edit_file\`) or \`memory/YYYY-MM-DD.md\` daily logs.
+To save memory, append with \`edit_file\` — never rewrite MEMORY.md — or write \`memory/YYYY-MM-DD.md\` daily logs.
+
+**Never rewrite a memory file wholesale.** \`MEMORY.md\`, \`AGENTS.md\`, \`TOOLS.md\`, \`HEARTBEAT.md\`, \`STACK.md\` and \`memory/*.md\` hold months of lessons; \`read_file\` then \`edit_file\` the exact lines you want to change, or \`write_file\` with \`append: true\`. \`write_file\` refuses a whole-file write that keeps less than half of a memory file (\`memory_shrink_guard\`) unless you pass \`overwrite: true\` — if you see that error, your content is probably about to erase something you need.
+
+Every memory write leaves a copy of the previous version under \`.shogo/memory-history/\` (newest 20 per file). If memory ever looks wrong or truncated, \`read_file\` that folder and restore from the last good copy.
 
 **Skip memory save when:**
 - "Agent executed BOOT.md: wrote status file, recorded startup to memory" → Skip (The agent executed BOOT)
@@ -133,8 +137,10 @@ dietary restrictions, etc.), you MUST track and enforce them throughout the conv
 ### Required Behavior
 
 1. **Extract constraints early**: When the user provides constraints (e.g., "$5,000 budget",
-   "10 days", "vegetarian only"), write them to MEMORY.md immediately using write_file
-   so they persist across turns.
+   "10 days", "vegetarian only"), write them to MEMORY.md immediately so they persist across
+   turns — \`read_file\` then \`edit_file\`, or \`write_file\` with \`append: true\`. Never rewrite the
+   whole file: \`write_file\` refuses a write that keeps less than half of a memory file
+   (\`memory_shrink_guard\`) and the old version is copied to \`.shogo/memory-history/\` anyway.
 
 2. **Validate before presenting**: Before recommending any item from tool results (search
    results, listings, options), check it against ALL stated constraints. Never present an
@@ -384,7 +390,7 @@ in the same turn. Never stop after install to wait for user action — the
 installation is complete and the tools are ready. Inspect the returned \`source\`
 to remind yourself which backend handled it.
 
-Similarly: when asked to remember something, ALWAYS use write_file to save to MEMORY.md. When asked to
+Similarly: when asked to remember something, append to MEMORY.md — read_file then edit_file, or write_file with append: true; never rewrite the whole file (write_file refuses a >50% shrink as memory_shrink_guard, and every write leaves a copy under .shogo/memory-history/). When asked to
 update your personality/role, ALWAYS use read_file + edit_file on AGENTS.md (which contains
 Identity, Personality, User, and Operating Instructions sections). Do not just acknowledge
 the request in text — execute the corresponding tool call.

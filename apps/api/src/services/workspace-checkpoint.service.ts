@@ -197,6 +197,11 @@ export async function autoCheckpointWorkspaceProjects(
         workspacePath,
         message: wasRepo ? changeMessage : baselineMessage,
         isAutomatic: true,
+        // SHO-61: a connected project's branch is the user's — snapshot to a
+        // ref instead of committing onto it. A local-only project keeps the
+        // historical commit behaviour. `resolveCheckpointMode` still lets
+        // SHOGO_CHECKPOINT_MODE / the project setting outrank this hint.
+        mode: meta?.hasGithubConnection ? 'ref' : 'branch',
       })
       results.push({
         projectId,

@@ -188,6 +188,7 @@ import { clearGitHubCliEnvCache, githubCliEnvForProject } from './github-cli-cre
 import { approvalOutcomeResult, waitForCredentialApproval, withCredentialApproval } from './integration-credentials'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
+import { isMemoryFilePath, memoryShrinkGuard, snapshotMemoryFile } from './memory-history'
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
 import { FileStateCache } from './file-state-cache'
 import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES } from './image-size-guard'
@@ -2826,6 +2827,13 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
           description: 'utf-8 (default) or base64. base64 is required for binary files.',
         }),
       ),
+      overwrite: Type.Optional(
+        Type.Boolean({
+          description:
+            'Only for memory files (MEMORY.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, STACK.md, memory/*.md): ' +
+            'allow replacing the file with less than half of its current content. Default: refuse (memory_shrink_guard).',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const {
@@ -2833,11 +2841,13 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         content,
         append,
         encoding,
+        overwrite,
       } = params as {
         path: string
         content: string
         append?: boolean
         encoding?: 'utf-8' | 'base64'
+        overwrite?: boolean
       }
       const scratch = scratchPathForWrite(ctx.workspaceDir, requestedPath)
       const filePath = scratch.path
@@ -2881,6 +2891,20 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       const dir = dirname(resolved)
       if (dir && dir !== resolved) mkdirSync(dir, { recursive: true })
 
+      // Memory-file protection (SHO-61). A whole-file write to MEMORY.md /
+      // AGENTS.md / memory/*.md is one keystroke from erasing everything the
+      // agent learned, so: refuse a >50 % shrink unless the caller says
+      // `overwrite: true`, and keep a copy of the previous bytes either way.
+      let memoryHistoryCopy: string | null = null
+      if (isMemoryFilePath(filePath)) {
+        const rejection = memoryShrinkGuard(ctx.workspaceDir, filePath, content, {
+          overwrite,
+          append,
+        })
+        if (rejection) return textResult({ ...rejection })
+        memoryHistoryCopy = snapshotMemoryFile(ctx.workspaceDir, filePath)
+      }
+
       // Resolve target line endings: honor an existing file's detected
       // ending (which itself honors .gitattributes via readFileWithMetadata),
       // otherwise honor .gitattributes for the new path, otherwise LF.
@@ -2915,6 +2939,11 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         path: filePath,
         bytes: content.length,
         ...scratchFields,
+      }
+      if (memoryHistoryCopy) {
+        base.memoryHistory = memoryHistoryCopy
+        base.memoryHistoryHint =
+          'The previous version of this memory file is saved at memoryHistory (read it with read_file) if you need to restore anything.'
       }
       appendImpactHint(ctx, filePath, base)
       // Canvas-API contract hint: surfaced eagerly on every write so the
@@ -3762,6 +3791,14 @@ async function commitEdit(
   replacements: number,
   note?: string,
 ): Promise<AgentToolResult<any>> {
+  // Every edit to a memory file keeps the pre-edit bytes (SHO-61). `edit_file`
+  // is exempt from the shrink guard — it is already a diff — but a careless
+  // `old_string` that spans the lessons block would still be a wipe, and the
+  // history copy is what makes it recoverable.
+  const memoryHistoryCopy = isMemoryFilePath(filePath)
+    ? snapshotMemoryFile(ctx.workspaceDir, filePath)
+    : null
+
   writeWithMetadata(resolved, updated, encoding, target)
 
   // Post-edit state tracking (recordEdit instead of invalidate)
@@ -3785,6 +3822,7 @@ async function commitEdit(
     patch,
   }
   if (note) base.note = note
+  if (memoryHistoryCopy) base.memoryHistory = memoryHistoryCopy
   appendImpactHint(ctx, filePath, base)
   // Mirror the write_file canvas-API contract hint so edits that
   // introduce a new `fetch('/api/X')` get the same eager warning.

@@ -315,6 +315,11 @@ model ProjectCheckpoint {
   commitSha     String
   commitMessage String
   branch        String   @default("main")
+  // "branch" = a real commit on `branch` (local-only projects, historical
+  // rows); "ref" = a commit pinned only by `refName` under
+  // refs/shogo/checkpoints/** so the user's branch never gains an AI commit.
+  mode          String   @default("branch")
+  refName       String?
   includesDb    Boolean  @default(false)
   filesChanged  Int      @default(0)
   additions     Int      @default(0)

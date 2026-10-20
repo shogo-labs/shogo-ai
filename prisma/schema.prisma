@@ -935,9 +935,17 @@ model ProjectCheckpoint {
   projectId     String
   name          String? // User-provided name like "Before auth changes"
   description   String?
-  commitSha     String // Git commit SHA
+  commitSha     String // Git commit SHA (a real commit on the branch, or a commit-tree snapshot)
   commitMessage String
   branch        String   @default("main")
+  // Where the snapshot commit lives. "branch" = a real commit on `branch`
+  // (local-only projects, historical rows). "ref" = a commit reachable only
+  // from `refName` under refs/shogo/checkpoints/**, so the user's checked-out
+  // branch never gains an "AI: …" commit. See git.service.snapshotTree.
+  mode          String   @default("branch")
+  // The ref that pins a "ref"-mode snapshot (live refs keep `git gc` from
+  // collecting the objects). Null for "branch"-mode rows.
+  refName       String?
   includesDb    Boolean  @default(false)
   filesChanged  Int      @default(0)
   additions     Int      @default(0)

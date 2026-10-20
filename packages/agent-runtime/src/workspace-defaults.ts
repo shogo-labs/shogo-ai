@@ -213,6 +213,10 @@ not belong in \`exec\`.
   'MEMORY.md': `# Memory
 
 Long-lived facts and learnings are stored here.
+
+Append with \`edit_file\` (or \`write_file\` with \`append: true\`) — never rewrite this file wholesale:
+every write keeps the previous version under \`.shogo/memory-history/\`, and \`write_file\` refuses a
+whole-file replacement that keeps less than half of the current content.
 `,
   'config.json': JSON.stringify(
     {
