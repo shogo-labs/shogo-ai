@@ -1579,6 +1579,13 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
           description: 'Issue-pipeline run id to embed in the body',
         }),
       ),
+      workItem: Type.Optional(
+        Type.String({
+          description:
+            'Card key to link this PR to (e.g. SHO-42). Omit and the server derives it from a KEY-12 in the ' +
+            'head branch or the title; with no key the PR is simply unlinked.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params, signal) => {
       const input = params as {
@@ -1588,6 +1595,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
         body?: string
         draft?: boolean
         runId?: string
+        workItem?: string
       }
       const title = input.title?.trim()
       const repository = currentGitHubRepository(ctx.workspaceDir)
@@ -1621,6 +1629,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
         body: markedBody,
         draft: input.draft === true,
         ...(input.runId ? { runId: input.runId } : {}),
+        ...(input.workItem?.trim() ? { workItem: input.workItem.trim() } : {}),
       }
       const githubPayload = {
         title: options.title,
@@ -1644,6 +1653,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
           author: botResult.data.author,
           number: botResult.data.number,
           url: botResult.data.url,
+          ...(botResult.data.workItem ? { workItem: botResult.data.workItem } : {}),
           ...(botResult.data.credential ? { credential: botResult.data.credential } : {}),
         })
       }

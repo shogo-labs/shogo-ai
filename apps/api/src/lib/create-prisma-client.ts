@@ -78,6 +78,8 @@ const JSON_OBJECT_FIELDS = new Set([
   'origin',
   // Work boards
   'fieldsSchema', 'fields', 'eventData', 'occurrenceContext', 'workItemTarget',
+  // Per-column rules (BoardColumn.rules: Json? on PG, JSON String on SQLite)
+  'rules',
   // Marketplace agent packs (Json? on PG, JSON String on SQLite): the parsed
   // pack.yaml on a listing version, the answers an install collected, and the
   // ids it created. Missing these made publishing and installing a pack throw

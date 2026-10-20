@@ -98,6 +98,7 @@ export function serializeColumn(c: any) {
     wipLimit: c.wipLimit ?? null,
     agentRef: c.agentRef ?? null,
     slaHours: c.slaHours ?? null,
+    rules: c.rules && typeof c.rules === 'object' ? c.rules : {},
   }
 }
 
@@ -361,7 +362,7 @@ async function actorLabel(workspaceId: string, actor: BoardActor): Promise<strin
   return 'Shogo'
 }
 
-async function recordEvent(item: { id: string; workspaceId: string }, type: string, actor: BoardActor, data?: Record<string, unknown>) {
+export async function recordEvent(item: { id: string; workspaceId: string }, type: string, actor: BoardActor, data?: Record<string, unknown>) {
   await db.workItemEvent.create({
     data: {
       workItemId: item.id,
@@ -420,6 +421,8 @@ export interface ColumnInput {
   wipLimit?: number | null
   agentRef?: string | null
   slaHours?: number | null
+  /** `{ allowAutoMerge?: boolean }` — may an agent arm/merge a card's PR here. */
+  rules?: unknown
 }
 
 export interface BoardInput {
@@ -440,6 +443,16 @@ export interface BoardInput {
   templateId?: string | null
 }
 
+/** Column rules we understand, with anything else dropped. `null` clears them. */
+function normalizeRules(value: unknown): Record<string, boolean> | null | undefined {
+  if (value === null) return null
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const out: Record<string, boolean> = {}
+  const allow = (value as Record<string, unknown>).allowAutoMerge
+  if (typeof allow === 'boolean') out.allowAutoMerge = allow
+  return out
+}
+
 function columnData(input: ColumnInput, position: number) {
   const name = str(input.name, 60)
   if (!name) throw bad('invalid_column', 'Every column needs a name')
@@ -451,6 +464,7 @@ function columnData(input: ColumnInput, position: number) {
     wipLimit: Number.isInteger(input.wipLimit) && (input.wipLimit as number) > 0 ? input.wipLimit : null,
     agentRef: agentRef ?? null,
     slaHours: typeof input.slaHours === 'number' && input.slaHours > 0 ? input.slaHours : null,
+    rules: normalizeRules(input.rules) ?? null,
   }
 }
 
@@ -653,6 +667,10 @@ export async function updateColumn(board: any, columnRef: string, patch: Partial
   if (patch.wipLimit !== undefined) data.wipLimit = Number.isInteger(patch.wipLimit) && (patch.wipLimit as number) > 0 ? patch.wipLimit : null
   if (patch.agentRef !== undefined) data.agentRef = normalizeAgentRef(patch.agentRef) ?? null
   if (patch.slaHours !== undefined) data.slaHours = typeof patch.slaHours === 'number' && patch.slaHours > 0 ? patch.slaHours : null
+  if (patch.rules !== undefined) {
+    const rules = normalizeRules(patch.rules)
+    if (rules !== undefined) data.rules = rules
+  }
   if (Object.keys(data).length) await db.boardColumn.update({ where: { id: column.id }, data })
   if (Number.isInteger(patch.position) || patch.after) {
     const order = board.columns.slice().sort((a: any, b: any) => a.position - b.position).map((c: any) => c.id).filter((id: string) => id !== column.id)
@@ -1143,7 +1161,7 @@ export async function commentWorkItem(
   item: any,
   text: string,
   actor: BoardActor,
-  opts: { projectId?: string | null; attachmentIds?: string[] } = {},
+  opts: { projectId?: string | null; attachmentIds?: string[]; system?: boolean } = {},
 ) {
   const body = String(text ?? '').trim()
   const attachmentIds = opts.attachmentIds ?? []
@@ -1157,7 +1175,15 @@ export async function commentWorkItem(
     return { messageId: null, threadRootId: null }
   }
   let result
-  if (actor.agentRef) {
+  if (opts.system) {
+    result = await postMessage({
+      conversationId: thread.conversation.id,
+      authorType: 'system',
+      threadRootId: thread.rootId,
+      text: body,
+    })
+    void afterMessagePosted(result, { actorUserId: null, origin: 'system' })
+  } else if (actor.agentRef) {
     const projectId = opts.projectId ?? agentRefProjectId(actor.agentRef)
     const { postAgentMessage } = await import('./chat-providers/outbound')
     const { chainForAgentPost, rootChain } = await import('./conversation-agent-chain')
@@ -1251,6 +1277,16 @@ export async function upsertLink(item: { id: string; workspaceId: string }, inpu
   const reason = oneOf(LINK_REASONS, input.reason) ?? 'manual'
   const existing = await db.workItemLink.findFirst({ where: { workItemId: item.id, kind, refId } })
   if (existing) return existing
+  // A PR linked by hand starts with what its URL says; the first read (or the
+  // next webhook) fills in checks, armed state and merge state.
+  let metadata: Record<string, unknown> | undefined
+  if (kind === 'pr') {
+    const { parsePullRequestUrl } = await import('./work-item-pr.service')
+    const parsed = parsePullRequestUrl(input.url)
+    if (parsed) {
+      metadata = { repo: parsed.repo, number: parsed.number, url: input.url ?? null, state: 'open', checks: { total: 0, passing: 0, failing: 0, pending: 0 }, failing: [] }
+    }
+  }
   try {
     const link = await db.workItemLink.create({
       data: {
@@ -1264,6 +1300,7 @@ export async function upsertLink(item: { id: string; workspaceId: string }, inpu
         addedByAgentRef: actor.agentRef ?? null,
         snippet: str(input.snippet, 500) ?? null,
         url: str(input.url, 1000) ?? null,
+        ...(metadata ? { metadata } : {}),
       },
     })
     if (reason !== 'origin' && reason !== 'tool_call' && kind !== 'thread') {
@@ -1317,7 +1354,7 @@ async function redactLinks(links: any[], viewer: BoardViewer) {
       ok = visible.get(l.conversationId)!
     }
     out.push(ok
-      ? { id: l.id, kind: l.kind, refId: l.refId, conversationId: l.conversationId, reason: l.reason, snippet: l.snippet, url: l.url, addedByUserId: l.addedByUserId, addedByAgentRef: l.addedByAgentRef, createdAt: l.createdAt }
+      ? { id: l.id, kind: l.kind, refId: l.refId, conversationId: l.conversationId, reason: l.reason, snippet: l.snippet, url: l.url, metadata: l.metadata ?? null, syncedAt: l.syncedAt ?? null, addedByUserId: l.addedByUserId, addedByAgentRef: l.addedByAgentRef, createdAt: l.createdAt }
       : { id: l.id, kind: l.kind, reason: l.reason, private: true, snippet: null, refId: null, conversationId: null, createdAt: l.createdAt })
   }
   return out
@@ -1356,13 +1393,19 @@ export async function getWorkItemDetail(item: any, viewer: BoardViewer) {
     db.workItemEvent.findMany({ where: { workItemId: item.id }, orderBy: { createdAt: 'desc' }, take: 25 }),
     viewer.kind === 'user' ? db.workItemSubscription.findFirst({ where: { workItemId: item.id, userId: viewer.userId } }) : null,
   ])
+  const prLinks = links.filter((l: any) => l.kind === 'pr')
+  const prService = await import('./work-item-pr.service')
+  // A repo connected with a personal token never sends a webhook: top the
+  // state up on read so the card is never stale by more than a minute.
+  prService.topUpStalePrLinks(prLinks.filter((l: any) => l.workspaceId === item.workspaceId))
+  const pr = prService.prBlock(prLinks[0])
   const visibleLinks = await redactLinks(links, viewer)
   const sessionIds = links.filter((l: any) => l.kind === 'chat_session').map((l: any) => l.refId)
   const sessions = sessionIds.length
     ? await db.chatSession.findMany({ where: { id: { in: sessionIds } }, select: { id: true, name: true, inferredName: true, contextType: true, contextId: true, createdAt: true, updatedAt: true } }).catch(() => [])
     : []
   return {
-    item: serializeItem(item),
+    item: { ...serializeItem(item), ...(pr ? { pr } : {}) },
     board: {
       id: item.board.id,
       name: item.board.name,
@@ -1445,9 +1488,11 @@ export async function getBoardView(board: any, opts: { includeArchived?: boolean
     take: MAX_ITEMS_PER_BOARD_VIEW,
   })
   const working = await runningCardReplies(items.map((i: any) => i.threadRootMessageId).filter(Boolean))
+  const { attachPrBlocks } = await import('./work-item-pr.service')
+  const serialized = await attachPrBlocks(items.map((i: any) => ({ ...serializeItem(i), working: working.get(i.threadRootMessageId) ?? [] })))
   return {
     board: serializeBoard(board),
-    items: items.map((i: any) => ({ ...serializeItem(i), working: working.get(i.threadRootMessageId) ?? [] })),
+    items: serialized,
     health: healthFor(board, items),
   }
 }
@@ -1517,7 +1562,8 @@ export async function listWorkItems(workspaceId: string, viewer: BoardViewer, fi
       || new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime())
   }
   if (filter.sort === 'due') items = items.sort((a: any, b: any) => (a.dueAt ? new Date(a.dueAt).getTime() : Infinity) - (b.dueAt ? new Date(b.dueAt).getTime() : Infinity))
-  return { items, boards }
+  const { attachPrBlocks } = await import('./work-item-pr.service')
+  return { items: await attachPrBlocks(items), boards }
 }
 
 // ─── Summary and health ──────────────────────────────────────────────────────

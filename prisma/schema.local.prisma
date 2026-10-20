@@ -3816,6 +3816,9 @@ model BoardColumn {
   agentRef  String?
   /// Cards older than this in the column count as breaching SLA.
   slaHours  Float?
+  /// Per-column rules. `allowAutoMerge` is the only key today: a card's PR may
+  /// only be armed / merged by an agent from a column that allows it.
+  rules     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -3923,6 +3926,10 @@ model WorkItemLink {
   addedByAgentRef String?
   snippet         String?
   url             String?
+  /// Live state of the linked PR (JSON on SQLite) — see schema.prisma.
+  metadata        String?
+  /// When `metadata` was last read from the source (null = never).
+  syncedAt        DateTime?
   createdAt       DateTime @default(now())
 
   workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)

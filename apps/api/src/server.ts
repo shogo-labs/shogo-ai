@@ -9960,6 +9960,23 @@ setTimeout(async () => {
   })()
 }
 
+// Cards that know their PR — sweeps stale PR links (a dropped webhook, a repo
+// connected with a personal token rather than the App) so a card never sits on
+// yesterday's checks. Wrapped in withGlobalJobLock: one region per tick.
+{
+  ;(async () => {
+    try {
+      const { startSyncPrLinksCron } = await import('./jobs/sync-pr-links')
+      startSyncPrLinksCron()
+    } catch (err: any) {
+      console.error(
+        '[SyncPrLinks] failed to schedule sweep (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
 // Custom-domain reconciler — polls Cloudflare for SaaS custom hostnames that
 // haven't gone live yet and writes the Worker KV route once active, so a
 // bring-your-own domain activates on its own (no manual "Check status").

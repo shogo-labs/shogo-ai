@@ -98,6 +98,26 @@ describe('boards', () => {
     expect((await call(seed.outsider, 'POST', `/workspaces/${seed.workspaceId}/boards`, { conversationId: channelId, name: 'Nope' })).status).toBe(403)
   })
 
+  test('the arming rule is set and cleared through the column route', async () => {
+    const board = await createBoard({ conversationId: channelId, name: 'Arming' })
+    const columnId = board.columns[2].id
+
+    const on = await call(seed.member, 'PATCH', `/boards/${board.id}/columns/${columnId}`, { rules: { allowAutoMerge: true } })
+    expect(on.status).toBe(200)
+    expect(on.json.column.rules).toEqual({ allowAutoMerge: true })
+
+    const off = await call(seed.member, 'PATCH', `/boards/${board.id}/columns/${columnId}`, { rules: { allowAutoMerge: false } })
+    expect(off.json.column.rules).toEqual({ allowAutoMerge: false })
+
+    // `rules: null` clears the rule rather than reading as "leave it alone".
+    // The column payload always carries an object, so a cleared rule is `{}`.
+    const cleared = await call(seed.member, 'PATCH', `/boards/${board.id}/columns/${columnId}`, { rules: null })
+    expect(cleared.status).toBe(200)
+    expect(cleared.json.column.rules).toEqual({})
+    const row = await db.boardColumn.findUnique({ where: { id: columnId } })
+    expect(row.rules).toBeNull()
+  })
+
   test('columns insert after a named column and refuse to delete while cards remain', async () => {
     const board = await createBoard({ conversationId: channelId, name: 'Deals', itemType: 'deal' })
     const added = await call(seed.member, 'POST', `/boards/${board.id}/columns`, { name: 'Legal review', category: 'review', after: 'Proposal' })

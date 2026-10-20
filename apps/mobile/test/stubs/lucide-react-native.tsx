@@ -160,6 +160,7 @@ export {
   Icon as GitCommitHorizontal,
   Icon as GitFork,
   Icon as GitMerge,
+  Icon as GitPullRequest,
   Icon as Globe,
   Icon as Globe2,
   Icon as GraduationCap,

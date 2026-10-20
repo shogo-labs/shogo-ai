@@ -381,6 +381,8 @@ export interface GitHubPullRequestOptions {
   body?: string
   draft?: boolean
   runId?: string
+  /** Card key to link the PR to; absent → derived from the branch or title. */
+  workItem?: string
 }
 
 export interface GitHubPullRequestResult {
@@ -388,6 +390,8 @@ export interface GitHubPullRequestResult {
   url: string
   htmlUrl?: string
   author?: string
+  /** The card this PR was linked to, when its title/branch (or `workItem`) named one. */
+  workItem?: string
   /** `github-app` (App bot), `user-token` (the connection's stored user token), or `requester` (the person who asked). */
   mode?: 'github-app' | 'user-token' | 'requester'
   /** Which account the write used, for the tool call's "as …" label. */
