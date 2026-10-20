@@ -265,6 +265,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason: 'Random session token; collision astronomically improbable.',
   },
   {
+    key: 'AgentWake.(agentRef,triggerMessageId)',
+    category: 'request_scoped',
+    reason:
+      'One queued wake per (trigger message, agent): written by the message-post, card-move and chained-hand-off paths in the region serving that conversation. A cross-region duplicate would only queue the same wake twice, which the drain runs serially anyway — dedupe, not leader election.',
+  },
+  {
     key: 'Huddle.roomName',
     category: 'random_secret',
     reason: 'LiveKit room name embeds the huddle row\'s random UUID (hd_<workspaceId>_<huddleId>); collision astronomically improbable.',

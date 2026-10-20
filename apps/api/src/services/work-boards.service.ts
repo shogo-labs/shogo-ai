@@ -29,6 +29,8 @@ import {
   updateMessageInternal,
 } from './conversation.service'
 import { agentMentionToken } from './conversation-mentions'
+import type { AgentChain } from './conversation-agent-chain'
+import type { AgentTarget } from './conversation-mentions'
 import { blocksForKind, type StatusCard } from './conversation-message-kind'
 import { registerAfterPostHook, afterMessagePosted } from './conversation-pipeline'
 import {
@@ -821,30 +823,35 @@ async function postActivity(item: any, board: any, text: string, opts: { done?: 
 }
 
 /**
- * Hand the card to an agent: tag it in the card thread and run it there, the
- * same path as an @mention. Capped per card per hour so two agents moving a
- * card back and forth can't loop.
+ * The wake message a board posts in the card thread, and the guards every wake
+ * shares — the same path as an @mention, so the agent reads the card where the
+ * work lives. Returns why a wake was skipped instead when it cannot run.
  */
-export async function wakeAgent(itemId: string, agentRef: string, actor: BoardActor, reason: string): Promise<{ woken: boolean; reason?: string }> {
+async function postAgentWake(
+  itemId: string,
+  agentRef: string,
+  actor: BoardActor,
+  reason: string,
+): Promise<{ item: any; thread: { conversation: any; rootId: string }; posted: any; target: AgentTarget; userId: string } | { skipped: string }> {
   const item = await db.workItem.findUnique({ where: { id: itemId }, include: { column: true, board: true } })
-  if (!item) return { woken: false, reason: 'not_found' }
-  if (actor.agentRef && actor.agentRef === agentRef) return { woken: false, reason: 'self' }
+  if (!item) return { skipped: 'not_found' }
+  if (actor.agentRef && actor.agentRef === agentRef) return { skipped: 'self' }
   const recent = await db.workItemEvent.count({
     where: { workItemId: item.id, type: 'agent_woken', createdAt: { gt: new Date(Date.now() - 3_600_000) } },
   })
   if (recent >= MAX_AGENT_WAKES_PER_HOUR) {
     await recordEvent(item, 'agent_wake_skipped', actor, { agentRef, reason: 'rate_limited' })
-    return { woken: false, reason: 'rate_limited' }
+    return { skipped: 'rate_limited' }
   }
   const thread = await ensureThread(item.id, actor)
   if (!thread) {
     await recordEvent(item, 'agent_wake_skipped', actor, { agentRef, reason: 'no_channel' })
-    return { woken: false, reason: 'no_channel' }
+    return { skipped: 'no_channel' }
   }
   const projectId = agentRefProjectId(agentRef)
   const target = { projectId }
   const originUserId = await originUserFor(item, item.board, actor)
-  if (!originUserId) return { woken: false, reason: 'no_origin_user' }
+  if (!originUserId) return { skipped: 'no_origin_user' }
   const summary = item.historySummary ? `\n\nWhere it stands: ${String(item.historySummary).slice(0, 800)}` : ''
   const text = `${agentMentionToken(projectId)} ${item.key} is yours (${reason}): **${item.title}** — ${item.column.name}.${summary}\n\nRead it with work_item_get("${item.key}"), do the work here in this thread, then move it with work_item_move.`
   const posted = await postMessage({
@@ -856,13 +863,171 @@ export async function wakeAgent(itemId: string, agentRef: string, actor: BoardAc
   const { setThreadOwner } = await import('./conversation-agent-chain')
   await setThreadOwner(thread.rootId, target, item.id)
   await recordEvent(item, 'agent_woken', actor, { agentRef, reason, messageId: posted.row.id })
+  return { item, thread, posted, target, userId: originUserId }
+}
+
+/**
+ * Hand the card to an agent: tag it in the card thread and run it there, the
+ * same path as an @mention. Capped per card per hour so two agents moving a
+ * card back and forth can't loop.
+ */
+export async function wakeAgent(itemId: string, agentRef: string, actor: BoardActor, reason: string): Promise<{ woken: boolean; reason?: string }> {
+  const wake = await postAgentWake(itemId, agentRef, actor, reason)
+  if ('skipped' in wake) return { woken: false, reason: wake.skipped }
   const { runAgentReply } = await import('./conversation-agent-dispatcher')
-  void runAgentReply({ conversation: thread.conversation, trigger: posted.row, target, userId: originUserId })
+  void runAgentReply({ conversation: wake.thread.conversation, trigger: wake.posted.row, target: wake.target, userId: wake.userId })
     .catch((err: Error) => console.error('[Boards] agent wake failed:', err.message))
   return { woken: true }
 }
 
+/** How long a move keeps its hint pending, so a tag in the same breath wins. */
+export const MOVE_NUDGE_MS = 5_000
+
+/**
+ * A move into a column that binds no agent hands the card back to its own
+ * developer — as a hint, not a run. The row is debounced by `notBefore`: the
+ * mover almost always tags the agent in the same breath (a bounce moves *and*
+ * comments), and that tag supersedes this row instead of the agent being woken
+ * twice for one bounce. A bounce nobody tags still wakes the developer when the
+ * window closes, which is what keeps *Changes Requested* from going idle.
+ */
+export async function nudgeAgentOnMove(itemId: string, agentRef: string, actor: BoardActor, reason: string): Promise<{ nudged: boolean; reason?: string }> {
+  const item = await db.workItem.findUnique({ where: { id: itemId }, include: { column: true, board: true } })
+  if (!item) return { nudged: false, reason: 'not_found' }
+  if (actor.agentRef && actor.agentRef === agentRef) return { nudged: false, reason: 'self' }
+  const thread = await ensureThread(item.id, actor)
+  if (!thread) return { nudged: false, reason: 'no_channel' }
+  const userId = await originUserFor(item, item.board, actor)
+  if (!userId) return { nudged: false, reason: 'no_origin_user' }
+  const notBefore = new Date(Date.now() + MOVE_NUDGE_MS)
+  // The card itself, not a message: one hint per (card, agent). A previous
+  // bounce's row is re-armed rather than skipped, or the second bounce of the
+  // same card would never wake anyone.
+  const rearmed = await db.agentWake.updateMany({
+    where: { triggerMessageId: thread.rootId, agentRef, status: { in: ['done', 'failed', 'superseded'] } },
+    data: {
+      workspaceId: item.workspaceId,
+      conversationId: thread.conversation.id,
+      threadRootId: thread.rootId,
+      userId,
+      reason: 'move_nudge',
+      notBefore,
+      status: 'pending',
+      attempts: 0,
+      claimedAt: null,
+      lastError: null,
+    },
+  })
+  if (!rearmed.count) {
+    try {
+      await db.agentWake.create({
+        data: {
+          workspaceId: item.workspaceId,
+          conversationId: thread.conversation.id,
+          threadRootId: thread.rootId,
+          triggerMessageId: thread.rootId,
+          agentRef,
+          userId,
+          reason: 'move_nudge',
+          notBefore,
+          status: 'pending',
+        },
+        select: { id: true },
+      })
+    } catch (err: any) {
+      // Two nudges at once are one hint: the other one is pending (or its run is
+      // already claimed), and this move changes nothing.
+      if (err?.code === 'P2002') return { nudged: false, reason: 'already_pending' }
+      throw err
+    }
+  }
+  await recordEvent(item, 'agent_wake_deferred', actor, { agentRef, reason, notBefore: notBefore.toISOString() })
+  const { scheduleAgentWakeDrain } = await import('./conversation-agent-dispatcher')
+  scheduleAgentWakeDrain({ conversationId: thread.conversation.id, threadRootId: thread.rootId, agentRef }, MOVE_NUDGE_MS + 250)
+  return { nudged: true }
+}
+
+/**
+ * The deferred half of a nudge: the window passed with no tag to supersede it,
+ * so the card's developer is woken for real now. Runs from the drain, which is
+ * why the reply is awaited (the drain marks the row done afterwards).
+ */
+export async function fireMoveNudge(wake: {
+  threadRootId: string | null
+  agentRef: string
+  userId: string
+  chain?: AgentChain | null
+}): Promise<boolean> {
+  if (!wake.threadRootId) return false
+  const item = await db.workItem.findFirst({
+    where: { threadRootMessageId: wake.threadRootId, archivedAt: null },
+    select: { id: true, column: true },
+  })
+  if (!item?.column) return false
+  const posted = await postAgentWake(item.id, wake.agentRef, {}, `moved to ${item.column.name}`)
+  if ('skipped' in posted) return false
+  const { runAgentReply } = await import('./conversation-agent-dispatcher')
+  await runAgentReply(
+    {
+      conversation: posted.thread.conversation,
+      trigger: posted.posted.row,
+      target: posted.target,
+      userId: wake.userId || posted.userId,
+      chain: wake.chain ?? undefined,
+    },
+    { drained: true },
+  )
+  return true
+}
+
 // ─── Cards ───────────────────────────────────────────────────────────────────
+
+/**
+ * A person tagged this agent in a card's thread. The card records it with the
+ * same `agent_woken` event a column, an assignment or a move writes, so the
+ * board's history answers "why did this agent run" for a tag too. A board wake
+ * posts its own tag as a system message and records its own event, so this only
+ * answers for a person's message.
+ */
+export async function noteThreadTagWake(run: {
+  threadRootId: string | null
+  agentRef: string
+  messageId: string
+}): Promise<void> {
+  if (!run.threadRootId) return
+  const item = await db.workItem.findFirst({
+    where: { threadRootMessageId: run.threadRootId, archivedAt: null },
+    select: { id: true, workspaceId: true },
+  })
+  if (!item) return
+  await recordEvent(item, 'agent_woken', { agentRef: run.agentRef }, {
+    agentRef: run.agentRef,
+    reason: 'thread_tag',
+    messageId: run.messageId,
+  })
+}
+
+/**
+ * A wake for this card's agent arrived while that agent was still working the
+ * card thread: it is queued behind the live run, and the card records it so the
+ * board shows work waiting rather than work lost.
+ */
+export async function noteAgentWakeQueued(run: {
+  threadRootId: string | null
+  agentRef: string
+  runningMessageId: string | null
+}): Promise<void> {
+  if (!run.threadRootId) return
+  const item = await db.workItem.findFirst({
+    where: { threadRootMessageId: run.threadRootId, archivedAt: null },
+    select: { id: true, workspaceId: true },
+  })
+  if (!item) return
+  await recordEvent(item, 'agent_wake_queued', { agentRef: run.agentRef }, {
+    agentRef: run.agentRef,
+    ...(run.runningMessageId ? { runningMessageId: run.runningMessageId } : {}),
+  })
+}
 
 export interface ItemInput {
   title: string
@@ -1134,7 +1299,17 @@ export async function moveWorkItem(item: any, input: MoveInput, actor: BoardActo
   const who = await actorLabel(item.workspaceId, actor)
   const where = toBoard.id === fromBoard.id ? toColumn.name : `${toBoard.name} › ${toColumn.name}`
   await postActivity(updated, fromBoard, `${who} moved ${item.key} to ${where}`, { done: isClosed(toColumn.category) })
-  if (toColumn.agentRef) await wakeAgent(item.id, toColumn.agentRef, actor, `moved to ${toColumn.name}`)
+  // One wake decision per move: a column that binds an agent hands the card to
+  // that agent; a work column that binds none hands it back to the card's own
+  // developer (a card parked in *Changes Requested* used to wake nobody, and the
+  // developer sat idle until someone tagged it by hand). The second is a hint,
+  // not a run: the mover usually tags the agent in the same breath, and that tag
+  // supersedes the hint instead of running the agent twice for one bounce.
+  if (toColumn.agentRef) {
+    await wakeAgent(item.id, toColumn.agentRef, actor, `moved to ${toColumn.name}`)
+  } else if (toColumn.category === 'active' || toColumn.category === 'backlog') {
+    if (updated.assigneeAgentRef) await nudgeAgentOnMove(item.id, updated.assigneeAgentRef, actor, `moved to ${toColumn.name}`)
+  }
   await publishBoard(fromBoard, { action: 'item.moved', itemId: item.id })
   if (toBoard.id !== fromBoard.id) await publishBoard(toBoard, { action: 'item.moved', itemId: item.id })
   return { item: serializeItem(updated), warnings }

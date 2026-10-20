@@ -348,6 +348,14 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
     const body = parseJson<QueueBody>(row.body, {})
     await persistQueuedUserMessage(row, body)
     await dispatchRow(row)
+    // A wake that ran is consumed even when the reply saved no text: the note
+    // was part of the turn that just started, and leaving it unconsumed lets the
+    // next release queue it again for work the session has already been told
+    // about (the repeat every sweep tick that reads as an empty-reply loop).
+    if (row.kind === 'task_notification') {
+      const { consumeTasks } = await import('./background-tasks.service')
+      await consumeTasks(taskWakeIds(row)).catch(() => {})
+    }
     await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } })
     // A wake landed (or a person's message went through): the pause is over.
     await clearPausedWakeRows(chatSessionId)

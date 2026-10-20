@@ -55,6 +55,7 @@ const EXEMPT: Record<string, string> = {
   agentEvalResult: 'Mutated via workspace/project-scoped eval routes — resolved by path params.',
   agentEvalSet: 'Mutated via workspace/project-scoped eval routes — resolved by path params.',
   agentSchedule: 'Mutated via /api/workspaces/:workspaceId/schedules — resolved by path workspaceId (routes/workspace-agent.ts, mounted publicly and internally with the same handler).',
+  agentWake: 'Written only by the conversation-agent dispatcher and drained by the chat-queue sweep inside the workspace\'s own process — there is no /api/<resource>/:id mutation. A row is derived from a conversation message that is itself home-region pinned.',
   appInstallGrant: 'Written with its marketplaceInstall (install, update, uninstall) and via /api/marketplace/installs/:installId/{consent,revoke} — same routing as marketplaceInstall.',
   eventDelivery: 'Created by the event emitter alongside its workspaceEvent and advanced only by the delivery worker (a job, not REST); redeliver is /api/workspaces/:workspaceId/triggers/... — resolved by path workspaceId.',
   eventSubscription: 'Mutated via /api/workspaces/:workspaceId/triggers (routes/workspace-agent.ts, mounted publicly and internally) — resolved by path workspaceId; app-owned rows are written with their appInstallGrant.',
