@@ -3884,6 +3884,12 @@ export class AgentGateway {
         // Aggressive tail: the head is what blew past the cap, and the split
         // already lands on a `user` boundary, so the recent turn survives.
         keepRecentMessages: MIDTURN_KEEP_RECENT_MESSAGES,
+        // A count of messages is not a size: production turns carry single tool
+        // results of hundreds of thousands of tokens, so the kept tail is
+        // bounded in tokens too and the post-compaction request lands at ~40%
+        // of the cap rather than back at it.
+        tailBudgetTokens: this.sessionManager.compactionTailBudgetTokens,
+        minKeepMessages: 1,
         promptOverheadTokens,
         summarize: (head, previousSummary) => this.sessionManager.summarizeHead(head, previousSummary),
         apply: (summary, splitIndex, opts) => {

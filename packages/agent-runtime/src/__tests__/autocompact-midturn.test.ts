@@ -58,6 +58,8 @@ function markerSummarizer() {
 
 function makeCompactor(opts: {
   autoCompactTokens?: number
+  tailBudgetTokens?: number
+  minKeepMessages?: number
   apply?: (summary: string, splitIndex: number, o: { replaceSummary: boolean }) => void
   now?: () => number
   summarize?: (head: Message[], prev?: string) => Promise<string>
@@ -68,6 +70,8 @@ function makeCompactor(opts: {
   const compactor = new MidTurnAutocompactor({
     autoCompactTokens: opts.autoCompactTokens ?? CAP,
     keepRecentMessages: MIDTURN_KEEP_RECENT_MESSAGES,
+    ...(opts.tailBudgetTokens ? { tailBudgetTokens: opts.tailBudgetTokens } : {}),
+    ...(opts.minKeepMessages ? { minKeepMessages: opts.minKeepMessages } : {}),
     promptOverheadTokens: PROMPT_OVERHEAD,
     summarize: opts.summarize ?? summarize,
     apply: (summary, splitIndex, o) => {

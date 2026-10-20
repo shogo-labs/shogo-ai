@@ -38,6 +38,7 @@ import {
   buildSummaryPrefixMessages,
   estimateMessageTokens,
   splitIndexForCompaction,
+  splitIndexForTokenBudget,
 } from './session-manager.js'
 
 /** New context required before a second compaction in the same turn. */
@@ -69,6 +70,15 @@ export interface MidTurnAutocompactOptions {
   autoCompactTokens: number
   /** Messages kept verbatim after the summary. */
   keepRecentMessages: number
+  /**
+   * Token ceiling for the kept tail (the messages left verbatim). When set, the
+   * split folds more than `keepRecentMessages` would, so a tail holding a giant
+   * tool result cannot leave the request at the size the compaction was called
+   * to fix.
+   */
+  tailBudgetTokens?: number
+  /** Messages that always survive, however large (default: 1). */
+  minKeepMessages?: number
   /** Summarize a head, folding into `previousSummary` when continuing. */
   summarize: (head: Message[], previousSummary?: string) => Promise<string>
   /**
@@ -139,7 +149,14 @@ export class MidTurnAutocompactor {
     const estimate = this.estimate(wire)
     if (!this.shouldCompact(estimate)) return { messages: wire, event: null }
 
-    const splitIndex = splitIndexForCompaction(messages, this.opts.keepRecentMessages)
+    const splitIndex =
+      (this.opts.tailBudgetTokens
+        ? splitIndexForTokenBudget(messages, {
+            tailBudgetTokens: this.opts.tailBudgetTokens,
+            minKeepMessages: this.opts.minKeepMessages ?? 1,
+            maxKeepMessages: this.opts.keepRecentMessages,
+          })
+        : null) ?? splitIndexForCompaction(messages, this.opts.keepRecentMessages)
     if (splitIndex === null) {
       // Nothing to fold away (too few messages) — honest no-op.
       this.manualRequested = false

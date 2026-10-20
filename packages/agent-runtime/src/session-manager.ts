@@ -65,6 +65,57 @@ export function splitIndexForCompaction(messages: Message[], keepRecentMessages:
   return splitIndex > 0 && splitIndex < messages.length ? splitIndex : null
 }
 
+/** Estimated tokens of a message array, using the same ruler as `estimateMessageTokens`. */
+export function estimateMessageArrayTokens(messages: Message[], tokensPerMessage = 0): number {
+  let tokens = 0
+  for (const msg of messages) tokens += Math.max(tokensPerMessage, estimateMessageTokens(msg))
+  return tokens
+}
+
+/**
+ * Split index that also bounds the *kept tail* by tokens.
+ *
+ * `splitIndexForCompaction` keeps a fixed number of messages, which assumes the
+ * recent ones are small. Production says otherwise: a single tool result can be
+ * 300k tokens, so ten kept messages can still exceed the cap the compaction was
+ * called to enforce — the request stays over budget and the next one overruns
+ * the model's window. This folds *more* (the split moves later) until the tail
+ * fits `tailBudgetTokens`, always keeping at least `minKeepMessages`.
+ *
+ * Returns `null` when there is nothing to fold away, so a short conversation is
+ * never compacted just because it holds one large message.
+ */
+export function splitIndexForTokenBudget(
+  messages: Message[],
+  opts: { tailBudgetTokens: number; minKeepMessages: number; maxKeepMessages: number; tokensPerMessage?: number },
+): number | null {
+  const countSplit = splitIndexForCompaction(messages, opts.maxKeepMessages)
+  if (countSplit === null) return null
+
+  const tokensOf = (msg: Message) => Math.max(opts.tokensPerMessage ?? 0, estimateMessageTokens(msg))
+  const minKeep = Math.max(1, opts.minKeepMessages)
+  // Split index above which fewer than `minKeep` messages would survive.
+  const hardMax = Math.max(1, messages.length - minKeep)
+
+  let split = Math.min(countSplit, hardMax)
+  let tailTokens = 0
+  for (let i = split; i < messages.length; i++) tailTokens += tokensOf(messages[i])
+
+  while (split < hardMax && tailTokens > opts.tailBudgetTokens) {
+    tailTokens -= tokensOf(messages[split])
+    split++
+  }
+  // Never hand the provider a tail that starts mid tool-result chain: a
+  // toolResult whose toolCall was summarized away is an invalid request, so
+  // the result is folded too (the tail then keeps only what follows it).
+  while (split < messages.length - 1 && messages[split].role === 'toolResult') {
+    tailTokens -= tokensOf(messages[split])
+    split++
+  }
+
+  return split > 0 && split < messages.length ? split : countSplit
+}
+
 /**
  * The two messages that stand in for everything a compaction folded away.
  *
@@ -176,6 +227,13 @@ export interface SessionManagerConfig {
   summarizeChunkTokens?: number
   /** Max consecutive summarization failures before circuit breaker trips (default: 3) */
   maxSummarizeFailures?: number
+  /**
+   * Token budget for the messages kept verbatim behind a summary
+   * (default: 40% of the autocompact threshold).
+   */
+  compactionTailBudgetTokens?: number
+  /** Messages that always survive a compaction, however large (default: 2) */
+  compactionMinKeepMessages?: number
 }
 
 export interface ManagedSession {
@@ -544,6 +602,29 @@ export class SessionManager {
   }
 
   /**
+   * Token budget for the messages kept verbatim behind a summary. 40% of the
+   * autocompact threshold by default, so the request after a compaction lands
+   * well below the cap instead of immediately needing another one.
+   */
+  get compactionTailBudgetTokens(): number {
+    if (this.config.compactionTailBudgetTokens) return this.config.compactionTailBudgetTokens
+    const threshold = this.autocompactThreshold
+    return threshold > 0 ? Math.max(1, Math.floor(threshold * 0.4)) : Number.MAX_SAFE_INTEGER
+  }
+
+  /** Split index bounded by the message count *and* the tail token budget. */
+  splitIndexForCompactionTokens(messages: Message[], maxKeepMessages: number): number | null {
+    return (
+      splitIndexForTokenBudget(messages, {
+        tailBudgetTokens: this.compactionTailBudgetTokens,
+        minKeepMessages: this.config.compactionMinKeepMessages ?? 2,
+        maxKeepMessages,
+        tokensPerMessage: this.config.estimatedTokensPerMessage,
+      }) ?? splitIndexForCompaction(messages, maxKeepMessages)
+    )
+  }
+
+  /**
    * Summarize a head of history in chunks and fold each chunk into a running
    * summary (map-reduce). The old single-shot path sent `12k chars` of a head
    * that could be 400k tokens — a "successful" summarize that dropped the
@@ -614,7 +695,7 @@ export class SessionManager {
     if (!session) return null
 
     const keepRecentMessages = aggressiveKeep ?? this.config.keepRecentMessages
-    const splitIndex = splitIndexForCompaction(session.messages, keepRecentMessages)
+    const splitIndex = this.splitIndexForCompactionTokens(session.messages, keepRecentMessages)
     if (splitIndex === null) return null
 
     const toCompact = session.messages.slice(0, splitIndex)
