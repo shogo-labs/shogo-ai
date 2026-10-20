@@ -238,7 +238,36 @@ describe('agents and the channel doc', () => {
     expect(invocation.prompt).toContain('We ship on Fridays.')
     expect(invocation.prompt).toContain('"Team charter"')
     expect(invocation.prompt).toContain('characters (')
-    expect(invocation.prompt).toContain('per-card narratives in the card thread')
+  })
+
+  test('the doc block asks agents to read it, never to write into it', async () => {
+    const g = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`)).json.conversations.find((c: any) => c.slug === 'general')
+    const tail = 'LAST LINE OF THE DOC'
+    const current = (await call(seed.member, 'GET', `/conversations/${g.id}/doc`)).json.doc.version
+    await call(seed.owner, 'PUT', `/conversations/${g.id}/doc`, {
+      title: 'Team charter',
+      content: `${'r'.repeat(9_000)}\n\n${tail}`,
+      baseVersion: current,
+    })
+    await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: `<@a:p:${seed.projectId}> what is in the doc?` })
+    const invocation = await waitFor(async () => invocations[0])
+    const prompt = invocation.prompt
+
+    // The invitation to write into the doc is gone, on both sides of the prompt.
+    expect(prompt).not.toContain('Update it with team_chat_doc_update')
+    expect(prompt).not.toContain('settle something the team should keep')
+    expect(prompt).not.toContain('prefer mode "patch_section" or "append"')
+    expect(prompt).not.toContain('per-card narratives in the card thread')
+
+    // It says the doc belongs to the people in the channel instead.
+    expect(prompt).toContain('kept by the people in the channel')
+    expect(prompt).toContain('do not edit it on your own initiative')
+    expect(prompt).toContain('change it only when someone asks you to')
+
+    // The body is still injected, still truncated, and the read tool is still the way to the rest.
+    expect(prompt).toContain('<channel_doc>')
+    expect(prompt).toContain('…(truncated; read the rest with team_chat_doc_read)')
+    expect(prompt).not.toContain(tail)
   })
 })
 

@@ -585,4 +585,14 @@ describe('team chat prompt section', () => {
     expect(TEAM_CHAT_GUIDE).toContain('team_chat_update')
     expect(TEAM_CHAT_GUIDE).toContain('Do not post a new message for each step')
   })
+
+  test('tells agents to read the channel doc, not to write into it', () => {
+    expect(TEAM_CHAT_GUIDE).not.toContain('record settled decisions')
+    expect(TEAM_CHAT_GUIDE).not.toContain('long content there')
+    expect(TEAM_CHAT_GUIDE).not.toContain('prefer `patch_section` or `append`')
+    expect(TEAM_CHAT_GUIDE).not.toContain('then mention the change briefly')
+    expect(TEAM_CHAT_GUIDE).toContain('kept by the people in it')
+    expect(TEAM_CHAT_GUIDE).toContain('Do not add to it or edit it on your own initiative')
+    expect(TEAM_CHAT_GUIDE).toContain('change it only when someone asks you to')
+  })
 })
