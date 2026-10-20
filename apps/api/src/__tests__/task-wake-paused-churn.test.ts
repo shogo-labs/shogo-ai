@@ -84,7 +84,7 @@ async function pauseSession(chatSessionId: string) {
   }
 }
 
-/** The sweep only retries once its backoff has elapsed; move the clock instead of waiting it out. */
+/** The sweep only retries once the backoff has elapsed; move the clock instead of waiting it out. */
 async function passBackoff(taskId: string) {
   await db.backgroundTask.update({ where: { id: taskId }, data: { nextAttemptAt: new Date(Date.now() - 1_000) } })
 }
@@ -106,7 +106,7 @@ describe('SHO-32: a paused session does not accumulate failed rows', () => {
     for (let tick = 0; tick < 10; tick++) {
       await runChatQueueDrain()
       expect((await pausedRows(session)).length).toBeLessThanOrEqual(1)
-      await passBackoff('t_paused001')    // the 5-minute step between ticks
+      await passBackoff('t_paused001')    // the retry would be due here (SHO-92: it is held instead)
     }
 
     const rows = await pausedRows(session)
@@ -116,25 +116,26 @@ describe('SHO-32: a paused session does not accumulate failed rows', () => {
     expect(dispatched).toHaveLength(0)
   })
 
-  test('a person writing resumes the wake inside one backoff step and drops the paused row', async () => {
+  test('a person writing resumes the wake on the next tick and drops the paused row', async () => {
     const session = await newSession()
     await pauseSession(session)
     await notifyShellTask(session, 't_paused002')
     tasks._testing.clearTimers()
 
     await runChatQueueDrain()
-    await passBackoff('t_paused002')
+    // A second tick while the session is still paused: nothing new is queued.
     await runChatQueueDrain()
     expect(await pausedRows(session)).toHaveLength(1)
 
-    // A paused row is a deferral, not a transient failure: its retry stays
-    // inside the five-minute cap, so a message from a person revives the wake
-    // promptly instead of hours later.
-    const paused = await db.backgroundTask.findUnique({ where: { id: 't_paused002' } })
-    expect(paused.nextAttemptAt.getTime() - Date.now()).toBeLessThanOrEqual(tasks.MAX_WAKE_BACKOFF_MS)
+    // SHO-92: the pause is a hold, not a retry. Nothing is re-armed, so the
+    // queue stays at one row until the pause lifts.
+    const held = await db.backgroundTask.findUnique({ where: { id: 't_paused002' } })
+    expect(held.attempts).toBe(1)
+    expect(held.nextAttemptAt).toBeNull()
+    expect(held.heldUntil.getTime()).toBeGreaterThan(Date.now())
+    expect(held.notifiedAt).not.toBeNull()
 
     await db.chatMessage.create({ data: { id: 'm_human_2', sessionId: session, role: 'user', content: 'carry on', parts: JSON.stringify([{ type: 'text', text: 'carry on' }]) } })
-    await passBackoff('t_paused002')
     await runChatQueueDrain()
     await waitFor(async () => dispatched.length > 0)
 

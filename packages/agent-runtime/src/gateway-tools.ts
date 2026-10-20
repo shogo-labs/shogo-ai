@@ -203,6 +203,22 @@ export interface ToolContext {
   workspaceDir: string
   channels: Map<string, import('./types').ChannelAdapter>
   config: import('./gateway').GatewayConfig
+  /**
+   * Which surface `config` was resolved for. A workspace chat gets
+   * `'workspace'` (toggles on `Workspace.settings`), a project chat
+   * `'project'` (`Project.settings`). `capabilities_configure` defaults to
+   * this scope; anything else that reads capability state must too.
+   */
+  capabilityScope?: 'workspace' | 'project'
+  /**
+   * Both surfaces' configs, so a tool can act on either scope correctly (a
+   * workspace chat asking for `scope: "project"` must read the project's
+   * toggles, not the workspace's). `config` is the turn's surface.
+   */
+  capabilityConfigs?: {
+    workspace: import('./gateway').GatewayConfig
+    project: import('./gateway').GatewayConfig
+  }
   projectId: string
   /** Workspace scope for the live mount/list tools. */
   workspaceId?: string

@@ -17,10 +17,14 @@ import { seedWorkspace, setupChannelsTestDb, waitFor, type SeededWorkspace } fro
 const { dir } = setupChannelsTestDb()
 
 const dispatched: any[] = []
+/** A dispatch that never reaches the runtime: the wake fails and is handed back. */
+let runtimeDown = false
 mock.module('../lib/runtime', () => ({ getRuntimeManager: () => ({}) }))
 mock.module('../routes/project-chat', () => ({
+  trackUsageFromStream: async () => undefined,
   projectChatRoutes: () => ({
     fetch: async (request: Request) => {
+      if (runtimeDown) throw new Error('runtime not ready')
       dispatched.push(JSON.parse(await request.text()))
       return new Response(null, { status: 200 })
     },
@@ -79,6 +83,7 @@ beforeAll(async () => {
 afterEach(() => {
   tasks._testing.clearTimers()
   dispatched.length = 0
+  runtimeDown = false
 })
 
 afterAll(async () => {
@@ -442,6 +447,99 @@ describe('wake', () => {
     await dispatchNext(chatSessionId)
     await waitFor(async () => dispatched.length > 0)
     expect(dispatched[0].taskNotification).toEqual({ taskIds: [row.id] })
+  })
+
+  test('a paused wake is attempted once and then held until a person writes (SHO-92)', async () => {
+    const chatSessionId = await newSession()
+    for (let i = 0; i < tasks.MAX_CONSECUTIVE_WAKES; i++) {
+      await pastWake(chatSessionId, i)
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    await db.chatSession.update({ where: { id: chatSessionId }, data: { activeTurnId: 'turn-1', activeTurnHeartbeatAt: new Date() } })
+    const task = await tasks.createTask({ id: tasks.newTaskId(), chatSessionId, source: 'agent_reply', targetRef: 'msg-hold:ws', title: '@Ops reply' })
+    await tasks.emitTaskEvent('agent_reply', 'msg-hold:ws', { status: 'completed' })
+    tasks._testing.clearTimers()
+    await tasks.enqueueTaskWake(chatSessionId, { dispatch: false })
+    await db.chatSession.update({ where: { id: chatSessionId }, data: { activeTurnId: null, activeTurnHeartbeatAt: null } })
+
+    await dispatchNext(chatSessionId)
+    const paused = await waitFor(async () => {
+      const row = await db.chatQueuedMessage.findFirst({ where: { sessionId: chatSessionId, status: 'failed' } })
+      return row ?? null
+    })
+    expect(paused.error).toContain('Paused')
+    const rowCreatedAt = paused.createdAt.getTime()
+
+    // One attempt, and no retry armed: the wake is held, not deferred.
+    const once = await db.backgroundTask.findUnique({ where: { id: task.id } })
+    expect(once.attempts).toBe(1)
+    expect(once.nextAttemptAt).toBeNull()
+    expect(once.heldUntil!.getTime()).toBeGreaterThan(Date.now())
+    expect(once.notifiedAt).not.toBeNull()
+
+    // Five sweeps with the retry forced into the past: nothing is re-queued, so
+    // the marker row a person sees is the same row it was, unchanged.
+    for (let sweep = 0; sweep < 5; sweep++) {
+      await db.backgroundTask.update({ where: { id: task.id }, data: { nextAttemptAt: new Date(Date.now() - 1_000) } })
+      await tasks.sweepUnnotifiedWakes()
+      await new Promise((r) => setTimeout(r, 20))
+    }
+
+    const held = await db.backgroundTask.findUnique({ where: { id: task.id } })
+    expect(held.attempts).toBe(1)
+    expect(held.consumed).toBe(false)
+    const rows = await db.chatQueuedMessage.findMany({ where: { sessionId: chatSessionId } })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.createdAt.getTime()).toBe(rowCreatedAt)
+    expect(dispatched).toHaveLength(0)
+
+    // A person writes: the pause has lifted, so the held update lands exactly once.
+    await db.chatMessage.create({
+      data: { sessionId: chatSessionId, role: 'user', content: 'carry on', parts: JSON.stringify([{ type: 'text', text: 'carry on' }]) },
+    })
+    await tasks.sweepUnnotifiedWakes()
+    await dispatchNext(chatSessionId)
+    await waitFor(async () => dispatched.length > 0)
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0].taskNotification.taskIds).toEqual([task.id])
+    expect((await db.backgroundTask.findUnique({ where: { id: task.id } })).consumed).toBe(true)
+
+    await dispatchNext(chatSessionId)
+    expect(dispatched).toHaveLength(1)
+  })
+
+  test('a wake that never dispatches stops after five attempts with one row (SHO-92)', async () => {
+    const chatSessionId = await newSession()
+    const task = await tasks.createTask({ id: tasks.newTaskId(), chatSessionId, source: 'agent_reply', targetRef: 'msg-never:ws', title: '@Ops reply' })
+    await tasks.emitTaskEvent('agent_reply', 'msg-never:ws', { status: 'completed' })
+    tasks._testing.clearTimers()
+    await tasks.enqueueTaskWake(chatSessionId, { dispatch: false })
+
+    runtimeDown = true
+    try {
+      // Six rounds: the fifth is the last attempt, the sixth must not run.
+      for (let round = 0; round < 6; round++) {
+        await db.backgroundTask.update({ where: { id: task.id }, data: { nextAttemptAt: new Date(Date.now() - 1_000) } })
+        await tasks.sweepUnnotifiedWakes()
+        await dispatchNext(chatSessionId)
+      }
+    } finally {
+      runtimeDown = false
+    }
+
+    const capped = await db.backgroundTask.findUnique({ where: { id: task.id } })
+    expect(capped.attempts).toBe(tasks.MAX_WAKE_ATTEMPTS)
+    expect(capped.heldUntil!.getTime()).toBeGreaterThan(Date.now())
+    expect(capped.consumed).toBe(false)
+    const failed = await db.chatQueuedMessage.findMany({ where: { sessionId: chatSessionId, status: 'failed' } })
+    expect(failed).toHaveLength(1)
+    expect(failed[0]!.error).toContain(`after ${tasks.MAX_WAKE_ATTEMPTS} attempts`)
+    expect(dispatched).toHaveLength(0)
+
+    // Held to its own expiry: a later sweep has nothing to retry.
+    await db.backgroundTask.update({ where: { id: task.id }, data: { nextAttemptAt: null } })
+    await tasks.sweepUnnotifiedWakes()
+    expect(await db.chatQueuedMessage.count({ where: { sessionId: chatSessionId } })).toBe(1)
   })
 })
 

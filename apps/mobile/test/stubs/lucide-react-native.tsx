@@ -99,6 +99,7 @@ export {
   Icon as CircleX,
   Icon as Clapperboard,
   Icon as ClipboardList,
+  Icon as ClipboardCopy,
   Icon as ClipboardPaste,
   Icon as Clock,
   Icon as Clock3,

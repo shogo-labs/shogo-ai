@@ -78,6 +78,60 @@ const ROUTE_TABLE: RouteEntry[] = [
 ]
 
 /**
+ * Paths that only belong to the desktop while one of its *own* workspaces is
+ * open (`source: 'machine'`).
+ *
+ * Routing does not need a list of what to send to the machine: everything
+ * workspace-scoped is the machine's while you are looking at the machine's
+ * workspace. What it needs is the opposite — the few families that stay the
+ * *cloud* workspace's, because a machine has no billing account, no cloud
+ * analytics and no Slack/Discord install to read. Those are pinned here and
+ * checked before the machine rule.
+ *
+ * The workspace *collection* (`/api/workspaces`, no id) is not workspace-scoped
+ * and is untouched by the rule below: a machine workspace must never replace
+ * the switcher's own workspace list.
+ */
+const MACHINE_WORKSPACE_CLOUD_ONLY: RouteEntry[] = [
+  { pattern: /^\/api\/workspaces\/[^/]+\/analytics(\/|$)/,         target: 'cloud' },
+  { pattern: /^\/api\/workspaces\/[^/]+\/cost-analytics(\/|$)/,    target: 'cloud' },
+  // A Slack/Discord/Teams install is configured cloud-side for a cloud
+  // workspace; a machine workspace has no install to show.
+  { pattern: /^\/api\/workspaces\/[^/]+\/chat-installations(\/|$)/, target: 'cloud' },
+  { pattern: /^\/api\/workspaces\/[^/]+\/redeem-license(\/|$)/,    target: 'cloud' },
+  // Membership and lifecycle of the cloud workspace: leaving it, its deletion
+  // preview and its member activity are all cloud rows.
+  { pattern: /^\/api\/workspaces\/[^/]+\/(deletion-preview|leave|permissions|member-activity)(\/|$)/, target: 'cloud' },
+  // Settings → Compute (instance, metrics, storage) and Billing's pooled child
+  // workspaces are served only by the cloud API; the desktop does not mount
+  // them, so routing them to the machine 404s. Export is the cloud workspace's
+  // too: the download itself is a raw fetch to cloud, so its estimate must be.
+  { pattern: /^\/api\/workspaces\/[^/]+\/(instance|metrics|storage|children|export)(\/|$)/, target: 'cloud' },
+  // Cloud-account integrations (OAuth credentials live cloud-side).
+  { pattern: /^\/api\/workspaces\/[^/]+\/(social|integrations)(\/|$)/, target: 'cloud' },
+]
+
+/**
+ * A workspace-scoped URL: `/api/workspaces/<id>/…`. The trailing segment is what
+ * separates it from the collection endpoint.
+ */
+const MACHINE_WORKSPACE_SCOPE = /^\/api\/workspaces\/[^/?#]+\//
+
+/**
+ * Team-chat families that name their workspace in the query string or in a
+ * nested id rather than in the path, so they never reach the rule above.
+ */
+const MACHINE_WORKSPACE_FAMILIES: RouteEntry[] = [
+  { pattern: /^\/api\/conversations(\/|$)/,                 target: 'remote' },
+  { pattern: /^\/api\/conversation-messages(\/|$)/,         target: 'remote' },
+  { pattern: /^\/api\/conversation-message-edits(\/|$)/,    target: 'remote' },
+  { pattern: /^\/api\/scheduled-messages(\/|$)/,            target: 'remote' },
+  { pattern: /^\/api\/reminders(\/|$)/,                     target: 'remote' },
+  { pattern: /^\/api\/custom-emoji(\/|$)/,                  target: 'remote' },
+  { pattern: /^\/api\/user-groups(\/|$)/,                   target: 'remote' },
+]
+
+/**
  * Legacy prefix list for backward-compat exports.
  * @deprecated Use ROUTE_TABLE instead.
  */
@@ -157,6 +211,22 @@ export function rewriteMachineWorkspaceParam(path: string, localWorkspaceId: str
 }
 
 /**
+ * Point a machine-workspace request at the machine's own workspace id when the
+ * id sits in the path (`/api/workspaces/:id/agent-proxy/…`).
+ *
+ * A workspace-scoped URL the cloud app builds carries the cloud workspace id,
+ * which the desktop has never heard of: it would resolve to no workspace and
+ * answer 404 (or, worse, to whichever row happened to match). The query and
+ * body rewrites below cannot reach that segment.
+ */
+export function rewriteMachineWorkspacePath(path: string, localWorkspaceId: string): string {
+  return path.replace(
+    /^\/api\/workspaces\/[^/?#]+/,
+    `/api/workspaces/${encodeURIComponent(localWorkspaceId)}`,
+  )
+}
+
+/**
  * Point a machine-workspace request body at the machine's own workspace id.
  *
  * Creates carry `workspaceId` in the body while the UI still holds the cloud
@@ -181,9 +251,29 @@ export function rewriteMachineWorkspaceBody<T>(body: T, localWorkspaceId: string
  * `/api/projects/:id/publish` hit cloud even though `/api/projects` is
  * remote.  First match wins.
  */
-export function shouldRouteToRemote(path: string): boolean {
+export function shouldRouteToRemote(
+  path: string,
+  opts?: { machineWorkspaceId?: string | null },
+): boolean {
   // Strip query string for matching — qs is preserved during rewrite.
   const pathOnly = path.split('?')[0] || path
+
+  // A paired desktop's own workspace owns everything scoped to it: its agent,
+  // its sessions, its team chat and its records. Deciding it here, once, is
+  // what keeps the screens from each choosing a host — a new workspace-scoped
+  // call is routed the day it is written instead of the day someone remembers
+  // to add it to a list.
+  if (opts?.machineWorkspaceId) {
+    // …except the families that are still the *cloud* workspace's (billing,
+    // analytics, membership, installs) — a machine has none of them.
+    for (const entry of MACHINE_WORKSPACE_CLOUD_ONLY) {
+      if (entry.pattern.test(pathOnly)) return false
+    }
+    if (MACHINE_WORKSPACE_SCOPE.test(pathOnly)) return true
+    for (const entry of MACHINE_WORKSPACE_FAMILIES) {
+      if (entry.pattern.test(pathOnly)) return true
+    }
+  }
 
   for (const entry of ROUTE_TABLE) {
     if (entry.pattern.test(pathOnly)) {
@@ -257,20 +347,30 @@ export function createRemoteAwareHttpClient(
 
         // Extract path from arguments
         const originalPath: string = args[0]
-        const path =
-          config.machineWorkspaceId
-            ? rewriteMachineWorkspaceParam(originalPath, config.machineWorkspaceId)
-            : originalPath
 
-        // Check if this path should be routed to remote
-        const shouldRoute = shouldRouteToRemote(path)
+        // Check if this path should be routed to remote. A machine workspace
+        // widens the remote set (its own agent and team chat live on the
+        // desktop), but only paths that match either table.
+        const shouldRoute = shouldRouteToRemote(originalPath, {
+          machineWorkspaceId: config.machineWorkspaceId,
+        })
 
         if (!shouldRoute) {
           return (original as Function).apply(target, args)
         }
 
+        // Point the request at the machine's own workspace id — in the path
+        // (`/api/workspaces/:id/agent-proxy/…`), the query string and, for a
+        // create, the body.
+        const machinePath = config.machineWorkspaceId
+          ? rewriteMachineWorkspacePath(
+              rewriteMachineWorkspaceParam(originalPath, config.machineWorkspaceId),
+              config.machineWorkspaceId,
+            )
+          : originalPath
+
         // Rewrite the path to go through the tunnel proxy
-        const rewrittenPath = rewritePathForRemote(path, config.remoteProxyBaseUrl)
+        const rewrittenPath = rewritePathForRemote(machinePath, config.remoteProxyBaseUrl)
         const newArgs = [...args]
         newArgs[0] = rewrittenPath
 
@@ -319,7 +419,7 @@ export function createRemoteAwareHttpClient(
         if (result && typeof result.then === 'function') {
           return result.catch((error: Error) => {
             // Notify caller about remote errors for fallback handling
-            config.onRemoteError?.(error, path)
+            config.onRemoteError?.(error, machinePath)
             throw error
           })
         }
@@ -334,4 +434,12 @@ export function createRemoteAwareHttpClient(
 
 // ─── Exports ────────────────────────────────────────────────────────────────
 
-export { REMOTE_ROUTED_PREFIXES, REMOTE_EXCLUDED_PATTERNS, ROUTE_TABLE, type RouteTarget, type RouteEntry }
+export {
+  REMOTE_ROUTED_PREFIXES,
+  REMOTE_EXCLUDED_PATTERNS,
+  ROUTE_TABLE,
+  MACHINE_WORKSPACE_CLOUD_ONLY,
+  MACHINE_WORKSPACE_FAMILIES,
+  type RouteTarget,
+  type RouteEntry,
+}

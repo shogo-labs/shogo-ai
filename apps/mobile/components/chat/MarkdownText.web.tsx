@@ -36,6 +36,8 @@ export interface MarkdownTextProps {
   onFilePress?: (path: string) => void
   /** Mentioned paths that pass this check render as file chips. */
   fileExists?: (path: string) => boolean
+  /** Return true to handle a link in the app instead of navigating to it. */
+  onLinkPress?: (href: string) => boolean
   /** Opens a person's or agent's profile when their @-mention is tapped. */
   onMentionPress?: (target: MentionTarget) => void
 }
@@ -54,6 +56,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.className !== next.className) return false
   if (prev.onFilePress !== next.onFilePress) return false
   if (prev.fileExists !== next.fileExists) return false
+  if (prev.onLinkPress !== next.onLinkPress) return false
   if (prev.onMentionPress !== next.onMentionPress) return false
   const a = prev.children || ""
   const b = next.children || ""
@@ -64,12 +67,14 @@ function FileAwareLink({
   href,
   onFilePress,
   fileExists,
+  onLinkPress,
   children,
   node: _node,
   ...rest
 }: AnchorHTMLAttributes<HTMLAnchorElement> & {
   onFilePress?: (path: string) => void
   fileExists?: (path: string) => boolean
+  onLinkPress?: (href: string) => boolean
   node?: unknown
 }) {
   const openShareFile = useShareFileOpener()
@@ -130,6 +135,23 @@ function FileAwareLink({
       </a>
     )
   }
+  // Everything else the host wants to keep in the app — a link to a message,
+  // for one. The href stays on the anchor so copying or a middle-click still
+  // works; only a plain click is taken over.
+  if (onLinkPress && typeof href === "string") {
+    const handle = onLinkPress
+    return (
+      <a
+        {...rest}
+        href={href}
+        onClick={(event: MouseEvent<HTMLAnchorElement>) => {
+          if (handle(href)) event.preventDefault()
+        }}
+      >
+        {children}
+      </a>
+    )
+  }
   return (
     <a {...rest} href={href}>
       {children}
@@ -177,6 +199,7 @@ export const MarkdownText = memo(
     isStreaming,
     onFilePress,
     fileExists,
+    onLinkPress,
     onMentionPress,
   }: MarkdownTextProps) {
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
@@ -208,13 +231,13 @@ export const MarkdownText = memo(
               {props.children}
             </MentionHighlight>
           ) : (
-            <FileAwareLink {...props} onFilePress={onFilePress} fileExists={fileExists} />
+            <FileAwareLink {...props} onFilePress={onFilePress} fileExists={fileExists} onLinkPress={onLinkPress} />
           ),
         img: ({ src, alt }: { src?: string | Blob; alt?: string; node?: unknown }) => (
           <MarkdownMedia src={typeof src === "string" ? src : null} alt={alt} />
         ),
       }),
-      [onFilePress, fileExists, onMentionPress],
+      [onFilePress, fileExists, onLinkPress, onMentionPress],
     )
     return (
       <Streamdown

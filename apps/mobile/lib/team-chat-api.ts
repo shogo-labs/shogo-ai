@@ -6,6 +6,8 @@
  * `/api/conversation-messages/:id`).
  */
 import type { BuddyLook } from '@shogo/shared-app/buddy-look'
+import type { HttpClient } from '@shogo-ai/sdk'
+import { getSDKHttpClient } from '@shogo/shared-app/domain'
 import { Platform } from 'react-native'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
@@ -142,6 +144,43 @@ export interface ConversationFilePage {
   nextCursor: string | null
 }
 
+/**
+ * What the file viewer needs to decide how to show a file, from
+ * `GET /api/conversation-files/:id/meta`. Deliberately not the capability
+ * URL's response: that one redirects to storage, which is what sent people to
+ * a browser tab in the first place.
+ */
+export interface ConversationFileMeta {
+  id: string
+  conversationId: string
+  messageId: string | null
+  name: string
+  mimeType: string
+  size: number
+  width: number | null
+  height: number | null
+  durationMs: number | null
+  peaks: string | null
+  preview: AttachmentPreview | null
+  createdAt: string
+  /** Capability URL, still needed to download or to open outside the app. */
+  url: string
+  /** The server holds this file's text, or can extract it on demand. */
+  hasText: boolean
+}
+
+/** A page of a file's text, from `GET /api/conversation-files/:id/text`. */
+export interface ConversationFileText {
+  fileId: string
+  name: string
+  mimeType: string
+  /** Null when nothing could be read out of the file. */
+  text: string | null
+  offset: number
+  totalChars: number
+  nextOffset: number | null
+}
+
 export interface ChatMessage {
   id: string
   conversationId: string
@@ -166,6 +205,11 @@ export interface ChatMessage {
   editedAt: string | null
   deletedAt: string | null
   createdAt: string
+  /**
+   * Where the message lives. Only the single-message fetch returns this (a
+   * quote labels itself from it); list responses leave it off.
+   */
+  conversation?: { id: string; name: string | null; kind: ConversationKind } | null
   /** Client-only: optimistic send not yet acknowledged, or failed. */
   pending?: 'sending' | 'failed'
 }
@@ -608,11 +652,35 @@ export function isSelfDm(c: Pick<ConversationSummary, 'kind' | 'participants'>):
   return c.kind === 'dm' && (c.participants ?? []).some((p) => p.type === 'user' && p.self === true)
 }
 
+/**
+ * A lazily-resolved client, so team chat is routed like the rest of the app.
+ *
+ * The domain client is the SDK interceptor's insert point: it sends a
+ * workspace's conversations to a paired desktop when one of that desktop's own
+ * workspaces is open (and rewrites the workspace id on the way), and to this
+ * app's API otherwise. Resolving it per call rather than once matters — many
+ * callers build an api at module scope, before the domain provider has mounted,
+ * and a client captured then would never see a machine.
+ */
+function teamChatHttp() {
+  return getSDKHttpClient() ?? createHttpClient()
+}
+
 export function teamChatApi() {
-  const http = createHttpClient()
+  // Forward each call to whichever client exists when it is made (see
+  // `teamChatHttp` above). Inheriting the client's methods through a proxy keeps
+  // every existing `api.get(...)` / `api.patch(...)` call site untouched.
+  const http = new Proxy({} as HttpClient, {
+    get(_target, prop) {
+      const client = teamChatHttp() as unknown as Record<string | symbol, unknown>
+      const value = client[prop]
+      return typeof value === 'function' ? value.bind(client) : value
+    },
+  })
   const ws = (workspaceId: string) => `/api/workspaces/${encodeURIComponent(workspaceId)}`
   const conv = (id: string) => `/api/conversations/${encodeURIComponent(id)}`
   const msg = (id: string) => `/api/conversation-messages/${encodeURIComponent(id)}`
+  const file = (id: string) => `/api/conversation-files/${encodeURIComponent(id)}`
   return {
     async list(workspaceId: string): Promise<ConversationSummary[]> {
       return (await http.get<{ conversations: ConversationSummary[] }>(`${ws(workspaceId)}/conversations`)).data
@@ -922,6 +990,24 @@ export function teamChatApi() {
     async message(messageId: string): Promise<ChatMessage> {
       return (await http.get<{ message: ChatMessage }>(msg(messageId))).data.message
     },
+    /** What a file is, for the viewer. Never redirects to storage. */
+    async fileMeta(
+      attachmentId: string,
+    ): Promise<{ file: ConversationFileMeta; conversation: { id: string; name: string | null; kind: string } }> {
+      return (
+        await http.get<{ file: ConversationFileMeta; conversation: { id: string; name: string | null; kind: string } }>(
+          `${file(attachmentId)}/meta`,
+        )
+      ).data
+    },
+    /** A page of a file's text, extracted server-side when needed. */
+    async fileText(attachmentId: string, opts: { offset?: number; limit?: number } = {}): Promise<ConversationFileText> {
+      const q = new URLSearchParams()
+      if (opts.offset !== undefined) q.set('offset', String(opts.offset))
+      if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+      const suffix = q.toString() ? `?${q}` : ''
+      return (await http.get<ConversationFileText>(`${file(attachmentId)}/text${suffix}`)).data
+    },
     async catchUp(id: string): Promise<CatchUpResult> {
       return (await http.post<CatchUpResult>(`${conv(id)}/catch-up`, {})).data
     },
@@ -1027,7 +1113,25 @@ export function nativeCookieHeader(): Record<string, string> {
   return cookie ? { Cookie: cookie } : {}
 }
 
-export function realtimeUrls(workspaceId: string): { ws: string; sse: string } {
+/**
+ * Where this workspace's live team-chat traffic comes from.
+ *
+ * A paired desktop's own workspace is served by that desktop: its events come
+ * from the machine relay, and there is no socket URL — the tunnel carries HTTP,
+ * not a WebSocket upgrade — so the connection goes straight to the SSE stream,
+ * which the relay forwards chunk by chunk.
+ */
+export function realtimeUrls(
+  workspaceId: string,
+  machine?: { instanceId: string; localWorkspaceId: string } | null,
+): { ws: string; sse: string } {
+  if (machine?.instanceId && machine.localWorkspaceId) {
+    const localId = encodeURIComponent(machine.localWorkspaceId)
+    return {
+      ws: '',
+      sse: `${API_URL}/api/machines/${encodeURIComponent(machine.instanceId)}/w/${localId}/api/workspaces/${localId}/conversations/events`,
+    }
+  }
   const base = `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}`
   return {
     // WebSockets bypass the fetch router; the desktop API relays this one.

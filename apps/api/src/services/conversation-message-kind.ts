@@ -55,6 +55,28 @@ export interface IntegrationConnectRequest {
   message?: string
 }
 
+/**
+ * A card's run ended with nobody on it and the card was handed back to its
+ * agent once, after `notBefore`. One per (card, last move).
+ */
+export interface CardRetry {
+  agentRef: string
+  /** The reply that died, so the card's history points at it. */
+  messageId: string
+}
+
+/**
+ * A card's run died twice (or could not be re-handed). Answering its question
+ * is what applies the choice — see `applyCardEscalationAnswer`.
+ */
+export interface CardEscalation {
+  itemId: string
+  agentRef: string
+  reason: CardEscalationReason
+}
+
+export type CardEscalationReason = 'run_died_twice' | 'no_holder' | 'rate_limited'
+
 /** A board card's channel post: enough for a client to draw a tappable card without a fetch. */
 export interface WorkItemBlock {
   id: string
@@ -86,6 +108,10 @@ export interface MessageBlocks {
   questions?: QuestionBlock[]
   /** Open questions asked again here; the card lives on the original message. */
   questionRefs?: QuestionRef[]
+  /** A card's run died and the card was handed back to its agent once (see `noteCardRunEnded`). */
+  cardRetry?: CardRetry
+  /** A card's run died twice: this question asks a person who takes it. */
+  cardEscalation?: CardEscalation
   /** `explicit`: the agent passed questions; `done`: the designer has looked at it. */
   questionScan?: 'explicit' | 'done'
   [key: string]: unknown

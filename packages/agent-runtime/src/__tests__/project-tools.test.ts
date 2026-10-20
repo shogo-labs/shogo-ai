@@ -27,6 +27,7 @@ const api = {
   detach: { ok: true, status: 200, data: { removed: true } } as any,
   getConfig: { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } } as any,
   configure: { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } } as any,
+  workspaceConfig: { ok: true, status: 200, data: { id: 'ws-1', name: 'WS', kind: 'team', settings: {} } } as any,
   call: { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } } as any,
   teamChannels: { ok: true, status: 200, data: { channels: [], groups: {} } } as any,
   workspaceProjects: { ok: true, status: 200, data: [] as any[] } as any,
@@ -62,6 +63,14 @@ mock.module('../internal-api', () => ({
   configureProject: (projectId: string, patch: any) => {
     calls.push({ fn: 'configureProject', args: [projectId, patch] })
     return api.configure
+  },
+  configureWorkspace: (workspaceId: string, patch: any) => {
+    calls.push({ fn: 'configureWorkspace', args: [workspaceId, patch] })
+    return api.workspaceConfig
+  },
+  getWorkspaceConfig: (workspaceId: string) => {
+    calls.push({ fn: 'getWorkspaceConfig', args: [workspaceId] })
+    return api.workspaceConfig
   },
   callProjectAgent: (targetId: string, req: any) => {
     calls.push({ fn: 'callProjectAgent', args: [targetId, req] })
@@ -158,6 +167,7 @@ beforeEach(() => {
   api.detach = { ok: true, status: 200, data: { removed: true } }
   api.getConfig = { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } }
   api.configure = { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } }
+  api.workspaceConfig = { ok: true, status: 200, data: { id: 'ws-1', name: 'WS', kind: 'team', settings: {} } }
   api.call = { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } }
   api.teamChannels = { ok: true, status: 200, data: { channels: [], groups: {} } }
   api.workspaceProjects = { ok: true, status: 200, data: [] }
@@ -1093,6 +1103,90 @@ describe('capabilities_configure', () => {
     expect(out.code).toBe('capability_locked')
     expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
     expect(existsSync(join(workspaceDir, 'config.json'))).toBe(false)
+  })
+
+  test('in a workspace chat the read reports the workspace scope by default', async () => {
+    const ctx = baseCtx({
+      capabilityScope: 'workspace',
+      capabilityConfigs: {
+        workspace: { channels: [], model: { provider: 'anthropic', name: 'x' }, boardAdminEnabled: false } as any,
+        project: { channels: [], model: { provider: 'anthropic', name: 'x' }, boardAdminEnabled: true } as any,
+      },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx))
+    expect(out.scope).toBe('workspace')
+    expect(out.disabled).toContain('boardAdminEnabled')
+  })
+
+  test('a project chat reads project scope even when a scope default exists', async () => {
+    const ctx = baseCtx({
+      capabilityScope: 'project',
+      capabilityConfigs: {
+        workspace: { channels: [], model: { provider: 'anthropic', name: 'x' }, boardAdminEnabled: false } as any,
+        project: { channels: [], model: { provider: 'anthropic', name: 'x' }, boardAdminEnabled: true } as any,
+      },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx))
+    expect(out.scope).toBe('project')
+    expect(out.enabled).toContain('boardAdminEnabled')
+  })
+
+  test('workspace scope writes Workspace.settings, never the anchor project', async () => {
+    internalApiCredentials = true
+    let reloaded = 0
+    const ctx = baseCtx({
+      capabilityScope: 'workspace',
+      onCapabilitiesChanged: async () => { reloaded++ },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx), {
+      changes: { boardAdminEnabled: false },
+    })
+    expect(out.changed).toBe(true)
+    expect(out.scope).toBe('workspace')
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+    expect(calls.find((c) => c.fn === 'configureWorkspace')?.args).toEqual([
+      'ws-1',
+      { settings: { boardAdminEnabled: false } },
+    ])
+    expect(reloaded).toBe(1)
+  })
+
+  test('workspace scope caches under workspaceCapabilities and leaves the project keys alone', async () => {
+    const ctx = baseCtx({ capabilityScope: 'workspace' })
+    await run(createCapabilitiesConfigureTool(ctx), { changes: { boardAdminEnabled: false } })
+    const saved = JSON.parse(readFileSync(join(workspaceDir, 'config.json'), 'utf-8'))
+    expect(saved.workspaceCapabilities.boardAdminEnabled).toBe(false)
+    // The flat keys are the project's cache; a workspace toggle must not land there.
+    expect(saved.boardAdminEnabled).toBeUndefined()
+  })
+
+  test('an explicit project scope from a workspace chat patches the project', async () => {
+    internalApiCredentials = true
+    const ctx = baseCtx({ capabilityScope: 'workspace' })
+    const out = await run(createCapabilitiesConfigureTool(ctx), {
+      scope: 'project',
+      changes: { shellEnabled: false },
+    })
+    expect(out.scope).toBe('project')
+    expect(calls.find((c) => c.fn === 'configureProject')?.args).toEqual([
+      'caller-1',
+      { settings: { shellEnabled: false } },
+    ])
+    expect(calls.find((c) => c.fn === 'configureWorkspace')).toBeUndefined()
+  })
+
+  test('a locked capability is refused on the workspace scope too', async () => {
+    internalApiCredentials = true
+    const ctx = baseCtx({
+      capabilityScope: 'workspace',
+      capabilityConfigs: {
+        workspace: { channels: [], model: { provider: 'anthropic', name: 'x' }, capabilityProfile: 'personal', shellEnabled: false } as any,
+        project: { channels: [], model: { provider: 'anthropic', name: 'x' } } as any,
+      },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { shellEnabled: true } })
+    expect(out.code).toBe('capability_locked')
+    expect(calls.find((c) => c.fn === 'configureWorkspace')).toBeUndefined()
   })
 
   test('a failed API write does not update the local cache', async () => {

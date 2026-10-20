@@ -733,6 +733,11 @@ export const AppSidebar = observer(function AppSidebar({
         kind: "desktop",
         source: "machine",
         localWorkspaceId: workspace.id,
+        // The machine's own name and kind travel with the selection: the shell
+        // and the header follow the workspace in view, not the cloud workspace
+        // that happens to be selected.
+        localWorkspaceName: workspace.name,
+        localWorkspaceKind: workspace.kind === "personal" ? "personal" : "team",
       });
       if (activeRemoteInstance?.source === "machine" && activeRemoteInstance.localWorkspaceId === workspace.id) {
         return;
