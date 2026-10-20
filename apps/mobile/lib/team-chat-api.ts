@@ -144,6 +144,43 @@ export interface ConversationFilePage {
   nextCursor: string | null
 }
 
+/**
+ * What the file viewer needs to decide how to show a file, from
+ * `GET /api/conversation-files/:id/meta`. Deliberately not the capability
+ * URL's response: that one redirects to storage, which is what sent people to
+ * a browser tab in the first place.
+ */
+export interface ConversationFileMeta {
+  id: string
+  conversationId: string
+  messageId: string | null
+  name: string
+  mimeType: string
+  size: number
+  width: number | null
+  height: number | null
+  durationMs: number | null
+  peaks: string | null
+  preview: AttachmentPreview | null
+  createdAt: string
+  /** Capability URL, still needed to download or to open outside the app. */
+  url: string
+  /** The server holds this file's text, or can extract it on demand. */
+  hasText: boolean
+}
+
+/** A page of a file's text, from `GET /api/conversation-files/:id/text`. */
+export interface ConversationFileText {
+  fileId: string
+  name: string
+  mimeType: string
+  /** Null when nothing could be read out of the file. */
+  text: string | null
+  offset: number
+  totalChars: number
+  nextOffset: number | null
+}
+
 export interface ChatMessage {
   id: string
   conversationId: string
@@ -168,6 +205,11 @@ export interface ChatMessage {
   editedAt: string | null
   deletedAt: string | null
   createdAt: string
+  /**
+   * Where the message lives. Only the single-message fetch returns this (a
+   * quote labels itself from it); list responses leave it off.
+   */
+  conversation?: { id: string; name: string | null; kind: ConversationKind } | null
   /** Client-only: optimistic send not yet acknowledged, or failed. */
   pending?: 'sending' | 'failed'
 }
@@ -638,6 +680,7 @@ export function teamChatApi() {
   const ws = (workspaceId: string) => `/api/workspaces/${encodeURIComponent(workspaceId)}`
   const conv = (id: string) => `/api/conversations/${encodeURIComponent(id)}`
   const msg = (id: string) => `/api/conversation-messages/${encodeURIComponent(id)}`
+  const file = (id: string) => `/api/conversation-files/${encodeURIComponent(id)}`
   return {
     async list(workspaceId: string): Promise<ConversationSummary[]> {
       return (await http.get<{ conversations: ConversationSummary[] }>(`${ws(workspaceId)}/conversations`)).data
@@ -946,6 +989,24 @@ export function teamChatApi() {
     },
     async message(messageId: string): Promise<ChatMessage> {
       return (await http.get<{ message: ChatMessage }>(msg(messageId))).data.message
+    },
+    /** What a file is, for the viewer. Never redirects to storage. */
+    async fileMeta(
+      attachmentId: string,
+    ): Promise<{ file: ConversationFileMeta; conversation: { id: string; name: string | null; kind: string } }> {
+      return (
+        await http.get<{ file: ConversationFileMeta; conversation: { id: string; name: string | null; kind: string } }>(
+          `${file(attachmentId)}/meta`,
+        )
+      ).data
+    },
+    /** A page of a file's text, extracted server-side when needed. */
+    async fileText(attachmentId: string, opts: { offset?: number; limit?: number } = {}): Promise<ConversationFileText> {
+      const q = new URLSearchParams()
+      if (opts.offset !== undefined) q.set('offset', String(opts.offset))
+      if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+      const suffix = q.toString() ? `?${q}` : ''
+      return (await http.get<ConversationFileText>(`${file(attachmentId)}/text${suffix}`)).data
     },
     async catchUp(id: string): Promise<CatchUpResult> {
       return (await http.post<CatchUpResult>(`${conv(id)}/catch-up`, {})).data

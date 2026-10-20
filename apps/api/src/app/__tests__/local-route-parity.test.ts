@@ -111,6 +111,11 @@ const REQUIRED_LOCAL_ROUTES = [
   // `createLocalApp()`. `music` comes along with it (voiceRoutes delegates).
   'POST /api/voice/tts',
   'POST /api/voice/music',
+  // The file viewer (SHO-70): a shared file opens in the app, so the metadata
+  // and text routes it renders from must answer on desktop too — otherwise the
+  // viewer is a blank screen on exactly the surface that has no browser tab.
+  'GET /api/conversation-files/:attachmentId/meta',
+  'GET /api/conversation-files/:attachmentId/text',
 ] as const
 
 /** Runtime → API paths that intentionally only exist in the cloud API. */

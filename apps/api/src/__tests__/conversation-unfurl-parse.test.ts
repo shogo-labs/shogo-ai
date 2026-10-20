@@ -6,8 +6,8 @@
  * alone runs past 512KB — silently never previewed.
  */
 
-import { describe, expect, test } from 'bun:test'
-import { parseUnfurl } from '../services/conversation-unfurl'
+import { afterEach, describe, expect, test } from 'bun:test'
+import { extractLinks, parseUnfurl } from '../services/conversation-unfurl'
 
 const page = (head: string) => `<!doctype html><html><head>${head}</head><body>body</body></html>`
 
@@ -77,5 +77,38 @@ describe('parseUnfurl', () => {
 
   test('a page with no title at all gets no card', () => {
     expect(parseUnfurl('https://example.com/', page('<meta name="viewport" content="width=device-width">'))).toBeNull()
+  })
+})
+
+describe('extractLinks', () => {
+  const APP_URL = 'https://qa70.example.test'
+  const saved = process.env.APP_URL
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.APP_URL
+    else process.env.APP_URL = saved
+  })
+
+  test('a link to our own app is never unfurled', () => {
+    process.env.APP_URL = APP_URL
+
+    // Every one of these answers with the same SPA shell, so a preview of it is
+    // an empty card — and it would sit right next to the quote of the message.
+    expect(extractLinks(`${APP_URL}/c/abc?msg=123`)).toEqual([])
+    expect(extractLinks(`${APP_URL}/f/att-123`)).toEqual([])
+    expect(extractLinks(`${APP_URL}/c/abc?doc=1`)).toEqual([])
+  })
+
+  test('links to anyone else are still previewed', () => {
+    process.env.APP_URL = APP_URL
+
+    expect(extractLinks(`${APP_URL}/c/abc?msg=1 and https://elsewhere.dev/post`)).toEqual(['https://elsewhere.dev/post'])
+  })
+
+  test('code fences and the <…> no-preview convention still win', () => {
+    process.env.APP_URL = APP_URL
+
+    expect(extractLinks('`https://elsewhere.dev/a` <https://elsewhere.dev/b>')).toEqual([])
+    expect(extractLinks('```\nhttps://elsewhere.dev/c\n```')).toEqual([])
   })
 })
