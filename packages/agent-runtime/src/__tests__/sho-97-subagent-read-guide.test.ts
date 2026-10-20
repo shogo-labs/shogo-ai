@@ -12,48 +12,19 @@
  * the child's own next API call still omitted the tool.
  */
 
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test'
+import { describe, it, expect, spyOn, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 
-let captured: any = null
-
-mock.module('../agent-loop', () => ({
-  runAgentLoop: async (opts: any) => {
-    captured = opts
-    return {
-      text: 'ok',
-      toolCalls: [],
-      iterations: 1,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      newMessages: [],
-      effectiveModelId: 'm',
-      maxIterationsExhausted: false,
-      loopBreak: false,
-    }
-  },
-}))
-
-mock.module('../internal-api', () => ({
-  deriveApiUrl: () => null,
-  getInternalHeaders: () => ({ 'Content-Type': 'application/json' }),
-}))
-
-mock.module('../model-router', () => ({
-  selectModelForSpawn: () => ({ selectedModel: 'auto', fallbackReason: null, routerTier: 'cheap' }),
-  escalateModel: () => ({ selectedModel: 'auto', fallbackReason: null, routerTier: 'premium' }),
-  buildAutoTierMap: () => ({ cheap: 'auto', mid: 'auto', premium: 'auto' }),
-  formatRoutingLog: () => '',
-}))
-
+import * as agentLoop from '../agent-loop'
 import { runSubagent } from '../subagent'
 import { createReadGuideTool } from '../gateway-tools'
 import { createToolProfile, DEFERRED_TOOLS_ENV } from '../tool-profile'
+
+let captured: any = null
+let loopSpy: ReturnType<typeof spyOn> | undefined
 
 function plainTool(name: string): AgentTool {
   return {
@@ -72,9 +43,29 @@ beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'sho97-sub-'))
   captured = null
   delete process.env[DEFERRED_TOOLS_ENV]
+  // A spy on the module export, not `mock.module`: module mocks are process-wide
+  // and leak into the next file when bun runs the package's tests together.
+  loopSpy = spyOn(agentLoop, 'runAgentLoop').mockImplementation(async (opts: any) => {
+    captured = opts
+    return {
+      text: 'ok',
+      toolCalls: [],
+      iterations: 1,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      newMessages: [],
+      effectiveModelId: 'm',
+      maxIterationsExhausted: false,
+      loopBreak: false,
+    } as any
+  })
 })
 
 afterEach(() => {
+  loopSpy?.mockRestore()
+  loopSpy = undefined
   if (tmp) rmSync(tmp, { recursive: true, force: true })
   if (originalEnv === undefined) delete process.env[DEFERRED_TOOLS_ENV]
   else process.env[DEFERRED_TOOLS_ENV] = originalEnv

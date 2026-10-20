@@ -1513,7 +1513,8 @@ app.patch('/agent/config', async (c) => {
     agentGateway?.reloadConfig()
 
     // The PATCH is the immediate update. Capability toggles are then
-    // confirmed against Project.settings, which wins when the pull succeeds.
+    // confirmed against the database (Project.settings, plus Workspace.settings
+    // in a workspace runtime), which wins when the pull succeeds.
     await agentGateway?.syncCapabilitiesFromApi()
 
     return c.json({ ok: true })
@@ -1934,6 +1935,15 @@ app.post('/agent/chat', async (c) => {
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
+  // Which surface this chat belongs to. The API proxy stamps it (workspace
+  // chat vs project chat); a direct caller without it gets the boot mode's
+  // default, which is what this runtime served before the split.
+  const chatContext =
+    body.chatContext === 'workspace' || body.chatContext === 'project'
+      ? (body.chatContext as 'workspace' | 'project')
+      : IS_WORKSPACE_RUNTIME && !process.env.WORKSPACE_ANCHOR_PROJECT_ID
+        ? 'workspace'
+        : 'project'
   console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, modelProvider: ${modelProvider ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
 
   if (body.timezone && typeof body.timezone === 'string') {
@@ -1968,6 +1978,7 @@ app.post('/agent/chat', async (c) => {
       confirmedPlan,
       dualPlan,
       chatSessionId: chatSessionKey,
+      chatContext,
     })
 
     const usage = agentGateway!.consumeLastTurnUsage()

@@ -28,13 +28,15 @@ import {
   CAPABILITY_INFO,
   CAPABILITY_KEYS,
   mergeCapabilitySettingsIntoConfig,
+  mergeCapabilitySettingsIntoWorkspaceSettings,
+  parseWorkspaceSettings,
   type CapabilityKey,
   type CapabilitySettings,
 } from '@shogo/shared-runtime/capability-settings'
 import type { ToolContext } from './gateway-tools'
 import { BACKGROUND_TASK_HINT, textResult } from './gateway-tools'
 import { trackRemoteTask } from './remote-tasks'
-import { capabilityState, effectiveCapabilityValue, lockedCapabilityKeys, resolveRuntimeCapabilities } from './capability-status-prompt'
+import { capabilityState, effectiveCapabilityValue, lockedCapabilityKeys, resolveCapabilitiesForScope, resolveRuntimeCapabilities } from './capability-status-prompt'
 import { isMetalRuntime } from './remote-tools'
 import {
   applyTechStackChange,
@@ -61,6 +63,7 @@ import {
   attachProject as apiAttachProject,
   callProjectAgent as apiCallProjectAgent,
   configureProject as apiConfigureProject,
+  configureWorkspace as apiConfigureWorkspace,
   createProject as apiCreateProject,
   detachProject as apiDetachProject,
   getProjectConfig as apiGetProjectConfig,
@@ -696,25 +699,51 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
 
 const CAPABILITY_KEY_SET = new Set<string>(CAPABILITY_KEYS)
 
+/** Which settings blob a capability change lands in. */
+type CapabilityToolScope = 'workspace' | 'project'
+
 function capabilityChangesSchema() {
   const properties: Record<string, ReturnType<typeof Type.Optional<ReturnType<typeof Type.Boolean>>>> = {}
   for (const key of CAPABILITY_KEYS) {
     properties[key] = Type.Optional(Type.Boolean({ description: CAPABILITY_INFO[key].label }))
   }
   return Type.Optional(Type.Object(properties, {
-    description: 'Flags to set on this project. Omit to read the current state.',
+    description: 'Flags to set on the chosen scope. Omit to read the current state.',
   }))
 }
 
-function capabilityStatus(config: ToolContext['config'], changed: boolean) {
-  const caps = resolveRuntimeCapabilities(config as unknown as Record<string, unknown>)
-  const view = capabilityState(config)
+/**
+ * Scope the call acts on: explicit `scope` wins, then the turn's surface, then
+ * the boot mode. Never inferred from the anchor project — a workspace runtime
+ * pinned to a project still serves workspace chats.
+ */
+function capabilityScopeFor(ctx: ToolContext, requested?: unknown): CapabilityToolScope {
+  if (requested === 'workspace' || requested === 'project') return requested
+  if (ctx.capabilityScope === 'workspace' || ctx.capabilityScope === 'project') return ctx.capabilityScope
+  return isWorkspaceAgentRuntime() ? 'workspace' : 'project'
+}
+
+/** Config for a scope: both surfaces' configs ride on the tool context. */
+function capabilityConfigFor(ctx: ToolContext, scope: CapabilityToolScope): ToolContext['config'] {
+  return ctx.capabilityConfigs?.[scope] ?? ctx.config
+}
+
+/** The workspace whose settings a `workspace`-scope patch lands on. */
+function capabilityWorkspaceId(ctx: ToolContext): string | undefined {
+  const id = ctx.workspaceId || process.env.WORKSPACE_ID
+  return id && id.trim() ? id : undefined
+}
+
+function capabilityStatus(config: ToolContext['config'], changed: boolean, scope: CapabilityToolScope) {
+  const caps = resolveCapabilitiesForScope(config as unknown as Record<string, unknown>, scope)
+  const view = capabilityState(config, scope)
   const resolved: CapabilitySettings = { ...caps }
   for (const key of view.locked) {
     resolved[key] = effectiveCapabilityValue(key, caps, config.capabilityProfile)
   }
   return {
     ok: true,
+    scope,
     changed,
     enabled: view.enabled,
     disabled: view.disabled,
@@ -728,11 +757,17 @@ function capabilityStatus(config: ToolContext['config'], changed: boolean) {
  * Persist a capability patch into config.json without clobbering flags the
  * patch does not mention. `activeMode` rides along with canvas so the prompt
  * guide matches the toggle.
+ *
+ * Project scope writes the flat keys (the project's cache). Workspace scope
+ * writes `workspaceCapabilities` — a separate object, so a workspace toggle
+ * can never be mistaken for (or overwrite) a project's. `activeMode` is the
+ * runtime's single mode either way, so it stays flat.
  */
 function writeLocalCapabilityCache(
   workspaceDir: string,
   patch: Partial<CapabilitySettings>,
-  activeMode?: 'canvas' | 'none',
+  activeMode: 'canvas' | 'none' | undefined,
+  scope: CapabilityToolScope,
 ): void {
   const configPath = resolveWorkspaceConfigFilePath(workspaceDir, 'config.json')
     ?? join(workspaceDir, 'config.json')
@@ -745,10 +780,20 @@ function writeLocalCapabilityCache(
       fileConfig = {}
     }
   }
-  const source = { ...fileConfig, ...patch }
-  const { config } = mergeCapabilitySettingsIntoConfig(fileConfig, source)
-  if (activeMode) config.activeMode = activeMode
-  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+  if (scope === 'workspace') {
+    const merged = mergeCapabilitySettingsIntoWorkspaceSettings(
+      parseWorkspaceSettings(fileConfig.workspaceCapabilities),
+      { ...patch, ...(activeMode ? { activeMode } : {}) },
+    )
+    fileConfig.workspaceCapabilities = merged.settings
+    if (activeMode) fileConfig.activeMode = activeMode
+  } else {
+    const source = { ...fileConfig, ...patch }
+    const { config } = mergeCapabilitySettingsIntoConfig(fileConfig, source)
+    fileConfig = config
+    if (activeMode) fileConfig.activeMode = activeMode
+  }
+  writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
 }
 
 export function createCapabilitiesConfigureTool(ctx: ToolContext): AgentTool {
@@ -756,19 +801,25 @@ export function createCapabilitiesConfigureTool(ctx: ToolContext): AgentTool {
     name: 'capabilities_configure',
     label: 'Configure Capabilities',
     description:
-      'Read or change this project\'s capability toggles (web search, shell, browser, channels, and the rest). Call with no changes to read what is enabled, disabled, or locked. Changes are saved on this project only and apply from your next turn. Locked capabilities cannot be changed.',
+      'Read or change capability toggles (web search, shell, browser, channels, and the rest). In a workspace chat these are the workspace agent\'s own toggles (stored on the workspace); in a project chat they are that project\'s. Call with no changes to read what is enabled, disabled, or locked. Defaults to the surface this turn runs in; pass `scope: "project"` from a workspace chat to change a project\'s toggles. Changes apply from your next turn. Locked capabilities cannot be changed.',
     parameters: Type.Object({
       changes: capabilityChangesSchema(),
+      scope: Type.Optional(Type.Union([Type.Literal('workspace'), Type.Literal('project')], {
+        description: 'Which toggles to read or change. Defaults to this turn\'s surface.',
+      })),
     }),
     execute: async (_id, params) => {
-      const raw = (params as { changes?: unknown }).changes
-      if (raw === undefined) return textResult(capabilityStatus(ctx.config, false))
+      const { changes: raw, scope: requestedScope } = params as { changes?: unknown; scope?: unknown }
+      const scope = capabilityScopeFor(ctx, requestedScope)
+      const scopedConfig = capabilityConfigFor(ctx, scope)
+
+      if (raw === undefined) return textResult(capabilityStatus(scopedConfig, false, scope))
       if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
         return textResult({ error: 'changes must be an object of capability flags', code: 'bad_request' })
       }
 
-      const current = resolveRuntimeCapabilities(ctx.config as unknown as Record<string, unknown>)
-      const locked = new Set(lockedCapabilityKeys(ctx.config.capabilityProfile))
+      const current = resolveCapabilitiesForScope(scopedConfig as unknown as Record<string, unknown>, scope)
+      const locked = new Set(lockedCapabilityKeys(scopedConfig.capabilityProfile))
       const patch: Partial<CapabilitySettings> = {}
       for (const [key, value] of Object.entries(raw)) {
         if (!CAPABILITY_KEY_SET.has(key)) {
@@ -779,39 +830,47 @@ export function createCapabilitiesConfigureTool(ctx: ToolContext): AgentTool {
         }
         if (locked.has(key as CapabilityKey)) {
           return textResult({
-            error: `${key} is locked by the ${ctx.config.capabilityProfile} workspace profile`,
+            error: `${key} is locked by the ${scopedConfig.capabilityProfile} workspace profile`,
             code: 'capability_locked',
           })
         }
         patch[key as CapabilityKey] = value
       }
-      if (Object.keys(patch).length === 0) return textResult(capabilityStatus(ctx.config, false))
+      if (Object.keys(patch).length === 0) return textResult(capabilityStatus(scopedConfig, false, scope))
 
-      const currentMode = ctx.config.activeMode || 'canvas'
+      const currentMode = scopedConfig.activeMode || 'canvas'
       let activeMode: 'canvas' | 'none' | undefined
       if (patch.canvasEnabled === false && currentMode !== 'none') activeMode = 'none'
       if (patch.canvasEnabled === true && currentMode !== 'canvas') activeMode = 'canvas'
 
       const differs = (Object.keys(patch) as CapabilityKey[]).some((key) => patch[key] !== current[key]) || activeMode !== undefined
-      if (!differs) return textResult(capabilityStatus(ctx.config, false))
+      if (!differs) return textResult(capabilityStatus(scopedConfig, false, scope))
 
       const settings: Record<string, unknown> = { ...patch }
       if (activeMode) settings.activeMode = activeMode
 
-      const projectId = projectScopedId(ctx.projectId)
-      if (projectId && hasInternalApiCredentials()) {
-        const res = await apiConfigureProject(projectId, { settings })
-        if (!res.ok || !res.data) return apiFailure(res)
+      if (scope === 'workspace') {
+        const workspaceId = capabilityWorkspaceId(ctx)
+        if (workspaceId && hasInternalApiCredentials()) {
+          const res = await apiConfigureWorkspace(workspaceId, { settings })
+          if (!res.ok || !res.data) return apiFailure(res)
+        }
+      } else {
+        const projectId = projectScopedId(ctx.projectId)
+        if (projectId && hasInternalApiCredentials()) {
+          const res = await apiConfigureProject(projectId, { settings })
+          if (!res.ok || !res.data) return apiFailure(res)
+        }
       }
-      writeLocalCapabilityCache(ctx.workspaceDir, patch, activeMode)
+      writeLocalCapabilityCache(ctx.workspaceDir, patch, activeMode, scope)
       await ctx.onCapabilitiesChanged?.()
 
       const nextConfig = {
-        ...ctx.config,
+        ...scopedConfig,
         ...patch,
         ...(activeMode ? { activeMode } : {}),
       }
-      return textResult(capabilityStatus(nextConfig, true))
+      return textResult(capabilityStatus(nextConfig, true, scope))
     },
   }
 }

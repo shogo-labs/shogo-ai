@@ -1388,6 +1388,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       }
       if (bodyIsJson && parsedBody && typeof parsedBody === 'object') {
         await stampWorkspacePlan(parsedBody, project.workspaceId)
+        // This is a project's own chat: its capability toggles come from
+        // `Project.settings`, never from the workspace agent's. The runtime
+        // serves both surfaces, so it has to be told which this is.
+        parsedBody.chatContext = 'project'
         body = JSON.stringify(parsedBody)
       }
 
