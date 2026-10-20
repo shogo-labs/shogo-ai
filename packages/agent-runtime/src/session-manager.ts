@@ -875,27 +875,17 @@ export class SessionManager {
   }
 
   private extractText(msg: Message): string {
-    if (msg.role === 'user') {
-      return typeof msg.content === 'string'
-        ? msg.content
-        : (msg.content as any[])
-            .filter((b: any) => b.type === 'text')
-            .map((b: any) => b.text)
-            .join(' ')
-    }
-    if (msg.role === 'assistant') {
-      return msg.content
-        .filter((c): c is TextContent => c.type === 'text')
-        .map((c) => c.text)
-        .join(' ')
-    }
-    if (msg.role === 'toolResult') {
-      return msg.content
-        .filter((c): c is TextContent => c.type === 'text')
-        .map((c) => c.text)
-        .join(' ')
-    }
-    return ''
+    // `content` is a string for plain user/assistant text and a block array for
+    // tool calls/results, so every role has to handle both shapes: a resumed
+    // session hydrated from JSON has assistant text as strings, and a summarizer
+    // that assumed blocks threw mid-turn instead of compacting.
+    const content = (msg as any).content
+    if (typeof content === 'string') return content
+    if (!Array.isArray(content)) return ''
+    return content
+      .filter((c: any) => c?.type === 'text')
+      .map((c: any) => c.text)
+      .join(' ')
   }
 
   private fallbackSummarize(messages: Message[]): string {

@@ -28,7 +28,10 @@ import {
 const CAP = 200_000
 const CEILING = 205_000
 /** System prompt + tool schemas, counted the way the gateway counts them. */
-const PROMPT_OVERHEAD = 12_000
+// Measured on a live `AgentGateway.agentTurn` at the streamFn boundary:
+// systemPrompt.length/4 + every tool schema = 52,021 tokens. The old 12k
+// constant made the 205k ceiling look met while real turns sent 211-228k.
+const PROMPT_OVERHEAD = 52_000
 
 function user(text: string): UserMessage {
   return { role: 'user', content: text, timestamp: Date.now() }
@@ -61,7 +64,6 @@ function makeCompactor(opts: {
   tailBudgetTokens?: number
   minKeepMessages?: number
   apply?: (summary: string, splitIndex: number, o: { replaceSummary: boolean }) => void
-  now?: () => number
   summarize?: (head: Message[], prev?: string) => Promise<string>
 }) {
   const events: ContextSummarizedEvent[] = []
@@ -78,7 +80,6 @@ function makeCompactor(opts: {
       applied.push({ summary, splitIndex, replaceSummary: o.replaceSummary })
       opts.apply?.(summary, splitIndex, o)
     },
-    ...(opts.now ? { now: opts.now } : {}),
   })
   return { compactor, events, applied, chunks }
 }
@@ -123,65 +124,66 @@ describe('resolveAutoCompactTokens', () => {
 })
 
 describe('mid-turn summarization in a real agent loop', () => {
-  test('a 40-tool-call turn is summarized mid-turn and never sends more than 205k', async () => {
-    const tracker = new MockToolTracker()
-    // 30k chars ≈ 7.5k tokens per result → ~300k tokens over 40 calls.
-    const tool = tracker.createTool('fetch_page', 'Fetch a page', () => ({ content: 'x'.repeat(30_000) }))
+  for (const calls of [40, 60, 90]) {
+    test(`a ${calls}-tool-call turn never sends a request over 205k`, async () => {
+      const tracker = new MockToolTracker()
+      // 30k chars ≈ 7.5k tokens per result → 300k / 450k / 675k raw tokens.
+      const tool = tracker.createTool('fetch_page', 'Fetch a page', () => ({ content: 'x'.repeat(30_000) }))
 
-    const responses = Array.from({ length: 40 }, (_, i) =>
-      buildToolUseResponse([{ name: 'fetch_page', arguments: { path: `page-${i}.html` }, id: `toolu_${i}` }]),
-    )
-    responses.push(buildTextResponse('All pages fetched.'))
+      const responses = Array.from({ length: calls }, (_, i) =>
+        buildToolUseResponse([{ name: 'fetch_page', arguments: { path: `page-${i}.html` }, id: `toolu_${i}` }]),
+      )
+      responses.push(buildTextResponse('All pages fetched.'))
 
-    const { compactor, events } = makeCompactor({})
-    const requestEstimates: number[] = []
-    const requestMessages: Message[][] = []
+      const { compactor, events } = makeCompactor({})
+      const requestEstimates: number[] = []
+      const requestMessages: Message[][] = []
 
-    const mockStream = createMockStreamFn(responses, (_index, messages) => {
-      // Estimate at the boundary the provider would see.
-      const tokens = messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0) + PROMPT_OVERHEAD
-      requestEstimates.push(tokens)
-      requestMessages.push(messages)
-    })
+      const mockStream = createMockStreamFn(responses, (_index, messages) => {
+        // Estimate at the boundary the provider would see.
+        const tokens = messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0) + PROMPT_OVERHEAD
+        requestEstimates.push(tokens)
+        requestMessages.push(messages)
+      })
 
-    const result = await runAgentLoop({
-      model: 'claude-haiku-5-5',
-      system: 'You are a test agent.',
-      history: [],
-      prompt: 'Fetch all pages.',
-      tools: [tool],
-      maxIterations: 60,
-      loopDetection: false,
-      streamFn: mockStream,
-      transformContext: async (messages) => {
-        const out = await compactor.transform(messages)
-        if (out.event) events.push(out.event)
-        return out.messages
-      },
-    })
+      const result = await runAgentLoop({
+        model: 'claude-haiku-5-5',
+        system: 'You are a test agent.',
+        history: [],
+        prompt: 'Fetch all pages.',
+        tools: [tool],
+        maxIterations: calls + 5,
+        loopDetection: false,
+        streamFn: mockStream,
+        transformContext: async (messages) => {
+          const out = await compactor.transform(messages)
+          if (out.event) events.push(out.event)
+          return out.messages
+        },
+      })
 
-    expect(result.toolCalls.length).toBe(40)
-    // ≥1 summarization before any request exceeded the cap ...
-    expect(events.length).toBeGreaterThanOrEqual(1)
-    expect(events[0].trigger).toBe('auto')
-    expect(events[0].tokensBefore).toBeGreaterThan(CAP)
-    // ... and no request above the ceiling.
-    expect(Math.max(...requestEstimates)).toBeLessThanOrEqual(CEILING)
+      expect(result.toolCalls.length).toBe(calls)
+      // ≥1 summarization before any request exceeded the cap ...
+      expect(events.length).toBeGreaterThanOrEqual(1)
+      expect(events[0].trigger).toBe('auto')
+      expect(events[0].tokensBefore).toBeGreaterThan(CAP)
+      // ... and the ceiling holds for every request, which needs more than one
+      // compaction once the turn outgrows what one compaction can absorb
+      // (the old 60s cooldown did exactly this and let 60/90-call turns reach
+      // 227k).
+      expect(Math.max(...requestEstimates)).toBeLessThanOrEqual(CEILING)
+      if (calls > 40) expect(events.length).toBeGreaterThanOrEqual(2)
 
-    // One prefix rewrite per turn: later calls re-emit the same summary
-    // prefix, so the provider sees a cached prefix instead of a fresh one.
-    const firstSummarized = requestMessages.findIndex((m) =>
-      typeof m[0]?.content === 'string' && m[0].content.startsWith('[Previous conversation summary]'),
-    )
-    expect(firstSummarized).toBeGreaterThan(0)
-    const prefix = JSON.stringify(requestMessages[firstSummarized].slice(0, 2))
-    for (const messages of requestMessages.slice(firstSummarized)) {
-      expect(JSON.stringify(messages.slice(0, 2))).toBe(prefix)
-    }
-    // Exactly one summary in this turn: the 400k of raw history in the loop
-    // array must not trigger a second rewrite (min-delta + cooldown).
-    expect(events).toHaveLength(1)
-  }, 30_000)
+      // One prefix rewrite per compaction: every summarized request carries a
+      // summary prefix, and exactly `events.length` distinct ones exist — so
+      // the calls between two compactions re-send byte-identical bytes.
+      const summaryPrefixes = requestMessages
+        .filter((m) => typeof m[0]?.content === 'string' && m[0].content.startsWith('[Previous conversation summary]'))
+        .map((m) => JSON.stringify(m.slice(0, 2)))
+      expect(summaryPrefixes.length).toBeGreaterThan(0)
+      expect(new Set(summaryPrefixes).size).toBe(events.length)
+    }, 60_000)
+  }
 
   test('after a compaction every later request is byte-identical until new messages arrive', async () => {
     const { compactor } = makeCompactor({ autoCompactTokens: 10_000 })

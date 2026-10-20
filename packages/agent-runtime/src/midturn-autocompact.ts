@@ -28,7 +28,15 @@
  * 2. A second summary inside the same turn is allowed only after
  *    `minDeltaTokens` (default 40k) of new context, otherwise a long turn
  *    thrashes the cache at ~3.5x cost.
- * 3. It runs only when the cheap layers were not enough — the caller passes
+ * 3. There is deliberately **no time-based cooldown**. A compaction lands the
+ *    request at ~40% of the cap (`compactionTailBudgetTokens`), so being over
+ *    the cap again means at least 60% of the cap — 120k on a 200k cap — of new
+ *    context has arrived, which is 3x `minDeltaTokens`. A wall-clock cooldown
+ *    therefore never adds protection the delta guard doesn't already give, and
+ *    it lets the estimate sit *above* the cap for its whole duration: measured
+ *    on a 40/60/90-tool-call turn, the old 60s cooldown peaked at 211k/227k/228k
+ *    against a 205k ceiling, and removing it alone brought all three to 203.7k.
+ * 4. It runs only when the cheap layers were not enough — the caller passes
  *    the post-cheap-layer estimate, so a request that checkpointing already
  *    brought under the cap is never summarized.
  */
@@ -43,9 +51,6 @@ import {
 
 /** New context required before a second compaction in the same turn. */
 export const DEFAULT_AUTOCOMPACT_MIN_DELTA_TOKENS = 40_000
-
-/** Ignore a repeat compaction this soon after the previous one. */
-export const DEFAULT_AUTOCOMPACT_COOLDOWN_MS = 60_000
 
 /**
  * Messages kept verbatim when a mid-turn compaction fires. Deliberately
@@ -90,9 +95,7 @@ export interface MidTurnAutocompactOptions {
   /** System prompt + tool schema tokens, counted in the trigger and the event. */
   promptOverheadTokens?: number
   minDeltaTokens?: number
-  cooldownMs?: number
   /** Injected for tests. */
-  now?: () => number
 }
 
 interface Memo {
@@ -113,7 +116,6 @@ export class MidTurnAutocompactor {
    * second compaction in a turn from re-summarizing what is already summarized.
    */
   private baseIndex = 0
-  private lastCompactionAt = -Infinity
   private lastCompactionTokens = 0
   private manualRequested = false
   private compacting = false
@@ -192,7 +194,6 @@ export class MidTurnAutocompactor {
 
       const emitted = [...prefix, ...messages.slice(splitIndex)]
       const tokensAfter = this.estimate(emitted)
-      this.lastCompactionAt = this.now()
       this.lastCompactionTokens = tokensAfter
       this.manualRequested = false
 
@@ -223,8 +224,6 @@ export class MidTurnAutocompactor {
       const minDelta = this.opts.minDeltaTokens ?? DEFAULT_AUTOCOMPACT_MIN_DELTA_TOKENS
       if (estimate - this.lastCompactionTokens < minDelta) return false
     }
-    const cooldown = this.opts.cooldownMs ?? DEFAULT_AUTOCOMPACT_COOLDOWN_MS
-    if (this.now() - this.lastCompactionAt < cooldown) return false
     return true
   }
 
@@ -247,9 +246,5 @@ export class MidTurnAutocompactor {
     let tokens = 0
     for (const msg of messages) tokens += estimateMessageTokens(msg)
     return tokens + (this.opts.promptOverheadTokens ?? 0)
-  }
-
-  private now(): number {
-    return this.opts.now ? this.opts.now() : Date.now()
   }
 }

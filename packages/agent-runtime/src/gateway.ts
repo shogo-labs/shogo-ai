@@ -3879,6 +3879,14 @@ export class AgentGateway {
           const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
           return sum + Math.ceil(schema.length / 4)
         }, 0)
+      // Per-call prefix fingerprints for this turn, paired with the provider's
+      // reported cache writes at turn end (`SHOGO_PREFIX_LOG=0` silences it).
+      const callFingerprints: Array<{
+        hash: string
+        msgs: number
+        chars: number
+        compacted: 'auto' | 'manual' | null
+      }> = []
       const midTurnCompactor = new MidTurnAutocompactor({
         autoCompactTokens,
         // Aggressive tail: the head is what blew past the cap, and the split
@@ -4026,6 +4034,23 @@ export class AgentGateway {
               })
             } catch { /* client disconnected mid-turn — the row still persists API-side */ }
             emitContextUsage()
+          }
+          if (process.env.SHOGO_PREFIX_LOG !== '0') {
+            // Per-call attribution (SHO-96 criterion 10): the fingerprint of the
+            // exact bytes about to be sent, paired at turn end with the cache
+            // writes the provider reports for that call. Without this pairing a
+            // cache write cannot be told apart from a genuine prefix rewrite —
+            // production shows 11.8k written tokens per opus call, more than the
+            // new content each call carries.
+            try {
+              const print = fingerprintMessages(compacted.messages)
+              callFingerprints.push({
+                hash: print.aggregate,
+                msgs: print.count,
+                chars: print.totalChars,
+                compacted: event ? event.trigger : null,
+              })
+            } catch { /* diagnostics only */ }
           }
           return compacted.messages
         },
@@ -4570,6 +4595,23 @@ export class AgentGateway {
         perCallUsage: result.perCallUsage ?? [],
         prefix,
         wasAborted: result.abortReason === 'external',
+      }
+
+      // One line per model call: the prefix fingerprint sent, and the cache
+      // read/write the provider reported for it. A call that writes while its
+      // hash is unchanged from the previous call is a genuine cache opportunity
+      // missed; a write whose hash did change is a real prefix change.
+      if (process.env.SHOGO_PREFIX_LOG !== '0' && callFingerprints.length > 0) {
+        const perCall = result.perCallUsage ?? []
+        const lines = callFingerprints.map((c, i) => {
+          const usage = perCall[i]
+          const mark = c.compacted ? ` compacted=${c.compacted}` : ''
+          return (
+            `  #${i + 1} ${c.hash} (${c.msgs} msgs, ${c.chars}c)${mark}` +
+            (usage ? ` read=${usage.cacheRead} write=${usage.cacheWrite} in=${usage.input} out=${usage.output}` : '')
+          )
+        })
+        console.log(`${this.logPrefix} [cache-attrib] turn=${prefix.turn} calls=${callFingerprints.length}\n${lines.join('\n')}`)
       }
 
       // UI notifications below may throw if the client disconnected (stop).
