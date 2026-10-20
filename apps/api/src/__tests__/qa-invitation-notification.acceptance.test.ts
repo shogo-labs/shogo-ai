@@ -14,7 +14,10 @@
  */
 
 import { afterAll, describe, expect, mock, test } from 'bun:test'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
+import { INVITATION_ACCEPT_PATH } from '../lib/invitation-path'
 
 const { dir } = setupChannelsTestDb()
 
@@ -258,5 +261,37 @@ describe('SHO-84 AC3 — answering the invite clears the bell entry', () => {
 
     const row = await db.notification.findFirst({ where: { userId: invitee.id } })
     expect(row.readAt).toBeNull()
+  })
+})
+
+/**
+ * SHO-84 AC6 — the link the push carries is a page the app actually serves.
+ *
+ * The 404 this whole feature area started from was a constant drifting from the
+ * route it pointed at. SHO-83 has now mounted `app/invitations/[id]/accept.tsx`,
+ * so the three things that have to agree can be tied together here: the shared
+ * constant, the notification's `actionUrl`, and the file expo-router turns into
+ * the route.
+ */
+describe('SHO-84 AC6 — the pushed path matches a mounted route', () => {
+  const repoRoot = resolve(import.meta.dir, '../../../..')
+
+  test('the constant, the route template and the route file agree', () => {
+    const id = 'inv_route_drift'
+
+    expect(INVITATION_ACCEPT_PATH(id)).toBe(`/invitations/${id}/accept`)
+
+    const routeFile = 'apps/mobile/app/invitations/[id]/accept.tsx'
+    expect(existsSync(resolve(repoRoot, routeFile))).toBe(true)
+
+    // expo-router: app/<segments>.tsx -> /<segments>, [param] -> :param
+    const routePath =
+      '/' +
+      routeFile
+        .replace('apps/mobile/app/', '')
+        .replace(/\[(\w+)\]/g, ':$1')
+        .replace(/\.tsx$/, '')
+
+    expect(INVITATION_ACCEPT_PATH(':id')).toBe(routePath)
   })
 })
