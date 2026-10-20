@@ -4,8 +4,9 @@
  * Settings tabs surfaced on native Account. Each row opens a bottom sheet
  * with the existing Settings tab body — no push to `/(app)/settings`.
  *
- * Matches the phone Settings tab bar, minus Compute (hidden on iOS) and
- * tabs already inlined on Account (email, API keys).
+ * Matches the phone Settings tab bar, minus the desktop-only tabs (`updates`,
+ * `computer-files`) that cannot render on a handset. Tabs already inlined on
+ * Account (email, API keys) are in the type but not in the row list below.
  */
 import {
   settingsTab,
@@ -14,7 +15,10 @@ import {
   type SettingsTabDefinition,
 } from "../../lib/settings-tabs";
 
-export type AccountSettingsSheetTab = Exclude<SettingsTabId, "compute">;
+export type AccountSettingsSheetTab = Exclude<
+  SettingsTabId,
+  "updates" | "computer-files"
+>;
 
 type SheetTabId = Exclude<AccountSettingsSheetTab, "appearance" | "account">;
 type SheetTabDef = Pick<SettingsTabDefinition, "id" | "Icon"> & {
@@ -29,6 +33,7 @@ const SHEET_TAB_IDS = new Set<SheetTabId>([
   "automations",
   "remote-control",
   "billing",
+  "compute",
   "security",
 ]);
 
@@ -45,11 +50,13 @@ export function accountSettingsSheetTitle(
 export function accountSettingsSheetGroups({
   localMode,
   showBilling,
+  platform,
 }: {
   localMode?: boolean;
   showBilling?: boolean;
+  platform?: string;
 }): Array<{ title: string; tabs: Array<SheetTabDef & { label: string }> }> {
-  const tabs = visibleSettingsTabs({ localMode, showBilling })
+  const tabs = visibleSettingsTabs({ localMode, showBilling, platform })
     .filter((tab) => isSheetTab(tab.id))
     .map((tab) => ({
       id: tab.id as SheetTabId,

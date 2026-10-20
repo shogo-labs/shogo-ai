@@ -283,9 +283,15 @@ describe('handed-off cards are watched', () => {
     expect(registry.get(read.task_id)?.dormant).toBeUndefined()
   })
 
-  test('a card the agent holds itself, or one already in review, is not watched', () => {
+  // SHO-88: handing a card into a review-category column that binds an agent
+  // opens a watch (lacvapps' QA lane is `review`); only a closed card ends one.
+  test('a review-category holder is watched, a closed card is not', () => {
     expect(isHandedOff({ assignee_agent: 'project:proj-1', category: 'active' }, 'project:proj-1')).toBe(false)
-    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'review' }, 'workspace')).toBe(false)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'review' }, 'workspace')).toBe(true)
+    expect(isHandedOff({ assignee_agent: null, column_agent: ENGINEER, category: 'review' }, 'workspace')).toBe(true)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'waiting' }, 'workspace')).toBe(true)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'done' }, 'workspace')).toBe(false)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'dismissed' }, 'workspace')).toBe(false)
     expect(isHandedOff({ assignee_agent: null, column_agent: ENGINEER, category: 'active' }, 'workspace')).toBe(true)
     expect(isHandedOff({ assignee_agent: null, category: 'active' }, 'workspace')).toBe(false)
   })

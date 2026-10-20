@@ -398,6 +398,51 @@ describe('when a person is in the thread', () => {
     expect(await events(card, 'agent_retry')).toHaveLength(1)
     expect(await db.agentWake.count({ where: { threadRootId: card.threadRootMessageId, status: 'pending' } })).toBe(1)
   })
+
+  test('the retry that answers the person does not escalate the card', async () => {
+    const b = await board('asked-then-retried')
+    const card = await cardOn(b, 'First attempt died, retry answered')
+    const t0 = Date.now() - 60_000
+    const row = (seq: number, extra: Record<string, unknown>, at: number) => db.conversationMessage.create({
+      data: {
+        conversationId: card.conversationId,
+        workspaceId: seed.workspaceId,
+        seq,
+        threadRootId: card.threadRootMessageId,
+        createdAt: new Date(at),
+        ...extra,
+      },
+    })
+    await row(91_100, { authorType: 'user', authorUserId: seed.member, text: 'where is this at?' }, t0)
+    const first = await row(91_101, {
+      authorType: 'agent',
+      authorAgentRef: { projectId: dev },
+      agentStatus: 'error',
+      text: 'This reply was interrupted because the server restarted.',
+    }, t0 + 1_000)
+    // The first attempt died, so the card was already re-handed once.
+    await db.workItemEvent.create({
+      data: { workItemId: card.id, workspaceId: seed.workspaceId, type: 'agent_retry', eventData: { messageId: first.id } },
+    })
+    const retry = await row(91_102, {
+      authorType: 'agent',
+      authorAgentRef: { projectId: dev },
+      agentStatus: 'done',
+      text: 'One test left, then it is in QA.',
+    }, t0 + 2_000)
+
+    await service.noteCardRunEnded({
+      threadRootId: card.threadRootMessageId,
+      projectId: dev,
+      messageId: retry.id,
+      agentStatus: 'done',
+      startedAt: new Date(t0 + 2_000),
+    })
+
+    // The failed row is not the agent's last word: a person asked, and this run answered them.
+    expect(await events(card, 'agent_escalated')).toHaveLength(0)
+    expect((await reload(card)).column.name).toBe('Backlog')
+  })
 })
 
 describe('a person re-waking the agent inside the backoff', () => {

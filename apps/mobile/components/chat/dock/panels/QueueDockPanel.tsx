@@ -21,6 +21,8 @@ import {
   AlertTriangle,
   Image as ImageIcon,
   ListOrdered,
+  PauseCircle,
+  Play,
 } from "lucide-react-native"
 import { useDockPanel } from "../useDockPanel"
 import type {
@@ -36,6 +38,78 @@ export interface QueueDockPanelProps {
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
   onEditQueuedMessage?: (messageId: string) => void
   onSendQueuedMessageNow?: (messageId: string) => void
+  onResumeTaskWakes?: (messageId: string) => void
+}
+
+/** The agent's own updates, held back by a wake pause. Never a queued message. */
+export function waitingTaskWakes(queuedMessages: QueuedMessage[]): QueuedMessage[] {
+  return queuedMessages.filter((msg) => msg.kind === "task_wake" && msg.paused)
+}
+
+/** The messages a person actually typed and is still waiting on. */
+export function chatQueuedMessages(queuedMessages: QueuedMessage[]): QueuedMessage[] {
+  return queuedMessages.filter((msg) => msg.kind !== "task_wake")
+}
+
+/**
+ * One chip for everything a paused session is holding: the count, the titles,
+ * why the session stopped, and Resume. The same updates in the task dock read
+ * "waiting" rather than finished-and-unseen, and the agent's own prompt says
+ * they are queued.
+ */
+/** The task's title off a queued wake note ("[Task update] SHO-88 Sim kernel (t_ab12) completed."). */
+export function taskTitle(content: string): string {
+  const first = content.split("\n")[0]!.trim()
+  const note = /^\[Task update\]\s*(.*?)\s*\(t_[^)]*\)/.exec(first)
+  return (note?.[1] ?? first).trim()
+}
+
+export function WaitingWakes({
+  wakes,
+  onResume,
+}: {
+  wakes: QueuedMessage[]
+  onResume?: (messageId: string) => void
+}) {
+  const newest = wakes[wakes.length - 1]
+  if (!newest) return null
+  const count = wakes.length
+  const titles = wakes.map((wake) => taskTitle(wake.content)).filter(Boolean)
+  return (
+    <View className="border-b border-border/40 bg-amber-500/10 px-3 py-2">
+      <View className="flex-row items-center gap-2">
+        <PauseCircle size={12} className="text-amber-600 dark:text-amber-400 flex-shrink-0" />
+        <Text
+          className="text-xs font-medium text-foreground flex-1 min-w-0"
+          numberOfLines={1}
+        >
+          {count === 1
+            ? "1 background update waiting"
+            : `${count} background updates waiting`}
+        </Text>
+        {onResume ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Resume background updates"
+            onPress={() => onResume(newest.id)}
+            className="flex-row items-center gap-1 rounded border border-border px-2 py-0.5 active:opacity-60"
+          >
+            <Play size={10} className="text-foreground" />
+            <Text className="text-[10px] font-medium text-foreground">Resume</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {titles.length > 0 ? (
+        <Text className="mt-0.5 text-[10px] text-muted-foreground" numberOfLines={2}>
+          {titles.join(" · ")}
+        </Text>
+      ) : null}
+      <Text className="mt-0.5 text-[10px] text-muted-foreground" numberOfLines={2}>
+        Paused after several automatic wake turns without a message. Resume to
+        deliver them now.
+      </Text>
+    </View>
+  )
 }
 
 // Hover is CSS-only. RN-Web's JS `hovered` state goes stale when the dock
@@ -77,10 +151,14 @@ function QueueBody({
   onReorderQueuedMessage,
   onEditQueuedMessage,
   onSendQueuedMessageNow,
+  onResumeTaskWakes,
 }: QueueDockPanelProps) {
+  const wakes = waitingTaskWakes(queuedMessages)
+  const messages = chatQueuedMessages(queuedMessages)
   return (
     <View>
-      {queuedMessages.map((msg, index) => {
+      <WaitingWakes wakes={wakes} onResume={onResumeTaskWakes} />
+      {messages.map((msg, index) => {
         const files = msg.files ?? []
         const imageFiles = files.filter((f) => f.type?.startsWith("image/"))
         const otherFiles = files.filter((f) => !f.type?.startsWith("image/"))
@@ -171,7 +249,7 @@ function QueueBody({
               )}
             >
               {onReorderQueuedMessage &&
-                queuedMessages.length > 1 &&
+                messages.length > 1 &&
                 index > 0 && (
                   <QueueAction
                     label="Move queued message up"
@@ -180,8 +258,8 @@ function QueueBody({
                   />
                 )}
               {onReorderQueuedMessage &&
-                queuedMessages.length > 1 &&
-                index < queuedMessages.length - 1 && (
+                messages.length > 1 &&
+                index < messages.length - 1 && (
                   <QueueAction
                     label="Move queued message down"
                     icon={ChevronDown}
@@ -220,7 +298,14 @@ function QueueBody({
 
 export function QueueDockPanel(props: QueueDockPanelProps) {
   const { queuedMessages } = props
-  const offlineCount = queuedMessages.filter((m) => m.offline).length
+  const messages = chatQueuedMessages(queuedMessages)
+  const wakeCount = waitingTaskWakes(queuedMessages).length
+  const offlineCount = messages.filter((m) => m.offline).length
+  const parts = [
+    offlineCount > 0 ? `${offlineCount} waiting` : null,
+    messages.length > offlineCount ? `${messages.length - offlineCount} queued` : null,
+    wakeCount > 0 ? `${wakeCount} update${wakeCount === 1 ? "" : "s"} paused` : null,
+  ].filter(Boolean)
 
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (queuedMessages.length === 0) return null
@@ -230,17 +315,14 @@ export function QueueDockPanel(props: QueueDockPanelProps) {
       order: 70,
       title: "Queue",
       icon: ListOrdered,
-      accent: offlineCount > 0 ? "warning" : "default",
-      summary:
-        offlineCount > 0
-          ? `${offlineCount} waiting${queuedMessages.length > offlineCount ? ` · ${queuedMessages.length - offlineCount} queued` : ""}`
-          : `${queuedMessages.length} queued`,
+      accent: wakeCount > 0 ? "warning" : offlineCount > 0 ? "warning" : "default",
+      summary: parts.join(" · "),
       defaultExpanded: true,
       flushBody: true,
       render: () => <QueueBody {...props} />,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props, offlineCount])
+  }, [props, offlineCount, wakeCount, parts.join("|")])
 
   useDockPanel(descriptor)
   return null

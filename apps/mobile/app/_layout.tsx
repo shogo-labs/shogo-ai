@@ -223,6 +223,7 @@ function AuthenticatedAppShell({
           <Stack.Screen name="index" />
           <Stack.Screen name="(auth)" />
           <Stack.Screen name="invite/[token]" />
+          <Stack.Screen name="invitations/[id]/accept" />
           <Stack.Screen name="m/[token]" />
           <Stack.Screen name="(onboarding)" />
           <Stack.Screen name="(app)" />

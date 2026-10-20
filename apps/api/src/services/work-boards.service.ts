@@ -30,6 +30,7 @@ import {
 } from './conversation.service'
 import { agentMentionToken } from './conversation-mentions'
 import { envInt, type AgentChain } from './conversation-agent-chain'
+import type { CardEventState } from './background-tasks.service'
 import type { AgentTarget } from './conversation-mentions'
 import { blocksForKind, type CardEscalation, type CardEscalationReason, type QuestionBlock, type StatusCard } from './conversation-message-kind'
 import { registerAfterPostHook, afterMessagePosted } from './conversation-pipeline'
@@ -379,7 +380,24 @@ export async function recordEvent(item: { id: string; workspaceId: string }, typ
   const line = cardEventLine(type, data)
   if (line) {
     const { emitTaskEvent } = await import('./background-tasks.service')
-    await emitTaskEvent('work_item', item.id, { line })
+    await emitTaskEvent('work_item', item.id, { line, card: cardEventState(data) })
+  }
+}
+
+/**
+ * The machine-readable half of a card event, carried alongside the rendered
+ * line: where the card landed and who holds it now. A watch decides
+ * terminal-vs-milestone from this rather than by re-parsing its own prose.
+ */
+function cardEventState(data?: Record<string, any>): CardEventState {
+  const to = data?.to
+  return {
+    ...(to && (to.column || to.category)
+      ? { to: { columnId: to.columnId, column: to.column, category: to.category } }
+      : {}),
+    ...(data?.assigneeAgentRef !== undefined ? { assigneeAgentRef: data.assigneeAgentRef ?? null } : {}),
+    ...(data?.columnAgentRef !== undefined ? { columnAgentRef: data.columnAgentRef ?? null } : {}),
+    ...(data?.cardClosed ? { terminal: true } : {}),
   }
 }
 
@@ -707,7 +725,11 @@ export async function deleteColumn(board: any, columnRef: string, moveTo: string
       data: { columnId: target.id, columnEnteredAt: now, lastActivityAt: now, ...(isClosed(target.category) ? { completedAt: now } : { completedAt: null }) },
     })
     for (const item of items) {
-      await recordEvent(item, 'moved', actor, { from: { columnId: column.id, column: column.name }, to: { columnId: target.id, column: target.name }, reason: 'column_deleted' })
+      await recordEvent(item, 'moved', actor, {
+        from: { columnId: column.id, column: column.name, category: column.category },
+        to: { columnId: target.id, column: target.name, category: target.category },
+        reason: 'column_deleted',
+      })
     }
   }
   await db.boardColumn.delete({ where: { id: column.id } })
@@ -1278,6 +1300,10 @@ export async function moveWorkItem(item: any, input: MoveInput, actor: BoardActo
   await recordEvent(item, 'moved', actor, {
     from: { boardId: fromBoard.id, board: fromBoard.name, columnId: fromColumn.id, column: fromColumn.name, category: fromColumn.category },
     to: { boardId: toBoard.id, board: toBoard.name, columnId: toColumn.id, column: toColumn.name, category: toColumn.category },
+    // The holder the card has now, so the watch on it knows what it is
+    // watching before deciding whether to carry on.
+    assigneeAgentRef: item.assigneeAgentRef ?? null,
+    columnAgentRef: toColumn.agentRef ?? null,
   })
   if (isClosed(fromColumn.category) && !isClosed(toColumn.category)) {
     await recordEvent(item, 'regressed', actor, { from: fromColumn.name })
@@ -1386,13 +1412,18 @@ export async function commentWorkItem(
   }
 }
 
+/**
+ * Archive (or restore) a card. Archiving closes it for good: a hand-off watch on
+ * it settles instead of running on to its expiry, so the assigner hears that the
+ * card is gone rather than nothing at all.
+ */
 export async function archiveWorkItem(item: any, archived: boolean, actor: BoardActor) {
   const updated = await db.workItem.update({
     where: { id: item.id },
     data: { archivedAt: archived ? new Date() : null, lastActivityAt: new Date() },
     include: { column: true, board: true },
   })
-  await recordEvent(item, archived ? 'archived' : 'restored', actor)
+  await recordEvent(item, archived ? 'archived' : 'restored', actor, archived ? { cardClosed: true } : undefined)
   await publishBoard(item.board, { action: archived ? 'item.archived' : 'item.restored', itemId: item.id })
   return serializeItem(updated)
 }
@@ -2070,6 +2101,8 @@ export async function noteCardRunEnded(run: CardRun): Promise<void> {
       await recordEvent(item, 'agent_stopped', { agentRef }, {
         column: item.column.name,
         messageId: run.messageId,
+        assigneeAgentRef: item.assigneeAgentRef ?? null,
+        columnAgentRef: item.column.agentRef ?? null,
         ...(run.agentStatus === 'stopped' ? { reason: 'stopped by a person' } : {}),
       })
     }
@@ -2176,22 +2209,37 @@ async function liveRunInThread(threadRootId: string | null, exceptMessageId: str
  *
  * A run that **failed** is not exempt however recently a person spoke — the
  * person asked and got an error, so there is still nobody on the card.
+ *
+ * Failed agent rows are skipped in the scan, not treated as the agent's last
+ * word: nobody got an answer from them. So a question whose first attempt died
+ * is answered by the retry, and the retry is exempt too — otherwise the card
+ * escalates out of its column seconds after the person was answered.
  */
 async function answeredAPerson(run: CardRun, row?: { createdAt?: Date } | null): Promise<boolean> {
   if (!run.threadRootId) return false
   const before = row?.createdAt ?? run.startedAt
-  const last = await db.conversationMessage.findFirst({
-    where: {
-      threadRootId: run.threadRootId,
-      deletedAt: null,
-      authorType: { in: ['user', 'agent'] },
-      id: { not: run.messageId },
-      ...(before ? { createdAt: { lt: before } } : {}),
-    },
-    orderBy: { createdAt: 'desc' },
-    select: { authorType: true },
-  })
-  return last?.authorType === 'user'
+  const base = {
+    threadRootId: run.threadRootId,
+    deletedAt: null,
+    id: { not: run.messageId },
+    ...(before ? { createdAt: { lt: before } } : {}),
+  }
+  const [lastUser, lastClean] = await Promise.all([
+    db.conversationMessage.findFirst({
+      where: { ...base, authorType: 'user' },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    }),
+    db.conversationMessage.findFirst({
+      where: { ...base, authorType: 'agent', OR: [{ agentStatus: null }, { agentStatus: 'done' }] },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    }),
+  ])
+  if (!lastUser) return false
+  const user = (lastUser as any).createdAt?.getTime?.() ?? 0
+  const clean = (lastClean as any)?.createdAt?.getTime?.() ?? 0
+  return user >= clean
 }
 
 /** Has this run already been re-handed or escalated? A reply only dies once. */
@@ -2222,7 +2270,11 @@ async function noteAgentFailed(item: any, failed: any): Promise<void> {
     select: { eventData: true },
   })
   if ((earlier as any[]).some((e) => eventData(e.eventData)?.messageId === failed.id)) return
-  await recordEvent(item, 'agent_failed', { agentRef: agentRefFor(failed.authorAgentRef?.projectId ?? null) }, { messageId: failed.id })
+  await recordEvent(item, 'agent_failed', { agentRef: agentRefFor(failed.authorAgentRef?.projectId ?? null) }, {
+    messageId: failed.id,
+    assigneeAgentRef: item.assigneeAgentRef ?? null,
+    columnAgentRef: item.column.agentRef ?? null,
+  })
 }
 
 /** The column that means "a person must look" on this board. */
@@ -2351,6 +2403,8 @@ async function escalateStrandedCard(
     reason,
     agentRef,
     messageId,
+    assigneeAgentRef: item.assigneeAgentRef ?? null,
+    columnAgentRef: item.column.agentRef ?? null,
     ...(lastError ? { lastError } : {}),
     ...(retryMessageId ? { retryMessageId } : {}),
   })
@@ -2363,8 +2417,10 @@ async function escalateStrandedCard(
     })
     await recordEvent(item, 'moved', {}, {
       from: { columnId: item.columnId, column: item.column.name },
-      to: { columnId: column.id, column: column.name },
+      to: { columnId: column.id, column: column.name, category: column.category },
       reason: 'agent_escalated',
+      assigneeAgentRef: item.assigneeAgentRef ?? null,
+      columnAgentRef: column.agentRef ?? null,
     })
     await refreshCardMessage(item.id)
     await publishBoard(item.board, { action: 'item.moved', itemId: item.id })
@@ -2464,7 +2520,12 @@ export async function applyCardEscalationAnswer(input: {
       where: { id: item.id },
       data: { assigneeUserId: input.userId, assigneeAgentRef: null, lastActivityAt: new Date() },
     })
-    await recordEvent(item, 'assigned', { userId: input.userId }, { label, userId: input.userId })
+    await recordEvent(item, 'assigned', { userId: input.userId }, {
+      label,
+      userId: input.userId,
+      assigneeAgentRef: null,
+      columnAgentRef: item.column.agentRef ?? null,
+    })
     await refreshCardMessage(item.id)
     await publishBoard(item.board, { action: 'item.updated', itemId: item.id })
     return
@@ -2479,8 +2540,10 @@ export async function applyCardEscalationAnswer(input: {
       })
       await recordEvent(item, 'moved', { userId: input.userId }, {
         from: { columnId: item.columnId, column: item.column.name },
-        to: { columnId: column.id, column: column.name },
+        to: { columnId: column.id, column: column.name, category: column.category },
         reason: 'escalation_dismissed',
+        assigneeAgentRef: item.assigneeAgentRef ?? null,
+        columnAgentRef: column.agentRef ?? null,
       })
       await refreshCardMessage(item.id)
       await publishBoard(item.board, { action: 'item.moved', itemId: item.id })

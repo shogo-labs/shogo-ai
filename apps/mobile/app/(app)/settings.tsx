@@ -21,7 +21,7 @@ import {
   StyleSheet,
   useWindowDimensions,
 } from "react-native";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { Redirect, useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { observer } from "mobx-react-lite";
 import {
@@ -75,10 +75,7 @@ import { useDomainActions } from "@shogo/shared-app/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation";
 import { usePermissions } from "../../hooks/usePermissions";
-import {
-  resolveActiveWorkspaceId,
-  setActiveWorkspaceId,
-} from "../../lib/workspace-store";
+import { setActiveWorkspaceId } from "../../lib/workspace-store";
 import {
   api,
   API_URL,
@@ -138,6 +135,12 @@ import {
   type SettingsTabId,
 } from "../../lib/settings-tabs";
 import { leaveSettings } from "../../lib/settings-back";
+import {
+  isDesktopShell,
+  isPhoneSettingsSurface,
+  phoneSettingsTarget,
+  resolveRequestedWorkspaceId,
+} from "../../lib/phone-settings-route";
 import {
   useToast,
   Toast,
@@ -224,10 +227,7 @@ const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === "ios";
 // Cloud), while a cloud-connected desktop install still needs the Updates
 // tab since it's the Electron auto-updater's home regardless of which
 // backend the app talks to. See `desktopOnly` in lib/settings-tabs.ts.
-const IS_DESKTOP_CLIENT =
-  Platform.OS === "web" &&
-  typeof window !== "undefined" &&
-  !!(window as any).shogoDesktop?.isDesktop;
+const IS_DESKTOP_CLIENT = isDesktopShell();
 
 interface NavItem {
   id: TabId;
@@ -279,6 +279,7 @@ function TabBar({
   return (
     <ScrollView
       horizontal
+      testID="settings-legacy-tab-bar"
       showsHorizontalScrollIndicator={false}
       className="border-b border-border/70 bg-card"
       contentContainerClassName="gap-1 px-4 py-1"
@@ -4372,6 +4373,11 @@ export default observer(function SettingsPage({
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const isWide = width >= SETTINGS_WIDE_BREAKPOINT;
+  // Phone (native handset or web ≤767px) has its own Settings surface: the
+  // Account screen with `NativeAccountSettingsSheet`. This page stays the
+  // wide/tablet one and redirects below — the single insert point for every
+  // `/settings?tab=…` deep link, so no caller changes.
+  const isPhoneSurface = isPhoneSettingsSurface(width, height);
   // Mirrors `showSidebar` in `(app)/_layout.tsx`: wide web renders the app
   // sidebar beside this page, so the page drops its own exit and switcher.
   const inAppShell = !onClose && Platform.OS === "web" && isWide;
@@ -4379,6 +4385,15 @@ export default observer(function SettingsPage({
   const { user } = useAuth();
   const workspaces = useWorkspaceCollection();
   const { features, localMode } = usePlatformConfig();
+  const phoneTarget = phoneSettingsTarget(
+    params as Record<string, string | string[] | undefined>,
+    {
+      localMode: localMode || !features.billing,
+      showBilling: features.billing,
+      platform: Platform.OS,
+      isDesktop: IS_DESKTOP_CLIENT,
+    },
+  );
 
   const [activeTab, setActiveTab] = useState<TabId>(() => {
     const requested = params.tab as TabId;
@@ -4387,28 +4402,29 @@ export default observer(function SettingsPage({
 
   // Usage and Cost Optimizer now live on the Analytics screen; keep old links working.
   useEffect(() => {
+    // The phone redirect already targets Analytics — never navigate twice.
+    if (isPhoneSurface) return;
     if (params.tab === "analytics" || params.tab === "costs") {
       router.replace({
         pathname: "/(app)/analytics",
         params: { view: params.tab === "costs" ? "costs" : "usage" },
       } as any);
     }
-  }, [params.tab, router]);
+  }, [isPhoneSurface, params.tab, router]);
 
   useEffect(() => {
-    const requestedWorkspace = params.workspace;
+    if (isPhoneSurface) return;
     const ownWorkspaceIds =
       workspaces?.all?.map((workspace: any) => workspace.id) ?? [];
-    if (!requestedWorkspace || ownWorkspaceIds.length === 0) return;
-    const resolvedWorkspace = resolveActiveWorkspaceId(
+    const resolvedWorkspace = resolveRequestedWorkspaceId(
+      params.workspace,
       ownWorkspaceIds,
-      requestedWorkspace,
-      { listLoaded: true },
     );
     if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace);
-  }, [params.workspace, workspaces?.all, workspaces?.isLoading]);
+  }, [isPhoneSurface, params.workspace, workspaces?.all, workspaces?.isLoading]);
 
   useEffect(() => {
+    if (isPhoneSurface) return;
     const isLocal = localMode || !features.billing;
     if (activeTab === "people" && isLocal) setActiveTab("workspace");
     if (activeTab === "compute" && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS))
@@ -4428,6 +4444,12 @@ export default observer(function SettingsPage({
     }
     leaveSettings(router, isNativePhone);
   };
+
+  // Phone lands on the Account screen with the mapped tab's sheet open. The
+  // wide branch below (and the tablet page) is unchanged.
+  if (isPhoneSurface) {
+    return <Redirect href={phoneTarget as any} />;
+  }
 
   if (isWide) {
     return (
@@ -4483,7 +4505,11 @@ export default observer(function SettingsPage({
   }
 
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
+    <View
+      testID="settings-legacy-page"
+      className="flex-1 bg-background"
+      style={{ paddingTop: insets.top }}
+    >
       <View className="flex-row items-center gap-3 border-b border-border/70 bg-card px-4 py-3">
         <Pressable
           accessibilityRole="button"
