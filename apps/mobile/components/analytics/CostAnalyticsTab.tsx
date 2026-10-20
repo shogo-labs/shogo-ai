@@ -3,7 +3,7 @@
 /**
  * Cost Analytics Tab — Agent Cost Optimizer Dashboard
  *
- * Per-agent cost breakdown, AI recommendations, budget alerts,
+ * Per-agent cost breakdown, optimizer impact, budget alerts,
  * cost trends, and A/B model experiments.
  */
 
@@ -19,7 +19,6 @@ import {
   TrendingDown as TrendingDownIcon,
   TrendingUp as TrendingUpIcon,
   Minus as MinusIcon,
-  Lightbulb as LightbulbIcon,
   Bell as BellIcon,
   FlaskConical as FlaskConicalIcon,
   Cpu as CpuIcon,
@@ -29,7 +28,6 @@ import {
   XCircle as XCircleIcon,
   ChevronDown as ChevronDownIcon,
   ChevronUp as ChevronUpIcon,
-  Settings as SettingsGlyph,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -42,7 +40,6 @@ const COST_ANALYTICS_ICON_MAP = {
   TrendingDown: TrendingDownIcon,
   TrendingUp: TrendingUpIcon,
   Minus: MinusIcon,
-  Lightbulb: LightbulbIcon,
   Bell: BellIcon,
   FlaskConical: FlaskConicalIcon,
   Cpu: CpuIcon,
@@ -52,7 +49,6 @@ const COST_ANALYTICS_ICON_MAP = {
   XCircle: XCircleIcon,
   ChevronDown: ChevronDownIcon,
   ChevronUp: ChevronUpIcon,
-  SettingsIcon: SettingsGlyph,
 } as const
 
 type CostAnalyticsIconName = keyof typeof COST_ANALYTICS_ICON_MAP
@@ -75,9 +71,7 @@ import {
   getModelDisplayName,
 } from './SharedAnalytics'
 import { Card, CardContent, Separator } from '@shogo/shared-ui/primitives'
-import { SubAgentModelsSection } from './SubAgentModelsSection'
 import { OptimizerInActionSection, type OptimizerInActionData } from './OptimizerInActionSection'
-import { RecommendationsSection, type CostRecommendation } from './RecommendationsSection'
 import { BudgetSection, type BudgetAlertItem, type BudgetStatus } from './BudgetSection'
 import { ExperimentsSection, type ExperimentItem } from './ExperimentsSection'
 import { LoadErrorNotice, type LoadErrors } from './LoadErrorNotice'
@@ -151,49 +145,19 @@ interface TrendsData {
   }
 }
 
-interface SubagentOverrideRecord {
-  id: string
-  workspaceId: string
-  projectId: string | null
-  agentType: string
-  model: string
-  /** Server-resolved display label for `model` (falls back to client resolution). */
-  modelLabel?: string
-  provider: string | null
-  updatedBy: string | null
-  createdAt: string
-  updatedAt: string
-}
-
 interface CostAnalyticsTabProps {
-  workspaceId: string
   fetchCostAnalytics: <T>(endpoint: string, params?: Record<string, string>) => Promise<T>
   postCostAnalytics: <T>(endpoint: string, body: Record<string, unknown>) => Promise<T>
-  /**
-   * Phase 1 (boss concern #2): Sub-agent model override CRUD plumbed from the
-   * settings page. Optional so consumers that don't yet wire it up degrade
-   * gracefully (the Sub-Agents tab and Apply buttons just stay hidden).
-   */
-  fetchSubagentOverrides?: () => Promise<SubagentOverrideRecord[] | null>
-  putSubagentOverride?: (body: {
-    agentType: string
-    model: string
-    provider?: string | null
-    projectId?: string | null
-  }) => Promise<unknown>
-  deleteSubagentOverride?: (agentType: string, projectId?: string | null) => Promise<unknown>
 }
 
 // =============================================================================
 // Sub-sections
 // =============================================================================
 
-type Section = 'breakdown' | 'recommendations' | 'subagents' | 'inaction' | 'budget' | 'trends' | 'experiments'
+type Section = 'breakdown' | 'inaction' | 'budget' | 'trends' | 'experiments'
 
 const SECTION_CONFIG: Array<{ id: Section; label: string; icon: CostAnalyticsIconName }> = [
   { id: 'breakdown', label: 'Agents', icon: 'Cpu' },
-  { id: 'recommendations', label: 'Optimize', icon: 'Lightbulb' },
-  { id: 'subagents', label: 'Sub-Agents', icon: 'SettingsIcon' },
   { id: 'inaction', label: 'In Action', icon: 'TrendingUp' },
   { id: 'trends', label: 'Trends', icon: 'TrendingUp' },
   { id: 'budget', label: 'Budgets', icon: 'Bell' },
@@ -209,19 +173,14 @@ type ResolvedSection = Omit<(typeof SECTION_CONFIG)[number], 'icon'> & {
 // =============================================================================
 
 export function CostAnalyticsTab({
-  workspaceId,
   fetchCostAnalytics,
   postCostAnalytics,
-  fetchSubagentOverrides,
-  putSubagentOverride,
-  deleteSubagentOverride,
 }: CostAnalyticsTabProps) {
   const icons = useCostAnalyticsIcons()
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [activeSection, setActiveSection] = useState<Section>('breakdown')
 
   const [breakdown, setBreakdown] = useState<{ data: BreakdownData | null; loading: boolean }>({ data: null, loading: true })
-  const [recommendations, setRecommendations] = useState<{ data: CostRecommendation[] | null; loading: boolean }>({ data: null, loading: false })
   const [trends, setTrends] = useState<{ data: TrendsData | null; loading: boolean }>({ data: null, loading: true })
   const [budgetAlerts, setBudgetAlerts] = useState<{ data: BudgetAlertItem[] | null; loading: boolean }>({ data: null, loading: true })
   const [budgetStatus, setBudgetStatus] = useState<{ data: BudgetStatus | null; loading: boolean }>({ data: null, loading: true })
@@ -235,14 +194,7 @@ export function CostAnalyticsTab({
     error: string | null
   }>({ data: null, loading: false, error: null })
 
-  const overridesAvailable = !!(fetchSubagentOverrides && putSubagentOverride && deleteSubagentOverride)
-
-  // Phase 4.3 — drop the unsupported Sub-Agents tab when overrides aren't wired
-  // up by the parent, so the tab strip never has dead options.
-  const visibleSections = overridesAvailable
-    ? SECTION_CONFIG
-    : SECTION_CONFIG.filter(s => s.id !== 'subagents')
-  const resolvedSections: ResolvedSection[] = visibleSections.map(({ icon, ...section }) => ({
+  const resolvedSections: ResolvedSection[] = SECTION_CONFIG.map(({ icon, ...section }) => ({
     ...section,
     icon: icons[icon],
   }))
@@ -271,12 +223,6 @@ export function CostAnalyticsTab({
     setBreakdown(s => ({ ...s, loading: true }))
     const data = await fetchSection<BreakdownData>('agent breakdown', 'agent-breakdown', { period })
     setBreakdown({ data, loading: false })
-  }, [fetchSection, period])
-
-  const loadRecommendations = useCallback(async () => {
-    setRecommendations(s => ({ ...s, loading: true }))
-    const data = await fetchSection<CostRecommendation[]>('recommendations', 'recommendations', { period })
-    setRecommendations({ data, loading: false })
   }, [fetchSection, period])
 
   const loadTrends = useCallback(async () => {
@@ -325,9 +271,6 @@ export function CostAnalyticsTab({
   // tab is open re-loads it; opening a new tab loads it on first activation.
   useEffect(() => {
     switch (activeSection) {
-      case 'recommendations':
-        if (!recommendations.data && !recommendations.loading) loadRecommendations()
-        break
       case 'experiments':
         if (!experiments.data && !experiments.loading) loadExperiments()
         break
@@ -335,50 +278,33 @@ export function CostAnalyticsTab({
         if (!inAction.data && !inAction.loading) loadInAction()
         break
       // 'breakdown', 'trends', 'budget' are eagerly loaded above.
-      // 'subagents' fetches via SubAgentModelsSection.
     }
   }, [
     activeSection,
-    recommendations.data, recommendations.loading, loadRecommendations,
     experiments.data, experiments.loading, loadExperiments,
     inAction.data, inAction.loading, loadInAction,
   ])
 
-  // Period changes invalidate cached lazy data — clear so the next activation
-  // reloads against the new window.
+  // Period changes invalidate cached lazy data — clear them so the next
+  // activation reloads against the new window.
   useEffect(() => {
-    setRecommendations({ data: null, loading: false })
+    setExperiments((s) => (s.data ? { data: null, loading: false } : s))
+    setInAction({ data: null, loading: false, error: null })
   }, [period])
 
-  // Composite refresh used by sub-components that mutate state (apply
-  // recommendation, create experiment, …). Reloads everything we already
-  // have plus refreshes the lazy tabs by clearing them.
+  // Composite refresh used by sub-components that mutate state (create
+  // experiment, edit a budget, …). Reloads everything we already have plus
+  // refreshes the lazy tabs by clearing them.
   const refreshAll = useCallback(async () => {
     await Promise.all([loadBreakdown(), loadTrends(), loadBudget()])
-    if (recommendations.data) await loadRecommendations()
     if (experiments.data) await loadExperiments()
     setInAction({ data: null, loading: false, error: null })
   }, [
-    loadBreakdown, loadTrends, loadBudget, loadRecommendations, loadExperiments,
-    recommendations.data, experiments.data,
+    loadBreakdown, loadTrends, loadBudget, loadExperiments,
+    experiments.data,
   ])
   // Back-compat alias for legacy call sites that already use `loadAll`.
   const loadAll = refreshAll
-
-  // Phase 1.3 — applying a recommendation upserts the workspace override so the
-  // very next sub-agent spawn picks it up. Refresh the recommendation list after
-  // so the row falls off (the gate now sees the user already opted in).
-  const handleApplyRecommendation = useCallback(async (rec: CostRecommendation) => {
-    if (!putSubagentOverride) return
-    await putSubagentOverride({
-      agentType: rec.agentType,
-      model: rec.recommendedModel,
-      projectId: null,
-    })
-    await loadAll()
-    // Refresh the "In Action" report so the boss sees the override land.
-    setInAction({ data: null, loading: false, error: null })
-  }, [putSubagentOverride, loadAll])
 
   return (
     <View className="gap-4">
@@ -386,7 +312,7 @@ export function CostAnalyticsTab({
       <View>
         <Text className="text-lg font-bold text-foreground mb-1">Agent Cost Optimizer</Text>
         <Text className="text-xs text-muted-foreground mb-3">
-          Per-agent cost breakdown, AI recommendations, and budget controls
+          Per-agent cost breakdown, budget controls, and model experiments
         </Text>
         <PeriodSelector value={period} onChange={setPeriod} />
       </View>
@@ -407,25 +333,6 @@ export function CostAnalyticsTab({
       {/* Active Section */}
       {activeSection === 'breakdown' && (
         <AgentBreakdownSection data={breakdown.data} loading={breakdown.loading} icons={icons} />
-      )}
-      {activeSection === 'recommendations' && (
-        <RecommendationsSection
-          data={recommendations.data}
-          loading={recommendations.loading}
-          onApply={overridesAvailable ? handleApplyRecommendation : undefined}
-        />
-      )}
-      {activeSection === 'subagents' && overridesAvailable && (
-        <SubAgentModelsSection
-          workspaceId={workspaceId}
-          fetchOverrides={fetchSubagentOverrides!}
-          putOverride={putSubagentOverride!}
-          deleteOverride={deleteSubagentOverride!}
-          onChange={() => {
-            loadAll()
-            setInAction({ data: null, loading: false, error: null })
-          }}
-        />
       )}
       {activeSection === 'inaction' && (
         <OptimizerInActionSection
@@ -751,11 +658,7 @@ function MetricPill({
 }
 
 // =============================================================================
-// 2. AI Recommendations — moved to ./RecommendationsSection.tsx (Phase 4.3 split)
-// =============================================================================
-
-// =============================================================================
-// 3. Cost Trends
+// 2. Cost Trends
 // =============================================================================
 
 function TrendsSection({

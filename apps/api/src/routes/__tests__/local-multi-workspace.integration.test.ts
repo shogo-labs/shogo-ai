@@ -378,3 +378,75 @@ describe('GET /api/workspaces/activity (local)', () => {
     expect(idle.every((i: any) => i.running === false && i.inFlight === false)).toBe(true)
   })
 })
+
+/**
+ * SHO-71 — a Zernio profile is a standing per-account charge, so it has to go
+ * with the workspace. This is the half of the wipe that leaves our database
+ * entirely, and the only part of the delete that another company bills us for.
+ */
+describe('delete removes the Zernio profile (social)', () => {
+  const deleted: string[] = []
+  let fake: any
+
+  beforeAll(async () => {
+    const { setSocialClient } = await import('../../services/social/client')
+    fake = {
+      mode: 'cloud',
+      async request(req: any) {
+        if (req.method === 'DELETE') deleted.push(req.path)
+        return {}
+      },
+    }
+    setSocialClient(fake)
+  })
+
+  afterAll(async () => {
+    const { setSocialClient } = await import('../../services/social/client')
+    setSocialClient(null)
+  })
+
+  async function ownedWorkspace(label: string) {
+    const res = await request('/api/workspaces', owner, {
+      method: 'POST',
+      body: JSON.stringify({ name: label }),
+    })
+    const id = ((await res.json()) as any).data.id as string
+    await db.socialProfile.create({
+      data: { workspaceId: id, zernioProfileId: `zp_${id}`, externalId: id, name: label },
+    })
+    return id
+  }
+
+  test('the profile is deleted at Zernio before the workspace rows disappear', async () => {
+    const id = await ownedWorkspace('Brand X')
+    deleted.length = 0
+
+    const res = await request(`/api/workspaces/${id}`, owner, { method: 'DELETE' })
+    expect(res.status).toBe(200)
+    expect(deleted).toEqual([`/profiles/zp_${id}`])
+    expect(await db.socialProfile.findUnique({ where: { workspaceId_localWorkspaceId: { workspaceId: id, localWorkspaceId: '' } } })).toBeNull()
+    expect(await db.workspace.findUnique({ where: { id } })).toBeNull()
+  })
+
+  test('a provider failure does not block the wipe and is reported', async () => {
+    const { setSocialClient, SocialError } = await import('../../services/social/client')
+    const id = await ownedWorkspace('Brand Y')
+    setSocialClient({
+      mode: 'cloud',
+      async request() {
+        throw new SocialError(502, 'provider_unreachable', 'Zernio is down')
+      },
+    })
+    try {
+      const res = await request(`/api/workspaces/${id}`, owner, { method: 'DELETE' })
+      expect(res.status).toBe(200)
+      const body: any = await res.json()
+      expect(body.warnings.join(' | ')).toContain('social profile: provider_unreachable: Zernio is down')
+      // The workspace still goes; only the charge is left behind, and loudly.
+      expect(await db.socialProfile.findUnique({ where: { workspaceId_localWorkspaceId: { workspaceId: id, localWorkspaceId: '' } } })).toBeNull()
+      expect(await db.workspace.findUnique({ where: { id } })).toBeNull()
+    } finally {
+      setSocialClient(fake)
+    }
+  })
+})

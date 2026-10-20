@@ -63,6 +63,9 @@ export class WindowManager {
         // Disabled so preload can require the audio capture pipeline while the
         // renderer remains isolated behind contextBridge.
         sandbox: false,
+        // Lets chat message and huddle sounds play right after launch, without
+        // waiting for a click in the window (the browser's autoplay rule).
+        autoplayPolicy: 'no-user-gesture-required',
         additionalArguments: [`--api-port=${getApiPort()}`],
       },
       show: false,

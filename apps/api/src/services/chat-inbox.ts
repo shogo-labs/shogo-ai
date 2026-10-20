@@ -63,6 +63,21 @@ export async function unreadInboxCount(workspaceId: string, userId: string): Pro
   return db.chatInboxItem.count({ where: { workspaceId, userId, readAt: null } })
 }
 
+/**
+ * Unread inbox items, with the thread replies among them. The client uses the
+ * thread count to honor the "thread replies in the Activity badge" setting.
+ */
+export async function unreadInboxSnapshot(
+  workspaceId: string,
+  userId: string,
+): Promise<{ unread: number; unreadThreads: number }> {
+  const [unread, unreadThreads] = await Promise.all([
+    unreadInboxCount(workspaceId, userId),
+    db.chatInboxItem.count({ where: { workspaceId, userId, readAt: null, kind: 'thread' } }),
+  ])
+  return { unread, unreadThreads }
+}
+
 export async function listInbox(
   workspaceId: string,
   userId: string,
@@ -83,14 +98,14 @@ export async function listInbox(
   const page = rows.slice(0, limit)
   const conversationIds = [...new Set(page.map((r: any) => r.conversationId).filter(Boolean))]
   const messageIds = [...new Set(page.map((r: any) => r.messageId).filter(Boolean))]
-  const [conversations, messages, unread] = await Promise.all([
+  const [conversations, messages, snapshot] = await Promise.all([
     conversationIds.length
       ? db.conversation.findMany({ where: { id: { in: conversationIds } }, select: { id: true, kind: true, name: true, slug: true } })
       : [],
     messageIds.length
       ? db.conversationMessage.findMany({ where: { id: { in: messageIds } }, select: { id: true, threadRootId: true } })
       : [],
-    unreadInboxCount(workspaceId, userId),
+    unreadInboxSnapshot(workspaceId, userId),
   ])
   const convById = new Map(conversations.map((c: any) => [c.id, c]))
   const threadById = new Map(messages.map((m: any) => [m.id, m.threadRootId]))
@@ -99,7 +114,8 @@ export async function listInbox(
       { ...r, threadRootId: r.messageId ? threadById.get(r.messageId) ?? null : null },
       r.conversationId ? convById.get(r.conversationId) : undefined,
     )),
-    unread,
+    unread: snapshot.unread,
+    unreadThreads: snapshot.unreadThreads,
     hasMore: rows.length > limit,
   }
 }
@@ -137,7 +153,7 @@ export async function markInboxRead(workspaceId: string, userId: string, input: 
   where.readAt = unread ? { not: null } : null
   const { count } = await db.chatInboxItem.updateMany({ where, data: { readAt: unread ? null : new Date() } })
   if (count) {
-    publishConversationEvent(workspaceId, { type: 'inbox.read', unread: await unreadInboxCount(workspaceId, userId) }, [userId])
+    publishConversationEvent(workspaceId, { type: 'inbox.read', ...(await unreadInboxSnapshot(workspaceId, userId)) }, [userId])
   }
   return count
 }

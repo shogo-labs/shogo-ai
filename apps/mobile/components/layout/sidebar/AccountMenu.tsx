@@ -27,6 +27,7 @@ import { NativeAccountSettingsSection } from "./NativeAccountSettingsSection";
 import { AccountNavLinks } from "./AccountNavLinks";
 import { type UserMenuProps } from "./UserMenuContent";
 import { WorkspaceMenuSection } from "./WorkspaceMenuSection";
+import type { MachineGroupData, MachineWorkspaceRow } from "./MachineWorkspacesGroup";
 import type { AccountSettingsSheetTab } from "../../settings/account-settings-sheets";
 
 function noopNativeSettingsTab(_tab: AccountSettingsSheetTab) {}
@@ -64,6 +65,13 @@ export interface AccountMenuProps extends UserMenuProps {
   onOpenNativeSettingsTab?: (tab: AccountSettingsSheetTab) => void;
   /** Wide-web rail: just the workspace tile, opening the menu beside the rail. */
   tile?: boolean;
+  /**
+   * Paired desktops whose own workspaces are listed under "This Mac"
+   * (SHO-54). Omitted when the caller has not loaded them yet — the group
+   * simply does not render.
+   */
+  machineWorkspaces?: MachineGroupData[];
+  onOpenMachineWorkspace?: (machine: MachineGroupData, workspace: MachineWorkspaceRow) => void;
 }
 
 export function AccountMenu({
@@ -85,6 +93,8 @@ export function AccountMenu({
   onCreatePersonalWorkspace,
   localMode,
   tile,
+  machineWorkspaces,
+  onOpenMachineWorkspace,
 }: AccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
@@ -225,6 +235,8 @@ export function AccountMenu({
                 localMode={localMode}
                 onClose={close}
                 presentation="switcher"
+                machineWorkspaces={machineWorkspaces}
+                onOpenMachineWorkspace={onOpenMachineWorkspace}
               />
             ) : (
             <AccountMenuBody
@@ -245,6 +257,8 @@ export function AccountMenu({
               localMode={localMode}
               onClose={close}
               isNative={false}
+              machineWorkspaces={machineWorkspaces}
+              onOpenMachineWorkspace={onOpenMachineWorkspace}
             />
             )}
           </ScrollView>
@@ -268,6 +282,8 @@ export function WorkspaceHeaderButton({
   hasPersonalWorkspace,
   onCreatePersonalWorkspace,
   localMode,
+  machineWorkspaces,
+  onOpenMachineWorkspace,
 }: AccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
@@ -349,6 +365,8 @@ export function AccountMenuBody({
   onClose,
   isNative = false,
   onOpenNativeSettingsTab,
+  machineWorkspaces,
+  onOpenMachineWorkspace,
 }: AccountMenuProps & { onClose: () => void; isNative?: boolean }) {
   const openNativeTab = onOpenNativeSettingsTab ?? noopNativeSettingsTab;
   const openProfileSheet = useCallback(() => {
@@ -376,6 +394,8 @@ export function AccountMenuBody({
           localMode={localMode}
           onClose={onClose}
           isNative
+          machineWorkspaces={machineWorkspaces}
+          onOpenMachineWorkspace={onOpenMachineWorkspace}
           settingsItems={
             <NativeAccountSettingsSection
               hasWorkspace={!!currentWorkspace}
@@ -428,6 +448,8 @@ export function AccountMenuBody({
         localMode={localMode}
         onClose={onClose}
         isNative={false}
+        machineWorkspaces={machineWorkspaces}
+        onOpenMachineWorkspace={onOpenMachineWorkspace}
       />
       <View className="h-px bg-border" />
       <AccountNavLinks

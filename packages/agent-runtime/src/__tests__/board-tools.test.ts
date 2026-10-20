@@ -123,6 +123,24 @@ describe('board tools', () => {
     expect(out.item).toMatchObject({ key: 'SUP-42', column: 'Open', category: 'active', assignee_agent: 'workspace', fields: { customer: 'Acme' } })
   })
 
+  test('work_item_comment carries the server’s mention_warnings for an ambiguous @Name', async () => {
+    reply = {
+      messageId: 'm-9',
+      threadRootId: 'm1',
+      mention_warnings: ['@New Project matches 7 people or agents — use the tag from team_directory'],
+    }
+    const out = await run('work_item_comment', { item: 'SUP-42', text: '@New Project status?' })
+    expect(calls[0].method).toBe('POST')
+    expect(calls[0].url).toBe('http://api.test/api/internal/workspaces/ws-1/agent-work-items/SUP-42/comments')
+    expect(calls[0].body).toMatchObject({ text: '@New Project status?', projectId: 'proj-1', sessionId: 'sess-1' })
+    expect(out).toMatchObject({
+      ok: true,
+      messageId: 'm-9',
+      threadRootId: 'm1',
+      mention_warnings: ['@New Project matches 7 people or agents — use the tag from team_directory'],
+    })
+  })
+
   test('work_item_move returns WIP warnings', async () => {
     reply = { item: ITEM, warnings: [{ code: 'wip_exceeded', column: 'Open', limit: 10, count: 11 }] }
     const out = await run('work_item_move', { item: 'SUP-42', column: 'Open' })
@@ -265,9 +283,15 @@ describe('handed-off cards are watched', () => {
     expect(registry.get(read.task_id)?.dormant).toBeUndefined()
   })
 
-  test('a card the agent holds itself, or one already in review, is not watched', () => {
+  // SHO-88: handing a card into a review-category column that binds an agent
+  // opens a watch (lacvapps' QA lane is `review`); only a closed card ends one.
+  test('a review-category holder is watched, a closed card is not', () => {
     expect(isHandedOff({ assignee_agent: 'project:proj-1', category: 'active' }, 'project:proj-1')).toBe(false)
-    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'review' }, 'workspace')).toBe(false)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'review' }, 'workspace')).toBe(true)
+    expect(isHandedOff({ assignee_agent: null, column_agent: ENGINEER, category: 'review' }, 'workspace')).toBe(true)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'waiting' }, 'workspace')).toBe(true)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'done' }, 'workspace')).toBe(false)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'dismissed' }, 'workspace')).toBe(false)
     expect(isHandedOff({ assignee_agent: null, column_agent: ENGINEER, category: 'active' }, 'workspace')).toBe(true)
     expect(isHandedOff({ assignee_agent: null, category: 'active' }, 'workspace')).toBe(false)
   })

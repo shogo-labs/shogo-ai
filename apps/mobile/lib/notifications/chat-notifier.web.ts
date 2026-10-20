@@ -14,9 +14,32 @@ import type {
   ChatNotificationPayload,
   NotificationPermissionState,
 } from './chat-notifier'
+import { alertTagFor, alertTitleFor, type ChatAlertReason } from './alert-title'
+import { readDeviceAlertPrefs, type DockBounce } from './device-alert-prefs'
+
+/** Reasons that ask for attention. Replies and mentions get the same nudge as a DM. */
+const ATTENTION_REASONS = new Set<string>(['dm', 'mention', 'broadcast', 'thread'])
+
+/**
+ * Desktop only: bounces the dock icon (macOS) or flashes the taskbar button
+ * (Windows) when a message arrives while the window is in the background.
+ * The main process checks focus again before it asks for attention.
+ */
+export async function requestAttention(reason: ChatAlertReason | null | undefined): Promise<void> {
+  const desktop = getDesktop()
+  if (!desktop?.requestAttention) return
+  if (!reason || !ATTENTION_REASONS.has(reason)) return
+  const prefs = readDeviceAlertPrefs()
+  try {
+    await desktop.requestAttention({ dockBounce: prefs.dockBounce, flashTaskbar: prefs.flashTaskbar })
+  } catch {
+    // Best-effort: a missing attention request is not an error.
+  }
+}
 
 type ShogoDesktopBridge = {
   isDesktop?: boolean
+  requestAttention?: (args: { dockBounce: DockBounce; flashTaskbar: boolean }) => Promise<{ ok: boolean; attention?: boolean }>
   showChatNotification?: (args: {
     title: string
     body: string
@@ -166,7 +189,16 @@ export async function notifyChannelMessage(p: ChannelNotificationPayload): Promi
   if (typeof window === 'undefined' || typeof Notification === 'undefined') return
   if (!getDesktop() && Notification.permission !== 'granted') return
   try {
-    const n = new Notification(p.title, { body: p.body, tag: `channel:${p.conversationId}` })
+    // Same tag for a thread, with `renotify`: each new reply re-alerts and
+    // replaces the previous banner instead of being dropped as a duplicate.
+    // `renotify` is in every browser but missing from the DOM typings, hence the widened type.
+    const options: NotificationOptions & { renotify: boolean } = {
+      body: p.body,
+      tag: alertTagFor(p),
+      renotify: true,
+      silent: p.silent === true,
+    }
+    const n = new Notification(alertTitleFor(p.reason, p.title), options)
     n.onclick = () => {
       try {
         window.focus()

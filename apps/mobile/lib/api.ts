@@ -793,6 +793,12 @@ export const api = {
     return res.data
   },
 
+  /** Tells the server this iPhone's PushKit token, so huddle calls can ring it (null turns that off). */
+  async putVoipToken(http: HttpClient, body: { pushToken: string; voipToken: string | null }) {
+    const res = await http.put<{ ok?: boolean }>('/api/mobile-push-subscriptions/voip', body)
+    return res.data
+  },
+
   async unregisterMobilePushSubscription(http: HttpClient, pushToken: string) {
     const res = await http.delete<{ ok?: boolean }>('/api/mobile-push-subscriptions', { pushToken })
     return res.data

@@ -422,19 +422,47 @@ export function createChannelDocReadTool(ctx: ToolContext): AgentTool {
     label: 'Read Channel Doc',
     description:
       "Read a team chat channel's doc: its shared markdown page of plans, decisions and checklists. Returns the " +
-      'title, content and version (pass version as base_version when you replace the whole doc), or doc: null when ' +
-      'the channel has none yet.',
+      'title, content, version and budget (chars/limit, ok|warn|critical) — pass version as base_version when you ' +
+      'replace the whole doc, or doc: null when the channel has none yet. include_archive lists the sections that ' +
+      'were archived out of it (heading + chars, no bodies); archive_id returns one archived section in full.',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
+      include_archive: Type.Optional(Type.Boolean({ description: 'Also list the sections archived out of this doc.' })),
+      archive_id: Type.Optional(Type.String({ description: 'Return one archived section in full, by id.' })),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { channel: string }
-      const result = await readAgentChannelDoc(workspaceId, input.channel.replace(/^#/, ''), channelIdentity(ctx))
-      return result.ok ? textResult({ ok: true, ...result.data }) : apiError(result, 'Could not read the channel doc')
+      const input = params as { channel: string; include_archive?: boolean; archive_id?: string }
+      const result = await readAgentChannelDoc(workspaceId, input.channel.replace(/^#/, ''), channelIdentity(ctx), {
+        includeArchive: input.include_archive === true,
+        archiveId: input.archive_id,
+      })
+      if (!result.ok || !result.data) return apiError(result, 'Could not read the channel doc')
+      const { doc, url, archives, archive } = result.data
+      if (archive) return textResult({ ok: true, archive, budget: doc?.budget })
+      return textResult({
+        ok: true,
+        doc,
+        url,
+        budget: doc?.budget ?? { chars: 0, limit: 200_000, pct: 0, level: 'ok' },
+        ...(archives ? { archives } : {}),
+      })
     },
   }
+}
+
+function docWriteFailure(result: { error?: string; code?: string; status?: number; details?: Record<string, any> }, fallback: string) {
+  const details = result.details ?? {}
+  return textResult({
+    error: result.error ?? fallback,
+    code: result.code,
+    status: result.status,
+    ...(details.over_by !== undefined ? { over_by: details.over_by, chars: details.chars, limit: details.limit } : {}),
+    ...(details.reason ? { reason: details.reason, heading: details.heading, card: details.card } : {}),
+    ...(details.matches ? { matches: details.matches } : {}),
+    ...(details.next ? { next: details.next } : {}),
+  })
 }
 
 export function createChannelDocUpdateTool(ctx: ToolContext): AgentTool {
@@ -442,26 +470,51 @@ export function createChannelDocUpdateTool(ctx: ToolContext): AgentTool {
     name: 'team_chat_doc_update',
     label: 'Update Channel Doc',
     description:
-      "Change a team chat channel's doc (creating it if needed), attributed to you. Modes: \"patch_section\" " +
-      'replaces the body under one heading (or adds that section), "append" adds to the end, and "replace" rewrites ' +
-      'the whole doc and needs base_version from team_chat_doc_read. Prefer patch_section or append so you do not ' +
-      'overwrite teammates. Everyone in the channel sees the change live and can restore an earlier version. ' +
-      'Fails with code doc_conflict if someone saved since you read it: read again and retry.',
+      "Change a team chat channel's doc (creating it if needed), attributed to you. Every response carries the " +
+      'doc\'s budget (chars/limit, pct, ok|warn|critical). Modes: "patch_section" replaces the body under one ' +
+      'heading (or adds that section), "append" adds to the end, "replace" rewrites the whole doc and needs ' +
+      'base_version from team_chat_doc_read, and "archive_section" moves one section into the doc\'s archive ' +
+      "(replacing it with a pointer line) so a full doc can be slimmed. Prefer patch_section over append/rewrite " +
+      'so you do not clobber teammates. A new section headed like a card (SHO-123, "QA gate", "round 2", ' +
+      '"shipped") or longer than 4,000 chars is refused with code use_card_thread: that narrative belongs in the ' +
+      'card thread via work_item_comment, and force: true overrides. A write that would exceed the limit returns ' +
+      'doc_full with over_by and the next calls — archive a section first. Fails with code doc_conflict if ' +
+      'someone saved since you read it: read again and retry.',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
-      mode: Type.Union([Type.Literal('patch_section'), Type.Literal('append'), Type.Literal('replace')], {
-        description: 'How to apply content.',
-      }),
-      content: Type.String({ description: 'Markdown. For patch_section, the new body of the section (without its heading).' }),
-      section: Type.Optional(Type.String({ description: 'Heading text of the section to replace (patch_section only), e.g. "Decisions".' })),
+      mode: Type.Union(
+        [Type.Literal('patch_section'), Type.Literal('append'), Type.Literal('replace'), Type.Literal('archive_section')],
+        { description: 'How to apply content.' },
+      ),
+      content: Type.Optional(Type.String({
+        description: 'Markdown. For patch_section, the new body of the section (without its heading). Not used by archive_section.',
+      })),
+      section: Type.Optional(Type.String({
+        description: 'Heading text of the section to replace (patch_section) or to archive (archive_section), e.g. "Decisions".',
+      })),
       title: Type.Optional(Type.String({ description: 'New doc title. Omit to keep the current one.' })),
       base_version: Type.Optional(Type.Number({ description: 'Version you read; required for replace.' })),
+      force: Type.Optional(Type.Boolean({
+        description: 'Write a card-narrative or oversized new section anyway (use_card_thread otherwise).',
+      })),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { channel: string; mode: AgentDocMode; content: string; section?: string; title?: string; base_version?: number }
-      if (typeof input.content !== 'string') return textResult({ error: 'content is required', code: 'invalid_input' })
+      const input = params as {
+        channel: string
+        mode: AgentDocMode
+        content?: string
+        section?: string
+        title?: string
+        base_version?: number
+        force?: boolean
+      }
+      if (input.mode === 'archive_section') {
+        if (!input.section?.trim()) return textResult({ error: 'section is required for archive_section', code: 'invalid_input' })
+      } else if (typeof input.content !== 'string') {
+        return textResult({ error: 'content is required', code: 'invalid_input' })
+      }
       if (input.mode === 'patch_section' && !input.section?.trim()) {
         return textResult({ error: 'section is required for patch_section', code: 'invalid_input' })
       }
@@ -475,12 +528,18 @@ export function createChannelDocUpdateTool(ctx: ToolContext): AgentTool {
         section: input.section,
         title: input.title,
         baseVersion: input.base_version,
+        force: input.force === true,
       })
-      if (result.ok && result.data) {
-        const { doc, url } = result.data
-        return textResult({ ok: true, version: doc?.version, title: doc?.title, url })
-      }
-      return apiError(result, 'Could not update the channel doc')
+      if (!result.ok || !result.data) return docWriteFailure(result, 'Could not update the channel doc')
+      const { doc, url, archive } = result.data
+      return textResult({
+        ok: true,
+        version: doc?.version,
+        title: doc?.title,
+        url,
+        budget: doc?.budget,
+        ...(archive ? { archived: { heading: archive.heading, chars: archive.chars, id: archive.id } } : {}),
+      })
     },
   }
 }

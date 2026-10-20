@@ -19,11 +19,13 @@ import { createVoiceHandlers } from '../server'
 const ORIGINAL_RT = process.env.RUNTIME_AUTH_SECRET
 const ORIGINAL_PID = process.env.PROJECT_ID
 const ORIGINAL_API = process.env.SHOGO_API_URL
+const ORIGINAL_CLOUD = process.env.SHOGO_CLOUD_URL
 
 beforeEach(() => {
   delete process.env.RUNTIME_AUTH_SECRET
   delete process.env.PROJECT_ID
   delete process.env.SHOGO_API_URL
+  delete process.env.SHOGO_CLOUD_URL
 })
 
 afterEach(() => {
@@ -33,6 +35,8 @@ afterEach(() => {
   else process.env.PROJECT_ID = ORIGINAL_PID
   if (ORIGINAL_API === undefined) delete process.env.SHOGO_API_URL
   else process.env.SHOGO_API_URL = ORIGINAL_API
+  if (ORIGINAL_CLOUD === undefined) delete process.env.SHOGO_CLOUD_URL
+  else process.env.SHOGO_CLOUD_URL = ORIGINAL_CLOUD
 })
 
 type Call = { url: string; init: RequestInit }
@@ -200,7 +204,181 @@ describe('createVoiceHandlers — runtime-token proxy mode', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('tts + agent.* return 501 in proxy mode (no end-user context)', async () => {
+  test('tts posts to /api/voice/tts and passes audio + model headers through', async () => {
+    const { fetch: fetchImpl, calls } = makeMockFetch(() => ({ status: 200 }))
+    const audio = new Uint8Array([9, 8, 7])
+    const fetchWithAudio = (async (input: any, init: any = {}) => {
+      const url = typeof input === 'string' ? input : String(input)
+      calls.push({ url, init })
+      return new Response(audio, {
+        status: 200,
+        headers: {
+          'content-type': 'audio/mpeg',
+          'x-tts-model-used': 'eleven_v4',
+          'x-tts-model-requested': 'eleven_v4',
+        },
+      })
+    }) as unknown as typeof fetch
+    void fetchImpl
+    const handlers = createVoiceHandlers({
+      proxy: {
+        runtimeToken: 'rt_tts',
+        projectId: 'proj_tts',
+        apiUrl: 'http://api',
+        fetch: fetchWithAudio,
+      },
+    })
+    const res = await handlers.tts(
+      new Request('http://pod/api/voice/tts', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'Narration check.', modelId: 'eleven_v4' }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('audio/mpeg')
+    expect(res.headers.get('x-tts-model-used')).toBe('eleven_v4')
+    expect(res.headers.get('x-tts-model-requested')).toBe('eleven_v4')
+    expect(Array.from(new Uint8Array(await res.arrayBuffer()))).toEqual([9, 8, 7])
+
+    expect(calls).toHaveLength(1)
+    const [call] = calls
+    expect(call.url).toBe('http://api/api/voice/tts?projectId=proj_tts')
+    const headers = (call.init.headers ?? {}) as Record<string, string>
+    expect(headers['x-runtime-token']).toBe('rt_tts')
+    expect(JSON.parse(call.init.body as string)).toEqual({
+      text: 'Narration check.',
+      modelId: 'eleven_v4',
+    })
+  })
+
+  test('tts returns 501 with the desktop message when upstream has no voice route', async () => {
+    const handlers = createVoiceHandlers({
+      proxy: {
+        runtimeToken: 'rt',
+        projectId: 'p',
+        apiUrl: 'http://api',
+        fetch: (async () => new Response('not found', { status: 404 })) as any,
+      },
+    })
+    const res = await handlers.tts(
+      new Request('http://pod/api/voice/tts', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'hi' }),
+      }),
+    )
+    expect(res.status).toBe(501)
+    const body = (await res.json()) as { detail: string }
+    expect(body.detail).toContain('no voice routes')
+  })
+
+  test('a pod with a runtime token but no API host still serves the local-only handlers', async () => {
+    process.env.RUNTIME_AUTH_SECRET = 'rt'
+    process.env.PROJECT_ID = 'p'
+    // No SHOGO_API_URL / SHOGO_CLOUD_URL — CI's env. Construction must not
+    // throw, and everything that never leaves the process must still answer.
+    const handlers = createVoiceHandlers({})
+    expect(
+      (await handlers.audioTags(new Request('http://pod/api/voice/audio-tags'))).status,
+    ).toBe(200)
+    const rejected = await handlers.music(
+      new Request('http://pod/api/voice/music', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'x', compositionPlan: { sections: [] } }),
+      }),
+    )
+    expect(rejected.status).toBe(400)
+    expect(
+      (await handlers.music(new Request('http://pod/api/voice/music', { method: 'GET' }))).status,
+    ).toBe(405)
+    // Only an actual proxied call refuses to guess a host.
+    await expect(
+      handlers.music(
+        new Request('http://pod/api/voice/music', {
+          method: 'POST',
+          body: JSON.stringify({ prompt: 'x' }),
+        }),
+      ),
+    ).rejects.toThrow(/SHOGO_API_URL/)
+  })
+
+  test('tts forwards upstream Warning 199 so a pod caller sees the fallback', async () => {
+    const proxied = (async () =>
+      new Response(new Uint8Array([4, 5]), {
+        status: 200,
+        headers: {
+          'content-type': 'audio/mpeg',
+          'x-tts-model-used': 'eleven_v4_turbo',
+          'x-tts-model-requested': 'eleven_v4',
+          warning: '199 - "eleven_v4 unavailable, used eleven_v4_turbo"',
+        },
+      })) as unknown as typeof fetch
+    const handlers = createVoiceHandlers({
+      proxy: { runtimeToken: 'rt', projectId: 'p', apiUrl: 'http://api', fetch: proxied },
+    })
+    const res = await handlers.tts(
+      new Request('http://pod/api/voice/tts', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'hi', modelId: 'eleven_v4' }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    expect(res.headers.get('x-tts-model-used')).toBe('eleven_v4_turbo')
+    expect(res.headers.get('warning')).toContain('199')
+  })
+
+  test('tts without text never hits the network', async () => {
+    const { fetch: fetchImpl, calls } = makeMockFetch(() => ({ status: 200, body: {} }))
+    const handlers = createVoiceHandlers({
+      proxy: {
+        runtimeToken: 'rt',
+        projectId: 'p',
+        apiUrl: 'http://api',
+        fetch: fetchImpl,
+      },
+    })
+    const res = await handlers.tts(
+      new Request('http://pod/api/voice/tts', { method: 'POST', body: JSON.stringify({}) }),
+    )
+    expect(res.status).toBe(400)
+    expect(calls).toHaveLength(0)
+  })
+
+  test('elevenLabs.textToSpeech goes through the proxy; agent provisioning throws', async () => {
+    const { fetch: fetchImpl, calls } = makeMockFetch(() => ({ status: 200 }))
+    const proxied = (async (input: any, init: any = {}) => {
+      const url = typeof input === 'string' ? input : String(input)
+      calls.push({ url, init })
+      return new Response(new Uint8Array([1, 2]), {
+        status: 200,
+        headers: {
+          'content-type': 'audio/mpeg',
+          'x-tts-model-used': 'eleven_v4_turbo',
+          'x-tts-model-requested': 'eleven_v4',
+        },
+      })
+    }) as unknown as typeof fetch
+    void fetchImpl
+    const handlers = createVoiceHandlers({
+      proxy: {
+        runtimeToken: 'rt',
+        projectId: 'p',
+        apiUrl: 'http://api',
+        fetch: proxied,
+      },
+    })
+    const out = await handlers.elevenLabs.textToSpeech({
+      voiceId: 'v1',
+      text: 'hi',
+      modelId: 'eleven_v4',
+    })
+    expect(out.modelId).toBe('eleven_v4_turbo')
+    expect(out.requestedModel).toBe('eleven_v4')
+    expect(out.fellBack).toBe(true)
+    expect(calls[0]!.url).toBe('http://api/api/voice/tts?projectId=p')
+    expect(() => (handlers.elevenLabs as any).createAgent).toThrow(/not available in runtime-token proxy mode/)
+  })
+
+  test('agent.* return 501 in proxy mode (no end-user context)', async () => {
     const handlers = createVoiceHandlers({
       proxy: {
         runtimeToken: 'rt',
@@ -210,7 +388,6 @@ describe('createVoiceHandlers — runtime-token proxy mode', () => {
       },
     })
     for (const handler of [
-      handlers.tts,
       handlers.agent.create,
       handlers.agent.patch,
       handlers.agent.delete,

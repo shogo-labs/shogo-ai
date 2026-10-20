@@ -15,7 +15,12 @@ import {
   pingPongRun,
   readChain,
 } from '../services/conversation-agent-chain'
-import { buildMentionLookup, resolveFriendlyMentionsWith } from '../services/conversation-mentions'
+import {
+  ambiguousMentionsIn,
+  buildMentionLookup,
+  buildMentionLookupIndex,
+  resolveFriendlyMentionsWith,
+} from '../services/conversation-mentions'
 import { scriptedAgentInvokeFromEnv } from '../services/conversation-agent-script'
 
 const A = { projectId: 'a' }
@@ -103,6 +108,36 @@ describe('friendly mentions', () => {
     expect(resolveFriendlyMentionsWith('mail ana@example.com', lookup)).toBe('mail ana@example.com')
     expect(resolveFriendlyMentionsWith('run `@Analyst` or\n```\n@Done Gate\n```', lookup)).toBe('run `@Analyst` or\n```\n@Done Gate\n```')
     expect(resolveFriendlyMentionsWith('<@a:p:an> already tagged', lookup)).toBe('<@a:p:an> already tagged')
+  })
+
+  test('resolves a prose tag at the end of a card comment and before punctuation', () => {
+    const directory = buildMentionLookup([
+      { token: '<@a:p:dev1>', names: ['Shogo Dev 1'] },
+      { token: '<@a:p:an>', names: ['Issue Pipeline — Analyst', 'Analyst'] },
+    ])
+    expect(resolveFriendlyMentionsWith('@Shogo Dev 1 this is yours — round 2 on the same branch.', directory))
+      .toBe('<@a:p:dev1> this is yours — round 2 on the same branch.')
+    expect(resolveFriendlyMentionsWith('@Shogo Dev 1: round 2', directory)).toBe('<@a:p:dev1>: round 2')
+    expect(resolveFriendlyMentionsWith('@Shogo Dev 1, take it', directory)).toBe('<@a:p:dev1>, take it')
+    expect(resolveFriendlyMentionsWith('over to @Analyst.', directory)).toBe('over to <@a:p:an>.')
+  })
+
+  test('reports the ambiguous names it refused to resolve, and only those', () => {
+    const index = buildMentionLookupIndex([
+      { token: '<@a:p:an>', names: ['Issue Pipeline — Analyst', 'Analyst'] },
+      { token: '<@u:u1>', names: ['Ana Lima', 'Ana'] },
+      { token: '<@u:u2>', names: ['Ana Souza', 'Ana'] },
+      { token: '<@a:p:np1>', names: ['New Project'] },
+      { token: '<@a:p:np2>', names: ['New Project'] },
+      { token: '<@a:p:npa>', names: ['New Project Alpha'] },
+    ])
+    expect(resolveFriendlyMentionsWith('@Analyst and @Ana can you check', index.lookup))
+      .toBe('<@a:p:an> and @Ana can you check')
+    expect(ambiguousMentionsIn('@Analyst and @Ana can you check', index)).toEqual([{ name: 'Ana', count: 2 }])
+    // A longer unambiguous name that starts with an ambiguous one is not a miss.
+    expect(ambiguousMentionsIn('@New Project Alpha is free, @New Project is not', index)).toEqual([{ name: 'New Project', count: 2 }])
+    expect(ambiguousMentionsIn('run `@Ana` in code', index)).toEqual([])
+    expect(ambiguousMentionsIn('nothing tagged here', index)).toEqual([])
   })
 })
 

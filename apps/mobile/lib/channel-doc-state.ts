@@ -8,7 +8,7 @@
  * theirs or overwrites. Pure so it can be unit-tested; `useConversationDoc`
  * drives it.
  */
-import type { ChannelDoc, DocAuthor } from './team-chat-api'
+import type { ChannelDoc, DocAuthor, DocBudget, DocBudgetLevel } from './team-chat-api'
 
 export interface DocDraft {
   title: string
@@ -134,4 +134,44 @@ export function docReducer(state: DocState, action: DocAction): DocState {
 
 export function describeAuthor(author: DocAuthor | null | undefined): string {
   return author?.name ?? 'Someone'
+}
+
+// ─── Budget ──────────────────────────────────────────────────────────────────
+
+/** Mirrors the API's limit; the doc is injected into every agent prompt, so full docs are expensive. */
+export const DOC_LIMIT = 200_000
+export const DOC_WARN_PCT = 70
+export const DOC_CRITICAL_PCT = 85
+
+/** The doc's budget for the text in the editor (the server sends the saved one). */
+export function docBudgetFor(content: string, limit = DOC_LIMIT): DocBudget {
+  const chars = content.length
+  const pct = limit > 0 ? Math.round((chars / limit) * 1000) / 10 : 0
+  const level: DocBudgetLevel = chars >= (limit * DOC_CRITICAL_PCT) / 100
+    ? 'critical'
+    : chars >= (limit * DOC_WARN_PCT) / 100
+      ? 'warn'
+      : 'ok'
+  return { chars, limit, pct, level }
+}
+
+/** `184,210 / 200,000` for the meter. */
+export function formatDocBudget(budget: { chars: number; limit: number }): string {
+  return `${budget.chars.toLocaleString('en-US')} / ${budget.limit.toLocaleString('en-US')}`
+}
+
+/** The doc's sections with the characters each occupies, for the "Archive a section" picker. */
+export function docSections(content: string): Array<{ heading: string; chars: number }> {
+  const lines = content.split('\n')
+  const found: Array<{ heading: string; level: number; start: number; chars: number }> = []
+  lines.forEach((line, i) => {
+    const m = line.match(/^(#{1,6})\s+(.*)$/)
+    if (m && m[2].trim()) found.push({ heading: m[2].trim(), level: m[1].length, start: i, chars: 0 })
+  })
+  found.forEach((section, i) => {
+    const next = found.slice(i + 1).find((s) => s.level <= section.level)
+    const end = next ? next.start : lines.length
+    section.chars = lines.slice(section.start, end).join('\n').replace(/\s+$/, '').length
+  })
+  return found.map(({ heading, chars }) => ({ heading, chars }))
 }

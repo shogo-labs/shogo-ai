@@ -34,6 +34,10 @@ function workspaceLink(path: string, workspaceId = 'ws-1') {
   return signSharedFileToken({ workspaceId, path, exp: Math.floor(Date.now() / 1000) + 3600 })
 }
 
+function projectLink(path: string, projectId = 'proj-a', workspaceId = 'ws-1') {
+  return signSharedFileToken({ projectId, workspaceId, path, exp: Math.floor(Date.now() / 1000) + 3600 })
+}
+
 beforeAll(() => {
   workspacesDir = mkdtempSync(join(tmpdir(), 'local-shared-files-'))
   outsideDir = mkdtempSync(join(tmpdir(), 'local-shared-files-outside-'))
@@ -44,6 +48,7 @@ beforeAll(() => {
   mkdirSync(join(workspacesDir, 'proj-a'), { recursive: true })
   writeFileSync(join(workspacesDir, 'proj-a', 'report.txt'), 'project file')
   symlinkSync(join(workspacesDir, 'proj-a'), join(mergedRoot, 'proj-a'))
+  symlinkSync(outsideDir, join(workspacesDir, 'proj-a', 'project-escape'))
 
   mkdirSync(join(workspacesDir, 'proj-other'), { recursive: true })
   writeFileSync(join(workspacesDir, 'proj-other', 'secret.txt'), 'other workspace')
@@ -91,5 +96,36 @@ describe('local shared file routes: workspace links', () => {
     }
     const otherWorkspace = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink('exports/summary.csv', 'ws-2')}`))
     expect(otherWorkspace.status).toBe(404)
+  })
+})
+
+describe('local shared file routes: project links', () => {
+  // A workspace-runtime agent signs a workspace-relative path, so a
+  // project-scoped link can arrive as `proj-a/report.txt` (SHO-67). Both
+  // shapes must serve the same bytes.
+  it('serves a project-relative path and a redundant project prefix', async () => {
+    const app = localSharedFileRoutes({ workspacesDir })
+    for (const path of ['report.txt', 'proj-a/report.txt']) {
+      const response = await app.fetch(new Request(`http://localhost/api/f/${projectLink(path)}`))
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe('project file')
+      expect(response.headers.get('content-disposition')).toBe('attachment; filename="report.txt"')
+    }
+  })
+
+  it('refuses an escape, a foreign workspace and a missing file', async () => {
+    const app = localSharedFileRoutes({ workspacesDir })
+    const cases = [
+      projectLink('project-escape/host.txt'),
+      projectLink('missing.txt'),
+      projectLink('report.txt', 'proj-a', 'ws-2'),
+      projectLink('report.txt', 'proj-other', 'ws-1'),
+    ]
+    for (const token of cases) {
+      const response = await app.fetch(new Request(`http://localhost/api/f/${token}`))
+      expect(response.status).toBe(404)
+    }
+    // A traversal path cannot even be signed, so it can never reach the route.
+    expect(() => projectLink('proj-a/../proj-other/secret.txt')).toThrow()
   })
 })

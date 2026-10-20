@@ -347,3 +347,153 @@ describe('CardPane', () => {
     expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ text: 'Customer replied' })
   })
 })
+
+describe('cards that know their PR (SHO-64)', () => {
+  const prBlock = (extra: Record<string, unknown> = {}) => ({
+    number: 1519,
+    repo: 'shogo-labs/shogo-ai',
+    url: 'https://github.com/shogo-labs/shogo-ai/pull/1519',
+    state: 'open',
+    draft: false,
+    merged: false,
+    mergedAt: null,
+    headSha: 'abc',
+    headRef: 'sho-64-pr-aware-cards',
+    mergeableState: 'blocked',
+    checks: { total: 4, passing: 3, failing: 0, pending: 1 },
+    failing: [],
+    armed: true,
+    queued: false,
+    ok: true,
+    red: false,
+    syncedAt: new Date().toISOString(),
+    ...extra,
+  })
+
+  beforeEach(() => {
+    routes['GET /api/boards/b1'] = () => ({
+      board,
+      items: [
+        item('1', 'c1', 1, { pr: prBlock() }),
+        item('2', 'c2', 1, { pr: prBlock({ number: 1531, armed: false, red: true, mergeableState: 'unstable', checks: { total: 4, passing: 2, failing: 2, pending: 0 }, failing: [{ name: 'Lint, Typecheck, Test', url: 'https://github.com/shogo-labs/shogo-ai/runs/1' }] }) }),
+        item('3', 'c3', 1, { pr: prBlock({ number: 1537, state: 'closed', merged: true, armed: false, checks: { total: 4, passing: 4, failing: 0, pending: 0 } }) }),
+        item('4', 'c2', 2),
+      ],
+      health: { issues: [] },
+    })
+  })
+
+  test('a board tile names the PR, its checks and whether it is armed', async () => {
+    render(createElement(BoardKanban, { boardId: 'b1', workspaceId: 'ws', mentionables: mentionables as any, onOpenCard: () => {} }))
+    await screen.findByTestId('board-card-SUP-1')
+    expect(screen.getByTestId('board-card-pr-1519').textContent).toContain('#1519 · 3/4 checks · 1 running · armed')
+    expect(screen.getByTestId('board-card-pr-1531').textContent).toContain('#1531 · 2/4 checks · failing')
+    expect(screen.getByTestId('board-card-pr-1537').textContent).toContain('#1537 · merged')
+    // A card without a PR shows no chip.
+    expect(document.querySelector('[data-testid^="board-card-pr-"][data-testid="board-card-pr-"]')).toBeNull()
+    expect(screen.getByTestId('board-card-SUP-4').textContent).not.toContain('#')
+  })
+
+  test('an arm that happened outside the guard shows in a warning tone', async () => {
+    // Armed in a column that may not arm: the board reports it, the PR stays
+    // armed, and the chip stops looking green.
+    routes['GET /api/boards/b1'] = () => ({
+      board,
+      items: [item('6', 'c1', 6, {
+        pr: prBlock({
+          number: 1700,
+          armed: true,
+          armingWarning: true,
+          mergeableState: 'clean',
+          checks: { total: 4, passing: 4, failing: 0, pending: 0 },
+        }),
+      })],
+      health: { issues: [] },
+    })
+    render(createElement(BoardKanban, { boardId: 'b1', workspaceId: 'ws', mentionables: mentionables as any, onOpenCard: () => {} }))
+    const chip = await screen.findByTestId('board-card-pr-1700')
+    expect(chip.textContent).toContain('#1700 · 4/4 checks · armed')
+    const { prTone } = await import('../PullRequestChip')
+    expect(prTone(prBlock({ number: 1700, armed: true, armingWarning: true }) as any)).toBe('warning')
+    expect(prTone(prBlock({ number: 1700, armed: true }) as any)).not.toBe('warning')
+  })
+
+  test('a failing check that is not required still shows on the tile', async () => {
+    // #1533's shape: `unstable`, only `cla` + `Android (emulator)` red. The card
+    // says so, but the board does not treat it as blocked.
+    routes['GET /api/boards/b1'] = () => ({
+      board,
+      items: [item('5', 'c1', 5, {
+        pr: prBlock({
+          number: 1533,
+          red: false,
+          mergeableState: 'unstable',
+          checks: { total: 3, passing: 1, failing: 2, pending: 0 },
+          failing: [{ name: 'cla', url: null }, { name: 'Android (emulator)', url: null }],
+        }),
+      })],
+      health: { issues: [] },
+    })
+    render(createElement(BoardKanban, { boardId: 'b1', workspaceId: 'ws', mentionables: mentionables as any, onOpenCard: () => {} }))
+    const chip = await screen.findByTestId('board-card-pr-1533')
+    expect(chip.textContent).toContain('#1533 · 1/3 checks · failing')
+  })
+
+  test('the column header shows and toggles the arming rule', async () => {
+    routes['PATCH /api/boards/b1/columns/c1'] = (c) => ({ column: { ...columns[0], rules: c.body.rules }, board })
+    render(createElement(BoardKanban, { boardId: 'b1', workspaceId: 'ws', mentionables: mentionables as any, onOpenCard: () => {} }))
+    const toggle = await screen.findByTestId('board-column-arm-Triage')
+    expect(toggle.getAttribute('aria-label')).toBe('Triage: auto-merge not allowed')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ rules: { allowAutoMerge: true } }))
+  })
+
+  test('the card pane shows the PR state, its checks and the failing run', async () => {
+    routes['GET /api/work-items/7'] = () => ({
+      item: item('7', 'c2', 1, { pr: prBlock({ number: 1531, red: true, mergeableState: 'unstable', failing: [{ name: 'Lint, Typecheck, Test', url: 'https://github.com/shogo-labs/shogo-ai/runs/1' }], checks: { total: 2, passing: 1, failing: 1, pending: 0 } }) }),
+      board: { id: 'b1', name: 'Shogo Dev', slug: 'shogo-dev', itemType: 'ticket', conversationId: null, fieldsSchema: [], columns },
+      column: columns[1],
+      url: 'https://x/work?card=7',
+      following: false,
+      recentMessages: [],
+      links: [],
+      agentRuns: [],
+      events: [],
+    })
+    render(createElement(CardPane, { itemId: '7', workspaceId: 'ws', me: 'u1', mentionables: mentionables as any, visible: true, onClose: () => {} }))
+    const section = await waitFor(() => {
+      const el = document.querySelector('[data-rn-shim="card-pr"]')
+      if (!el) throw new Error('no PR section')
+      return el
+    })
+    expect(section.textContent).toContain('#1531 · shogo-labs/shogo-ai')
+    expect(section.textContent).toContain('A required check is failing')
+    expect(section.textContent).toContain('Lint, Typecheck, Test')
+    expect(section.textContent).toContain('Synced')
+  })
+
+  test('an unlinked card offers to link a PR from its details', async () => {
+    routes['GET /api/work-items/7'] = () => ({
+      item: item('7', 'c2', 1),
+      board: { id: 'b1', name: 'Shogo Dev', slug: 'shogo-dev', itemType: 'ticket', conversationId: null, fieldsSchema: [], columns },
+      column: columns[1],
+      url: 'https://x/work?card=7',
+      following: false,
+      recentMessages: [],
+      links: [],
+      agentRuns: [],
+      events: [],
+    })
+    routes['POST /api/work-items/7/links'] = () => ({ link: { id: 'l1', kind: 'pr', refId: '1519' } })
+    render(createElement(CardPane, { itemId: '7', workspaceId: 'ws', me: 'u1', mentionables: mentionables as any, visible: true, onClose: () => {} }))
+    fireEvent.click(await screen.findByText('Details'))
+    fireEvent.change(await screen.findByLabelText('Pull request URL'), { target: { value: 'https://github.com/shogo-labs/shogo-ai/pull/1519' } })
+    fireEvent.click(screen.getByText('Link'))
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toEqual({
+      kind: 'pr',
+      refId: '1519',
+      url: 'https://github.com/shogo-labs/shogo-ai/pull/1519',
+      reason: 'manual',
+    }))
+  })
+})

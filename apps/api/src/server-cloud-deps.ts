@@ -51,6 +51,7 @@ import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { cliAuthRoutes } from './routes/cli-auth'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
+import { machineRoutes } from './routes/machines'
 import { remoteAuditRoutes } from './routes/remote-audit'
 import { mobilePushRoutes } from './routes/mobile-push'
 import { appInstallRoutes } from './routes/app-installs'
@@ -119,6 +120,7 @@ export {
   evalInternalRoutes,
   cliAuthRoutes,
   instanceRoutes,
+  machineRoutes,
   authenticateInstanceWs,
   handleInstanceWsOpen,
   handleInstanceWsMessage,

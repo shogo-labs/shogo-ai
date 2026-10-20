@@ -35,6 +35,7 @@ import { useDraftsFeed, useSavedFeed } from '../../../hooks/useChatItems'
 import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
 import { AgentWorkingBanner } from '../../../components/team-chat/AgentWorkingBanner'
 import { ConversationHeader } from '../../../components/team-chat/ConversationHeader'
+import { ChatPermissionNudge } from '../../../components/notifications/ChatPermissionNudge'
 import { HuddleBanner } from '../../../components/team-chat/Huddle'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
 import { ProjectSidePane } from '../../../components/team-chat/ProjectSidePane'
@@ -433,6 +434,7 @@ export default function ConversationScreen() {
             {header}
             {tabs}
             {huddleBanner}
+            <ChatPermissionNudge />
             {boardId ? (
               <View className="flex-1" style={floating ? { paddingTop: topInset } : undefined}>
                 <BoardKanban

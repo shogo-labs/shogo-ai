@@ -49,6 +49,7 @@ import {
 import { workspaceMeetingRoutes } from './workspace-meetings'
 import { agentChannelRoutes, type AgentChannelAuthContext } from './conversations'
 import { agentBoardRoutes } from './work-boards'
+import { agentSocialRoutes } from './social'
 import {
   createInternalAuthorizers,
   logAuthReject,
@@ -122,6 +123,14 @@ export interface RuntimeInternalRoutesOptions {
   loadAgentCall?: () => Promise<AgentCallService>
   /** Cloud-only GitHub App operations; omitted from the slim desktop bundle. */
   loadGitHub?: () => Promise<GitHubService>
+  /**
+   * Desktop resolves a shared-file target before signing it, so the link and
+   * the download route cannot disagree about what `path` is relative to.
+   * Omitted in cloud, where the project runtime owns the files.
+   */
+  resolveSharedFileTarget?: (
+    scope: { projectId?: string; workspaceId: string; path: string },
+  ) => Promise<{ target: string; normalizedPath: string } | null>
 }
 
 export function numberOr(value: unknown, fallback: number): number {
@@ -250,6 +259,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     loadProjectLifecycle,
     loadAgentCall,
     loadGitHub,
+    resolveSharedFileTarget,
   } = opts
   const { validateAuth, authorizeWorkspaceScope, authorizeWorkspaceRuntimeRequest } =
     createInternalAuthorizers(authenticate)
@@ -706,6 +716,23 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }),
   )
 
+  // Social management mirrors the user routes so `social_media` and the UI can
+  // never drift apart: same bodies, same services, one provider path.
+  app.route(
+    '/',
+    agentSocialRoutes({
+      authorize: async (c) => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return c.json({ error: 'Unauthorized' }, 401)
+        }
+        const identity = await authenticate(c)
+        const projectId = identity?.kind === 'project' ? identity.projectId : undefined
+        return { workspaceId, projectId }
+      },
+    }),
+  )
+
   /**
    * `chat_handoff`: deliver a message into another chat and start its turn,
    * acting as the person whose turn this is. The person comes from the signed
@@ -1127,10 +1154,29 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     try {
       const scope = await loadScope()
       if (scope instanceof Response) return scope
+
+      // Sign the path the download route will actually resolve: a project
+      // link is read from the project root, but a workspace runtime's agent
+      // path is workspace-relative. Resolving here (instead of signing
+      // verbatim) means a missing file fails the mint instead of producing a
+      // link that 404s later.
+      let signedPath = path
+      if (resolveSharedFileTarget) {
+        const resolved = await resolveSharedFileTarget({
+          projectId: scope.projectId,
+          workspaceId: scope.workspaceId,
+          path,
+        })
+        if (!resolved) {
+          return c.json({ error: { code: 'file_not_found', message: 'File not found' } }, 400)
+        }
+        signedPath = resolved.normalizedPath
+      }
+
       const token = signSharedFileToken({
         ...(scope.projectId ? { projectId: scope.projectId } : {}),
         workspaceId: scope.workspaceId,
-        path,
+        path: signedPath,
         exp: now + expiresInDays * 24 * 60 * 60,
         now,
       })
@@ -1141,7 +1187,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         ok: true,
         url: `${origin}/api/f/${encodeURIComponent(token)}`,
         expiresAt: new Date((now + expiresInDays * 24 * 60 * 60) * 1000).toISOString(),
-        path,
+        path: signedPath,
       })
     } catch (err: any) {
       console.error(`[Internal] shared file token for ${label} failed:`, err?.message || err)
@@ -1512,6 +1558,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const base = typeof body?.base === 'string' ? body.base.trim() : ''
     const prBody = typeof body?.body === 'string' ? body.body : ''
     const runId = typeof body?.runId === 'string' ? body.runId.trim() : ''
+    const workItem = typeof body?.workItem === 'string' ? body.workItem.trim() : ''
     if (!title || !head) {
       return c.json({ error: 'title and head are required' }, 400)
     }
@@ -1572,11 +1619,34 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         : auth.kind === 'token'
           ? auth.login ?? undefined
           : `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`
+      // A PR that names a card links itself: explicit `workItem`, then a card
+      // key in the head branch, then one in the title. No key is not an error.
+      let linked: { key: string } | null = null
+      try {
+        const project = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
+        if (project?.workspaceId) {
+          const { linkPullRequestToCard } = await import('../services/work-item-pr.service')
+          const link = await linkPullRequestToCard({
+            workspaceId: project.workspaceId,
+            repoFullName: `${connection.repoOwner}/${connection.repoName}`,
+            number: result.number,
+            url: result.html_url,
+            title,
+            head,
+            workItem,
+            actor: { agentRef: `project:${projectId}` },
+          })
+          if (link) linked = { key: link.key }
+        }
+      } catch (err: any) {
+        console.warn(`[Internal] Could not link PR #${result.number} to a card:`, err?.message ?? err)
+      }
       return c.json({
         ok: true,
         number: result.number,
         url: result.html_url,
         htmlUrl: result.html_url,
+        ...(linked ? { workItem: linked.key } : {}),
         mode: actor.kind === 'personal' ? 'requester' : auth.kind === 'token' ? 'user-token' : 'github-app',
         author,
         credential: credentialUse(actor, author),
@@ -1618,6 +1688,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       }
       const actor = await githubWriteActor(c, projectId, 'github_merge_pr')
       if (actor.kind === 'blocked') return actor.response
+      // A PR linked to a card may only be merged from a column whose rules
+      // allow it: arming from "In Development" is how #1519 merged unwatched.
+      const { mergeGuard } = await import('../services/work-item-pr.service')
+      const guard = await mergeGuard(projectId, number)
+      if (!guard.ok) {
+        return c.json({
+          error: {
+            code: guard.code,
+            message: guard.message,
+            card: guard.card,
+            column: guard.column,
+            allowedColumns: guard.allowedColumns,
+          },
+        }, 409)
+      }
       const result = await github.mergePullRequest({
         ...(actor.kind === 'personal'
           ? { token: actor.token }
@@ -2540,12 +2625,17 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
   })
 
-  /** GET /api/internal/tasks?chatSessionId= — running tasks for a session (the dock). */
+  /**
+   * GET /api/internal/tasks?chatSessionId= — running tasks for a session (the
+   * dock), plus what the session is waiting to be told: a pause, and the titles
+   * its undelivered wakes are for.
+   */
   app.get('/tasks', async (c) => {
     const chatSessionId = c.req.query('chatSessionId') ?? ''
     if (!chatSessionId || !(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
-    const { listTasks, viewOf } = await tasksSvc()
-    return c.json({ tasks: (await listTasks(chatSessionId)).map((row) => viewOf(row)) })
+    const { listTasks, viewOf, sessionWakeState } = await tasksSvc()
+    const [tasks, wake] = await Promise.all([listTasks(chatSessionId), sessionWakeState(chatSessionId).catch(() => null)])
+    return c.json({ tasks: tasks.map((row) => viewOf(row)), ...(wake ? { wake } : {}) })
   })
 
   /** POST /api/internal/tasks/consume  body: { ids } — the agent saw these results. */

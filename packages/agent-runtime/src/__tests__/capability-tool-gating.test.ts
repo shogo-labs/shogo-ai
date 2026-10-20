@@ -117,6 +117,21 @@ describe('filterDisabledCapabilityTools', () => {
     expect(names(makeConfig({ socialMediaEnabled: true })).has('social_media')).toBe(true)
   })
 
+  test('social_media exists on the management opt-in alone, and lookups stay off', () => {
+    const config = makeConfig({ socialManagementEnabled: true })
+    expect(names(config).has('social_media')).toBe(true)
+    // The management opt-in must not turn lookups on: no platform is enabled.
+    expect(enabledSocialPlatforms(config)).toEqual([])
+  })
+
+  test('an inbox call is refused while social management is off', async () => {
+    const tool = createTools(makeCtx(makeConfig({ socialMediaEnabled: true }))).find(
+      (t) => t.name === 'social_media',
+    )!
+    const result = await tool.execute('call-1', { action: 'inbox', kind: 'dms' })
+    expect(JSON.stringify(result)).toContain('Social management is off')
+  })
+
   test('social_media is removed when every platform is off', () => {
     const n = names(makeConfig({
       socialMediaEnabled: true,
@@ -314,8 +329,6 @@ describe('filterSubagentOnlyTools', () => {
   test('team profile keeps the media tools on the main agent and still strips browser/server_sync', () => {
     const n = mainAgentTools(makeConfig())
     expect(n.has('generate_image')).toBe(true)
-    expect(n.has('upscale_image')).toBe(true)
-    expect(n.has('remove_background')).toBe(true)
     expect(n.has('list_media_models')).toBe(true)
     expect(n.has('transcribe_audio')).toBe(true)
     expect(n.has('browser')).toBe(false)
@@ -325,8 +338,8 @@ describe('filterSubagentOnlyTools', () => {
   test('imageGenEnabled: false still removes the image tools from the main agent', () => {
     const n = mainAgentTools(makeConfig({ imageGenEnabled: false }))
     expect(n.has('generate_image')).toBe(false)
-    expect(n.has('upscale_image')).toBe(false)
-    expect(n.has('remove_background')).toBe(false)
+    // Nothing to list once image, video and 3D are all off.
+    expect(n.has('list_media_models')).toBe(false)
   })
 
   test('generate_video appears only with videoGenEnabled: true', () => {

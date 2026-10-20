@@ -30,7 +30,15 @@
  * In a Shogo-managed pod, `RUNTIME_AUTH_SECRET` and `PROJECT_ID` are
  * injected automatically; `createVoiceHandlers({})` detects them and
  * proxies to the Shogo API. No keys, no `getUser`, no companion store
- * are required for the proxy path.
+ * are required for the proxy path, and `tts` / `music` work there —
+ * `tts` forwards to the hosted `POST /api/voice/tts`, `music` to
+ * `POST /api/voice/music`. Only the user-scoped handlers (`signedUrl`,
+ * `agent.*`) return 501 in proxy mode; everything on `elevenLabs` except
+ * `textToSpeech` / `composeMusic` throws.
+ *
+ * An explicit `apiKey` wins over the ambient runtime token, so
+ * `createVoiceHandlers({ apiKey })` stays BYO even inside a pod —
+ * `config.mode` (`'auto' | 'byo' | 'proxy'`) can force either transport.
  *
  * @example Next.js App Router (BYO ElevenLabs)
  * ```ts

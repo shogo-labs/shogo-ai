@@ -32,6 +32,7 @@ import {
   type RuntimeResolver,
 } from '@shogo-ai/worker/tunnel'
 import { getRuntimeManager } from './runtime'
+import { collectMachineSnapshot } from './machine-snapshot'
 import { wipeCloudKey } from './cloud-key-wipe'
 import { deriveProjectRuntimeToken } from './project-runtime-token'
 import { getShogoCloudUrl } from './cloud-urls'
@@ -117,6 +118,20 @@ const desktopResolver: RuntimeResolver = {
       return getRuntimeManager().getActiveProjects()
     } catch {
       return []
+    }
+  },
+
+  /**
+   * Heartbeat metadata: the workspaces this machine owns, so the cloud can
+   * list them (and keep showing the last-known list while offline) without
+   * mirroring any of the machine's data.
+   */
+  async machineSnapshot() {
+    try {
+      return (await collectMachineSnapshot()) as unknown as Record<string, unknown>
+    } catch (err: any) {
+      console.warn(`[InstanceTunnel] machine snapshot unavailable: ${err?.message ?? err}`)
+      return null
     }
   },
 

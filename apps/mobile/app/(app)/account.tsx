@@ -6,8 +6,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Pressable, ScrollView, Text, View } from "react-native"
-import { useRouter } from "expo-router"
+import { Pressable, Platform, ScrollView, Text, View } from "react-native"
+import { useLocalSearchParams, useRouter } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { observer } from "mobx-react-lite"
 import { ArrowLeft } from "lucide-react-native"
@@ -40,6 +40,11 @@ import {
   scheduleWorkspaceSwitch,
 } from "../../lib/switch-workspace"
 import { setActiveWorkspaceId } from "../../lib/workspace-store"
+import {
+  isDesktopShell,
+  phoneSettingsSheetTab,
+  resolveRequestedWorkspaceId,
+} from "../../lib/phone-settings-route"
 import { SettingsContent } from "./settings"
 
 function noopAccountClose() {}
@@ -60,7 +65,22 @@ export default observer(function AccountPage() {
   const currentWorkspace = useActiveWorkspace()
   const hasAdminAccess = useHasAdminAccess(user?.id)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<AccountSettingsSheetTab | null>(null)
+  const params = useLocalSearchParams<{ tab?: string; workspace?: string }>()
+  // Same tab-availability rules the legacy Settings page uses, so a deep link
+  // that is not available in this mode/platform opens Workspace instead.
+  const settingsOptions = useMemo(
+    () => ({
+      localMode: localMode || !features.billing,
+      showBilling: features.billing,
+      platform: Platform.OS,
+      isDesktop: isDesktopShell(),
+    }),
+    [features.billing, localMode],
+  )
+  const requestedTab = typeof params.tab === "string" ? params.tab : undefined
+  const [settingsTab, setSettingsTab] = useState<AccountSettingsSheetTab | null>(
+    () => phoneSettingsSheetTab(params, settingsOptions),
+  )
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(null)
 
   const allWorkspaces = workspaces?.all ?? []
@@ -101,6 +121,28 @@ export default observer(function AccountPage() {
       setPendingWorkspaceId(null)
     }
   }, [currentWorkspace?.id, pendingWorkspaceId])
+
+  // A settings deep link (`/settings?tab=…` redirected here) opens its sheet.
+  // The `tab` param is consumed by `closeSettingsSheet`, never on mount: a
+  // `setParams` here remounts the route on web and would drop the sheet state
+  // (and `?workspace=`) before it renders. `slackLinked` is left for
+  // `IntegrationsTab`, which owns and clears it.
+  useEffect(() => {
+    if (!requestedTab) return
+    setSettingsTab(phoneSettingsSheetTab({ tab: requestedTab }, settingsOptions))
+  }, [requestedTab, settingsOptions])
+
+  // `?workspace=<id>` switches the active workspace before the tab body renders
+  // — it is what makes the Automations/People deep links show the right one.
+  useEffect(() => {
+    const ownWorkspaceIds =
+      workspaces?.all?.map((workspace: { id: string }) => workspace.id) ?? []
+    const resolved = resolveRequestedWorkspaceId(
+      typeof params.workspace === "string" ? params.workspace : undefined,
+      ownWorkspaceIds,
+    )
+    if (resolved) setActiveWorkspaceId(resolved)
+  }, [params.workspace, workspaces?.all])
 
   const go = useCallback(
     (href: string) => {
@@ -182,7 +224,13 @@ export default observer(function AccountPage() {
     } catch {}
   }, [posthog, signOut])
 
-  const closeSettingsSheet = useCallback(() => setSettingsTab(null), [])
+  // Clearing the consumed `tab` here (not on mount) keeps the deep-linked
+  // sheet open while it renders, and still leaves the Account screen clean:
+  // closing it or pressing Back afterwards does not re-open the sheet.
+  const closeSettingsSheet = useCallback(() => {
+    setSettingsTab(null)
+    if (requestedTab) router.setParams({ tab: undefined } as any)
+  }, [requestedTab, router])
 
   if (!isSupported) return null
 

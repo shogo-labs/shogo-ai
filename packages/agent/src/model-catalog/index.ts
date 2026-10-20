@@ -18,11 +18,13 @@ export {
   MODEL_CATALOG,
   IMAGE_MODEL_CATALOG,
   VIDEO_MODEL_CATALOG,
+  HIGGSFIELD_LEGACY_MODEL_ALIASES,
   AUTO_MODEL_ID,
   OPENROUTER_MODEL_PREFIX,
   type ModelEntry,
   type ImageModelEntry,
   type ImageModelCapabilities,
+  type ModelOptionField,
   type VideoModelEntry,
   type ModelId,
   type ImageModelId,
@@ -53,6 +55,7 @@ export {
 
 export {
   resolveModelId,
+  resolveMediaModelId,
   getModelEntry,
   getImageModelEntry,
   getVideoModelEntry,
@@ -81,6 +84,13 @@ export {
 } from './helpers'
 
 export { ADAPTIVE_THINKING_MODEL_MARKERS, supportsAdaptiveThinking } from './thinking'
+
+export {
+  endpointsOf,
+  mediaOption,
+  mergeModelOptions,
+  optionsForEndpoint,
+} from './media-options'
 
 export {
   registerDynamicModels,

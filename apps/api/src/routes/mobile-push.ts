@@ -131,5 +131,37 @@ export function mobilePushRoutes() {
     return c.json({ ok: true })
   })
 
+  /**
+   * Record this iPhone's PushKit VoIP token, so a huddle ring can show the
+   * native incoming-call screen while the app is closed. `null` clears it (the
+   * "Announce huddle calls" setting is off), and the device then gets the
+   * ordinary alert push instead.
+   */
+  router.put('/mobile-push-subscriptions/voip', async (c) => {
+    const userId = authUserId(c)
+    if (!userId) return unauthorized(c)
+
+    const body = await c.req.json<{ pushToken?: string; voipToken?: string | null }>().catch(
+      () => ({} as { pushToken?: string; voipToken?: string | null }),
+    )
+    const pushToken = typeof body.pushToken === 'string' ? body.pushToken.trim() : ''
+    const { voipToken } = body
+    if (!pushToken || voipToken === undefined) {
+      return c.json({ error: { code: 'invalid_request', message: 'pushToken and voipToken are required' } }, 400)
+    }
+    if (voipToken !== null && (typeof voipToken !== 'string' || !/^[0-9a-fA-F]{16,512}$/.test(voipToken.trim()))) {
+      return c.json({ error: { code: 'invalid_request', message: 'voipToken must be a PushKit hex token or null' } }, 400)
+    }
+
+    const result = await prisma.mobilePushSubscription.updateMany({
+      where: { userId, pushToken },
+      data: { voipToken: voipToken === null ? null : voipToken.trim().toLowerCase() },
+    })
+    if (result.count === 0) {
+      return c.json({ error: { code: 'not_found', message: 'Register this device for push first' } }, 404)
+    }
+    return c.json({ ok: true })
+  })
+
   return router
 }

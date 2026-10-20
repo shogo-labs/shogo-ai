@@ -166,6 +166,7 @@ import {
   deriveApiUrl,
   derivePublicApiUrl,
   getInternalHeaders,
+  NO_API_URL_ERROR,
   listCheckpoints as apiListCheckpoints,
   getCheckpointDiff as apiGetCheckpointDiff,
   rollbackCheckpoint as apiRollbackCheckpoint,
@@ -185,9 +186,11 @@ import {
   type CheckpointCallResult,
 } from './internal-api'
 import { clearGitHubCliEnvCache, githubCliEnvForProject } from './github-cli-credentials'
+import { resolveShareFileLinkTarget } from './share-file-path'
 import { approvalOutcomeResult, waitForCredentialApproval, withCredentialApproval } from './integration-credentials'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
+import { isMemoryFilePath, memoryShrinkGuard, snapshotMemoryFile } from './memory-history'
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
 import { FileStateCache } from './file-state-cache'
 import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES } from './image-size-guard'
@@ -1592,6 +1595,13 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
           description: 'Issue-pipeline run id to embed in the body',
         }),
       ),
+      workItem: Type.Optional(
+        Type.String({
+          description:
+            'Card key to link this PR to (e.g. SHO-42). Omit and the server derives it from a KEY-12 in the ' +
+            'head branch or the title; with no key the PR is simply unlinked.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params, signal) => {
       const input = params as {
@@ -1601,6 +1611,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
         body?: string
         draft?: boolean
         runId?: string
+        workItem?: string
       }
       const title = input.title?.trim()
       const repository = currentGitHubRepository(ctx.workspaceDir)
@@ -1634,6 +1645,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
         body: markedBody,
         draft: input.draft === true,
         ...(input.runId ? { runId: input.runId } : {}),
+        ...(input.workItem?.trim() ? { workItem: input.workItem.trim() } : {}),
       }
       const githubPayload = {
         title: options.title,
@@ -1657,6 +1669,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
           author: botResult.data.author,
           number: botResult.data.number,
           url: botResult.data.url,
+          ...(botResult.data.workItem ? { workItem: botResult.data.workItem } : {}),
           ...(botResult.data.credential ? { credential: botResult.data.credential } : {}),
         })
       }
@@ -2842,6 +2855,13 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
           description: 'utf-8 (default) or base64. base64 is required for binary files.',
         }),
       ),
+      overwrite: Type.Optional(
+        Type.Boolean({
+          description:
+            'Only for memory files (MEMORY.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, STACK.md, memory/*.md): ' +
+            'allow replacing the file with less than half of its current content. Default: refuse (memory_shrink_guard).',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const {
@@ -2849,11 +2869,13 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         content,
         append,
         encoding,
+        overwrite,
       } = params as {
         path: string
         content: string
         append?: boolean
         encoding?: 'utf-8' | 'base64'
+        overwrite?: boolean
       }
       const scratch = scratchPathForWrite(ctx.workspaceDir, requestedPath)
       const filePath = scratch.path
@@ -2897,6 +2919,20 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       const dir = dirname(resolved)
       if (dir && dir !== resolved) mkdirSync(dir, { recursive: true })
 
+      // Memory-file protection (SHO-61). A whole-file write to MEMORY.md /
+      // AGENTS.md / memory/*.md is one keystroke from erasing everything the
+      // agent learned, so: refuse a >50 % shrink unless the caller says
+      // `overwrite: true`, and keep a copy of the previous bytes either way.
+      let memoryHistoryCopy: string | null = null
+      if (isMemoryFilePath(filePath)) {
+        const rejection = memoryShrinkGuard(ctx.workspaceDir, filePath, content, {
+          overwrite,
+          append,
+        })
+        if (rejection) return textResult({ ...rejection })
+        memoryHistoryCopy = snapshotMemoryFile(ctx.workspaceDir, filePath)
+      }
+
       // Resolve target line endings: honor an existing file's detected
       // ending (which itself honors .gitattributes via readFileWithMetadata),
       // otherwise honor .gitattributes for the new path, otherwise LF.
@@ -2931,6 +2967,11 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         path: filePath,
         bytes: content.length,
         ...scratchFields,
+      }
+      if (memoryHistoryCopy) {
+        base.memoryHistory = memoryHistoryCopy
+        base.memoryHistoryHint =
+          'The previous version of this memory file is saved at memoryHistory (read it with read_file) if you need to restore anything.'
       }
       appendImpactHint(ctx, filePath, base)
       // Canvas-API contract hint: surfaced eagerly on every write so the
@@ -3778,6 +3819,14 @@ async function commitEdit(
   replacements: number,
   note?: string,
 ): Promise<AgentToolResult<any>> {
+  // Every edit to a memory file keeps the pre-edit bytes (SHO-61). `edit_file`
+  // is exempt from the shrink guard — it is already a diff — but a careless
+  // `old_string` that spans the lessons block would still be a wipe, and the
+  // history copy is what makes it recoverable.
+  const memoryHistoryCopy = isMemoryFilePath(filePath)
+    ? snapshotMemoryFile(ctx.workspaceDir, filePath)
+    : null
+
   writeWithMetadata(resolved, updated, encoding, target)
 
   // Post-edit state tracking (recordEdit instead of invalidate)
@@ -3801,6 +3850,7 @@ async function commitEdit(
     patch,
   }
   if (note) base.note = note
+  if (memoryHistoryCopy) base.memoryHistory = memoryHistoryCopy
   appendImpactHint(ctx, filePath, base)
   // Mirror the write_file canvas-API contract hint so edits that
   // introduce a new `fetch('/api/X')` get the same eager warning.
@@ -4352,12 +4402,13 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       'This is for individual files, not web apps. Do not invent a localhost or preview URL, and do not use the publish tool for a file download.',
       'Never upload the file to a third-party host (filebin, file.io, transfer.sh, tmpfiles, 0x0.st, or similar) with curl or any other tool; this is the only supported way to hand a user a file.',
       'After this succeeds, paste the returned URL verbatim and tell the user when it expires. Do not delete or overwrite the shared file before the user downloads it.',
-      'In a workspace runtime, pass `project_id` for the project that owns the file. It defaults to the current project, the workspace anchor, or the only attached project; with none of those, the link is served from this workspace.',
+      'In a workspace runtime the file decides where the link points: a file inside a mounted project gets a project link, anything else gets a workspace link. `project_id` only picks the project when the path alone is ambiguous.',
     ].join(' '),
     label: 'Share file',
     parameters: Type.Object({
       path: Type.String({
-        description: 'Workspace-relative path of the file to share.',
+        description:
+          'Workspace-relative path of the file to share (the same path read_file uses). In a workspace runtime a mounted project\'s files are at `<projectId>/…`; the link is minted under whichever project actually owns the file.',
       }),
       expires_in_days: Type.Optional(Type.Number({
         description: 'How many days the link should work, from 1 to 7. Defaults to 7.',
@@ -4365,7 +4416,7 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       project_id: Type.Optional(
         Type.String({
           description:
-            'Project that owns the file. Required in a workspace runtime when more than one project is attached and none is the current or anchor project.',
+            'Optional tiebreaker. The project that owns the file is taken from the path itself (a file under `<projectId>/…` belongs to that project); pass this only when the path sits at the workspace root and you want a particular project named, or to be explicit. A value that contradicts where the file actually lives is ignored and reported in the result.',
         }),
       ),
     }),
@@ -4397,16 +4448,29 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      const projectId = resolveTargetProjectId(ctx, input.project_id)
+      const requestedProjectId = resolveTargetProjectId(ctx, input.project_id)
       const workspaceId = isWorkspaceRuntimeMode()
         ? ctx.workspaceId || resolveRuntimeIdentity().workspaceId
         : null
+
+      // The file's real location decides the scope and the signed path: a
+      // project link is resolved against the project root, which is
+      // `<workspaceDir>/<projectId>/…`, not against the workspace root.
+      const target = resolveShareFileLinkTarget({
+        workspaceDir: ctx.workspaceDir,
+        resolvedPath: resolved,
+        path,
+        requestedProjectId,
+        mountedProjectIds: workspaceAttachedProjectIds(),
+        workspaceRuntime: isWorkspaceRuntimeMode(),
+      })
+      const projectId = target.projectId
       if (!projectId && !workspaceId) {
         return textResult({
           error: 'No project selected. Pass project_id for the project that owns this file.',
         })
       }
-      const linkOptions = { path, expiresInDays: input.expires_in_days }
+      const linkOptions = { path: target.linkPath, expiresInDays: input.expires_in_days }
       // With no single owning project, the link is served by this workspace
       // runtime, which is where the file was just found.
       const result = projectId
@@ -4420,14 +4484,23 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      const filename = path.split('/').pop() || path
+      const filename = target.linkPath.split('/').pop() || target.linkPath
       return textResult({
         ok: true,
         url: result.data.url,
         filename,
         size: fileSize,
         expiresAt: result.data.expiresAt,
-        path,
+        path: target.linkPath,
+        linkPath: target.linkPath,
+        ...(projectId ? { projectId } : {}),
+        ...(target.ignoredProjectId
+          ? {
+              note: projectId
+                ? `The file lives in project ${projectId}, so the link was minted there instead of ${target.ignoredProjectId}. Path signed: ${target.linkPath}`
+                : `The file is not inside any mounted project, so the link was minted as a workspace link instead of under ${target.ignoredProjectId}. Path signed: ${target.linkPath}`,
+            }
+          : {}),
       })
     },
   }
@@ -8692,7 +8765,15 @@ const SOCIAL_CACHE_TTL_SECONDS = 10 * 60
 
 export type SocialPlatformName = 'instagram' | 'tiktok'
 
-/** Platforms the `social_media` tool may call. Empty when the tool should be hidden. */
+/**
+ * Whether `social_media` exists at all: public lookups and account management
+ * are separate opt-ins, and a workspace may want either without the other.
+ */
+export function socialMediaToolEnabled(config: import('./gateway').GatewayConfig): boolean {
+  return config.socialMediaEnabled === true || config.socialManagementEnabled === true
+}
+
+/** Platforms the `social_media` tool may call. Empty when lookups are off. */
 export function enabledSocialPlatforms(config: import('./gateway').GatewayConfig): SocialPlatformName[] {
   if (config.socialMediaEnabled !== true) return []
   const platforms: SocialPlatformName[] = []
@@ -8708,8 +8789,55 @@ function socialPlatformSchema(platforms: SocialPlatformName[]) {
 }
 
 /**
- * Public Instagram/TikTok profile and recent-post lookup. The EnsembleData
- * token stays on the API server; this calls `POST ${TOOLS_PROXY_URL}/social/...`.
+ * Call the internal social routes — the same handlers the desktop composer and
+ * the UI use, so a tool action cannot drift from what a person sees.
+ */
+async function socialInternalCall(
+  ctx: ToolContext,
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<{ ok: true; data: any } | { ok: false; error: string; suggestion?: string }> {
+  const workspaceId = ctx.workspaceId
+  if (!workspaceId) {
+    return { ok: false, error: 'No workspace in scope for social inbox calls.' }
+  }
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, error: NO_API_URL_ERROR }
+  try {
+    const response = await fetch(
+      `${apiUrl.replace(/\/$/, '')}/api/internal/workspaces/${encodeURIComponent(workspaceId)}${path}`,
+      {
+        method,
+        headers: getInternalHeaders(),
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(20_000),
+      },
+    )
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: (data as any)?.error?.message ?? (data as any)?.error ?? `HTTP ${response.status}`,
+        suggestion:
+          response.status === 409
+            ? 'Connect the account, then run action "inbox" with kind "dms" or "comments" to sync first.'
+            : undefined,
+      }
+    }
+    return { ok: true, data }
+  } catch (err: any) {
+    return { ok: false, error: `Social inbox request failed: ${err?.message ?? err}` }
+  }
+}
+
+/**
+ * Public Instagram/TikTok profile and recent-post lookup, plus the connected
+ * accounts' own inbox: threads and comments, and answering them.
+ *
+ * The lookup calls `POST ${TOOLS_PROXY_URL}/social/...` (the EnsembleData token
+ * stays on the API server); the inbox actions call the internal social routes,
+ * which are the same handlers the UI uses.
  */
 function createSocialMediaTool(ctx: ToolContext): AgentTool {
   const platforms = enabledSocialPlatforms(ctx.config)
@@ -8717,35 +8845,259 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
   return {
     name: 'social_media',
     description:
-      `Look up a public social profile or its recent posts (views, likes, comments, shares). ` +
-      `Enabled platforms: ${platformList}. ` +
-      `Use action "profile" for the bio and display name, or "recent_posts" for the latest posts. ` +
-      `Each call spends paid API units — prefer one call with a sufficient limit over several small ones.`,
+      `Look up a public social profile or its recent posts (views, likes, comments, shares), ` +
+      `or work the connected accounts' inbox. ` +
+      `Enabled lookup platforms: ${platformList}. ` +
+      `Actions: "profile" and "recent_posts" take a handle; ` +
+      `"inbox" lists DM threads (kind "dms") or comments (kind "comments"); ` +
+      `"reply" takes conversation_id + text; "comment_reply" takes comment_id + text; ` +
+      `"automate" manages comment→DM automations (automation_action create/list/pause/resume/delete). ` +
+      `Lookups spend paid API units — prefer one call with a sufficient limit over several small ones. ` +
+      `Inbox replies are public/sent as the connected account: quote the user's own words when unsure.`,
     label: 'Social Media',
     parameters: Type.Object({
-      platform: socialPlatformSchema(platforms),
-      action: Type.Union([Type.Literal('profile'), Type.Literal('recent_posts')], {
-        description: 'profile | recent_posts',
-      }),
-      handle: Type.String({ description: 'Account handle, with or without a leading @.' }),
+      action: Type.Union(
+        [
+          Type.Literal('profile'),
+          Type.Literal('recent_posts'),
+          Type.Literal('inbox'),
+          Type.Literal('reply'),
+          Type.Literal('comment_reply'),
+          Type.Literal('automate'),
+        ],
+        { description: 'profile | recent_posts | inbox | reply | comment_reply | automate' },
+      ),
+      platform: Type.Optional(socialPlatformSchema(platforms)),
+      handle: Type.Optional(Type.String({ description: 'Account handle, with or without a leading @. Required for profile/recent_posts.' })),
       limit: Type.Optional(Type.Number({
-        description: 'How many recent posts to return (1-50, default 20). Ignored for profile.',
+        description: 'How many posts or inbox rows to return (1-50, default 20).',
       })),
+      kind: Type.Optional(Type.Union([Type.Literal('dms'), Type.Literal('comments')], {
+        description: 'For action "inbox": which half of the inbox to list.',
+      })),
+      unread_only: Type.Optional(Type.Boolean({ description: 'For action "inbox": only threads with unread messages.' })),
+      conversation_id: Type.Optional(Type.String({ description: 'For action "reply": the inbox thread id.' })),
+      comment_id: Type.Optional(Type.String({ description: 'For action "comment_reply": the comment id.' })),
+      text: Type.Optional(Type.String({ description: 'For "reply" / "comment_reply": what to send.' })),
+      automation_action: Type.Optional(
+        Type.Union(
+          [
+            Type.Literal('create'),
+            Type.Literal('list'),
+            Type.Literal('pause'),
+            Type.Literal('resume'),
+            Type.Literal('delete'),
+          ],
+          { description: 'For action "automate": what to do with the workspace comment automations.' },
+        ),
+      ),
+      automation_kind: Type.Optional(
+        Type.Union(
+          [Type.Literal('comment_dm'), Type.Literal('keyword_reply'), Type.Literal('sequence')],
+          { description: 'comment_dm (DM the commenter), keyword_reply (public reply only) or sequence (a comment-triggered DM graph).' },
+        ),
+      ),
+      automation_id: Type.Optional(Type.String({ description: 'For automate pause/resume/delete: the automation id from automate list.' })),
+      account_id: Type.Optional(Type.String({ description: 'For automate create: the connected account id to run it on.' })),
+      name: Type.Optional(Type.String({ description: 'For automate create: a label for the automation.' })),
+      keywords: Type.Optional(Type.String({ description: 'For automate create: comma-separated trigger keywords, e.g. "merge,link".' })),
+      dm_message: Type.Optional(Type.String({ description: 'For automate create: the DM to send the commenter.' })),
+      comment_reply: Type.Optional(Type.String({ description: 'For automate create: a public reply under the comment (required on reply-only platforms).' })),
+      messages: Type.Optional(Type.String({ description: 'For a sequence: comma-separated DM messages sent in order, 1-3.' })),
     }),
     execute: async (_toolCallId, rawParams) => {
       // The platform enum is built from the enabled set, so TypeBox cannot
       // infer the parameter object. Read the fields explicitly.
-      const params = rawParams as { platform?: unknown; action?: unknown; handle?: unknown; limit?: unknown }
-      const platform = String(params.platform ?? '')
-      const action = params.action === 'recent_posts' ? 'recent_posts' : params.action === 'profile' ? 'profile' : ''
-      const handle = String(params.handle ?? '').trim().replace(/^@+/, '')
+      const params = rawParams as {
+        action?: unknown
+        platform?: unknown
+        handle?: unknown
+        limit?: unknown
+        kind?: unknown
+        unread_only?: unknown
+        conversation_id?: unknown
+        comment_id?: unknown
+        text?: unknown
+        automation_action?: unknown
+        automation_kind?: unknown
+        automation_id?: unknown
+        account_id?: unknown
+        name?: unknown
+        keywords?: unknown
+        dm_message?: unknown
+        comment_reply?: unknown
+        messages?: unknown
+      }
+      const action = String(params.action ?? '')
       const allowed = enabledSocialPlatforms(ctx.config)
+      const limit = typeof params.limit === 'number' && Number.isFinite(params.limit)
+        ? Math.min(50, Math.max(1, Math.floor(params.limit)))
+        : 20
+
+      // Two opt-ins, checked per action: lookups spend paid lookup units, and
+      // managing the connected accounts does not. Turning one on must not turn
+      // the other on, so neither may be read as the other's gate. The lookup
+      // path keeps its own platform check further down.
+      const managementActions = new Set(['inbox', 'reply', 'comment_reply', 'automate'])
+      if (managementActions.has(action) && ctx.config.socialManagementEnabled !== true) {
+        return textResult({
+          error: 'Social management is off for this project: the inbox, replies and automations are disabled. Turn on the Social management capability to use them.',
+        })
+      }
+
+      if (action === 'automate') {
+        const step = String(params.automation_action ?? 'list')
+        if (step === 'list') {
+          const result = await socialInternalCall(ctx, 'GET', `/social/automations?limit=${limit}`)
+          if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+          const automations = Array.isArray(result.data?.automations) ? result.data.automations : []
+          return textResult({
+            count: automations.length,
+            automations: automations.map((automation: any) => ({
+              automation_id: automation.id,
+              name: automation.name,
+              kind: automation.kind,
+              platform: automation.platform,
+              status: automation.status,
+              keywords: automation.keywords,
+              runs: automation.runCount,
+            })),
+          })
+        }
+
+        const automationId = String(params.automation_id ?? '').trim()
+        if (step === 'pause' || step === 'resume' || step === 'delete') {
+          if (!automationId) {
+            return textResult({
+              error: 'automation_id is required: run action "automate" with automation_action "list" first.',
+            })
+          }
+          const path = `/social/automations/${encodeURIComponent(automationId)}`
+          const result =
+            step === 'delete'
+              ? await socialInternalCall(ctx, 'DELETE', path)
+              : await socialInternalCall(ctx, 'PATCH', path, {
+                  status: step === 'pause' ? 'paused' : 'active',
+                })
+          if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+          return textResult({
+            ok: true,
+            automation_id: automationId,
+            status: step === 'delete' ? 'deleted' : step === 'pause' ? 'paused' : 'active',
+          })
+        }
+
+        if (step !== 'create') {
+          return textResult({ error: 'automation_action must be create, list, pause, resume or delete.' })
+        }
+
+        const accountId = String(params.account_id ?? '').trim()
+        if (!accountId) {
+          return textResult({
+            error: 'account_id is required: list the connected accounts first to get one.',
+          })
+        }
+        const splitList = (value: unknown) =>
+          String(value ?? '')
+            .split(',')
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        const messages = splitList(params.messages).map((entry) => ({ text: entry }))
+        const body: Record<string, unknown> = {
+          accountId,
+          name: String(params.name ?? '').trim() || 'Comment automation',
+          kind: params.automation_kind ?? 'comment_dm',
+          keywords: splitList(params.keywords),
+        }
+        if (typeof params.dm_message === 'string' && params.dm_message.trim()) {
+          body.dmMessage = params.dm_message.trim()
+        }
+        if (typeof params.comment_reply === 'string' && params.comment_reply.trim()) {
+          body.commentReply = params.comment_reply.trim()
+        }
+        if (messages.length) body.messages = messages
+
+        const result = await socialInternalCall(ctx, 'POST', '/social/automations', body)
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        return textResult({ created: true, ...result.data?.automation })
+      }
+
+      if (action === 'inbox' || action === 'reply' || action === 'comment_reply') {
+        if (action === 'inbox') {
+          const kind = params.kind === 'comments' ? 'comments' : 'dms'
+          if (kind === 'comments') {
+            const result = await socialInternalCall(ctx, 'GET', `/social/comments?limit=${limit}`)
+            if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+            const comments = Array.isArray(result.data?.comments) ? result.data.comments : []
+            return textResult({
+              kind,
+              count: comments.length,
+              comments: comments.map((comment: any) => ({
+                comment_id: comment.id,
+                platform: comment.platform,
+                author: comment.authorUsername ?? comment.authorName ?? null,
+                text: comment.text,
+                status: comment.status,
+                occurred_at: comment.occurredAt,
+                replied_at: comment.repliedAt,
+              })),
+            })
+          }
+          const unread = params.unread_only === true ? '&unread=true' : ''
+          const result = await socialInternalCall(ctx, 'GET', `/social/inbox?limit=${limit}${unread}`)
+          if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+          const conversations = Array.isArray(result.data?.conversations) ? result.data.conversations : []
+          return textResult({
+            kind,
+            count: conversations.length,
+            unread: result.data?.unread ?? 0,
+            conversations: conversations.map((conversation: any) => ({
+              conversation_id: conversation.id,
+              platform: conversation.platform,
+              participant: conversation.participantName ?? conversation.participantId ?? null,
+              unread: conversation.unreadCount,
+              last_message_at: conversation.lastMessageAt,
+              preview: conversation.lastMessagePreview,
+            })),
+          })
+        }
+
+        const text = String(params.text ?? '').trim()
+        if (!text) return textResult({ error: 'text is required to reply.' })
+        if (action === 'reply') {
+          const conversationId = String(params.conversation_id ?? '').trim()
+          if (!conversationId) return textResult({ error: 'conversation_id is required for action "reply".' })
+          const result = await socialInternalCall(
+            ctx,
+            'POST',
+            `/social/inbox/conversations/${encodeURIComponent(conversationId)}/messages`,
+            { text },
+          )
+          if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+          return textResult({ sent: true, ...result.data?.reply })
+        }
+        const commentId = String(params.comment_id ?? '').trim()
+        if (!commentId) return textResult({ error: 'comment_id is required for action "comment_reply".' })
+        const result = await socialInternalCall(
+          ctx,
+          'POST',
+          `/social/comments/${encodeURIComponent(commentId)}/reply`,
+          { text },
+        )
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        return textResult({ sent: true, ...result.data?.reply })
+      }
+
+      const platform = String(params.platform ?? '')
       if (!allowed.includes(platform as SocialPlatformName)) {
         return textResult({
           error: `Platform "${platform || 'unknown'}" is not enabled. Enabled platforms: ${allowed.join(', ') || 'none'}.`,
         })
       }
-      if (!action) return textResult({ error: 'action must be "profile" or "recent_posts".' })
+      if (action !== 'profile' && action !== 'recent_posts') {
+        return textResult({ error: 'action must be profile, recent_posts, inbox, reply, comment_reply or automate.' })
+      }
+      const handle = String(params.handle ?? '').trim().replace(/^@+/, '')
       if (!handle) return textResult({ error: 'handle is required.' })
 
       const proxyUrl = process.env.TOOLS_PROXY_URL
@@ -8757,9 +9109,6 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      const limit = typeof params.limit === 'number' && Number.isFinite(params.limit)
-        ? Math.min(50, Math.max(1, Math.floor(params.limit)))
-        : 20
       const op = action === 'profile' ? 'profile' : 'posts'
       const cacheKey = webCacheKey('social', JSON.stringify({ platform, action, handle: handle.toLowerCase(), limit }))
       const cached = await webCacheGet<AgentToolResult<any>>(cacheKey)
@@ -9651,7 +10000,10 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   // BETA: worktree awareness tool only exists when per-chat worktrees are on (off by default).
   if (config.gitWorktreesEnabled !== true) disabled.add('worktree_list')
   // Social lookups are opt-in, and a platform that is off must not be callable.
-  if (enabledSocialPlatforms(config).length === 0) disabled.add('social_media')
+  // Management is a separate opt-in, so the tool survives on either — but a
+  // workspace with lookups on and every platform off has nothing to look up.
+  const lookupsUsable = enabledSocialPlatforms(config).length > 0
+  if (!lookupsUsable && config.socialManagementEnabled !== true) disabled.add('social_media')
 
   const memoryOff = config.memoryEnabled === false
   if (disabled.size === 0 && !memoryOff) return tools

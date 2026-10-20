@@ -303,7 +303,20 @@ export interface ChatSettings {
   notifyDefault: NotifyLevel
   keywords: string[]
   emailDigest: 'off' | 'daily'
+  messageSound: MessageSound
+  huddleSound: HuddleSound
+  /** Direct messages also appear in the Activity inbox. */
+  dmInActivity: boolean
+  /** Unread thread replies count toward the Activity badge. */
+  threadRepliesInBadge: boolean
+  /** When a phone push goes out. */
+  mobilePushDelay: MobilePushDelay
 }
+
+export type MobilePushDelay = 'immediate' | 'inactive' | 'inactive_5m' | 'inactive_10m'
+
+export type MessageSound = 'default' | 'subtle' | 'off'
+export type HuddleSound = 'ring' | 'chime' | 'off'
 
 export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message' | 'question'
 
@@ -385,6 +398,8 @@ export interface Reminder {
 export interface InboxPage {
   items: InboxItem[]
   unread: number
+  /** The unread items that are thread replies. */
+  unreadThreads?: number
   hasMore: boolean
 }
 
@@ -434,7 +449,7 @@ export type TeamChatEvent =
     }
   | { type: 'status.changed'; userId: string; status: UserStatus | null }
   | { type: 'inbox.created'; item: InboxItem }
-  | { type: 'inbox.read'; unread: number }
+  | { type: 'inbox.read'; unread: number; unreadThreads?: number }
   | { type: 'saved.changed'; messageId: string; saved: boolean }
   | { type: 'draft.changed'; draft: Draft }
   | { type: 'scheduled.failed'; id: string; error: string | null }
@@ -474,9 +489,33 @@ export interface ChannelDoc {
   content: string
   version: number
   locked: boolean
+  /** How full the doc is; the doc is injected into every agent's prompt, so full is expensive. */
+  budget?: DocBudget
   updatedBy: DocAuthor | null
   createdAt: string
   updatedAt: string
+}
+
+export type DocBudgetLevel = 'ok' | 'warn' | 'critical'
+
+export interface DocBudget {
+  chars: number
+  limit: number
+  /** Percent used, one decimal. */
+  pct: number
+  level: DocBudgetLevel
+}
+
+/** A section archived out of a channel doc. `content` is only on a single-archive read. */
+export interface ChannelDocArchive {
+  id: string
+  conversationId: string
+  title: string
+  heading: string
+  chars: number
+  content?: string
+  archivedBy: DocAuthor | null
+  createdAt: string
 }
 
 export interface ChannelDocState {
@@ -673,6 +712,38 @@ export function teamChatApi() {
     },
     async lockDoc(conversationId: string, locked: boolean): Promise<ChannelDoc> {
       return (await http.post<{ doc: ChannelDoc }>(`${conv(conversationId)}/doc/lock`, { locked })).data.doc
+    },
+    async listDocArchives(conversationId: string): Promise<ChannelDocArchive[]> {
+      return (await http.get<{ archives: ChannelDocArchive[] }>(`${conv(conversationId)}/doc/archives`)).data.archives ?? []
+    },
+    async getDocArchive(conversationId: string, archiveId: string): Promise<ChannelDocArchive> {
+      return (await http.get<{ archive: ChannelDocArchive }>(
+        `${conv(conversationId)}/doc/archives/${encodeURIComponent(archiveId)}`,
+      )).data.archive
+    },
+    async archiveDocSection(
+      conversationId: string,
+      section: string,
+      baseVersion: number,
+    ): Promise<{ doc: ChannelDoc; archive: ChannelDocArchive }> {
+      try {
+        return (await http.post<{ doc: ChannelDoc; archive: ChannelDocArchive }>(
+          `${conv(conversationId)}/doc/archives`,
+          { section, baseVersion },
+        )).data
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
+    },
+    async restoreDocArchive(conversationId: string, archiveId: string, baseVersion: number): Promise<ChannelDoc> {
+      try {
+        return (await http.post<{ doc: ChannelDoc }>(
+          `${conv(conversationId)}/doc/archives/${encodeURIComponent(archiveId)}/restore`,
+          { baseVersion },
+        )).data.doc
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
     },
     async save(messageId: string, on: boolean) {
       await http.post(`${msg(messageId)}/save`, { on })

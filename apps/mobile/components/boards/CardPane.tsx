@@ -29,6 +29,7 @@ import { MarkdownText } from '../chat/MarkdownText'
 import { TimelinePane } from '../team-chat/TimelinePane'
 import { OptionSheet } from './OptionSheet'
 import { PRIORITY_DOT } from './priority'
+import { PullRequestSection } from './PullRequestChip'
 
 const api = workBoardsApi()
 const chat = teamChatApi()
@@ -146,6 +147,7 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
           />
           {item.dueAt ? <Chip label={`Due ${new Date(item.dueAt).toLocaleDateString()}`} hint="Due" /> : null}
         </View>
+        {item.pr ? <PullRequestSection pr={item.pr} /> : null}
         {notice ? <Text className="text-xs text-amber-700 dark:text-amber-400">{notice}</Text> : null}
       </View>
       <ScrollView
@@ -164,7 +166,16 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
         {tab === 'thread' ? (
           <CardThread detail={detail} workspaceId={workspaceId} me={me} mentionables={mentionables} conversation={conversation ?? null} visible={visible} onCommented={reload} />
         ) : tab === 'details' ? (
-          <CardDetails detail={detail} onPatch={patch} />
+          <CardDetails
+            detail={detail}
+            onPatch={patch}
+            onLinkPr={item.pr ? undefined : async (url) => {
+              const number = url.match(/\/pull\/(\d+)/)?.[1]
+              if (!number) throw new Error('That is not a pull request URL')
+              await api.linkPullRequest(item.id, url, number)
+              await reload()
+            }}
+          />
         ) : tab === 'history' ? (
           <CardHistory itemId={item.id} mentionables={mentionables} />
         ) : (
@@ -207,7 +218,7 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
 }
 
 /** Description, summary and board fields — the long-form parts of a card. */
-function CardDetails({ detail, onPatch }: { detail: WorkItemDetail; onPatch: (change: ItemPatch) => void }) {
+function CardDetails({ detail, onPatch, onLinkPr }: { detail: WorkItemDetail; onPatch: (change: ItemPatch) => void; onLinkPr?: (url: string) => Promise<void> }) {
   const { item, board } = detail
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -259,6 +270,7 @@ function CardDetails({ detail, onPatch }: { detail: WorkItemDetail; onPatch: (ch
           <MarkdownText>{item.historySummary}</MarkdownText>
         </View>
       ) : null}
+      {onLinkPr ? <PullRequestSection pr={undefined} onLink={onLinkPr} /> : null}
       {fieldEntries.length ? (
         <View className="gap-1">
           {fieldEntries.map(([key, value]) => {

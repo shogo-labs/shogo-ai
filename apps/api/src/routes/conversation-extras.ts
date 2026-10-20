@@ -36,7 +36,17 @@ import {
   updateReminder,
   updateScheduled,
 } from '../services/chat-items'
-import { getDoc, listRevisions, restoreRevision, saveDoc, setDocLocked } from '../services/conversation-doc.service'
+import {
+  archiveSection,
+  getArchive,
+  getDoc,
+  listArchives,
+  listRevisions,
+  restoreArchive,
+  restoreRevision,
+  saveDoc,
+  setDocLocked,
+} from '../services/conversation-doc.service'
 
 export interface ExtrasHelpers {
   requireUser: (c: any) => Promise<string | Response>
@@ -177,6 +187,55 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     const body = await h.readJson(c)
     try {
       return c.json({ doc: await setDocLocked(c.req.param('conversationId'), userId, body.locked !== false) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  // ─── Archived doc sections ──────────────────────────────────────────────
+
+  router.get('/conversations/:conversationId/doc/archives', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json({ archives: await listArchives(c.req.param('conversationId'), userId) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.get('/conversations/:conversationId/doc/archives/:archiveId', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json({ archive: await getArchive(c.req.param('conversationId'), userId, c.req.param('archiveId')) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversations/:conversationId/doc/archives', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await h.readJson(c)
+    try {
+      const { doc, archive } = await archiveSection(c.req.param('conversationId'), userId, {
+        section: String(body.section ?? ''),
+        baseVersion: Number.isInteger(body.baseVersion) ? body.baseVersion : undefined,
+      })
+      return c.json({ doc, archive })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversations/:conversationId/doc/archives/:archiveId/restore', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await h.readJson(c)
+    try {
+      const doc = await restoreArchive(c.req.param('conversationId'), userId, c.req.param('archiveId'), body.baseVersion)
+      return c.json({ doc })
     } catch (err) {
       return h.errorResponse(c, err)
     }

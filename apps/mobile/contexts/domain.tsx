@@ -88,6 +88,7 @@ export function DomainProvider({ children }: { children: ReactNode }) {
       credentials={isNative ? 'omit' : 'include'}
       getAuthCookie={isNative ? getAuthCookie : undefined}
       remoteProxyBaseUrl={remoteProxyBaseUrl}
+      machineWorkspaceId={instance?.source === 'machine' ? (instance.localWorkspaceId ?? null) : null}
       onRemoteError={(error, path) => {
         console.warn('[DomainProvider] Remote request failed:', path, error.message)
       }}

@@ -7,7 +7,7 @@
  */
 import { useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { AlertTriangle, Bot, Clock, KanbanSquare, List, Plus, Search, X } from 'lucide-react-native'
+import { AlertTriangle, Bot, Clock, GitPullRequest, KanbanSquare, List, Plus, Search, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { Mentionables } from '../../lib/team-chat-api'
 import { workBoardsApi, type BoardColumn, type HealthIssue, type WorkItem } from '../../lib/work-boards-api'
@@ -17,6 +17,7 @@ import { DraggableCard, DropZone, supportsDrag } from './drag'
 import { OptionSheet } from './OptionSheet'
 import { Lane } from './Lane'
 import { PRIORITY_DOT } from './priority'
+import { PullRequestChip } from './PullRequestChip'
 import { WorkItemRow } from './WorkItemRow'
 import { WorkingIndicator } from './WorkingIndicator'
 
@@ -61,6 +62,15 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
       void reload()
     } catch (err) {
       setNotice(err instanceof Error ? err.message : 'Could not add the card')
+    }
+  }
+
+  const toggleArming = async (column: BoardColumn) => {
+    try {
+      await api.updateColumn(boardId, column.id, { rules: { ...(column.rules ?? {}), allowAutoMerge: !column.rules?.allowAutoMerge } })
+      void reload()
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Could not change the column rule')
     }
   }
 
@@ -170,6 +180,7 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
               onOpen={onOpenCard}
               onMenu={setMenuFor}
               onAdd={(title) => addCard(column, title)}
+              onToggleArming={() => void toggleArming(column)}
             />
           ))}
         </ScrollView>
@@ -201,6 +212,7 @@ interface ColumnProps {
   onOpen: (item: WorkItem) => void
   onMenu: (item: WorkItem) => void
   onAdd: (title: string) => Promise<void>
+  onToggleArming: () => void
 }
 
 function Column(props: ColumnProps) {
@@ -208,6 +220,7 @@ function Column(props: ColumnProps) {
   const [hoverCard, setHoverCard] = useState<string | null>(null)
   const badges = columnBadges(column, items.length, props.issues)
   const agent = column.agentRef ? agentName(column.agentRef, props.mentionables) : null
+  const arming = column.rules?.allowAutoMerge === true
   return (
     <Lane
       title={column.name}
@@ -221,12 +234,28 @@ function Column(props: ColumnProps) {
           <Text className="text-[10px] font-medium text-destructive">{badges.breaches}</Text>
         </View>
       ) : null}
-      right={agent ? (
-        <View className="flex-row items-center gap-1" accessibilityLabel={`${agent} works this column`}>
-          <Bot size={12} className="text-muted-foreground" />
-          <Text className="max-w-24 text-[11px] text-muted-foreground" numberOfLines={1}>{agent}</Text>
+      right={(
+        <View className="flex-row items-center gap-1.5">
+          {agent ? (
+            <View className="flex-row items-center gap-1" accessibilityLabel={`${agent} works this column`}>
+              <Bot size={12} className="text-muted-foreground" />
+              <Text className="max-w-24 text-[11px] text-muted-foreground" numberOfLines={1}>{agent}</Text>
+            </View>
+          ) : null}
+          {/* Cards here may have their PR armed and merged by an agent. */}
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityState={{ checked: arming }}
+            accessibilityLabel={`${column.name}: ${arming ? 'auto-merge allowed' : 'auto-merge not allowed'}`}
+            onPress={props.onToggleArming}
+            testID={`board-column-arm-${column.name}`}
+            className={cn('flex-row items-center gap-1 rounded px-1 py-0.5', arming ? 'bg-emerald-500/10' : 'hover:bg-muted')}
+          >
+            <GitPullRequest size={11} className={arming ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'} />
+            {arming ? <Text className="text-[10px] font-medium text-emerald-700 dark:text-emerald-400">arm</Text> : null}
+          </Pressable>
         </View>
-      ) : null}
+      )}
       dragging={!!props.dragging}
       onDropCard={(id) => props.onDrop(id, null)}
       footer={<AddCard onAdd={props.onAdd} />}
@@ -294,6 +323,7 @@ export function CardTile({ item, issues, mentionables, selected, faded, onPress,
       </View>
       <Text className="text-sm text-foreground" numberOfLines={3}>{item.title}</Text>
       <View className="flex-row flex-wrap items-center gap-1.5">
+        {item.pr ? <PullRequestChip pr={item.pr} /> : null}
         {who ? (
           <View className="flex-row items-center gap-1 rounded bg-muted px-1.5 py-0.5">
             {item.assigneeAgentRef ? <Bot size={10} className="text-muted-foreground" /> : null}

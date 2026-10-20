@@ -191,6 +191,11 @@ function AppLayoutInner() {
     pathname === "/profile" || pathname === "/(app)/profile";
   const isAccountPage =
     pathname === "/account" || pathname === "/(app)/account";
+  // Phone Settings redirects to Account (`lib/phone-settings-route.ts`). The
+  // redirect frame must not draw the legacy AppHeader or open the legacy
+  // AppSidebar drawer — it is a phone screen, not the wide Settings page.
+  const isSettingsPage =
+    pathname === "/settings" || pathname === "/(app)/settings";
   const isSearchPage = pathname === "/search" || pathname === "/(app)/search";
   const isProjectChatsPage =
     pathname === "/project-chats" || pathname === "/(app)/project-chats";
@@ -349,6 +354,7 @@ function AppLayoutInner() {
     isApiKeysPage ||
     isProfilePage ||
     isAccountPage ||
+    isSettingsPage ||
     isSearchPage ||
     isProjectChatsPage ||
     isAIModelsPage ||
@@ -411,9 +417,9 @@ function AppLayoutInner() {
   ]);
 
   useEffect(() => {
-    if (!isWide && !isAccountPage) return;
+    if (!isWide && !isAccountPage && !isSettingsPage) return;
     resetDrawer();
-  }, [isAccountPage, isWide, resetDrawer]);
+  }, [isAccountPage, isSettingsPage, isWide, resetDrawer]);
 
   useEffect(() => {
     if (useMobileWorkspaceShell) resetDrawer();

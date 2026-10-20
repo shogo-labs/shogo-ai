@@ -60,6 +60,10 @@ export function describeEvent(event: WorkItemEvent, mentionables: Mentionables |
       return [`It happened again`, d.environment && `in ${d.environment}`, d.release && `on ${d.release}`].filter(Boolean).join(' ')
     case 'agent_woken':
       return `${agentName(String(d.agentRef ?? 'workspace'), mentionables)} picked it up${d.reason ? ` (${d.reason})` : ''}`
+    case 'agent_wake_queued':
+      return `${agentName(String(d.agentRef ?? 'workspace'), mentionables)} is still working here, so the next wake waits for that reply`
+    case 'agent_wake_deferred':
+      return `${agentName(String(d.agentRef ?? 'workspace'), mentionables)} picks it up in a moment unless it is tagged here first`
     case 'agent_wake_skipped':
       return d.reason === 'rate_limited' ? `${agentName(String(d.agentRef ?? 'workspace'), mentionables)} was not woken again this hour` : null
     case 'agent_failed':

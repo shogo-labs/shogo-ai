@@ -13,12 +13,14 @@
  * build pipeline runs.
  */
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { mkdirSync, writeFileSync } from 'fs'
+import { mkdirSync, realpathSync, writeFileSync } from 'fs'
 import * as realInternalApi from '../internal-api'
 import type { ToolContext } from '../gateway-tools'
 
-const TEST_DIR = '/tmp/test-gateway-tools-publish'
-mkdirSync(TEST_DIR, { recursive: true })
+// Canonical path: the share_file trust check compares real paths, and on
+// macOS /tmp is a symlink to /private/tmp.
+mkdirSync('/tmp/test-gateway-tools-publish', { recursive: true })
+const TEST_DIR = realpathSync('/tmp/test-gateway-tools-publish')
 
 let getPublishStateImpl: (projectId: string) => Promise<any>
 let publishProjectImpl: (projectId: string, opts: any) => Promise<any>
@@ -106,6 +108,14 @@ let fetchThrows = false
 const origFetch = globalThis.fetch
 
 beforeEach(() => {
+  // These are unit tests: pin the runtime mode per test instead of inheriting
+  // it, because a dev/QA agent checkout is itself a workspace runtime
+  // (WORKSPACE_RUNTIME/WORKSPACE_ANCHOR_PROJECT_ID are set in its env).
+  // `describe('workspace runtime project id')` sets them back per test.
+  delete process.env.WORKSPACE_RUNTIME
+  delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+  delete process.env.WORKSPACE_PROJECT_IDS
+  delete process.env.WORKSPACE_ID
   publishCalls = []
   sharedFileCalls = []
   workspaceSharedFileCalls = []
@@ -211,11 +221,16 @@ describe('workspace runtime project id', () => {
   })
 
   test('share_file uses the anchor and never sends the workspace key', async () => {
-    workspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1' })
-    writeFileSync(`${TEST_DIR}/report.pdf`, 'pdf bytes')
-    const result = await runShareFile(baseCtx({ projectId: 'ws:abc' }), { path: 'report.pdf' })
+    workspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1', WORKSPACE_PROJECT_IDS: 'anchor-1' })
+    mkdirSync(`${TEST_DIR}/anchor-1`, { recursive: true })
+    writeFileSync(`${TEST_DIR}/anchor-1/report.pdf`, 'pdf bytes')
+    const result = await runShareFile(baseCtx({ projectId: 'ws:abc' }), { path: 'anchor-1/report.pdf' })
     expect(result.ok).toBe(true)
     expect(sharedFileCalls[0].projectId).toBe('anchor-1')
+    // Signed relative to the project root: a project-scoped download reads
+    // from there, not from the merged workspace root (SHO-67).
+    expect(sharedFileCalls[0].opts.path).toBe('report.pdf')
+    expect(workspaceSharedFileCalls).toHaveLength(0)
   })
 
   // Production: 86 share_file calls in a week failed with "No project

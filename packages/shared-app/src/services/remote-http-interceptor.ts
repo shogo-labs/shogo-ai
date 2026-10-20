@@ -127,6 +127,48 @@ export interface RemoteInterceptorConfig {
    * The UI can show a fallback banner or auto-switch to local mode.
    */
   onRemoteError?: (error: Error, path: string) => void
+
+  /**
+   * Set when `remoteProxyBaseUrl` targets one of a paired desktop's own
+   * workspaces (`/api/machines/<id>/w/<localWorkspaceId>`). Cloud and machine
+   * workspace ids come from different databases, so a `workspaceId` the UI
+   * sends along (the cloud one that happens to be selected) is rewritten to
+   * the machine's own id — otherwise the desktop filters its projects by an
+   * id it has never heard of and answers `200 []`, which reads as "my
+   * projects vanished".
+   */
+  machineWorkspaceId?: string | null
+}
+
+/**
+ * Point a machine-workspace request at the machine's own workspace id.
+ *
+ * Only the query string is touched: routing decisions and the path itself are
+ * workspace-agnostic, and the relay already carries the local workspace id.
+ */
+export function rewriteMachineWorkspaceParam(path: string, localWorkspaceId: string): string {
+  const queryStart = path.indexOf('?')
+  if (queryStart === -1) return path
+  const pathname = path.slice(0, queryStart)
+  const params = new URLSearchParams(path.slice(queryStart + 1))
+  if (!params.has('workspaceId') || params.get('workspaceId') === localWorkspaceId) return path
+  params.set('workspaceId', localWorkspaceId)
+  return `${pathname}?${params.toString()}`
+}
+
+/**
+ * Point a machine-workspace request body at the machine's own workspace id.
+ *
+ * Creates carry `workspaceId` in the body while the UI still holds the cloud
+ * id it was showing; leaving it means the desktop cannot resolve the id and
+ * files the project or folder into whichever workspace happens to be first.
+ * Only plain JSON objects are touched — files, strings and arrays pass through.
+ */
+export function rewriteMachineWorkspaceBody<T>(body: T, localWorkspaceId: string): T {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body
+  const record = body as Record<string, unknown>
+  if (typeof record.workspaceId !== 'string' || record.workspaceId === localWorkspaceId) return body
+  return { ...record, workspaceId: localWorkspaceId } as T
 }
 
 // ─── Path Routing Logic ─────────────────────────────────────────────────────
@@ -214,7 +256,11 @@ export function createRemoteAwareHttpClient(
         }
 
         // Extract path from arguments
-        const path: string = args[0]
+        const originalPath: string = args[0]
+        const path =
+          config.machineWorkspaceId
+            ? rewriteMachineWorkspaceParam(originalPath, config.machineWorkspaceId)
+            : originalPath
 
         // Check if this path should be routed to remote
         const shouldRoute = shouldRouteToRemote(path)
@@ -227,6 +273,12 @@ export function createRemoteAwareHttpClient(
         const rewrittenPath = rewritePathForRemote(path, config.remoteProxyBaseUrl)
         const newArgs = [...args]
         newArgs[0] = rewrittenPath
+
+        // A create still carries the cloud workspaceId in its body; point it at
+        // the machine's own workspace so the record lands where the user is.
+        if (config.machineWorkspaceId && (prop === 'post' || prop === 'patch')) {
+          newArgs[1] = rewriteMachineWorkspaceBody(newArgs[1], config.machineWorkspaceId)
+        }
 
         // Build the common header bag once
         const remoteHeaders: Record<string, string> = {

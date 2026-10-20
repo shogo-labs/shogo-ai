@@ -312,6 +312,16 @@ export function localWorkspaceRoutes(options: LocalWorkspaceRouteOptions = {}): 
 
     const warnings: string[] = []
 
+    // Zernio bills per connected account, so the profile has to go while we can
+    // still name it — deleting the row first would leave a permanent charge.
+    try {
+      const { deleteProfileForWorkspace } = await import('../services/social/profiles.service')
+      const profile = await deleteProfileForWorkspace(workspaceId)
+      if (profile.error) warnings.push(`social profile: ${profile.error}`)
+    } catch (err: any) {
+      warnings.push(`social profile: ${err?.message ?? err}`)
+    }
+
     // Stop every runtime this workspace owns before its files disappear: the
     // workspace-session runtime (`ws:<id>`) and each project-anchored one
     // (`ws:proj:<projectId>`), which are separate processes.

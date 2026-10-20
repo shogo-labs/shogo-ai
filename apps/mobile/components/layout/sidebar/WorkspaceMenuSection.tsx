@@ -15,6 +15,7 @@ import { EVENTS, trackEvent } from "../../../lib/analytics";
 import { CompactUsageWindows } from "../../billing/UsageWindows";
 import { densityFor } from "../../../lib/phone-density";
 import { AccountSettingsGroup } from "./AccountSettingsGroup";
+import { MachineWorkspacesGroup, type MachineGroupData, type MachineWorkspaceRow } from "./MachineWorkspacesGroup";
 import { isCloudWorkspace, useCloudWorkspaces } from "../../../lib/workspace-route";
 import { workspaceColor, workspaceInitial } from "../../../lib/workspace-color";
 import { useCloudSession } from "../../../hooks/useCloudSession";
@@ -55,6 +56,13 @@ export interface WorkspaceMenuSectionProps {
    * (identity, settings, usage) without the workspace list.
    */
   presentation?: "full" | "switcher" | "workspace-menu";
+  /**
+   * Paired desktops and their own workspaces ("This Mac"). Listed next to the
+   * cloud workspaces so the machine's rows sit where the user already switches
+   * context; omitted while they are still loading.
+   */
+  machineWorkspaces?: MachineGroupData[];
+  onOpenMachineWorkspace?: (machine: MachineGroupData, workspace: MachineWorkspaceRow) => void;
 }
 
 /**
@@ -99,6 +107,8 @@ export function WorkspaceMenuSection({
   accountItems,
   settingsItems,
   presentation = "full",
+  machineWorkspaces,
+  onOpenMachineWorkspace,
 }: WorkspaceMenuSectionProps) {
   const posthog = usePostHogSafe();
   const density = densityFor(isNative);
@@ -376,6 +386,15 @@ export function WorkspaceMenuSection({
           </Pressable>
         );
       })}
+      {machineWorkspaces && onOpenMachineWorkspace && (
+        <MachineWorkspacesGroup
+          machines={machineWorkspaces}
+          onOpen={(machine, workspace) => {
+            onOpenMachineWorkspace(machine, workspace);
+            onClose();
+          }}
+        />
+      )}
       {!localMode && hasPersonalWorkspace === false && onCreatePersonalWorkspace && (
         <Pressable
           onPress={() => {
@@ -481,6 +500,16 @@ export function WorkspaceMenuSection({
           </Pressable>
         );
       })}
+      {machineWorkspaces && onOpenMachineWorkspace && (
+        <MachineWorkspacesGroup
+          machines={machineWorkspaces}
+          onOpen={(machine, workspace) => {
+            onOpenMachineWorkspace(machine, workspace);
+            onClose();
+          }}
+          compact
+        />
+      )}
       {!localMode && hasPersonalWorkspace === false && onCreatePersonalWorkspace && (
         <Pressable
           onPress={() => {

@@ -44,6 +44,36 @@ export interface BoardColumn {
   wipLimit: number | null
   agentRef: string | null
   slaHours: number | null
+  /** `{ allowAutoMerge?: boolean }` — a card's PR may be armed/merged here. */
+  rules?: ColumnRules
+}
+
+export interface ColumnRules {
+  allowAutoMerge?: boolean
+}
+
+/** A card's linked pull request, as the server last read it from GitHub. */
+export interface CardPullRequest {
+  number: number
+  repo: string
+  url: string | null
+  state: 'open' | 'closed'
+  draft: boolean
+  merged: boolean
+  mergedAt: string | null
+  headSha: string | null
+  headRef: string | null
+  mergeableState: string | null
+  checks: { total: number; passing: number; failing: number; pending: number }
+  failing: Array<{ name: string; url: string | null }>
+  armed: boolean
+  queued: boolean
+  ok: boolean
+  /** A blocking check is red. */
+  red: boolean
+  /** Armed while its column does not allow arming — reported, never un-armed. */
+  armingWarning?: boolean
+  syncedAt: string | null
 }
 
 export interface BoardField {
@@ -107,6 +137,8 @@ export interface WorkItem {
   createdAt: string
   column?: { id: string; name: string; category: ColumnCategory }
   board?: { id: string; name: string; slug: string; conversationId: string | null; itemType: ItemType }
+  /** The card's linked pull request, when it has one. */
+  pr?: CardPullRequest
   /** Agent replies running in the card's thread right now (board views only). */
   working?: WorkingAgent[]
 }
@@ -145,6 +177,9 @@ export interface WorkItemLink {
   reason: string
   snippet: string | null
   url: string | null
+  /** Live state of what the link points at (a `pr` link's checks, armed, state). */
+  metadata?: Record<string, unknown> | null
+  syncedAt?: string | null
   private?: boolean
   createdAt: string
 }
@@ -257,7 +292,7 @@ export function workBoardsApi() {
     async createColumn(boardId: string, input: { name: string; category?: ColumnCategory; after?: string }) {
       return (await http.post<Board>(`${board(boardId)}/columns`, input)).data
     },
-    async updateColumn(boardId: string, columnId: string, patch: Partial<Pick<BoardColumn, 'name' | 'category' | 'wipLimit' | 'agentRef' | 'slaHours'>>) {
+    async updateColumn(boardId: string, columnId: string, patch: Partial<Pick<BoardColumn, 'name' | 'category' | 'wipLimit' | 'agentRef' | 'slaHours' | 'rules'>>) {
       return (await http.patch<Board>(`${board(boardId)}/columns/${encodeURIComponent(columnId)}`, patch)).data
     },
     async createItem(boardId: string, input: ItemPatch & { title: string; column?: string }): Promise<WorkItem> {
@@ -301,6 +336,10 @@ export function workBoardsApi() {
     },
     async follow(itemId: string, following: boolean) {
       return (await http.post<{ following: boolean }>(`${item(itemId)}/follow`, { following })).data
+    },
+    /** Link a PR by number (the server fills in repo/number from the URL). */
+    async linkPullRequest(itemId: string, url: string, refId: string) {
+      return (await http.post<{ link: WorkItemLink }>(`${item(itemId)}/links`, { kind: 'pr', refId, url, reason: 'manual' })).data
     },
   }
 }

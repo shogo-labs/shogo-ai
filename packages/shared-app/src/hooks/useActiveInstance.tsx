@@ -71,6 +71,23 @@ export interface ActiveInstance {
    * workspace switches.
    */
   origin?: string
+  /**
+   * What is being looked at:
+   *  - `'machine'` this is one of a paired desktop's *own* workspaces
+   *    (the "This Mac" group in the workspace switcher), reached through
+   *    `/api/machines/<id>/w/<localWorkspaceId>`. It is deliberately not
+   *    tied to the cloud workspace the UI happens to have selected, so it
+   *    survives a cloud workspace switch.
+   *  - undefined — the older meaning: a device selected inside a cloud
+   *    workspace (Remote Control), routed through `/api/instances/<id>/p`.
+   */
+  source?: 'machine'
+  /**
+   * The desktop's own workspace id, for `source: 'machine'`. Cloud ids and
+   * machine ids live in different databases; every relayed call carries this
+   * so the desktop knows which of its workspaces the user opened.
+   */
+  localWorkspaceId?: string
 }
 
 export type InstanceStatus = 'online' | 'heartbeat' | 'offline' | 'unknown'
@@ -239,6 +256,10 @@ export function ActiveInstanceProvider({
 
   const remoteAgentBaseUrl = useMemo(() => {
     if (!instance || !apiUrl) return null
+    if (instance.source === 'machine') {
+      if (!instance.localWorkspaceId) return null
+      return `${apiUrl}/api/machines/${instance.instanceId}/w/${instance.localWorkspaceId}`
+    }
     return `${apiUrl}/api/instances/${instance.instanceId}/p`
   }, [instance, apiUrl])
 
@@ -267,6 +288,7 @@ async function validateInstance(
   fetchOptions?: RequestInit,
 ): Promise<{ valid: boolean; status?: InstanceStatus; kind?: InstanceKind }> {
   if (!apiUrl) return { valid: false }
+  if (inst.source === 'machine') return validateMachine(inst, apiUrl, fetchFn, fetchOptions)
   try {
     const res = await fetchFn(`${apiUrl}/api/instances/${inst.instanceId}`, {
       ...fetchOptions,
@@ -281,6 +303,34 @@ async function validateInstance(
     const kind: InstanceKind | undefined =
       data.kind === 'desktop' || data.kind === 'cli-worker' ? data.kind : undefined
     return { valid: true, status, kind }
+  } catch {
+    return { valid: false }
+  }
+}
+
+/**
+ * A machine workspace is validated against `/api/machines`, not
+ * `/api/instances/:id`: the list is already owner-scoped, so a machine that
+ * disappears from it means the device key was revoked or the machine was
+ * unpaired — the stored context is no longer usable and gets cleared.
+ */
+async function validateMachine(
+  inst: ActiveInstance,
+  apiUrl: string,
+  fetchFn: typeof fetch,
+  fetchOptions?: RequestInit,
+): Promise<{ valid: boolean; status?: InstanceStatus; kind?: InstanceKind }> {
+  try {
+    const res = await fetchFn(`${apiUrl}/api/machines`, { ...fetchOptions })
+    if (!res.ok) return { valid: false }
+    const data = await res.json()
+    const found = (data?.machines ?? []).find((m: any) => m.id === inst.instanceId)
+    if (!found) return { valid: false }
+    const status: InstanceStatus =
+      found.status === 'online' || found.status === 'heartbeat' || found.status === 'offline'
+        ? found.status
+        : 'unknown'
+    return { valid: true, status, kind: 'desktop' }
   } catch {
     return { valid: false }
   }
@@ -329,6 +379,10 @@ export function computeRemoteProxyBaseUrl(
   remoteAgentBaseUrl: string | null,
 ): string | null {
   if (!instance || !remoteAgentBaseUrl) return null
+  // A machine workspace always tunnels: the desktop owns the projects, chats
+  // and tool-call logs of its own workspace, and `remoteAgentBaseUrl` already
+  // points at that machine's relay (`/api/machines/<id>/w/<localWorkspaceId>`).
+  if (instance.source === 'machine') return remoteAgentBaseUrl
   if (instance.kind === 'desktop') return remoteAgentBaseUrl
   return null
 }

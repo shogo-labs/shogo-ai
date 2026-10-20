@@ -78,6 +78,14 @@ export interface RuntimeResolver {
    * tunnel falls back to a generic `NO_LOCAL_RUNTIME` payload.
    */
   describeRejection?(pathWithQuery: string, projectId?: string): ResolveRejection;
+
+  /**
+   * Owner-gated snapshot of this machine's own workspaces (ids, names,
+   * counts — never transcripts). Carried on every heartbeat so the cloud
+   * can list a machine's workspaces, and show its last-known state while
+   * it is offline, without persisting anything machine-specific.
+   */
+  machineSnapshot?(): Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
 }
 
 interface TunnelRequest {
@@ -284,6 +292,12 @@ export class WorkerTunnel {
       });
     } catch {
       meta.activeProjects = 0;
+    }
+    try {
+      const machine = await this.opts.resolver.machineSnapshot?.();
+      if (machine) meta.machine = machine;
+    } catch {
+      // Best-effort: a stale snapshot is better than no heartbeat at all.
     }
     return meta;
   }

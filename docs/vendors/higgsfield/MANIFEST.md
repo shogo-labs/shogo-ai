@@ -13,7 +13,13 @@ weekly and opens an issue when the vendor's docs have moved on.
 | File | What it is | sha256 |
 | --- | --- | --- |
 | `llms-full.txt` | The vendor's full documentation export, verbatim | sha256 `2fad4318604b12daa073b74affaf748b07fa6c62d006c5f0e5fdbb57f9ff995b` |
-| `catalog.json` | Endpoint ids + schemas derived from `llms-full.txt` | sha256 `b320f543ed9798e5b9ee03b3afce44f2d71d2f63c5cedcadf69113697e626881` |
+| `catalog.json` | Endpoint ids + schemas derived from `llms-full.txt` | sha256 `8651cce1b16204722ed7fa29d4ee3103037e04376ff63a0c72c592ecd458677b` |
+
+The catalog carries every documented constraint per field — `enum`, `minimum`,
+`maximum`, `multipleOf`, `default`, `title`, `minItems`/`maxItems`, `maxLength`
+and the item schema of array-of-object fields (`multi_prompt[]`) — because the
+generated media catalog and the request builder validate against these numbers
+rather than restating them by hand.
 
 ## Where they came from
 

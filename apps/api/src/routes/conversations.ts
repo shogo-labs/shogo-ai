@@ -56,7 +56,7 @@ import {
   updateConversation,
   updateMembership,
 } from '../services/conversation.service'
-import { getDocForAgent, updateDocAsAgent } from '../services/conversation-doc.service'
+import { getArchiveForAgent, getDocForAgent, listArchivesForAgent, updateDocAsAgent } from '../services/conversation-doc.service'
 import { afterMessagePosted } from '../services/conversation-pipeline'
 import { AgentMessageError, postAgentMessage, updateAgentMessage } from '../services/chat-providers/outbound'
 import { blocksForKind, cardToMarkdown, normalizeCard, normalizeKind, normalizeQuestionDrafts, questionsOf, questionsToMarkdown } from '../services/conversation-message-kind'
@@ -73,7 +73,7 @@ import { decideApproval, listPendingApprovals } from '../services/conversation-a
 import { liveActivityApprovalAnswered } from '../services/approval-live-activity'
 import { loadWorkLog } from '../services/agent-work-log'
 import { chainForAgentPost, rootChain, setThreadOwner } from '../services/conversation-agent-chain'
-import { loadAgentCard, loadTeamDirectory, loadUserCard, resolveFriendlyMentions, setAgentBuddyLook } from '../services/conversation-directory'
+import { loadAgentCard, loadTeamDirectory, loadUserCard, setAgentBuddyLook } from '../services/conversation-directory'
 import { listTeamChannels, syncTeamChannelOwnership, TeamChannelError, upsertTeamChannel } from '../services/conversation-team-channels'
 import { huddleUserIds } from '../services/huddle.service'
 import { getPresence } from '../services/conversation-presence'
@@ -1301,13 +1301,28 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (!conversation) return c.json({ error: { code: 'not_found', message: 'Channel not found or not visible to this agent' } }, 404)
     if (await isolatedIn(conversation.id, projectId)) return c.json(ISOLATED_ERROR, 403)
     try {
+      const archiveId = c.req.query('archive_id')
+      if (archiveId) {
+        return c.json({ channel: { id: conversation.id, name: conversation.name }, archive: await getArchiveForAgent(conversation, archiveId) })
+      }
       const doc = await getDocForAgent(conversation)
-      return c.json({ channel: { id: conversation.id, name: conversation.name }, doc, url: docUrl(conversation.id) })
+      const wantArchives = c.req.query('include_archive') === '1' || c.req.query('include_archive') === 'true'
+      const archives = wantArchives ? await listArchivesForAgent(conversation) : undefined
+      return c.json({
+        channel: { id: conversation.id, name: conversation.name },
+        doc,
+        url: docUrl(conversation.id),
+        ...(archives ? { archives } : {}),
+      })
     } catch (err) {
       return errorResponse(c, err)
     }
   })
 
+  /**
+   * Write to a channel doc as an agent. `archive_section` moves one section into
+   * the doc's archive (see SHO-62); every response carries the doc's budget.
+   */
   router.put(`${base}/:channel/doc`, async (c) => {
     const auth = await config.authorize(c)
     if (auth instanceof Response) return auth
@@ -1318,16 +1333,17 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     const conversation = await resolveAgentConversation(auth.workspaceId, c.req.param('channel'), projectId)
     if (!conversation) return c.json({ error: { code: 'not_found', message: 'Channel not found or not visible to this agent' } }, 404)
     if (await isolatedIn(conversation.id, projectId)) return c.json(ISOLATED_ERROR, 403)
-    const mode = body.mode === 'append' || body.mode === 'patch_section' ? body.mode : 'replace'
+    const mode = ['append', 'patch_section', 'archive_section'].includes(body.mode) ? body.mode : 'replace'
     try {
-      const doc = await updateDocAsAgent(conversation, projectId, {
+      const { doc, archive } = await updateDocAsAgent(conversation, projectId, {
         mode,
         content: body.content,
         title: typeof body.title === 'string' ? body.title : undefined,
         section: typeof body.section === 'string' ? body.section : undefined,
         baseVersion: Number.isInteger(body.baseVersion) ? body.baseVersion : undefined,
+        force: body.force === true,
       })
-      return c.json({ doc, url: docUrl(conversation.id) })
+      return c.json({ doc, url: docUrl(conversation.id), ...(archive ? { archive } : {}) })
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -1383,7 +1399,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       const blocks = blocksForKind({ kind, card })
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: await resolveFriendlyMentions(auth.workspaceId, card ? [cardToMarkdown(card), note.trim()].filter(Boolean).join('\n\n') : note, projectId),
+        // Plain `@Name` is resolved at the insert point (`conversation.service.postMessage`).
+        text: card ? [cardToMarkdown(card), note.trim()].filter(Boolean).join('\n\n') : note,
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         threadRootId,
         agentChain,
@@ -1413,6 +1430,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
           url: `${getFrontendUrl()}/c/${encodeURIComponent(conversation.id)}?thread=${encodeURIComponent(rootId)}`,
           ...(tasks.length ? { tasks } : {}),
         },
+        ...(result.mentionWarnings?.length ? { mention_warnings: result.mentionWarnings } : {}),
       }, 201)
     } catch (err) {
       return errorResponse(c, err)
@@ -1455,7 +1473,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     }
     const questions = normalizeQuestionDrafts(body.questions)
     try {
-      const text = typeof body.text === 'string' ? await resolveFriendlyMentions(auth.workspaceId, body.text, projectId) : undefined
+      // An edit never goes through `postMessage`, so `updateAgentMessage` resolves plain `@Name` for it.
+      const text = typeof body.text === 'string' ? body.text : undefined
       let message: any
       if (text !== undefined || card || normalizeKind(body.kind)) {
         ;({ message } = await updateAgentMessage({
@@ -1556,7 +1575,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       }
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: await resolveFriendlyMentions(auth.workspaceId, String(body.text ?? ''), projectId),
+        // Plain `@Name` is resolved at the insert point (`conversation.service.postMessage`).
+        text: String(body.text ?? ''),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         agentChain: await postChain(auth.workspaceId, projectId, body, null),
         ...(onBehalfOf ? { blocks: { onBehalfOf } } : {}),

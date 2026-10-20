@@ -17,15 +17,16 @@
  * (see `code-agent-prompt.ts`). One cross-reference line points there.
  */
 
-import { isAutoModel } from '@shogo/model-catalog'
-import { getAvailableModels } from './available-models'
-
 /**
- * Placeholder for the concrete model id shown in the SDK examples. It is
- * filled from the workspace's model list (see `getShogoSdkGuide`), so the
- * guide never names a model the API does not offer.
+ * Placeholder for the concrete model id shown in the SDK examples. It stays a
+ * placeholder — it used to be filled from the workspace's model list, but that
+ * list is populated asynchronously after boot, so the substituted id changed
+ * between the first two turns of a chat: six bytes inside the *cached* prompt
+ * zone, which invalidated the prefix cache for every session on that runtime
+ * (SHO-82). Telling the agent where to look the ids up costs nothing and is
+ * identical on every deployment.
  */
-const EXAMPLE_LLM_MODEL_PLACEHOLDER = '__EXAMPLE_LLM_MODEL__'
+const EXAMPLE_LLM_MODEL_PLACEHOLDER = '<model id from GET /ai/v1/models>'
 
 const SHOGO_SDK_GUIDE_TEMPLATE = `## Shogo SDK (\`@shogo-ai/sdk\`)
 
@@ -223,12 +224,10 @@ The hook wraps \`@elevenlabs/react\` (or \`@elevenlabs/react-native\`) and gives
 - For installed managed integration tools (Jira, Slack, Gmail, etc.), use \`@shogo-ai/sdk/tools\` per the "Installed Integrations" section above — that subsection has the canonical pattern and is the source of truth for tools usage.`
 
 /**
- * The SDK guide with its example model id taken from the workspace's model
- * list. If the list is not loaded or empty, the example is a placeholder that
- * tells the agent to look the ids up from `GET /ai/v1/models`.
+ * The SDK guide. Deterministic by construction: it is part of the cached
+ * prompt zone, so nothing in here may depend on runtime state (see the
+ * placeholder note above and the `cache-stable-zone-identical` eval).
  */
 export function getShogoSdkGuide(): string {
-  const first = getAvailableModels().find((m) => !isAutoModel(m.id))
-  const example = first?.id ?? '<model id from GET /ai/v1/models>'
-  return SHOGO_SDK_GUIDE_TEMPLATE.replaceAll(EXAMPLE_LLM_MODEL_PLACEHOLDER, example)
+  return SHOGO_SDK_GUIDE_TEMPLATE
 }

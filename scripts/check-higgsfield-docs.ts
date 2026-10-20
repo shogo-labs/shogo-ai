@@ -30,11 +30,9 @@ import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
 import { join, resolve } from 'path'
 import { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG, type ImageModelEntry, type VideoModelEntry } from '../packages/agent/src/model-catalog/models'
-import {
-  HIGGSFIELD_IMAGE_SHAPES,
-  HIGGSFIELD_RESTYLE_PRESETS_PATH,
-} from '../apps/api/src/lib/higgsfield-media'
+import { HIGGSFIELD_RESTYLE_PRESETS_PATH } from '../apps/api/src/lib/higgsfield-media'
 import { deriveCatalog, renderCatalog, type HiggsfieldCatalog } from './derive-higgsfield-catalog'
+import { GENERATED_PATH as GENERATED_MEDIA_CATALOG, renderMediaCatalog } from './generate-media-catalog'
 
 const REPO_ROOT = resolve(import.meta.dir, '..')
 const DOCS_DIR = join(REPO_ROOT, 'docs/vendors/higgsfield')
@@ -119,60 +117,64 @@ for (const entry of Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[]) {
   const kind = entry.genjutsu ? 'edit' : 'video'
   checkEndpoint(entry.id, entry.textToVideoApiModel, kind)
   checkEndpoint(entry.id, entry.imageToVideoApiModel, kind)
-  checkParams(entry.id, entry.textToVideoApiModel, 'duration', entry.durations)
-  if (entry.imageToVideoApiModel) {
-    checkParams(entry.id, entry.imageToVideoApiModel, 'duration', entry.durations)
-    checkParams(entry.id, entry.imageToVideoApiModel, 'resolution', entry.resolutions)
+  // The advertised menu has to be valid on *every* generation endpoint: the
+  // agent picks the endpoint by whether it passes a start image, not the other
+  // way round.
+  for (const endpoint of entry.endpoints ?? []) {
+    checkParams(entry.id, endpoint, 'duration', entry.durations)
   }
-  checkParams(entry.id, entry.textToVideoApiModel, 'resolution', entry.resolutions)
-  checkParams(entry.id, entry.textToVideoApiModel, 'aspect_ratio', entry.aspectRatios)
-  if (entry.imageToVideoApiModel) {
-    checkParams(entry.id, entry.imageToVideoApiModel, 'aspect_ratio', entry.aspectRatios)
-  }
-  if (entry.defaultResolution) {
-    checkParams(entry.id, entry.textToVideoApiModel, 'resolution', [entry.defaultResolution])
+  const primary = entry.textToVideoApiModel ?? entry.imageToVideoApiModel
+  checkParams(entry.id, primary, 'aspect_ratio', entry.aspectRatios)
+  if (entry.defaultResolution) checkParams(entry.id, primary, 'resolution', [entry.defaultResolution])
+  if (entry.durations.length > 0 && !entry.durations.includes(entry.defaultDuration)) {
+    fail(`${entry.id}: defaultDuration ${entry.defaultDuration} is not one of its durations (${entry.durations.join(', ')}).`)
   }
   // A Genjutsu workflow needs the source-clip field the docs document.
-  if (entry.genjutsu && !known[entry.textToVideoApiModel]?.fields.video_url) {
+  if (entry.genjutsu && !known[entry.textToVideoApiModel ?? '']?.fields.video_url) {
     fail(`${entry.id}: the docs' schema for ${entry.textToVideoApiModel} has no 'video_url' — Genjutsu edits need one.`)
   }
-  if (entry.genjutsu === 'restyle' && !known[entry.textToVideoApiModel]?.fields.preset_id) {
+  if (entry.genjutsu === 'restyle' && !known[entry.textToVideoApiModel ?? '']?.fields.preset_id) {
     fail(`${entry.id}: the docs' schema for ${entry.textToVideoApiModel} has no 'preset_id', but restyle requires one.`)
+  }
+  // An advertised option has to be documented on the endpoint it is advertised for.
+  for (const [endpoint, options] of Object.entries(entry.optionsByEndpoint ?? {})) {
+    const documented = known[endpoint]
+    if (!documented) continue
+    for (const option of options) {
+      const spec = documented.fields[option.name]
+      if (!spec) {
+        fail(`${entry.id}: advertises option '${option.name}', which ${endpoint} does not document.`)
+        continue
+      }
+      if (option.enum && spec.enum && option.enum.join(',') !== spec.enum.join(',')) {
+        fail(`${entry.id}: '${option.name}' values on ${endpoint} are ${option.enum.join(', ')} but the docs say ${spec.enum.join(', ')}.`)
+      }
+      if (option.minimum !== undefined && option.minimum !== spec.minimum) {
+        fail(`${entry.id}: '${option.name}' minimum on ${endpoint} is ${option.minimum} but the docs say ${spec.minimum}.`)
+      }
+      if (option.maximum !== undefined && option.maximum !== spec.maximum) {
+        fail(`${entry.id}: '${option.name}' maximum on ${endpoint} is ${option.maximum} but the docs say ${spec.maximum}.`)
+      }
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
-// 4. Request shaping in the client
+// 4. The generated media catalog is current
 // ---------------------------------------------------------------------------
 
-// Every wired image model builds its body from HIGGSFIELD_IMAGE_SHAPES, and
-// every value in that table has to be one the endpoint documents.
-for (const entry of Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[]) {
-  if (entry.provider !== 'higgsfield') continue
-  const shape = HIGGSFIELD_IMAGE_SHAPES[entry.id]
-  if (!shape) {
-    fail(`${entry.id}: has no entry in HIGGSFIELD_IMAGE_SHAPES (apps/api/src/lib/higgsfield-media.ts) — add its documented request shape.`)
-    continue
+// `media-catalog.generated.ts` is rendered from this snapshot plus the overlay.
+// Re-render and diff: a vendor endpoint added or renamed, an option whose bounds
+// changed, or an overlay entry that no longer matches all surface here instead of
+// in a request the vendor rejects.
+try {
+  const rendered = renderMediaCatalog()
+  const onDisk = readFileSync(GENERATED_MEDIA_CATALOG, 'utf8')
+  if (rendered !== onDisk) {
+    fail('packages/agent/src/model-catalog/media-catalog.generated.ts is stale — run `bun run scripts/generate-media-catalog.ts --write` and commit the result.')
   }
-  const endpoints = [entry.apiModel, ...(shape.editWhenReferenced && entry.editApiModel ? [entry.editApiModel] : [])]
-  for (const endpoint of endpoints) {
-    checkParams(`${entry.id} aspect ratios`, endpoint, 'aspect_ratio', shape.aspectRatios)
-    checkParams(`${entry.id} resolutions`, endpoint, 'resolution', shape.resolutions)
-    checkParams(`${entry.id} quality`, endpoint, 'quality', [
-      ...(shape.qualities ?? []),
-      ...(shape.extendedQualities ?? []),
-    ])
-  }
-  // References go to whichever endpoint will actually receive them.
-  if (shape.references) {
-    const target = shape.editWhenReferenced && entry.editApiModel ? entry.editApiModel : entry.apiModel
-    const spec = known[target]?.fields[shape.references.field]
-    if (!spec) {
-      fail(`${entry.id}: sends '${shape.references.field}' to ${target}, which the docs' schema does not define.`)
-    } else if (shape.references.multiple !== (spec.type === 'array')) {
-      fail(`${entry.id}: '${shape.references.field}' on ${target} is documented as ${spec.type}, so references must be sent as ${spec.type === 'array' ? 'an array' : 'a single value'}.`)
-    }
-  }
+} catch (error: any) {
+  fail(`media-catalog.generated.ts cannot be rendered from the snapshot: ${error?.message ?? error}`)
 }
 
 const presetsDocumented = llmsFull.includes(HIGGSFIELD_RESTYLE_PRESETS_PATH)

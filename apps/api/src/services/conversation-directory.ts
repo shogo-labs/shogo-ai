@@ -15,11 +15,13 @@ import { resolveAgentRunModelLabel } from './agent-run-model.service'
 import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 import {
   agentMentionToken,
-  buildMentionLookup,
+  ambiguousMentionsIn,
+  buildMentionLookupIndex,
   collapseRepeatedMentions,
   groupMentionToken,
   resolveFriendlyMentionsWith,
   userMentionToken,
+  type AmbiguousMention,
   type MentionDirectoryEntry,
 } from './conversation-mentions'
 
@@ -84,15 +86,35 @@ export function directoryEntries(directory: TeamDirectory): MentionDirectoryEntr
   return entries
 }
 
+export interface ResolvedMentions {
+  /** `text` with plain `@Name`s turned into tokens. */
+  text: string
+  /** Names left as written because more than one person or agent answers to them. */
+  ambiguous: AmbiguousMention[]
+}
+
 /**
  * Resolve plain `@Name`, `@email` and `@group-handle` in `text` to mention
- * tokens, and fold a mention repeated in parentheses into one.
+ * tokens, and fold a mention repeated in parentheses into one. The names that
+ * could not be resolved because they are ambiguous come back with the text so
+ * the caller can say why nothing was tagged.
  */
-export async function resolveFriendlyMentions(workspaceId: string, text: string, viewerProjectId: string | null = null): Promise<string> {
-  if (!text.includes('@')) return text
-  const directory = await loadTeamDirectory(workspaceId, viewerProjectId)
-  const lookup = buildMentionLookup(directoryEntries(directory))
-  return collapseRepeatedMentions(resolveFriendlyMentionsWith(text, lookup), lookup)
+export async function resolveFriendlyMentions(
+  workspaceId: string,
+  text: string,
+  viewerProjectId: string | null = null,
+): Promise<ResolvedMentions> {
+  if (!text.includes('@')) return { text, ambiguous: [] }
+  const index = buildMentionLookupIndex(directoryEntries(await loadTeamDirectory(workspaceId, viewerProjectId)))
+  return {
+    text: collapseRepeatedMentions(resolveFriendlyMentionsWith(text, index.lookup), index.lookup),
+    ambiguous: ambiguousMentionsIn(text, index),
+  }
+}
+
+/** `mention_warnings` lines for tool results: one per name that could not be resolved. */
+export function mentionWarnings(ambiguous: AmbiguousMention[]): string[] {
+  return ambiguous.map((a) => `@${a.name} matches ${a.count} people or agents — use the tag from team_directory`)
 }
 
 

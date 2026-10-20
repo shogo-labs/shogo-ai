@@ -40,6 +40,8 @@ export function TeamDock({ maxWidth }: { maxWidth: number }) {
     dms: chat.counts.dms,
     activity: activityBadge(chat.counts.inbox, agents.tasks),
   }
+  // Thread replies the user chose to keep out of the number show as a dot.
+  const dots: Record<string, boolean> = { activity: chat.counts.activityDot }
   const surface = 'shadow-sm overflow-hidden bg-transparent'
   const tint = isDark ? 'rgba(28,28,30,0.42)' : 'rgba(255,255,255,0.42)'
 
@@ -50,13 +52,14 @@ export function TeamDock({ maxWidth }: { maxWidth: number }) {
         {ITEMS.map(({ id, label, icon: Icon, href }) => {
           const selected = active === id
           const count = badges[id] ?? 0
+          const dot = count === 0 && !!dots[id]
           return (
             <Pressable
               key={id}
               onPress={() => router.replace(href as any)}
               accessibilityRole="tab"
               aria-selected={selected}
-              accessibilityLabel={count ? `${label}, ${count} unread` : label}
+              accessibilityLabel={count ? `${label}, ${count} unread` : dot ? `${label}, unread` : label}
               className={cn('flex-1 items-center justify-center rounded-full', selected && 'bg-primary/10')}
               style={{ height: SIZE - NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2 }}
             >
@@ -66,6 +69,7 @@ export function TeamDock({ maxWidth }: { maxWidth: number }) {
                   <Text className="text-[10px] font-semibold leading-4 text-white">{badgeText(count)}</Text>
                 </View>
               )}
+              {dot && <View testID="dock-dot" className="absolute right-4 top-1 h-2 w-2 rounded-full bg-destructive" />}
             </Pressable>
           )
         })}

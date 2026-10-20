@@ -33,7 +33,7 @@ import {
   updateMessageInternal,
   type PostMessageResult,
 } from './conversation.service'
-import { createInboxItems, unreadInboxCount } from './chat-inbox'
+import { createInboxItems, unreadInboxSnapshot } from './chat-inbox'
 import {
   kindOf,
   questionOptions,
@@ -459,7 +459,7 @@ async function clearInboxItems(row: any, questions: QuestionBlock[]): Promise<vo
   if (!done.length) return
   await db.chatInboxItem.updateMany({ where: { id: { in: done.map((i) => i.id) } }, data: { readAt: new Date() } })
   for (const userId of new Set(done.map((i) => i.userId as string))) {
-    publishConversationEvent(row.workspaceId, { type: 'inbox.read', unread: await unreadInboxCount(row.workspaceId, userId) }, [userId])
+    publishConversationEvent(row.workspaceId, { type: 'inbox.read', ...(await unreadInboxSnapshot(row.workspaceId, userId)) }, [userId])
   }
 }
 

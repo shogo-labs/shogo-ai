@@ -17,7 +17,7 @@ export interface EmitWorkspaceEventInput {
   workspaceId: string
   type: string
   version?: number
-  source?: 'shogo' | 'composio'
+  source?: 'shogo' | 'composio' | 'zernio'
   payload: unknown
   /** Same key, same event: repeated emits are no-ops. */
   dedupeKey: string

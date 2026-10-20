@@ -61,4 +61,17 @@ describe('computeRemoteProxyBaseUrl', () => {
     // the validation poll to hydrate `kind`.
     expect(computeRemoteProxyBaseUrl(inst(undefined), baseUrl)).toBeNull()
   })
+
+  it('tunnels a machine workspace even though it is not a cloud workspace (SHO-54)', () => {
+    // A "This Mac" row is one of the desktop's own workspaces. Its data is
+    // the desktop's, so every stateful read has to go through the machine
+    // relay — never to the cloud, which has never heard of that workspace.
+    const machineBase = 'https://studio.shogo.ai/api/machines/inst-1/w/lw-1'
+    const machine: ActiveInstance = {
+      ...inst('desktop'),
+      source: 'machine',
+      localWorkspaceId: 'lw-1',
+    }
+    expect(computeRemoteProxyBaseUrl(machine, machineBase)).toBe(machineBase)
+  })
 })

@@ -1,0 +1,172 @@
+{
+  "models": {
+    "hoshi-2-0": {
+      "model": "hoshi-2-0",
+      "date": "2026-10-20T08:47:37.486Z",
+      "perTest": {
+        "cache-warm-repeat": {
+          "ratio": 0.9835374796025861,
+          "firstTurnRatio": 0.9940286707030356,
+          "turnTokens": 192252,
+          "prefixTokens": 45856,
+          "turns": 3
+        },
+        "cache-multiturn-history": {
+          "ratio": 0.9426577382535619,
+          "firstTurnRatio": 0.9920084011551589,
+          "turnTokens": 95225,
+          "prefixTokens": 45856,
+          "turns": 5
+        },
+        "cache-tool-loop": {
+          "ratio": 0.9038364095923574,
+          "firstTurnRatio": 0.9038364095923574,
+          "turnTokens": 337477,
+          "prefixTokens": 45963,
+          "turns": 1
+        },
+        "cache-volatile-isolation": {
+          "ratio": 0.9866760604239624,
+          "firstTurnRatio": 0.9924891363200933,
+          "turnTokens": 144058,
+          "prefixTokens": 45963,
+          "turns": 4
+        },
+        "cache-compaction-recovery": {
+          "ratio": 0.9898798294891972,
+          "firstTurnRatio": 0.9957204595762622,
+          "turnTokens": 47435,
+          "prefixTokens": 45963,
+          "turns": 3
+        },
+        "cache-subagent-fork": {
+          "ratio": 0.9234849203764071,
+          "firstTurnRatio": 0.9234849203764071,
+          "turnTokens": 389897,
+          "prefixTokens": 45963,
+          "turns": 1
+        },
+        "cache-accounting-identity": {
+          "ratio": 0.9955945279399675,
+          "firstTurnRatio": 0.9955945279399675,
+          "turnTokens": 47441,
+          "prefixTokens": 45963,
+          "turns": 1
+        }
+      },
+      "notes": "median of 1 run(s)"
+    },
+    "claude-haiku-5-5": {
+      "model": "claude-haiku-5-5",
+      "date": "2026-10-20T08:47:37.499Z",
+      "perTest": {
+        "cache-warm-repeat": {
+          "ratio": 0.9982404095046971,
+          "firstTurnRatio": 0.9650500744547286,
+          "turnTokens": 68498,
+          "prefixTokens": 45856,
+          "turns": 3
+        },
+        "cache-multiturn-history": {
+          "ratio": 0.9954404444123801,
+          "firstTurnRatio": 0.9999416041344272,
+          "turnTokens": 68498,
+          "prefixTokens": 45856,
+          "turns": 5
+        },
+        "cache-tool-loop": {
+          "ratio": 0.9907069038830105,
+          "firstTurnRatio": 0.9907069038830105,
+          "turnTokens": 486813,
+          "prefixTokens": 45856,
+          "turns": 1
+        },
+        "cache-volatile-isolation": {
+          "ratio": 0.9982705248012557,
+          "firstTurnRatio": 0.9999416041344272,
+          "turnTokens": 68498,
+          "prefixTokens": 45856,
+          "turns": 4
+        },
+        "cache-compaction-recovery": {
+          "ratio": 0.962801130239739,
+          "firstTurnRatio": 0.9999416041344272,
+          "turnTokens": 68498,
+          "prefixTokens": 45856,
+          "turns": 3
+        },
+        "cache-subagent-fork": {
+          "ratio": 0.9850708806670353,
+          "firstTurnRatio": 0.9850708806670353,
+          "turnTokens": 490049,
+          "prefixTokens": 45856,
+          "turns": 1
+        },
+        "cache-accounting-identity": {
+          "ratio": 0.9649514633968324,
+          "firstTurnRatio": 0.9649514633968324,
+          "turnTokens": 68505,
+          "prefixTokens": 45856,
+          "turns": 1
+        }
+      },
+      "notes": "median of 1 run(s)"
+    },
+    "gpt-6-luna": {
+      "model": "gpt-6-luna",
+      "date": "2026-10-20T08:47:37.512Z",
+      "perTest": {
+        "cache-warm-repeat": {
+          "ratio": 0.9967203498293515,
+          "firstTurnRatio": 0,
+          "turnTokens": 37376,
+          "prefixTokens": 45959,
+          "turns": 3
+        },
+        "cache-multiturn-history": {
+          "ratio": 0.9966775642559073,
+          "firstTurnRatio": 0.999919734589041,
+          "turnTokens": 37376,
+          "prefixTokens": 45959,
+          "turns": 5
+        },
+        "cache-tool-loop": {
+          "ratio": 0.9899978950850236,
+          "firstTurnRatio": 0.9899978950850236,
+          "turnTokens": 266044,
+          "prefixTokens": 45959,
+          "turns": 1
+        },
+        "cache-volatile-isolation": {
+          "ratio": 0.9968270051194539,
+          "firstTurnRatio": 0.999919734589041,
+          "turnTokens": 37376,
+          "prefixTokens": 45959,
+          "turns": 4
+        },
+        "cache-compaction-recovery": {
+          "ratio": 0.9940461887598452,
+          "firstTurnRatio": 0.999919734589041,
+          "turnTokens": 37376,
+          "prefixTokens": 45959,
+          "turns": 3
+        },
+        "cache-subagent-fork": {
+          "ratio": 0.7920046107094205,
+          "firstTurnRatio": 0.7920046107094205,
+          "turnTokens": 190860,
+          "prefixTokens": 45959,
+          "turns": 1
+        },
+        "cache-accounting-identity": {
+          "ratio": 0.9974051682628002,
+          "firstTurnRatio": 0.9974051682628002,
+          "turnTokens": 37382,
+          "prefixTokens": 45959,
+          "turns": 1
+        }
+      },
+      "notes": "median of 1 run(s)"
+    }
+  }
+}
