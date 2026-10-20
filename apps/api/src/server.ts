@@ -46,6 +46,7 @@ import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-ev
 import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
 import { createInviteLinkAfterAccept } from './routes/invite-link-after-accept'
 import { inviteLinkRoutes } from './routes/invite-links'
+import { invitationInfoRoutes } from './routes/invitation-info'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
@@ -9011,6 +9012,13 @@ app.get('/api/invite-links/:token/info', async (c) => {
     },
   })
 })
+
+// Get invitation info for the emailed accept link (`/invitations/<id>/accept`).
+// Public on purpose — the page renders before the invitee signs in — and the
+// payload carries no email address. Mounted BEFORE the generated routers so
+// `/:id/info` can't fall through to the generated `GET /:id` (which requires
+// an authenticated session and the invitation to belong to the caller).
+app.route('/api/invitations', invitationInfoRoutes())
 
 // Custom chat-message extension endpoints (truncate-from, etc.).
 // MUST be mounted BEFORE the generated routes so Hono matches the
