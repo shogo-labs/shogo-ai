@@ -31,6 +31,7 @@ import { prisma } from './lib/prisma'
 import { isSecretCryptoConfigured } from './lib/secret-crypto'
 import { ensureTranscriptionEngine } from './services/transcription-install.service'
 import { startCloudWorkspaceSync } from './services/cloud-workspaces'
+import { startInstanceTunnel, stopInstanceTunnel } from './lib/instance-tunnel'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 import { cloudSocketRelayHandlers, isCloudSocketRelayData } from './routes/local-cloud-proxy'
 
@@ -102,6 +103,10 @@ const server = Bun.serve({
 console.log(`🚀 Local API server running on http://localhost:${server.port}`)
 console.log(`   Workspace runtime: ws:proj:<anchor>`)
 
+// Registers this machine with Shogo Cloud (heartbeat + on-demand WS). The
+// tunnel proxies cloud requests back to this server, so start it after listen.
+if (process.env.SHOGO_API_KEY) startInstanceTunnel()
+
 async function startBackgroundTranscriptionSetup(): Promise<void> {
   try {
     const rows = await (prisma as any).localConfig.findMany({
@@ -125,6 +130,7 @@ void startBackgroundTranscriptionSetup()
 async function shutdown(signal: string): Promise<void> {
   console.log(`[LocalAPI] Received ${signal}, stopping runtimes...`)
   stopLocalBackgroundWorkers()
+  stopInstanceTunnel()
   void stopComposioListener?.()
   try {
     await runtimeManager.stopAll()

@@ -31,6 +31,7 @@ import { SUBAGENT_CODE_EVALS } from './evals/test-cases-subagent-code'
 import { SUBAGENT_AB_EVALS } from './evals/test-cases-subagent-ab'
 import { KNOWLEDGE_GRAPH_EVALS } from './evals/test-cases-knowledge-graph'
 import { TOKEN_BUDGET_EVALS } from './evals/test-cases-token-budget'
+import { CACHE_EFFICIENCY_EVALS } from './evals/test-cases-cache-efficiency'
 import { PLAN_EVALS } from './evals/test-cases-plans'
 
 const tracks = {
@@ -53,6 +54,7 @@ const tracks = {
   subagent: SUBAGENT_EVALS, 'subagent-smoke': SUBAGENT_SMOKE_EVALS,
   'subagent-code': SUBAGENT_CODE_EVALS, 'subagent-ab': SUBAGENT_AB_EVALS,
   'knowledge-graph': KNOWLEDGE_GRAPH_EVALS, 'token-budget': TOKEN_BUDGET_EVALS,
+  'cache-efficiency': CACHE_EFFICIENCY_EVALS,
   plan: PLAN_EVALS,
 }
 let total = 0

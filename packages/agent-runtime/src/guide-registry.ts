@@ -230,7 +230,7 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
     const direct: string[] = []
     if (media) {
       kinds.push('Image generation', 'image editing')
-      direct.push('`generate_image`', '`upscale_image`', '`remove_background`')
+      direct.push('`generate_image`')
     }
     if (video) {
       kinds.push('video generation')

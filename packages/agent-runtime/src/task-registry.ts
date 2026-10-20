@@ -142,6 +142,11 @@ export interface RunningProcess {
   stale?: boolean
   /** Where the task's work is happening (thread, card, project session, log). */
   link?: TaskLink
+  /**
+   * Finished, but its update is still queued behind a paused wake: the session
+   * has not been given it yet. Set by the gateway from the API's wake state.
+   */
+  waiting?: boolean
 }
 
 /** Serializable subset persisted into session metadata so the list survives restart. */

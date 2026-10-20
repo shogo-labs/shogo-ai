@@ -5,6 +5,7 @@
  * they do not push the Settings page.
  */
 import { AccountSettingsGroup, AccountSettingsRow } from "./AccountSettingsGroup"
+import { Platform } from "react-native"
 import { PHONE_DENSITY } from "../../../lib/phone-density"
 import {
   accountSettingsSheetGroups,
@@ -23,7 +24,7 @@ export function NativeAccountSettingsSection({
   onOpenTab: (tab: AccountSettingsSheetTab) => void
 }) {
   if (!hasWorkspace) return null
-  const groups = accountSettingsSheetGroups({ localMode, showBilling })
+  const groups = accountSettingsSheetGroups({ localMode, showBilling, platform: Platform.OS })
   return (
     <>
       {groups.map((group) => (

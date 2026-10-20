@@ -231,6 +231,23 @@ describe('the Stop button', () => {
 })
 
 describe('stopping', () => {
+  test('a stop never ends another reply that is live on the same session', async () => {
+    const ch = await channel('shared-session')
+    const root = await post(seed.member, ch.id, `${tag(builder)} keep going`)
+    const running = await runningIn(root)
+    // A second running row on that session: what a duplicate wake used to leave behind.
+    const duplicate = await placeholder(ch, root, running.agentSessionId)
+
+    const stopped = await asAgent('POST', '/running-agents/stop', { requester: seed.member, body: { messageId: duplicate } })
+    expect(stopped.status).toBe(200)
+    expect(runtimeStops).toEqual([])
+    expect((await db.conversationMessage.findUnique({ where: { id: running.id } })).agentStatus).toBe('running')
+
+    // Nothing else is live on the session any more, so the stop reaches the runtime.
+    await db.conversationMessage.update({ where: { id: duplicate }, data: { agentStatus: 'stopped' } })
+    await asAgent('POST', '/running-agents/stop', { requester: seed.member, body: { messageId: running.id } })
+    expect(runtimeStops).toEqual([{ projectId: builder, sessionId: running.agentSessionId, userId: seed.member }])
+  })
   test('stopping a reply settles it as stopped, and the agent it tagged is never woken', async () => {
     const ch = await channel('loop-room')
     const root = await post(seed.member, ch.id, `${tag(builder)} start`)

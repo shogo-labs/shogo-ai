@@ -31,7 +31,7 @@ import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
-import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig } from './agent-loop'
+import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig, type PerCallUsage, type AgentLoopResult } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, subagentOrchestrationDisabled, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, type RestrictedMode } from './gateway-tools'
@@ -50,6 +50,7 @@ import {
 } from './stable-compaction'
 import { scrubInvalidImages } from './image-size-guard'
 import {
+  CACHE_BOUNDARY,
   fingerprintMessages,
   fingerprintSystem,
   fingerprintTools,
@@ -59,6 +60,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
 import { buildCapabilityStatusSection, resolveRuntimeCapabilities } from './capability-status-prompt'
+import { buildWakeStatusSection } from './wake-status-prompt'
 import { BOARDS_GUIDE, COMPANY_OPS_GUIDE } from './board-tools'
 import { TASK_WAKE_RETRY_MS } from './remote-tasks'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
@@ -103,7 +105,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, getProjectConfig, getSessionWakeState, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, type SessionWakeState } from './internal-api'
 import { mergeCapabilitySettingsIntoConfig } from '@shogo/shared-runtime/capability-settings'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
@@ -460,6 +462,54 @@ export function describeTurnFailure(
 
 export type VisualMode = 'canvas' | 'app' | 'none'
 
+/** Separator between two prompt sections in the system prompt. */
+const SECTION_SEPARATOR = '\n\n---\n\n'
+
+/**
+ * The prompt-cache prefix a turn was sent with, as short hashes.
+ *
+ * Cache layout is the only lever we have on providers that cache implicitly
+ * (DeepSeek behind `hoshi`) — there is no breakpoint to set. Comparing two
+ * turns: `stableHash` changing is pure waste (the cached prefix was thrown
+ * away); `dynamicHash` changing is expected; `toolsHash` changing invalidates
+ * everything on every provider; `historyHash` shows whether the message list
+ * grew from the front (a compaction) instead of from the end.
+ */
+export interface CachePrefix {
+  /** 1-based user turn on this session. */
+  turn: number
+  /** Hash of the system-prompt bytes before `<|CACHE_BOUNDARY|>` — the cached zone. */
+  stableHash: string
+  /** Hash of the per-turn zone after the boundary. Expected to change each turn. */
+  dynamicHash: string
+  /** Hash of the ordered tool definitions (name + description + JSON schema). */
+  toolsHash: string
+  /** Hash of the outgoing message list at turn start. */
+  historyHash: string
+  stableChars: number
+  dynamicChars: number
+  toolCount: number
+  messageCount: number
+}
+
+/** One probe of the prompt-cache prefix, taken without calling a model. */
+export interface CachePrefixProbe {
+  sessionId: string
+  /** True when two consecutive builds produced byte-identical stable zones. */
+  identical: boolean
+  /** The stable-zone section whose content drifted between the two builds, when it did. */
+  drift: { label: string; chars: number } | null
+  builds: Array<{
+    stableHash: string
+    dynamicHash: string
+    stableChars: number
+    dynamicChars: number
+    toolsHash: string
+    toolCount: number
+  }>
+  sections: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }>
+}
+
 /** What the dock's output route answers with: the text plus where the task lives. */
 export interface SessionTaskOutput {
   taskId: string
@@ -699,6 +749,13 @@ export class AgentGateway {
     escalated: boolean
     responseEmpty: boolean
     /**
+     * Per-model-call breakdown (one entry per tool-use iteration), so a cache
+     * rewrite inside a turn is visible instead of only the turn's totals.
+     */
+    perCallUsage: PerCallUsage[]
+    /** The prompt-cache prefix this turn was sent with (see `CachePrefix`). */
+    prefix: CachePrefix
+    /**
      * True when the turn ended via a user-initiated stop (Stop button).
      * server.ts uses this to tag the trailing `data-turn-complete` frame
      * with `status: 'aborted'` so project-chat bills the partial usage
@@ -741,9 +798,9 @@ export class AgentGateway {
    */
   private contentReplacementStates = new Map<string, ContentReplacementState>()
   /**
-   * Per-session user-turn counter used only by prefix-cache debug logging.
-   * Bumped once on entry to `runTurn`. Paired with a per-turn call counter
-   * (closure-scoped inside runTurn) so log lines read `turn=T call=N`.
+   * Per-session user-turn counter, incremented once on entry to `runTurn` and
+   * reported as `prefix.turn` so a turn's cache numbers can be lined up with
+   * the `[cache-prefix]` log line and the previous turn's hashes.
    * Not consulted for correctness; safe to clear or leave stale.
    */
   private turnCounters = new Map<string, number>()
@@ -790,6 +847,12 @@ export class AgentGateway {
   private teamManager?: TeamManager
   /** Per-session shell cwd tracking — persists cd across exec calls */
   private shellCwd = new Map<string, string>()
+  /**
+   * Per-session background-wake state, refreshed at turn start. The prompt is
+   * built synchronously, so the API's answer is cached here rather than fetched
+   * mid-build (see `wake-status-prompt.ts`).
+   */
+  private wakeStates = new Map<string, SessionWakeState | null>()
   /** Per-session backgrounded command registry — soft-timed-out exec runs */
   private commandRegistries = new Map<string, TaskRegistry>()
   /**
@@ -1046,6 +1109,83 @@ export class AgentGateway {
     const usage = this._lastTurnUsage
     this._lastTurnUsage = null
     return usage
+  }
+
+  /**
+   * Force one compaction pass on a session, the way autocompact/post-turn
+   * compaction would. Eval-harness hook only (`POST /agent/tool-mocks/compact`):
+   * it exists so the `cache-compaction-recovery` test can prove a rewritten
+   * prefix recovers its cache instead of resetting it for the rest of the chat.
+   */
+  async forceCompaction(sessionId: string): Promise<{ messagesBefore: number; messagesAfter: number } | null> {
+    // Keep only the last two messages so a short (3-turn) eval session still
+    // compacts; the default keep-window is far larger than any eval's history.
+    const result = await this.sessionManager.compact(sessionId, undefined, 2)
+    if (!result) return null
+    // Compaction rewrote the prefix — the same reset the autocompact paths do.
+    this.contentReplacementStates.delete(sessionId)
+    return { messagesBefore: result.messagesBefore, messagesAfter: result.messagesAfter }
+  }
+
+  /**
+   * Sample the prompt-cache prefix without calling a model.
+   *
+   * Builds the real system prompt twice with a tick between the builds (so any
+   * clock- or log-derived section moves, which is exactly what a per-turn
+   * builder would produce) and hashes both, plus a freshly assembled tool list.
+   * This is what makes the two structural `cache-efficiency` tests free: a
+   * volatile byte in the cached zone is a bug whether or not tokens were paid
+   * to discover it.
+   */
+  async sampleCachePrefix(sessionId = 'chat'): Promise<CachePrefixProbe> {
+    const build = () => {
+      const system = this.loadBootstrapContext(sessionId)
+      return { system, sections: this.lastPromptBreakdown ?? [] }
+    }
+    const first = build()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const second = build()
+    const toolsPrint = fingerprintTools(this.buildProbeTools())
+    const print = (system: string) => {
+      const p = fingerprintSystem(system)
+      return {
+        stableHash: p.stableHash,
+        dynamicHash: p.dynamicHash,
+        stableChars: p.stableChars,
+        dynamicChars: p.dynamicChars,
+        toolsHash: toolsPrint.hash,
+        toolCount: toolsPrint.count,
+      }
+    }
+    const builds = [print(first.system), print(second.system)]
+    const stableOf = (system: string) => {
+      const idx = system.indexOf(CACHE_BOUNDARY)
+      return idx >= 0 ? system.slice(0, idx) : system
+    }
+    const stableA = stableOf(first.system)
+    const stableB = stableOf(second.system)
+    let drift: CachePrefixProbe['drift'] = null
+    if (stableA !== stableB) {
+      let at = 0
+      while (at < stableA.length && at < stableB.length && stableA[at] === stableB[at]) at++
+      let offset = 0
+      for (const section of first.sections) {
+        if (section.zone !== 'stable') continue
+        if (at < offset + section.chars) {
+          drift = { label: section.label, chars: section.chars }
+          break
+        }
+        offset += section.chars + SECTION_SEPARATOR.length
+      }
+      drift ??= { label: 'unmapped', chars: Math.max(stableA.length, stableB.length) }
+    }
+    return {
+      sessionId,
+      identical: stableA === stableB,
+      drift,
+      builds,
+      sections: first.sections,
+    }
   }
 
   /** Replace prompt sections at runtime (used by DSPy optimization pipeline) */
@@ -2380,6 +2520,28 @@ export class AgentGateway {
     if (reg && taskIds.length > 0) reg.markConsumed(taskIds)
   }
 
+  /**
+   * Read what the session is waiting to be told, so this turn's prompt can say
+   * so. Called at turn start (before the turn is buffered) because the prompt
+   * is assembled synchronously; a failure keeps the last known state.
+   */
+  async refreshWakeState(sessionId: string): Promise<void> {
+    if (!hasInternalApiCredentials()) return
+    // Bounded: a slow API must not hold the turn's first token back. A miss
+    // (null) keeps the last known state rather than claiming the pause is over.
+    const timeout = new Promise<null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), 1_500)
+      ;(timer as any).unref?.()
+    })
+    const state = await Promise.race([getSessionWakeState(sessionId).catch(() => null), timeout])
+    if (state) this.wakeStates.set(sessionId, state)
+  }
+
+  /** The cached wake state, for the prompt and for tests. */
+  wakeStateFor(sessionId: string): SessionWakeState | null {
+    return this.wakeStates.get(sessionId) ?? null
+  }
+
   /** List the tasks still running for a chat thread. */
   listSessionProcesses(sessionId: string): import('./command-registry').RunningProcess[] {
     return this.getOrCreateCommandRegistry(sessionId).listVisible()
@@ -2393,7 +2555,11 @@ export class AgentGateway {
     // empty first response would never be retried.
     await this.hydratingRegistries.get(sessionId)
     if (reg.hasRunningRemote()) await reg.refreshRemote()
-    return reg.listDock()
+    // A paused session's tasks are finished but not yet delivered: show them as
+    // waiting, so the dock does not read "completed" for something the agent was
+    // never told.
+    const waiting = new Set((this.wakeStates.get(sessionId)?.waiting ?? []).map((task) => task.taskId))
+    return reg.listDock().map((proc) => (waiting.has(proc.id) ? { ...proc, waiting: true } : proc))
   }
 
   /**
@@ -3609,14 +3775,38 @@ export class AgentGateway {
       const turnStartedAt = Date.now()
       const canQueueTaskWake = hasInternalApiCredentials()
 
-      // --- Prefix-cache debug: turn-start snapshot ---
-      // Emits short hashes of the three inputs Anthropic keys its prompt
-      // cache on: tools, system (split stable/dynamic), and history prefix.
-      // Compare across turns: anything that changes here is a cache-break
-      // cause. `stable` changing is the smoking gun for wasted cache.
+      // --- Prefix-cache snapshot ---------------------------------------------
+      // Everything a provider keys its prompt cache on, as short hashes:
+      // (tools, system split stable/dynamic, message list). Anthropic keys on
+      // those three exactly; DeepSeek (which backs `hoshi`) matches complete
+      // persisted prefix units of the same three and gives us no breakpoint to
+      // set, so layout stability is the only lever. One line per turn makes
+      // "did this turn waste the cache?" answerable, and the same object rides
+      // the `data-usage` frame so an eval can assert a ratio against the exact
+      // prefix it was measured on. Silenced with SHOGO_PREFIX_LOG=0.
       const turnNum = (this.turnCounters.get(sessionId) ?? 0) + 1
       this.turnCounters.set(sessionId, turnNum)
-      let apiCallNum = 0
+      const systemPrint = fingerprintSystem(systemPrompt)
+      const toolsPrint = fingerprintTools(tools)
+      const historyPrint = fingerprintMessages(history)
+      const prefix: CachePrefix = {
+        turn: turnNum,
+        stableHash: systemPrint.stableHash,
+        dynamicHash: systemPrint.dynamicHash,
+        toolsHash: toolsPrint.hash,
+        historyHash: historyPrint.aggregate,
+        stableChars: systemPrint.stableChars,
+        dynamicChars: systemPrint.dynamicChars,
+        toolCount: toolsPrint.count,
+        messageCount: historyPrint.count,
+      }
+      if (process.env.SHOGO_PREFIX_LOG !== '0') {
+        console.log(
+          `${this.logPrefix} [cache-prefix] turn=${turnNum} stable=${prefix.stableHash}(${prefix.stableChars}c) ` +
+          `dynamic=${prefix.dynamicHash}(${prefix.dynamicChars}c) tools=${prefix.toolsHash}(${prefix.toolCount}) ` +
+          `history=${prefix.historyHash}(${prefix.messageCount} msgs)`,
+        )
+      }
 
       // Reset per-turn edit tracking so read_lints auto-scope starts clean.
       this.fileStateCache.resetTurn()
@@ -4225,6 +4415,8 @@ export class AgentGateway {
         ...(result.loopBreak?.pattern ? { loopPattern: result.loopBreak.pattern } : {}),
         escalated: false,
         responseEmpty,
+        perCallUsage: result.perCallUsage ?? [],
+        prefix,
         wasAborted: result.abortReason === 'external',
       }
 
@@ -4713,11 +4905,10 @@ export class AgentGateway {
       ].join('\n'))
     }
 
-    // Separator tells the AI proxy to split the system prompt into two Anthropic
-    // system blocks: the stable prefix gets cache_control, the dynamic suffix
-    // does not. Without this, the entire prompt is one block whose cache is
-    // invalidated every turn because the dynamic content changes.
-    const CACHE_BOUNDARY = '\n\n<|CACHE_BOUNDARY|>\n\n'
+    // The `<|CACHE_BOUNDARY|>` separator (imported from prefix-fingerprint so
+    // the builder, the fingerprint and `sampleCachePrefix` share one
+    // definition) tells the AI proxy to split the system prompt into two
+    // blocks: the stable prefix is the cached zone, the dynamic suffix is not.
 
     // ---- DYNAMIC ZONE: changes between turns or sessions ----
 
@@ -4906,10 +5097,18 @@ export class AgentGateway {
       if (teamCtx) pushDynamic('team-context', teamCtx)
     }
 
+    // 12b. Background updates this session is holding. After the cache
+    // boundary on purpose: a pause comes and goes, and putting it in the cached
+    // prefix would invalidate the prompt every time it changed (SHO-82).
+    if (sessionId) {
+      const wake = buildWakeStatusSection(this.wakeStates.get(sessionId))
+      if (wake) pushDynamic('wake-status', wake)
+    }
+
     this.lastPromptBreakdown = sections
 
-    const stableText = stableParts.join('\n\n---\n\n')
-    const dynamicText = dynamicParts.join('\n\n---\n\n')
+    const stableText = stableParts.join(SECTION_SEPARATOR)
+    const dynamicText = dynamicParts.join(SECTION_SEPARATOR)
     return dynamicText ? stableText + CACHE_BOUNDARY + dynamicText : stableText
   }
 
@@ -5579,15 +5778,9 @@ export class AgentGateway {
   private remoteTools: { config: GatewayConfig; tools: ReturnType<typeof createTools> } | null = null
   private remoteCommandRegistry = new TaskRegistry()
 
-  /**
-   * Tools for `/agent/remote/tool`: another project's runtime running one of
-   * this project's tools. Rooted at this project's own folder (the anchor in
-   * a workspace runtime), with no session, UI stream or file-read cache. One
-   * command registry spans all remote calls so exec_wait finds earlier runs.
-   */
-  getRemoteTools(): ReturnType<typeof createTools> {
-    if (this.remoteTools?.config === this.config) return this.remoteTools.tools
-    const ctx: ToolContext = {
+  /** Tool context for a session-less tool set (remote calls, cache probes). */
+  private sessionlessToolContext(): ToolContext {
+    return {
       workspaceDir: defaultShellCwd(this.workspaceDir),
       channels: this.channels,
       config: this.config,
@@ -5599,9 +5792,28 @@ export class AgentGateway {
       indexEngine: this.indexEngine ?? undefined,
       commandRegistry: this.remoteCommandRegistry,
     }
-    const tools = filterDisabledCapabilityTools(createTools(ctx), this.config)
+  }
+
+  /**
+   * Tools for `/agent/remote/tool`: another project's runtime running one of
+   * this project's tools. Rooted at this project's own folder (the anchor in
+   * a workspace runtime), with no session, UI stream or file-read cache. One
+   * command registry spans all remote calls so exec_wait finds earlier runs.
+   */
+  getRemoteTools(): ReturnType<typeof createTools> {
+    if (this.remoteTools?.config === this.config) return this.remoteTools.tools
+    const tools = filterDisabledCapabilityTools(createTools(this.sessionlessToolContext()), this.config)
     this.remoteTools = { config: this.config, tools }
     return tools
+  }
+
+  /**
+   * Rebuild the tool list from scratch. `fingerprintTools` over this is the
+   * "did the tool block change?" signal for the cache-efficiency eval suite —
+   * a cached `getRemoteTools()` would make that comparison trivially true.
+   */
+  private buildProbeTools(): AgentTool[] {
+    return filterDisabledCapabilityTools(createTools(this.sessionlessToolContext()), this.config)
   }
 
   async disconnectChannel(type: string): Promise<void> {

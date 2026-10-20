@@ -50,22 +50,28 @@ export interface RestartAttemptInfo {
 }
 
 /**
- * Liveness policy for a child that is up but not serving. Fifteen seconds is
- * slow enough to be invisible (one loopback GET) and fast enough that the
- * three-strike trip lands inside ~45 s, which is the acceptance bar.
+ * Liveness policy for a child that is up but not serving. A busy API is not a
+ * hung one: under a heavy agent load `/health` can take seconds to answer, and
+ * restarting then kills every running agent turn. So only a probe that gets no
+ * answer at all within `timeoutMs` (or is refused) counts as a failure; a late
+ * answer proves the API is alive and resets the count. Three misses in a row
+ * means the API has been silent for at least ~90 s.
  */
 export interface HealthWatchdogPolicy {
   /** Gap between probes while the API is supposed to be serving. */
   intervalMs: number
-  /** Abort a single probe after this long — a hung handler is the failure. */
+  /** A probe with no answer after this long counts as a failure. */
   timeoutMs: number
+  /** An answer slower than this is logged as slow; it still counts as alive. */
+  slowMs: number
   /** Consecutive failed probes before the child is treated as wedged. */
   failureThreshold: number
 }
 
 export const DEFAULT_HEALTH_WATCHDOG: HealthWatchdogPolicy = {
   intervalMs: 15_000,
-  timeoutMs: 3_000,
+  timeoutMs: 30_000,
+  slowMs: 3_000,
   failureThreshold: 3,
 }
 
@@ -105,6 +111,8 @@ export interface LocalApiSupervisorOptions {
   kill?: () => void | Promise<void>
   /** Reached 1..failureThreshold failed probe; still below the trip point. */
   onHealthFailure?: (info: HealthFailureInfo) => void
+  /** A probe answered, but slower than `slowMs`. The API counts as alive. */
+  onSlowHealth?: (info: { elapsedMs: number }) => void
   /** The child is wedged: about to be killed so the restart loop takes over. */
   onWatchdogTripped?: (info: { failures: number }) => void
   log?: (message: string) => void
@@ -320,6 +328,7 @@ export class LocalApiSupervisor {
 
     this.probing = true
     let healthy = false
+    const startedAt = Date.now()
     try {
       healthy = await this.probeWithTimeout()
     } catch {
@@ -332,6 +341,8 @@ export class LocalApiSupervisor {
     if (this.stopped || this.gaveUp || !this.opts.fetchHealth) return
 
     if (healthy) {
+      const elapsedMs = Date.now() - startedAt
+      if (elapsedMs > this.watchdogPolicy.slowMs) this.opts.onSlowHealth?.({ elapsedMs })
       this.healthFailures = 0
       this.scheduleWatchdogTick()
       return

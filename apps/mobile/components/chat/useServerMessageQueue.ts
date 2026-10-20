@@ -56,8 +56,22 @@ function filesFromParts(parts: string | undefined): FileAttachment[] | undefined
   return files.length > 0 ? files : undefined
 }
 
+/**
+ * A queued task wake: the agent's own background update, not a message a person
+ * typed. It is never painted as a queued user message.
+ */
+function taskNotificationOf(row: IChatQueuedMessage): { paused?: boolean } | undefined {
+  const body = parseJson<QueueBody & { taskNotification?: { paused?: boolean } }>(row.body, {})
+  return body.taskNotification
+}
+
+function isTaskWakeRow(row: IChatQueuedMessage | undefined): boolean {
+  return !!row && !!taskNotificationOf(row)
+}
+
 function toQueuedMessage(row: IChatQueuedMessage): QueuedMessage {
-  const body = parseJson<QueueBody>(row.body, {})
+  const body = parseJson<QueueBody & { taskNotification?: { paused?: boolean } }>(row.body, {})
+  const taskWake = body.taskNotification
   return {
     id: row.id,
     content: row.content,
@@ -68,6 +82,9 @@ function toQueuedMessage(row: IChatQueuedMessage): QueuedMessage {
       : undefined,
     status: row.status,
     error: row.error || undefined,
+    // A task wake is never a queued chat message: it is the agent's own update,
+    // and while a pause holds it back it is shown as one waiting chip instead.
+    ...(taskWake ? { kind: "task_wake" as const, paused: taskWake.paused === true } : {}),
   }
 }
 
@@ -244,6 +261,9 @@ export function useServerMessageQueue({
         userRemovedIdsRef.current.delete(id)
         continue
       }
+      // A task wake leaving the queue is the agent being handed its own update,
+      // not a message a person sent: it must not be painted as a user bubble.
+      if (isTaskWakeRow(previousRows.get(id))) continue
       dispatchedId ??= id
     }
     if (dispatchedId && !pendingTurnRef.current) {
@@ -332,7 +352,7 @@ export function useServerMessageQueue({
   )
 
   const action = useCallback(
-    async (id: string, actionName: "reorder" | "send-now", body?: Record<string, unknown>) => {
+    async (id: string, actionName: "reorder" | "send-now" | "resume", body?: Record<string, unknown>) => {
       const env = getEnv<{ http: { post: (url: string, body?: unknown) => Promise<{ data?: any }> } }>(collection)
       const response = await env.http.post(
         `/api/chat-queued-messages/${encodeURIComponent(id)}/${actionName}`,
@@ -361,6 +381,18 @@ export function useServerMessageQueue({
     [action],
   )
 
+  /**
+   * Deliver the updates a paused session is holding. The server flips the
+   * paused wake back to pending and marks it as the start of a new run, so the
+   * cap lifts without the person typing a message.
+   */
+  const resumeTaskWake = useCallback(
+    async (id: string) => {
+      await action(id, "resume")
+    },
+    [action],
+  )
+
   const isServerQueued = useCallback(
     (id: string) => rows.some((row) => row.id === id),
     [rows],
@@ -374,6 +406,7 @@ export function useServerMessageQueue({
     update,
     reorder,
     sendNow,
+    resumeTaskWake,
     isServerQueued,
     reload: load,
   }

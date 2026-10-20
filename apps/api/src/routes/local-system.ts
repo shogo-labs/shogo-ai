@@ -26,12 +26,20 @@ import {
 const LOCAL_ACCESS_KEY = 'LOCAL_ACCESS_PREFS'
 import { clearCloudWorkspaces, setCloudWorkspaces } from '../services/cloud-workspaces'
 
+function restartInstanceTunnel(): void {
+  void import('../lib/instance-tunnel')
+    .then(({ stopInstanceTunnel, startInstanceTunnel }) => {
+      stopInstanceTunnel()
+      startInstanceTunnel()
+    })
+    .catch(() => {})
+}
+
 const PROVIDER_KEYS = [
   { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
   { id: 'openai', envKey: 'OPENAI_API_KEY' },
   { id: 'google', envKey: 'GOOGLE_API_KEY' },
   { id: 'openrouter', envKey: 'OPENROUTER_API_KEY' },
-  { id: 'fal', envKey: 'FAL_KEY' },
   { id: 'tripo', envKey: 'TRIPO_API_KEY' },
   { id: 'higgsfield', envKey: 'HIGGSFIELD_API_KEY' },
 ] as const
@@ -320,6 +328,7 @@ export function localSystemRoutes(): Hono {
       resetCloudKeyState()
       _resetUpstreamCredentialCache()
       _resetAgentModelDefaultsCache()
+      restartInstanceTunnel()
       return c.json({ ok: true, workspace: data.workspace, cloudUrl })
     } catch (err: any) {
       return c.json({ ok: false, error: `Cannot reach Shogo Cloud: ${err?.message ?? err}`, cloudUrl }, 502)
@@ -335,6 +344,7 @@ export function localSystemRoutes(): Hono {
     delete process.env.SHOGO_API_KEY
     _resetUpstreamCredentialCache()
     _resetAgentModelDefaultsCache()
+    void import('../lib/instance-tunnel').then(({ stopInstanceTunnel }) => stopInstanceTunnel()).catch(() => {})
     return c.json({ ok: true })
   })
 
@@ -348,17 +358,23 @@ export function localSystemRoutes(): Hono {
       create: { key: 'SHOGO_INSTANCE_NAME', value: name },
     })
     process.env.SHOGO_INSTANCE_NAME = name
+    restartInstanceTunnel()
     return c.json({ ok: true, name })
   })
 
   router.get('/local/instance-info', async () => {
     const name = process.env.SHOGO_INSTANCE_NAME || os.hostname()
+    let tunnelConnected = false
+    try {
+      const { isTunnelConnected } = await import('../lib/instance-tunnel')
+      tunnelConnected = isTunnelConnected()
+    } catch {}
     return Response.json({
       name,
       hostname: os.hostname(),
       os: os.platform(),
       arch: os.arch(),
-      tunnelConnected: false,
+      tunnelConnected,
       cloudUrl: getShogoCloudUrl(),
     })
   })
