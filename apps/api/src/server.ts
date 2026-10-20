@@ -35,7 +35,7 @@ import { workBoardRoutes } from './routes/work-boards'
 // local mode too. Loading them via server-cloud-deps left local 404ing.
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { costAnalyticsRoutes } from './routes/cost-analytics'
-import { AGENT_REPLY_TIMEOUT_MS, configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
+import { configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
 import { registerBuiltInChatProviders } from './services/chat-providers'
 import { chatProviderRoutes } from './routes/chat-providers'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
@@ -1618,8 +1618,9 @@ app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUs
 app.route('/api', sharedMeetingRoutes())
 // Workspace channels (team chat with @mentionable agents).
 configureConversationAgentDispatcher({ runtimeManager: getRuntimeManager() })
-// Other pods may still be writing replies; only settle those past the longest a run can take.
-void settleOrphanedAgentReplies(AGENT_REPLY_TIMEOUT_MS + 60_000).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
+// A reply another pod is still writing keeps its turn heartbeated, so the
+// heartbeat — not a fixed age — is what tells a dead run from a live one.
+void settleOrphanedAgentReplies(0).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
 registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))

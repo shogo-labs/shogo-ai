@@ -40,6 +40,7 @@ import {
   questionsOf,
   questionRefsOf,
   questionsToMarkdown,
+  type CardEscalation,
   type MessageBlocks,
   type QuestionAnswer,
   type QuestionBlock,
@@ -775,6 +776,16 @@ export async function answerQuestion(input: AnswerInput): Promise<{ message: any
     secretCipher,
     now,
   })
+
+  // An escalated card's question is not a question *to* an agent: the choice it
+  // carries is the action (retry / take / dismiss), applied right here.
+  const escalation = (row.blocks as MessageBlocks | null)?.cardEscalation as CardEscalation | undefined
+  if (escalation?.itemId) {
+    const { applyCardEscalationAnswer } = await import('./work-boards.service')
+    await applyCardEscalationAnswer({ escalation, answer: answerText, userId: input.userId }).catch((err: Error) =>
+      console.warn('[Questions] applying an escalation answer failed:', err.message))
+    return { message: closed.message, question: closed.question, relay: 'sent' }
+  }
 
   const relay = await settleRelays(row.id, { userId: input.userId, origin: input.origin })
   return { message: closed.message, question: closed.question, relay: relay.status, reply: relay.reply }
