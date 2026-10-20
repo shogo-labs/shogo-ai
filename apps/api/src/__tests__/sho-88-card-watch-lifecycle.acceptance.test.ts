@@ -229,6 +229,48 @@ describe('SHO-88 · one watch follows the card from lane to Done', () => {
     expect(row.status).toBe('completed')
     expect(row.notifiedAt).toBeTruthy()
   }, 30_000)
+
+  test('two moves back to back land as one wake that ends the watch on the real state', async () => {
+    // QA round 1: a milestone arriving while the previous wake is still in flight
+    // used to be dropped — QA → Done inside the coalesce window told the watcher
+    // "QA" and never that the card had finished.
+    const c = await watchedCard()
+    const wakes = () => dispatched.filter((body) => (body.taskNotification?.taskIds ?? []).includes(c.watchId))
+
+    await c.move('QA')
+    await c.move('Done')
+
+    await waitFor(() => (wakes().length ? true : null), 10_000)
+    // Nothing else arrives: the two moves are one story for the agent.
+    await new Promise((r) => setTimeout(r, 2_500))
+    expect(wakes()).toHaveLength(1)
+    // …and it is the story that ends with the card closed, not the one that
+    // stopped at QA.
+    expect(wakes()[0].text).toContain('moved to Done (done)')
+
+    const settled = (await tasks.getTask(c.watchId))!
+    expect(settled.status).toBe('completed')
+    expect(settled.summary).toBe('the card is closed')
+    expect(settled.notifiedAt).toBeTruthy()
+    // Settled for good: a later drain does not revive it and adds no wake.
+    await tasks.enqueueTaskWake(c.session.id)
+    expect((await tasks.getTask(c.watchId))!.status).toBe('completed')
+    expect(wakes()).toHaveLength(1)
+  }, 30_000)
+
+  test('archiving a watched card ends the watch instead of leaving it to expire', async () => {
+    const c = await watchedCard()
+    const archived = await call(
+      'POST',
+      `/internal/workspaces/${seed.workspaceId}/agent-work-items/${c.item.key}/archive`,
+      { archived: true },
+      { 'x-project': seed.projectId },
+    )
+    expect(archived.status).toBe(200)
+    const row = (await tasks.getTask(c.watchId))!
+    expect(row.status).toBe('completed')
+    expect(row.summary).toBe('the card is closed')
+  }, 30_000)
 })
 
 describe('SHO-88 · a paused session is visible to the agent and to the person', () => {

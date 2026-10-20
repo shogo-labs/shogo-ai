@@ -725,7 +725,11 @@ export async function deleteColumn(board: any, columnRef: string, moveTo: string
       data: { columnId: target.id, columnEnteredAt: now, lastActivityAt: now, ...(isClosed(target.category) ? { completedAt: now } : { completedAt: null }) },
     })
     for (const item of items) {
-      await recordEvent(item, 'moved', actor, { from: { columnId: column.id, column: column.name }, to: { columnId: target.id, column: target.name }, reason: 'column_deleted' })
+      await recordEvent(item, 'moved', actor, {
+        from: { columnId: column.id, column: column.name, category: column.category },
+        to: { columnId: target.id, column: target.name, category: target.category },
+        reason: 'column_deleted',
+      })
     }
   }
   await db.boardColumn.delete({ where: { id: column.id } })
@@ -1413,13 +1417,18 @@ export async function commentWorkItem(
   }
 }
 
+/**
+ * Archive (or restore) a card. Archiving closes it for good: a hand-off watch on
+ * it settles instead of running on to its expiry, so the assigner hears that the
+ * card is gone rather than nothing at all.
+ */
 export async function archiveWorkItem(item: any, archived: boolean, actor: BoardActor) {
   const updated = await db.workItem.update({
     where: { id: item.id },
     data: { archivedAt: archived ? new Date() : null, lastActivityAt: new Date() },
     include: { column: true, board: true },
   })
-  await recordEvent(item, archived ? 'archived' : 'restored', actor)
+  await recordEvent(item, archived ? 'archived' : 'restored', actor, archived ? { cardClosed: true } : undefined)
   await publishBoard(item.board, { action: archived ? 'item.archived' : 'item.restored', itemId: item.id })
   return serializeItem(updated)
 }
