@@ -231,7 +231,7 @@ function isWsRequested(wsRequestedAt: Date | null): boolean {
  * IMPORTANT: only strips query-free path segments. Callers must handle
  * query strings separately (append after normalization).
  */
-function normalizeTransparentProxyPath(path: string): string {
+export function normalizeTransparentProxyPath(path: string): string {
   const pathWithoutQuery = path.split('?')[0] || path
   const wrappedProjectPath = pathWithoutQuery.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/.*)?$/)
   if (wrappedProjectPath) {
@@ -249,7 +249,7 @@ function normalizeTransparentProxyPath(path: string): string {
  * query string).  We intentionally do NOT call normalizeTransparentProxyPath
  * again here to avoid double-normalization bugs.
  */
-function isStreamingRequest(method: string, cleanPath: string): boolean {
+export function isStreamingRequest(method: string, cleanPath: string): boolean {
   // Strip query string defensively in case a caller still passes one.
   const pathOnly = cleanPath.split('?')[0] || cleanPath
 
@@ -1636,6 +1636,56 @@ export function instanceRoutes() {
 function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
   if (!lastSeenAt) return false
   return Date.now() - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
+}
+
+/**
+ * Live status of one machine. Same three states the `/instances` list renders:
+ * `online` while its tunnel WebSocket is up, `heartbeat` while it has polled
+ * recently (offline app, or a tunnel that has not been opened yet), `offline`
+ * otherwise.
+ */
+export async function getInstanceTunnelStatus(
+  instanceId: string,
+  lastSeenAt: Date | null,
+): Promise<'online' | 'heartbeat' | 'offline'> {
+  if (tunnels.has(instanceId) || (await isTunnelConnectedAnywhere(instanceId))) return 'online'
+  return isRecentlySeenViaHeartbeat(lastSeenAt) ? 'heartbeat' : 'offline'
+}
+
+/**
+ * Wake an instance's tunnel if it is asleep and wait up to `timeoutMs` for it.
+ * Used by the machine-workspace relay, which has to be honest about "offline"
+ * instead of forwarding into a void.
+ */
+export async function ensureTunnelConnected(
+  instanceId: string,
+  timeoutMs: number = TUNNEL_WAIT_TIMEOUT_MS,
+): Promise<boolean> {
+  if (tunnels.has(instanceId)) return true
+
+  let remotePod = await getTunnelOwner(instanceId)
+  if (remotePod === getPodId()) {
+    await evictTunnelOwnership(instanceId).catch(() => {})
+    remotePod = null
+  }
+  if (remotePod) {
+    const alive = await verifyPodAlive(remotePod)
+    if (alive) return true
+    await evictTunnelOwnership(instanceId).catch(() => {})
+  }
+
+  await prisma.instance
+    .update({ where: { id: instanceId }, data: { wsRequestedAt: new Date() } })
+    .catch(() => {})
+  void sendPushToInstance(instanceId, { type: 'ws-requested', priority: 'high' })
+
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, TUNNEL_WAIT_POLL_MS))
+    if (tunnels.has(instanceId)) return true
+    if (await getTunnelOwner(instanceId)) return true
+  }
+  return false
 }
 
 // ─── Heartbeat ping for all connected tunnels ───────────────────────────────

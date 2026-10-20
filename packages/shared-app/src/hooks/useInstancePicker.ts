@@ -96,6 +96,10 @@ export function useInstancePicker({
   // a different machine explicitly via the picker.
   useEffect(() => {
     if (!activeInstance || !workspaceId) return
+    // A machine workspace is not scoped to the cloud workspace on screen —
+    // it belongs to the desktop. Clearing it on every cloud workspace switch
+    // would eject the user from their own Mac (SHO-54).
+    if (activeInstance.source === 'machine') return
     const isFederated = !!activeInstance.origin && activeInstance.origin !== 'local'
     if (isFederated) return
     if (activeInstance.workspaceId !== workspaceId) {

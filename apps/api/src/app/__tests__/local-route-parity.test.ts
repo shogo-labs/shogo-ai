@@ -65,6 +65,7 @@ const REQUIRED_LOCAL_ROUTES = [
   'DELETE /api/integrations/connections/:id',
   // Called by the local agent-runtime; "Trust folder" is dead without it.
   'GET /api/internal/projects/:projectId/trust',
+  'GET /api/local/machine',
   'GET /api/local/remote-hosts',
   'POST /api/local/remote-hosts',
   'POST /api/local/remote-hosts/:id/connect',

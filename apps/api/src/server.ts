@@ -241,6 +241,7 @@ const evalAdminRoutes: any = cloud.evalAdminRoutes ?? emptyRouter
 const evalInternalRoutes: any = cloud.evalInternalRoutes ?? emptyRouter
 const cliAuthRoutes: any = cloud.cliAuthRoutes ?? emptyRouter
 const instanceRoutes: any = cloud.instanceRoutes ?? emptyRouter
+const machineRoutes: any = cloud.machineRoutes ?? emptyRouter
 const authenticateInstanceWs: any = cloud.authenticateInstanceWs ?? (async () => false)
 const handleInstanceWsOpen: any = cloud.handleInstanceWsOpen ?? (() => {})
 const handleInstanceWsMessage: any = cloud.handleInstanceWsMessage ?? (() => {})
@@ -1590,6 +1591,8 @@ app.route('/api', cliAuthRoutes())
 
 // Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
+// A paired desktop's own workspaces, owner-only (`/api/machines…`).
+app.route('/api', machineRoutes())
 app.route('/api', remoteAuditRoutes())
 app.route('/api', mobilePushRoutes())
 app.route('/api', appInstallRoutes())
