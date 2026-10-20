@@ -1900,6 +1900,9 @@ app.post('/agent/chat', async (c) => {
   if (Array.isArray(wokenByTasks)) {
     agentGateway!.acknowledgeTaskNotification(chatSessionKey, wokenByTasks.filter((id): id is string => typeof id === 'string'))
   }
+  // What this session is still holding (a pause and the updates behind it) is
+  // part of this turn's prompt, so read it before the prompt is assembled.
+  await agentGateway!.refreshWakeState(chatSessionKey).catch(() => {})
   if (typeof body.chatSessionName === 'string' && body.chatSessionName.trim()) {
     sessionManager.setSessionMetadata(chatSessionKey, { title: body.chatSessionName.trim().slice(0, 200) })
   }

@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
-import { taskWakeIdsFromBody } from './background-tasks.service'
+import { taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAUSED } from './background-tasks.service'
 
 /** Well above TURN_REATTACH_AFTER_MS, so the reattach job gets to a dead tracker's turn first. */
 const ACTIVE_TURN_STALE_AFTER_MS = 10 * 60 * 1000
@@ -243,9 +243,6 @@ async function dispatchRow(row: QueueRow): Promise<void> {
   })
 }
 
-const WAKE_PAUSED =
-  'Paused: background tasks finished several times in a row without anyone writing. Send a message to continue.'
-
 /** The tasks a task-notification row was queued for. */
 function taskWakeIds(row: QueueRow): string[] {
   return taskWakeIdsFromBody(row.body)
@@ -255,6 +252,9 @@ function taskWakeIds(row: QueueRow): string[] {
  * Why a queued task wake should not run: every task in it was already seen
  * (`consumed`), or the session has auto-woken too many times in a row. Either
  * way the row goes; the caller decides whether the tasks are still owed a wake.
+ *
+ * A wake a person resumed from the composer (`wakeRunReset`) is never paused:
+ * resuming *is* the pause lifting, and its turn starts the count again.
  */
 async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | null> {
   const ids = taskWakeIds(row)
@@ -267,11 +267,23 @@ async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | 
     if (!tasks.some((t) => !t.consumed)) return 'consumed'
     cardsOnly = tasks.every((t) => t.source === 'work_item')
   }
+  if (taskWakeBodyResetsRun(row.body)) return null
   const { MAX_CONSECUTIVE_WAKES, MAX_CONSECUTIVE_CARD_WAKES, consecutiveWakeWaits } =
     await import('./background-tasks.service')
   const limit = cardsOnly ? MAX_CONSECUTIVE_CARD_WAKES : MAX_CONSECUTIVE_WAKES
   if ((await consecutiveWakeWaits(row.sessionId, limit)) >= limit) return WAKE_PAUSED
   return null
+}
+
+/**
+ * Mark a paused wake on the row itself, so the composer can show it as a
+ * waiting update with a Resume action instead of as a queued chat message that
+ * failed. Read off `body.taskNotification.paused` by the client.
+ */
+function pausedBody(body: string | null | undefined): string {
+  const parsed = parseJson<Record<string, any>>(body, {})
+  const taskNotification = parsed.taskNotification && typeof parsed.taskNotification === 'object' ? parsed.taskNotification : {}
+  return JSON.stringify({ ...parsed, taskNotification: { ...taskNotification, paused: true } })
 }
 
 /**
@@ -335,7 +347,7 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
     } else {
       await (prisma as any).chatQueuedMessage.updateMany({
         where: { id: row.id, status: 'dispatching' },
-        data: { status: 'failed', error: skip },
+        data: { status: 'failed', error: skip, body: pausedBody(row.body) },
       }).catch(() => {})
       await clearPausedWakeRows(chatSessionId, row.id)
       await releaseTaskWake(row)
