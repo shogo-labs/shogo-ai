@@ -48,6 +48,7 @@ import {
   resolveInLoopContextBudgetTokens,
   stableTransformContext,
 } from './stable-compaction'
+import { MIDTURN_KEEP_RECENT_MESSAGES, MidTurnAutocompactor } from './midturn-autocompact'
 import { scrubInvalidImages } from './image-size-guard'
 import {
   CACHE_BOUNDARY,
@@ -71,6 +72,7 @@ import { CanvasTypecheckGate } from './canvas-typecheck'
 import {
   inferProviderFromModel as catalogInferProvider,
   resolveModelId,
+  getContextWindowTokens,
   AGENT_MODE_DEFAULTS,
   setAgentModeOverrides,
   isAutoModel,
@@ -740,6 +742,12 @@ export class AgentGateway {
   private permissionEngine: PermissionEngine | null = null
   /** Callback to push permission-related SSE events to the connected client */
   private _permissionSseCallback?: (event: Record<string, any>) => void
+  /**
+   * Sessions with a pending *manual* summarize request (the context dock's
+   * button) whose turn is still live. Consumed by the next `transformContext`
+   * call in that turn.
+   */
+  private manualCompactionRequests = new Set<string>()
   /** Usage from the most recent agentTurn (consumed by server.ts for the finish event) */
   private _lastTurnUsage: {
     inputTokens: number
@@ -1558,35 +1566,52 @@ export class AgentGateway {
     // mismatched pair sends the model to the wrong upstream.
     const summarizerModel = resolveSummarizerModel(process.env.AGENT_SUMMARIZER_MODEL)
     console.log(`[AgentGateway] Summarizer model: ${summarizerModel.id} (provider=${summarizerModel.provider})`)
-    this.sessionManager.setSummarizeFn(async (messages) => {
+    this.sessionManager.setSummarizeFn(async (messages, previousSummary) => {
       const { resolveModel: rm, resolveApiKey: rak } = await import('./pi-adapter')
       const { runAgentLoop: summarizeLoop } = await import('./agent-loop')
       const provider = summarizerModel.provider
       const apiKey = rak(rm(provider, summarizerModel.id).provider)
       if (!apiKey) throw new Error('No API key for summarization')
 
-      const messageTexts = messages.map(m => {
+      // No truncation: the caller chunks the head at `summarizeChunkTokens`
+      // so each excerpt is already bounded. The old 500-char-per-message /
+      // 12k-char-prompt caps threw away ~99% of a long turn — including the
+      // decisions the summary exists to preserve (SHO-96).
+      const messageTexts = messages.map((m) => {
         if (m.role === 'user') {
           const content = typeof m.content === 'string' ? m.content : (m.content as any[]).filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ')
-          return `User: ${content.substring(0, 500)}`
+          return `User: ${content}`
         }
         if (m.role === 'assistant') {
           const text = m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
-          return `Assistant: ${text.substring(0, 500)}`
+          const toolCalls = m.content
+            .filter((c: any) => c.type === 'toolCall')
+            .map((c: any) => `${c.name}(${JSON.stringify(c.arguments ?? {}).slice(0, 400)})`)
+          return [`Assistant: ${text}`, ...toolCalls.map((t) => `Tool call: ${t}`)].filter((s) => s.trim() && s !== 'Assistant: ').join('\n')
         }
         if (m.role === 'toolResult') {
           const text = m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
-          return `Tool result: ${text.substring(0, 200)}`
+          return `Tool result: ${text}`
         }
         return ''
       }).filter(Boolean).join('\n')
 
+      // Fold: when this excerpt follows an earlier chunk, the model must carry
+      // the running summary forward instead of replacing it.
+      const system = previousSummary
+        ? 'You maintain a running summary of a long agent turn. You receive the running summary so far and a new excerpt of the conversation. Merge the excerpt into the running summary. Preserve: key decisions, files edited, errors encountered, and current task state. Drop only redundant detail. Output only the merged summary.'
+        : 'Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific. Output only the summary.'
+
+      const prompt = previousSummary
+        ? `Running summary so far:\n${previousSummary}\n\nNew excerpt:\n${messageTexts}`
+        : messageTexts
+
       const result = await summarizeLoop({
         provider,
         model: summarizerModel.id,
-        system: 'Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific. Output only the summary.',
+        system,
         history: [],
-        prompt: messageTexts.substring(0, 12000),
+        prompt,
         tools: [],
         maxIterations: 1,
         loopDetection: false,
@@ -3310,8 +3335,22 @@ export class AgentGateway {
     }) as AgentTool[]
 
     // Multi-layer context compaction pipeline (Layers 1-4)
-    const contextBudgetChars = (this.sessionManager.autocompactThreshold) * 4
-    const inLoopBudgetTokens = resolveInLoopContextBudgetTokens(this.sessionManager.autocompactThreshold)
+    //
+    // One cap, in one place: the resolved model's real window minus the
+    // output/buffer reserve, capped at AGENT_AUTOCOMPACT_TOKENS (200k). Until
+    // SHO-96 nothing ever set the window, so a 1M-window haiku/opus turn was
+    // budgeted at 200k while the provider accepted 400k, and summarization —
+    // which could only run at a turn boundary anyway — never fired mid-turn.
+    const modelContextWindow = getContextWindowTokens(modelId)
+    // The catalog is only the *default* source: a window the caller set
+    // explicitly (config, or a test pinning a 2k window to force compaction)
+    // always wins, and overriding it silently changed what the cap derived from.
+    if (!this.config.session?.contextWindowTokens) {
+      this.sessionManager.setContextWindowTokens(modelContextWindow)
+    }
+    const autoCompactTokens = this.sessionManager.autocompactThreshold
+    const contextBudgetChars = autoCompactTokens * 4
+    const inLoopBudgetTokens = resolveInLoopContextBudgetTokens(autoCompactTokens)
     let history = this.sessionManager.buildHistory(sessionId)
     history = applyToolResultBudget(history, contextBudgetChars)
     const mc = microcompact(history)
@@ -3955,6 +3994,52 @@ export class AgentGateway {
         ? { 'x-chat-session-id': sessionId }
         : undefined
 
+      // Mid-turn summarization (SHO-96). pi-agent-core drives the tool loop, so
+      // `transformContext` is the only point we control between tool calls —
+      // that is where this fires. One instance per turn: a new turn starts
+      // fresh, which is what makes "one summary per turn" and the mid-turn
+      // manual request both meaningful.
+      const promptOverheadTokens =
+        Math.ceil(systemPrompt.length / 4) +
+        tools.reduce((sum, t) => {
+          const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
+          return sum + Math.ceil(schema.length / 4)
+        }, 0)
+      // Per-call prefix fingerprints for this turn, paired with the provider's
+      // reported cache writes at turn end (`SHOGO_PREFIX_LOG=0` silences it).
+      const callFingerprints: Array<{
+        hash: string
+        msgs: number
+        chars: number
+        compacted: 'auto' | 'manual' | null
+      }> = []
+      const midTurnCompactor = new MidTurnAutocompactor({
+        autoCompactTokens,
+        // Aggressive tail: the head is what blew past the cap, and the split
+        // already lands on a `user` boundary, so the recent turn survives.
+        keepRecentMessages: MIDTURN_KEEP_RECENT_MESSAGES,
+        // A count of messages is not a size: production turns carry single tool
+        // results of hundreds of thousands of tokens, so the kept tail is
+        // bounded in tokens too and the post-compaction request lands at ~40%
+        // of the cap rather than back at it.
+        tailBudgetTokens: this.sessionManager.compactionTailBudgetTokens,
+        minKeepMessages: 1,
+        promptOverheadTokens,
+        summarize: (head, previousSummary) => this.sessionManager.summarizeHead(head, previousSummary),
+        apply: (summary, splitIndex, opts) => {
+          // Session-relative index: the loop's array may include a head that a
+          // previous compaction already folded away.
+          this.sessionManager.applyCompaction(sessionId, {
+            summary,
+            splitIndex,
+            replaceSummary: opts.replaceSummary,
+            extraContext: this.fileStateCache.size > 0
+              ? this.fileStateCache.getSummary(this.workspaceDir)
+              : undefined,
+          })
+        },
+      })
+
       const loopOptions: Parameters<typeof runAgentLoop>[0] = {
         provider,
         model: modelId,
@@ -4005,7 +4090,13 @@ export class AgentGateway {
         // compaction decisions monotone and write-once per tool_call_id so
         // the prompt-cache prefix stays byte-identical across calls for any
         // id that's already been decided. See stable-compaction.ts.
-        transformContext: (messages) => {
+        //
+        // After the three cheap layers: if the request that is about to go on
+        // the wire is still over the cap, summarize between tool calls (SHO-96).
+        transformContext: async (messages) => {
+          if (this.manualCompactionRequests.delete(sessionId)) {
+            midTurnCompactor.requestManual()
+          }
           let state = this.contentReplacementStates.get(sessionId)
           if (!state) {
             state = createContentReplacementState()
@@ -4025,7 +4116,69 @@ export class AgentGateway {
           // oversized payload — before it reaches the wire. Deterministic, so it
           // does not disturb the stable-compaction byte-identical prefix
           // invariant.
-          return scrubInvalidImages(result.messages)
+          const wire = scrubInvalidImages(result.messages)
+          const compacted = await midTurnCompactor.transform(wire)
+          const event = compacted.event
+          if (event) {
+            // The prefix was rewritten: drop per-session replacement decisions so
+            // fresh ones are taken against the new history (same rule as the
+            // turn-boundary and reactive paths).
+            this.contentReplacementStates.delete(sessionId)
+            runningContextEstimate = event.tokensAfter
+            console.log(
+              `${this.logPrefix} Mid-turn summarization (${event.trigger}): ` +
+              `${event.tokensBefore} -> ${event.tokensAfter} tokens, ` +
+              `${event.messagesBefore} -> ${event.messagesAfter} messages ` +
+              `(cap ${autoCompactTokens}, window ${contextWindowTokens}) for session ${sessionId}`,
+            )
+            // Cache-break attribution: the prefix fingerprint changes exactly
+            // once per compaction and is stable afterwards (prefix-fingerprint
+            // had no caller until SHO-96).
+            try {
+              const before = fingerprintMessages(wire)
+              const after = fingerprintMessages(compacted.messages)
+              console.log(
+                `${this.logPrefix} Prefix fingerprint: ${before.aggregate} (${before.totalChars} chars, ` +
+                `${before.count} msgs) -> ${after.aggregate} (${after.totalChars} chars, ${after.count} msgs)`,
+              )
+            } catch { /* diagnostics only */ }
+            // Not transient: this frame IS a transcript row. The AI SDK appends
+            // it to `parts` live, and the API persists the same shape, so the
+            // divider survives a reload (SHO-96 acceptance 4).
+            try {
+              uiWriter?.write({
+                type: 'data-context-summarized',
+                data: {
+                  trigger: event.trigger,
+                  tokensBefore: event.tokensBefore,
+                  tokensAfter: event.tokensAfter,
+                  messagesBefore: event.messagesBefore,
+                  messagesAfter: event.messagesAfter,
+                  summaryChars: event.summaryChars,
+                  contextWindowTokens,
+                },
+              })
+            } catch { /* client disconnected mid-turn — the row still persists API-side */ }
+            emitContextUsage()
+          }
+          if (process.env.SHOGO_PREFIX_LOG !== '0') {
+            // Per-call attribution (SHO-96 criterion 10): the fingerprint of the
+            // exact bytes about to be sent, paired at turn end with the cache
+            // writes the provider reports for that call. Without this pairing a
+            // cache write cannot be told apart from a genuine prefix rewrite —
+            // production shows 11.8k written tokens per opus call, more than the
+            // new content each call carries.
+            try {
+              const print = fingerprintMessages(compacted.messages)
+              callFingerprints.push({
+                hash: print.aggregate,
+                msgs: print.count,
+                chars: print.totalChars,
+                compacted: event ? event.trigger : null,
+              })
+            } catch { /* diagnostics only */ }
+          }
+          return compacted.messages
         },
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
@@ -4502,6 +4655,7 @@ export class AgentGateway {
         const fileStateSummary = this.fileStateCache.size > 0
           ? this.fileStateCache.getSummary(this.workspaceDir)
           : undefined
+        const tokensBeforePostTurn = this.sessionManager.estimateTokens(session)
         const compactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
         if (compactResult) {
           console.log(
@@ -4510,6 +4664,25 @@ export class AgentGateway {
           // Prefix rewritten — drop stable-compaction state. Next turn's
           // transformContext takes fresh decisions against the new history.
           this.contentReplacementStates.delete(sessionId)
+          runningContextEstimate = this.sessionManager.estimateTokens(session)
+          // Same transcript row as a mid-turn summarization: every compaction
+          // shows up in history exactly once, whichever layer ran it (SHO-96).
+          if (uiWriter) {
+            try {
+              uiWriter.write({
+                type: 'data-context-summarized',
+                data: {
+                  trigger: 'auto',
+                  tokensBefore: tokensBeforePostTurn,
+                  tokensAfter: runningContextEstimate,
+                  messagesBefore: compactResult.messagesBefore,
+                  messagesAfter: compactResult.messagesAfter,
+                  summaryChars: compactResult.summary.length,
+                  contextWindowTokens,
+                },
+              } as any)
+            } catch { /* client gone — the row still persists via the API */ }
+          }
         }
       }
 
@@ -4548,6 +4721,23 @@ export class AgentGateway {
         perCallUsage: result.perCallUsage ?? [],
         prefix,
         wasAborted: result.abortReason === 'external',
+      }
+
+      // One line per model call: the prefix fingerprint sent, and the cache
+      // read/write the provider reported for it. A call that writes while its
+      // hash is unchanged from the previous call is a genuine cache opportunity
+      // missed; a write whose hash did change is a real prefix change.
+      if (process.env.SHOGO_PREFIX_LOG !== '0' && callFingerprints.length > 0) {
+        const perCall = result.perCallUsage ?? []
+        const lines = callFingerprints.map((c, i) => {
+          const usage = perCall[i]
+          const mark = c.compacted ? ` compacted=${c.compacted}` : ''
+          return (
+            `  #${i + 1} ${c.hash} (${c.msgs} msgs, ${c.chars}c)${mark}` +
+            (usage ? ` read=${usage.cacheRead} write=${usage.cacheWrite} in=${usage.input} out=${usage.output}` : '')
+          )
+        })
+        console.log(`${this.logPrefix} [cache-attrib] turn=${prefix.turn} calls=${callFingerprints.length}\n${lines.join('\n')}`)
       }
 
       // UI notifications below may throw if the client disconnected (stop).
@@ -6511,6 +6701,56 @@ export class AgentGateway {
 
   getSessionManager(): SessionManager {
     return this.sessionManager
+  }
+
+  /**
+   * Manually summarize a session's context — the context-usage dock's button
+   * (SHO-96).
+   *
+   * - live turn: queue it; the next `transformContext` call (i.e. the next
+   *   tool step) consumes the flag and emits the transcript row.
+   * - idle session: summarize now and report the real before/after.
+   * - nothing foldable: say so instead of faking a success.
+   */
+  async compactSession(sessionId: string): Promise<{
+    status: 'compacted' | 'queued' | 'nothing-to-compact' | 'unknown-session'
+    reason?: string
+    tokensBefore?: number
+    tokensAfter?: number
+    messagesBefore?: number
+    messagesAfter?: number
+    summaryChars?: number
+  }> {
+    const detail = this.sessionManager.getDetail(sessionId)
+    if (!detail) return { status: 'unknown-session', reason: 'session not found' }
+
+    if (this.turnAbortControllers.has(sessionId)) {
+      this.manualCompactionRequests.add(sessionId)
+      return { status: 'queued', reason: 'will summarize at the next step' }
+    }
+
+    const tokensBefore = detail.estimatedTokens
+    const result = await this.sessionManager.compact(sessionId)
+    if (!result) {
+      return {
+        status: 'nothing-to-compact',
+        reason: 'nothing to compact',
+        tokensBefore,
+        tokensAfter: tokensBefore,
+      }
+    }
+    // The prefix was rewritten — drop stable-compaction decisions, exactly as
+    // every other compaction path does.
+    this.contentReplacementStates.delete(sessionId)
+    const after = this.sessionManager.getDetail(sessionId)
+    return {
+      status: 'compacted',
+      tokensBefore,
+      tokensAfter: after?.estimatedTokens ?? tokensBefore,
+      messagesBefore: result.messagesBefore,
+      messagesAfter: result.messagesAfter,
+      summaryChars: result.summary.length,
+    }
   }
 
   getMCPClientManager(): MCPClientManager {

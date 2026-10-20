@@ -213,6 +213,21 @@ export function modelSupportsAudioInput(id: string): boolean {
   return entry?.capabilities?.supportsAudioInput === true
 }
 
+/**
+ * The model's real context window in tokens, when the catalog knows it.
+ *
+ * Used to derive the summarize threshold (window − output/buffer reserve,
+ * capped at `AGENT_AUTOCOMPACT_TOKENS`). `undefined` means "unknown": callers
+ * fall back to the flat 200k cap rather than inventing a window.
+ */
+export function getContextWindowTokens(id: string): number | undefined {
+  const entry = getModelEntry(id)
+  const fromCatalog = entry?.contextWindow
+  if (typeof fromCatalog === 'number' && fromCatalog > 0) return fromCatalog
+  const fromDynamic = getDynamicModel(id)?.contextWindow
+  return typeof fromDynamic === 'number' && fromDynamic > 0 ? fromDynamic : undefined
+}
+
 /** Return the transport kind for a model. Unannotated catalog entries are chat models. */
 export function getModelKind(id: string): ModelKind {
   return getModelEntry(id)?.kind ?? 'chat'

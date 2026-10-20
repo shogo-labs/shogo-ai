@@ -26,6 +26,7 @@ import { WorkGroup } from "./WorkGroup"
 import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
 import { useChatImageWidth } from "./use-chat-image-width"
 import { WorkedForGroup } from "./WorkedForGroup"
+import { ContextCompactionDivider } from "./ContextCompactionDivider"
 import { PlanningStatusLine } from "./PlanningStatusLine"
 import { useDeferredBacklog } from "./use-deferred-backlog"
 import type { MessagePart, GroupedMessagePart } from "./types"
@@ -663,6 +664,10 @@ export const AssistantContent = memo(
 
       if (part.type === "image-gallery") {
         return <GeneratedImageGallery key={part.id} tools={part.tools} />
+      }
+
+      if (part.type === "compaction") {
+        return <ContextCompactionDivider key={part.id} part={part} />
       }
 
       if (part.type === "tool") {

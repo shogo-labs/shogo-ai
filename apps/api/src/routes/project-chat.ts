@@ -125,6 +125,43 @@ export interface TrackedStreamResult {
 const TURN_START_CLOCK_SKEW_MS = 30_000
 
 /**
+ * Write the transcript row for a compaction that happened with no live turn to
+ * carry the SSE frame (the dock's manual button on an idle session).
+ *
+ * The part shape is identical to what `trackUsageFromStream` persists for an
+ * auto compaction, so the divider renders the same way whether it came from a
+ * turn or from the button.
+ */
+async function persistCompactionRow(
+  chatSessionId: string,
+  data: {
+    trigger: 'auto' | 'manual'
+    tokensBefore: number
+    tokensAfter: number
+    messagesBefore: number
+    messagesAfter: number
+    summaryChars: number
+  },
+): Promise<void> {
+  try {
+    const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
+    if (!session) return
+    await prisma.chatMessage.create({
+      data: {
+        sessionId: chatSessionId,
+        role: 'assistant',
+        content: '',
+        parts: JSON.stringify([{ type: 'data-context-summarized', data }]),
+        agent: 'technical',
+        model: 'auto',
+      },
+    })
+  } catch (err: any) {
+    console.warn('[ProjectChat] Failed to persist compaction row:', err?.message ?? err)
+  }
+}
+
+/**
  * Scan a teed copy of the AI SDK stream for usage/tool-call data.
  *
  * The Vercel AI SDK UI protocol uses newline-delimited messages. Key prefixes:
@@ -163,6 +200,8 @@ const TURN_START_CLOCK_SKEW_MS = 30_000
  *   bump, and auto-checkpointing are simply skipped since there's no
  *   project to attribute them to.
  */
+
+
 export async function trackUsageFromStream(
   stream: ReadableStream<Uint8Array>,
   requestBody: any,
@@ -667,6 +706,28 @@ export async function trackUsageFromStream(
       if (typeof seq === 'number' && seq > lastObservedSeq) {
         lastObservedSeq = seq
       }
+    }
+
+    // Mid-turn (or queued-manual) context summarization. Persisted as a part
+    // on the assistant message — the divider the transcript renders, and the
+    // reason the context ring dropped in the same frame. It must survive a
+    // reload, which is why it is not a transient status frame (SHO-96).
+    if (type === 'data-context-summarized') {
+      const payload = data?.data ?? {}
+      orderedParts.push({
+        type: 'data-context-summarized',
+        data: {
+          trigger: payload.trigger === 'manual' ? 'manual' : 'auto',
+          tokensBefore: Number(payload.tokensBefore) || 0,
+          tokensAfter: Number(payload.tokensAfter) || 0,
+          messagesBefore: Number(payload.messagesBefore) || 0,
+          messagesAfter: Number(payload.messagesAfter) || 0,
+          summaryChars: Number(payload.summaryChars) || 0,
+          contextWindowTokens: Number(payload.contextWindowTokens) || undefined,
+        },
+      })
+      persistenceDirty = true
+      persistenceUrgent = true
     }
 
     if (type === 'finish' || type === 'finish-step' || type === 'usage' || type === 'data-usage') {
@@ -2273,6 +2334,66 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     } catch (err: any) {
       console.warn(`[ProjectChat] turn snapshot proxy error for ${projectId}/${chatSessionId}:`, err?.message || err)
       return c.json({ status: "unknown" as const }, 404)
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/chat/compact - Summarize this chat's context now
+   *
+   * The context-usage dock's button. Proxies to the runtime's
+   * `/agent/sessions/:id/compact` and, when the session was idle and actually
+   * compacted, writes the transcript row itself (an idle session has no live
+   * turn to carry the SSE frame). A live turn returns 202 `queued` and the row
+   * lands with the assistant message at the next step.
+   *
+   * Always surfaces the runtime's own `reason` — a fake success would make the
+   * dock's ring and the transcript disagree.
+   */
+  router.post("/projects/:projectId/chat/compact", async (c) => {
+    const projectId = c.req.param("projectId")
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" }, compacted: false },
+          404,
+        )
+      }
+      let parsed: any = {}
+      try { parsed = JSON.parse(await c.req.text()) } catch { /* empty body */ }
+      const chatSessionId =
+        c.req.header("X-Chat-Session-Id") || parsed?.chatSessionId || parsed?.sessionId
+      if (typeof chatSessionId !== "string" || !chatSessionId) {
+        return c.json({ compacted: false, queued: false, reason: "missing chatSessionId" }, 400)
+      }
+
+      const response = await fetchFromRuntime(
+        projectId,
+        `/agent/sessions/${encodeURIComponent(chatSessionId)}/compact`,
+        { method: "POST", body: "{}", signal: c.req.raw.signal },
+      )
+      const result: any = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        return c.json(
+          { compacted: false, queued: false, reason: result?.error ?? result?.reason ?? `runtime ${response.status}` },
+          response.status as any,
+        )
+      }
+
+      if (result?.compacted) {
+        await persistCompactionRow(chatSessionId, {
+          trigger: "manual",
+          tokensBefore: Number(result.tokensBefore) || 0,
+          tokensAfter: Number(result.tokensAfter) || 0,
+          messagesBefore: Number(result.messagesBefore) || 0,
+          messagesAfter: Number(result.messagesAfter) || 0,
+          summaryChars: Number(result.summaryChars) || 0,
+        })
+      }
+      return c.json(result, response.status as any)
+    } catch (error: any) {
+      console.warn("[ProjectChat] compact error:", error?.message || error)
+      return c.json({ compacted: false, queued: false, reason: error?.message ?? "compact failed" }, 502)
     }
   })
 
