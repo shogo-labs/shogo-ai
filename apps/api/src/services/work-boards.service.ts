@@ -29,10 +29,10 @@ import {
   updateMessageInternal,
 } from './conversation.service'
 import { agentMentionToken } from './conversation-mentions'
-import type { AgentChain } from './conversation-agent-chain'
+import { envInt, type AgentChain } from './conversation-agent-chain'
 import type { CardEventState } from './background-tasks.service'
 import type { AgentTarget } from './conversation-mentions'
-import { blocksForKind, type StatusCard } from './conversation-message-kind'
+import { blocksForKind, type CardEscalation, type CardEscalationReason, type QuestionBlock, type StatusCard } from './conversation-message-kind'
 import { registerAfterPostHook, afterMessagePosted } from './conversation-pipeline'
 import {
   COLUMN_CATEGORIES,
@@ -941,27 +941,22 @@ export async function nudgeAgentOnMove(itemId: string, agentRef: string, actor: 
     },
   })
   if (!rearmed.count) {
-    try {
-      await db.agentWake.create({
-        data: {
-          workspaceId: item.workspaceId,
-          conversationId: thread.conversation.id,
-          threadRootId: thread.rootId,
-          triggerMessageId: thread.rootId,
-          agentRef,
-          userId,
-          reason: 'move_nudge',
-          notBefore,
-          status: 'pending',
-        },
-        select: { id: true },
-      })
-    } catch (err: any) {
+    const { enqueueAgentWake } = await import('./conversation-agent-dispatcher')
+    const wakeId = await enqueueAgentWake({
+      conversationId: thread.conversation.id,
+      threadRootId: thread.rootId,
+      triggerMessageId: thread.rootId,
+      agentRef,
+      userId,
+      reason: 'move_nudge',
+      notBefore,
+    }).catch((err: any) => {
       // Two nudges at once are one hint: the other one is pending (or its run is
       // already claimed), and this move changes nothing.
-      if (err?.code === 'P2002') return { nudged: false, reason: 'already_pending' }
+      if (err?.code === 'P2002') return null
       throw err
-    }
+    })
+    if (!wakeId) return { nudged: false, reason: 'already_pending' }
   }
   await recordEvent(item, 'agent_wake_deferred', actor, { agentRef, reason, notBefore: notBefore.toISOString() })
   const { scheduleAgentWakeDrain } = await import('./conversation-agent-dispatcher')
@@ -2046,7 +2041,15 @@ export function registerWorkBoardHooks(): void {
           await upsertLink(item, { kind: 'chat_session', refId: row.agentSessionId, conversationId: row.conversationId, reason: 'agent_run', snippet: row.authorAgentRef?.name ?? 'Agent' }, { agentRef: agentRefFor(row.authorAgentRef?.projectId ?? null) })
         }
         if (row.authorType === 'agent' && row.agentStatus === 'error' && (ctx.settled || ctx.origin === 'agent')) {
-          await sendToNeedsAttention(item, row)
+          // The same handler a run end reaches, so a reply that lands here is
+          // re-handed or escalated instead of being parked on its own.
+          await noteCardRunEnded({
+            threadRootId: row.threadRootId,
+            projectId: row.authorAgentRef?.projectId ?? null,
+            messageId: row.id,
+            agentStatus: 'error',
+            startedAt: row.createdAt ?? undefined,
+          }).catch((err: Error) => console.warn('[Boards] failed-run note failed:', err.message))
         }
       }
     }
@@ -2069,10 +2072,17 @@ export function registerWorkBoardHooks(): void {
 
 /**
  * An agent's run in a card thread finished. When that agent holds the card and
- * left it where it was, whoever is watching the card hears about it: a failed
- * run goes to "needs attention", and a run that ended without moving the card
- * records `agent_stopped`, so the assigner is not left waiting on a card
- * nobody is working.
+ * left it where it was, the card gets nobody — so it is noticed here rather than
+ * left parked:
+ *
+ * - a failed run records `agent_failed`, so whoever watches the card hears it;
+ * - a run that ended **stranded** (no move, no question, no other live run) is
+ *   re-handed to its agent once, with a backoff, through the wake queue;
+ * - a second stranded ending since the card last moved escalates it to the
+ *   board's attention column with a reason and one question for a person.
+ *
+ * This is the single insert point: run ends in-process, and runs the dead-run
+ * sweep settles, all arrive here.
  */
 export async function noteCardRunEnded(run: CardRun): Promise<void> {
   if (!run.threadRootId) return
@@ -2082,10 +2092,11 @@ export async function noteCardRunEnded(run: CardRun): Promise<void> {
   })
   if (!item) return
   const agentRef = agentRefFor(run.projectId)
-  if ((item.assigneeAgentRef ?? item.column.agentRef) === agentRef) {
+  const row = await db.conversationMessage.findUnique({ where: { id: run.messageId } }).catch(() => null)
+  const holder = cardHolderRefs(item).includes(agentRef)
+  if (holder) {
     if (run.agentStatus === 'error') {
-      const failed = await db.conversationMessage.findUnique({ where: { id: run.messageId } })
-      if (failed) await sendToNeedsAttention(item, failed)
+      if (row) await noteAgentFailed(item, row)
     } else if (item.column.category === 'backlog' || item.column.category === 'active') {
       await recordEvent(item, 'agent_stopped', { agentRef }, {
         column: item.column.name,
@@ -2095,6 +2106,10 @@ export async function noteCardRunEnded(run: CardRun): Promise<void> {
         ...(run.agentStatus === 'stopped' ? { reason: 'stopped by a person' } : {}),
       })
     }
+  }
+  if (holder && !(await handledRun(item.id, run.messageId))) {
+    const check = await strandedFor(item, run, row)
+    if (check.stranded) await rehandOrEscalate(item, run, check, row)
   }
   await settleCardWatchers(item, run)
 }
@@ -2107,6 +2122,451 @@ export interface CardRun {
   /** When the run started; its posts in the thread since then are what it handed on. */
   startedAt?: Date
 }
+
+/** How long a stranded card waits before its one re-hand: a pod that just died gets a moment back. */
+export const CARD_RETRY_BACKOFF_MS = envInt('SHOGO_CARD_RETRY_BACKOFF_MS', 60_000)
+
+/** The agents a card belongs to: its assignee **and** the agent its column binds. */
+function cardHolderRefs(item: any): string[] {
+  return [...new Set([item.assigneeAgentRef, item.column?.agentRef].filter((ref: unknown): ref is string => !!ref))]
+}
+
+export type StrandedCheck =
+  | { stranded: true; agentRef: string; since: Date }
+  | { stranded: false; reason: 'not_a_holder' | 'terminal' | 'stopped_by_person' | 'moved' | 'person_asked' | 'asked' | 'escalation_open' | 'live_run' }
+
+/**
+ * Did this run end with nobody on the card? True when its agent holds the card,
+ * the card is not closed, the run was not stopped by a person, the card has not
+ * moved since the run started, the run was not answering somebody who is still in
+ * the thread, that agent has no question open in the thread, no escalation is
+ * already waiting on a person, and nothing else is running there.
+ */
+export async function strandedFor(item: any, run: CardRun, row?: { createdAt?: Date } | null): Promise<StrandedCheck> {
+  const agentRef = agentRefFor(run.projectId)
+  if (!cardHolderRefs(item).includes(agentRef)) return { stranded: false, reason: 'not_a_holder' }
+  const category = item.column?.category
+  if (category === 'done' || category === 'dismissed') return { stranded: false, reason: 'terminal' }
+  if (run.agentStatus === 'stopped') return { stranded: false, reason: 'stopped_by_person' }
+  const since = run.startedAt ?? row?.createdAt ?? new Date(Date.now() - 60_000)
+  const moved = await db.workItemEvent.findFirst({
+    where: { workItemId: item.id, type: 'moved', createdAt: { gte: since } },
+    select: { id: true },
+  })
+  if (moved) return { stranded: false, reason: 'moved' }
+  if (run.agentStatus !== 'error' && (await answeredAPerson(run, row))) return { stranded: false, reason: 'person_asked' }
+  const posts = await db.conversationMessage.findMany({
+    where: { threadRootId: run.threadRootId, authorType: 'agent', deletedAt: null, createdAt: { gte: since } },
+    select: { id: true, authorAgentRef: true, blocks: true },
+    take: 40,
+  })
+  const mine = (posts as any[]).filter((m) => (m.authorAgentRef?.projectId ?? null) === run.projectId)
+  if (mine.some((m) => openQuestionsOf(m.blocks).length)) return { stranded: false, reason: 'asked' }
+  // `blocks` is JSON text on SQLite and an object on Postgres, so the escalation
+  // is found by reading the thread's system posts rather than by a JSON path.
+  const escalationPosts = await db.conversationMessage.findMany({
+    where: { threadRootId: run.threadRootId, deletedAt: null, authorType: 'system', createdAt: { gte: new Date(Date.now() - 7 * 24 * 3_600_000) } },
+    select: { id: true, blocks: true },
+    take: 100,
+  })
+  if ((escalationPosts as any[]).some((m: any) => blocksOf(m.blocks)?.cardEscalation && openQuestionsOf(m.blocks).length)) {
+    return { stranded: false, reason: 'escalation_open' }
+  }
+  if (await liveRunInThread(run.threadRootId, run.messageId)) return { stranded: false, reason: 'live_run' }
+  return { stranded: true, agentRef, since }
+}
+
+function blocksOf(blocks: unknown): Record<string, any> | null {
+  if (!blocks) return null
+  if (typeof blocks === 'string') return safeJson(blocks)
+  return blocks as Record<string, any>
+}
+
+/** Open questions this message asks, from either store shape. */
+function openQuestionsOf(blocks: unknown): any[] {
+  const parsed = blocksOf(blocks)
+  const questions = Array.isArray(parsed?.questions) ? parsed!.questions : []
+  return questions.filter((q: any) => q?.status === 'open')
+}
+
+/** Another agent's reply is still being written in this thread. */
+async function liveRunInThread(threadRootId: string | null, exceptMessageId: string): Promise<boolean> {
+  if (!threadRootId) return false
+  const row = await db.conversationMessage.findFirst({
+    where: { threadRootId, authorType: 'agent', agentStatus: 'running', deletedAt: null, id: { not: exceptMessageId } },
+    select: { id: true },
+  })
+  return !!row
+}
+
+/**
+ * Was this run answering a person? The card is not unattended when somebody just
+ * spoke on it: a question in a card thread wakes the holder, the holder answers
+ * without moving the card, and re-handing that would run the agent twice and then
+ * ask "who takes it?" with the asker still in the thread. Measured from the
+ * thread, not from `startedAt`: the message that woke the run was posted before
+ * the run began.
+ *
+ * A run that **failed** is not exempt however recently a person spoke — the
+ * person asked and got an error, so there is still nobody on the card.
+ *
+ * Failed agent rows are skipped in the scan, not treated as the agent's last
+ * word: nobody got an answer from them. So a question whose first attempt died
+ * is answered by the retry, and the retry is exempt too — otherwise the card
+ * escalates out of its column seconds after the person was answered.
+ */
+async function answeredAPerson(run: CardRun, row?: { createdAt?: Date } | null): Promise<boolean> {
+  if (!run.threadRootId) return false
+  const before = row?.createdAt ?? run.startedAt
+  const base = {
+    threadRootId: run.threadRootId,
+    deletedAt: null,
+    id: { not: run.messageId },
+    ...(before ? { createdAt: { lt: before } } : {}),
+  }
+  const [lastUser, lastClean] = await Promise.all([
+    db.conversationMessage.findFirst({
+      where: { ...base, authorType: 'user' },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    }),
+    db.conversationMessage.findFirst({
+      where: { ...base, authorType: 'agent', OR: [{ agentStatus: null }, { agentStatus: 'done' }] },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    }),
+  ])
+  if (!lastUser) return false
+  const user = (lastUser as any).createdAt?.getTime?.() ?? 0
+  const clean = (lastClean as any)?.createdAt?.getTime?.() ?? 0
+  return user >= clean
+}
+
+/** Has this run already been re-handed or escalated? A reply only dies once. */
+async function handledRun(itemId: string, messageId: string): Promise<boolean> {
+  const rows = await db.workItemEvent.findMany({
+    where: { workItemId: itemId, type: { in: ['agent_retry', 'agent_escalated'] } },
+    select: { eventData: true },
+    take: 100,
+  })
+  return (rows as any[]).some((e) => eventData(e.eventData)?.messageId === messageId)
+}
+
+function eventData(data: unknown): any {
+  return typeof data === 'string' ? safeJson(data) : data
+}
+
+/** One line for a card history: the error as it will be read in the thread. */
+function oneLine(text: unknown, max = 160): string | null {
+  const flat = String(text ?? '').replace(/\s+/g, ' ').trim()
+  if (!flat) return null
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+/** What the card's run said when it failed, once per reply (a retry must not double-post). */
+async function noteAgentFailed(item: any, failed: any): Promise<void> {
+  const earlier = await db.workItemEvent.findMany({
+    where: { workItemId: item.id, type: 'agent_failed', createdAt: { gt: new Date(Date.now() - 10 * 60_000) } },
+    select: { eventData: true },
+  })
+  if ((earlier as any[]).some((e) => eventData(e.eventData)?.messageId === failed.id)) return
+  await recordEvent(item, 'agent_failed', { agentRef: agentRefFor(failed.authorAgentRef?.projectId ?? null) }, {
+    messageId: failed.id,
+    assigneeAgentRef: item.assigneeAgentRef ?? null,
+    columnAgentRef: item.column.agentRef ?? null,
+  })
+}
+
+/** The column that means "a person must look" on this board. */
+function attentionColumn(board: any): any {
+  return board.columns.find((c: any) => c.category === 'waiting' && /attention/i.test(c.name))
+    ?? board.columns.find((c: any) => c.category === 'waiting')
+}
+
+/** How many times this card was re-handed since it last moved; a real move resets the ledger. */
+async function retriesSinceLastMove(itemId: string): Promise<number> {
+  const lastMove = await db.workItemEvent.findFirst({
+    where: { workItemId: itemId, type: 'moved' },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true },
+  })
+  return db.workItemEvent.count({
+    where: {
+      workItemId: itemId,
+      type: 'agent_retry',
+      ...(lastMove ? { createdAt: { gt: lastMove.createdAt } } : {}),
+    },
+  })
+}
+
+/** One re-hand, or the escalation when that is the honest next step. */
+async function rehandOrEscalate(item: any, run: CardRun, check: { agentRef: string }, row: any): Promise<void> {
+  const lastError = oneLine(row?.text)
+  if ((await retriesSinceLastMove(item.id)) > 0) {
+    await escalateStrandedCard(item, check.agentRef, 'run_died_twice', lastError, run.messageId, row)
+    return
+  }
+  const recentWakes = await db.workItemEvent.count({
+    where: { workItemId: item.id, type: 'agent_woken', createdAt: { gt: new Date(Date.now() - 3_600_000) } },
+  })
+  if (recentWakes >= MAX_AGENT_WAKES_PER_HOUR) {
+    await escalateStrandedCard(item, check.agentRef, 'rate_limited', lastError, run.messageId, row)
+    return
+  }
+  const line = await rehandCard(item, check.agentRef, { messageId: run.messageId, lastError }, {
+    lede: `Restarting it in ~${Math.round(CARD_RETRY_BACKOFF_MS / 1000)} s; if that run also ends without progress the card goes to Needs attention.`,
+    delayMs: CARD_RETRY_BACKOFF_MS,
+  })
+  if (!line) await escalateStrandedCard(item, check.agentRef, 'no_holder', lastError, run.messageId, row)
+}
+
+/**
+ * Hand the card back to the agent whose run died: one line in the thread that
+ * says so, and one wake behind it after `delayMs`. The line carries the retry's
+ * instruction, so the run that wakes reads the card's current state from it.
+ * Returns the line's message id, or null when there is nowhere to post it.
+ */
+async function rehandCard(
+  item: any,
+  agentRef: string,
+  run: { messageId: string; lastError: string | null },
+  opts: { lede: string; delayMs: number },
+): Promise<string | null> {
+  const thread = await ensureThread(item.id, { agentRef })
+  if (!thread) return null
+  const userId = await originUserFor(item, item.board, { agentRef })
+  if (!userId) return null
+  const projectId = agentRefProjectId(agentRef)
+  const name = await agentDisplayName(item.workspaceId, projectId)
+  const summary = item.historySummary ? `\n\nWhere it stands: ${String(item.historySummary).slice(0, 800)}` : ''
+  const text = [
+    `${agentMentionToken(projectId)} **Re-handed** — ${name}'s run on ${item.key} ended without moving the card${run.lastError ? ` (${run.lastError})` : ''}. ${opts.lede}`,
+    `${item.key} is in ${item.column.name}: **${item.title}**.${summary}`,
+    `Your previous run ended without moving the card or asking a question — read it with work_item_get("${item.key}"), continue from your last message, do not redo finished work, then move it with work_item_move.`,
+  ].join('\n\n')
+  const posted = await postMessage({
+    conversationId: thread.conversation.id,
+    authorType: 'system',
+    threadRootId: thread.rootId,
+    systemMentions: true,
+    text,
+    blocks: { cardRetry: { agentRef, messageId: run.messageId } },
+  })
+  void afterMessagePosted(posted, { actorUserId: null, origin: 'system' })
+  const lineId = posted.row.id as string
+  const { enqueueAgentWake, scheduleAgentWakeDrain, RUN_DIED_RETRY_REASON } = await import('./conversation-agent-dispatcher')
+  const wakeId = await enqueueAgentWake({
+    conversationId: thread.conversation.id,
+    threadRootId: thread.rootId,
+    triggerMessageId: lineId,
+    agentRef,
+    userId,
+    reason: RUN_DIED_RETRY_REASON,
+    notBefore: new Date(Date.now() + opts.delayMs),
+  }).catch((err: Error) => {
+    console.warn('[Boards] re-hand wake failed:', err.message)
+    return null
+  })
+  await recordEvent(item, 'agent_retry', { agentRef }, {
+    agentRef,
+    messageId: run.messageId,
+    retryMessageId: lineId,
+    ...(run.lastError ? { lastError: run.lastError } : {}),
+  })
+  // The row's own timer fires just after its window; the 15s sweep is the
+  // backstop for a pod that restarted in between.
+  if (wakeId) scheduleAgentWakeDrain({ conversationId: thread.conversation.id, threadRootId: thread.rootId, agentRef }, opts.delayMs + 250)
+  return lineId
+}
+
+/**
+ * A card whose run died twice can't be fixed by another automatic run: it moves
+ * to the column that means a person must look, records why, and asks one
+ * question the person can act on. The move is internal on purpose — going
+ * through `moveWorkItem` would start a third run on the card it is escalating.
+ */
+async function escalateStrandedCard(
+  item: any,
+  agentRef: string,
+  reason: CardEscalationReason,
+  lastError: string | null,
+  messageId: string,
+  row: any,
+): Promise<void> {
+  const retry = await db.workItemEvent.findFirst({
+    where: { workItemId: item.id, type: 'agent_retry' },
+    orderBy: { createdAt: 'desc' },
+    select: { eventData: true },
+  })
+  const retryMessageId = eventData(retry?.eventData)?.retryMessageId ?? null
+  await recordEvent(item, 'agent_escalated', { agentRef }, {
+    reason,
+    agentRef,
+    messageId,
+    assigneeAgentRef: item.assigneeAgentRef ?? null,
+    columnAgentRef: item.column.agentRef ?? null,
+    ...(lastError ? { lastError } : {}),
+    ...(retryMessageId ? { retryMessageId } : {}),
+  })
+  const column = attentionColumn(item.board)
+  if (column && column.id !== item.columnId) {
+    const now = new Date()
+    await db.workItem.update({
+      where: { id: item.id },
+      data: { columnId: column.id, columnEnteredAt: now, lastActivityAt: now, completedAt: null },
+    })
+    await recordEvent(item, 'moved', {}, {
+      from: { columnId: item.columnId, column: item.column.name },
+      to: { columnId: column.id, column: column.name, category: column.category },
+      reason: 'agent_escalated',
+      assigneeAgentRef: item.assigneeAgentRef ?? null,
+      columnAgentRef: column.agentRef ?? null,
+    })
+    await refreshCardMessage(item.id)
+    await publishBoard(item.board, { action: 'item.moved', itemId: item.id })
+    item = { ...item, columnId: column.id, column }
+  }
+  await postEscalationQuestion(item, agentRef, reason, lastError, row)
+}
+
+/** The one question an escalated card asks: who takes it. */
+async function postEscalationQuestion(
+  item: any,
+  agentRef: string,
+  reason: CardEscalationReason,
+  lastError: string | null,
+  row: any,
+): Promise<void> {
+  const thread = await ensureThread(item.id, { agentRef })
+  if (!thread) return
+  const { newQuestionId, onQuestionAsked } = await import('./conversation-questions')
+  const projectId = agentRefProjectId(agentRef)
+  const name = await agentDisplayName(item.workspaceId, projectId)
+  const chain = row?.agentChain && typeof row.agentChain === 'object' ? row.agentChain : null
+  const owner = item.assigneeUserId ?? chain?.originUserId ?? item.createdById ?? null
+  const why = reason === 'run_died_twice'
+    ? `${name}'s run on ${item.key} died again without moving the card`
+    : reason === 'rate_limited'
+      ? `${name}'s run on ${item.key} ended without moving the card, and it has been woken too often this hour to try again`
+      : `${name}'s run on ${item.key} ended without moving the card and there is nobody to hand it back to`
+  const now = new Date()
+  const question: QuestionBlock = {
+    id: newQuestionId(),
+    to: owner ? { userIds: [owner], via: 'thread' } : { userIds: [], anyone: true, via: 'thread' },
+    header: 'Who takes it?',
+    prompt: `${why}${lastError ? ` (${lastError})` : ''}. Who takes it?`,
+    interaction: 'choice',
+    options: [
+      { label: 'Retry it', description: `Wake ${name} once more on this card.` },
+      { label: "I'll take it", description: 'Assign the card to you; nothing else runs it.' },
+      { label: 'Dismiss', description: 'Move the card to Dismissed.' },
+    ],
+    status: 'open',
+    source: 'inferred',
+    askCount: 1,
+    lastAskedAt: now.toISOString(),
+  }
+  const blocks = {
+    questions: [question],
+    cardEscalation: { itemId: item.id, agentRef, reason },
+    messageKind: 'decision' as const,
+  }
+  const posted = await postMessage({
+    conversationId: thread.conversation.id,
+    authorType: 'system',
+    threadRootId: thread.rootId,
+    systemMentions: true,
+    text: `${owner ? `<@u:${owner}> ` : ''}**${item.key}** needs a person: ${why}.`,
+    blocks,
+  })
+  await onQuestionAsked({ ...posted.row, blocks }, thread.conversation, question).catch((err: Error) =>
+    console.warn('[Boards] escalation question notify failed:', err.message))
+  void afterMessagePosted(posted, { actorUserId: null, origin: 'system' })
+}
+
+/**
+ * What a person chose on an escalated card's question. Applied where every other
+ * answer lands (`answerQuestion`), so nothing has to guess later which card a
+ * question belonged to.
+ */
+export async function applyCardEscalationAnswer(input: {
+  escalation: CardEscalation
+  answer: string
+  userId: string
+}): Promise<void> {
+  const item = await db.workItem.findUnique({
+    where: { id: input.escalation.itemId },
+    include: { column: true, board: { include: BOARD_INCLUDE } },
+  })
+  if (!item) return
+  const choice = escalationChoice(input.answer)
+  if (choice === 'retry') {
+    const escalated = await db.workItemEvent.findFirst({
+      where: { workItemId: item.id, type: 'agent_escalated' },
+      orderBy: { createdAt: 'desc' },
+      select: { eventData: true },
+    })
+    const data = eventData(escalated?.eventData)
+    await rehandCard(item, input.escalation.agentRef, {
+      messageId: data?.messageId ?? item.id,
+      lastError: oneLine(data?.lastError),
+    }, { lede: 'Restarting it now.', delayMs: 0 })
+    return
+  }
+  if (choice === 'take') {
+    const user = await db.user.findUnique({ where: { id: input.userId }, select: { name: true, email: true } }).catch(() => null)
+    const label = user?.name || user?.email || 'someone'
+    await db.workItem.update({
+      where: { id: item.id },
+      data: { assigneeUserId: input.userId, assigneeAgentRef: null, lastActivityAt: new Date() },
+    })
+    await recordEvent(item, 'assigned', { userId: input.userId }, {
+      label,
+      userId: input.userId,
+      assigneeAgentRef: null,
+      columnAgentRef: item.column.agentRef ?? null,
+    })
+    await refreshCardMessage(item.id)
+    await publishBoard(item.board, { action: 'item.updated', itemId: item.id })
+    return
+  }
+  if (choice === 'dismiss') {
+    const column = item.board.columns.find((c: any) => c.category === 'dismissed')
+    if (column && column.id !== item.columnId) {
+      const now = new Date()
+      await db.workItem.update({
+        where: { id: item.id },
+        data: { columnId: column.id, columnEnteredAt: now, lastActivityAt: now, completedAt: now },
+      })
+      await recordEvent(item, 'moved', { userId: input.userId }, {
+        from: { columnId: item.columnId, column: item.column.name },
+        to: { columnId: column.id, column: column.name, category: column.category },
+        reason: 'escalation_dismissed',
+        assigneeAgentRef: item.assigneeAgentRef ?? null,
+        columnAgentRef: column.agentRef ?? null,
+      })
+      await refreshCardMessage(item.id)
+      await publishBoard(item.board, { action: 'item.moved', itemId: item.id })
+    }
+    return
+  }
+  // Anything typed by hand: the card stays where a person can see it, and their
+  // words are already in the thread.
+  await recordEvent(item, 'agent_escalation_answered', { userId: input.userId }, {
+    choice: 'other',
+    answer: String(input.answer ?? '').slice(0, 400),
+  })
+}
+
+/** The three choices an escalated card offers, as the answer text arrives. */
+export function escalationChoice(answer: string): 'retry' | 'take' | 'dismiss' | 'other' {
+  const text = String(answer ?? '').trim().toLowerCase()
+  if (/^retry\b/.test(text)) return 'retry'
+  if (/^(i'?ll take|take it|i will take|assign me|i'?ll do it)\b/.test(text)) return 'take'
+  if (/^dismiss\b/.test(text)) return 'dismiss'
+  return 'other'
+}
+
 
 /** Agent key (`agentKey`) of the agent a chat session belongs to. */
 function sessionAgentKey(session: { contextType?: string; contextId?: string | null } | null): string | null {
@@ -2228,47 +2688,6 @@ function safeJson(text: string): any {
   } catch {
     return null
   }
-}
-
-async function sendToNeedsAttention(item: any, failed: any) {
-  const earlier = await db.workItemEvent.findMany({
-    where: { workItemId: item.id, type: 'agent_failed', createdAt: { gt: new Date(Date.now() - 10 * 60_000) } },
-    select: { eventData: true },
-  })
-  const messageIdOf = (data: any) => (typeof data === 'string' ? safeJson(data) : data)?.messageId
-  if (earlier.some((e: any) => messageIdOf(e.eventData) === failed.id)) return
-  await recordEvent(item, 'agent_failed', { agentRef: agentRefFor(failed.authorAgentRef?.projectId ?? null) }, {
-    messageId: failed.id,
-    assigneeAgentRef: item.assigneeAgentRef ?? null,
-    columnAgentRef: item.column.agentRef ?? null,
-  })
-  const column = item.board.columns.find((c: any) => c.category === 'waiting' && /attention/i.test(c.name))
-    ?? item.board.columns.find((c: any) => c.category === 'waiting')
-  if (column && column.id !== item.columnId) {
-    const now = new Date()
-    await db.workItem.update({ where: { id: item.id }, data: { columnId: column.id, columnEnteredAt: now, lastActivityAt: now, completedAt: null } })
-    await recordEvent(item, 'moved', {}, {
-      from: { columnId: item.columnId, column: item.column.name },
-      to: { columnId: column.id, column: column.name, category: column.category },
-      reason: 'agent_failed',
-      assigneeAgentRef: item.assigneeAgentRef ?? null,
-      columnAgentRef: column.agentRef ?? null,
-    })
-    await refreshCardMessage(item.id)
-  }
-  const chain = failed.agentChain && typeof failed.agentChain === 'object' ? failed.agentChain : null
-  const owner = item.assigneeUserId ?? chain?.originUserId ?? item.createdById
-  if (item.threadRootMessageId && item.conversationId) {
-    const result = await postMessage({
-      conversationId: item.conversationId,
-      authorType: 'system',
-      threadRootId: item.threadRootMessageId,
-      systemMentions: true,
-      text: `${owner ? `<@u:${owner}> ` : ''}The agent working ${item.key} stopped with an error${column ? `, so the card moved to ${column.name}` : ''}. Reply here or reassign it.`,
-    })
-    void afterMessagePosted(result, { actorUserId: null, origin: 'system' })
-  }
-  await publishBoard(item.board, { action: 'item.moved', itemId: item.id })
 }
 
 export type { ColumnCategory }
