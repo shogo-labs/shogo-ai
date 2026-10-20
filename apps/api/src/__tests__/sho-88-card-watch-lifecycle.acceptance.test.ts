@@ -258,6 +258,28 @@ describe('SHO-88 · one watch follows the card from lane to Done', () => {
     expect(wakes()).toHaveLength(1)
   }, 30_000)
 
+  test('two review moves inside one window reach the agent as one note, and the watch survives', async () => {
+    // The same window, a non-terminal second move: both lines belong to one
+    // note, and because the card is still open the watch must come back.
+    const c = await watchedCard()
+    const wakes = () => dispatched.filter((body) => (body.taskNotification?.taskIds ?? []).includes(c.watchId))
+
+    await c.move('QA')
+    await c.move('Review')
+    await waitFor(() => (wakes().length ? true : null), 10_000)
+    await new Promise((r) => setTimeout(r, 2_500))
+    expect(wakes()).toHaveLength(1)
+    expect(wakes()[0].text).toContain('moved to QA (review)')
+    expect(wakes()[0].text).toContain('moved to Review (review)')
+    expect((await tasks.getTask(c.watchId))!.status).toBe('running')
+
+    // …and the card is still watched afterwards.
+    await c.move('Done')
+    await waitFor(() => (wakes().length >= 2 ? true : null), 10_000)
+    expect(wakes()[1].text).toContain('moved to Done (done)')
+    expect((await tasks.getTask(c.watchId))!.summary).toBe('the card is closed')
+  }, 30_000)
+
   test('archiving a watched card ends the watch instead of leaving it to expire', async () => {
     const c = await watchedCard()
     const archived = await call(
