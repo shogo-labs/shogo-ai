@@ -4,7 +4,7 @@
 import { Hono } from 'hono'
 import { readFile, stat } from 'fs/promises'
 import { extname } from 'path'
-import { verifySharedFileToken } from '../lib/shared-file-token'
+import { describeSharedFileToken, diagnoseSharedFileToken, sharedFileLinkError } from '../lib/shared-file-token'
 import { resolveLocalSharedFileTarget } from '../lib/local-shared-file-target'
 
 export interface LocalSharedFileRoutesConfig {
@@ -41,10 +41,15 @@ export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono
   app.get('/f/:token', (c) => handleDownload(c))
 
   async function handleDownload(c: any): Promise<Response> {
-    const payload = verifySharedFileToken(c.req.param('token'))
-    if (!payload) {
-      return c.json({ error: { code: 'not_found', message: 'This download link is invalid or expired' } }, 404)
+    const diagnosis = diagnoseSharedFileToken(c.req.param('token'))
+    if (!diagnosis.ok) {
+      // The token is a capability, not a secret: log which check failed and
+      // what it claimed, so the next "the link doesn't work" is one grep.
+      console.warn(`[LocalSharedFiles] Refused a download link: ${describeSharedFileToken(diagnosis)}`)
+      const error = sharedFileLinkError(diagnosis.reason)
+      return c.json({ error: { code: error.code, message: error.message } }, error.status)
     }
+    const payload = diagnosis.claims
 
     try {
       const resolvedFile = await resolveLocalSharedFileTarget({
@@ -55,12 +60,12 @@ export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono
       })
       const target = resolvedFile?.target ?? null
       if (!target) {
-        return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
+        return c.json({ error: { code: 'file_not_found', message: 'File not found' } }, 404)
       }
 
       const metadata = await stat(target)
       if (!metadata.isFile()) {
-        return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
+        return c.json({ error: { code: 'file_not_found', message: 'File not found' } }, 404)
       }
 
       const filename = filenameFor(payload.path)
@@ -78,7 +83,7 @@ export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono
       })
     } catch (error: any) {
       if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
-        return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
+        return c.json({ error: { code: 'file_not_found', message: 'File not found' } }, 404)
       }
       console.error('[LocalSharedFiles] Download failed:', error?.message || error)
       return c.json({ error: { code: 'download_failed', message: 'File download failed' } }, 500)

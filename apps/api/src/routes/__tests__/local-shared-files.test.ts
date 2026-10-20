@@ -129,3 +129,61 @@ describe('local shared file routes: project links', () => {
     expect(() => projectLink('proj-a/../proj-other/secret.txt')).toThrow()
   })
 })
+
+/**
+ * A dead link has to say which way it is dead: an expired link (ask for a new
+ * one), a mangled one (the token did not survive the trip), or a token whose
+ * file is gone. They used to be one 404 with one message (SHO-80).
+ */
+describe('local shared file routes: honest 404s', () => {
+  const originalWarn = console.warn
+  let warnings: string[] = []
+
+  beforeEach(() => {
+    warnings = []
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((arg) => String(arg)).join(' '))
+    }
+  })
+
+  afterAll(() => {
+    console.warn = originalWarn
+  })
+
+  async function fetchToken(token: string) {
+    const app = localSharedFileRoutes({ workspacesDir })
+    const response = await app.fetch(new Request(`http://localhost/api/f/${token}`))
+    return { response, body: (await response.json()) as { error: { code: string; message: string } } }
+  }
+
+  it('answers `expired` for a link past its exp', async () => {
+    const token = signSharedFileToken({
+      workspaceId: 'ws-1',
+      path: 'exports/summary.csv',
+      exp: Math.floor(Date.now() / 1000) - 5,
+      now: Math.floor(Date.now() / 1000) - 3600,
+    })
+    const { response, body } = await fetchToken(token)
+    expect(response.status).toBe(404)
+    expect(body.error.code).toBe('expired')
+    expect(warnings.join('\n')).toContain('reason=expired')
+    expect(warnings.join('\n')).toContain('path=exports/summary.csv')
+  })
+
+  it('answers `invalid_link` for a mangled or tampered token, and logs why', async () => {
+    const token = workspaceLink('exports/summary.csv')
+    const mangled = `${token.slice(0, -1)}${token.endsWith('a') ? 'b' : 'a'}`
+
+    for (const candidate of [mangled, `${token}.extra`]) {
+      const { body } = await fetchToken(candidate)
+      expect(body.error.code).toBe('invalid_link')
+    }
+    expect(warnings.join('\n')).toContain('reason=signature_mismatch')
+    expect(warnings.join('\n')).toContain('reason=malformed')
+  })
+
+  it('answers `file_not_found` when the token is good but nothing resolves', async () => {
+    const { body } = await fetchToken(workspaceLink('exports/missing.csv'))
+    expect(body.error.code).toBe('file_not_found')
+  })
+})

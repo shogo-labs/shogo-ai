@@ -8,7 +8,7 @@ import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { resolveWorkspaceRuntimeUrl as resolveWorkspaceRuntime } from '../lib/resolve-workspace-runtime-url'
 import { resolveAgentProxyPodUrl } from '../lib/agent-proxy-resolver'
 import { relayAgentProxyViaTunnel } from '../lib/tunnel-relay'
-import { verifySharedFileToken } from '../lib/shared-file-token'
+import { describeSharedFileToken, diagnoseSharedFileToken, sharedFileLinkError } from '../lib/shared-file-token'
 import { importCloudModule } from '../lib/cloud-import'
 import { isMetalEnabled } from '../lib/metal-eligibility'
 
@@ -196,10 +196,13 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
       return c.json({ error: { code: 'rate_limited', message: 'Too many download attempts' } }, 429)
     }
 
-    const payload = verifySharedFileToken(c.req.param('token'))
-    if (!payload) {
-      return c.json({ error: { code: 'not_found', message: 'This download link is invalid or expired' } }, 404)
+    const diagnosis = diagnoseSharedFileToken(c.req.param('token'))
+    if (!diagnosis.ok) {
+      console.warn(`[SharedFiles] Refused a download link: ${describeSharedFileToken(diagnosis)}`)
+      const error = sharedFileLinkError(diagnosis.reason)
+      return c.json({ error: { code: error.code, message: error.message } }, error.status)
     }
+    const payload = diagnosis.claims
 
     const { projectId, workspaceId } = payload
     const pinned = projectId ? await pinHome(c, projectId) : await pinWorkspaceHome(c, workspaceId)
@@ -294,7 +297,7 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
     }
 
     if (!runtimeDown && fileNotFound) {
-      return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
+      return c.json({ error: { code: 'file_not_found', message: 'File not found' } }, 404)
     }
 
     console.error(`[SharedFiles] Download failed for ${projectId ?? `workspace ${workspaceId}`}: ${lastFailure}`)

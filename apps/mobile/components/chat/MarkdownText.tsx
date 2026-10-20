@@ -26,6 +26,8 @@ import {
   type MentionTarget,
 } from "./file-links";
 import { MarkdownMediaNative } from "./MarkdownMediaNative";
+import { useShareFileOpener, type ShareFileTarget } from "./share-file-context";
+import { parseInAppFileHref } from "../../lib/share-file-links";
 import { withHardBreaks } from "../../lib/markdown-breaks";
 import { normalizeRichTextPaste } from "../../lib/rich-text-paste";
 import { usePhoneLayout } from "../../lib/native-phone-layout";
@@ -65,6 +67,8 @@ export interface MarkdownTextProps {
   onLinkPress?: (href: string) => boolean;
   /** Opens a person's or agent's profile when their @-mention is tapped. */
   onMentionPress?: (target: MentionTarget) => void;
+  /** Opens a file the API serves in the app's own viewer. */
+  onShareFilePress?: (target: ShareFileTarget) => void;
 }
 
 const baseStyles: MarkedStyles = {
@@ -240,6 +244,7 @@ class NativePhoneMarkdownRenderer extends Renderer {
     private readonly onLinkPress?: (href: string) => boolean,
     private readonly fileExists?: (path: string) => boolean,
     private readonly onMentionPress?: (target: MentionTarget) => void,
+    private readonly onShareFilePress?: (target: ShareFileTarget) => void,
   ) {
     super();
   }
@@ -281,6 +286,33 @@ class NativePhoneMarkdownRenderer extends Renderer {
           style={mentionStyle}
         >
           {children}
+        </Text>
+      );
+    }
+    const servedFile = parseInAppFileHref(href);
+    if (servedFile && this.onShareFilePress) {
+      const open = this.onShareFilePress;
+      const { bg, text } = this.chipColors;
+      return (
+        <Text
+          accessibilityRole="link"
+          accessibilityLabel={servedFile.name}
+          testID="chat-file-chip"
+          key={this.getKey()}
+          onPress={() => open(servedFile)}
+          style={[
+            styles,
+            {
+              textDecorationLine: "none",
+              fontWeight: "500",
+              color: text,
+              backgroundColor: bg,
+              borderRadius: 6,
+            },
+          ]}
+        >
+          <FileTypeIcon path={servedFile.name} size={14} />
+          {` ${servedFile.name} `}
         </Text>
       );
     }
@@ -434,6 +466,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.onFilePress !== next.onFilePress) return false;
   if (prev.fileExists !== next.fileExists) return false;
   if (prev.onLinkPress !== next.onLinkPress) return false;
+  if (prev.onShareFilePress !== next.onShareFilePress) return false;
   if (prev.onMentionPress !== next.onMentionPress) return false;
   const a = prev.children || "";
   const b = next.children || "";
@@ -447,7 +480,10 @@ export const MarkdownText = memo(function MarkdownText({
   fileExists,
   onLinkPress,
   onMentionPress,
+  onShareFilePress,
 }: MarkdownTextProps) {
+  const contextOpener = useShareFileOpener();
+  const shareFileOpener = onShareFilePress ?? contextOpener ?? undefined;
   const { colorScheme } = useColorScheme();
   const { width } = useWindowDimensions();
   const isPhoneLayout = usePhoneLayout();
@@ -508,6 +544,7 @@ export const MarkdownText = memo(function MarkdownText({
         onLinkPress,
         fileExists,
         onMentionPress,
+        shareFileOpener,
       ),
     [
       width,
@@ -518,6 +555,7 @@ export const MarkdownText = memo(function MarkdownText({
       onLinkPress,
       fileExists,
       onMentionPress,
+      shareFileOpener,
     ],
   );
 

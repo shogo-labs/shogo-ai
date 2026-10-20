@@ -67,6 +67,8 @@ import {
 } from "../../../lib/file-change-store"
 import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
+import { useShareFileOpener } from "../share-file-context"
+import { parseInAppFileHref } from "../../../lib/share-file-links"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
@@ -381,9 +383,18 @@ function FileThumbnail({
     mediaType.includes("javascript") ||
     mediaType.includes("yaml")
 
+  // A stored attachment is a file the app already serves: open it in the app's
+  // own viewer rather than a browser tab (SHO-80).
+  const openShareFile = useShareFileOpener()
+  const servedFile = useMemo(() => parseInAppFileHref(url), [url])
+  const openFile = useCallback(() => {
+    if (servedFile && openShareFile) openShareFile(servedFile)
+    else Linking.openURL(url)
+  }, [openShareFile, servedFile, url])
+
   const handlePress = useCallback(async () => {
     if (!isTextLike) {
-      Linking.openURL(url)
+      openFile()
       return
     }
     if (fileContent !== null) {
@@ -397,11 +408,11 @@ function FileThumbnail({
       setFileContent(text)
       setShowModal(true)
     } catch {
-      Linking.openURL(url)
+      openFile()
     } finally {
       setLoading(false)
     }
-  }, [url, isTextLike, fileContent])
+  }, [url, isTextLike, fileContent, openFile])
 
   return (
     <>

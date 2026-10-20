@@ -173,10 +173,14 @@ function splitTrailingUrlPunctuation(match: string): {
 } {
   let candidate = match
   let trailing = ""
+  // A share token is base64url, so it can end in `_`. Stripping that one
+  // character breaks the signature and the link comes back "invalid" (SHO-80).
+  const shareLink = /\/f\//.test(match)
 
   while (candidate) {
     const char = candidate[candidate.length - 1]
     if (!/[.,!?;:)\]}*_~"'>]/.test(char)) break
+    if (char === "_" && shareLink) break
     if (
       (char === ")" && hasUnmatchedOpening(candidate.slice(0, -1), "(", ")")) ||
       (char === "]" && hasUnmatchedOpening(candidate.slice(0, -1), "[", "]")) ||

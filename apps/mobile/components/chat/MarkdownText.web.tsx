@@ -20,6 +20,8 @@ import {
 } from "./file-links"
 import { MarkdownMedia } from "./MarkdownMedia.web"
 import { FileTypeIcon } from "./FileTypeIcon.web"
+import { useShareFileOpener } from "./share-file-context"
+import { parseInAppFileHref } from "../../lib/share-file-links"
 import { withHardBreaks } from "../../lib/markdown-breaks"
 
 export interface MarkdownTextProps {
@@ -75,6 +77,29 @@ function FileAwareLink({
   onLinkPress?: (href: string) => boolean
   node?: unknown
 }) {
+  const openShareFile = useShareFileOpener()
+  // A link to a file the app serves is a chip, never an <a href> that leaves
+  // the app: clicking it opens the file in the side pane (or the modal).
+  const servedFile = typeof href === "string" ? parseInAppFileHref(href) : null
+  if (servedFile && openShareFile) {
+    const open = openShareFile
+    return (
+      <a
+        href={href}
+        title={servedFile.name}
+        className="chat-file-chip"
+        data-testid="chat-file-chip"
+        data-file-kind={servedFile.kind}
+        onClick={(event: MouseEvent<HTMLAnchorElement>) => {
+          event.preventDefault()
+          open(servedFile)
+        }}
+      >
+        <FileTypeIcon path={servedFile.name} size={14} />
+        <span>{servedFile.name}</span>
+      </a>
+    )
+  }
   const path = typeof href === "string" ? pathFromFileHref(href) : null
   if (path && onFilePress && fileExists?.(path)) {
     const open = onFilePress

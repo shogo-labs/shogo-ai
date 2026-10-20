@@ -130,6 +130,12 @@ ipcRenderer.on('shogo:chat:open-with-context', (_event, payload: { markdown?: st
   window.dispatchEvent(new CustomEvent('shogo:chat:open-with-context', { detail: payload }))
 })
 
+// A file link the window refused to open (no second window, no system
+// browser) comes back here so the app shows it in its own pane.
+ipcRenderer.on('shogo:open-file', (_event, payload: { href?: string }) => {
+  window.dispatchEvent(new CustomEvent('shogo:open-file', { detail: payload }))
+})
+
 contextBridge.exposeInMainWorld('shogoDesktop', {
   platform: process.platform,
   isDesktop: true,
