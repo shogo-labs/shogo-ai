@@ -160,7 +160,7 @@ describe('withShogoCommitTrailer', () => {
       undefined,
       '--trailer',
       canonical,
-    ])
+    ] as unknown as string[])
     expect(withShogoCommitTrailer(['commit', '-m'], env)).toEqual(['commit', '-m', '--trailer', canonical])
   })
 })
