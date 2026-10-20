@@ -36,7 +36,9 @@ import {
   deleteMessage,
   editMessage,
   getConversationForUser,
+  getConversationPreview,
   getMessage,
+  getMessagePreview,
   getWorkspaceRole,
   joinConversation,
   leaveConversation,
@@ -50,6 +52,7 @@ import {
   postMessage,
   removeMember,
   requirePost,
+  normalizeLinkPreviewOptOuts,
   serializeConversation,
   setAttachmentUrlBuilder,
   setReaction,
@@ -474,6 +477,17 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     }
   })
 
+  /** The inline card a bare conversation link renders — same gate as a message link. */
+  router.get('/conversations/:conversationId/preview', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json(await getConversationPreview(c.req.param('conversationId'), userId))
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
   router.patch('/conversations/:conversationId', async (c) => {
     const userId = await requireUser(c)
     if (userId instanceof Response) return userId
@@ -611,6 +625,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const body = await readJson(c)
     try {
       const threadRootId = typeof body.threadRootId === 'string' ? body.threadRootId : null
+      const linkPreviewsOff = normalizeLinkPreviewOptOuts(body.linkPreviewsOff)
       const access = await requirePost(c.req.param('conversationId'), userId, { threadReply: !!threadRootId })
       if (!access.membership && (access.conversation.kind === 'public' || access.conversation.kind === 'activity')) {
         await joinConversation(access.conversation.id, userId)
@@ -624,6 +639,10 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         alsoSentToChannel: body.alsoSentToChannel === true && access.conversation.kind !== 'activity',
         clientMsgId: typeof body.clientMsgId === 'string' ? body.clientMsgId.slice(0, 100) : null,
         attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
+        // The sender declined a preview for some of this message's links (they
+        // point at a private conversation). Storing the refusal — rather than
+        // the preview — is what keeps the decision out of the message forever.
+        blocks: linkPreviewsOff.length ? { linkPreviewsOff } : undefined,
       })
       void afterMessagePosted(result, { actorUserId: userId, origin: 'app' })
       return c.json({ message: result.message }, result.duplicate ? 200 : 201)
@@ -735,6 +754,21 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     if (userId instanceof Response) return userId
     try {
       return c.json({ message: await getMessage(c.req.param('messageId'), userId) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * The inline card a shared message link renders. Access is decided here, for
+   * this reader, on every request: somebody who cannot open the conversation
+   * gets the same 404 the conversation gives them, so a link reveals nothing.
+   */
+  router.get('/conversation-messages/:messageId/preview', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json(await getMessagePreview(c.req.param('messageId'), userId))
     } catch (err) {
       return errorResponse(c, err)
     }

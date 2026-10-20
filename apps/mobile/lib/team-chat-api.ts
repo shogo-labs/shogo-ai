@@ -290,6 +290,37 @@ export interface LinkUnfurl {
   siteName: string | null
 }
 
+/** Conversation metadata a shared-link preview may show, as one reader sees it. */
+export interface LinkPreviewConversation {
+  id: string
+  name: string | null
+  kind: string
+  topic: string | null
+  /** Private, a DM, or a group DM — i.e. not open to the whole workspace. */
+  private: boolean
+}
+
+/**
+ * `GET /api/conversation-messages/:id/preview`. Resolved per reader on every
+ * request; a reader without access gets a 404 instead, never a partial card.
+ */
+export interface MessageLinkPreview {
+  conversation: LinkPreviewConversation
+  message: {
+    id: string
+    conversationId: string
+    authorName: string
+    authorImage: string | null
+    /** Truncated server-side; `truncated` says whether there is more. */
+    text: string
+    truncated: boolean
+    createdAt: string
+    threadRootId: string | null
+    replyCount: number
+    deleted: boolean
+  }
+}
+
 export type NotifyLevel = 'all' | 'mentions' | 'none'
 export type MembershipNotifyLevel = NotifyLevel | 'default'
 
@@ -897,9 +928,20 @@ export function teamChatApi() {
     },
     async post(
       id: string,
-      input: { text: string; threadRootId?: string | null; alsoSentToChannel?: boolean; clientMsgId: string; attachmentIds?: string[] },
+      input: { text: string; threadRootId?: string | null; alsoSentToChannel?: boolean; clientMsgId: string; attachmentIds?: string[]; linkPreviewsOff?: string[] },
     ): Promise<ChatMessage> {
       return (await http.post<{ message: ChatMessage }>(`${conv(id)}/messages`, input)).data.message
+    },
+    /**
+     * The card a shared message link renders. Access is decided server-side per
+     * request, so a link to a conversation this reader cannot open simply 404s.
+     */
+    async messagePreview(messageId: string): Promise<MessageLinkPreview> {
+      return (await http.get<MessageLinkPreview>(`${msg(messageId)}/preview`)).data
+    },
+    /** The same for a bare conversation link. */
+    async conversationPreview(conversationId: string): Promise<{ conversation: LinkPreviewConversation }> {
+      return (await http.get<{ conversation: LinkPreviewConversation }>(`${conv(conversationId)}/preview`)).data
     },
     /** Files shared in a conversation, newest first. */
     async files(

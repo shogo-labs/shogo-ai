@@ -36,6 +36,12 @@ export interface MarkdownTextProps {
   fileExists?: (path: string) => boolean
   /** Opens a person's or agent's profile when their @-mention is tapped. */
   onMentionPress?: (target: MentionTarget) => void
+  /**
+   * Last say over a plain link before the browser gets it. Return `true` when
+   * the host handled it (a message link opens in place); `false` lets the
+   * anchor behave normally. Mirrors the native renderer.
+   */
+  onLinkPress?: (href: string) => boolean
 }
 
 const linkSafetyOff = { enabled: false as const }
@@ -53,6 +59,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.onFilePress !== next.onFilePress) return false
   if (prev.fileExists !== next.fileExists) return false
   if (prev.onMentionPress !== next.onMentionPress) return false
+  if (prev.onLinkPress !== next.onLinkPress) return false
   const a = prev.children || ""
   const b = next.children || ""
   return a.length === b.length && a === b
@@ -62,12 +69,14 @@ function FileAwareLink({
   href,
   onFilePress,
   fileExists,
+  onLinkPress,
   children,
   node: _node,
   ...rest
 }: AnchorHTMLAttributes<HTMLAnchorElement> & {
   onFilePress?: (path: string) => void
   fileExists?: (path: string) => boolean
+  onLinkPress?: (href: string) => boolean
   node?: unknown
 }) {
   const path = typeof href === "string" ? pathFromFileHref(href) : null
@@ -106,7 +115,27 @@ function FileAwareLink({
     )
   }
   return (
-    <a {...rest} href={href}>
+    <a
+      {...rest}
+      href={href}
+      onClick={
+        onLinkPress && typeof href === "string"
+          ? (event: MouseEvent<HTMLAnchorElement>) => {
+              // A modifier click is the reader explicitly asking for a new tab —
+              // leave it alone, exactly as a browser would.
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+                rest.onClick?.(event)
+                return
+              }
+              if (onLinkPress(href)) {
+                event.preventDefault()
+                return
+              }
+              rest.onClick?.(event)
+            }
+          : rest.onClick
+      }
+    >
       {children}
     </a>
   )
@@ -153,6 +182,7 @@ export const MarkdownText = memo(
     onFilePress,
     fileExists,
     onMentionPress,
+    onLinkPress,
   }: MarkdownTextProps) {
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
     const phoneLayoutOverride = usePhoneLayoutOverride()
@@ -183,13 +213,13 @@ export const MarkdownText = memo(
               {props.children}
             </MentionHighlight>
           ) : (
-            <FileAwareLink {...props} onFilePress={onFilePress} fileExists={fileExists} />
+            <FileAwareLink {...props} onFilePress={onFilePress} fileExists={fileExists} onLinkPress={onLinkPress} />
           ),
         img: ({ src, alt }: { src?: string | Blob; alt?: string; node?: unknown }) => (
           <MarkdownMedia src={typeof src === "string" ? src : null} alt={alt} />
         ),
       }),
-      [onFilePress, fileExists, onMentionPress],
+      [onFilePress, fileExists, onMentionPress, onLinkPress],
     )
     return (
       <Streamdown

@@ -15,7 +15,9 @@ import { ChatMarkdown } from '../chat/ChatMarkdown'
 import type { MentionTarget } from '../chat/file-links'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
-import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
+import { messageLink, parseChatLink } from '../../lib/team-chat-links'
+import { openChatLinkInApp } from '../../lib/chat-link-navigation'
+import { ChatLinkPreviews } from './ChatLinkPreview'
 import { activityTarget } from '../../lib/activity-target'
 import { formatFullTime, formatShortTime, formatTime } from '../../lib/team-chat-time'
 import { EmojiPicker } from './EmojiPicker'
@@ -99,19 +101,6 @@ export interface MessageRowProps {
   onMakeCard?: (message: ChatMessage) => void
   /** Briefly emphasized after opening a link to it. */
   highlighted?: boolean
-}
-
-/** Message links open in place; everything else goes to the browser. */
-export function openMessageLinkInApp(href: string): boolean {
-  const target = parseMessageLink(href)
-  if (!target) return false
-  void import('expo-router').then(({ router }) =>
-    router.push({
-      pathname: '/(app)/c/[conversationId]',
-      params: { conversationId: target.conversationId, msg: target.messageId, ...(target.threadRootId ? { thread: target.threadRootId } : {}) },
-    } as any),
-  )
-  return true
 }
 
 /**
@@ -224,14 +213,23 @@ function AuthorStatus({ userId }: { userId: string | null | undefined }) {
 function UnfurlCards({ message }: { message: ChatMessage }) {
   const unfurls = (message.blocks as { unfurls?: LinkUnfurl[] } | null)?.unfurls
   if (!Array.isArray(unfurls)) return null
-  const live = unfurls.filter((u) => message.text.includes(u.url))
+  const live = unfurls
+    .filter((u) => message.text.includes(u.url))
+    // Our own message and conversation links get the real preview card above.
+    // The generic website unfurl of one of those is both redundant and wrong —
+    // it described our own SPA shell ("Shogo") instead of the message.
+    .filter((u) => !parseChatLink(u.url))
   if (!live.length) return null
   return (
     <View className="mt-1.5 gap-1.5">
       {live.map((u) => (
         <Pressable
           key={u.url}
-          onPress={() => Linking.openURL(u.url)}
+          // Belt and braces: an unfurl stored before this change may still be one
+          // of our links, so route it in place rather than into a browser tab.
+          onPress={() => {
+            if (!openChatLinkInApp(u.url)) void Linking.openURL(u.url)
+          }}
           accessibilityRole="link"
           accessibilityLabel={`Link preview: ${u.title}`}
           className="max-w-[520px] flex-row gap-3 rounded-md border-l-4 border-border bg-muted/30 py-2 pl-3 pr-2 active:bg-muted"
@@ -700,7 +698,7 @@ function MessageRowImpl(props: MessageRowProps) {
             {workItem ? (
               <WorkItemCard item={workItem} onPress={() => openWorkItem(workItem)} />
             ) : card ? (
-              <StatusCardView card={card} onOpenLink={openMessageLinkInApp} />
+              <StatusCardView card={card} onOpenLink={openChatLinkInApp} />
             ) : null}
             {approval ? <ApprovalCardView approval={approval} messageId={message.id} canDecide={!message.pending} onDecide={(decision) => api.decideApproval(message.id, decision)} /> : null}
             {work ? <AgentWorkedFor messageId={message.id} work={work} /> : null}
@@ -760,11 +758,12 @@ function MessageRowImpl(props: MessageRowProps) {
                       {jumbo.map((code, i) => <JumboEmoji key={`${code}-${i}`} code={code} size={jumboSize} />)}
                     </View>
                   ) : (
-                    <ChatMarkdown isStreaming={running} onLinkPress={openMessageLinkInApp} onMentionPress={props.onMentionPress}>{renderMentionsMarkdown(body, names)}</ChatMarkdown>
+                    <ChatMarkdown isStreaming={running} onLinkPress={openChatLinkInApp} onMentionPress={props.onMentionPress}>{renderMentionsMarkdown(body, names)}</ChatMarkdown>
                   )}
                 </View>
               )
             })()}
+            {!running && <ChatLinkPreviews message={message} />}
             {!running && <UnfurlCards message={message} />}
             {running && (
               // Display only: navigation is the header's Open session button, so the status takes no hover or press.

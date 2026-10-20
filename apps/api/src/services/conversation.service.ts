@@ -1521,6 +1521,136 @@ export async function getMessage(messageId: string, userId: string) {
   return serializeMessage(row)
 }
 
+// ─── Shared-link previews ────────────────────────────────────────────────────
+//
+// A message that links to another message carries only the URL. Everything a
+// preview shows is resolved *here*, per reader, on every request — never
+// written into the message's `blocks`. A preview cached at post time and
+// replayed to every later reader is exactly how a private channel's content
+// would escape the channel it came from.
+
+/** Enough of a message to recognise it; the full text is one click away. */
+const PREVIEW_MAX_TEXT = 400
+/** A message can carry a handful of links; a hostile one cannot carry a page. */
+const PREVIEW_MAX_OPT_OUTS = 20
+
+export interface LinkPreviewConversation {
+  id: string
+  name: string | null
+  kind: string
+  topic: string | null
+  /** Not open to the whole workspace: private, a DM, or a group DM. */
+  private: boolean
+}
+
+export interface MessageLinkPreview {
+  conversation: LinkPreviewConversation
+  message: {
+    id: string
+    conversationId: string
+    authorName: string
+    authorImage: string | null
+    text: string
+    truncated: boolean
+    createdAt: Date
+    threadRootId: string | null
+    replyCount: number
+    /** Deleted messages keep their row so the reader gets a tombstone, not a 404. */
+    deleted: boolean
+  }
+}
+
+/**
+ * URLs whose author declined to attach a preview. Anything that is not a plain
+ * http(s) URL is dropped rather than stored, so a malformed payload cannot
+ * grow the block without bound.
+ */
+export function normalizeLinkPreviewOptOuts(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const url = item.trim()
+    if (!url || url.length > 2048 || !/^https?:\/\//i.test(url)) continue
+    if (!out.includes(url)) out.push(url)
+    if (out.length >= PREVIEW_MAX_OPT_OUTS) break
+  }
+  return out
+}
+
+/** The name a preview shows, matching the client's `authorName()` exactly. */
+function previewAuthorName(message: ReturnType<typeof serializeMessage>): string {
+  if (message.authorType === 'agent') return message.authorAgent?.name ?? 'Agent'
+  if (message.authorType === 'system') return 'Shogo'
+  if (message.authorType === 'bot') return 'Bot'
+  return message.author?.name ?? 'Someone'
+}
+
+/**
+ * Conversation metadata, as `userId` may see it. A DM has no name in the
+ * database, so the other participants stand in for one — enough to recognise
+ * the conversation, and only for somebody already allowed to read it.
+ */
+async function previewConversationMeta(conversation: any, userId: string): Promise<LinkPreviewConversation> {
+  const direct = conversation.kind === 'dm' || conversation.kind === 'group_dm'
+  let name: string | null = conversation.name ?? null
+  if (direct) {
+    const rows = await db.conversationMember.findMany({
+      where: { conversationId: conversation.id, memberType: 'user', userId: { not: userId } },
+      select: { user: { select: { name: true, email: true } } },
+      orderBy: { createdAt: 'asc' },
+      take: 3,
+    })
+    const names = rows
+      .map((r: any) => r.user?.name || r.user?.email)
+      .filter((n: unknown): n is string => typeof n === 'string' && n.length > 0)
+    if (names.length) name = names.join(', ')
+  }
+  return {
+    id: conversation.id,
+    name,
+    kind: conversation.kind,
+    topic: conversation.topic ?? null,
+    private: conversation.kind === 'private' || direct,
+  }
+}
+
+/**
+ * What a message link may reveal to *this* reader. `loadAccess` is the whole
+ * gate: a reader who cannot open the conversation gets the same neutral 404
+ * the conversation itself returns, so a link can never reveal that a private
+ * channel exists, let alone what was said in it.
+ */
+export async function getMessagePreview(messageId: string, userId: string): Promise<MessageLinkPreview> {
+  const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include: MESSAGE_INCLUDE })
+  if (!row) throw new ConversationError(404, 'not_found', 'Message not found')
+  const access = await loadAccess(row.conversationId, userId)
+  if (!canSeeMessage(row, userId)) throw new ConversationError(404, 'not_found', 'Message not found')
+  const message = serializeMessage(row)
+  const full = row.deletedAt ? '' : String(row.text ?? '')
+  return {
+    conversation: await previewConversationMeta(access.conversation, userId),
+    message: {
+      id: message.id,
+      conversationId: message.conversationId,
+      authorName: previewAuthorName(message),
+      authorImage: message.author?.image ?? null,
+      text: full.slice(0, PREVIEW_MAX_TEXT),
+      truncated: full.length > PREVIEW_MAX_TEXT,
+      createdAt: row.createdAt,
+      threadRootId: row.threadRootId ?? null,
+      replyCount: row.replyCount ?? 0,
+      deleted: !!row.deletedAt,
+    },
+  }
+}
+
+/** The same preview for a bare conversation link, gated by the same access rule. */
+export async function getConversationPreview(conversationId: string, userId: string) {
+  const access = await loadAccess(conversationId, userId)
+  return { conversation: await previewConversationMeta(access.conversation, userId) }
+}
+
 export interface ReactionAddedEvent {
   message: any
   conversation: any
