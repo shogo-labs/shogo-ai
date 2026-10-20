@@ -84,7 +84,7 @@ const REPLY = [
 
 const REQUEST = ["**Goal:** ship the card.", "", "1. clamp the body", "2. keep the tests green"].join("\n")
 
-const { ProjectCallCard } = await import("../ProjectCallCard")
+const { ProjectCallCard, REPLY_MAX_HEIGHT } = await import("../ProjectCallCard")
 
 function tool(reply = REPLY, message = REQUEST): any {
   return {
@@ -173,7 +173,7 @@ describe("ProjectCallCard markdown rendering", () => {
     const reply = screen.getByTestId("project-call-reply")
     const clamp = screen.getByTestId("project-call-reply-clamp")
 
-    expect(clamp.style.maxHeight).toBe("96px")
+    expect(clamp.style.maxHeight).toBe(`${REPLY_MAX_HEIGHT}px`)
     expect(clamp.style.overflow).toBe("hidden")
 
     fireEvent.click(within(reply).getByText("Show more"))

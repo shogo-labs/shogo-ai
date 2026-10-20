@@ -140,9 +140,14 @@ function StatusIcon({ status }: { status: CallStatus }) {
   return <Clock className="w-3.5 h-3.5 text-muted-foreground" size={14} />;
 }
 
-/** Collapsed heights of the card's markdown bodies, in card body lines. */
-export const REQUEST_MAX_HEIGHT = 44; // ~2 lines of 12/18
-export const REPLY_MAX_HEIGHT = 96; // ~4 lines of 12/18
+/**
+ * Collapsed heights of the card's markdown bodies: a whole number of card body
+ * lines (12/18 in `global.css` and `MarkdownText`'s card styles). A height that
+ * is not a multiple of 18 leaves the last visible line a chopped row of glyphs.
+ */
+const CARD_LINE_HEIGHT = 18;
+export const REQUEST_MAX_HEIGHT = 2 * CARD_LINE_HEIGHT;
+export const REPLY_MAX_HEIGHT = 4 * CARD_LINE_HEIGHT;
 
 const LONG_BODY_CHARS = 220;
 
@@ -214,6 +219,7 @@ export function ProjectCallCard({ tool, className }: ProjectCallCardProps) {
   const [elapsed, setElapsed] = useState(0);
   const [requestExpanded, setRequestExpanded] = useState(false);
   const [replyExpanded, setReplyExpanded] = useState(false);
+  const [errorExpanded, setErrorExpanded] = useState(false);
   const [requestHeight, setRequestHeight] = useState(0);
   const [replyHeight, setReplyHeight] = useState(0);
 
@@ -305,9 +311,17 @@ export function ProjectCallCard({ tool, className }: ProjectCallCardProps) {
         {view.error ? (
           <View className="gap-0.5">
             <Text className="text-[9px] font-medium uppercase tracking-wide text-destructive">Error</Text>
-            <Text className="text-[11px] text-destructive" selectable testID="project-call-error">
+            <Text
+              className="text-[11px] text-destructive"
+              numberOfLines={errorExpanded ? undefined : 4}
+              selectable
+              testID="project-call-error"
+            >
               {view.error}
             </Text>
+            {bodyOverflowsPreview(view.error, 4) ? (
+              <ExpandToggle expanded={errorExpanded} onPress={() => setErrorExpanded((v) => !v)} />
+            ) : null}
           </View>
         ) : view.reply ? (
           <View className="gap-0.5" testID="project-call-reply">
