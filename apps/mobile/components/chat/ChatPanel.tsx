@@ -69,6 +69,7 @@ import {
   buildOptimisticUserMessage,
   hasMatchingUserMessage,
   newestUserId,
+  stampSendTime,
   type OptimisticEchoInput as OptimisticUserInput,
 } from "./optimistic-echo"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
@@ -1779,6 +1780,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const lastUserInputRef = useRef<{
     content: string
     files?: FileAttachment[]
+    /** When it was sent — the chat tag's delivery window is read off this (SHO-52). */
+    sentAt?: number
   } | null>(null)
   const lastNonEmptyMessagesRef = useRef<UIMessage[]>([])
 
@@ -3845,7 +3848,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         : null
 
     if (effectiveMessages.length > 0) {
-      return appendOptimisticEcho(effectiveMessages, currentOptimisticInput)
+      return stampSendTime(
+        appendOptimisticEcho(effectiveMessages, currentOptimisticInput),
+        lastUserInputRef.current,
+      )
     }
 
     if (isStreaming || isSendingMessageRef.current) {
@@ -3912,7 +3918,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const trimmedContent = content.trim()
       const fileArray = files ?? []
       if (!trimmedContent && fileArray.length === 0) return
-      lastUserInputRef.current = { content: trimmedContent, files: fileArray }
+      lastUserInputRef.current = { content: trimmedContent, files: fileArray, sentAt: Date.now() }
       const baselineUserId = newestUserId(messagesRef.current)
       setOptimisticUserInput((current) =>
         current &&
@@ -3924,6 +3930,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               content: trimmedContent,
               files: fileArray,
               baselineUserId,
+              sentAt: lastUserInputRef.current?.sentAt,
             },
       )
     },
