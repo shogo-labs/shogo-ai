@@ -94,6 +94,25 @@ describe('connect', () => {
     expect(result.backupBranch).toBeUndefined()
   })
 
+  test('installs the agent identity in a repo it creates, so commits need no config', async () => {
+    makeRemote()
+    await runGitHubWorkspaceOp(WS, op('connect'))
+    expect(git(WS, 'config', '--local', '--get', 'user.name')).toBe('Shogo Agent')
+    expect(git(WS, 'config', '--local', '--get', 'user.email')).toBe('agent@shogo.ai')
+
+    const made = (() => {
+      writeFileSync(join(WS, 'agent-note.md'), 'hi\n')
+      execFileSync('git', ['add', 'agent-note.md'], { cwd: WS, encoding: 'utf8' })
+      execFileSync('git', ['commit', '-q', '-m', 'chore: from the agent'], {
+        cwd: WS,
+        encoding: 'utf8',
+        env: { ...process.env },
+      })
+      return git(WS, 'rev-parse', 'HEAD')
+    })()
+    expect(git(WS, 'log', '-1', '--format=%an <%ae>', made)).toBe('Shogo Agent <agent@shogo.ai>')
+  })
+
   test('keeps local history that already contains the remote branch', async () => {
     makeRemote()
     git(WS, 'clone', '-q', 'https://github.com/octo/site.git', '.')

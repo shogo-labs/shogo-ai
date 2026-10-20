@@ -27,6 +27,15 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * The one co-author every Shogo commit carries. Never built from the caller's
+ * `authorName`/`authorEmail`: a caller-supplied identity produced commits whose
+ * co-author was `dev2@shogo.local`, which GitHub renders with the gray avatar
+ * (no account behind the address). Kept as a literal because this package is
+ * standalone MIT and cannot import `@shogo/shared-runtime` (AGPL).
+ */
+const SHOGO_CO_AUTHOR_TRAILER = 'Co-authored-by: Shogo Agent <agent@shogo.ai>';
+
 // ---------------------------------------------------------------------------
 // Availability probe
 // ---------------------------------------------------------------------------
@@ -338,7 +347,7 @@ export async function commitAndPush(opts: CommitAndPushOptions): Promise<CommitA
       message,
       '--no-verify',
       '--trailer',
-      `Co-authored-by: ${authorName || process.env.SHOGO_AGENT_GIT_NAME || 'Shogo Agent'} <${authorEmail || process.env.SHOGO_AGENT_GIT_EMAIL || 'agent@shogo.ai'}>`,
+      SHOGO_CO_AUTHOR_TRAILER,
     ],
     { cwd: localDir, env, logger, timeoutMs },
   );

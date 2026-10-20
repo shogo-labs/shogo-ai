@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { shogoCoAuthorTrailer } from '@shogo/shared-runtime/agent-attribution'
+import { isShogoAgentIdentity, shogoCoAuthorTrailer } from '@shogo/shared-runtime/agent-attribution'
 
 interface ShellToken {
   value: string
@@ -75,6 +75,46 @@ function hasShogoTrailer(segment: ShellToken[], trailer: string): boolean {
   return false
 }
 
+const CO_AUTHOR_TRAILER_RE = /^co-authored-by:\s*(.*)$/i
+const TRAILER_IDENTITY_RE = /^(.*?)\s*<([^>]+)>$/
+
+/** True when a `--trailer` value is a co-author line naming a Shogo identity. */
+function isShogoCoAuthorValue(value: string): boolean {
+  const coAuthor = CO_AUTHOR_TRAILER_RE.exec(value.trim())
+  if (!coAuthor) return false
+  const identity = TRAILER_IDENTITY_RE.exec(coAuthor[1] ?? '')
+  return identity
+    ? isShogoAgentIdentity(identity[1], identity[2])
+    : isShogoAgentIdentity(coAuthor[1], '')
+}
+
+/**
+ * Span of an existing `--trailer` value that names a Shogo co-author. It is
+ * repaired in place: a hand-written `Shogo <noreply@shogo.ai>` is what produced
+ * the two-co-author commits on `main` (the canonical line was added *beside*
+ * it), so it must be replaced, never joined.
+ */
+function findShogoTrailer(
+  segment: ShellToken[],
+): { start: number; end: number; value: string } | null {
+  for (let index = 0; index < segment.length; index += 1) {
+    const token = segment[index]!
+    if (token.value === '--trailer') {
+      const value = segment[index + 1]
+      if (value && !value.operator && isShogoCoAuthorValue(value.value)) {
+        return { start: value.start, end: value.end, value: value.value }
+      }
+      index += 1
+      continue
+    }
+    const inline = /^--trailer=([\s\S]*)$/.exec(token.value)
+    if (inline && isShogoCoAuthorValue(inline[1] ?? '')) {
+      return { start: token.start + '--trailer='.length, end: token.end, value: inline[1] ?? '' }
+    }
+  }
+  return null
+}
+
 function findGitCommitSubcommand(segment: ShellToken[], gitIndex: number): number {
   const optionsWithValues = new Set(['-C', '-c', '--git-dir', '--work-tree', '--exec-path', '--namespace'])
   let index = gitIndex + 1
@@ -101,7 +141,7 @@ export function injectCommitTrailer(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const tokens = tokenizeShell(command)
-  const insertions: Array<{ position: number; text: string }> = []
+  const edits: Array<{ start: number; end: number; text: string }> = []
   let segmentStart = 0
 
   const inspectSegment = (segment: ShellToken[]) => {
@@ -109,12 +149,22 @@ export function injectCommitTrailer(
     const gitIndex = segment.findIndex((token) => token.value === 'git' && !token.quoted)
     if (gitIndex < 0) return
     const commitIndex = findGitCommitSubcommand(segment, gitIndex)
-    if (commitIndex < 0 || hasShogoTrailer(segment, shogoCoAuthorTrailer(env))) return
+    if (commitIndex < 0) return
+
+    const canonical = shogoCoAuthorTrailer(env)
+    const existing = findShogoTrailer(segment)
+    if (existing) {
+      if (existing.value.trim() === canonical) return
+      edits.push({ start: existing.start, end: existing.end, text: `"${canonical.replaceAll('"', '\\"')}"` })
+      return
+    }
+    if (hasShogoTrailer(segment, canonical)) return
 
     const commitToken = segment[commitIndex]!
-    insertions.push({
-      position: commitToken.end,
-      text: ` --trailer "${shogoCoAuthorTrailer(env).replaceAll('"', '\\"')}"`,
+    edits.push({
+      start: commitToken.end,
+      end: commitToken.end,
+      text: ` --trailer "${canonical}"`,
     })
   }
 
@@ -127,8 +177,8 @@ export function injectCommitTrailer(
   }
 
   let result = command
-  for (const insertion of insertions.reverse()) {
-    result = `${result.slice(0, insertion.position)}${insertion.text}${result.slice(insertion.position)}`
+  for (const edit of edits.sort((a, b) => b.start - a.start)) {
+    result = `${result.slice(0, edit.start)}${edit.text}${result.slice(edit.end)}`
   }
   return result
 }

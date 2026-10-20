@@ -380,3 +380,56 @@ describe('commitAndPush (author env vars)', () => {
   });
 });
 
+describe('commitAndPush (co-author trailer)', () => {
+  it('writes the canonical co-author even when the caller passes a non-agent email', async () => {
+    spawnHandler = (inv) => {
+      if (inv.args[0] === 'diff') return { exitCode: 1 };
+      if (inv.args[0] === 'rev-parse') return { stdout: 'shaaaaaa\n' };
+      return { exitCode: 0 };
+    };
+    await commitAndPush({
+      apiUrl: 'https://api.shogo.ai',
+      apiKey: 'k',
+      projectId: 'p',
+      localDir: '/tmp/never',
+      message: 'chore: x',
+      authorName: 'Shogo Dev 2',
+      authorEmail: 'dev2@shogo.local',
+    });
+    const commitInv = spawnInvocations.find((i) => i.args[0] === 'commit')!;
+    const trailer = commitInv.args[commitInv.args.indexOf('--trailer') + 1];
+    expect(trailer).toBe('Co-authored-by: Shogo Agent <agent@shogo.ai>');
+    expect(commitInv.args.join(' ')).not.toContain('dev2@shogo.local');
+  });
+
+  it('never takes the co-author from SHOGO_AGENT_GIT_* env overrides', async () => {
+    const previous = { name: process.env.SHOGO_AGENT_GIT_NAME, email: process.env.SHOGO_AGENT_GIT_EMAIL };
+    process.env.SHOGO_AGENT_GIT_NAME = 'Shogo Dev 3';
+    process.env.SHOGO_AGENT_GIT_EMAIL = 'dev3@shogo.local';
+    spawnInvocations.length = 0;
+    spawnHandler = (inv) => {
+      if (inv.args[0] === 'diff') return { exitCode: 1 };
+      if (inv.args[0] === 'rev-parse') return { stdout: 'shaaaaaa\n' };
+      return { exitCode: 0 };
+    };
+    try {
+      await commitAndPush({
+        apiUrl: 'https://api.shogo.ai',
+        apiKey: 'k',
+        projectId: 'p',
+        localDir: '/tmp/never',
+        message: 'chore: x',
+      });
+      const commitInv = spawnInvocations.find((i) => i.args[0] === 'commit')!;
+      expect(commitInv.args[commitInv.args.indexOf('--trailer') + 1]).toBe(
+        'Co-authored-by: Shogo Agent <agent@shogo.ai>',
+      );
+    } finally {
+      if (previous.name === undefined) delete process.env.SHOGO_AGENT_GIT_NAME;
+      else process.env.SHOGO_AGENT_GIT_NAME = previous.name;
+      if (previous.email === undefined) delete process.env.SHOGO_AGENT_GIT_EMAIL;
+      else process.env.SHOGO_AGENT_GIT_EMAIL = previous.email;
+    }
+  });
+});
+
