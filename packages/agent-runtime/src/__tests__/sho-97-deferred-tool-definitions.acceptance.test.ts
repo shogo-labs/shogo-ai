@@ -134,8 +134,10 @@ describe('SHO-97: deferred tool definitions', () => {
 
     const deferred = await runTurn({}, readFileThenText())
 
-    expect(baselineTools.length).toBeGreaterThan(100)
-    expect(deferred[0].tools.length).toBeLessThan(baselineTools.length / 2)
+    // Absolute counts are environment-dependent: CI's isolated runner registers
+    // ~60 tools where a developer machine that has integrations installed sees
+    // ~110. The claim is relative, so assert the ratio rather than a count.
+    expect(baselineTools.length).toBeGreaterThan(deferred[0].tools.length * 2)
     expect(deferred[0].toolTokens).toBeLessThanOrEqual(DEFAULT_TOKEN_BUDGET)
     // The measured win, per API call.
     expect(deferred[0].toolTokens).toBeLessThan(baselineTokens / 2)
@@ -169,25 +171,29 @@ describe('SHO-97: deferred tool definitions', () => {
 
   test('read_guide({ tool }) returns the schema and advertises it on the next call', async () => {
     const calls = await runTurn({}, [
-      buildToolUseResponse([{ name: 'read_guide', arguments: { tool: 'goal_list' } }]),
+      buildToolUseResponse([{ name: 'read_guide', arguments: { tool: 'publish' } }]),
       buildTextResponse('done'),
     ])
 
-    expect(calls[0].tools).not.toContain('goal_list')
+    expect(calls[0].tools).not.toContain('publish')
     expect(toolResultText(calls[1])).toContain('Input schema')
-    expect(calls[1].tools).toContain('goal_list')
+    expect(calls[1].tools).toContain('publish')
   })
 
   test('a deferred tool called directly still runs, and is advertised afterwards', async () => {
+    // `heartbeat_status` is registered in every environment and only reads
+    // config, unlike `board_list`/`goal_list` (workspace-only, absent from CI's
+    // isolated runner) and `publish` (needs a mock, and a mocked tool's execute
+    // replaces the activation wrapper).
     const calls = await runTurn({}, [
-      buildToolUseResponse([{ name: 'board_list', arguments: {} }]),
+      buildToolUseResponse([{ name: 'heartbeat_status', arguments: {} }]),
       buildTextResponse('done'),
     ])
 
-    expect(calls[0].tools).not.toContain('board_list')
+    expect(calls[0].tools).not.toContain('heartbeat_status')
     const result = toolResultText(calls[1])
     expect(result).not.toContain('Tool not found')
-    expect(calls[1].tools).toContain('board_list')
+    expect(calls[1].tools).toContain('heartbeat_status')
   })
 
   test('the prompt breakdown shows advertised schemas plus a deferred count', async () => {
@@ -206,9 +212,16 @@ describe('SHO-97: deferred tool definitions', () => {
   })
 
   test('turning the flag off restores every schema', async () => {
-    const calls = await runTurn({ deferredToolsEnabled: false }, readFileThenText())
-    expect(calls[0].tools.length).toBeGreaterThan(100)
-    expect(calls[0].systemPrompt).not.toContain('## Deferred Tools')
+    const on = await runTurn({}, readFileThenText())
+    await gateway!.stop()
+    gateway = undefined
+    const off = await runTurn({ deferredToolsEnabled: false }, readFileThenText())
+
+    // Every tool the deferred run advertised is in the full set, and the full
+    // set is strictly bigger — no absolute tool count, which varies by machine.
+    for (const name of on[0].tools) expect(off[0].tools).toContain(name)
+    expect(off[0].tools.length).toBeGreaterThan(on[0].tools.length)
+    expect(off[0].systemPrompt).not.toContain('## Deferred Tools')
   })
 })
 

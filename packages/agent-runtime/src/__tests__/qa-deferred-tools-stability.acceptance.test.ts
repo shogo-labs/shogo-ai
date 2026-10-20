@@ -103,6 +103,9 @@ async function startGateway(responses: ReturnType<typeof buildTextResponse>[]): 
   const capture = capturingStream(responses)
   gateway = new AgentGateway(TEST_DIR, 'test-project')
   gateway.setStreamFn(capture.streamFn)
+  // `publish` is registered in every environment; the workspace-only tools
+  // (`goal_list`, `board_list`) are absent from CI's isolated runner.
+  gateway.setToolMocks({ publish: () => ({ ok: true, url: 'https://sho-97-stability.shogo.one' }) })
   await quietly(() => gateway!.start())
   return capture.calls
 }
@@ -126,21 +129,21 @@ describe('SHO-97 QA: the advertised set is stable for the whole session', () => 
 
   test('a tool activated in one turn stays advertised, and only grows the set', async () => {
     const calls = await startGateway([
-      buildToolUseResponse([{ name: 'read_guide', arguments: { tool: 'goal_list' } }]),
+      buildToolUseResponse([{ name: 'read_guide', arguments: { tool: 'publish' } }]),
       buildTextResponse('first answer'),
       buildTextResponse('second answer'),
     ])
     await quietly(async () => {
-      await gateway!.processChatMessage('what goals exist?')
+      await gateway!.processChatMessage('publish the app')
       await gateway!.processChatMessage('and now something else')
     })
 
     expect(calls.length).toBe(3)
     // Turn 1: deferred → read_guide → advertised.
-    expect(calls[0].tools).not.toContain('goal_list')
-    expect(calls[1].tools).toContain('goal_list')
+    expect(calls[0].tools).not.toContain('publish')
+    expect(calls[1].tools).toContain('publish')
     // Turn 2 keeps it: an activation is not undone at a turn boundary.
-    expect(calls[2].tools).toContain('goal_list')
+    expect(calls[2].tools).toContain('publish')
     // …and it is exactly the turn-1 post-activation set, with nothing dropped.
     expect(calls[2].tools).toEqual(calls[1].tools)
     for (const name of calls[0].tools) expect(calls[2].tools).toContain(name)
