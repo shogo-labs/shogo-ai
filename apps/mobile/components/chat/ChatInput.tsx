@@ -476,6 +476,13 @@ export type QueuedMessage = {
   references?: ChatReference[];
   status?: string;
   error?: string;
+  /**
+   * `task_wake` is the agent's own background update, not something a person
+   * typed: it is never rendered as a queued chat message. While a wake pause
+   * holds it back it shows as one "N updates waiting" chip with a Resume.
+   */
+  kind?: "message" | "task_wake";
+  paused?: boolean;
   /** True when queued because a send failed on a network error, rather than
    * because it was typed while a turn was streaming. Rendered with a
    * distinct "waiting for connection" style so it's obvious nothing was
@@ -506,6 +513,8 @@ export interface ChatInputProps {
   ) => void;
   onEditQueuedMessage?: (messageId: string) => void;
   onSendQueuedMessageNow?: (messageId: string) => void;
+  /** Deliver the updates a paused session is holding (the waiting chip's Resume). */
+  onResumeTaskWakes?: (messageId: string) => void;
   interactionMode?: InteractionMode;
   onInteractionModeChange?: (mode: InteractionMode) => void;
   /**
@@ -642,6 +651,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onReorderQueuedMessage,
   onEditQueuedMessage,
   onSendQueuedMessageNow,
+  onResumeTaskWakes,
   interactionMode: controlledInteractionMode,
   onInteractionModeChange,
   composer: composerProp,
@@ -2032,6 +2042,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         onReorderQueuedMessage={onReorderQueuedMessage}
         onEditQueuedMessage={onEditQueuedMessage}
         onSendQueuedMessageNow={onSendQueuedMessageNow}
+        onResumeTaskWakes={onResumeTaskWakes}
       />
       <ContextUsageDockPanel
         contextUsage={contextUsage}

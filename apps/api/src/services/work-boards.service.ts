@@ -30,6 +30,7 @@ import {
 } from './conversation.service'
 import { agentMentionToken } from './conversation-mentions'
 import type { AgentChain } from './conversation-agent-chain'
+import type { CardEventState } from './background-tasks.service'
 import type { AgentTarget } from './conversation-mentions'
 import { blocksForKind, type StatusCard } from './conversation-message-kind'
 import { registerAfterPostHook, afterMessagePosted } from './conversation-pipeline'
@@ -379,7 +380,24 @@ export async function recordEvent(item: { id: string; workspaceId: string }, typ
   const line = cardEventLine(type, data)
   if (line) {
     const { emitTaskEvent } = await import('./background-tasks.service')
-    await emitTaskEvent('work_item', item.id, { line })
+    await emitTaskEvent('work_item', item.id, { line, card: cardEventState(data) })
+  }
+}
+
+/**
+ * The machine-readable half of a card event, carried alongside the rendered
+ * line: where the card landed and who holds it now. A watch decides
+ * terminal-vs-milestone from this rather than by re-parsing its own prose.
+ */
+function cardEventState(data?: Record<string, any>): CardEventState {
+  const to = data?.to
+  return {
+    ...(to && (to.column || to.category)
+      ? { to: { columnId: to.columnId, column: to.column, category: to.category } }
+      : {}),
+    ...(data?.assigneeAgentRef !== undefined ? { assigneeAgentRef: data.assigneeAgentRef ?? null } : {}),
+    ...(data?.columnAgentRef !== undefined ? { columnAgentRef: data.columnAgentRef ?? null } : {}),
+    ...(data?.cardClosed ? { terminal: true } : {}),
   }
 }
 
@@ -707,7 +725,11 @@ export async function deleteColumn(board: any, columnRef: string, moveTo: string
       data: { columnId: target.id, columnEnteredAt: now, lastActivityAt: now, ...(isClosed(target.category) ? { completedAt: now } : { completedAt: null }) },
     })
     for (const item of items) {
-      await recordEvent(item, 'moved', actor, { from: { columnId: column.id, column: column.name }, to: { columnId: target.id, column: target.name }, reason: 'column_deleted' })
+      await recordEvent(item, 'moved', actor, {
+        from: { columnId: column.id, column: column.name, category: column.category },
+        to: { columnId: target.id, column: target.name, category: target.category },
+        reason: 'column_deleted',
+      })
     }
   }
   await db.boardColumn.delete({ where: { id: column.id } })
@@ -1283,6 +1305,10 @@ export async function moveWorkItem(item: any, input: MoveInput, actor: BoardActo
   await recordEvent(item, 'moved', actor, {
     from: { boardId: fromBoard.id, board: fromBoard.name, columnId: fromColumn.id, column: fromColumn.name, category: fromColumn.category },
     to: { boardId: toBoard.id, board: toBoard.name, columnId: toColumn.id, column: toColumn.name, category: toColumn.category },
+    // The holder the card has now, so the watch on it knows what it is
+    // watching before deciding whether to carry on.
+    assigneeAgentRef: item.assigneeAgentRef ?? null,
+    columnAgentRef: toColumn.agentRef ?? null,
   })
   if (isClosed(fromColumn.category) && !isClosed(toColumn.category)) {
     await recordEvent(item, 'regressed', actor, { from: fromColumn.name })
@@ -1391,13 +1417,18 @@ export async function commentWorkItem(
   }
 }
 
+/**
+ * Archive (or restore) a card. Archiving closes it for good: a hand-off watch on
+ * it settles instead of running on to its expiry, so the assigner hears that the
+ * card is gone rather than nothing at all.
+ */
 export async function archiveWorkItem(item: any, archived: boolean, actor: BoardActor) {
   const updated = await db.workItem.update({
     where: { id: item.id },
     data: { archivedAt: archived ? new Date() : null, lastActivityAt: new Date() },
     include: { column: true, board: true },
   })
-  await recordEvent(item, archived ? 'archived' : 'restored', actor)
+  await recordEvent(item, archived ? 'archived' : 'restored', actor, archived ? { cardClosed: true } : undefined)
   await publishBoard(item.board, { action: archived ? 'item.archived' : 'item.restored', itemId: item.id })
   return serializeItem(updated)
 }
@@ -2059,6 +2090,8 @@ export async function noteCardRunEnded(run: CardRun): Promise<void> {
       await recordEvent(item, 'agent_stopped', { agentRef }, {
         column: item.column.name,
         messageId: run.messageId,
+        assigneeAgentRef: item.assigneeAgentRef ?? null,
+        columnAgentRef: item.column.agentRef ?? null,
         ...(run.agentStatus === 'stopped' ? { reason: 'stopped by a person' } : {}),
       })
     }
@@ -2204,13 +2237,23 @@ async function sendToNeedsAttention(item: any, failed: any) {
   })
   const messageIdOf = (data: any) => (typeof data === 'string' ? safeJson(data) : data)?.messageId
   if (earlier.some((e: any) => messageIdOf(e.eventData) === failed.id)) return
-  await recordEvent(item, 'agent_failed', { agentRef: agentRefFor(failed.authorAgentRef?.projectId ?? null) }, { messageId: failed.id })
+  await recordEvent(item, 'agent_failed', { agentRef: agentRefFor(failed.authorAgentRef?.projectId ?? null) }, {
+    messageId: failed.id,
+    assigneeAgentRef: item.assigneeAgentRef ?? null,
+    columnAgentRef: item.column.agentRef ?? null,
+  })
   const column = item.board.columns.find((c: any) => c.category === 'waiting' && /attention/i.test(c.name))
     ?? item.board.columns.find((c: any) => c.category === 'waiting')
   if (column && column.id !== item.columnId) {
     const now = new Date()
     await db.workItem.update({ where: { id: item.id }, data: { columnId: column.id, columnEnteredAt: now, lastActivityAt: now, completedAt: null } })
-    await recordEvent(item, 'moved', {}, { from: { columnId: item.columnId, column: item.column.name }, to: { columnId: column.id, column: column.name }, reason: 'agent_failed' })
+    await recordEvent(item, 'moved', {}, {
+      from: { columnId: item.columnId, column: item.column.name },
+      to: { columnId: column.id, column: column.name, category: column.category },
+      reason: 'agent_failed',
+      assigneeAgentRef: item.assigneeAgentRef ?? null,
+      columnAgentRef: column.agentRef ?? null,
+    })
     await refreshCardMessage(item.id)
   }
   const chain = failed.agentChain && typeof failed.agentChain === 'object' ? failed.agentChain : null
