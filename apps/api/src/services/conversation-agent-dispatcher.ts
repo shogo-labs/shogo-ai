@@ -56,6 +56,7 @@ import type { AgentWork, IntegrationConnectRequest, StatusCard } from './convers
 import { agentWorkOf } from './agent-work-log'
 import { AGENT_REPLY_TIMEOUT_MS, emitTaskEvent, replyEvent, replyTargetRef, silenceSessionTasks } from './background-tasks.service'
 import { docContextFor } from './conversation-doc.service'
+import { CHANNEL_DOC_GUIDE } from '@shogo/agent-runtime/src/channel-doc-guide'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
 import { publishReplyMedia } from './agent-reply-media'
 import { resolveAgentRunModel } from './agent-run-model.service'
@@ -1145,21 +1146,25 @@ async function channelDocContext(conversation: any): Promise<string[]> {
   const body = truncated ? `${doc.content.slice(0, DOC_CONTEXT_CHARS)}\n…(truncated; read the rest with team_chat_doc_read)` : doc.content
   return [
     '',
-    `Channel doc${doc.title ? ` "${doc.title}"` : ''} (version ${doc.version}): the channel's shared document. Treat it as the ` +
-      'source of truth for plans, decisions and checklists. Update it with team_chat_doc_update when you settle ' +
-      'something the team should keep (prefer mode "patch_section" or "append" over rewriting it). Keep per-card ' +
-      'narratives in the card thread with work_item_comment, not here.',
+    `Channel doc${doc.title ? ` "${doc.title}"` : ''} (version ${doc.version}): the channel's shared document. ${CHANNEL_DOC_GUIDE}`,
     `${doc.budget.chars.toLocaleString('en-US')} / ${doc.budget.limit.toLocaleString('en-US')} characters (${doc.budget.pct}%, ` +
-      `${doc.budget.level}). ` +
-      (doc.budget.level === 'critical'
-        ? 'It is nearly full: archive a finished section with mode "archive_section" before you add anything.'
-        : doc.budget.level === 'warn'
-          ? 'It is filling up: prefer editing an existing section over appending a new one.'
-          : ''),
+      `${doc.budget.level}). ${docBudgetLine(doc.budget.level)}`,
     '<channel_doc>',
     body,
     '</channel_doc>',
   ]
+}
+
+/** The budget's instruction, worded to match the guide: at warn/critical the doc takes no new section. */
+function docBudgetLine(level: string): string {
+  if (level === 'critical') {
+    return 'It is nearly full: you may not add a section. Fold the fact into an existing rule with mode "patch_section", ' +
+      'archive a superseded section with "archive_section" first, or put it in the card thread with work_item_comment.'
+  }
+  if (level === 'warn') {
+    return 'It is filling up: do not add a section — fold the fact into an existing rule with mode "patch_section".'
+  }
+  return ''
 }
 
 function chainContext(conversation: any, trigger: any, threadRootId: string | null, chain: AgentChain): string[] {

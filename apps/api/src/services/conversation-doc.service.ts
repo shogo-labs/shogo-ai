@@ -37,6 +37,11 @@ export const DOC_CRITICAL_PCT = 85
  * thread is the cheaper home. `force` overrides.
  */
 export const MAX_APPENDED_SECTION_CHARS = 4_000
+/**
+ * Past `DOC_WARN_PCT`, how much an existing section may grow in one write
+ * before it is treated as an append in disguise. `force` overrides.
+ */
+export const MAX_SECTION_GROWTH_CHARS = 1_500
 /** Saves by the same author within this window update the latest revision instead of adding one. */
 export const REVISION_COALESCE_MS = 2 * 60_000
 /** At most one "updated the doc" notice per channel in this window. */
@@ -490,10 +495,17 @@ function appendSection(markdown: string, heading: string, body: string): string 
 
 const CARD_KEY_RE = /SHO-\d+/i
 const CARD_STORY_RE = /\b(qa gate|round\s+\d+|shipped)\b/i
+/** An ISO date in a heading — `(Planner, 2026-10-20)` — is a card report wearing a topic title. */
+const DATE_SUFFIX_RE = /\b20\d{2}-\d{2}-\d{2}\b/
+/** `(Planner)`, `(Dev 2, …)`, `(Shogo QA)` — an author attribution in parentheses. */
+const AUTHOR_SUFFIX_RE = /\([^)]*\b(planner|qa|dev\s*\d|russell)\b[^)]*\)/i
 
 /** A heading that narrates a card: its durable home is the card thread, not the doc. */
 export function isCardNarrativeHeading(heading: string): boolean {
-  return CARD_KEY_RE.test(heading) || CARD_STORY_RE.test(heading)
+  return CARD_KEY_RE.test(heading)
+    || CARD_STORY_RE.test(heading)
+    || DATE_SUFFIX_RE.test(heading)
+    || AUTHOR_SUFFIX_RE.test(heading)
 }
 
 function useCardThreadError(heading: string, reason: 'card_heading' | 'section_size', chars: number): ConversationError {
@@ -551,6 +563,61 @@ function assertNotCardLog(base: string, update: AgentDocUpdate) {
   if (card) throw useCardThreadError(card.heading, 'card_heading', card.body.length)
   const big = added.find((s) => s.body.length > MAX_APPENDED_SECTION_CHARS)
   if (big) throw useCardThreadError(big.heading, 'section_size', big.body.length)
+}
+
+/** The way out of a doc that is too full to take a section. */
+const DOC_BUDGET_NEXT = ['patch_section', 'archive_section', 'work_item_comment']
+
+/**
+ * Past `DOC_WARN_PCT` the doc may only change in place: a new heading, or a
+ * section that balloons, adds a version it cannot afford. The old guard only
+ * offered "archive someone else's section", which no agent picks, so it added
+ * a small section instead and the doc crept to its limit (SHO-101).
+ * `force` overrides.
+ */
+function docBudgetError(
+  budget: DocBudget,
+  detail: { reason: 'new_heading' | 'section_growth'; heading: string; over_headings?: number; growth?: number },
+): ConversationError {
+  const where = `${number(budget.chars)} / ${number(budget.limit)} characters (${budget.pct}%, ${budget.level})`
+  const message = detail.reason === 'new_heading'
+    ? `This doc is at ${where}, so it does not take a new section${detail.heading ? ` ("${detail.heading}")` : ''}. ` +
+      'Fold the fact into an existing rule with mode "patch_section", archive a superseded section with ' +
+      '"archive_section" first, or keep per-card notes in the card thread with work_item_comment. force: true writes it anyway.'
+    : `This doc is at ${where}, so "${detail.heading}" may not grow by ${number(detail.growth ?? 0)} characters ` +
+      `(max ${number(MAX_SECTION_GROWTH_CHARS)}). Trim it to the lasting rule, archive a superseded section first, or ` +
+      'put the detail in the card thread with work_item_comment. force: true writes it anyway.'
+  return new ConversationError(400, 'doc_budget', message, {
+    chars: budget.chars,
+    limit: budget.limit,
+    level: budget.level,
+    pct: budget.pct,
+    budget,
+    reason: detail.reason,
+    heading: detail.heading,
+    ...(detail.over_headings !== undefined ? { over_headings: detail.over_headings } : {}),
+    ...(detail.growth !== undefined ? { growth: detail.growth, growth_limit: MAX_SECTION_GROWTH_CHARS } : {}),
+    next: DOC_BUDGET_NEXT,
+  })
+}
+
+function assertDocBudget(base: string, update: AgentDocUpdate, content: string) {
+  if (update.force) return
+  // A write that does not fit is refused as doc_full anyway, and that error names the size.
+  if (content.length > MAX_DOC_CHARS) return
+  const budget = docBudget(base.length)
+  if (budget.level === 'ok') return
+  const added = addedSections(base, update).filter((s) => s.heading)
+  if (added.length) {
+    throw docBudgetError(budget, { reason: 'new_heading', heading: added[0].heading, over_headings: added.length })
+  }
+  if (update.mode !== 'patch_section') return
+  const existing = update.section ? extractSection(base, update.section) : null
+  if (!existing) return
+  const growth = (update.content ?? '').trim().length - existing.body.length
+  if (growth > MAX_SECTION_GROWTH_CHARS) {
+    throw docBudgetError(budget, { reason: 'section_growth', heading: existing.heading, growth })
+  }
 }
 
 /** Replace the body under the heading named `section`, or append a new section when it is missing. */
@@ -706,6 +773,7 @@ export async function updateDocAsAgent(
   } else {
     content = update.content
   }
+  assertDocBudget(base, update, content)
   if (content.length > MAX_DOC_CHARS) throw docFullError(content.length)
   return { doc: await writeDoc(conversation, actor, {
     title: update.title ?? current?.title ?? '',

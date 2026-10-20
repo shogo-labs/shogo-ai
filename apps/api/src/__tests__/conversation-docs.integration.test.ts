@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { rmSync } from 'fs'
 import { Hono } from 'hono'
 import { seedWorkspace, setupChannelsTestDb, sseResponse, waitFor, type SeededWorkspace } from './helpers/channels-test-db'
+import { CHANNEL_DOC_GUIDE } from '@shogo/agent-runtime/src/channel-doc-guide'
 
 const { dir } = setupChannelsTestDb()
 
@@ -43,6 +44,12 @@ async function newChannel(name: string, kind: 'public' | 'private' = 'public', o
   const res = await call(owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name, kind })
   expect(res.status).toBe(201)
   return res.json.conversation.id as string
+}
+
+/** A doc of exactly `chars` characters with two sections, so patching and appending have targets. */
+function docOfSize(chars: number) {
+  const head = '# Big doc\n\n## Rules\n\n- ship on Friday\n\n## Archive candidate\n\n'
+  return `${head}${'z'.repeat(Math.max(0, chars - head.length))}`
 }
 
 beforeAll(async () => {
@@ -238,18 +245,16 @@ describe('agents and the channel doc', () => {
     expect(invocation.prompt).toContain('We ship on Fridays.')
     expect(invocation.prompt).toContain('"Team charter"')
     expect(invocation.prompt).toContain('characters (')
-    expect(invocation.prompt).toContain('per-card narratives in the card thread')
+    // The doc block and the team-chat guide read one constant, so they cannot drift apart again.
+    expect(invocation.prompt).toContain(CHANNEL_DOC_GUIDE)
+    expect(invocation.prompt).toContain('durable, cross-card rules')
+    expect(invocation.prompt).toContain('work_item_comment')
+    expect(invocation.prompt).not.toContain('long content')
   })
 })
 
 describe('channel doc budget, doc_full and archives', () => {
   const internal = (path: string) => `/internal/workspaces/${seed.workspaceId}/agent-channels${path}`
-
-  /** A doc of exactly `chars` characters with two sections, so patching and archiving have targets. */
-  function docOfSize(chars: number) {
-    const head = '# Big doc\n\n## Rules\n\n- ship on Friday\n\n## Archive candidate\n\n'
-    return `${head}${'z'.repeat(Math.max(0, chars - head.length))}`
-  }
 
   test('every read and write carries the budget, with 70% and 85% as the warn/critical edges', async () => {
     const id = await newChannel('budget-doc')
@@ -385,6 +390,57 @@ describe('channel doc budget, doc_full and archives', () => {
     expect(forced.json.doc.content).toContain('## SHO-123 QA gate')
   })
 
+  test('past the warn budget a new heading is refused with doc_budget; in-place patches still land', async () => {
+    const warnChars = Math.ceil((docs.MAX_DOC_CHARS * docs.DOC_WARN_PCT) / 100)
+    // At ok the very same append is normal use.
+    const okDoc = await newChannel('ok-append')
+    await call(seed.owner, 'PUT', `/conversations/${okDoc}/doc`, { content: docOfSize(warnChars - 1), baseVersion: 0 })
+    const okAppend = await call(null, 'PUT', internal('/ok-append/doc'), { mode: 'append', content: '## Local secrets\n\n- one line' })
+    expect(okAppend.status).toBe(200)
+    expect(okAppend.json.doc.content).toContain('## Local secrets')
+
+    // At warn (the same doc, one character over the threshold) it is refused.
+    const id = await newChannel('warn-append')
+    await call(seed.owner, 'PUT', `/conversations/${id}/doc`, { content: docOfSize(warnChars), baseVersion: 0 })
+    const refused = await call(null, 'PUT', internal('/warn-append/doc'), { mode: 'append', content: '## Local secrets\n\n- one line' })
+    expect(refused.status).toBe(400)
+    expect(refused.json.error.code).toBe('doc_budget')
+    expect(refused.json.error).toMatchObject({ level: 'warn', reason: 'new_heading', heading: 'Local secrets', over_headings: 1 })
+    expect(refused.json.error.chars).toBe(warnChars)
+    expect(refused.json.error.limit).toBe(docs.MAX_DOC_CHARS)
+    expect(refused.json.error.next).toEqual(['patch_section', 'archive_section', 'work_item_comment'])
+    expect(refused.json.error.message).toContain('work_item_comment')
+    expect((await call(seed.member, 'GET', `/conversations/${id}/doc`)).json.doc.version).toBe(1)
+
+    // A patch_section naming a heading the doc does not have is the same new section.
+    const newSection = await call(null, 'PUT', internal('/warn-append/doc'), { mode: 'patch_section', section: 'Webhooks', content: 'x' })
+    expect(newSection.json.error).toMatchObject({ code: 'doc_budget', reason: 'new_heading', heading: 'Webhooks' })
+
+    // Folding into an existing rule is what the refusal asks for, and it works.
+    const fold = await call(null, 'PUT', internal('/warn-append/doc'), { mode: 'patch_section', section: 'Rules', content: '- ship on Friday\n- keep secrets in env' })
+    expect(fold.status).toBe(200)
+    expect(fold.json.doc.content).toContain('keep secrets in env')
+
+    // A section that balloons in place is refused too, and force writes it.
+    const grown = await call(null, 'PUT', internal('/warn-append/doc'), {
+      mode: 'patch_section', section: 'Rules', content: `- ship on Friday\n${'g'.repeat(2_000)}`,
+    })
+    expect(grown.status).toBe(400)
+    expect(grown.json.error).toMatchObject({ code: 'doc_budget', reason: 'section_growth', heading: 'Rules', growth_limit: 1_500 })
+    expect(grown.json.error.growth).toBeGreaterThan(1_500)
+
+    const forced = await call(null, 'PUT', internal('/warn-append/doc'), {
+      mode: 'append', content: '## Local secrets\n\n- one line', force: true,
+    })
+    expect(forced.status).toBe(200)
+    expect(forced.json.doc.content).toContain('## Local secrets')
+
+    const forcedGrowth = await call(null, 'PUT', internal('/warn-append/doc'), {
+      mode: 'patch_section', section: 'Rules', content: `- ship on Friday\n${'g'.repeat(2_000)}`, force: true,
+    })
+    expect(forcedGrowth.status).toBe(200)
+  })
+
   test('replaying the real 199,316-character doc accepts a patch that fits and refuses one that does not', async () => {
     const id = await newChannel('real-fixture')
     const base = docOfSize(199_316)
@@ -425,7 +481,13 @@ describe('doc section helpers', () => {
     expect(docs.isCardNarrativeHeading('QA gate notes')).toBe(true)
     expect(docs.isCardNarrativeHeading('Round 2 findings')).toBe(true)
     expect(docs.isCardNarrativeHeading('What shipped last week')).toBe(true)
+    // An attribution or a date on a topic title is a card report wearing a rule's name (SHO-101).
+    expect(docs.isCardNarrativeHeading('Cache & token efficiency (Planner, 2026-10-20)')).toBe(true)
+    expect(docs.isCardNarrativeHeading('Paid providers: relay and markup (Dev 2, 2026-10-19, SHO-71)')).toBe(true)
+    expect(docs.isCardNarrativeHeading('Local-mode instance secrets (QA)')).toBe(true)
+    expect(docs.isCardNarrativeHeading('Staging 2026-10-19')).toBe(true)
     expect(docs.isCardNarrativeHeading('Working mode flips')).toBe(false)
     expect(docs.isCardNarrativeHeading('Model catalog & media pricing')).toBe(false)
+    expect(docs.isCardNarrativeHeading('Desktop and cloud never diverge')).toBe(false)
   })
 })

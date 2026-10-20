@@ -39,6 +39,7 @@ import {
   type AgentStatusCard,
 } from './internal-api'
 import { uploadWorkspaceMedia } from './workspace-media'
+import { CHANNEL_DOC_GUIDE } from './channel-doc-guide'
 
 const KIND_SCHEMA = Type.Union(
   [Type.Literal('status'), Type.Literal('result'), Type.Literal('decision'), Type.Literal('alert')],
@@ -122,13 +123,13 @@ export const TEAM_CHAT_GUIDE = [
   '- Write every message so someone reading the thread later knows what happened and why: in two to four sentences, say what you did, what you found or decided and why, and what you need next. Never post a bare "your turn", "done", or "back to you".',
   '- Tag people only when you need a decision or approval from them, and ask one clear question.',
   '- When you need input from a person, post with `team_chat_post` and pass `questions` (tag them in the text) so they get an answerable card, instead of burying the question in prose. Their answer arrives as a reply in the thread. A question already open in the channel is not re-asked; refer to it instead.',
-  '- Keep messages to a few sentences, not paragraphs. Put long content (plans, logs, diffs) in files or links and reference them.',
+  '- Keep messages to a few sentences, not paragraphs. Put long material (plans, logs, diffs) in files or links and reference them.',
   '- Use `team_chat_dm` to escalate something urgent to one person instead of tagging a whole channel.',
   '- If someone asks you to message a teammate for them, use `team_chat_dm` with `for_requester: true`; then reply to the requester with the returned link.',
   '- Use `team_chat_add_member` to put someone in a channel, e.g. when welcoming a new teammate.',
   '- Asked to create a channel, or to change one (private, topic, agent members)? Do it yourself; never send the person to the UI. Add or edit it under `teamChannels` in shogo-system.yaml and run `system_apply` (dry run, then apply). The person who asked is added as the new channel\'s owner. Without `system_apply`, ask the workspace agent in the channel to do it.',
   '- Files shared in your channels and DMs: use `fetch_chat_files`. Search them by meaning with `query`, read a document\'s text with `file_id`, and pass `download: true` only when you need the raw file on disk (images, spreadsheets to run code on, archives); it is saved under `chat-files/`.',
-  '- Each channel can have a doc: a shared markdown page for its plans, decisions and checklists. Read it with `team_chat_doc_read`; record settled decisions and long content there with `team_chat_doc_update` (prefer `patch_section` or `append` over rewriting it), then mention the change briefly in your reply.',
+  '- Each channel can have a doc: the channel\'s shared page, read with `team_chat_doc_read` and edited with `team_chat_doc_update`. ' + CHANNEL_DOC_GUIDE,
   '- Asked what a teammate worked on ("what did Sam do today?")? Use `member_activity`. Only owners and admins may ask; if the API refuses, say so plainly and do not guess from channel history. Answer only the person who asked, in the conversation where they asked. Never post someone\'s activity summary into a channel.',
   '- Respect Do Not Disturb: when someone is away, leave the question in the thread rather than pinging them repeatedly.',
   '- Starting a new piece of work? Post a top-level message with `team_chat_post` (pass `run_id` if you track one); you own that thread and unaddressed replies there come to you.',
@@ -458,8 +459,12 @@ function docWriteFailure(result: { error?: string; code?: string; status?: numbe
     error: result.error ?? fallback,
     code: result.code,
     status: result.status,
-    ...(details.over_by !== undefined ? { over_by: details.over_by, chars: details.chars, limit: details.limit } : {}),
+    ...(details.chars !== undefined ? { chars: details.chars, limit: details.limit } : {}),
+    ...(details.over_by !== undefined ? { over_by: details.over_by } : {}),
     ...(details.reason ? { reason: details.reason, heading: details.heading, card: details.card } : {}),
+    ...(details.over_headings !== undefined ? { over_headings: details.over_headings } : {}),
+    ...(details.growth !== undefined ? { growth: details.growth, growth_limit: details.growth_limit } : {}),
+    ...(details.level ? { level: details.level, pct: details.pct, budget: details.budget } : {}),
     ...(details.matches ? { matches: details.matches } : {}),
     ...(details.next ? { next: details.next } : {}),
   })
@@ -471,15 +476,18 @@ export function createChannelDocUpdateTool(ctx: ToolContext): AgentTool {
     label: 'Update Channel Doc',
     description:
       "Change a team chat channel's doc (creating it if needed), attributed to you. Every response carries the " +
-      'doc\'s budget (chars/limit, pct, ok|warn|critical). Modes: "patch_section" replaces the body under one ' +
-      'heading (or adds that section), "append" adds to the end, "replace" rewrites the whole doc and needs ' +
-      'base_version from team_chat_doc_read, and "archive_section" moves one section into the doc\'s archive ' +
-      "(replacing it with a pointer line) so a full doc can be slimmed. Prefer patch_section over append/rewrite " +
-      'so you do not clobber teammates. A new section headed like a card (SHO-123, "QA gate", "round 2", ' +
-      '"shipped") or longer than 4,000 chars is refused with code use_card_thread: that narrative belongs in the ' +
-      'card thread via work_item_comment, and force: true overrides. A write that would exceed the limit returns ' +
-      'doc_full with over_by and the next calls — archive a section first. Fails with code doc_conflict if ' +
-      'someone saved since you read it: read again and retry.',
+      'doc\'s budget (chars/limit, pct, ok|warn|critical). The doc holds durable, cross-card rules only: a finding, ' +
+      'a plan, a QA report or anything specific to one card belongs in that card\'s thread with work_item_comment. ' +
+      'Modes: "patch_section" replaces the body under one heading (or adds that section), "append" adds to the end, ' +
+      '"replace" rewrites the whole doc and needs base_version from team_chat_doc_read, and "archive_section" moves ' +
+      'one section into the doc\'s archive (replacing it with a pointer line) so a full doc can be slimmed. Prefer ' +
+      'patch_section over append/rewrite so you do not clobber teammates. A new section headed like a card (SHO-123, ' +
+      '"QA gate", "round 2", "shipped", or an author/date suffix) or longer than 4,000 chars is refused with code ' +
+      'use_card_thread: that narrative belongs in the card thread via work_item_comment, and force: true overrides. ' +
+      'From the warn budget (70%) up, a write that adds a heading or grows a section by more than 1,500 chars is ' +
+      'refused with code doc_budget: fold the fact into an existing rule with patch_section, or archive_section a ' +
+      'superseded one first (force: true overrides). A write that would exceed the limit returns doc_full with ' +
+      'over_by and the next calls. Fails with code doc_conflict if someone saved since you read it: read again and retry.',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
       mode: Type.Union(
@@ -495,7 +503,7 @@ export function createChannelDocUpdateTool(ctx: ToolContext): AgentTool {
       title: Type.Optional(Type.String({ description: 'New doc title. Omit to keep the current one.' })),
       base_version: Type.Optional(Type.Number({ description: 'Version you read; required for replace.' })),
       force: Type.Optional(Type.Boolean({
-        description: 'Write a card-narrative or oversized new section anyway (use_card_thread otherwise).',
+        description: 'Write a card-narrative, an oversized new section, or a new/growing section past the 70% budget anyway (refused otherwise).',
       })),
     }),
     execute: async (_id, params) => {

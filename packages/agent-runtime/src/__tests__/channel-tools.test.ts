@@ -9,6 +9,7 @@ import { createTools, type ToolContext } from '../gateway-tools'
 import { downloadedPath, pruneChatFiles, safeSegment } from '../chat-files'
 import { CORE_TOOL_NAMES } from '../capability-profiles'
 import { CHANNEL_TOOL_NAMES, createAgentRunTools, createChannelTools, TEAM_CHAT_GUIDE, teamChatToolsAvailable } from '../channel-tools'
+import { CHANNEL_DOC_GUIDE } from '../channel-doc-guide'
 
 function ctx(overrides: Partial<ToolContext> = {}, capabilityProfile?: 'personal' | 'team'): ToolContext {
   return {
@@ -400,6 +401,71 @@ describe('channel tools call the internal agent-channel API', () => {
     reply = { error: { code: 'use_card_thread', message: 'card narrative', reason: 'card_heading', heading: 'SHO-123 QA gate', card: 'SHO-123' } }
     const cardLog = payload(await tool('team_chat_doc_update').execute('t', { channel: 'roadmap', mode: 'append', content: '## SHO-123 QA gate\n\nstory' }))
     expect(cardLog).toMatchObject({ code: 'use_card_thread', reason: 'card_heading', card: 'SHO-123' })
+  })
+
+  test('a doc past 70% surfaces doc_budget with the budget and the way out, and force is forwarded', async () => {
+    // What the API returns once the doc is at warn/critical and the write would add a heading.
+    reply = {
+      error: {
+        code: 'doc_budget',
+        message: 'This doc is at 160,000 / 200,000 characters (80%, warn), so it does not take a new section ("Local secrets").',
+        chars: 160_000,
+        limit: 200_000,
+        level: 'warn',
+        pct: 80,
+        budget: { chars: 160_000, limit: 200_000, pct: 80, level: 'warn' },
+        reason: 'new_heading',
+        heading: 'Local secrets',
+        over_headings: 1,
+        next: ['patch_section', 'archive_section', 'work_item_comment'],
+      },
+    }
+    status = 400
+    const refused = payload(await tool('team_chat_doc_update').execute('t', {
+      channel: 'roadmap', mode: 'append', content: '## Local secrets\n\n- one line',
+    }))
+    expect(refused).toMatchObject({
+      code: 'doc_budget', status: 400, chars: 160_000, limit: 200_000, level: 'warn', pct: 80,
+      reason: 'new_heading', heading: 'Local secrets', over_headings: 1,
+      next: ['patch_section', 'archive_section', 'work_item_comment'],
+    })
+    expect(refused.budget).toMatchObject({ level: 'warn' })
+    expect(String(refused.error)).toContain('160,000 / 200,000')
+
+    // force: true reaches the API instead of being swallowed by the tool.
+    reply = { doc: { title: 'Plan', version: 9, budget: { chars: 160_400, limit: 200_000, pct: 80.2, level: 'warn' } }, url: 'https://x/c/c-1?doc=1' }
+    status = 200
+    const forced = payload(await tool('team_chat_doc_update').execute('t', {
+      channel: 'roadmap', mode: 'append', content: '## Local secrets\n\n- one line', force: true,
+    }))
+    expect(forced.ok).toBe(true)
+    expect(JSON.parse(String(calls[1].init?.body))).toMatchObject({ mode: 'append', force: true })
+
+    // The same refusal for a section that balloons, with growth and its own limit.
+    status = 400
+    reply = {
+      error: {
+        code: 'doc_budget', message: 'too much growth', chars: 160_000, limit: 200_000, level: 'warn', pct: 80,
+        reason: 'section_growth', heading: 'Rules', growth: 3_200, next: ['patch_section', 'archive_section', 'work_item_comment'],
+      },
+    }
+    const grown = payload(await tool('team_chat_doc_update').execute('t', {
+      channel: 'roadmap', mode: 'patch_section', section: 'Rules', content: '- a much longer rule',
+    }))
+    expect(grown).toMatchObject({ code: 'doc_budget', reason: 'section_growth', heading: 'Rules', growth: 3_200 })
+  })
+
+  test('the doc guidance invites durable rules only, never "long content" or a new section', () => {
+    expect(TEAM_CHAT_GUIDE).toContain(CHANNEL_DOC_GUIDE)
+    expect(TEAM_CHAT_GUIDE).not.toContain('long content')
+    expect(CHANNEL_DOC_GUIDE).not.toContain('long content')
+    expect(CHANNEL_DOC_GUIDE).not.toContain('append')
+    expect(CHANNEL_DOC_GUIDE).toContain('durable, cross-card rules')
+    expect(CHANNEL_DOC_GUIDE).toContain('work_item_comment')
+    expect(CHANNEL_DOC_GUIDE).toContain('"patch_section"')
+    expect(CHANNEL_DOC_GUIDE).toContain('`archive_section`')
+    expect(CHANNEL_DOC_GUIDE).toContain('warn or critical')
+    expect(String(tool('team_chat_doc_update').description)).toContain('doc_budget')
   })
 
   test('validation and API errors are returned to the model', async () => {
