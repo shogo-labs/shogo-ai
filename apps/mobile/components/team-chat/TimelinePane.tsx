@@ -28,6 +28,7 @@ import { Composer, type ComposerHandle } from './Composer'
 import { MentionNudgeCard } from './MentionNudgeCard'
 import { EphemeralNotice } from './EphemeralNotice'
 import { AddToChannelConfirmHost, confirmsAddToChannel } from './AddToChannelConfirm'
+import { LinkPreviewConsentHost } from './LinkPreviewConsent'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
@@ -464,6 +465,7 @@ export function TimelinePane(props: TimelinePaneProps) {
         />
       )}
       <AddToChannelConfirmHost />
+      <LinkPreviewConsentHost />
       <Composer
         ref={composerRef}
         workspaceId={workspaceId}
