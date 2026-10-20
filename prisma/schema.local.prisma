@@ -195,6 +195,15 @@ model Workspace {
   slackInstallation      SlackWorkspaceInstallation?
   agentProfile           WorkspaceAgentProfile?
   goals                  Goal[]
+  socialProfiles         SocialProfile[]
+  socialAccounts         SocialAccount[]
+  socialPosts            SocialPost[]
+  socialRelayedEvents    SocialRelayedEvent[]
+  socialConversations    SocialConversation[]
+  socialMessages         SocialMessage[]
+  socialComments         SocialComment[]
+  socialAutomations      SocialAutomation[]
+  socialAutomationRuns   SocialAutomationRun[]
 
   @@index([parentWorkspaceId])
   @@map("workspaces")
@@ -3956,4 +3965,307 @@ model ProblemOccurrence {
   @@index([workItemId, occurredAt])
   @@index([workspaceId, fingerprint])
   @@map("problem_occurrences")
+}
+
+// ─── Social management (Zernio) — SQLite mirror of prisma/schema.prisma ──────
+// Json? columns are stored as JSON strings; String[] as JSON-encoded String.
+
+model SocialProfile {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  localWorkspaceId String   @default("")
+  zernioProfileId  String   @unique
+  externalId       String   @unique
+  name             String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  accounts  SocialAccount[]
+
+  @@unique([workspaceId, localWorkspaceId])
+  @@map("social_profiles")
+}
+
+model SocialAccount {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  profileId       String
+  zernioAccountId String    @unique
+  platform        String
+  username        String
+  displayName     String?
+  isActive        Boolean   @default(true)
+  tokenHealthy    Boolean   @default(true)
+  needsReconnect  Boolean   @default(false)
+  lastHealthAt    DateTime?
+  /// Watermark for the `social_account_monthly` meter: the month this row has
+  /// already been charged for. Zernio bills per connected account, prorated by
+  /// active days, so the sweep charges once per account per month.
+  monthlyRateDebitedFor DateTime?
+  connectedAt     DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  profile   SocialProfile      @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  targets   SocialPostTarget[]
+  conversations SocialConversation[]
+  comments  SocialComment[]
+  automations SocialAutomation[]
+
+  @@unique([workspaceId, platform, username])
+  @@index([workspaceId, platform])
+  @@map("social_accounts")
+}
+
+model SocialPost {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  status          String    @default("draft")
+  content         String
+  mediaJson       String?
+  scheduledFor    DateTime?
+  publishedAt     DateTime?
+  zernioPostId    String?
+  idempotencyKey  String    @unique
+  createdByUserId String?
+  tags            String    @default("[]")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  targets   SocialPostTarget[]
+  comments  SocialComment[]
+
+  @@index([workspaceId, scheduledFor])
+  @@index([workspaceId, status])
+  @@map("social_posts")
+}
+
+model SocialPostTarget {
+  id              String   @id @default(uuid())
+  postId          String
+  accountId       String
+  platform        String
+  customContent   String?
+  mediaJson       String?
+  status          String   @default("pending")
+  platformPostId  String?
+  platformPostUrl String?
+  error           String?
+  /// Set once the `social_x_api` meter has charged this leg, so a retried
+  /// dispatch cannot bill the same published post twice. Null on every
+  /// non-X platform, which Zernio does not bill per post.
+  meteredAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  post    SocialPost    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  account SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, accountId])
+  @@index([accountId, status])
+  @@map("social_post_targets")
+}
+
+/// A verified webhook that belongs to a desktop's local scope, written down
+/// before we answer the provider. A desktop polls the cloud relay for these,
+/// applies each in its own DB and acks it; `dedupeKey` makes a provider retry
+/// collapse onto the row that already exists.
+model SocialRelayedEvent {
+  id               String    @id @default(uuid())
+  dedupeKey        String    @unique
+  workspaceId      String
+  localWorkspaceId String
+  externalId       String
+  eventType        String
+  /// JSON-encoded envelope the desktop replays through `applySocialEvent`.
+  /// Deliberately not `payload`: that name is globally JSON-coerced by the
+  /// SQLite client for `WorkspaceEvent.payload`.
+  eventJson        String
+  occurredAt       DateTime  @default(now())
+  appliedAt        DateTime?
+  /// Failed apply attempts. A delivery whose payload we cannot apply is retried
+  /// rather than acked away, but not forever: past the attempt cap it is
+  /// dead-lettered (`failedAt`) so a poison event cannot loop.
+  attempts         Int       @default(0)
+  lastAttemptAt    DateTime?
+  lastError        String?
+  failedAt         DateTime?
+  createdAt        DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, localWorkspaceId, appliedAt])
+  @@index([workspaceId, failedAt])
+  @@map("social_relayed_events")
+}
+
+/// One inbox thread — a DM conversation on a messaging platform. Written by
+/// the provider's webhooks and by the backfill sweep, never by polling the
+/// provider for each render.
+model SocialConversation {
+  id                   String    @id @default(uuid())
+  workspaceId          String
+  accountId            String?
+  zernioConversationId String    @unique
+  platform             String
+  participantId        String?
+  participantName      String?
+  participantPicture   String?
+  status               String    @default("active")
+  unreadCount          Int       @default(0)
+  lastReadAt           DateTime?
+  lastMessageAt        DateTime?
+  lastMessagePreview   String?
+  assignedToUserId     String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account   SocialAccount?  @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  messages  SocialMessage[]
+
+  @@index([workspaceId, lastMessageAt])
+  @@index([workspaceId, unreadCount])
+  @@index([workspaceId, platform])
+  @@map("social_conversations")
+}
+
+/// One message inside a thread. Unique on the provider's message id, so a
+/// redelivered webhook and a backfill sweep that overlaps it are the same row.
+model SocialMessage {
+  id              String   @id @default(uuid())
+  workspaceId     String
+  conversationId  String
+  zernioMessageId String   @unique
+  direction       String
+  platform        String
+  text            String?
+  attachmentsJson String?
+  authorId        String?
+  authorName      String?
+  authorUsername  String?
+  authorPicture   String?
+  status          String   @default("sent")
+  error           String?
+  /// True once a billable outbound message has been counted (P6's `social_dm`
+  /// meter flips this; the reply path records the row and leaves it false).
+  metered         Boolean  @default(false)
+  sentAt          DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace    Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation SocialConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, sentAt])
+  @@index([workspaceId, sentAt])
+  @@map("social_messages")
+}
+
+/// One comment on a post we published (or on a post the account owns that
+/// Zernio tracks). Separate from messages on purpose: comments are answered
+/// publicly and addressed by their own ids.
+model SocialComment {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  postId          String?
+  accountId       String?
+  zernioCommentId String    @unique
+  /// What `POST /inbox/comments/{postId}` takes: Zernio's post id when the
+  /// payload carries one, else the platform's own post id.
+  zernioPostId    String
+  platformPostId  String
+  platform        String
+  text            String
+  authorId        String?
+  authorName      String?
+  authorUsername  String?
+  authorPicture   String?
+  /// The connected account wrote this — the platform echoes our own replies
+  /// back as comment events.
+  isOwn           Boolean   @default(false)
+  isHidden        Boolean   @default(false)
+  status          String    @default("new")
+  repliedAt       DateTime?
+  permalink       String?
+  occurredAt      DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  post      SocialPost?    @relation(fields: [postId], references: [id], onDelete: SetNull)
+  account   SocialAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, occurredAt])
+  @@index([workspaceId, status])
+  @@index([zernioPostId])
+  @@map("social_comments")
+}
+
+/// A ManyChat-style automation the workspace runs on one connected account.
+///
+/// Zernio owns the execution: a `comment_dm`/`keyword_reply` row mirrors a
+/// comment automation (`POST /v1/comment-automations`), and a `sequence` row
+/// mirrors a workflow graph (`POST /v1/workflows`). This table is what we bill,
+/// count and show — never a second scheduler. `runCount`/`lastRunAt` are moved
+/// by the automation webhooks, not by a sweep.
+model SocialAutomation {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  accountId        String?
+  /// comment_dm | keyword_reply | sequence
+  kind             String    @default("comment_dm")
+  /// The provider's own id: a comment automation id or a workflow id.
+  zernioResourceId String?   @unique
+  platform         String
+  name             String
+  /// static (fixed copy) | agent (the agent writes the DM)
+  mode             String    @default("static")
+  /// draft | active | paused
+  status           String    @default("active")
+  /// JSON-encoded string[]: SQLite has no list type.
+  keywords         String    @default("[]")
+  /// The provider request this row mirrors, so a later edit can be replayed.
+  config           Json?
+  runCount         Int       @default(0)
+  lastRunAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  workspace Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account   SocialAccount?        @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  runs      SocialAutomationRun[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, kind])
+  @@map("social_automations")
+}
+
+/// One execution of an automation, from the provider's own run webhooks.
+///
+/// A row per execution (not a counter on the automation) is what lets analytics
+/// answer "how many runs in this range" honestly; the provider's execution id is
+/// globally unique, so a redelivered `workflow.run.completed` collapses onto the
+/// same row instead of inflating the count.
+model SocialAutomationRun {
+  id                String    @id @default(uuid())
+  workspaceId       String
+  automationId      String?
+  zernioExecutionId String    @unique
+  /// running | completed | exited | failed
+  status            String    @default("running")
+  error             String?
+  startedAt         DateTime  @default(now())
+  endedAt           DateTime?
+  createdAt         DateTime  @default(now())
+
+  workspace  Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  automation SocialAutomation? @relation(fields: [automationId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, startedAt])
+  @@index([automationId])
+  @@map("social_automation_runs")
 }

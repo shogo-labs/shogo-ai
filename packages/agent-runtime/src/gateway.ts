@@ -554,6 +554,12 @@ export interface GatewayConfig {
    * `true` leaves the tool off. Each call spends paid EnsembleData units.
    */
   socialMediaEnabled?: boolean
+  /**
+   * The management half of `social_media` (inbox, replies, comment replies and
+   * comment→DM automations). Separate opt-in so a workspace can manage its
+   * connected accounts without paying for public lookups.
+   */
+  socialManagementEnabled?: boolean
   /** When the master switch is on, Instagram lookups stay available unless this is `false`. */
   socialInstagramEnabled?: boolean
   /** When the master switch is on, TikTok lookups stay available unless this is `false`. */

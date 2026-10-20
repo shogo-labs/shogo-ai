@@ -326,10 +326,21 @@ export async function updateWorkspace(
   workspaceId: string,
   data: Prisma.WorkspaceUpdateInput
 ) {
-  return prisma.workspace.update({
+  const workspace = await prisma.workspace.update({
     where: { id: workspaceId },
     data,
   });
+
+  // One workspace = one brand, so a rename is also the Zernio profile's name.
+  // Fire-and-forget: a provider hiccup must never fail a workspace rename.
+  if (typeof data.name === 'string' && data.name.trim()) {
+    const { renameProfile } = await import('./social/profiles.service');
+    void renameProfile(workspaceId, data.name.trim()).catch((err: unknown) => {
+      console.warn('[Social] Could not rename the Zernio profile:', err);
+    });
+  }
+
+  return workspace;
 }
 
 /**

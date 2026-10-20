@@ -117,6 +117,21 @@ describe('filterDisabledCapabilityTools', () => {
     expect(names(makeConfig({ socialMediaEnabled: true })).has('social_media')).toBe(true)
   })
 
+  test('social_media exists on the management opt-in alone, and lookups stay off', () => {
+    const config = makeConfig({ socialManagementEnabled: true })
+    expect(names(config).has('social_media')).toBe(true)
+    // The management opt-in must not turn lookups on: no platform is enabled.
+    expect(enabledSocialPlatforms(config)).toEqual([])
+  })
+
+  test('an inbox call is refused while social management is off', async () => {
+    const tool = createTools(makeCtx(makeConfig({ socialMediaEnabled: true }))).find(
+      (t) => t.name === 'social_media',
+    )!
+    const result = await tool.execute('call-1', { action: 'inbox', kind: 'dms' })
+    expect(JSON.stringify(result)).toContain('Social management is off')
+  })
+
   test('social_media is removed when every platform is off', () => {
     const n = names(makeConfig({
       socialMediaEnabled: true,

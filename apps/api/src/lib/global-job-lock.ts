@@ -91,6 +91,7 @@ export const KNOWN_JOB_IDS: Record<string, bigint> = Object.freeze({
   'channels-email-digest': jobNameToLockId('channels-email-digest'),
   'channels-scheduler': jobNameToLockId('channels-scheduler'),
   'channels-indexer': jobNameToLockId('channels-indexer'),
+  'social-account-monthly': jobNameToLockId('social-account-monthly'),
 }) as Record<string, bigint>
 
 export type GlobalJobLockResult<T> =

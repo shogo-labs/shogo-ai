@@ -300,6 +300,42 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'workspace-events.ts deduplicates one emitted event key per workspace before creating the append-only event row and its deliveries.',
   },
   {
+    key: 'SocialRelayedEvent.dedupeKey',
+    category: 'external_global_id',
+    reason:
+      '`zernio:<provider event id>` is assigned by Zernio and is the same string on every region; the webhook ingress writes it once and a provider retry re-reads that row instead of inserting.',
+  },
+  {
+    key: 'SocialAutomation.zernioResourceId',
+    category: 'external_global_id',
+    reason:
+      'Zernio assigns a comment-automation id (or a workflow id) globally and echoes it on every `workflow.run.*` webhook, so the row the relay records on create and the row the run webhook resolves are the same one; ownership is still checked against the row\'s workspaceId before any write.',
+  },
+  {
+    key: 'SocialAutomationRun.zernioExecutionId',
+    category: 'external_global_id',
+    reason:
+      'One provider execution has one id on every region, so a redelivered run webhook updates its row instead of counting the run twice — which is what makes `automationRuns` a fact rather than a counter.',
+  },
+  {
+    key: 'SocialConversation.zernioConversationId',
+    category: 'external_global_id',
+    reason:
+      'Zernio assigns the conversation id globally and echoes the same value on every webhook and every list sweep, so both ends of the relay upsert one row instead of racing an insert; ownership is still checked against the row\'s workspaceId before any write.',
+  },
+  {
+    key: 'SocialMessage.zernioMessageId',
+    category: 'external_global_id',
+    reason:
+      'The provider message id is global and is the same on the webhook, the retried delivery and the REST sweep — which is exactly what makes ingestion idempotent across them.',
+  },
+  {
+    key: 'SocialComment.zernioCommentId',
+    category: 'external_global_id',
+    reason:
+      'Zernio assigns the comment id globally and repeats it on the webhook echo, the comment listing and the reply response, so those three converge on one row.',
+  },
+  {
     key: 'EventSubscription.composioTriggerId',
     category: 'external_global_id',
     reason:
@@ -850,6 +886,48 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'single_tenant_upsert',
     reason:
       'Reaction toggle under /api/conversation-messages/:id/reactions by the reacting user only; create-or-ignore / deleteMany on the same triple.',
+  },
+  {
+    key: 'SocialProfile.(localWorkspaceId,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One Zernio profile per (workspace, local workspace) scope, created on that scope\'s first connect under /api/workspaces/:workspaceId/social/connect (home region) and adopted by externalId if the create raced.',
+  },
+  {
+    key: 'SocialProfile.zernioProfileId',
+    category: 'external_global_id',
+    reason:
+      'Zernio-assigned profile id; the single create path stores it once per workspace and re-reads by externalId on a conflict.',
+  },
+  {
+    key: 'SocialProfile.externalId',
+    category: 'external_global_id',
+    reason:
+      'The routing key handed to Zernio is derived from the scope (ws_<workspaceId> / lws_<localWorkspaceId>), so a duplicate means the same scope created two profiles — the create path resolves it by re-reading the profile for that externalId.',
+  },
+  {
+    key: 'SocialAccount.zernioAccountId',
+    category: 'external_global_id',
+    reason:
+      'Zernio-assigned account id, written by connect-completion and the account sync/webhook upserts; a cross-region retry upserts the same row.',
+  },
+  {
+    key: 'SocialAccount.(platform,username,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Account sync and the connect redirect upsert by zernioAccountId inside one workspace; this key only rejects a second handle collision in the same workspace.',
+  },
+  {
+    key: 'SocialPost.idempotencyKey',
+    category: 'request_scoped',
+    reason:
+      'SHA-256 of workspace + content + schedule + targets, written only by the composer / publish tool in the workspace\'s home region; a duplicate submit re-reads the existing post.',
+  },
+  {
+    key: 'SocialPostTarget.(accountId,postId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Target rows are created with their post in one insert (same home region) and only updated afterwards; the pair is unique by construction.',
   },
 ]
 

@@ -27,6 +27,7 @@ export const CAPABILITY_KEYS = [
   'channelsEnabled',
   'gitWorktreesEnabled',
   'socialMediaEnabled',
+  'socialManagementEnabled',
   'socialInstagramEnabled',
   'socialTiktokEnabled',
   'teamChatEnabled',
@@ -102,7 +103,11 @@ export const CAPABILITY_INFO: Record<CapabilityKey, { label: string; summary: st
   },
   socialMediaEnabled: {
     label: 'Social media',
-    summary: 'Opt-in. Gates the `social_media` tool.',
+    summary: 'Opt-in. Gates the `social_media` lookups (profile and recent posts) and the paid lookups behind them.',
+  },
+  socialManagementEnabled: {
+    label: 'Social management',
+    summary: 'Opt-in. Gates the management half of `social_media`: the inbox, replies, comment replies and comment→DM automations. Independent of lookups, because managing connected accounts needs no paid lookup units.',
   },
   socialInstagramEnabled: {
     label: 'Instagram',
@@ -144,6 +149,7 @@ export const OPT_IN_KEYS: ReadonlySet<CapabilityKey> = new Set<CapabilityKey>([
   'threeDGenEnabled',
   'gitWorktreesEnabled',
   'socialMediaEnabled',
+  'socialManagementEnabled',
   'boardAdminEnabled',
   'companyOpsEnabled',
   'problemsEnabled',

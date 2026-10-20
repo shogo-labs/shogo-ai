@@ -40,6 +40,8 @@ const ARRAY_FIELDS = new Set([
   'schemas', 'affectedPackages', 'applicablePatterns', 'acceptanceCriteria',
   'given', 'then', 'completedTasks', 'failedTasks', 'tags', 'supportedConfig',
   'screenshotUrls',
+  // Social automation keywords (String[] on PG, JSON String on SQLite)
+  'keywords',
   // ProjectAuthConfig allowlist fields
   'allowedEmails', 'allowedDomains',
   // ModelDefinition alias list (Json? on PG, String? JSON on SQLite)
@@ -84,6 +86,8 @@ const JSON_OBJECT_FIELDS = new Set([
   // Background task destination (Json? on PG, JSON String on SQLite): where the
   // dock opens the agent's thread for a task that handed work off.
   'link',
+  // Social posts / targets keep their media URL list as JSON on both sides.
+  'mediaJson',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and

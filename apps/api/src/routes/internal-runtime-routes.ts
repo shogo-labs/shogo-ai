@@ -49,6 +49,7 @@ import {
 import { workspaceMeetingRoutes } from './workspace-meetings'
 import { agentChannelRoutes, type AgentChannelAuthContext } from './conversations'
 import { agentBoardRoutes } from './work-boards'
+import { agentSocialRoutes } from './social'
 import {
   createInternalAuthorizers,
   logAuthReject,
@@ -703,6 +704,23 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.route(
     '/',
     agentBoardRoutes({
+      authorize: async (c) => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return c.json({ error: 'Unauthorized' }, 401)
+        }
+        const identity = await authenticate(c)
+        const projectId = identity?.kind === 'project' ? identity.projectId : undefined
+        return { workspaceId, projectId }
+      },
+    }),
+  )
+
+  // Social management mirrors the user routes so `social_media` and the UI can
+  // never drift apart: same bodies, same services, one provider path.
+  app.route(
+    '/',
+    agentSocialRoutes({
       authorize: async (c) => {
         const workspaceId = c.req.param('workspaceId')
         if (!(await authorizeWorkspaceScope(c, workspaceId))) {

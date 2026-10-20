@@ -166,6 +166,7 @@ import {
   deriveApiUrl,
   derivePublicApiUrl,
   getInternalHeaders,
+  NO_API_URL_ERROR,
   listCheckpoints as apiListCheckpoints,
   getCheckpointDiff as apiGetCheckpointDiff,
   rollbackCheckpoint as apiRollbackCheckpoint,
@@ -8738,7 +8739,15 @@ const SOCIAL_CACHE_TTL_SECONDS = 10 * 60
 
 export type SocialPlatformName = 'instagram' | 'tiktok'
 
-/** Platforms the `social_media` tool may call. Empty when the tool should be hidden. */
+/**
+ * Whether `social_media` exists at all: public lookups and account management
+ * are separate opt-ins, and a workspace may want either without the other.
+ */
+export function socialMediaToolEnabled(config: import('./gateway').GatewayConfig): boolean {
+  return config.socialMediaEnabled === true || config.socialManagementEnabled === true
+}
+
+/** Platforms the `social_media` tool may call. Empty when lookups are off. */
 export function enabledSocialPlatforms(config: import('./gateway').GatewayConfig): SocialPlatformName[] {
   if (config.socialMediaEnabled !== true) return []
   const platforms: SocialPlatformName[] = []
@@ -8754,8 +8763,55 @@ function socialPlatformSchema(platforms: SocialPlatformName[]) {
 }
 
 /**
- * Public Instagram/TikTok profile and recent-post lookup. The EnsembleData
- * token stays on the API server; this calls `POST ${TOOLS_PROXY_URL}/social/...`.
+ * Call the internal social routes — the same handlers the desktop composer and
+ * the UI use, so a tool action cannot drift from what a person sees.
+ */
+async function socialInternalCall(
+  ctx: ToolContext,
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<{ ok: true; data: any } | { ok: false; error: string; suggestion?: string }> {
+  const workspaceId = ctx.workspaceId
+  if (!workspaceId) {
+    return { ok: false, error: 'No workspace in scope for social inbox calls.' }
+  }
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, error: NO_API_URL_ERROR }
+  try {
+    const response = await fetch(
+      `${apiUrl.replace(/\/$/, '')}/api/internal/workspaces/${encodeURIComponent(workspaceId)}${path}`,
+      {
+        method,
+        headers: getInternalHeaders(),
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(20_000),
+      },
+    )
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: (data as any)?.error?.message ?? (data as any)?.error ?? `HTTP ${response.status}`,
+        suggestion:
+          response.status === 409
+            ? 'Connect the account, then run action "inbox" with kind "dms" or "comments" to sync first.'
+            : undefined,
+      }
+    }
+    return { ok: true, data }
+  } catch (err: any) {
+    return { ok: false, error: `Social inbox request failed: ${err?.message ?? err}` }
+  }
+}
+
+/**
+ * Public Instagram/TikTok profile and recent-post lookup, plus the connected
+ * accounts' own inbox: threads and comments, and answering them.
+ *
+ * The lookup calls `POST ${TOOLS_PROXY_URL}/social/...` (the EnsembleData token
+ * stays on the API server); the inbox actions call the internal social routes,
+ * which are the same handlers the UI uses.
  */
 function createSocialMediaTool(ctx: ToolContext): AgentTool {
   const platforms = enabledSocialPlatforms(ctx.config)
@@ -8763,35 +8819,259 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
   return {
     name: 'social_media',
     description:
-      `Look up a public social profile or its recent posts (views, likes, comments, shares). ` +
-      `Enabled platforms: ${platformList}. ` +
-      `Use action "profile" for the bio and display name, or "recent_posts" for the latest posts. ` +
-      `Each call spends paid API units — prefer one call with a sufficient limit over several small ones.`,
+      `Look up a public social profile or its recent posts (views, likes, comments, shares), ` +
+      `or work the connected accounts' inbox. ` +
+      `Enabled lookup platforms: ${platformList}. ` +
+      `Actions: "profile" and "recent_posts" take a handle; ` +
+      `"inbox" lists DM threads (kind "dms") or comments (kind "comments"); ` +
+      `"reply" takes conversation_id + text; "comment_reply" takes comment_id + text; ` +
+      `"automate" manages comment→DM automations (automation_action create/list/pause/resume/delete). ` +
+      `Lookups spend paid API units — prefer one call with a sufficient limit over several small ones. ` +
+      `Inbox replies are public/sent as the connected account: quote the user's own words when unsure.`,
     label: 'Social Media',
     parameters: Type.Object({
-      platform: socialPlatformSchema(platforms),
-      action: Type.Union([Type.Literal('profile'), Type.Literal('recent_posts')], {
-        description: 'profile | recent_posts',
-      }),
-      handle: Type.String({ description: 'Account handle, with or without a leading @.' }),
+      action: Type.Union(
+        [
+          Type.Literal('profile'),
+          Type.Literal('recent_posts'),
+          Type.Literal('inbox'),
+          Type.Literal('reply'),
+          Type.Literal('comment_reply'),
+          Type.Literal('automate'),
+        ],
+        { description: 'profile | recent_posts | inbox | reply | comment_reply | automate' },
+      ),
+      platform: Type.Optional(socialPlatformSchema(platforms)),
+      handle: Type.Optional(Type.String({ description: 'Account handle, with or without a leading @. Required for profile/recent_posts.' })),
       limit: Type.Optional(Type.Number({
-        description: 'How many recent posts to return (1-50, default 20). Ignored for profile.',
+        description: 'How many posts or inbox rows to return (1-50, default 20).',
       })),
+      kind: Type.Optional(Type.Union([Type.Literal('dms'), Type.Literal('comments')], {
+        description: 'For action "inbox": which half of the inbox to list.',
+      })),
+      unread_only: Type.Optional(Type.Boolean({ description: 'For action "inbox": only threads with unread messages.' })),
+      conversation_id: Type.Optional(Type.String({ description: 'For action "reply": the inbox thread id.' })),
+      comment_id: Type.Optional(Type.String({ description: 'For action "comment_reply": the comment id.' })),
+      text: Type.Optional(Type.String({ description: 'For "reply" / "comment_reply": what to send.' })),
+      automation_action: Type.Optional(
+        Type.Union(
+          [
+            Type.Literal('create'),
+            Type.Literal('list'),
+            Type.Literal('pause'),
+            Type.Literal('resume'),
+            Type.Literal('delete'),
+          ],
+          { description: 'For action "automate": what to do with the workspace comment automations.' },
+        ),
+      ),
+      automation_kind: Type.Optional(
+        Type.Union(
+          [Type.Literal('comment_dm'), Type.Literal('keyword_reply'), Type.Literal('sequence')],
+          { description: 'comment_dm (DM the commenter), keyword_reply (public reply only) or sequence (a comment-triggered DM graph).' },
+        ),
+      ),
+      automation_id: Type.Optional(Type.String({ description: 'For automate pause/resume/delete: the automation id from automate list.' })),
+      account_id: Type.Optional(Type.String({ description: 'For automate create: the connected account id to run it on.' })),
+      name: Type.Optional(Type.String({ description: 'For automate create: a label for the automation.' })),
+      keywords: Type.Optional(Type.String({ description: 'For automate create: comma-separated trigger keywords, e.g. "merge,link".' })),
+      dm_message: Type.Optional(Type.String({ description: 'For automate create: the DM to send the commenter.' })),
+      comment_reply: Type.Optional(Type.String({ description: 'For automate create: a public reply under the comment (required on reply-only platforms).' })),
+      messages: Type.Optional(Type.String({ description: 'For a sequence: comma-separated DM messages sent in order, 1-3.' })),
     }),
     execute: async (_toolCallId, rawParams) => {
       // The platform enum is built from the enabled set, so TypeBox cannot
       // infer the parameter object. Read the fields explicitly.
-      const params = rawParams as { platform?: unknown; action?: unknown; handle?: unknown; limit?: unknown }
-      const platform = String(params.platform ?? '')
-      const action = params.action === 'recent_posts' ? 'recent_posts' : params.action === 'profile' ? 'profile' : ''
-      const handle = String(params.handle ?? '').trim().replace(/^@+/, '')
+      const params = rawParams as {
+        action?: unknown
+        platform?: unknown
+        handle?: unknown
+        limit?: unknown
+        kind?: unknown
+        unread_only?: unknown
+        conversation_id?: unknown
+        comment_id?: unknown
+        text?: unknown
+        automation_action?: unknown
+        automation_kind?: unknown
+        automation_id?: unknown
+        account_id?: unknown
+        name?: unknown
+        keywords?: unknown
+        dm_message?: unknown
+        comment_reply?: unknown
+        messages?: unknown
+      }
+      const action = String(params.action ?? '')
       const allowed = enabledSocialPlatforms(ctx.config)
+      const limit = typeof params.limit === 'number' && Number.isFinite(params.limit)
+        ? Math.min(50, Math.max(1, Math.floor(params.limit)))
+        : 20
+
+      // Two opt-ins, checked per action: lookups spend paid lookup units, and
+      // managing the connected accounts does not. Turning one on must not turn
+      // the other on, so neither may be read as the other's gate. The lookup
+      // path keeps its own platform check further down.
+      const managementActions = new Set(['inbox', 'reply', 'comment_reply', 'automate'])
+      if (managementActions.has(action) && ctx.config.socialManagementEnabled !== true) {
+        return textResult({
+          error: 'Social management is off for this project: the inbox, replies and automations are disabled. Turn on the Social management capability to use them.',
+        })
+      }
+
+      if (action === 'automate') {
+        const step = String(params.automation_action ?? 'list')
+        if (step === 'list') {
+          const result = await socialInternalCall(ctx, 'GET', `/social/automations?limit=${limit}`)
+          if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+          const automations = Array.isArray(result.data?.automations) ? result.data.automations : []
+          return textResult({
+            count: automations.length,
+            automations: automations.map((automation: any) => ({
+              automation_id: automation.id,
+              name: automation.name,
+              kind: automation.kind,
+              platform: automation.platform,
+              status: automation.status,
+              keywords: automation.keywords,
+              runs: automation.runCount,
+            })),
+          })
+        }
+
+        const automationId = String(params.automation_id ?? '').trim()
+        if (step === 'pause' || step === 'resume' || step === 'delete') {
+          if (!automationId) {
+            return textResult({
+              error: 'automation_id is required: run action "automate" with automation_action "list" first.',
+            })
+          }
+          const path = `/social/automations/${encodeURIComponent(automationId)}`
+          const result =
+            step === 'delete'
+              ? await socialInternalCall(ctx, 'DELETE', path)
+              : await socialInternalCall(ctx, 'PATCH', path, {
+                  status: step === 'pause' ? 'paused' : 'active',
+                })
+          if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+          return textResult({
+            ok: true,
+            automation_id: automationId,
+            status: step === 'delete' ? 'deleted' : step === 'pause' ? 'paused' : 'active',
+          })
+        }
+
+        if (step !== 'create') {
+          return textResult({ error: 'automation_action must be create, list, pause, resume or delete.' })
+        }
+
+        const accountId = String(params.account_id ?? '').trim()
+        if (!accountId) {
+          return textResult({
+            error: 'account_id is required: list the connected accounts first to get one.',
+          })
+        }
+        const splitList = (value: unknown) =>
+          String(value ?? '')
+            .split(',')
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        const messages = splitList(params.messages).map((entry) => ({ text: entry }))
+        const body: Record<string, unknown> = {
+          accountId,
+          name: String(params.name ?? '').trim() || 'Comment automation',
+          kind: params.automation_kind ?? 'comment_dm',
+          keywords: splitList(params.keywords),
+        }
+        if (typeof params.dm_message === 'string' && params.dm_message.trim()) {
+          body.dmMessage = params.dm_message.trim()
+        }
+        if (typeof params.comment_reply === 'string' && params.comment_reply.trim()) {
+          body.commentReply = params.comment_reply.trim()
+        }
+        if (messages.length) body.messages = messages
+
+        const result = await socialInternalCall(ctx, 'POST', '/social/automations', body)
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        return textResult({ created: true, ...result.data?.automation })
+      }
+
+      if (action === 'inbox' || action === 'reply' || action === 'comment_reply') {
+        if (action === 'inbox') {
+          const kind = params.kind === 'comments' ? 'comments' : 'dms'
+          if (kind === 'comments') {
+            const result = await socialInternalCall(ctx, 'GET', `/social/comments?limit=${limit}`)
+            if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+            const comments = Array.isArray(result.data?.comments) ? result.data.comments : []
+            return textResult({
+              kind,
+              count: comments.length,
+              comments: comments.map((comment: any) => ({
+                comment_id: comment.id,
+                platform: comment.platform,
+                author: comment.authorUsername ?? comment.authorName ?? null,
+                text: comment.text,
+                status: comment.status,
+                occurred_at: comment.occurredAt,
+                replied_at: comment.repliedAt,
+              })),
+            })
+          }
+          const unread = params.unread_only === true ? '&unread=true' : ''
+          const result = await socialInternalCall(ctx, 'GET', `/social/inbox?limit=${limit}${unread}`)
+          if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+          const conversations = Array.isArray(result.data?.conversations) ? result.data.conversations : []
+          return textResult({
+            kind,
+            count: conversations.length,
+            unread: result.data?.unread ?? 0,
+            conversations: conversations.map((conversation: any) => ({
+              conversation_id: conversation.id,
+              platform: conversation.platform,
+              participant: conversation.participantName ?? conversation.participantId ?? null,
+              unread: conversation.unreadCount,
+              last_message_at: conversation.lastMessageAt,
+              preview: conversation.lastMessagePreview,
+            })),
+          })
+        }
+
+        const text = String(params.text ?? '').trim()
+        if (!text) return textResult({ error: 'text is required to reply.' })
+        if (action === 'reply') {
+          const conversationId = String(params.conversation_id ?? '').trim()
+          if (!conversationId) return textResult({ error: 'conversation_id is required for action "reply".' })
+          const result = await socialInternalCall(
+            ctx,
+            'POST',
+            `/social/inbox/conversations/${encodeURIComponent(conversationId)}/messages`,
+            { text },
+          )
+          if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+          return textResult({ sent: true, ...result.data?.reply })
+        }
+        const commentId = String(params.comment_id ?? '').trim()
+        if (!commentId) return textResult({ error: 'comment_id is required for action "comment_reply".' })
+        const result = await socialInternalCall(
+          ctx,
+          'POST',
+          `/social/comments/${encodeURIComponent(commentId)}/reply`,
+          { text },
+        )
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        return textResult({ sent: true, ...result.data?.reply })
+      }
+
+      const platform = String(params.platform ?? '')
       if (!allowed.includes(platform as SocialPlatformName)) {
         return textResult({
           error: `Platform "${platform || 'unknown'}" is not enabled. Enabled platforms: ${allowed.join(', ') || 'none'}.`,
         })
       }
-      if (!action) return textResult({ error: 'action must be "profile" or "recent_posts".' })
+      if (action !== 'profile' && action !== 'recent_posts') {
+        return textResult({ error: 'action must be profile, recent_posts, inbox, reply, comment_reply or automate.' })
+      }
+      const handle = String(params.handle ?? '').trim().replace(/^@+/, '')
       if (!handle) return textResult({ error: 'handle is required.' })
 
       const proxyUrl = process.env.TOOLS_PROXY_URL
@@ -8803,9 +9083,6 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      const limit = typeof params.limit === 'number' && Number.isFinite(params.limit)
-        ? Math.min(50, Math.max(1, Math.floor(params.limit)))
-        : 20
       const op = action === 'profile' ? 'profile' : 'posts'
       const cacheKey = webCacheKey('social', JSON.stringify({ platform, action, handle: handle.toLowerCase(), limit }))
       const cached = await webCacheGet<AgentToolResult<any>>(cacheKey)
@@ -9697,7 +9974,10 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   // BETA: worktree awareness tool only exists when per-chat worktrees are on (off by default).
   if (config.gitWorktreesEnabled !== true) disabled.add('worktree_list')
   // Social lookups are opt-in, and a platform that is off must not be callable.
-  if (enabledSocialPlatforms(config).length === 0) disabled.add('social_media')
+  // Management is a separate opt-in, so the tool survives on either — but a
+  // workspace with lookups on and every platform off has nothing to look up.
+  const lookupsUsable = enabledSocialPlatforms(config).length > 0
+  if (!lookupsUsable && config.socialManagementEnabled !== true) disabled.add('social_media')
 
   const memoryOff = config.memoryEnabled === false
   if (disabled.size === 0 && !memoryOff) return tools

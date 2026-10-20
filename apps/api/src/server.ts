@@ -87,6 +87,7 @@ import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from
 import { createChatSessionForkRoutes } from './routes/chat-session-fork'
 import { chatQueuedMessageActionsRoutes } from './routes/chat-queued-message-actions'
 import { toolsProxyRoutes } from './routes/tools-proxy'
+import { socialRelayRoutes, socialRoutes, socialWebhookRoutes } from './routes/social'
 import {
   generateTitleCompletion,
   setTitleGenerationModelId,
@@ -8592,6 +8593,14 @@ app.route('/api/v1', publicApi)
 // Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
 const toolsProxy = toolsProxyRoutes()
 app.route('/api', toolsProxy)
+// Social management (Zernio). People talk to the workspace-scoped routes; a
+// desktop forwards its provider calls to the relay, which is the only place
+// the master Zernio key is used.
+app.route('/api', socialRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', socialRelayRoutes())
+// Zernio's webhooks (comments, DMs, account health). Cloud only: the desktop
+// half of the relay applies local-scope events in its own DB.
+app.route('/api', socialWebhookRoutes())
 
 // EZ Mode / voice translator routes (session-auth'd via authMiddleware
 // above). Keeps ELEVENLABS_API_KEY on the server and serves the shared
@@ -9870,6 +9879,26 @@ setTimeout(async () => {
     } catch (err: any) {
       console.error(
         '[VoiceRebill] failed to schedule monthly rebill (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Social account monthly meter — `social_account_monthly`. Daily on purpose:
+// the per-account watermark makes an extra tick a no-op, and a monthly-only job
+// misses the 1st after any deploy window. Wrapped in
+// `withGlobalJobLock('social-account-monthly')` so one region charges.
+{
+  ;(async () => {
+    try {
+      const { startSocialAccountMonthlyCron } = await import(
+        './jobs/social-account-monthly'
+      )
+      startSocialAccountMonthlyCron()
+    } catch (err: any) {
+      console.error(
+        '[SocialAccountMonthly] failed to schedule the account meter (non-fatal):',
         err?.message ?? err,
       )
     }
