@@ -180,20 +180,37 @@ describe('SHO-97: deferred tool definitions', () => {
     expect(calls[1].tools).toContain('publish')
   })
 
-  test('a deferred tool called directly still runs, and is advertised afterwards', async () => {
-    // `heartbeat_status` is registered in every environment and only reads
-    // config, unlike `board_list`/`goal_list` (workspace-only, absent from CI's
-    // isolated runner) and `publish` (needs a mock, and a mocked tool's execute
-    // replaces the activation wrapper).
-    const calls = await runTurn({}, [
-      buildToolUseResponse([{ name: 'heartbeat_status', arguments: {} }]),
+  test('a deferred tool called directly still runs', async () => {
+    // `publish` is the one deferred tool that is registered in every
+    // environment — `board_list`, `goal_list` and `heartbeat_status` only exist
+    // when the runtime is wired to a workspace, which CI's runner is not.
+    //
+    // Only dispatch is asserted here: a mocked tool replaces `execute`, so the
+    // `withActivationOnCall` wrapper never runs. Activation is pinned by the
+    // `read_guide({ tool })` case above, which goes through `profile.advertise`
+    // rather than through a tool call.
+    setupWorkspace({})
+    const publishCalls: Record<string, any>[] = []
+    const capture = capturingStream([
+      buildToolUseResponse([{ name: 'publish', arguments: { subdomain: 'sho-97-direct' } }]),
       buildTextResponse('done'),
     ])
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(capture.streamFn)
+    gateway.setToolMocks({
+      publish: params => {
+        publishCalls.push(params)
+        return { ok: true, url: 'https://sho-97-direct.shogo.one' }
+      },
+    })
+    await gateway.start()
+    await gateway.processChatMessage('publish it')
 
-    expect(calls[0].tools).not.toContain('heartbeat_status')
-    const result = toolResultText(calls[1])
-    expect(result).not.toContain('Tool not found')
-    expect(calls[1].tools).toContain('heartbeat_status')
+    expect(capture.calls[0].tools).not.toContain('publish')
+    expect(toolResultText(capture.calls[1])).not.toContain('Tool not found')
+    // The call reached the tool with the arguments the model sent.
+    expect(publishCalls).toHaveLength(1)
+    expect(publishCalls[0].subdomain).toBe('sho-97-direct')
   })
 
   test('the prompt breakdown shows advertised schemas plus a deferred count', async () => {
