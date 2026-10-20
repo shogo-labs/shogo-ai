@@ -8,6 +8,7 @@ const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
 let findManyImpl: (args: { where: { instanceId: string } }) => Promise<Array<{ pushToken: string }>> =
   async () => []
 let mobileFindManyImpl: () => Promise<Array<{ pushToken: string }>> = async () => []
+let mobileFindManyArgs: any = null
 let instanceDeleteManyImpl: (args: any) => Promise<unknown> = async () => ({ count: 0 })
 let mobileDeleteManyImpl: (args: any) => Promise<unknown> = async () => ({ count: 0 })
 let instanceDeleteManyArgs: any = null
@@ -23,7 +24,10 @@ mock.module('../prisma', () => ({
       },
     },
     mobilePushSubscription: {
-      findMany: () => mobileFindManyImpl(),
+      findMany: (args: any) => {
+        mobileFindManyArgs = args
+        return mobileFindManyImpl()
+      },
       deleteMany: (args: any) => {
         mobileDeleteManyArgs = args
         return mobileDeleteManyImpl(args)
@@ -241,6 +245,42 @@ describe('sendPushToUser', () => {
         data: { reminderId: 'rem-1', type: 'reminder-due' },
         priority: 'high',
         channelId: 'reminder-due',
+      },
+    ])
+  })
+  it('limits a push to the given devices (pushTokens)', async () => {
+    mobileFindManyImpl = async () => [{ pushToken: 'ExponentPushToken[user-a]' }]
+    await sendPushToUser('user-1', {
+      title: 'Ring',
+      body: 'is calling you',
+      pushTokens: ['ExponentPushToken[user-a]'],
+    })
+    expect(mobileFindManyArgs.where).toMatchObject({ userId: 'user-1', pushToken: { in: ['ExponentPushToken[user-a]'] } })
+  })
+
+  it('skips the lookup entirely when pushTokens is empty', async () => {
+    await sendPushToUser('user-1', { title: 'Ring', body: 'x', pushTokens: [] })
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('a dataOnly push has no banner text and wakes the app in the background', async () => {
+    mobileFindManyImpl = async () => [{ pushToken: 'ExponentPushToken[user-a]' }]
+    await sendPushToUser('user-1', {
+      type: 'huddle-ring-cancel',
+      dataOnly: true,
+      priority: 'high',
+      sound: 'default',
+      audience: 'chat',
+      data: { huddleId: 'h-1' },
+    })
+    const body = JSON.parse(lastFetchArgs[1].body)
+    expect(body).toEqual([
+      {
+        to: 'ExponentPushToken[user-a]',
+        _contentAvailable: true,
+        data: { huddleId: 'h-1', type: 'huddle-ring-cancel' },
+        priority: 'high',
+        channelId: 'chat-complete',
       },
     ])
   })

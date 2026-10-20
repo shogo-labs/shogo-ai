@@ -303,7 +303,20 @@ export interface ChatSettings {
   notifyDefault: NotifyLevel
   keywords: string[]
   emailDigest: 'off' | 'daily'
+  messageSound: MessageSound
+  huddleSound: HuddleSound
+  /** Direct messages also appear in the Activity inbox. */
+  dmInActivity: boolean
+  /** Unread thread replies count toward the Activity badge. */
+  threadRepliesInBadge: boolean
+  /** When a phone push goes out. */
+  mobilePushDelay: MobilePushDelay
 }
+
+export type MobilePushDelay = 'immediate' | 'inactive' | 'inactive_5m' | 'inactive_10m'
+
+export type MessageSound = 'default' | 'subtle' | 'off'
+export type HuddleSound = 'ring' | 'chime' | 'off'
 
 export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message' | 'question'
 
@@ -385,6 +398,8 @@ export interface Reminder {
 export interface InboxPage {
   items: InboxItem[]
   unread: number
+  /** The unread items that are thread replies. */
+  unreadThreads?: number
   hasMore: boolean
 }
 
@@ -434,7 +449,7 @@ export type TeamChatEvent =
     }
   | { type: 'status.changed'; userId: string; status: UserStatus | null }
   | { type: 'inbox.created'; item: InboxItem }
-  | { type: 'inbox.read'; unread: number }
+  | { type: 'inbox.read'; unread: number; unreadThreads?: number }
   | { type: 'saved.changed'; messageId: string; saved: boolean }
   | { type: 'draft.changed'; draft: Draft }
   | { type: 'scheduled.failed'; id: string; error: string | null }

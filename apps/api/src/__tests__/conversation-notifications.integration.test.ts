@@ -154,3 +154,83 @@ describe('delivery', () => {
     expect(pushes.filter((p) => p.userId === seed.viewer)).toHaveLength(1)
   })
 })
+
+describe('activity inbox and phone push timing', () => {
+  const settingsSvc = () => import('../services/chat-settings')
+  const inboxSvc = () => import('../services/chat-inbox')
+  const queue = () => import('../services/push-delay-queue')
+
+  beforeEach(async () => {
+    const s = await settingsSvc()
+    await s.updateChatSettings(seed.workspaceId, seed.member, {
+      dmInActivity: false,
+      threadRepliesInBadge: true,
+      mobilePushDelay: 'inactive',
+      messageSound: 'default',
+    })
+  })
+
+  test('direct messages reach the Activity inbox only when the person asked for that', async () => {
+    const inbox = await inboxSvc()
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+    const dmItems = async () => (await inbox.listInbox(seed.workspaceId, seed.member)).items.filter((i) => i.kind === 'dm')
+    const dmSend = (text: string) => service.postMessage({ conversationId: dm.id, authorType: 'user', authorUserId: seed.owner, text })
+
+    await notifications.notifyForMessage(await dmSend('off by default'))
+    expect(await dmItems()).toHaveLength(0)
+
+    const s = await settingsSvc()
+    await s.updateChatSettings(seed.workspaceId, seed.member, { dmInActivity: true })
+    await notifications.notifyForMessage(await dmSend('now in activity'))
+    const items = await dmItems()
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ kind: 'dm', conversationId: dm.id, preview: 'now in activity' })
+    await s.updateChatSettings(seed.workspaceId, seed.member, { dmInActivity: false })
+  })
+
+  test('mobilePushDelay "immediate" pushes even while the person is active', async () => {
+    const s = await settingsSvc()
+    await presence.recordPresence(seed.workspaceId, seed.member, 'active')
+    await notified(await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.member)} now` }))
+    expect(pushes).toHaveLength(0)
+
+    await s.updateChatSettings(seed.workspaceId, seed.member, { mobilePushDelay: 'immediate' })
+    await notified(await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.member)} again` }))
+    expect(pushes.map((p) => p.userId)).toEqual([seed.member])
+  })
+
+  test('a delayed push waits, and reading the conversation first cancels it', async () => {
+    const s = await settingsSvc()
+    const q = await queue()
+    await s.updateChatSettings(seed.workspaceId, seed.member, { mobilePushDelay: 'inactive_5m' })
+    await notified(await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.member)} look later` }))
+    expect(pushes).toHaveLength(0)
+    expect(q.delayedPushCount()).toBe(1)
+
+    await service.markRead(generalId, seed.member)
+    expect(q.delayedPushCount()).toBe(0)
+    expect(pushes).toHaveLength(0)
+  })
+
+  test('the delayed push is dropped if the person came back before it fired', async () => {
+    const s = await settingsSvc()
+    const q = await queue()
+    await s.updateChatSettings(seed.workspaceId, seed.member, { mobilePushDelay: 'inactive_5m' })
+    await notified(await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.member)} ping` }))
+    expect(q.delayedPushCount()).toBe(1)
+    await presence.recordPresence(seed.workspaceId, seed.member, 'active')
+    await q.flushDelayedPushesForTests()
+    expect(pushes).toHaveLength(0)
+    expect(q.delayedPushCount()).toBe(0)
+  })
+
+  test('the delayed push is sent when the person is still away at the end of the wait', async () => {
+    const s = await settingsSvc()
+    const q = await queue()
+    await s.updateChatSettings(seed.workspaceId, seed.member, { mobilePushDelay: 'inactive_10m' })
+    await notified(await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.member)} still there?` }))
+    await q.flushDelayedPushesForTests()
+    expect(pushes.map((p) => p.userId)).toEqual([seed.member])
+    expect(pushes[0].body).toBe('@member still there?')
+  })
+})

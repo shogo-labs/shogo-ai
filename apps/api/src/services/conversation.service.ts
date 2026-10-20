@@ -20,6 +20,8 @@ import { publicPreview } from './conversation-file-preview'
 import { normalizeBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 import { normalizeCapabilitySettings } from '@shogo/shared-runtime/capability-settings'
 import { parseProjectSettings } from '../lib/project-settings'
+import { unreadInboxSnapshot } from './chat-inbox'
+import { cancelDelayedPushes } from './push-delay-queue'
 
 const db = prisma as any
 
@@ -1588,6 +1590,8 @@ export async function markRead(conversationId: string, userId: string, seq?: num
     where: { id: access.membership.id },
     data: { lastReadSeq: target, lastReadAt: new Date() },
   })
+  // Reading the conversation makes its held phone pushes unnecessary.
+  cancelDelayedPushes(userId, conversationId)
   const unreadCount = target >= lastSeq ? 0 : await db.conversationMessage.count({
     where: {
       conversationId,
@@ -1608,8 +1612,8 @@ export async function markRead(conversationId: string, userId: string, seq?: num
       data: { readAt: new Date() },
     })
     if (count) {
-      const unread = await db.chatInboxItem.count({ where: { workspaceId: access.conversation.workspaceId, userId, readAt: null } })
-      publishConversationEvent(access.conversation.workspaceId, { type: 'inbox.read', unread }, [userId])
+      const snapshot = await unreadInboxSnapshot(access.conversation.workspaceId, userId)
+      publishConversationEvent(access.conversation.workspaceId, { type: 'inbox.read', ...snapshot }, [userId])
     }
   }
   return { lastReadSeq: updated.lastReadSeq, unreadCount }

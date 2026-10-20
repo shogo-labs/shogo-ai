@@ -2894,6 +2894,8 @@ model MobilePushSubscription {
   liveActivityPushToStartToken String?
   /// APNs token for the Live Activity running now on this iPhone, to update or end it.
   liveActivityToken            String?
+  /// PushKit VoIP token that rings this iPhone's incoming-call screen for a huddle (iOS only).
+  voipToken                    String?
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
 
@@ -4528,6 +4530,16 @@ model ChatUserSettings {
   /// "off" or "daily": email a digest of unread mentions and DMs.
   emailDigest     String    @default("off")
   lastDigestAt    DateTime?
+  /// Sound for chat messages: "default", "subtle", or "off".
+  messageSound    String    @default("default")
+  /// Sound for incoming huddles: "ring", "chime", or "off".
+  huddleSound     String    @default("ring")
+  /// Put direct messages in the Activity inbox too.
+  dmInActivity         Boolean   @default(false)
+  /// Count unread thread replies in the Activity badge.
+  threadRepliesInBadge Boolean   @default(true)
+  /// When a phone push goes out: "immediate", "inactive", "inactive_5m", or "inactive_10m".
+  mobilePushDelay      String    @default("inactive")
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 

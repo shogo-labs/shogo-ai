@@ -220,6 +220,33 @@ describe('ringing in DMs', () => {
     await huddles.leaveHuddle(dm.id, seed.owner)
   })
 
+  test('the ring push is a sounding call on its own channel by default', async () => {
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    const ringPush = pushes.find((p) => p.payload.type === 'huddle-ring')
+    expect(ringPush?.payload).toMatchObject({
+      channelId: 'huddle-calls',
+      categoryId: 'huddle-call',
+      priority: 'high',
+      sound: 'default',
+    })
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('huddleSound off sends the ring push silent', async () => {
+    await db.chatUserSettings.create({ data: { workspaceId: seed.workspaceId, userId: seed.member, huddleSound: 'off' } })
+    try {
+      const dm = await freshDm()
+      await huddles.joinHuddle(dm.id, seed.owner)
+      const ringPush = pushes.find((p) => p.payload.type === 'huddle-ring')
+      expect(ringPush?.payload.channelId).toBe('huddle-calls')
+      expect(ringPush?.payload.sound).toBeNull()
+      await huddles.leaveHuddle(dm.id, seed.owner)
+    } finally {
+      await db.chatUserSettings.deleteMany({ where: { workspaceId: seed.workspaceId, userId: seed.member } })
+    }
+  })
+
   test('channels, muted DMs, and Do Not Disturb do not ring', async () => {
     await huddles.joinHuddle((await channel(`huddle-noring-${crypto.randomUUID().slice(0, 6)}`)).id, seed.owner)
     expect(events.some((e) => e.event.type === 'huddle.ring')).toBe(false)
@@ -430,3 +457,197 @@ describe('huddle presence badge', () => {
   })
 })
 
+
+describe('ringing each device, and cancelling rings', () => {
+  const IOS_VOIP = 'ab'.repeat(32)
+  let voipCalls: Array<{ token: string; payload: any }> = []
+  let voipResult: { sent: boolean; dead: boolean; status: number; reason?: string } = { sent: true, dead: false, status: 200 }
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 25))
+
+  beforeAll(() => {
+    huddles._setVoipSenderForTests(async (token, payload) => {
+      voipCalls.push({ token, payload })
+      return voipResult
+    })
+  })
+
+  beforeEach(async () => {
+    voipCalls = []
+    voipResult = { sent: true, dead: false, status: 200 }
+    await db.mobilePushSubscription.deleteMany({ where: { userId: seed.member } })
+  })
+
+  afterAll(async () => {
+    huddles._setVoipSenderForTests(null)
+    await db.mobilePushSubscription.deleteMany({ where: { userId: seed.member } })
+  })
+
+  async function registerDevices(devices: Array<{ pushToken: string; platform: 'ios' | 'android'; voipToken?: string }>) {
+    for (const d of devices) {
+      await db.mobilePushSubscription.create({ data: { userId: seed.member, pushToken: d.pushToken, platform: d.platform, voipToken: d.voipToken ?? null } })
+    }
+  }
+
+  async function freshDm() {
+    await db.conversation.deleteMany({ where: { workspaceId: seed.workspaceId, kind: 'dm' } })
+    return service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+  }
+
+  test('an iPhone with a VoIP token gets a call, not an alert; Android gets a data push; other devices get the alert', async () => {
+    await registerDevices([
+      { pushToken: 'ExponentPushToken[ios-voip]', platform: 'ios', voipToken: IOS_VOIP },
+      { pushToken: 'ExponentPushToken[android]', platform: 'android' },
+      { pushToken: 'ExponentPushToken[ios-no-voip]', platform: 'ios' },
+    ])
+    const dm = await freshDm()
+    const joined = await huddles.joinHuddle(dm.id, seed.owner)
+    await settle()
+
+    expect(voipCalls).toEqual([
+      {
+        token: IOS_VOIP,
+        payload: { huddleId: joined.huddle.id, conversationId: dm.id, workspaceId: seed.workspaceId, kind: 'dm', from: expect.objectContaining({ userId: seed.owner }) },
+      },
+    ])
+    const dataPushes = pushes.filter((p) => p.payload.dataOnly)
+    expect(dataPushes).toEqual([
+      expect.objectContaining({
+        userId: seed.member,
+        payload: expect.objectContaining({ type: 'huddle-ring', priority: 'high', pushTokens: ['ExponentPushToken[android]'] }),
+      }),
+    ])
+    const alerts = pushes.filter((p) => p.payload.type === 'huddle-ring' && !p.payload.dataOnly)
+    expect(alerts).toEqual([
+      expect.objectContaining({
+        userId: seed.member,
+        payload: expect.objectContaining({ pushTokens: ['ExponentPushToken[ios-no-voip]'], channelId: 'huddle-calls', sound: 'default' }),
+      }),
+    ])
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('when APNs does not take the call, the iPhone still gets the alert', async () => {
+    await registerDevices([{ pushToken: 'ExponentPushToken[ios-voip]', platform: 'ios', voipToken: IOS_VOIP }])
+    voipResult = { sent: false, dead: false, status: 503, reason: 'ServiceUnavailable' }
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    await settle()
+
+    expect(pushes).toEqual([
+      expect.objectContaining({
+        userId: seed.member,
+        payload: expect.objectContaining({ type: 'huddle-ring', pushTokens: ['ExponentPushToken[ios-voip]'] }),
+      }),
+    ])
+    const kept = await db.mobilePushSubscription.findUnique({ where: { pushToken: 'ExponentPushToken[ios-voip]' } })
+    expect(kept.voipToken).toBe(IOS_VOIP)
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('a dead VoIP token is cleared from the device record', async () => {
+    await registerDevices([{ pushToken: 'ExponentPushToken[ios-voip]', platform: 'ios', voipToken: IOS_VOIP }])
+    voipResult = { sent: false, dead: true, status: 410, reason: 'Unregistered' }
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    await settle()
+
+    const row = await db.mobilePushSubscription.findUnique({ where: { pushToken: 'ExponentPushToken[ios-voip]' } })
+    expect(row.voipToken).toBeNull()
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('huddleSound off: no call and no data push, only a silent alert to every device', async () => {
+    await db.chatUserSettings.create({ data: { workspaceId: seed.workspaceId, userId: seed.member, huddleSound: 'off' } })
+    try {
+      await registerDevices([
+        { pushToken: 'ExponentPushToken[ios-voip]', platform: 'ios', voipToken: IOS_VOIP },
+        { pushToken: 'ExponentPushToken[android]', platform: 'android' },
+      ])
+      const dm = await freshDm()
+      await huddles.joinHuddle(dm.id, seed.owner)
+      await settle()
+
+      expect(voipCalls).toEqual([])
+      expect(pushes.some((p) => p.payload.dataOnly)).toBe(false)
+      const alert = pushes.find((p) => p.payload.type === 'huddle-ring')
+      expect(alert?.payload.sound).toBeNull()
+      expect(alert?.payload.pushTokens).toEqual(expect.arrayContaining(['ExponentPushToken[ios-voip]', 'ExponentPushToken[android]']))
+      await huddles.leaveHuddle(dm.id, seed.owner)
+    } finally {
+      await db.chatUserSettings.deleteMany({ where: { workspaceId: seed.workspaceId, userId: seed.member } })
+    }
+  })
+
+  test('the caller joining does not cancel their own ring', async () => {
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    expect(pushes.some((p) => p.payload.type === 'huddle-ring-cancel')).toBe(false)
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('answering on another device cancels the ring on every rung device', async () => {
+    await registerDevices([{ pushToken: 'ExponentPushToken[android]', platform: 'android' }])
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    pushes = []
+
+    await huddles.joinHuddle(dm.id, seed.member)
+    expect(pushes).toEqual([
+      expect.objectContaining({
+        userId: seed.member,
+        payload: expect.objectContaining({ type: 'huddle-ring-cancel', dataOnly: true, priority: 'high' }),
+      }),
+    ])
+    await huddles.leaveHuddle(dm.id, seed.member)
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('declining stops the decliner\'s other devices from ringing', async () => {
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    pushes = []
+
+    await huddles.declineHuddle(dm.id, seed.member)
+    expect(pushes.some((p) => p.userId === seed.member && p.payload.type === 'huddle-ring-cancel')).toBe(true)
+  })
+
+  test('ending the huddle cancels the ring for everyone rung', async () => {
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    pushes = []
+
+    await huddles.leaveHuddle(dm.id, seed.owner)
+    expect(pushes).toEqual([expect.objectContaining({ userId: seed.member, payload: expect.objectContaining({ type: 'huddle-ring-cancel' }) })])
+  })
+
+  test('the ring window passing cancels the ring, and a cancelled ring cancels only once', async () => {
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    pushes = []
+
+    await huddles._expireRingsForTests()
+    await huddles._expireRingsForTests()
+    expect(pushes.filter((p) => p.payload.type === 'huddle-ring-cancel')).toHaveLength(1)
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+})
+
+describe('routeRingDevices', () => {
+  const ios = (pushToken: string, voipToken: string | null = null) => ({ pushToken, platform: 'ios', voipToken })
+  const android = (pushToken: string) => ({ pushToken, platform: 'android', voipToken: null })
+
+  test('DMs route iPhones with VoIP to calls and Android to data pushes; the rest to alerts', async () => {
+    const { routeRingDevices } = huddles
+    const routed = routeRingDevices([ios('a', 'v'), ios('b'), android('c'), { pushToken: 'd', platform: 'web', voipToken: null }], { oneToOne: true, silent: false })
+    expect(routed.voip.map((d) => d.pushToken)).toEqual(['a'])
+    expect(routed.data.map((d) => d.pushToken)).toEqual(['c'])
+    expect(routed.alert.map((d) => d.pushToken).sort()).toEqual(['b', 'd'])
+  })
+
+  test('group calls and silent huddles only use alerts', async () => {
+    const devices = [ios('a', 'v'), android('c')]
+    expect(huddles.routeRingDevices(devices, { oneToOne: false, silent: false }).alert).toHaveLength(2)
+    expect(huddles.routeRingDevices(devices, { oneToOne: true, silent: true }).alert).toHaveLength(2)
+  })
+})

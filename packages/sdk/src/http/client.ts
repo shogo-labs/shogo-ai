@@ -318,6 +318,17 @@ export class HttpClient {
   }
 
   /**
+   * PUT request
+   */
+  async put<T = unknown>(
+    path: string,
+    body?: unknown,
+    headers?: Record<string, string>
+  ): Promise<ShogoResponse<T>> {
+    return this.request<T>(path, { method: 'PUT', body, headers })
+  }
+
+  /**
    * DELETE request
    */
   async delete<T = unknown>(
