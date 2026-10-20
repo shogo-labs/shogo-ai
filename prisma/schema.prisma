@@ -1979,6 +1979,45 @@ model BackgroundTask {
   @@map("background_tasks")
 }
 
+/// A wake that arrived while the agent already had a live run in that thread.
+/// One live run per (agent, thread): the loser of the reservation writes a row
+/// here, is acknowledged in the thread, and runs when the live reply ends.
+/// `status` runs pending → claimed → done | failed; the drain sweep picks up a
+/// pending row left behind by an API restart (nothing else would run it).
+model AgentWake {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  conversationId   String
+  threadRootId     String?
+  /// The message that woke the agent: one wake per (trigger, agent).
+  triggerMessageId String
+  /// `project:<id>` or `workspace`, as boards and mentions name an agent.
+  agentRef         String
+  /// Who the drain runs the wake for (billing and the chain's origin).
+  userId           String
+  /// Chain state to resume with, so a queued hand-off keeps its place.
+  chain            Json?
+  /// Why the row exists: `wake` (behind a live run) or `move_nudge` (a move
+  /// into a column that binds no agent — a hint, debounced by `notBefore`, that
+  /// the tag following it supersedes).
+  reason           String    @default("wake")
+  /// Earliest time the drain may start this row. Null runs as soon as it can.
+  notBefore        DateTime?
+  /// pending | claimed | done | failed | superseded
+  status           String    @default("pending")
+  attempts         Int       @default(0)
+  claimedAt        DateTime?
+  lastError        String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @default(now()) @updatedAt
+
+  @@unique([triggerMessageId, agentRef])
+  @@index([conversationId, threadRootId, agentRef, status])
+  @@index([status, createdAt])
+  @@index([status, notBefore])
+  @@map("agent_wakes")
+}
+
 /// A user's thumbs up/down reaction to one assistant `ChatMessage` (one
 /// completed turn). Powers the footer feedback buttons under each
 /// assistant turn in the mobile/web chat UI. One row per (messageId,

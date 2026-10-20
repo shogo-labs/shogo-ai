@@ -6366,6 +6366,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [isStreaming, handleStop, processMessageQueue, serverQueue],
   )
 
+  /**
+   * The waiting chip's Resume: deliver the updates a paused session is holding.
+   * The server un-pauses the wake; this window only needs to refresh the queue.
+   */
+  const handleResumeTaskWakes = useCallback(
+    (messageId: string) => {
+      void serverQueue.resumeTaskWake(messageId).catch((error) => {
+        console.warn("[ChatPanel] Failed to resume waiting updates:", error)
+      })
+    },
+    [serverQueue],
+  )
+
   const displayedQueue = useMemo(
     () => [...serverQueue.queuedMessages, ...messageQueue],
     [messageQueue, serverQueue.queuedMessages],
@@ -8662,6 +8675,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onReorderQueuedMessage={handleReorderQueuedMessage}
                     onEditQueuedMessage={handleEditQueuedMessage}
                     onSendQueuedMessageNow={handleSendQueuedMessageNow}
+                    onResumeTaskWakes={handleResumeTaskWakes}
                     interactionMode={interactionMode}
                     onInteractionModeChange={handleInteractionModeChange}
                     dualPlan={dualPlan}
