@@ -1,20 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * SHO-85 — a finished reply must survive the history repaint.
+ * SHO-85 — a finished reply must survive a paint from saved history.
  *
  * The API writes the assistant row *after* the stream EOFs (`trackUsageFromStream`
  * → `persistAssistantSnapshot`: EOF, billing close, possible auto-resume), so
- * the panel finishes the turn while the reply exists only on screen. Any paint
- * from `/chat-messages` in that window used to replace the transcript with rows
- * that end on the user's prompt: the reply the person just watched finish
- * disappeared until the chat was reopened (Russell, Windows desktop beta).
- *
- * These specs delay the "persist" of the assistant row in the mocked API and
- * then hold the client to three promises:
- *   1. the reply is still on screen while the row does not exist;
+ * the panel can finish the turn while the reply exists only on screen. These
+ * specs delay the "persist" of the assistant row in the mocked API and hold the
+ * client to three promises:
+ *   1. the reply is still on screen while the row does not exist, and the panel
+ *      did read saved history after the turn ended (so a paint really raced it);
  *   2. a refocus (which forces a real fetch) does not drop it either;
  *   3. once the row lands, the transcript shows it exactly once, from the row.
+ *
+ * Scope note (QA round 1, 2026-10-20): this is durability coverage, not the
+ * red-on-main repro. `route.fulfill` sends the SSE in one chunk, so `isStreaming`
+ * never renders `true`, Effect 1's post-turn revalidate exits at the "Fix E.1"
+ * sending guard, and nothing can paint the reply away here — main passes these
+ * too. The path that does empty the transcript (a resume replay with nothing
+ * left to rebuild) is `chat-reply-survives-empty-replay.test.ts`, which fails on
+ * `main` and passes on this branch.
  *
  * The chat stream, the turn probe and `/chat-messages` are mocked here; the
  * local API still serves workspaces/projects and the panel is the real one.
@@ -231,7 +236,12 @@ async function waitForReply(page: Page): Promise<void> {
   ).toBeVisible({ timeout: 60_000 })
 }
 
-async function sendSecondTurn(page: Page, state: HistoryState, prompt: string): Promise<void> {
+/** Sends the turn under test; returns how many history reads the panel had served when it did. */
+async function sendSecondTurn(
+  page: Page,
+  state: HistoryState,
+  prompt: string,
+): Promise<number> {
   const composer = page.getByTestId("project-composer-input").first()
   await composer.waitFor({ state: "visible", timeout: 20_000 })
   await composer.click()
@@ -242,10 +252,12 @@ async function sendSecondTurn(page: Page, state: HistoryState, prompt: string): 
   // can be wiped again inside the first frame, so "the reply is visible" is not
   // a reliable way to know the turn started.
   await expect.poll(() => state.turnServed, { timeout: 30_000 }).toBe(true)
+  const readsAtTurnEnd = state.reads
   // Let the stream finish and the post-stream settle run before asserting.
   await page
     .waitForSelector(AGENT_STOP_SELECTOR, { state: "detached", timeout: 30_000 })
     .catch(() => {})
+  return readsAtTurnEnd
 }
 
 /** A window focus event, i.e. the person coming back to the app. */
@@ -262,14 +274,17 @@ test("a reply the server has not written yet stays on screen when the turn ends"
   const state = await installChatMocks(page, persistDelayMs)
   await startProjectWithBootstrapTurn(page)
 
-  await sendSecondTurn(page, state, "Does the reply survive?")
+  const readsAtTurnEnd = await sendSecondTurn(page, state, "Does the reply survive?")
 
   // The mocked API has not reported the row yet, but the panel must not paint a
   // transcript that is behind the screen: the reply stays, and it is the live
   // text (not the saved row, which does not exist).
   await page.waitForTimeout(2_500)
   expect(await occurrences(page, REPLY_MARKER), "the finished reply is still on screen").toBe(1)
-  expect(state.reads, "the panel did read saved history while the row was missing").toBeGreaterThan(0)
+  expect(
+    state.reads,
+    "the panel read saved history after the turn ended, while the row was missing",
+  ).toBeGreaterThan(readsAtTurnEnd)
 
   // The row lands ~6s in; the reply stays, exactly once.
   await page.waitForTimeout(persistDelayMs)

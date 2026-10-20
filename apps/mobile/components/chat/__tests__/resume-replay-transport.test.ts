@@ -197,6 +197,50 @@ describe("withResumeReplayReset", () => {
     expect(await readAll(result)).toEqual(chunks)
     expect(resets).toBe(0)
   })
+
+  test("keeps the transcript when the replay has nothing left to rebuild", async () => {
+    let resets = 0
+    const heartbeat = [
+      { type: "data-turn-seq", data: { turnId: "turn-1", seq: 91 }, transient: true },
+    ]
+    const heartbeatOnly = withResumeReplayReset(
+      {
+        sendMessages: async () => chunkStream(chunks),
+        reconnectToStream: async () => chunkStream(heartbeat),
+      },
+      () => resets++,
+      () => {},
+    )
+    const empty = withResumeReplayReset(
+      {
+        sendMessages: async () => chunkStream(chunks),
+        reconnectToStream: async () => chunkStream([]),
+      },
+      () => resets++,
+      () => {},
+    )
+
+    expect(await readAll(await heartbeatOnly.reconnectToStream(request))).toEqual(heartbeat)
+    expect(resets, "a heartbeat-only replay drops nothing, so it must not reset").toBe(0)
+
+    expect(await readAll(await empty.reconnectToStream(request))).toEqual([])
+    expect(resets, "an empty replay drops nothing, so it must not reset").toBe(0)
+  })
+
+  test("resets once the replay really starts rebuilding the message", async () => {
+    let resets = 0
+    const transport = withResumeReplayReset(
+      {
+        sendMessages: async () => chunkStream(chunks),
+        reconnectToStream: async () => chunkStream(chunks),
+      },
+      () => resets++,
+      () => {},
+    )
+
+    expect(await readAll(await transport.reconnectToStream(request))).toEqual(chunks)
+    expect(resets).toBe(1)
+  })
 })
 
 describe("withResumeReplayReset message snapshot", () => {

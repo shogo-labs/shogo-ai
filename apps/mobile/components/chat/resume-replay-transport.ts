@@ -109,17 +109,22 @@ const SNAPSHOT_PEEK_MS = 1500
 
 /**
  * Reads ahead at most one chunk without losing it: `stream()` yields the
- * original chunks, optionally minus the first one.
+ * original chunks, optionally minus the first one. `endedWithoutFrames` says
+ * the peek ended because the stream closed, not because it went quiet: a held
+ * open stream with nothing to send yet is a live turn, a closed one is a
+ * runtime with nothing buffered.
  */
 function peekFirstChunk<T>(source: ReadableStream<T>, timeoutMs: number) {
   const reader = source.getReader()
   let firstRead: Promise<ReadableStreamReadResult<T>> | null = reader.read()
   let skipFirst = false
+  let endedWithoutFrames = false
   const peeked = new Promise<T | undefined>((resolve, reject) => {
     const timer = setTimeout(() => resolve(undefined), timeoutMs)
     firstRead!.then(
       (result) => {
         clearTimeout(timer)
+        endedWithoutFrames = result.done === true
         resolve(result.done ? undefined : result.value)
       },
       (error) => {
@@ -130,6 +135,9 @@ function peekFirstChunk<T>(source: ReadableStream<T>, timeoutMs: number) {
   })
   return {
     peeked,
+    get endedWithoutFrames() {
+      return endedWithoutFrames
+    },
     stream(opts: { skipFirst: boolean }): ReadableStream<T> {
       skipFirst = opts.skipFirst
       return new ReadableStream<T>(
@@ -154,6 +162,26 @@ function peekFirstChunk<T>(source: ReadableStream<T>, timeoutMs: number) {
 }
 
 /**
+ * Whether a resume may drop the unfinished copy of the message on screen: the
+ * replay has to be about to rebuild it. A buffered heartbeat, or a stream that
+ * closed without a single frame, means the runtime has nothing left to replay —
+ * dropping then leaves the transcript with no copy at all, which is how a reply
+ * the person watched finish disappeared. Silence alone is not evidence of that
+ * (a live turn's stream is held open with nothing to send yet), so it keeps the
+ * old drop.
+ */
+export function replayRebuildsMessage(args: {
+  first: { type?: unknown; transient?: unknown } | undefined
+  endedWithoutFrames: boolean
+  appliesSnapshot: boolean
+}): boolean {
+  const { first, endedWithoutFrames, appliesSnapshot } = args
+  if (first === undefined) return !endedWithoutFrames
+  if (first.type === MESSAGE_SNAPSHOT_CHUNK_TYPE) return !appliesSnapshot
+  return first.transient !== true
+}
+
+/**
  * Also coalesces chunk bursts on both streams (see chunk-coalescer.ts): the
  * replay arrives as one burst, and a POST stream can carry one too when the
  * API resumes a cut turn server-side.
@@ -161,7 +189,8 @@ function peekFirstChunk<T>(source: ReadableStream<T>, timeoutMs: number) {
  * When the resume stream opens with a message snapshot, `onSnapshot` gets it
  * (it must install the message before the SDK reads the last one, which
  * happens once this resolves) and `beforeReplay` is not called. Otherwise the
- * older replay path applies.
+ * older replay path applies, and only when the replay is really going to
+ * rebuild the message (see `replayRebuildsMessage`).
  */
 export function withResumeReplayReset<T extends UIMessage>(
   transport: ChatTransport<T>,
@@ -174,19 +203,21 @@ export function withResumeReplayReset<T extends UIMessage>(
     reconnectToStream: async (options) => {
       const stream = await transport.reconnectToStream(options)
       if (!stream) return stream
-      if (!onSnapshot) {
-        beforeReplay()
-        return coalesceChunkBursts(stream)
-      }
       const peek = peekFirstChunk(stream, SNAPSHOT_PEEK_MS)
       const first = await peek.peeked
-      const snapshot =
-        first?.type === MESSAGE_SNAPSHOT_CHUNK_TYPE
-          ? ((first as any).data?.message as T | undefined)
-          : undefined
-      if (snapshot) onSnapshot(snapshot)
-      else beforeReplay()
-      return coalesceChunkBursts(peek.stream({ skipFirst: first?.type === MESSAGE_SNAPSHOT_CHUNK_TYPE }))
+      const isSnapshotChunk = first?.type === MESSAGE_SNAPSHOT_CHUNK_TYPE
+      const snapshot = isSnapshotChunk ? ((first as any).data?.message as T | undefined) : undefined
+      if (snapshot && onSnapshot) onSnapshot(snapshot)
+      else if (
+        replayRebuildsMessage({
+          first: first as { type?: unknown; transient?: unknown } | undefined,
+          endedWithoutFrames: peek.endedWithoutFrames,
+          appliesSnapshot: Boolean(onSnapshot),
+        })
+      ) {
+        beforeReplay()
+      }
+      return coalesceChunkBursts(peek.stream({ skipFirst: Boolean(snapshot && onSnapshot) }))
     },
   }
 }
