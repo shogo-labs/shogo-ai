@@ -109,6 +109,51 @@ function encodeRuntimePath(path: string): string {
   return path.split('/').map((segment) => encodeURIComponent(segment)).join('/')
 }
 
+export interface SharedFileDownloadShape {
+  path: string
+  /**
+   * `project` asks the runtime for its own project root. Without it the
+   * runtime reads the merged workspace root, where a project is mounted at
+   * `<projectId>/…`.
+   */
+  scope?: 'project'
+}
+
+/**
+ * The roots a signed path can be read from, in the order worth trying.
+ *
+ * A project link signs `path` relative to the *project* root (SHO-67), but a
+ * workspace runtime mounts that project at `<workspaceDir>/<projectId>` inside
+ * the merged root that an unscoped read walks — so the merged-root read needs
+ * the prefix back. `?scope=project` is the same file when the runtime's own
+ * project is this one. The path as signed covers links minted before SHO-67
+ * (workspace-relative, sometimes already carrying `<projectId>/`).
+ *
+ * The mint cannot check this: the API signs what the runtime reported and has
+ * only the pod's word for where the file is (the local app resolves it, the
+ * cloud app cannot reach the filesystem), so the read side has to know every
+ * shape a link can legitimately mean.
+ */
+export function sharedFileDownloadShapes(
+  signedPath: string,
+  projectId?: string,
+): SharedFileDownloadShape[] {
+  if (!projectId) return [{ path: signedPath }]
+
+  if (signedPath.startsWith(`${projectId}/`)) {
+    const stripped = signedPath.slice(projectId.length + 1)
+    const shapes: SharedFileDownloadShape[] = [{ path: signedPath }]
+    if (stripped) shapes.push({ path: stripped }, { path: stripped, scope: 'project' })
+    return shapes
+  }
+
+  return [
+    { path: `${projectId}/${signedPath}` },
+    { path: signedPath, scope: 'project' },
+    { path: signedPath },
+  ]
+}
+
 export interface SharedFileRouteDeps {
   pinChatToHomeRegion?: typeof pinChatToHomeRegion
   pinWorkspaceToHomeRegion?: typeof pinWorkspaceToHomeRegion
@@ -160,30 +205,27 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
     const pinned = projectId ? await pinHome(c, projectId) : await pinWorkspaceHome(c, workspaceId)
     if (pinned) return pinned
 
-    // A project-scoped link minted from a workspace runtime can carry a
-    // redundant `<projectId>/` prefix: the runtime's `path` is
-    // workspace-relative while this route reads it from the project root, so
-    // the file lands at `<project>/<projectId>/…` (SHO-67). Retry once with
-    // the prefix stripped so links already handed out keep working.
-    const paths = [payload.path]
-    if (projectId && payload.path.startsWith(`${projectId}/`)) {
-      const stripped = payload.path.slice(projectId.length + 1)
-      if (stripped) paths.push(stripped)
-    }
+    // A project link's `path` is relative to the project root, so the merged
+    // root this route reads needs `<projectId>/` back in front of it — see
+    // `sharedFileDownloadShapes`. Trying every shape it can mean is what keeps
+    // a link a Free user just received from 404ing.
+    const shapes = sharedFileDownloadShapes(payload.path, projectId)
 
     let lastFailure = ''
     let fileNotFound = false
     let runtimeDown = false
 
-    for (const currentPath of paths) {
-      const agentPath = `/agent/workspace/download/${encodeRuntimePath(currentPath)}`
+    for (const shape of shapes) {
+      const agentPath = `/agent/workspace/download/${encodeRuntimePath(shape.path)}`
+      const agentUrlPath = shape.scope ? `${agentPath}?scope=${shape.scope}` : agentPath
       const fetchRuntime = (url: string, runtimeToken: string) =>
-        fetch(`${url.replace(/\/+$/, '')}${agentPath}`, {
+        fetch(`${url.replace(/\/+$/, '')}${agentUrlPath}`, {
           method: 'GET',
           headers: { 'x-runtime-token': runtimeToken },
           signal: c.req.raw.signal,
         })
 
+      let runtimeLabel = ''
       let retryable = true
       for (let attempt = 0; attempt <= RUNTIME_RETRY_DELAYS_MS.length; attempt++) {
         if (attempt > 0) {
@@ -194,7 +236,9 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
         try {
           let upstream: Response
           if (!projectId) {
-            upstream = await fetchRuntime(await resolveWorkspaceRuntimeUrl(workspaceId), deriveWorkspaceToken(workspaceId))
+            const url = await resolveWorkspaceRuntimeUrl(workspaceId)
+            runtimeLabel = url
+            upstream = await fetchRuntime(url, deriveWorkspaceToken(workspaceId))
           } else {
             const resolution = await resolveRuntime(projectId)
             if (!resolution.ok) {
@@ -202,6 +246,7 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
               continue
             }
 
+            runtimeLabel = resolution.kind === 'tunnel' ? `tunnel ${resolution.instanceId}` : resolution.url
             const runtimeToken = await deriveToken(projectId, { workspaceId })
             upstream = resolution.kind === 'tunnel'
               ? await relayTunnel({
@@ -209,7 +254,7 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
                   instanceId: resolution.instanceId,
                   workspaceId: resolution.workspaceId,
                   projectId,
-                  agentPath,
+                  agentPath: agentUrlPath,
                   cleanPath: agentPath,
                   method: 'GET',
                   headers: { 'x-runtime-token': runtimeToken },
@@ -220,12 +265,18 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
           if (upstream.ok) {
             return new Response(upstream.body, {
               status: upstream.status,
-              headers: downloadHeaders(currentPath, upstream.headers),
+              headers: downloadHeaders(shape.path, upstream.headers),
             })
           }
           await upstream.body?.cancel().catch(() => {})
           if (!isTransientRuntimeStatus(upstream.status)) {
-            // The runtime will not serve this path — try the next shape.
+            // This root has no such file — say which one, so a reported 404
+            // never has to be diagnosed by guessing again.
+            console.warn(
+              `[SharedFiles] No file for ${projectId ? `project ${projectId}` : `workspace ${workspaceId}`} ` +
+                `at ${shape.path}${shape.scope ? ` (scope=${shape.scope})` : ''} — ` +
+                `${runtimeLabel || 'runtime'} answered ${upstream.status}`,
+            )
             retryable = false
             fileNotFound = true
             break

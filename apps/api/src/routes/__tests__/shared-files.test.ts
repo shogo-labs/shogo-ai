@@ -55,8 +55,69 @@ describe('shared file routes', () => {
     expect(await response.text()).toBe('PDF bytes')
     expect(response.headers.get('content-disposition')).toBe('attachment; filename="final report.pdf"')
     expect(response.headers.get('content-type')).toBe('application/pdf')
-    expect(requestedUrl).toBe('http://runtime/agent/workspace/download/reports/final%20report.pdf')
+    expect(requestedUrl).toBe('http://runtime/agent/workspace/download/project-1/reports/final%20report.pdf')
     expect(requestedToken).toBe('runtime-secret')
+  })
+
+  // SHO-94: the mint signs a project-relative path (SHO-67), while an unscoped
+  // runtime read walks the merged workspace root — where the project is mounted
+  // at `<projectId>/…`. Reading the link exactly as signed was a guaranteed 404
+  // for every file inside a project.
+  it('reads a project-relative path from its project mount, then its project root', async () => {
+    const requested: string[] = []
+    globalThis.fetch = (async (input) => {
+      const url = String(input)
+      requested.push(url)
+      return url.endsWith('/agent/workspace/download/report.pdf?scope=project')
+        ? new Response('PDF bytes', { status: 200, headers: { 'content-type': 'application/pdf' } })
+        : new Response('{"error":"File not found"}', { status: 404 })
+    }) as typeof fetch
+
+    const response = await retryingApp([]).fetch(new Request(`http://api.test/api/f/${token('report.pdf')}`))
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('PDF bytes')
+    expect(requested).toEqual([
+      'http://runtime/agent/workspace/download/project-1/report.pdf',
+      'http://runtime/agent/workspace/download/report.pdf?scope=project',
+    ])
+  })
+
+  it('tries the merged root last, for a runtime whose workspace is the project', async () => {
+    const requested: string[] = []
+    globalThis.fetch = (async (input) => {
+      const url = String(input)
+      requested.push(url)
+      return url.endsWith('/agent/workspace/download/report.pdf')
+        ? new Response('PDF bytes', { status: 200, headers: { 'content-type': 'application/pdf' } })
+        : new Response('{"error":"File not found"}', { status: 404 })
+    }) as typeof fetch
+
+    const response = await retryingApp([]).fetch(new Request(`http://api.test/api/f/${token('report.pdf')}`))
+
+    expect(response.status).toBe(200)
+    expect(requested.at(-1)).toBe('http://runtime/agent/workspace/download/report.pdf')
+  })
+
+  it('names the root that had no file, so a 404 explains itself', async () => {
+    globalThis.fetch = (async () => new Response('{"error":"File not found"}', { status: 404 })) as typeof fetch
+    const warnings: string[] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')) }
+
+    try {
+      const response = await retryingApp([]).fetch(new Request(`http://api.test/api/f/${token('report.pdf')}`))
+
+      expect(response.status).toBe(404)
+      expect((await response.json()).error.code).toBe('not_found')
+      expect(warnings).toHaveLength(3)
+      expect(warnings[0]).toContain('project project-1')
+      expect(warnings[0]).toContain('at project-1/report.pdf')
+      expect(warnings[0]).toContain('http://runtime answered 404')
+      expect(warnings[1]).toContain('at report.pdf (scope=project)')
+    } finally {
+      console.warn = originalWarn
+    }
   })
 
   it('serves the same download under /api/f/ so studio-origin links reach the API', async () => {
@@ -98,6 +159,7 @@ describe('shared file routes', () => {
 
   it('passes binary downloads through a paired-instance tunnel', async () => {
     let relayedPath = ''
+    let relayedCleanPath = ''
     const app = sharedFileRoutes({
       pinChatToHomeRegion: async () => null,
       resolveAgentProxyPodUrl: async () => ({
@@ -110,6 +172,7 @@ describe('shared file routes', () => {
       deriveProjectRuntimeToken: async () => 'runtime-secret',
       relayAgentProxyViaTunnel: async (options) => {
         relayedPath = options.agentPath
+        relayedCleanPath = options.cleanPath
         return new Response(new Uint8Array([0, 1, 2, 3]), {
           status: 200,
           headers: { 'content-type': 'application/octet-stream' },
@@ -121,7 +184,37 @@ describe('shared file routes', () => {
     expect(response.status).toBe(200)
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([0, 1, 2, 3]))
     expect(response.headers.get('content-disposition')).toBe('attachment; filename="archive.zip"')
-    expect(relayedPath).toBe('/agent/workspace/download/build/archive.zip')
+    expect(relayedPath).toBe('/agent/workspace/download/project-1/build/archive.zip')
+    expect(relayedCleanPath).toBe('/agent/workspace/download/project-1/build/archive.zip')
+  })
+
+  it('keeps a scope on the relayed path but not on the streaming-detection path', async () => {
+    const relayed: Array<{ agentPath: string; cleanPath: string }> = []
+    const app = sharedFileRoutes({
+      pinChatToHomeRegion: async () => null,
+      resolveAgentProxyPodUrl: async () => ({
+        ok: true,
+        kind: 'tunnel',
+        instanceId: 'instance-1',
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+      }),
+      deriveProjectRuntimeToken: async () => 'runtime-secret',
+      relayAgentProxyViaTunnel: async (options) => {
+        relayed.push({ agentPath: options.agentPath, cleanPath: options.cleanPath })
+        return new Response('missing', { status: 404 })
+      },
+    })
+
+    const response = await app.fetch(new Request(`http://api.test/f/${token('build/archive.zip')}`))
+
+    expect(response.status).toBe(404)
+    expect(relayed.map((r) => r.agentPath)).toEqual([
+      '/agent/workspace/download/project-1/build/archive.zip',
+      '/agent/workspace/download/build/archive.zip?scope=project',
+      '/agent/workspace/download/build/archive.zip',
+    ])
+    expect(relayed[1].cleanPath).toBe('/agent/workspace/download/build/archive.zip')
   })
 
   it('returns 404 for invalid, expired, or missing runtime files', async () => {
@@ -192,7 +285,8 @@ describe('shared file routes', () => {
     const response = await retryingApp([]).fetch(new Request(`http://api.test/api/f/${token()}`))
 
     expect(response.status).toBe(404)
-    expect(calls).toBe(1)
+    // One read per root a project link can mean — no retries of a refusal.
+    expect(calls).toBe(3)
   })
 
   it('serves a workspace-scoped link from the workspace runtime', async () => {
@@ -285,6 +379,8 @@ describe('shared file routes', () => {
     )
 
     expect(response.status).toBe(404)
-    expect(calls).toBe(2)
+    // The path as signed, the prefix-stripped read, and the same read from the
+    // runtime's own project root.
+    expect(calls).toBe(3)
   })
 })
