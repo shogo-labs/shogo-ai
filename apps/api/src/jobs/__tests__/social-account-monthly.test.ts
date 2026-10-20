@@ -25,6 +25,18 @@ const { activeFraction, runSocialAccountMonthly } = await import('../social-acco
 
 const db = prisma as any
 
+/**
+ * The day the fixtures' accounts were connected, inside the month every tick
+ * below is pinned to.
+ *
+ * It has to be explicit: `SocialAccount.connectedAt` defaults to the database's
+ * real clock, and `activeFraction` charges nothing for an account connected
+ * after the tick's `now`. A fixture that let the default stand therefore priced
+ * to zero as soon as the wall clock passed the pinned `now` — which is how the
+ * first test went red on `main` for every PR (SHO-90).
+ */
+const CONNECTED_AT = new Date('2026-10-05T00:00:00.000Z')
+
 let charges: any[] = []
 let walletDown = false
 /** Accounts the fake provider reports for the next reconcile. */
@@ -126,9 +138,9 @@ describe('the monthly account meter', () => {
     await resetMonth()
     // Two accounts on the cloud profile, one on the desktop's — three total, so
     // the workspace is in the 3–10 band even though each profile is in 1–2.
-    await addAccount({ profileId, platform: 'instagram' })
-    await addAccount({ profileId, platform: 'facebook' })
-    await addAccount({ profileId: localProfileId, platform: 'tiktok' })
+    await addAccount({ profileId, platform: 'instagram', connectedAt: CONNECTED_AT })
+    await addAccount({ profileId, platform: 'facebook', connectedAt: CONNECTED_AT })
+    await addAccount({ profileId: localProfileId, platform: 'tiktok', connectedAt: CONNECTED_AT })
     setSocialClient({ mode: 'cloud', async request() { return { accounts: providerAccounts } } })
     setSocialUsageWallet(fakeWallet)
 
@@ -138,7 +150,8 @@ describe('the monthly account meter', () => {
     expect(charges).toHaveLength(1)
     expect(charges[0]!.actionType).toBe('social_account_monthly')
     // 3 × $6, prorated to the part of October these accounts were live: they
-    // were connected "now", so this is the remaining days of the month only.
+    // were connected on the 5th, so this is the 16 days to the 20th, not a full
+    // month.
     expect(charges[0]!.actionMetadata.inventory).toBe(3)
     expect(charges[0]!.actionMetadata.band).toBe(10)
     expect(charges[0]!.rawUsd).toBeLessThan(18)
@@ -218,7 +231,13 @@ describe('the monthly account meter', () => {
     })
     setSocialUsageWallet(fakeWallet)
 
-    const summary = await runSocialAccountMonthly({ now: new Date('2026-10-25T12:00:00.000Z') })
+    // The rows the reconcile adopts are created by `syncProfileAccounts`, which
+    // cannot be told a `connectedAt` — they land on the real clock. So the tick
+    // has to be a moment after *now*, not a pinned date the wall clock will
+    // eventually pass: past it, every adopted account prices to zero days and
+    // this test fails for the same reason SHO-90 broke the first one.
+    const tickAt = new Date(Date.now() + 60_000)
+    const summary = await runSocialAccountMonthly({ now: tickAt })
     const adopted = await db.socialAccount.findFirst({
       where: { zernioAccountId: 'za_provider_only_zp_cloud' },
     })
