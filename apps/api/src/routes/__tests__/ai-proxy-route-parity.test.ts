@@ -72,8 +72,6 @@ const VOICE_LOCAL_ONLY: Record<string, LocalOnlyEntry> = {
   // cloud-authed desktop they 503 instead of reaching the cloud's key.
   '/voice/signed-url':
     `${PRE_EXISTING}resolves the local ELEVENLABS_API_KEY (resolveElevenLabsClient); hosted voice mode needs a desktop→cloud branch`,
-  '/voice/music':
-    `${PRE_EXISTING}resolves the local ELEVENLABS_API_KEY; #1550 moves the handler to voice-media.ts, which forwards (SHO-74 §2)`,
   '/voice/twilio/available-numbers/:projectId':
     `${PRE_EXISTING}needs the cloud Twilio account to list numbers; by definition the desktop has none`,
   '/voice/twilio/provision-number/:projectId':
@@ -150,6 +148,12 @@ const ROUTERS: RouterSpec[] = [
     name: 'voice',
     file: '../voice.ts',
     localOnly: VOICE_LOCAL_ONLY,
+  },
+  {
+    // Hosted TTS and music: both forward to cloud under the gate (SHO-74 §2).
+    name: 'voice-media',
+    file: '../voice-media.ts',
+    localOnly: {},
   },
 ]
 
@@ -267,6 +271,28 @@ describe('proxy route parity', () => {
         if (!route.body.includes('isShogoCloudForwarding()')) {
           return `${path} forwards without checking isShogoCloudForwarding(), so it only ever runs locally`
         }
+        return null
+      })
+      .filter((entry): entry is string => entry !== null)
+
+    expect(ungated).toEqual([])
+  })
+
+  test('hosted voice media checks the cloud gate before the local key', async () => {
+    // The router check above only proves the registration delegates. Pin the
+    // handlers themselves: the cloud branch has to run before the local
+    // ELEVENLABS_API_KEY lookup, or a cloud-authed desktop keeps answering 503.
+    const text = await readRouter('../voice-media.ts')
+    const ungated = ['handleVoiceTts', 'handleVoiceMusic']
+      .map((name) => {
+        const start = text.indexOf(`export async function ${name}(`)
+        if (start < 0) return `${name} is gone from voice-media.ts — update this guard`
+        const next = text.indexOf('export async function ', start + 1)
+        const body = text.slice(start, next < 0 ? text.length : next)
+        const gate = body.indexOf('isShogoCloudForwarding()')
+        const localKey = body.indexOf('resolveShogoElevenLabsClient(')
+        if (gate < 0) return `${name} never checks isShogoCloudForwarding(), so cloud-authed desktops get a local 503`
+        if (localKey >= 0 && localKey < gate) return `${name} resolves the local key before the cloud gate`
         return null
       })
       .filter((entry): entry is string => entry !== null)
