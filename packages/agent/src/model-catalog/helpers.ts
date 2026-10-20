@@ -5,6 +5,7 @@ import {
   MODEL_CATALOG,
   IMAGE_MODEL_CATALOG,
   VIDEO_MODEL_CATALOG,
+  HIGGSFIELD_LEGACY_MODEL_ALIASES,
   AUTO_MODEL_ID,
   OPENROUTER_MODEL_PREFIX,
   type ModelEntry,
@@ -64,12 +65,22 @@ export function getModelEntry(id: string): ModelEntry | undefined {
 }
 
 /**
+ * Map an id from the retired fal media catalog onto the Higgsfield model that
+ * replaces it, so a saved prompt or a pinned id keeps working. Unknown ids pass
+ * through untouched.
+ */
+export function resolveMediaModelId(id: string): string {
+  return HIGGSFIELD_LEGACY_MODEL_ALIASES[id] ?? id
+}
+
+/**
  * Look up the full catalog entry for an image model.
  * Falls back to prefix matching. Returns undefined for unknown models.
  */
 export function getImageModelEntry(id: string): ImageModelEntry | undefined {
-  if (id in IMAGE_MODEL_CATALOG) {
-    return (IMAGE_MODEL_CATALOG as Record<string, ImageModelEntry>)[id]
+  const resolved = resolveMediaModelId(id)
+  if (resolved in IMAGE_MODEL_CATALOG) {
+    return (IMAGE_MODEL_CATALOG as Record<string, ImageModelEntry>)[resolved]
   }
   for (const [key, entry] of Object.entries(IMAGE_MODEL_CATALOG)) {
     if (key.startsWith(id) || entry.apiModel.startsWith(id)) return entry
@@ -79,7 +90,8 @@ export function getImageModelEntry(id: string): ImageModelEntry | undefined {
 
 /** Look up a video model by catalog id. Returns undefined for unknown models. */
 export function getVideoModelEntry(id: string): VideoModelEntry | undefined {
-  return (VIDEO_MODEL_CATALOG as Record<string, VideoModelEntry>)[id]
+  const resolved = resolveMediaModelId(id)
+  return (VIDEO_MODEL_CATALOG as Record<string, VideoModelEntry>)[resolved]
 }
 
 // ---------------------------------------------------------------------------

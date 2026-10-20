@@ -329,8 +329,6 @@ describe('filterSubagentOnlyTools', () => {
   test('team profile keeps the media tools on the main agent and still strips browser/server_sync', () => {
     const n = mainAgentTools(makeConfig())
     expect(n.has('generate_image')).toBe(true)
-    expect(n.has('upscale_image')).toBe(true)
-    expect(n.has('remove_background')).toBe(true)
     expect(n.has('list_media_models')).toBe(true)
     expect(n.has('transcribe_audio')).toBe(true)
     expect(n.has('browser')).toBe(false)
@@ -340,8 +338,8 @@ describe('filterSubagentOnlyTools', () => {
   test('imageGenEnabled: false still removes the image tools from the main agent', () => {
     const n = mainAgentTools(makeConfig({ imageGenEnabled: false }))
     expect(n.has('generate_image')).toBe(false)
-    expect(n.has('upscale_image')).toBe(false)
-    expect(n.has('remove_background')).toBe(false)
+    // Nothing to list once image, video and 3D are all off.
+    expect(n.has('list_media_models')).toBe(false)
   })
 
   test('generate_video appears only with videoGenEnabled: true', () => {

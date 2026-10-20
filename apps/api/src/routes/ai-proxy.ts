@@ -65,22 +65,16 @@ import {
   type Provider,
   type ImageProvider,
   type ImageModelEntry,
+  type ModelOptionField,
   type VideoModelEntry,
   getVideoModelEntry,
+  mergeModelOptions,
+  endpointsOf,
+  resolveMediaModelId,
   type AgentMode,
   type ModelTier,
 } from '@shogo/model-catalog'
 import { randomUUID } from 'node:crypto'
-import {
-  generateImageFal,
-  processImageFal,
-  fetchAsBase64,
-  buildFalVideoRequest,
-  falQueueSubmit,
-  falQueueStatus,
-  falQueueVideoResult,
-  type ImageProcessOperation,
-} from '../lib/fal-media'
 import { putVideoJob, getVideoJob, claimVideoCharge, type VideoJobRecord } from '../lib/video-job-store'
 import { put3dJob, get3dJob, claim3dCharge } from '../lib/3d-job-store'
 import {
@@ -2802,7 +2796,6 @@ function getImageProviderApiKey(provider: ImageProvider): string | null {
   switch (provider) {
     case 'openai': return getNativeProviderApiKeySync('openai')
     case 'google': return getNativeProviderApiKeySync('google')
-    case 'fal': return getNativeProviderApiKeySync('fal')
     case 'higgsfield': return getNativeProviderApiKeySync('higgsfield')
     case 'local': return 'local'
     default: return null
@@ -2880,14 +2873,27 @@ function recordHiggsfieldImageUsage(
 async function generateImageHiggsfield(
   apiKey: string,
   entry: ImageModelEntry,
-  params: { prompt: string; size?: string; quality?: string; n?: number; referenceImages?: string[] },
+  params: {
+    prompt: string
+    size?: string
+    quality?: string
+    n?: number
+    referenceImages?: string[]
+    options?: Record<string, unknown>
+  },
   signal?: AbortSignal,
 ): Promise<{ result: ImageGenerationResponse; charge: { rawUsd: number; billedUsd: number } }> {
   const n = Math.max(1, Math.min(4, params.n || 1))
   const referenceUrls = await Promise.all(
     (params.referenceImages ?? []).map((ref) => higgsfieldEnsurePublicUrl(apiKey, ref, signal)),
   )
-  const request = buildHiggsfieldImageRequest(entry, { ...params, referenceUrls })
+  const request = buildHiggsfieldImageRequest(entry, {
+    prompt: params.prompt,
+    size: params.size,
+    quality: params.quality,
+    referenceUrls,
+    options: params.options,
+  })
 
   const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, signal).catch((err) => {
     throw new HiggsfieldError(
@@ -3078,9 +3084,7 @@ import {
   calculateGenjutsuUsageCost,
   calculateHiggsfieldUsageCost,
   calculateImageUsageCost,
-  calculateImageProcessUsageCost,
   calculateTranscriptionUsageCost,
-  calculateVideoUsageCost,
   calculate3dUsageCost,
   estimateTripoTaskCost,
   TRIPO_USD_PER_CREDIT,
@@ -3091,6 +3095,7 @@ import {
   buildHiggsfieldEstimateBody,
   buildHiggsfieldImageRequest,
   buildHiggsfieldVideoRequest,
+  fetchAsBase64,
   higgsfieldEnsurePublicUrl,
   higgsfieldEstimate,
   higgsfieldCancel,
@@ -3104,10 +3109,9 @@ import {
 } from '../lib/higgsfield-media'
 
 /**
- * One billable media output. Images (including upscale / background removal)
- * fold into the open billing session's image totals; video folds into its
- * video totals; 3D folds into its own. With no session open, it is charged as
- * its own usage event.
+ * One billable media output. Images fold into the open billing session's image
+ * totals; video folds into its video totals; 3D folds into its own. With no
+ * session open, it is charged as its own usage event.
  */
 interface MediaCharge {
   kind: 'image' | 'video' | '3d'
@@ -3116,7 +3120,7 @@ interface MediaCharge {
   billedUsd: number
   /** Output seconds (video only). */
   seconds?: number
-  actionType: 'ai_image_generation' | 'ai_image_processing' | 'ai_video_generation' | 'ai_3d_generation'
+  actionType: 'ai_image_generation' | 'ai_video_generation' | 'ai_3d_generation'
   metadata: Record<string, unknown>
 }
 
@@ -3186,18 +3190,15 @@ function recordImageUsage(
 
 const DEFAULT_VIDEO_MODEL = 'hf-hailuo-2.3'
 
-/**
- * Defaults follow whichever provider is configured: Higgsfield when its key is
- * present (the product default), otherwise the previous fal/OpenAI model so a
- * self-hosted install without a Higgsfield key keeps working.
- */
+/** Video is Higgsfield-only; a server without its key answers 503 provider_not_configured. */
 function defaultVideoModel(): string {
-  return getImageProviderApiKey('higgsfield') ? DEFAULT_VIDEO_MODEL : 'kling-2.5-turbo-pro'
+  return DEFAULT_VIDEO_MODEL
 }
 
 const DEFAULT_IMAGE_MODEL = 'hf-soul-v2'
 const FALLBACK_IMAGE_MODEL = 'gpt-image-2.5-flare'
 
+/** Higgsfield when its key is configured (the product default), else OpenAI. */
 function defaultImageModel(): string {
   return getImageProviderApiKey('higgsfield') ? DEFAULT_IMAGE_MODEL : FALLBACK_IMAGE_MODEL
 }
@@ -3221,7 +3222,17 @@ function mediaErrorStatus(error: any): MediaErrorStatus | 0 {
     switch (error.code) {
       case 'provider_busy': return 429
       case 'credits': return 402
-      case 'validation': return 400
+      case 'validation':
+      case 'invalid_option':
+      case 'option_unsupported':
+      case 'invalid_duration':
+      case 'invalid_resolution':
+      case 'invalid_aspect_ratio':
+      case 'audio_not_supported':
+      case 'image_to_video_unsupported':
+      case 'text_to_video_unsupported':
+      case 'reference_images_unsupported':
+        return 400
       case 'auth': case 'blocked': case 'unavailable': return 503
       case 'timeout': return 504
       default: return 502
@@ -3230,6 +3241,18 @@ function mediaErrorStatus(error: any): MediaErrorStatus | 0 {
   if (error?.message?.includes('429')) return 429
   if (error?.message?.includes('503')) return 503
   return 0
+}
+
+/**
+ * `3–15` for a contiguous range, `6, 10` for a menu. Kling 3.0 documents 3–15 s
+ * as thirteen values, and listing them all reads worse than the range.
+ */
+function describeDurationMenu(durations: readonly number[]): string {
+  if (durations.length === 0) return '(none)'
+  const contiguous = durations.every((value, index) => index === 0 || value === durations[index - 1] + 1)
+  return contiguous && durations.length > 2
+    ? `${durations[0]}–${durations[durations.length - 1]}`
+    : durations.join(', ')
 }
 
 /** Error code for the OpenAI-shaped error body. */
@@ -3270,90 +3293,135 @@ async function cachedHiggsfieldEstimate(
 /** Test seam — drops cached estimates between cases. */
 export const _resetHiggsfieldEstimateCache = () => higgsfieldEstimateCache.clear()
 
-/** Response body of `GET /ai/v1/media/models`. Exported for tests. */
-export async function listMediaModels(signal?: AbortSignal) {
-  const higgsfieldKey = getImageProviderApiKey('higgsfield')
+/** JSON view of one documented option field, as `list_media_models` shows it. */
+function publicOption(field: ModelOptionField): Record<string, unknown> {
+  return {
+    name: field.name,
+    type: field.type,
+    ...(field.required ? { required: true } : {}),
+    ...(field.enum ? { values: field.enum } : {}),
+    ...(field.minimum !== undefined ? { min: field.minimum } : {}),
+    ...(field.maximum !== undefined ? { max: field.maximum } : {}),
+    ...(field.multipleOf !== undefined ? { multiple_of: field.multipleOf } : {}),
+    ...(field.default !== undefined ? { default: field.default } : {}),
+    ...(field.title ? { title: field.title } : {}),
+    ...(field.items ? { items: field.items } : {}),
+    ...(field.minItems !== undefined ? { min_items: field.minItems } : {}),
+    ...(field.maxItems !== undefined ? { max_items: field.maxItems } : {}),
+    ...(field.maxLength !== undefined ? { max_length: field.maxLength } : {}),
+    ...(field.itemFields
+      ? { item_fields: Object.values(field.itemFields).map((nested) => publicOption(nested)) }
+      : {}),
+    ...(field.endpoints ? { endpoints: field.endpoints } : {}),
+  }
+}
 
-  const images = await Promise.all(
-    (Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[])
-      .filter((entry) => !entry.retired && !!getImageProviderApiKey(entry.provider))
-      .map(async (entry) => {
-        const base = {
-          id: entry.id,
-          name: entry.displayName,
-          provider: entry.provider,
-          best_for: entry.bestFor,
-          text_to_image: entry.capabilities.textToImage,
-          image_to_image: entry.capabilities.imageToImage,
-          max_reference_images: entry.capabilities.maxReferenceImages,
-          parameters: {
-            size: entry.provider === 'openai'
-              ? '1024x1024, 1024x1792, 1792x1024'
-              : 'any WxH; mapped to the closest supported aspect ratio',
-            quality: ['standard', 'hd'],
-            options: '1-4',
-          },
-          ...(entry.deprecated ? { deprecated: true, replacement: entry.replacement } : {}),
-        }
-        if (entry.provider === 'higgsfield' && higgsfieldKey) {
-          // A catalog entry whose request shape is unknown (or whose estimate
-          // throws) must never blank the whole listing: one bad model falls back
-          // to its catalog price and the other fifteen still list.
-          let request: { endpoint: string; input: Record<string, unknown> } | null = null
-          try {
-            request = buildHiggsfieldImageRequest(entry, { prompt: 'a product photo on a plain background', size: '1024x1024', quality: 'standard' })
-          } catch (error) {
-            console.warn(`[AI Proxy] No image request shape for ${entry.id}; listing it from its catalog price only:`, error)
+/**
+ * Response body of `GET /ai/v1/media/models`. Exported for tests.
+ *
+ * `model` narrows the answer to one model's full option list, which is what an
+ * agent needs before filling in a call; without it every model is listed with
+ * its options, endpoints and price.
+ */
+export async function listMediaModels(
+  signal?: AbortSignal,
+  filter: { model?: string; kind?: 'image' | 'video' } = {},
+) {
+  const higgsfieldKey = getImageProviderApiKey('higgsfield')
+  const wanted = filter.model ? resolveMediaModelId(filter.model) : undefined
+
+  const images = filter.kind === 'video'
+    ? []
+    : await mapWithLimit(
+        (Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[])
+          .filter((entry) => !entry.retired && !!getImageProviderApiKey(entry.provider))
+          .filter((entry) => !wanted || entry.id === wanted),
+        4,
+        async (entry) => {
+          const options = mergeModelOptions(entry)
+          const base = {
+            id: entry.id,
+            name: entry.displayName,
+            provider: entry.provider,
+            best_for: entry.bestFor,
+            text_to_image: entry.capabilities.textToImage,
+            image_to_image: entry.capabilities.imageToImage,
+            max_reference_images: entry.capabilities.maxReferenceImages,
+            endpoints: endpointsOf(entry),
+            ...(entry.referenceField ? { reference_field: entry.referenceField.name } : {}),
+            options: options.map(publicOption),
+            parameters: {
+              size: entry.provider === 'openai'
+                ? '1024x1024, 1024x1792, 1792x1024'
+                : 'any WxH; mapped to the closest supported aspect ratio',
+              quality: ['standard', 'hd'],
+              options: '1-4',
+            },
+            ...(entry.deprecated ? { deprecated: true, replacement: entry.replacement } : {}),
           }
-          const estimate = request
-            ? await cachedHiggsfieldEstimate(higgsfieldKey, entry, request, signal)
-            : null
-          const rawUsd = estimate?.rawUsd ?? entry.usdPerRequest
+          if (entry.provider === 'higgsfield' && higgsfieldKey) {
+            // A catalog entry whose request shape is unknown (or whose estimate
+            // throws) must never blank the whole listing: one bad model falls back
+            // to its catalog price and the other seventeen still list.
+            let request: { endpoint: string; input: Record<string, unknown> } | null = null
+            try {
+              request = buildHiggsfieldImageRequest(entry, { prompt: 'a product photo on a plain background', size: '1024x1024', quality: 'standard' })
+            } catch (error) {
+              console.warn(`[AI Proxy] No image request shape for ${entry.id}; listing it from its catalog price only:`, error)
+            }
+            const estimate = request
+              ? await cachedHiggsfieldEstimate(higgsfieldKey, entry, request, signal)
+              : null
+            const rawUsd = estimate?.rawUsd ?? entry.usdPerRequest
+            return {
+              ...base,
+              price: {
+                unit: 'image',
+                usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
+                source: estimate?.rawUsd !== undefined ? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
+              },
+            }
+          }
+          // The price ladder is model × quality × size, so publish the marked-up
+          // numbers an agent needs to budget: `usd`/`hd_usd`/`low_usd` at 1024²
+          // (the keys agents already read) plus the standard price per size.
+          const priceAt = (quality: string, size: string) =>
+            roundUsd(calculateImageUsageCost(entry.id, quality, size).billedUsd)
           return {
             ...base,
             price: {
               unit: 'image',
-              usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
-              source: estimate?.rawUsd !== undefined ? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
+              usd: priceAt('standard', '1024x1024'),
+              hd_usd: priceAt('hd', '1024x1024'),
+              low_usd: priceAt('low', '1024x1024'),
+              usd_by_size: {
+                '1024x1024': priceAt('standard', '1024x1024'),
+                '1024x1536': priceAt('standard', '1024x1536'),
+                '1536x1024': priceAt('standard', '1536x1024'),
+              },
             },
           }
-        }
-        // The price ladder is model × quality × size, so publish the marked-up
-        // numbers an agent needs to budget: `usd`/`hd_usd`/`low_usd` at 1024²
-        // (the keys agents already read) plus the standard price per size.
-        const priceAt = (quality: string, size: string) =>
-          roundUsd(calculateImageUsageCost(entry.id, quality, size).billedUsd)
-        return {
-          ...base,
-          price: {
-            unit: 'image',
-            usd: priceAt('standard', '1024x1024'),
-            hd_usd: priceAt('hd', '1024x1024'),
-            low_usd: priceAt('low', '1024x1024'),
-            usd_by_size: {
-              '1024x1024': priceAt('standard', '1024x1024'),
-              '1024x1536': priceAt('standard', '1024x1536'),
-              '1536x1024': priceAt('standard', '1536x1024'),
-            },
-          },
-        }
-      }),
-  )
+        },
+      )
 
   const videoEntries = (Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[])
     .filter((entry) => !!getImageProviderApiKey(entry.provider))
-  const videos = await Promise.all(
-    videoEntries.map(async (entry) => {
+    .filter((entry) => !wanted || entry.id === wanted)
+  const videos = filter.kind === 'image'
+    ? []
+    : await mapWithLimit(videoEntries, 4, async (entry) => {
       const base = {
         id: entry.id,
         name: entry.displayName,
         provider: entry.provider,
         best_for: entry.bestFor,
-        text_to_video: true,
+        text_to_video: !!entry.textToVideoApiModel,
         image_to_video: !!entry.imageToVideoApiModel,
         source_video: !!entry.sourceVideo,
         max_reference_images: entry.maxReferenceImages,
-        audio: entry.usdPerSecondWithAudio !== undefined,
+        audio: !!entry.audio,
+        endpoints: endpointsOf(entry),
+        options: mergeModelOptions(entry).map(publicOption),
         parameters: {
           durations: entry.durations,
           default_duration: entry.defaultDuration,
@@ -3386,16 +3454,23 @@ export async function listMediaModels(signal?: AbortSignal) {
             },
           }
         }
-        const estimate = await cachedHiggsfieldEstimate(
-          higgsfieldKey,
-          entry,
-          buildHiggsfieldVideoRequest(entry, {
-            prompt: 'a product rotating on a table, soft studio light',
-            duration: entry.defaultDuration,
-            resolution: entry.defaultResolution,
-          }),
-          signal,
-        )
+        let request: { endpoint: string; input: Record<string, unknown> } | null = null
+        // An image-to-video-only family has no text-to-video request to quote;
+        // its price comes from the catalog rather than a made-up start image.
+        if (entry.textToVideoApiModel) {
+          try {
+            request = buildHiggsfieldVideoRequest(entry, {
+              prompt: 'a product rotating on a table, soft studio light',
+              duration: entry.defaultDuration,
+              resolution: entry.defaultResolution,
+            })
+          } catch (error) {
+            console.warn(`[AI Proxy] No video request shape for ${entry.id}; listing it from its catalog price only:`, error)
+          }
+        }
+        const estimate = request
+          ? await cachedHiggsfieldEstimate(higgsfieldKey, entry, request, signal)
+          : null
         const rawUsd = estimate?.rawUsd ?? entry.usdPerRequest
         return {
           ...base,
@@ -3410,60 +3485,35 @@ export async function listMediaModels(signal?: AbortSignal) {
       if (entry.usdPerRequest !== undefined) {
         return {
           ...base,
-          price: { unit: 'clip', usd: roundUsd(calculateVideoUsageCost(entry, entry.defaultDuration, false).billedUsd) },
+          price: { unit: 'clip', usd: roundUsd(calculateHiggsfieldUsageCost({ rawUsd: entry.usdPerRequest }).billedUsd) },
         }
       }
-      return {
-        ...base,
-        price: {
-          unit: 'second',
-          usd: roundUsd(calculateVideoUsageCost(entry, 1, false).billedUsd),
-          ...(entry.usdPerSecondWithAudio !== undefined
-            ? { with_audio_usd: roundUsd(calculateVideoUsageCost(entry, 1, true).billedUsd) }
-            : {}),
-          default_clip_usd: roundUsd(calculateVideoUsageCost(entry, entry.defaultDuration, false).billedUsd),
-        },
-      }
-    }),
-  )
-
-  const falConfigured = !!getImageProviderApiKey('fal')
-  const utilities = falConfigured
-    ? [
-        { id: 'upscale', tool: 'upscale_image', price: { unit: 'output megapixel', usd: roundUsd(calculateImageProcessUsageCost('upscale', { width: 1000, height: 1000 }).billedUsd) } },
-        { id: 'remove-background', tool: 'remove_background', price: { unit: 'image', usd: roundUsd(calculateImageProcessUsageCost('remove-background').billedUsd) } },
-      ]
-    : []
+      return { ...base, price: { unit: 'clip', usd: null, source: 'unknown' } }
+    })
 
   return {
     images,
     videos,
-    utilities,
     currency: 'USD',
     default_image_model: defaultImageModel(),
     default_video_model: defaultVideoModel(),
-    note: 'Prices include the Shogo markup and are what the workspace is charged. Higgsfield prices are quoted by its free /estimate for the default parameters; a `null` price means the vendor must be asked at submit time (Genjutsu prices depend on the source clip).',
+    note: 'Prices include the Shogo markup and are what the workspace is charged. Higgsfield prices are quoted by its free /estimate for the default parameters; a `null` price means the vendor must be asked at submit time (Genjutsu prices depend on the source clip). Every model lists its documented options: pass model-specific ones as `options` on generate_image / generate_video.',
   }
 }
 
-function recordVideoUsage(
-  tokenPayload: ProxyTokenPayload,
-  entry: VideoModelEntry,
-  seconds: number,
-  audio: boolean,
-  metadata: Record<string, unknown>,
-  chatSessionId?: string | null,
-) {
-  const cost = calculateVideoUsageCost(entry, seconds, audio)
-  return recordMediaUsage(tokenPayload, {
-    kind: 'video',
-    model: entry.id,
-    rawUsd: cost.rawUsd,
-    billedUsd: cost.billedUsd,
-    seconds,
-    actionType: 'ai_video_generation',
-    metadata: { seconds, audio, ...metadata },
-  }, chatSessionId)
+/** Run `fn` over `items` with at most `limit` in flight (the vendor rate-limits bursts). */
+async function mapWithLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const index = next++
+      if (index >= items.length) return
+      results[index] = await fn(items[index])
+    }
+  })
+  await Promise.all(workers)
+  return results
 }
 
 /**
@@ -5167,6 +5217,8 @@ export function aiProxyRoutes() {
         quality?: string
         n?: number
         response_format?: string
+        /** Model-specific documented fields (see list_media_models). */
+        options?: Record<string, unknown>
       }
 
       if (!body.prompt) {
@@ -5220,8 +5272,6 @@ export function aiProxyRoutes() {
         result = await generateImageGoogle(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'local') {
         result = await generateImageLocal(imageModel.apiModel, body, signal)
-      } else if (imageModel.provider === 'fal' && imageModel.entry) {
-        result = await generateImageFal(apiKey, imageModel.entry, body, signal)
       } else if (imageModel.provider === 'higgsfield' && imageModel.entry) {
         const generated = await generateImageHiggsfield(apiKey, imageModel.entry, body, signal)
         result = generated.result
@@ -5252,7 +5302,9 @@ export function aiProxyRoutes() {
       }
 
       capture?.recordResponse({ status: 200, body: result, format: 'json' })
-      return c.json(result)
+      // `model` is the catalog id that actually ran: a retired id forwarded by a
+      // caller is reported as the model that replaced it.
+      return c.json({ ...result, model: imageModel.entry?.id ?? model })
     } catch (error: any) {
       capture?.finish({ errorType: 'generation_error' })
       console.error('[AI Proxy] Image generation error:', error.message)
@@ -5268,9 +5320,10 @@ export function aiProxyRoutes() {
    * POST /ai/v1/images/edits - Image editing proxy (reference images + prompt)
    *
    * Accepts multipart/form-data with one or more `image` files and a prompt.
-   * GPT image models go to OpenAI's /v1/images/edits; fal models go to their
-   * edit endpoint with the references as data URIs. The number of images is
-   * checked against the model's catalog `capabilities`.
+   * GPT image models go to OpenAI's /v1/images/edits; Higgsfield models upload
+   * the references and send them on whichever endpoint documents a reference
+   * field. The number of images is checked against the model's catalog
+   * `capabilities`.
    */
   router.post('/ai/v1/images/edits', async (c) => {
     const tokenPayload = await validateProxyAuth(c)
@@ -5304,6 +5357,20 @@ export function aiProxyRoutes() {
       const size = (formData.get('size') as string) || '1024x1024'
       const n = parseInt((formData.get('n') as string) || '1', 10)
       const quality = (formData.get('quality') as string) || 'standard'
+      const rawOptions = formData.get('options')
+      let options: Record<string, unknown> | undefined
+      if (typeof rawOptions === 'string' && rawOptions.trim().length > 0) {
+        try {
+          const parsed = JSON.parse(rawOptions)
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+          options = parsed as Record<string, unknown>
+        } catch {
+          return c.json(
+            { error: { message: 'options must be a JSON object of model-specific fields.', type: 'invalid_request_error', code: 'invalid_options' } },
+            400
+          )
+        }
+      }
 
       if (!prompt) {
         return c.json(
@@ -5326,7 +5393,7 @@ export function aiProxyRoutes() {
         )
       }
       const maxRefs = imageModel.entry?.capabilities.imageToImage ? imageModel.entry.capabilities.maxReferenceImages : 0
-      if (maxRefs === 0 || (imageModel.provider !== 'openai' && imageModel.provider !== 'fal' && imageModel.provider !== 'higgsfield')) {
+      if (maxRefs === 0 || (imageModel.provider !== 'openai' && imageModel.provider !== 'higgsfield')) {
         return c.json(
           { error: { message: `Image model '${model}' does not accept reference images. Call list_media_models to find one that does.`, type: 'invalid_request_error', code: 'reference_images_unsupported' } },
           400
@@ -5368,18 +5435,11 @@ export function aiProxyRoutes() {
 
       let result: ImageGenerationResponse
       let billed = false
-      if (imageModel.provider === 'fal') {
-        result = await generateImageFal(
-          apiKey,
-          imageModel.entry!,
-          { prompt, size, quality, n, referenceImages: imageDataUris },
-          c.req.raw.signal,
-        )
-      } else if (imageModel.provider === 'higgsfield') {
+      if (imageModel.provider === 'higgsfield') {
         const generated = await generateImageHiggsfield(
           apiKey,
           imageModel.entry!,
-          { prompt, size, quality, n, referenceImages: imageDataUris },
+          { prompt, size, quality, n, referenceImages: imageDataUris, options },
           c.req.raw.signal,
         )
         result = generated.result
@@ -5429,7 +5489,7 @@ export function aiProxyRoutes() {
       }
 
       capture?.recordResponse({ status: 200, body: result, format: 'json' })
-      return c.json(result)
+      return c.json({ ...result, model: imageModel.entry?.id ?? imageModel.apiModel })
     } catch (error: any) {
       capture?.finish({ errorType: 'edit_error' })
       console.error('[AI Proxy] Image edit error:', error.message)
@@ -5443,9 +5503,10 @@ export function aiProxyRoutes() {
 
   /**
    * GET /ai/v1/media/models - Image and video models this server can run,
-   * with capabilities, main parameters and Shogo (marked-up) price. Backs
-   * the `list_media_models` tool so agents can pick a model and budget a
-   * batch before generating. Models whose provider has no key are omitted.
+   * with their endpoints, every documented option and a Shogo (marked-up)
+   * price. Backs the `list_media_models` tool so agents can pick a model and
+   * budget a batch before generating. Models whose provider has no key are
+   * omitted. `?model=` narrows to one model, `?kind=image|video` to one kind.
    */
   router.get('/ai/v1/media/models', async (c) => {
     const tokenPayload = await validateProxyAuth(c)
@@ -5455,7 +5516,14 @@ export function aiProxyRoutes() {
         401
       )
     }
-    return c.json(await listMediaModels(c.req.raw.signal))
+    const kind = c.req.query('kind')
+    if (kind !== undefined && kind !== 'image' && kind !== 'video') {
+      return c.json(
+        { error: { message: "kind must be 'image' or 'video'.", type: 'invalid_request_error', code: 'invalid_kind' } },
+        400
+      )
+    }
+    return c.json(await listMediaModels(c.req.raw.signal, { model: c.req.query('model'), kind }))
   })
 
   /**
@@ -5491,9 +5559,9 @@ export function aiProxyRoutes() {
 
   /**
    * POST /ai/v1/media/estimate - What a generation would cost, without
-   * generating it. Free on both providers (Higgsfield's `/estimate` is free and
-   * fal prices are per second), and never creates a job or a charge. Agents and
-   * the live tests use this to budget before spending.
+   * generating it. Free (Higgsfield's `/estimate` is free), and never creates a
+   * job or a charge. Agents and the live tests use this to budget before
+   * spending.
    */
   router.post('/ai/v1/media/estimate', async (c) => {
     const tokenPayload = await validateProxyAuth(c)
@@ -5515,9 +5583,11 @@ export function aiProxyRoutes() {
         size?: string
         quality?: string
         prompt?: string
+        audio?: boolean
         source_video_url?: string
         source_duration_seconds?: number
         preset_id?: string
+        options?: Record<string, unknown>
       }
       const videoEntry = body.kind !== 'image' && body.model ? getVideoModelEntry(body.model) : undefined
       const imageEntry = body.kind !== 'video' && body.model ? resolveImageModel(body.model)?.entry : undefined
@@ -5531,11 +5601,10 @@ export function aiProxyRoutes() {
         }
         const duration = body.duration ?? videoEntry.defaultDuration
         if (videoEntry.durations.length > 0 && !videoEntry.durations.includes(duration)) {
-          return invalid(`${videoEntry.displayName} supports durations ${videoEntry.durations.join(', ')} seconds; got ${duration}.`, 'invalid_duration')
-        }
-        if (videoEntry.provider === 'fal') {
-          const charge = calculateVideoUsageCost(videoEntry, duration, false)
-          return c.json({ model: videoEntry.id, provider: 'fal', unit: 'second', duration, raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), source: 'catalog' })
+          return invalid(
+            `${videoEntry.displayName} supports durations ${describeDurationMenu(videoEntry.durations)} seconds; got ${duration}.`,
+            'invalid_duration',
+          )
         }
         if (videoEntry.sourceVideo) {
           // Genjutsu quotes a prose rate card rather than a `usd` figure, so
@@ -5571,6 +5640,8 @@ export function aiProxyRoutes() {
           duration,
           resolution: body.resolution,
           aspectRatio: body.aspect_ratio,
+          audio: body.audio,
+          options: body.options,
         })
         const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal)
         const charge = higgsfieldCharge(estimate.rawUsd)
@@ -5586,7 +5657,12 @@ export function aiProxyRoutes() {
         return c.json({ error: { message: `Image provider '${entry.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } }, 503)
       }
       if (entry.provider === 'higgsfield') {
-        const request = buildHiggsfieldImageRequest(entry, { prompt: 'a product photo', size: body.size, quality: body.quality })
+        const request = buildHiggsfieldImageRequest(entry, {
+          prompt: 'a product photo',
+          size: body.size,
+          quality: body.quality,
+          options: body.options,
+        })
         const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal)
         const charge = higgsfieldCharge(estimate.rawUsd)
         if (!charge) {
@@ -5666,92 +5742,20 @@ export function aiProxyRoutes() {
     }
   })
 
-  /**
-   * POST /ai/v1/images/process - Image utilities (upscale, background
-   * removal) on fal. JSON body `{ operation, image, scale? }` where `image`
-   * is a data URI. Returns the same `{ data: [{ b64_json, content_type }] }`
-   * shape as the generation routes and bills like an image.
-   */
-  router.post('/ai/v1/images/process', async (c) => {
-    const tokenPayload = await validateProxyAuth(c)
-    if (!tokenPayload) {
-      return c.json(
-        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
-        401
-      )
-    }
-
-    if (!(await isTurnInFlight(c, tokenPayload))) {
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
-      if (!balanceCheck.ok) {
-        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
-        return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
-      }
-    }
-
-    try {
-      const body = await c.req.json() as { operation?: string; image?: string; scale?: number }
-      const operation = body.operation as ImageProcessOperation
-      if (operation !== 'upscale' && operation !== 'remove-background') {
-        return c.json(
-          { error: { message: 'operation must be "upscale" or "remove-background"', type: 'invalid_request_error', code: 'invalid_operation' } },
-          400
-        )
-      }
-      if (typeof body.image !== 'string' || !body.image.startsWith('data:image/')) {
-        return c.json(
-          { error: { message: 'image must be an image data URI', type: 'invalid_request_error', code: 'missing_image' } },
-          400
-        )
-      }
-      const apiKey = getImageProviderApiKey('fal')
-      if (!apiKey) {
-        return c.json(
-          { error: { message: "Image provider 'fal' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
-          503
-        )
-      }
-
-      console.log(`[AI Proxy] 🎨 Image ${operation}: ${tokenPayload.projectId}`)
-      const result = await processImageFal(apiKey, operation, body.image, { scale: body.scale }, c.req.raw.signal)
-
-      const cost = calculateImageProcessUsageCost(operation, { width: result.width, height: result.height })
-      recordMediaUsage(tokenPayload, {
-        kind: 'image',
-        model: operation,
-        rawUsd: cost.rawUsd,
-        billedUsd: cost.billedUsd,
-        actionType: 'ai_image_processing',
-        metadata: { operation, width: result.width, height: result.height, scale: body.scale },
-      }, c.req.header('x-chat-session-id') || null)
-
-      return c.json({
-        created: Math.floor(Date.now() / 1000),
-        data: [{ b64_json: result.b64_json, content_type: result.content_type, width: result.width, height: result.height }],
-      })
-    } catch (error: any) {
-      console.error('[AI Proxy] Image process error:', error.message)
-      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
-      return c.json(
-        { error: { message: error.message || 'Image processing failed', type: 'server_error', code: 'process_error' } },
-        statusCode
-      )
-    }
-  })
-
   // =========================================================================
-  // Video Generation Endpoints (fal queue API)
+  // Video Generation Endpoints (Higgsfield)
   // =========================================================================
 
   /**
    * POST /ai/v1/videos/generations - Submit a video job.
    *
    * Body: `{ prompt, model, duration?, aspect_ratio?, resolution?, audio?,
-   * start_image?, reference_images?, source_video_url?, preset_id? }` with
-   * images as data URIs (or public URLs). Returns `{ id }` right away; poll
-   * `GET /ai/v1/videos/:id`. Nothing is charged until the job completes, and a
-   * failed / NSFW / canceled job is never charged.
+   * start_image?, reference_images?, source_video_url?, preset_id?, options? }`
+   * with images as data URIs (or public URLs). `options` carries model-specific
+   * fields (`cfg_scale`, `multi_shots`, `multi_prompt`, `seed`, …) — the proxy
+   * validates each against the endpoint's documented schema. Returns `{ id }`
+   * right away; poll `GET /ai/v1/videos/:id`. Nothing is charged until the job
+   * completes, and a failed / NSFW / canceled job is never charged.
    */
   router.post('/ai/v1/videos/generations', async (c) => {
     const tokenPayload = await validateProxyAuth(c)
@@ -5788,6 +5792,8 @@ export function aiProxyRoutes() {
         source_duration_seconds?: number
         preset_id?: string
         genjutsu?: string
+        /** Model-specific documented fields (see list_media_models). */
+        options?: Record<string, unknown>
       }
       if (body.genjutsu && !GENJUTSU_MODEL_BY_WORKFLOW[body.genjutsu]) {
         return invalid(`genjutsu must be one of ${Object.keys(GENJUTSU_MODEL_BY_WORKFLOW).join(', ')}; got '${body.genjutsu}'.`, 'invalid_genjutsu')
@@ -5806,27 +5812,15 @@ export function aiProxyRoutes() {
       if (!prompt && !entry.sourceVideo) return invalid('prompt is required', 'missing_prompt')
 
       // A Genjutsu edit's length is the source clip's; everything else has a
-      // fixed duration menu the model documents.
+      // duration menu the model documents. The list is a range for the newer
+      // families (Kling 3.0 documents 3–15 s), so it reads as one number.
       const duration = entry.sourceVideo ? 0 : body.duration ?? entry.defaultDuration
       /** Billed length of a Genjutsu source clip, in seconds. */
       let sourceSeconds: number | undefined
       if (!entry.sourceVideo && !entry.durations.includes(duration)) {
-        return invalid(`${entry.displayName} supports durations ${entry.durations.join(', ')} seconds; got ${duration}.`, 'invalid_duration')
-      }
-      if (body.aspect_ratio) {
-        if (entry.aspectRatios.length === 0) {
-          return invalid(`${entry.displayName} has no aspect_ratio parameter${entry.sourceVideo ? '' : '; output framing follows the start image'}.`, 'invalid_aspect_ratio')
-        }
-        if (!entry.aspectRatios.includes(body.aspect_ratio)) {
-          return invalid(`${entry.displayName} supports aspect ratios ${entry.aspectRatios.join(', ')}; got ${body.aspect_ratio}.`, 'invalid_aspect_ratio')
-        }
-      }
-      if (body.resolution && !(entry.resolutions ?? []).includes(body.resolution)) {
         return invalid(
-          entry.resolutions?.length
-            ? `${entry.displayName} supports resolutions ${entry.resolutions.join(', ')}; got ${body.resolution}.`
-            : `${entry.displayName} has a fixed resolution; drop resolution.`,
-          'invalid_resolution',
+          `${entry.displayName} supports durations ${describeDurationMenu(entry.durations)} seconds; got ${duration}.`,
+          'invalid_duration',
         )
       }
       if (entry.sourceVideo) {
@@ -5856,7 +5850,6 @@ export function aiProxyRoutes() {
         // The provider trims anything longer than its max, so bill the trimmed length.
         sourceSeconds = Math.min(declared, entry.maxSourceSeconds ?? 30)
       }
-      const resolution = body.resolution ?? entry.defaultResolution ?? '720p'
       if (body.start_image !== undefined) {
         const acceptable = typeof body.start_image === 'string'
           && (body.start_image.startsWith('data:image/') || /^https:\/\//i.test(body.start_image))
@@ -5889,41 +5882,7 @@ export function aiProxyRoutes() {
 
       const signal = c.req.raw.signal
       const id = `vid_${randomUUID()}`
-
-      if (entry.provider === 'fal') {
-        const audio = entry.usdPerSecondWithAudio !== undefined && body.audio === true
-        const request = buildFalVideoRequest(entry, {
-          prompt,
-          duration,
-          aspectRatio: body.aspect_ratio,
-          audio,
-          startImage: body.start_image,
-          referenceImages: refs,
-        })
-        const submission = await falQueueSubmit(apiKey, request, signal)
-
-        await putVideoJob({
-          id,
-          provider: 'fal',
-          workspaceId: tokenPayload.workspaceId,
-          projectId: tokenPayload.projectId,
-          userId: tokenPayload.userId,
-          chatSessionId: c.req.header('x-chat-session-id') || null,
-          model: entry.id,
-          endpoint: request.endpoint,
-          statusUrl: submission.statusUrl,
-          responseUrl: submission.responseUrl,
-          duration,
-          audio,
-          aspectRatio: body.aspect_ratio,
-          imageToVideo: !!body.start_image,
-          createdAt: Date.now(),
-        })
-        console.log(`[AI Proxy] 🎬 Video job ${id}: ${tokenPayload.projectId} → fal/${request.endpoint} (${duration}s${audio ? ', audio' : ''})`)
-
-        const estimate = calculateVideoUsageCost(entry, duration, audio)
-        return c.json({ id, status: 'queued', model: entry.id, duration, audio, provider: 'fal', estimated_usd: roundUsd(estimate.billedUsd) })
-      }
+      const audio = body.audio === true
 
       // Higgsfield: input media must be public URLs, so data URIs are uploaded
       // first (the API key stays server-side). The price is settled before we
@@ -5934,24 +5893,29 @@ export function aiProxyRoutes() {
         : undefined
       const request = buildHiggsfieldVideoRequest(entry, {
         prompt: prompt || undefined,
-        duration,
+        duration: entry.sourceVideo ? undefined : duration,
         aspectRatio: body.aspect_ratio,
-        resolution,
+        resolution: body.resolution,
+        audio: body.audio,
         startImageUrl,
         referenceUrls,
         sourceVideoUrl: body.source_video_url,
         presetId: body.preset_id,
+        options: body.options,
       })
+      // What the request actually carries, not what was asked for: a model whose
+      // audio field is absent reports false even if `audio` was sent.
+      const sentResolution = (request.input.resolution as string | undefined) ?? entry.defaultResolution ?? '720p'
 
       let charge: { rawUsd: number; billedUsd: number } | null
       let credits: number | undefined
       if (entry.genjutsu) {
         // Genjutsu answers `/estimate` with a prose rate card, not a `usd`
         // figure, so price it from the vendor's per-second table instead.
-        charge = calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, resolution, sourceSeconds!)
+        charge = calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, sentResolution, sourceSeconds!)
         if (!charge) {
           return invalid(
-            `Cannot price ${entry.displayName} at ${resolution}; supported resolutions are ${(entry.resolutions ?? []).join(', ')}.`,
+            `Cannot price ${entry.displayName} at ${sentResolution}; supported resolutions are ${(entry.resolutions ?? []).join(', ')}.`,
             'estimate_unavailable',
           )
         }
@@ -5983,21 +5947,21 @@ export function aiProxyRoutes() {
         requestId: submission.requestId,
         estimate: { rawUsd: charge.rawUsd, billedUsd: charge.billedUsd, ...(credits !== undefined ? { credits } : {}) },
         duration: billedDuration,
-        audio: false,
+        audio: audio && !!entry.audio,
         aspectRatio: body.aspect_ratio,
-        resolution,
+        resolution: sentResolution,
         ...(entry.sourceVideo ? { sourceVideo: true } : {}),
         imageToVideo: !!body.start_image,
         createdAt: Date.now(),
       })
-      console.log(`[AI Proxy] 🎬 Video job ${id}: ${tokenPayload.projectId} → ${request.endpoint} (${billedDuration}s${entry.sourceVideo ? ', source clip' : ''}, $${charge.billedUsd.toFixed(3)})`)
+      console.log(`[AI Proxy] 🎬 Video job ${id}: ${tokenPayload.projectId} → ${request.endpoint} (${billedDuration}s${audio && entry.audio ? ', audio' : ''}${entry.sourceVideo ? ', source clip' : ''}, $${charge.billedUsd.toFixed(3)})`)
 
       return c.json({
         id,
         status: 'queued',
         model: entry.id,
         duration: billedDuration,
-        audio: false,
+        audio: audio && !!entry.audio,
         provider: 'higgsfield',
         estimated_usd: roundUsd(charge.billedUsd),
         price_source: entry.genjutsu ? 'rate_card' : 'estimate',
@@ -6079,44 +6043,10 @@ export function aiProxyRoutes() {
       }
     }
 
-    try {
-      const status = await falQueueStatus(apiKey, job.statusUrl, c.req.raw.signal)
-      if (status.status !== 'COMPLETED') {
-        return c.json({
-          ...base,
-          status: status.status === 'IN_QUEUE' ? 'queued' : 'in_progress',
-          queue_position: status.queuePosition,
-        })
-      }
-      if (status.error) {
-        return c.json({ ...base, status: 'failed', error: status.error })
-      }
-
-      const video = await falQueueVideoResult(apiKey, job.responseUrl!, c.req.raw.signal)
-      if (await claimVideoCharge(id)) {
-        recordVideoUsage(
-          tokenPayload,
-          entry,
-          job.duration,
-          job.audio,
-          { jobId: id, endpoint: job.endpoint, imageToVideo: job.imageToVideo, aspectRatio: job.aspectRatio },
-          c.req.header('x-chat-session-id') || job.chatSessionId || null,
-        )
-      }
-      return c.json({
-        ...base,
-        status: 'completed',
-        video: { url: video.url, content_type: video.contentType, file_size: video.fileSize },
-      })
-    } catch (error: any) {
-      // fal answers the result URL with a 4xx detail when the job itself failed.
-      const message: string = error.message || 'Video status check failed'
-      if (/fal error \((400|422)\)/.test(message)) {
-        return c.json({ ...base, status: 'failed', error: message })
-      }
-      console.error(`[AI Proxy] Video status error for ${id}:`, message)
-      return c.json({ error: { message, type: 'server_error', code: 'video_status_error' } }, 502)
-    }
+    return c.json(
+      { error: { message: `Video job '${id}' has no provider.`, type: 'server_error', code: 'provider_not_configured' } },
+      503
+    )
   })
 
   // =========================================================================
@@ -6191,7 +6121,7 @@ export function aiProxyRoutes() {
    * GET /ai/v1/3d/models - 3D models this server can run, with capabilities
    * and Shogo (marked-up) price, plus the operations and their credit
    * estimates so a caller can budget before spending. Empty when no Tripo key
-   * is configured, like the fal entries in `/ai/v1/media/models`.
+   * is configured.
    */
   router.get('/ai/v1/3d/models', async (c) => {
     const tokenPayload = await validateProxyAuth(c)
@@ -6829,7 +6759,6 @@ export function aiProxyRoutes() {
       anthropic: !!getNativeProviderApiKeySync('anthropic'),
       openai: !!getNativeProviderApiKeySync('openai'),
       google: !!getNativeProviderApiKeySync('google'),
-      fal: !!getNativeProviderApiKeySync('fal'),
       higgsfield: !!getNativeProviderApiKeySync('higgsfield'),
       tripo: !!getNativeProviderApiKeySync('tripo'),
     }

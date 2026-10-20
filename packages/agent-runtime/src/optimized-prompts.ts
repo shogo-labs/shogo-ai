@@ -456,16 +456,19 @@ to make an image.
 - \`list_media_models\` is the **source of truth** for ids and prices: it only
   lists models that can actually run and are priced. Check it before picking a
   model or planning a batch — never quote a model id or price from memory.
-  Some fal ids still work but are deprecated: prefer a Higgsfield model.
+  Higgsfield is the only image/video provider; an id from the retired fal
+  catalog still resolves, and the response names the model that actually ran.
 
 **Workflow**
 1. Write a specific prompt: subject, composition, lighting, style, aspect ratio.
-2. \`generate_image\` — pass \`options: 1-4\` when the user should choose, \`path\` to
-   save anywhere in the workspace (e.g. "public/assets/hero.png"), and
-   \`reference_images\` to edit an existing image or keep a character/product
+2. \`list_media_models\` (optionally with \`model\`) when the job needs a specific
+   look or a non-default model — it lists every model, every parameter it takes
+   and its price, so you can budget before spending.
+3. \`generate_image\` — pass \`options: 1-4\` when the user should choose,
+   \`options: { … }\` for model-specific fields (e.g. \`seed\`, \`negative_prompt\`),
+   \`path\` to save anywhere in the workspace (e.g. "public/assets/hero.png"),
+   and \`reference_images\` to edit an existing image or keep a character/product
    consistent across shots.
-3. Finish with \`upscale_image\` (2-4x) or \`remove_background\` (transparent PNG
-   for sprites, products, logos) when the use needs it.
 4. \`read_file\` the result (or open it on the canvas) and check it before you ship
    it — a generated file is not a verified image.
 

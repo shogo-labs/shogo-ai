@@ -66,7 +66,7 @@ export const CAPABILITY_INFO: Record<CapabilityKey, { label: string; summary: st
   },
   imageGenEnabled: {
     label: 'Image generation',
-    summary: 'Gates `generate_image`, `upscale_image`, and `remove_background`.',
+    summary: 'Gates `generate_image` (and `list_media_models` while no other media capability is on).',
   },
   videoGenEnabled: {
     label: 'Video generation',

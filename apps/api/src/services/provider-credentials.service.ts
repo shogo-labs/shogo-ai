@@ -4,7 +4,7 @@
  * Native-provider API key resolver.
  *
  * Resolves the API key for a first-party provider (Anthropic, OpenAI, Google,
- * OpenRouter, fal) from two sources, in precedence order:
+ * OpenRouter) from two sources, in precedence order:
  *
  *   1. An admin-stored, encrypted key in the `PlatformSetting` table under the
  *      key `provider-key.<provider>` (cloud super-admin entry). Decrypted via
@@ -35,7 +35,6 @@ export const NATIVE_PROVIDER_ENV_KEY: Record<string, string> = {
   openai: 'OPENAI_API_KEY',
   google: 'GOOGLE_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
-  fal: 'FAL_KEY',
   tripo: 'TRIPO_API_KEY',
   higgsfield: 'HIGGSFIELD_API_KEY',
 }

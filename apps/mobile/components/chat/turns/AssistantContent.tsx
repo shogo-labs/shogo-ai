@@ -194,7 +194,7 @@ function isItemActive(item: MessagePart): boolean {
 }
 
 /** Tools whose result card shows the produced image (same result shape as generate_image). */
-const IMAGE_RESULT_TOOL_NAMES = new Set(["generate_image", "upscale_image", "remove_background"])
+const IMAGE_RESULT_TOOL_NAMES = new Set(["generate_image"])
 
 function isGeneratedImagePart(part: GroupedMessagePart): boolean {
   return (

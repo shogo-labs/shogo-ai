@@ -234,50 +234,6 @@ export const IMAGE_USD_CONFIG: Record<string, { prices: ImagePriceTable }> = {
       landscape: { low: 0.195, medium: 0.195, high: 0.195 },
     },
   },
-  // fal list prices (fal.ai model pages, 2026-10). "hd" maps to 2K output for
-  // Nano Banana (same price as 1K) and QUALITY rendering for Ideogram.
-  'nano-banana-pro': {
-    prices: {
-      square: { low: 0.15, medium: 0.15, high: 0.15 },
-      portrait: { low: 0.15, medium: 0.15, high: 0.15 },
-      landscape: { low: 0.15, medium: 0.15, high: 0.15 },
-    },
-  },
-  'nano-banana-2': {
-    prices: {
-      square: { low: 0.08, medium: 0.08, high: 0.08 },
-      portrait: { low: 0.08, medium: 0.08, high: 0.08 },
-      landscape: { low: 0.08, medium: 0.08, high: 0.08 },
-    },
-  },
-  'seedream-5-pro': {
-    prices: {
-      square: { low: 0.0675, medium: 0.0675, high: 0.0675 },
-      portrait: { low: 0.0675, medium: 0.0675, high: 0.0675 },
-      landscape: { low: 0.0675, medium: 0.0675, high: 0.0675 },
-    },
-  },
-  'flux-pro-ultra': {
-    prices: {
-      square: { low: 0.06, medium: 0.06, high: 0.06 },
-      portrait: { low: 0.06, medium: 0.06, high: 0.06 },
-      landscape: { low: 0.06, medium: 0.06, high: 0.06 },
-    },
-  },
-  'ideogram-3': {
-    prices: {
-      square: { low: 0.06, medium: 0.06, high: 0.09 },
-      portrait: { low: 0.06, medium: 0.06, high: 0.09 },
-      landscape: { low: 0.06, medium: 0.06, high: 0.09 },
-    },
-  },
-  'recraft-3': {
-    prices: {
-      square: { low: 0.04, medium: 0.04, high: 0.04 },
-      portrait: { low: 0.04, medium: 0.04, high: 0.04 },
-      landscape: { low: 0.04, medium: 0.04, high: 0.04 },
-    },
-  },
   // Higgsfield fallbacks, only for displaying a price when `/estimate` is
   // unavailable — a request that cannot be priced is refused, never billed from
   // these numbers. SOUL V2 is $0.004 at 720p and $0.006 at 1080p.
@@ -337,57 +293,8 @@ export function calculateImageUsageCost(
 }
 
 // =============================================================================
-// Image utility costs (upscale, background removal)
-// =============================================================================
-
-/** fal list prices: Clarity upscaler bills per output megapixel; BiRefNet per compute second (flat estimate). */
-export const IMAGE_PROCESS_USD_CONFIG = {
-  upscale: { perOutputMegapixel: 0.03, minUsd: 0.03 },
-  'remove-background': { flat: 0.005 },
-} as const
-
-export function calculateImageProcessUsageCost(
-  operation: keyof typeof IMAGE_PROCESS_USD_CONFIG,
-  output: { width?: number; height?: number } = {},
-): UsageCostResult {
-  let rawUsd: number
-  if (operation === 'upscale') {
-    const cfg = IMAGE_PROCESS_USD_CONFIG.upscale
-    const megapixels = output.width && output.height ? (output.width * output.height) / 1_000_000 : 4
-    rawUsd = Math.max(cfg.minUsd, megapixels * cfg.perOutputMegapixel)
-  } else {
-    rawUsd = IMAGE_PROCESS_USD_CONFIG['remove-background'].flat
-  }
-  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
-}
-
-// =============================================================================
 // Video Generation Usage Costs
 // =============================================================================
-
-/** Per-second list prices, as carried by a `VIDEO_MODEL_CATALOG` entry. */
-export interface VideoRates {
-  usdPerSecond?: number
-  usdPerSecondWithAudio?: number
-  /** Flat upstream price for one clip (per-request providers, e.g. Higgsfield). */
-  usdPerRequest?: number
-}
-
-/**
- * USD for one generated video. Per-request priced providers (Higgsfield) charge
- * a flat clip price; per-second providers charge the model's rate (the audio
- * rate when audio is on and the model prices it separately) times duration.
- */
-export function calculateVideoUsageCost(rates: VideoRates, seconds: number, audio = false): UsageCostResult {
-  let rawUsd: number
-  if (rates.usdPerRequest !== undefined) {
-    rawUsd = Math.max(0, rates.usdPerRequest)
-  } else {
-    const perSecond = audio && rates.usdPerSecondWithAudio !== undefined ? rates.usdPerSecondWithAudio : rates.usdPerSecond ?? 0
-    rawUsd = Math.max(0, seconds) * perSecond
-  }
-  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
-}
 
 /**
  * USD for a Higgsfield request: the free `/estimate` captured at submit time,
