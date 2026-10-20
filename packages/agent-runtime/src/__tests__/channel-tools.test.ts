@@ -363,6 +363,45 @@ describe('channel tools call the internal agent-channel API', () => {
     expect(conflict).toMatchObject({ code: 'doc_conflict', status: 409 })
   })
 
+  test('channel doc tools carry the budget, archive a section and surface doc_full', async () => {
+    const budget = { chars: 175_492, limit: 200_000, pct: 87.7, level: 'critical' }
+    reply = {
+      channel: { id: 'c-1', name: 'roadmap' },
+      doc: { title: 'Plan', content: '# Q4', version: 7, budget },
+      url: 'https://x/c/c-1?doc=1',
+      archives: [{ id: 'a-1', heading: 'SHO-26 QA gate', chars: 7688 }],
+    }
+    const read = payload(await tool('team_chat_doc_read').execute('t', { channel: 'roadmap', include_archive: true }))
+    expect(read).toMatchObject({ ok: true, budget, archives: [{ heading: 'SHO-26 QA gate' }] })
+    const readUrl = new URL(calls[0].url)
+    expect(readUrl.searchParams.get('include_archive')).toBe('1')
+
+    reply = { channel: { id: 'c-1', name: 'roadmap' }, archive: { id: 'a-1', heading: 'SHO-26 QA gate', content: 'the story' } }
+    const one = payload(await tool('team_chat_doc_read').execute('t', { channel: 'roadmap', archive_id: 'a-1' }))
+    expect(one.archive).toMatchObject({ heading: 'SHO-26 QA gate', content: 'the story' })
+    expect(new URL(calls[1].url).searchParams.get('archive_id')).toBe('a-1')
+
+    reply = { doc: { title: 'Plan', version: 8, budget: { chars: 160_000, limit: 200_000, pct: 80, level: 'warn' } }, url: 'https://x/c/c-1?doc=1', archive: { id: 'a-2', heading: 'Old card', chars: 1200 } }
+    const archived = payload(await tool('team_chat_doc_update').execute('t', { channel: 'roadmap', mode: 'archive_section', section: 'Old card' }))
+    expect(archived).toMatchObject({ ok: true, version: 8, budget: { level: 'warn' }, archived: { heading: 'Old card', chars: 1200 } })
+    expect(JSON.parse(String(calls[2].init?.body))).toEqual({
+      projectId: 'proj-1', mode: 'archive_section', section: 'Old card',
+    })
+
+    const noSection = payload(await tool('team_chat_doc_update').execute('t', { channel: 'roadmap', mode: 'archive_section' }))
+    expect(noSection.code).toBe('invalid_input')
+
+    status = 400
+    reply = { error: { code: 'doc_full', message: 'too big', chars: 201_000, limit: 200_000, over_by: 1_000, next: ['archive_section'] } }
+    const full = payload(await tool('team_chat_doc_update').execute('t', { channel: 'roadmap', mode: 'append', content: '## Notes\n\nmore' }))
+    expect(full).toMatchObject({ code: 'doc_full', status: 400, over_by: 1_000, chars: 201_000, next: ['archive_section'] })
+
+    status = 400
+    reply = { error: { code: 'use_card_thread', message: 'card narrative', reason: 'card_heading', heading: 'SHO-123 QA gate', card: 'SHO-123' } }
+    const cardLog = payload(await tool('team_chat_doc_update').execute('t', { channel: 'roadmap', mode: 'append', content: '## SHO-123 QA gate\n\nstory' }))
+    expect(cardLog).toMatchObject({ code: 'use_card_thread', reason: 'card_heading', card: 'SHO-123' })
+  })
+
   test('validation and API errors are returned to the model', async () => {
     const empty = payload(await tool('team_chat_post').execute('t', { channel: 'general', text: '  ' }))
     expect(empty.code).toBe('invalid_input')

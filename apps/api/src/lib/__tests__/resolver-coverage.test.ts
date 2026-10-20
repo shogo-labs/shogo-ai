@@ -82,6 +82,7 @@ const EXEMPT: Record<string, string> = {
   conversationMessageEmbedding: 'Written as a side effect of indexing a conversation message — the parent conversation route resolves its workspace.',
   conversationAttachmentChunk: 'Written as a side effect of indexing extracted attachment text — the parent attachment conversation is home-region scoped.',
   conversationDoc: 'Mutated only via /api/conversations/:id/doc routes — the conversation lookup resolves its workspace.',
+  conversationDocArchive: 'Mutated only via /api/conversations/:id/doc/archives routes — the conversation lookup resolves its workspace (same as conversationDoc).',
   customDomain: 'Mutated via /api/projects/:projectId/domains — resolved by path projectId.',
   customEmoji: 'Mutated via workspace-scoped custom emoji routes — resolved by path workspaceId.',
   gitHubConnection: 'Mutated via /api/projects/:projectId/github — resolved by path projectId.',

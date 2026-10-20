@@ -73,6 +73,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   ConversationAttachmentChunk: { decision: 'include', reason: 'Extracted text chunks used for channel search.', scope: { kind: 'parent', field: 'attachmentId', parent: 'ConversationAttachment' } },
   ConversationDoc: { decision: 'include', reason: 'The shared doc of each channel.', scope: { kind: 'parent', field: 'conversationId', parent: 'Conversation' } },
   ConversationDocRevision: { decision: 'include', reason: 'Doc revision history.', scope: { kind: 'parent', field: 'docId', parent: 'ConversationDoc' } },
+  ConversationDocArchive: { decision: 'include', reason: 'Sections archived out of a channel doc, restorable from the doc pane.', scope: { kind: 'parent', field: 'conversationId', parent: 'Conversation' } },
   ConversationMention: { decision: 'include', reason: 'Who was mentioned in which message.', scope: { kind: 'parent', field: 'messageId', parent: 'ConversationMessage' } },
   ConversationPin: { decision: 'include', reason: 'Pinned messages.', scope: { kind: 'parent', field: 'conversationId', parent: 'Conversation' } },
   ConversationReaction: { decision: 'include', reason: 'Emoji reactions.', scope: { kind: 'parent', field: 'messageId', parent: 'ConversationMessage' } },

@@ -489,9 +489,33 @@ export interface ChannelDoc {
   content: string
   version: number
   locked: boolean
+  /** How full the doc is; the doc is injected into every agent's prompt, so full is expensive. */
+  budget?: DocBudget
   updatedBy: DocAuthor | null
   createdAt: string
   updatedAt: string
+}
+
+export type DocBudgetLevel = 'ok' | 'warn' | 'critical'
+
+export interface DocBudget {
+  chars: number
+  limit: number
+  /** Percent used, one decimal. */
+  pct: number
+  level: DocBudgetLevel
+}
+
+/** A section archived out of a channel doc. `content` is only on a single-archive read. */
+export interface ChannelDocArchive {
+  id: string
+  conversationId: string
+  title: string
+  heading: string
+  chars: number
+  content?: string
+  archivedBy: DocAuthor | null
+  createdAt: string
 }
 
 export interface ChannelDocState {
@@ -688,6 +712,38 @@ export function teamChatApi() {
     },
     async lockDoc(conversationId: string, locked: boolean): Promise<ChannelDoc> {
       return (await http.post<{ doc: ChannelDoc }>(`${conv(conversationId)}/doc/lock`, { locked })).data.doc
+    },
+    async listDocArchives(conversationId: string): Promise<ChannelDocArchive[]> {
+      return (await http.get<{ archives: ChannelDocArchive[] }>(`${conv(conversationId)}/doc/archives`)).data.archives ?? []
+    },
+    async getDocArchive(conversationId: string, archiveId: string): Promise<ChannelDocArchive> {
+      return (await http.get<{ archive: ChannelDocArchive }>(
+        `${conv(conversationId)}/doc/archives/${encodeURIComponent(archiveId)}`,
+      )).data.archive
+    },
+    async archiveDocSection(
+      conversationId: string,
+      section: string,
+      baseVersion: number,
+    ): Promise<{ doc: ChannelDoc; archive: ChannelDocArchive }> {
+      try {
+        return (await http.post<{ doc: ChannelDoc; archive: ChannelDocArchive }>(
+          `${conv(conversationId)}/doc/archives`,
+          { section, baseVersion },
+        )).data
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
+    },
+    async restoreDocArchive(conversationId: string, archiveId: string, baseVersion: number): Promise<ChannelDoc> {
+      try {
+        return (await http.post<{ doc: ChannelDoc }>(
+          `${conv(conversationId)}/doc/archives/${encodeURIComponent(archiveId)}/restore`,
+          { baseVersion },
+        )).data.doc
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
     },
     async save(messageId: string, on: boolean) {
       await http.post(`${msg(messageId)}/save`, { on })

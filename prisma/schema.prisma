@@ -4249,6 +4249,7 @@ model Conversation {
   scheduledMessages ScheduledMessage[]
   huddles           Huddle[]
   doc               ConversationDoc?
+  docArchives       ConversationDocArchive[]
   boards            Board[]
 
   @@unique([workspaceId, slug])
@@ -4615,6 +4616,34 @@ model ConversationDocRevision {
 
   @@index([docId, createdAt])
   @@map("conversation_doc_revisions")
+}
+
+/// A section archived out of a ConversationDoc so a near-limit doc can be
+/// slimmed without losing its text. The doc keeps one pointer line in place of
+/// the section; the body lives here until someone restores it.
+model ConversationDocArchive {
+  id                  String   @id @default(uuid())
+  conversationId      String
+  workspaceId         String
+  /// Doc title at the time of archiving.
+  title               String   @default("")
+  /// Heading text (without the leading #s).
+  heading             String
+  /// Section body, without the heading line.
+  content             String   @default("")
+  /// Characters removed from the doc (the whole section, heading included).
+  chars               Int      @default(0)
+  /// "user" or "agent".
+  archivedByType      String   @default("user")
+  archivedByUserId    String?
+  archivedByProjectId String?
+  createdAt           DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@index([workspaceId])
+  @@map("conversation_doc_archives")
 }
 
 model SavedMessage {

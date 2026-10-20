@@ -293,6 +293,8 @@ export interface CheckpointCallResult<T> {
   /** The card someone has to approve, when `code` is `approval_pending`. */
   approvalId?: string
   expiresAt?: string
+  /** Extra fields the API sent with the error (e.g. `over_by` on `doc_full`). */
+  details?: Record<string, any>
 }
 
 async function checkpointFetch<T>(
@@ -829,7 +831,16 @@ async function personalFetch<T>(
     if (!res.ok) {
       const err = json?.error
       const message = typeof err === 'string' ? err : err?.message
-      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+      const details = err && typeof err === 'object'
+        ? Object.fromEntries(Object.entries(err).filter(([k]) => k !== 'code' && k !== 'message'))
+        : undefined
+      return {
+        ok: false,
+        status: res.status,
+        error: message ?? `HTTP ${res.status}`,
+        code: err?.code,
+        ...(details && Object.keys(details).length ? { details } : {}),
+      }
     }
     return { ok: true, status: res.status, data: parse ? parse(json) : (json as T) }
   } catch (err: any) {
@@ -1322,6 +1333,15 @@ export async function stopRunningAgents(
   })
 }
 
+/** How full a channel doc is (see the API's `conversation-doc.service`). */
+export interface AgentDocBudget {
+  chars: number
+  limit: number
+  /** Percent used, one decimal. */
+  pct: number
+  level: 'ok' | 'warn' | 'critical'
+}
+
 /** A channel's shared markdown doc (see the API's `conversation-doc.service`). */
 export interface AgentChannelDoc {
   id: string
@@ -1330,22 +1350,50 @@ export interface AgentChannelDoc {
   content: string
   version: number
   locked: boolean
+  budget?: AgentDocBudget
   updatedBy: { type: 'user' | 'agent'; id: string | null; name: string } | null
   updatedAt: string
 }
 
-export type AgentDocMode = 'replace' | 'append' | 'patch_section'
+/** A section archived out of a channel doc. `content` is only on a single-archive read. */
+export interface AgentDocArchive {
+  id: string
+  conversationId: string
+  title: string
+  heading: string
+  chars: number
+  content?: string
+  archivedBy: { type: 'user' | 'agent'; id: string | null; name: string } | null
+  createdAt: string
+}
+
+export type AgentDocMode = 'replace' | 'append' | 'patch_section' | 'archive_section'
 
 export async function readAgentChannelDoc(
   workspaceId: string,
   channel: string,
   identity: AgentChannelIdentity,
-): Promise<CheckpointCallResult<{ channel: { id: string; name: string | null }; doc: AgentChannelDoc | null; url: string | null }>> {
+  options: { includeArchive?: boolean; archiveId?: string } = {},
+): Promise<CheckpointCallResult<{
+  channel: { id: string; name: string | null }
+  doc: AgentChannelDoc | null
+  url: string | null
+  archives?: AgentDocArchive[]
+  archive?: AgentDocArchive
+}>> {
   const params = new URLSearchParams()
   if (identity.projectId) params.set('projectId', identity.projectId)
+  if (options.includeArchive) params.set('include_archive', '1')
+  if (options.archiveId) params.set('archive_id', options.archiveId)
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/doc?${params}`), {
     method: 'GET',
-    parse: (j) => ({ channel: j?.channel, doc: j?.doc ?? null, url: j?.url ?? null }),
+    parse: (j) => ({
+      channel: j?.channel,
+      doc: j?.doc ?? null,
+      url: j?.url ?? null,
+      ...(j?.archives ? { archives: j.archives } : {}),
+      ...(j?.archive ? { archive: j.archive } : {}),
+    }),
   })
 }
 
@@ -1355,12 +1403,13 @@ export async function updateAgentChannelDoc(
   input: {
     identity: AgentChannelIdentity
     mode: AgentDocMode
-    content: string
+    content?: string
     title?: string
     section?: string
     baseVersion?: number
+    force?: boolean
   },
-): Promise<CheckpointCallResult<{ doc: AgentChannelDoc; url: string | null }>> {
+): Promise<CheckpointCallResult<{ doc: AgentChannelDoc; url: string | null; archive?: AgentDocArchive }>> {
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/doc`), {
     method: 'PUT',
     body: JSON.stringify({
@@ -1370,8 +1419,9 @@ export async function updateAgentChannelDoc(
       title: input.title,
       section: input.section,
       baseVersion: input.baseVersion,
+      force: input.force || undefined,
     }),
-    parse: (j) => ({ doc: j?.doc, url: j?.url ?? null }),
+    parse: (j) => ({ doc: j?.doc, url: j?.url ?? null, ...(j?.archive ? { archive: j.archive } : {}) }),
   })
 }
 
