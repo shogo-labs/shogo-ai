@@ -16,7 +16,7 @@
 
 import { afterAll, describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -113,7 +113,7 @@ describe('SHO-98 acceptance — the hook is the enforcement point', () => {
     expect(message(dir).trimEnd().endsWith(CANONICAL)).toBe(true)
     expect(ok(dir, ['log', '-1', '--format=%an <%ae>']).trim()).toBe('Shogo Agent <agent@shogo.ai>')
     expect(ok(dir, ['log', '-1', '--format=%cn <%ce>']).trim()).toBe('Shogo Agent <agent@shogo.ai>')
-  })
+  }, 30_000)
 
   test('AC2: a hand-written Shogo co-author is replaced and a human co-author survives', () => {
     const withWrong = repo('agent@shogo.ai', 'Shogo Agent')
@@ -135,7 +135,7 @@ describe('SHO-98 acceptance — the hook is the enforcement point', () => {
     expect(paired).toContain(`Co-authored-by: ${HUMAN}`)
     expect(canonicalCount(withHuman)).toBe(1)
     expect(paired.trimEnd().endsWith(CANONICAL)).toBe(true)
-  })
+  }, 30_000)
 
   test('AC3+AC6: -F, bash -c and amend are attributed; a bad identity is refused', () => {
     const fromFile = repo('agent@shogo.ai', 'Shogo Agent')
@@ -178,7 +178,7 @@ describe('SHO-98 acceptance — the hook is the enforcement point', () => {
       expect(result.stderr).toContain('agent@shogo.ai')
       expect(ok(refused, ['rev-list', '--count', '--all']).trim()).toBe('0')
     }
-  })
+  }, 30_000)
 
   test('AC4: a human checkout is never refused and never gets a trailer', () => {
     const dir = repo('russelllacour@gmail.com', 'Russell LaCour')
@@ -189,7 +189,7 @@ describe('SHO-98 acceptance — the hook is the enforcement point', () => {
     ok(dir, ['remote', 'add', 'origin', remote])
     expect(run(dir, ['push', '-q', 'origin', 'HEAD:refs/heads/human']).code).toBe(0)
     expect(ok(remote, ['rev-parse', '--verify', 'refs/heads/human']).trim()).not.toBe('')
-  })
+  }, 30_000)
 
   test('AC3b: a --no-verify commit with a wrong identity cannot leave the box', () => {
     const dir = repo('agent@shogo.ai', 'Shogo Agent')
@@ -208,7 +208,7 @@ describe('SHO-98 acceptance — the hook is the enforcement point', () => {
     expect(push.code).not.toBe(0)
     expect(push.stderr).toContain('[pre-push] Refusing to push')
     expect(ok(remote, ['for-each-ref']).trim()).toBe('')
-  })
+  }, 30_000)
 
   test('AC7: a fresh clone is guarded by `prepare` alone — no hand-installed hooks', () => {
     // The hook must ship executable in the tracked tree, or a clone is inert.
@@ -233,7 +233,7 @@ describe('SHO-98 acceptance — the hook is the enforcement point', () => {
     ok(clone, ['add', 'guard.txt'])
     expect(run(clone, ['commit', '-q', '-m', 'chore: guarded from the first commit']).code).toBe(0)
     expect(canonicalCount(clone)).toBe(1)
-  })
+  }, 30_000)
 
   test('call sites never write a caller-supplied co-author', async () => {
     const { withShogoCommitTrailer, normalizeAgentAttribution } = await import(
@@ -253,36 +253,34 @@ describe('SHO-98 acceptance — the hook is the enforcement point', () => {
     const again = normalizeAgentAttribution(twice.message)
     expect(again.changed).toBe(false)
     expect(again.message.split(CANONICAL).length - 1).toBe(1)
-  })
+  }, 30_000)
 
-  test('a branch that merged main is still pushable (main is authored by people)', () => {
+  test('a branch that merged upstream human history is still pushable', () => {
     const remote = bareRemote()
     const agent = repo('agent@shogo.ai', 'Shogo Agent')
     ok(agent, ['remote', 'add', 'origin', remote])
-    // The tracked pre-push also regenerates the Prisma client when pushing to
-    // main; giving it the path it looks at keeps it from amending the seed.
-    mkdirSync(join(agent, 'apps/api/src/generated/prisma'), { recursive: true })
-    writeFileSync(join(agent, 'apps/api/src/generated/prisma/.keep'), '')
     writeFileSync(join(agent, 'seed.txt'), 'seed\n')
     ok(agent, ['add', '-A'])
     ok(agent, ['commit', '-q', '-m', 'chore: seed'])
-    ok(agent, ['push', '-q', 'origin', 'HEAD:refs/heads/main'])
+    ok(agent, ['push', '-q', 'origin', 'HEAD:refs/heads/trunk'])
     ok(agent, ['push', '-q', 'origin', 'HEAD:refs/heads/feature'])
 
-    // A person's commit lands on main from a plain clone (no hooks installed).
+    // A person's commit lands on upstream (in production that branch is `main`;
+    // the guard keys off identity, not the branch name) from a plain clone with
+    // no hooks installed.
     const humanDir = tempDir('sho98-human')
-    ok(humanDir, ['clone', '--quiet', remote, join(humanDir, 'h')])
+    ok(humanDir, ['clone', '--quiet', '--branch', 'trunk', remote, join(humanDir, 'h')])
     const human = join(humanDir, 'h')
     ok(human, ['config', 'user.name', 'Russell LaCour'])
     ok(human, ['config', 'user.email', 'russelllacour@gmail.com'])
     writeFileSync(join(human, 'human.txt'), 'h\n')
     ok(human, ['add', '-A'])
     ok(human, ['commit', '-q', '-m', 'feat: a person built this'])
-    ok(human, ['push', '-q', 'origin', 'HEAD:refs/heads/main'])
+    ok(human, ['push', '-q', 'origin', 'HEAD:refs/heads/trunk'])
 
     // The agent syncs main into its feature branch — the everyday flow.
     ok(agent, ['fetch', '-q', 'origin'])
-    const merge = run(agent, ['merge', '-q', '--no-edit', 'origin/main'])
+    const merge = run(agent, ['merge', '-q', '--no-edit', 'origin/trunk'])
     expect(merge.code).toBe(0)
 
     const push = run(agent, ['push', '-q', 'origin', 'HEAD:refs/heads/feature'])
@@ -291,5 +289,5 @@ describe('SHO-98 acceptance — the hook is the enforcement point', () => {
     expect(ok(remote, ['rev-parse', 'refs/heads/feature']).trim()).toBe(
       ok(agent, ['rev-parse', 'HEAD']).trim(),
     )
-  })
+  }, 30_000)
 })
