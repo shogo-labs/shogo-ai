@@ -4,7 +4,7 @@
  * Admin General Settings - Shogo Cloud connection, cloud registration, and appearance.
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -102,6 +102,51 @@ export default function AdminGeneralPage() {
       console.error('[AdminGeneral] Failed to load instance info:', err)
     }
   }, [platform])
+
+  /**
+   * A key that was just accepted, or a renamed machine, leaves the tunnel
+   * reconnecting for a few seconds. Poll for 30s so the card settles on
+   * Connected by itself instead of sitting on Disconnected until the screen is
+   * reloaded (the #1568 report).
+   */
+  // `workspaces` is optional for older local APIs; fall back to the single
+  // workspace name so the row is never blank on a machine that is registered.
+  // The fallback has no id (the old API never sent one) — a name-shaped id
+  // would be a key nothing else can match.
+  const registeredWorkspaces =
+    instanceInfo?.workspaces ??
+    (instanceInfo?.workspaceName
+      ? [
+          {
+            id: "",
+            name: instanceInfo.workspaceName,
+            state: (instanceInfo.tunnelConnected ? "connected" : "connecting") as
+              | "connected"
+              | "connecting",
+          },
+        ]
+      : [])
+
+  const settlePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const settleInstanceInfo = useCallback(() => {
+    if (settlePollRef.current) clearInterval(settlePollRef.current)
+    const stopAt = Date.now() + 30_000
+    void fetchInstanceInfo()
+    settlePollRef.current = setInterval(() => {
+      if (Date.now() > stopAt) {
+        if (settlePollRef.current) clearInterval(settlePollRef.current)
+        settlePollRef.current = null
+        return
+      }
+      void fetchInstanceInfo()
+    }, 3_000)
+  }, [fetchInstanceInfo])
+  useEffect(
+    () => () => {
+      if (settlePollRef.current) clearInterval(settlePollRef.current)
+    },
+    [],
+  )
 
   const loadStatus = useCallback(async () => {
     try {
@@ -259,6 +304,7 @@ export default function AdminGeneralPage() {
       setApiKeyDraft('')
       setLoginStatus('idle')
       await loadStatus()
+      settleInstanceInfo()
       void refreshCloudWorkspaces(API_URL)
     } catch (err: any) {
       setLoginStatus('error')
@@ -302,7 +348,7 @@ export default function AdminGeneralPage() {
     setIsSavingName(true)
     try {
       await platform.updateInstanceName(trimmed)
-      setTimeout(() => fetchInstanceInfo(), 2000)
+      settleInstanceInfo()
     } catch (err) {
       console.error('[AdminGeneral] Failed to update instance name:', err)
       if (instanceInfo) setInstanceNameDraft(instanceInfo.name)
@@ -634,9 +680,39 @@ export default function AdminGeneralPage() {
                     )}
                   </View>
                 </View>
-                {instanceInfo.workspaceName && (
-                  <InfoRow label="Cloud Workspace" value={instanceInfo.workspaceName} />
-                )}
+                {/* Every workspace this machine is registered in, with its own
+                    tunnel state — a desktop signed into several workspaces
+                    registers in each of them. */}
+                <View className="gap-1">
+                  <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Cloud Workspaces
+                  </Text>
+                  {registeredWorkspaces.length === 0 ? (
+                    <Text className="text-sm text-muted-foreground">
+                      {instanceInfo.tunnelConnected ? "not registered yet" : "Connecting…"}
+                    </Text>
+                  ) : (
+                    registeredWorkspaces.map((workspace) => (
+                      <View
+                        key={workspace.id || workspace.name}
+                        className="flex-row items-center justify-between gap-2"
+                      >
+                        <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                          {workspace.name || workspace.id}
+                        </Text>
+                        <Text
+                          className={
+                            workspace.state === "connected"
+                              ? "text-xs text-green-500 font-medium"
+                              : "text-xs text-muted-foreground font-medium"
+                          }
+                        >
+                          {workspace.state === "connected" ? "Connected" : "Connecting…"}
+                        </Text>
+                      </View>
+                    ))
+                  )}
+                </View>
               </View>
             </View>
           </SectionCard>

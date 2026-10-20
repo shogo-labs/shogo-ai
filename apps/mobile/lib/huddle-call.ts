@@ -84,6 +84,14 @@ export function useHuddleCall(): HuddleCallState {
   return useSyncExternalStore(subscribe, getHuddleCall, getHuddleCall)
 }
 
+/** For code outside React (the native call screen) that reacts to every change of the call. */
+export function subscribeHuddleCall(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
+}
+
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
 }

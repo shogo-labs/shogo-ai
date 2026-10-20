@@ -1,0 +1,241 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * The relay's tenant scoping is the security boundary for the master Zernio
+ * key, so it is tested as a pure decision first — no database, no provider.
+ */
+
+import { describe, expect, test } from 'bun:test'
+import { planRelayRequest } from '../relay-plan'
+
+const workspaceId = '11111111-1111-4111-8111-111111111111'
+/** The routing id the cloud derives for the cloud scope. */
+const externalId = `ws_${workspaceId}`
+const profile = {
+  id: 'profile_1',
+  workspaceId,
+  localWorkspaceId: '',
+  zernioProfileId: 'zernio_profile_1',
+  externalId,
+  name: 'Acme',
+}
+
+const plan = (args: Partial<Parameters<typeof planRelayRequest>[0]> = {}) =>
+  planRelayRequest({
+    method: 'GET',
+    path: '/profiles',
+    query: {},
+    body: undefined,
+    workspaceId,
+    externalId,
+    profile,
+    ...args,
+  })
+
+describe('relay scoping', () => {
+  test('the caller can only ever read its own profile', () => {
+    const result = plan({ path: '/profiles', query: { externalId: 'someone_else' } })
+    expect(result).toMatchObject({ kind: 'forward', query: { externalId } })
+  })
+
+  test('a profile create is rewritten onto the caller’s workspace', () => {
+    const result = plan({
+      method: 'POST',
+      path: '/profiles',
+      body: { name: 'Acme', externalId: 'victim_workspace' },
+    })
+    expect(result).toMatchObject({ kind: 'forward', record: 'profile-created' })
+    expect((result as any).body).toEqual({ name: 'Acme', externalId })
+  })
+
+  test('each local workspace derives its own routing id, never the request’s', () => {
+    const localScope = '22222222-2222-4222-8222-222222222222'
+    const localPlan = plan({
+      method: 'POST',
+      path: '/profiles',
+      body: { name: 'Acme', externalId: 'ws_victim' },
+      externalId: `lws_${localScope}`,
+      profile: { ...profile, localWorkspaceId: localScope, externalId: `lws_${localScope}` },
+    })
+    expect((localPlan as any).body).toEqual({ name: 'Acme', externalId: `lws_${localScope}` })
+
+    const read = plan({ path: '/profiles', query: { externalId: 'lws_other' }, externalId: `lws_${localScope}` })
+    expect(read).toMatchObject({ kind: 'forward', query: { externalId: `lws_${localScope}` } })
+  })
+
+  test('another workspace’s profile id is refused', () => {
+    const result = plan({ path: '/profiles/zernio_profile_other', method: 'DELETE' })
+    expect(result).toMatchObject({ kind: 'deny', status: 403, code: 'profile_out_of_scope' })
+  })
+
+  test('account reads are pinned to the caller’s profile id', () => {
+    const result = plan({
+      path: '/accounts',
+      query: { profileId: 'zernio_profile_other' },
+    })
+    expect(result).toMatchObject({
+      kind: 'forward',
+      query: { profileId: 'zernio_profile_1' },
+      record: 'accounts-listed',
+    })
+  })
+
+  test('an account mutation must name an id the route can verify', () => {
+    const result = plan({ path: '/accounts/zernio_account_9', method: 'DELETE' })
+    expect(result).toMatchObject({
+      kind: 'forward',
+      path: '/accounts/zernio_account_9',
+      verifyAccountId: 'zernio_account_9',
+    })
+  })
+
+  test('a publish is forced onto the caller’s profile', () => {
+    const result = plan({
+      method: 'POST',
+      path: '/posts',
+      body: { content: 'hi', profileId: 'zernio_profile_other', platforms: [] },
+    })
+    expect((result as any).body).toMatchObject({ profileId: 'zernio_profile_1', content: 'hi' })
+    expect(result).toMatchObject({ record: 'post-created' })
+  })
+
+  test('post mutations must name an id the route can verify', () => {
+    const result = plan({ path: '/posts/zernio_post_9', method: 'PATCH', body: { content: 'x' } })
+    expect(result).toMatchObject({ kind: 'forward', verifyPostId: 'zernio_post_9' })
+    expect((result as any).body).toMatchObject({ profileId: 'zernio_profile_1' })
+  })
+
+  test('anything outside the allowlist is denied by default', () => {
+    for (const path of ['/analytics', '/webhooks/settings', '/', '/profiles/1/2']) {
+      expect(plan({ path, method: 'POST' })).toMatchObject({
+        kind: 'deny',
+        code: expect.stringMatching(/relay_path_not_allowed|method_not_allowed|invalid_path/),
+      })
+    }
+  })
+
+  test('an automation create is pinned to the caller’s profile and account', () => {
+    const result = plan({
+      path: '/comment-automations',
+      method: 'POST',
+      body: { accountId: 'zernio_acc_1', profileId: 'zernio_profile_other', name: 'Merge', dmMessage: 'x' },
+    })
+    expect(result).toMatchObject({
+      kind: 'forward',
+      record: 'automation-created',
+      verifyAccountId: 'zernio_acc_1',
+    })
+    expect((result as any).body.profileId).toBe('zernio_profile_1')
+  })
+
+  test('an automation mutation must name an id the route can verify', () => {
+    expect(plan({ path: '/comment-automations/ca_9', method: 'PATCH', body: { isActive: false } })).toMatchObject({
+      kind: 'forward',
+      verifyAutomationId: 'ca_9',
+    })
+    expect(plan({ path: '/workflows/wf_9/activate', method: 'POST' })).toMatchObject({
+      kind: 'forward',
+      path: '/workflows/wf_9/activate',
+      verifyAutomationId: 'wf_9',
+    })
+  })
+
+  test('operations that need a profile are refused before the provider is called', () => {
+    for (const [method, path] of [
+      ['GET', '/accounts'],
+      ['GET', '/posts'],
+      ['POST', '/posts'],
+      ['GET', '/connect/instagram'],
+    ] as const) {
+      expect(plan({ method, path, profile: null })).toMatchObject({
+        kind: 'deny',
+        status: 412,
+        code: 'social_not_connected',
+      })
+    }
+  })
+
+  test('unsupported methods never reach the provider', () => {
+    expect(plan({ method: 'PUT', path: '/posts' })).toMatchObject({
+      kind: 'deny',
+      status: 405,
+      code: 'method_not_allowed',
+    })
+  })
+})
+
+describe('inbox scoping', () => {
+  const account = 'zernio_ig'
+
+  test('a conversation list is pinned to the caller’s own profile', () => {
+    expect(plan({ path: '/inbox/conversations', query: { profileId: 'someone_else', limit: '25' } })).toMatchObject({
+      kind: 'forward',
+      path: '/inbox/conversations',
+      query: { profileId: 'zernio_profile_1', limit: '25' },
+    })
+  })
+
+  test('a thread needs an account the workspace owns, in either direction', () => {
+    expect(
+      plan({ path: '/inbox/conversations/conv_1/messages', query: { accountId: account } }),
+    ).toMatchObject({
+      kind: 'forward',
+      path: '/inbox/conversations/conv_1/messages',
+      verifyAccountId: account,
+    })
+
+    expect(
+      plan({
+        method: 'POST',
+        path: '/inbox/conversations/conv_1/messages',
+        body: { accountId: account, message: 'Yes — we ship there.', extra: 'dropped' },
+      }),
+    ).toMatchObject({
+      kind: 'forward',
+      body: { accountId: account, message: 'Yes — we ship there.' },
+      verifyAccountId: account,
+    })
+  })
+
+  test('a thread with no account, or an empty message, is refused before it leaves', () => {
+    expect(plan({ path: '/inbox/conversations/conv_1/messages', query: {} })).toMatchObject({
+      kind: 'deny',
+      status: 400,
+      code: 'invalid_body',
+    })
+    expect(
+      plan({
+        method: 'POST',
+        path: '/inbox/conversations/conv_1/messages',
+        body: { accountId: account, message: '   ' },
+      }),
+    ).toMatchObject({ kind: 'deny', status: 400, code: 'invalid_body' })
+  })
+
+  test('comments are listed by profile and answered by account + comment id', () => {
+    expect(plan({ path: '/inbox/comments', query: { profileId: 'someone_else' } })).toMatchObject({
+      kind: 'forward',
+      query: { profileId: 'zernio_profile_1' },
+    })
+    expect(
+      plan({
+        method: 'POST',
+        path: '/inbox/comments/zernio_post_1',
+        body: { accountId: account, message: 'Just merged!', commentId: 'cmt_1' },
+      }),
+    ).toMatchObject({
+      kind: 'forward',
+      path: '/inbox/comments/zernio_post_1',
+      body: { accountId: account, message: 'Just merged!', commentId: 'cmt_1' },
+      verifyAccountId: account,
+    })
+  })
+
+  test('an inbox path outside the allowlist is still denied', () => {
+    expect(plan({ method: 'DELETE', path: '/inbox/conversations/conv_1' })).toMatchObject({ kind: 'deny' })
+    expect(plan({ method: 'PUT', path: '/inbox/comments/zernio_post_1' })).toMatchObject({
+      kind: 'deny',
+      status: 405,
+    })
+  })
+})

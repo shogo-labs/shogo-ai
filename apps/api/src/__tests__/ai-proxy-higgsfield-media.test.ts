@@ -19,7 +19,6 @@ process.env.SHOGO_LOCAL_MODE = 'true'
 delete process.env.SHOGO_API_KEY
 process.env.HIGGSFIELD_API_KEY = 'hf-test-key'
 process.env.HIGGSFIELD_BASE_URL = 'https://hf.test'
-delete process.env.FAL_KEY
 
 mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
@@ -232,12 +231,21 @@ describe('helpers', () => {
 
   test('every Higgsfield image catalog entry builds a request and never throws', () => {
     const entries = Object.values(IMAGE_MODEL_CATALOG).filter((e: any) => e.provider === 'higgsfield')
-    expect(entries.length).toBe(15)
+    expect(entries.length).toBe(18)
     for (const entry of entries as any[]) {
-      const withRefs = shape(entry.id, { referenceUrls: ['https://cdn.test/a.png'] })
-      expect(withRefs.endpoint).toBeTruthy()
-      expect(withRefs.input.prompt).toBe('a can')
-      expect(() => shape(entry.id, { size: '1792x1024', quality: 'max' })).not.toThrow()
+      // Every model builds a prompt-only request…
+      const plain = shape(entry.id, { size: '1792x1024', quality: 'max' })
+      expect(plain.endpoint).toBeTruthy()
+      expect(plain.input.prompt).toBe('a can')
+      // …and accepts references exactly when its capabilities say it does.
+      if (entry.capabilities.imageToImage) {
+        const withRefs = shape(entry.id, { referenceUrls: ['https://cdn.test/a.png'] })
+        const field = withRefs.input[entry.referenceField.name]
+        expect(field).toEqual(entry.referenceField.multiple ? ['https://cdn.test/a.png'] : 'https://cdn.test/a.png')
+      } else {
+        expect(() => shape(entry.id, { referenceUrls: ['https://cdn.test/a.png'] }))
+          .toThrow(/does not accept reference images/)
+      }
     }
   })
 
@@ -283,13 +291,16 @@ describe('helpers', () => {
     expect(shape('hf-grok-image-2', { quality: 'hd' }).input).toMatchObject({ quality: 'medium', resolution: '2k' })
   })
 
-  test('Ads Studio sends the prompt, ratio and references only', () => {
+  test('Ads Studio sends the prompt, ratio, references and a pinned batch_size', () => {
     const req = shape('hf-ads-studio', { size: '1080x1350', referenceUrls: ['https://cdn.test/product.png'] })
     expect(req.endpoint).toBe('higgsfield/ads-studio/v1.0')
     expect(req.input).toEqual({
       prompt: 'a can',
       aspect_ratio: '4:5',
       image_urls: ['https://cdn.test/product.png'],
+      // The endpoint documents batch_size with no default, so pin 1: the proxy
+      // fans out `n` itself and must not be billed for a surprise extra image.
+      batch_size: 1,
     })
   })
 
@@ -320,6 +331,51 @@ describe('helpers', () => {
     })
     expect(ok.endpoint).toBe('higgsfield/genjutsu/restyle/v1.0')
     expect(ok.input).toMatchObject({ video_url: 'https://cdn.test/in.mp4', preset_id: 'preset-1', resolution: '480p' })
+  })
+})
+
+describe('catalog coverage', () => {
+  test('every documented video/image endpoint is reachable from a model, with no extras', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { resolve } = await import('node:path')
+    // The snapshot the code is generated from: if the vendor adds an endpoint
+    // and the catalog is not regenerated, this fails instead of the endpoint
+    // being silently unusable.
+    const catalog = JSON.parse(
+      readFileSync(resolve(import.meta.dir, '../../../../docs/vendors/higgsfield/catalog.json'), 'utf8'),
+    ) as { endpoints: Record<string, { kind: string }> }
+
+    const wired = new Set<string>()
+    for (const entry of Object.values(IMAGE_MODEL_CATALOG) as any[]) {
+      if (entry.provider !== 'higgsfield') continue
+      for (const endpoint of entry.endpoints ?? [entry.apiModel]) wired.add(endpoint)
+    }
+    for (const entry of Object.values(VIDEO_MODEL_CATALOG) as any[]) {
+      if (entry.provider !== 'higgsfield') continue
+      for (const endpoint of entry.endpoints ?? [entry.textToVideoApiModel]) wired.add(endpoint)
+    }
+
+    const documented = Object.entries(catalog.endpoints)
+      .filter(([, endpoint]) => endpoint.kind === 'video' || endpoint.kind === 'image')
+      .map(([id]) => id)
+      .sort()
+    expect(documented.length).toBeGreaterThan(50)
+    expect(documented.filter((id) => !wired.has(id))).toEqual([])
+    // And nothing wired that the docs do not document.
+    expect([...wired].filter((id) => !catalog.endpoints[id]).sort()).toEqual([])
+  })
+
+  test('Kling 3.0 Standard is text-to-video and image-to-video, 3–15 s, with sound', () => {
+    const entry = VIDEO_MODEL_CATALOG['hf-kling-3.0-std'] as any
+    expect(entry.textToVideoApiModel).toBe('kling-video/v3.0/std/text-to-video')
+    expect(entry.imageToVideoApiModel).toBe('kling-video/v3.0/std/image-to-video')
+    expect(entry.durations).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+    expect(entry.audio).toBe(true)
+    expect(entry.aspectRatios).toEqual(['16:9', '9:16', '1:1'])
+    // The option table is the vendor's, not a hand-kept subset.
+    for (const endpoint of entry.endpoints) {
+      expect(entry.optionsByEndpoint[endpoint].length).toBeGreaterThan(3)
+    }
   })
 })
 
@@ -585,6 +641,118 @@ describe('video routes', () => {
     expect(fetchLog.some((f) => f.url === 'https://hf.test/minimax/hailuo-2.3/standard/text-to-video' && f.init?.method === 'POST')).toBe(false)
   })
 
+  test('Kling 3.0 Standard, text-to-video, 3 s with sound: the documented body', async () => {
+    mockEstimate('kling-video/v3.0/std/text-to-video', '0.3150')
+    mockGeneration({ endpoint: 'kling-video/v3.0/std/text-to-video', videoUrl: 'https://cdn.test/out.mp4' })
+
+    const { res, data } = await submit({ model: 'hf-kling-3.0-std', duration: 3, audio: true, aspect_ratio: '9:16' })
+    expect(res.status).toBe(200)
+    expect(data).toMatchObject({ model: 'hf-kling-3.0-std', duration: 3, audio: true, provider: 'higgsfield' })
+
+    const submitCall = fetchLog.find((f) => f.url === 'https://hf.test/kling-video/v3.0/std/text-to-video')
+    expect(JSON.parse(String(submitCall!.init?.body))).toEqual({
+      prompt: 'a fox runs',
+      duration: 3,
+      aspect_ratio: '9:16',
+      sound: 'on',
+    })
+  })
+
+  test('Kling 3.0 Standard, image-to-video, 3 s with sound: uploads the frame and switches endpoint', async () => {
+    on('https://hf.test/files/generate-upload-url', () => json({
+      public_url: 'https://cdn.test/first.png', upload_url: 'https://s3.test/put', upload_headers: {},
+    }))
+    on('https://s3.test/put', () => new Response('', { status: 200 }))
+    mockEstimate('kling-video/v3.0/std/image-to-video', '0.3150')
+    mockGeneration({ endpoint: 'kling-video/v3.0/std/image-to-video', videoUrl: 'https://cdn.test/out.mp4' })
+
+    const start = `data:image/png;base64,${Buffer.from('first-frame').toString('base64')}`
+    const { res, data } = await submit({ model: 'hf-kling-3.0-std', duration: 3, audio: true, start_image: start })
+    expect(res.status).toBe(200)
+    expect(data.audio).toBe(true)
+
+    const submitCall = fetchLog.find((f) => f.url === 'https://hf.test/kling-video/v3.0/std/image-to-video')
+    expect(JSON.parse(String(submitCall!.init?.body))).toEqual({
+      prompt: 'a fox runs',
+      duration: 3,
+      image_url: 'https://cdn.test/first.png',
+      sound: 'on',
+    })
+  })
+
+  test('model-specific options are passed through and validated against the schema', async () => {
+    mockEstimate('kling-video/v3.0/std/text-to-video', '0.3150')
+    mockGeneration({ endpoint: 'kling-video/v3.0/std/text-to-video', videoUrl: 'https://cdn.test/out.mp4' })
+
+    // multi_prompt[] carries per-shot durations; cfg_scale is 0–1.
+    const ok = await submit({
+      model: 'hf-kling-3.0-std',
+      duration: 8,
+      audio: false,
+      options: {
+        cfg_scale: 0.7,
+        multi_shots: true,
+        multi_prompt: [
+          { prompt: 'a fox runs', duration: 4 },
+          { prompt: 'it stops', duration: 4 },
+        ],
+      },
+    })
+    expect(ok.res.status).toBe(200)
+    const body = JSON.parse(String(fetchLog.find((f) => f.url === 'https://hf.test/kling-video/v3.0/std/text-to-video')!.init?.body))
+    expect(body).toEqual({
+      prompt: 'a fox runs',
+      duration: 8,
+      sound: 'off',
+      cfg_scale: 0.7,
+      multi_shots: true,
+      multi_prompt: [
+        { prompt: 'a fox runs', duration: 4 },
+        { prompt: 'it stops', duration: 4 },
+      ],
+    })
+
+    // Out of range names the field, the model and the range.
+    const badRange = await submit({ model: 'hf-kling-3.0-std', options: { cfg_scale: 4 } })
+    expect(badRange.res.status).toBe(400)
+    expect(badRange.data.error.code).toBe('invalid_option')
+    expect(badRange.data.error.message).toContain('cfg_scale')
+    expect(badRange.data.error.message).toContain('0–1')
+
+    // An undeclared field is refused instead of being sent to the vendor.
+    const unknown = await submit({ model: 'hf-kling-3.0-std', options: { video_quality: 'best' } })
+    expect(unknown.res.status).toBe(400)
+    expect(unknown.data.error.code).toBe('option_unsupported')
+    expect(unknown.data.error.message).toContain('video_quality')
+
+    // A duration outside 3–15 is refused with the range, not a vendor 422.
+    const badDuration = await submit({ model: 'hf-kling-3.0-std', duration: 20 })
+    expect(badDuration.res.status).toBe(400)
+    expect(badDuration.data.error.code).toBe('invalid_duration')
+    expect(badDuration.data.error.message).toContain('3–15')
+
+    // No request reached the vendor for any of the three.
+    expect(fetchLog.filter((f) => f.url.startsWith('https://hf.test/kling-video/')).length).toBe(1)
+  })
+
+  test('asking for sound on a silent model is refused, and never silently dropped', async () => {
+    const { res, data } = await submit({ model: 'hf-hailuo-2.3', audio: true })
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('audio_not_supported')
+    expect(data.error.message).toContain('no native audio')
+    expect(fetchLog.some((f) => f.url.startsWith('https://hf.test/minimax/'))).toBe(false)
+  })
+
+  test('a retired fal id submits on the model that replaced it, naming that model', async () => {
+    mockEstimate('kling-video/v3.0/pro/text-to-video', '0.5000')
+    mockGeneration({ endpoint: 'kling-video/v3.0/pro/text-to-video', videoUrl: 'https://cdn.test/out.mp4' })
+
+    const { res, data } = await submit({ model: 'kling-3-pro', duration: 5 })
+    expect(res.status).toBe(200)
+    expect(data.model).toBe('hf-kling-3.0-pro')
+    expect(fetchLog.some((f) => f.url === 'https://hf.test/kling-video/v3.0/pro/text-to-video')).toBe(true)
+  })
+
   test('rejects an aspect_ratio on a model that has none', async () => {
     const { res, data } = await submit({ aspect_ratio: '9:16' })
     expect(res.status).toBe(400)
@@ -721,21 +889,33 @@ describe('estimate route', () => {
     expect(sent.duration).toBe(10)
   })
 
-  test('prices a fal model from the catalog, and a Genjutsu edit needs a length', async () => {
-    const fal = await call('/ai/v1/media/estimate', {
+  test('a retired fal id prices the Higgsfield model that replaced it', async () => {
+    mockEstimate('kling-video/v3.0/pro/text-to-video', '0.5000')
+    const res = await call('/ai/v1/media/estimate', {
       method: 'POST',
       body: JSON.stringify({ model: 'kling-3-pro', duration: 5 }),
     })
-    // No FAL_KEY here, so the provider is not configured.
-    expect(fal.status).toBe(503)
+    const data = await res.json() as any
+    expect(res.status).toBe(200)
+    // The answer names the model that will actually run, not the retired id.
+    expect(data).toMatchObject({ model: 'hf-kling-3.0-pro', provider: 'higgsfield' })
 
     const genjutsu = await call('/ai/v1/media/estimate', {
       method: 'POST',
       body: JSON.stringify({ model: 'hf-genjutsu-restyle' }),
     })
-    const data = await genjutsu.json() as any
+    const missing = await genjutsu.json() as any
     expect(genjutsu.status).toBe(400)
-    expect(data.error.code).toBe('missing_source_duration')
+    expect(missing.error.code).toBe('missing_source_duration')
+  })
+
+  test('an id that no longer exists is a 400 naming it, not a silent fallback', async () => {
+    const res = await call('/ai/v1/media/estimate', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'flux-pro-ultra-2', duration: 5 }),
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json() as any).error.code).toBe('model_not_found')
   })
 
   test('a token-priced endpoint is refused with a clear message, never a generic error', async () => {
@@ -821,7 +1001,7 @@ describe('estimate route', () => {
 describe('list_media_models', () => {
   beforeEach(() => _resetHiggsfieldEstimateCache())
 
-  test('lists Higgsfield first with per-clip prices and deprecated fal models flagged', async () => {
+  test('lists every model with its endpoints, options and a price', async () => {
     mockEstimate('higgsfield-ai/soul/v2/standard', '0.0940')
     mockEstimate('minimax/hailuo-2.3/standard/text-to-video', '0.0700')
 
@@ -858,37 +1038,91 @@ describe('list_media_models', () => {
     expect(second).toBe(first)
   })
 
-  test('fal models stay routable but are marked deprecated with a replacement', async () => {
-    mockEstimate('higgsfield-ai/soul/v2/standard', '0.0940')
-    mockEstimate('minimax/hailuo-2.3/standard/text-to-video', '0.0700')
-    const data = await listMediaModels() as any
-    const ids = [...data.images, ...data.videos].map((m: any) => m.id)
-    // fal entries are hidden without a FAL_KEY, so check the catalog itself.
-    const { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG } = await import('@shogo/model-catalog')
-    // Each fal model points at the Higgsfield model that does the same job.
-    expect((IMAGE_MODEL_CATALOG as any)['nano-banana-pro']).toMatchObject({ deprecated: true, replacement: 'hf-qwen-image-3' })
-    expect((IMAGE_MODEL_CATALOG as any)['nano-banana-2']).toMatchObject({ deprecated: true, replacement: 'hf-qwen-image-3' })
-    expect((IMAGE_MODEL_CATALOG as any)['seedream-5-pro']).toMatchObject({ deprecated: true, replacement: 'hf-qwen-image-3' })
-    expect((IMAGE_MODEL_CATALOG as any)['recraft-3']).toMatchObject({ deprecated: true, replacement: 'hf-recraft-v4.1' })
-    expect((IMAGE_MODEL_CATALOG as any)['flux-pro-ultra']).toMatchObject({ deprecated: true, replacement: 'hf-marketing-studio-flare' })
-    expect((IMAGE_MODEL_CATALOG as any)['ideogram-3']).toMatchObject({ deprecated: true, replacement: 'hf-ideogram-4' })
-    expect((VIDEO_MODEL_CATALOG as any)['kling-2.5-turbo-pro']).toMatchObject({ deprecated: true, replacement: 'hf-hailuo-2.3' })
-    expect(ids).not.toContain('kling-2.5-turbo-pro')
+  test('a Kling 3.0 Standard listing carries the whole documented option surface', async () => {
+    mockEstimate('kling-video/v3.0/std/text-to-video', '0.3150')
+    const data = await listMediaModels(undefined, { model: 'hf-kling-3.0-std' }) as any
+    expect(data.images).toEqual([])
+    const model = data.videos[0]
+    expect(model.id).toBe('hf-kling-3.0-std')
+    expect(model.audio).toBe(true)
+    expect(model.endpoints).toEqual([
+      'kling-video/v3.0/std/text-to-video',
+      'kling-video/v3.0/std/image-to-video',
+    ])
+    expect(model.parameters.durations).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+    const names = model.options.map((o: any) => o.name)
+    // The knobs this card exists for: multi-shot / multi-prompt, native sound,
+    // cfg_scale, and the i2v-only last frame all have to be visible to the agent.
+    for (const name of ['duration', 'sound', 'multi_shots', 'multi_prompt', 'cfg_scale', 'last_image_url', 'image_url']) {
+      expect(names).toContain(name)
+    }
+    const duration = model.options.find((o: any) => o.name === 'duration')
+    expect(duration).toMatchObject({ type: 'integer', min: 3, max: 15 })
+    const sound = model.options.find((o: any) => o.name === 'sound')
+    expect(sound.values).toEqual(['on', 'off'])
+    // A field only one endpoint documents names that endpoint, so the agent
+    // knows it needs a start image to use it.
+    const lastFrame = model.options.find((o: any) => o.name === 'last_image_url')
+    expect(lastFrame.endpoints).toEqual(['kling-video/v3.0/std/image-to-video'])
+    const multiPrompt = model.options.find((o: any) => o.name === 'multi_prompt')
+    expect(multiPrompt.items).toBe('object')
+    expect(multiPrompt.item_fields.map((f: any) => f.name)).toEqual(expect.arrayContaining(['prompt', 'duration']))
   })
 
-  test('lists all 15 Higgsfield image models with a non-null price, best_for and reference limit', async () => {
+  test('?model= narrows to one model, and an unknown one returns empty lists plus a hint', async () => {
+    mockEstimate('higgsfield-ai/soul/v2/standard', '0.0940')
+    const only = await listMediaModels(undefined, { model: 'hf-ideogram-4' }) as any
+    expect(only.images.map((m: any) => m.id)).toEqual(['hf-ideogram-4'])
+    expect(only.videos).toEqual([])
+
+    const retired = await listMediaModels(undefined, { model: 'nano-banana-pro' }) as any
+    expect(retired.images.map((m: any) => m.id)).toEqual(['hf-qwen-image-3'])
+
+    const nothing = await listMediaModels(undefined, { model: 'not-a-model' }) as any
+    expect(nothing.images).toEqual([])
+    expect(nothing.videos).toEqual([])
+  })
+
+  test('retired fal ids are no longer catalog entries, they resolve through aliases', async () => {
+    const { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG, resolveMediaModelId } = await import('@shogo/model-catalog')
+    // Nothing fal-shaped is left in the catalog itself.
+    for (const id of ['nano-banana-pro', 'nano-banana-2', 'seedream-5-pro', 'recraft-3', 'flux-pro-ultra', 'ideogram-3']) {
+      expect((IMAGE_MODEL_CATALOG as any)[id]).toBeUndefined()
+    }
+    for (const id of ['kling-3-pro', 'kling-2.5-turbo-pro', 'veo-3.1-fast', 'minimax-h3-max']) {
+      expect((VIDEO_MODEL_CATALOG as any)[id]).toBeUndefined()
+    }
+    // …and every retired id still lands on a model that exists.
+    expect(resolveMediaModelId('kling-3-pro')).toBe('hf-kling-3.0-pro')
+    expect(resolveMediaModelId('veo-3.1-fast')).toBe('hf-kling-3.0-std')
+    expect(resolveMediaModelId('nano-banana-pro')).toBe('hf-qwen-image-3')
+    expect(resolveMediaModelId('hf-kling-3.0-std')).toBe('hf-kling-3.0-std')
+  })
+
+  test('lists every Higgsfield image model with a non-null price, best_for and reference limit', async () => {
     // No /estimate routes are mocked: every quote fails, so each price has to
     // come from the catalog instead of blanking the listing.
     const data = await listMediaModels() as any
     const higgsfield = data.images.filter((m: any) => m.provider === 'higgsfield')
-    expect(higgsfield.length).toBe(15)
+    expect(higgsfield.length).toBe(Object.keys(IMAGE_MODEL_CATALOG).filter((id) => (IMAGE_MODEL_CATALOG as any)[id].provider === 'higgsfield').length)
+    expect(higgsfield.length).toBeGreaterThanOrEqual(18)
     for (const model of higgsfield) {
-      expect(model.price.usd).toBeGreaterThan(0)
-      expect(['estimate', 'catalog']).toContain(model.price.source)
+      expect(model.price.unit).toBe('image')
+      // A price is either the vendor's estimate, the documented list price, or
+      // explicitly unknown (never a silent 0 or a missing field).
+      if (model.price.source === 'unknown') {
+        expect(model.price.usd).toBeNull()
+      } else {
+        expect(model.price.usd).toBeGreaterThan(0)
+      }
       expect(typeof model.best_for).toBe('string')
       expect(model.best_for.length).toBeGreaterThan(0)
       expect(typeof model.max_reference_images).toBe('number')
-      expect(model.price.unit).toBe('image')
+      // Every model documents at least prompt + aspect_ratio, so the agent can
+      // always see what it may pass.
+      expect(model.endpoints.length).toBeGreaterThan(0)
+      expect(model.options.length).toBeGreaterThan(0)
+      expect(model.options.map((o: any) => o.name)).toContain('prompt')
     }
     // The three token-priced endpoints have no per-request quote: documented
     // catalog figure, never null.

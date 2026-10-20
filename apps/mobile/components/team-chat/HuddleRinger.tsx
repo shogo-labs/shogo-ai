@@ -9,14 +9,16 @@ import { AppState, Platform, Pressable, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Headphones, PhoneOff } from 'lucide-react-native'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useChatSettings } from '../../hooks/useChatPrefs'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { useWorkspaceChatMode } from '../../hooks/useWorkspaceChatMode'
 import { useMyUserId } from '../../hooks/useTeamChat'
 import { useTeamChatEvents } from '../../lib/team-chat-connection'
 import { nativeChatVisible, teamChatApi } from '../../lib/team-chat-api'
 import { huddleMediaSupported } from '../../lib/huddle-call'
-import { answerRing, applyRingEvent, declineRing, restoreRings, useIncomingRings, type IncomingRing } from '../../lib/huddle-ring'
+import { answerRing, applyRingEvent, declineRing, restoreRings, ringLabel, useIncomingRings, type IncomingRing } from '../../lib/huddle-ring'
 import { startRingtone } from '../../lib/huddle-ringtone'
+import { hasSystemCall } from '../../lib/native-call'
 import { isUserInactive, notifyChannelMessage } from '../../lib/notifications/chat-notifier'
 import { Face } from './Huddle'
 
@@ -44,6 +46,8 @@ export function HuddleRinger() {
   const insets = useSafeAreaInsets()
   const rings = useIncomingRings()
   const ring = rings[0] ?? null
+  const { settings } = useChatSettings(workspaceId)
+  const huddleSound = settings?.huddleSound ?? 'ring'
 
   useEffect(() => {
     if (workspaceId && me) catchUp(workspaceId, me)
@@ -69,14 +73,16 @@ export function HuddleRinger() {
     })()
   })
 
-  const ringing = !!ring
+  // A direct call rings until it's answered or it times out; a group huddle plays its cue once.
+  // A phone whose system call screen is already ringing doesn't buzz a second time.
+  const ringId = ring?.huddleId ?? null
+  const ringKind = ring?.kind ?? null
   useEffect(() => {
-    if (!ringing) return
-    return startRingtone()
-  }, [ringing])
+    if (!ringId || !ringKind) return
+    return startRingtone({ sound: huddleSound, loop: ringKind === 'dm', vibrate: !hasSystemCall(ringId) })
+  }, [ringId, ringKind, huddleSound])
 
   if (!ring) return null
-  const label = ring.kind === 'dm' ? ring.from.name : `${ring.from.name}'s huddle`
 
   return (
     <View
@@ -107,7 +113,7 @@ export function HuddleRinger() {
         </Pressable>
         {huddleMediaSupported ? (
           <Pressable
-            onPress={() => void answerRing(ring, label)}
+            onPress={() => void answerRing(ring, ringLabel(ring))}
             accessibilityRole="button"
             accessibilityLabel="Answer huddle"
             className="h-10 w-10 items-center justify-center rounded-full bg-emerald-600 active:opacity-80"

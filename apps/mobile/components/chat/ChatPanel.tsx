@@ -30,6 +30,7 @@
 import {
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useCallback,
   useMemo,
@@ -68,6 +69,7 @@ import {
   buildOptimisticUserMessage,
   hasMatchingUserMessage,
   newestUserId,
+  stampSendTime,
   type OptimisticEchoInput as OptimisticUserInput,
 } from "./optimistic-echo"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
@@ -102,8 +104,10 @@ import {
   useDomainActions,
   useChatMessageCollectionForSession,
   useProjectCollection,
+  useSDKHttpOptional,
 } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
+import { resolveHistoryPaint } from "./history-paint"
 import { useResolvedTheme } from "../../contexts/theme"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import {
@@ -1057,6 +1061,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // so the agent can read its files. AppSidebar already loads the collection
   // app-wide; we loadAll() defensively in case the panel mounts first.
   const projectCollection = useProjectCollection()
+  // Routing insert point: a workspace-scoped request goes through the domain
+  // client, so a paired desktop's own workspace gets its history from that
+  // machine (the SDK interceptor rewrites the path and the workspace id).
+  const domainHttp = useSDKHttpOptional()
   useEffect(() => {
     projectCollection
       .loadAll(workspaceProjectFilter(workspaceId))
@@ -1148,17 +1156,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const workspaceHistorySearch = useCallback(
     async (query: string): Promise<AgentHistoryResult[]> => {
       if (!workspaceId) return []
+      const search = {
+        q: query,
+        kind: "all",
+        limit: "12",
+        exclude: chatSessionId || "",
+      }
       try {
+        if (domainHttp) {
+          const response = await domainHttp.get<{ results?: AgentHistoryResult[] }>(
+            `/api/workspaces/${encodeURIComponent(workspaceId)}/history/search`,
+            search,
+          )
+          return Array.isArray(response.data?.results) ? response.data.results : []
+        }
         const fetchFn = expoFetch ?? globalThis.fetch
         const headers: Record<string, string> = nativeHeaders
           ? nativeHeaders()
           : {}
-        const params = new URLSearchParams({
-          q: query,
-          kind: "all",
-          limit: "12",
-          exclude: chatSessionId || "",
-        })
+        const params = new URLSearchParams(search)
         const response = await fetchFn(
           `${API_URL}/api/workspaces/${encodeURIComponent(
             workspaceId,
@@ -1175,7 +1191,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return []
       }
     },
-    [workspaceId, chatSessionId, nativeHeaders, expoFetch],
+    [workspaceId, chatSessionId, nativeHeaders, expoFetch, domainHttp],
   )
 
   /**
@@ -1764,12 +1780,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Tracks previous streaming state so the post-stream revalidate effect only
   // fires on the true→false transition (not every idle render).
   const wasStreamingRef = useRef(false)
+  // Session whose reply this panel just streamed or joined. Such a reply is on
+  // screen before the API has written its row (it persists after the stream
+  // EOFs), so a paint from history must not replace it (SHO-85).
+  const liveReplySessionRef = useRef<string | null>(null)
+  // Paints refused in a row while the server catches up; carried on the Sentry
+  // event so a report shows how hard the reply was to keep on screen.
+  const historyPaintAttemptRef = useRef(0)
   const cachedMessagesRef = useRef<any[] | null>(null)
   const hasInjectedInitialMessageRef = useRef(false)
   const isSendingMessageRef = useRef(false)
   const lastUserInputRef = useRef<{
     content: string
     files?: FileAttachment[]
+    /** When it was sent — the chat tag's delivery window is read off this (SHO-52). */
+    sentAt?: number
   } | null>(null)
   const lastNonEmptyMessagesRef = useRef<UIMessage[]>([])
 
@@ -3162,7 +3187,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   m.role === "assistant" &&
                   !priorAssistantIds.has(m.id),
               )
-              if (appeared) return
+              if (appeared) {
+                // Repaint once now that the row exists. Warming the cache is
+                // not enough: a paint that ran while the row was still missing
+                // dropped the reply from the screen, and this is what brings it
+                // back — with the server's canonical id, exactly once (SHO-85).
+                if (currentSessionIdRef.current === sessionIdForReconcile) {
+                  paintLoadedHistoryRef.current(sessionIdForReconcile, {
+                    requireReply: false,
+                  })
+                }
+                return
+              }
             }
             console.warn(
               "[ChatPanel] Assistant message not yet persisted after reconcile retries — relying on next full reload",
@@ -3825,7 +3861,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         : null
 
     if (effectiveMessages.length > 0) {
-      return appendOptimisticEcho(effectiveMessages, currentOptimisticInput)
+      return stampSendTime(
+        appendOptimisticEcho(effectiveMessages, currentOptimisticInput),
+        lastUserInputRef.current,
+      )
     }
 
     if (isStreaming || isSendingMessageRef.current) {
@@ -3892,7 +3931,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const trimmedContent = content.trim()
       const fileArray = files ?? []
       if (!trimmedContent && fileArray.length === 0) return
-      lastUserInputRef.current = { content: trimmedContent, files: fileArray }
+      lastUserInputRef.current = { content: trimmedContent, files: fileArray, sentAt: Date.now() }
       const baselineUserId = newestUserId(messagesRef.current)
       setOptimisticUserInput((current) =>
         current &&
@@ -3904,6 +3943,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               content: trimmedContent,
               files: fileArray,
               baselineUserId,
+              sentAt: lastUserInputRef.current?.sentAt,
             },
       )
     },
@@ -3991,16 +4031,26 @@ const ChatPanelContent = observer(function ChatPanelContent({
         offset: "0",
       })
       try {
-        const fetchFn = expoFetch ?? globalThis.fetch
-        const response = await fetchFn(
-          `${API_URL}/api/chat-messages?${params.toString()}`,
-          {
-            headers: nativeHeaders ? nativeHeaders() : {},
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          } as any,
-        )
-        if (!response.ok) return null
-        const body = await response.json().catch(() => null)
+        // Same insert point as the transcript itself (`/api/chat-messages` is
+        // routed by the SDK interceptor): read the row from the same places the
+        // messages come from, or a machine workspace would compare its
+        // transcript against a cloud chat and think history moved.
+        const body = domainHttp
+          ? (await domainHttp.get<{ items?: any[] }>("/api/chat-messages", {
+              sessionId,
+              agent: "technical",
+              limit: "1",
+              offset: "0",
+            })).data
+          : await (expoFetch ?? globalThis.fetch)(
+              `${API_URL}/api/chat-messages?${params.toString()}`,
+              {
+                headers: nativeHeaders ? nativeHeaders() : {},
+                credentials: Platform.OS === "web" ? "include" : undefined,
+              } as any,
+            )
+              .then((response) => (response.ok ? response.json().catch(() => null) : null))
+              .catch(() => null)
         const newest = Array.isArray(body?.items) ? body.items[0] : null
         if (!newest?.id) return null
         return {
@@ -4012,7 +4062,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return null
       }
     },
-    [expoFetch, nativeHeaders],
+    [expoFetch, nativeHeaders, domainHttp],
   )
 
   // A turn this panel is not attached to (started in another window, by
@@ -4079,21 +4129,46 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const attachToLiveTurnIfAnyRef = useRef(attachToLiveTurnIfAny)
   attachToLiveTurnIfAnyRef.current = attachToLiveTurnIfAny
 
-  // Repaint the transcript from saved history. A turn this window did not run
-  // — a delegated task, a channel dispatch, a project call, or the wake a
-  // finished background task produces — has its reply written by the server,
-  // so reloading is the only way it lands here (SHO-31).
-  const reloadPersistedResponse = useCallback(
-    async (options: { requireReply?: boolean } = {}) => {
-      if (!sessionMessages || isStreamingRef.current) return
-      const sessionId = currentSessionIdRef.current
-      if (!sessionId) return
-      await sessionMessages.loadPage(
-        { sessionId, agent: "technical" },
-        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+  /**
+   * A paint from history was refused because the reply on screen is newer than
+   * anything the server has written (SHO-85). Reported once per paint, never on
+   * the happy path: without it the next "my reply vanished" report has nothing
+   * to look at.
+   */
+  const reportHistoryPaintKeptLiveTail = useCallback(
+    (context: string, reason: string, history: readonly any[]) => {
+      const historyTailRole = history[history.length - 1]?.role ?? "none"
+      console.warn(
+        `[ChatPanel] Kept the on-screen reply instead of painting history (${context}, reason=${reason}, ` +
+          `historyTailRole=${historyTailRole}, historyRows=${history.length})`,
       )
-      if (isStreamingRef.current || currentSessionIdRef.current !== sessionId) return
+      try {
+        Sentry.captureMessage("chat_history_paint_dropped_reply", {
+          level: "warning",
+          tags: { context, reason },
+          extra: {
+            sessionId: currentSessionIdRef.current,
+            turnId: currentTurnIdRef.current,
+            historyTailRole,
+            historyRows: history.length,
+            screenRows: messagesRef.current.length,
+            attempt: historyPaintAttemptRef.current,
+          },
+        })
+      } catch (err) {
+        console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+      }
+    },
+    [],
+  )
 
+  /**
+   * Paint the transcript from what the message store holds, unless that would
+   * drop a reply the API has not written yet (SHO-85).
+   */
+  const paintLoadedHistory = useCallback(
+    (sessionId: string, options: { requireReply?: boolean; keepsLiveTail?: boolean } = {}) => {
+      if (!sessionMessages) return
       const loaded = [...sessionMessages.all].sort(
         (a: any, b: any) =>
           messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt),
@@ -4120,6 +4195,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return next
       })
       const cached = cachedMessagesRef.current
+      const paint = resolveHistoryPaint({
+        history: aiMessages,
+        current: cached ?? [],
+        keepsLiveTail:
+          options.keepsLiveTail ?? liveReplySessionRef.current === sessionId,
+      })
+      if (paint.keptLiveTail) {
+        historyPaintAttemptRef.current += 1
+        reportHistoryPaintKeptLiveTail("paintLoadedHistory", paint.reason, aiMessages)
+        return
+      }
       const unchanged =
         cached?.length === aiMessages.length &&
         cached?.[aiMessages.length - 1]?.id === aiMessages[aiMessages.length - 1]?.id &&
@@ -4127,10 +4213,33 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (!unchanged) {
         cachedMessagesRef.current = aiMessages
         setMessages(aiMessages)
+        liveReplySessionRef.current = null
       }
       sessionMessageCache.set(sessionId, aiMessages)
     },
-    [sessionMessages, setMessages],
+    [sessionMessages, setMessages, reportHistoryPaintKeptLiveTail],
+  )
+  const paintLoadedHistoryRef = useRef(paintLoadedHistory)
+  paintLoadedHistoryRef.current = paintLoadedHistory
+
+  // Repaint the transcript from saved history. A turn this window did not run
+  // — a delegated task, a channel dispatch, a project call, or the wake a
+  // finished background task produces — has its reply written by the server,
+  // so reloading is the only way it lands here (SHO-31).
+  const reloadPersistedResponse = useCallback(
+    async (options: { requireReply?: boolean } = {}) => {
+      if (!sessionMessages || isStreamingRef.current) return
+      const sessionId = currentSessionIdRef.current
+      if (!sessionId) return
+      await sessionMessages.loadPage(
+        { sessionId, agent: "technical" },
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+      )
+      if (isStreamingRef.current || currentSessionIdRef.current !== sessionId) return
+
+      paintLoadedHistory(sessionId, options)
+    },
+    [sessionMessages, paintLoadedHistory],
   )
 
   /**
@@ -4738,6 +4847,48 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [messages, onActiveToolCall])
 
+  // Post-stream settle: when streaming ends, the AI SDK messages ARE the
+  // authoritative fresh state — `cachedMessagesRef.current` is already kept in
+  // lockstep with `messages` on every active-panel render (see the block near
+  // line 1593), and `sessionMessageCache` is updated there too. The only thing
+  // we need to do here is mark the cache fresh so Effect 1 (which re-runs
+  // because `isStreaming` is in its deps) takes the fast bail-out path and
+  // skips the network refetch + setMessages cycle that used to cascade a
+  // second re-render across every open tab. Zombie loading flags are also
+  // cleared defensively.
+  //
+  // This MUST be a layout effect declared above Effect 1 (SHO-85). Effects run
+  // in declaration order, so as a plain `useEffect` below it stamped the cache
+  // *after* Effect 1 had already read a stale stamp on the same commit — the
+  // one where `isStreaming` flips to false — and refetched. The assistant row
+  // is written server-side after the stream EOFs, so that fetch came back
+  // without the reply and painted it off the screen. Running first here makes
+  // Effect 1 see the fresh stamp and keep the turn that just finished.
+  useLayoutEffect(() => {
+    if (!isActive || !currentSessionId) {
+      wasStreamingRef.current = isStreaming
+      return
+    }
+    if (wasStreamingRef.current && !isStreaming) {
+      cacheRefreshedAtRef.current.set(currentSessionId, performance.now())
+      if (isLoadingMessagesRef.current) {
+        isLoadingMessagesRef.current = false
+        setIsLoadingMessages(false)
+      }
+    }
+    wasStreamingRef.current = isStreaming
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, isStreaming, currentSessionId])
+
+  // Remember which session's reply this panel is watching live, so a history
+  // paint can tell "the server has not written this yet" from "this reply is
+  // stale" (SHO-85). Cleared when a paint adopts the server's row.
+  useEffect(() => {
+    if (isStreaming && currentSessionId) {
+      liveReplySessionRef.current = currentSessionId
+    }
+  }, [isStreaming, currentSessionId])
+
   // Effect 1: Load chat messages with stale-while-revalidate.
   // On tab activate: show cached messages instantly (if available), then fetch
   // fresh data from the API. Only update the display if the response differs.
@@ -4878,6 +5029,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
 
         const cached = cachedMessagesRef.current
+        // Never paint a transcript that is behind what is on screen: the reply
+        // this panel just streamed is written server-side after the stream
+        // EOFs, so history can legitimately be missing it (SHO-85).
+        const paint = resolveHistoryPaint({
+          history: aiMessages,
+          current: cached ?? [],
+          keepsLiveTail: liveReplySessionRef.current === loadSessionId,
+        })
+        if (paint.keptLiveTail) {
+          historyPaintAttemptRef.current += 1
+          reportHistoryPaintKeptLiveTail("effect-1", paint.reason, aiMessages)
+          return
+        }
         const textLength = (m: any): number => {
           const fromParts = (m?.parts ?? []).reduce(
             (n: number, p: any) =>
@@ -4900,6 +5064,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
           cachedMessagesRef.current = aiMessages
           sessionMessageCache.set(loadSessionId, aiMessages)
           setMessages(aiMessages)
+          // History accounts for the screen again: the reply it was missing has
+          // been written (or was never this panel's), so the next paint may go
+          // ahead without the live-tail guard (SHO-85).
+          liveReplySessionRef.current = null
+          historyPaintAttemptRef.current = 0
         } else {
           // Same shape as cache — still refresh the module cache entry so any
           // later in-flight mutations (status flips, etc.) don't drift.
@@ -5013,31 +5182,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     onResolveSessionModel,
   ])
 
-  // Post-stream settle: when streaming ends, the AI SDK messages ARE the
-  // authoritative fresh state — `cachedMessagesRef.current` is already kept in
-  // lockstep with `messages` on every active-panel render (see the block near
-  // line 1593), and `sessionMessageCache` is updated there too. The only thing
-  // we need to do here is mark the cache fresh so Effect 1 (which re-runs
-  // because `isStreaming` is in its deps) takes the fast bail-out path and
-  // skips the network refetch + setMessages cycle that used to cascade a
-  // second re-render across every open tab. Zombie loading flags are also
-  // cleared defensively.
-  useEffect(() => {
-    if (!isActive || !currentSessionId) {
-      wasStreamingRef.current = isStreaming
-      return
-    }
-    if (wasStreamingRef.current && !isStreaming) {
-      cacheRefreshedAtRef.current.set(currentSessionId, performance.now())
-      if (isLoadingMessagesRef.current) {
-        isLoadingMessagesRef.current = false
-        setIsLoadingMessages(false)
-      }
-    }
-    wasStreamingRef.current = isStreaming
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive, isStreaming, currentSessionId])
-
   // Surface a system notification when a turn finishes streaming while the
   // user is not currently active in the app (desktop window unfocused,
   // browser tab hidden, or mobile app backgrounded). Platform-agnostic —
@@ -5121,9 +5265,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return baseMessage
       })
 
+      const paint = resolveHistoryPaint({
+        history: aiMessages,
+        current: cachedMessagesRef.current ?? [],
+        keepsLiveTail: liveReplySessionRef.current === currentSessionId,
+      })
+      if (paint.keptLiveTail) {
+        historyPaintAttemptRef.current += 1
+        reportHistoryPaintKeptLiveTail("load-older", paint.reason, aiMessages)
+        // Nothing was painted, so the scroll handler must be able to ask again.
+        isLoadingOlderRef.current = false
+        return
+      }
+
       cachedMessagesRef.current = aiMessages
       sessionMessageCache.set(currentSessionId, aiMessages)
       setMessages(aiMessages)
+      liveReplySessionRef.current = null
+      historyPaintAttemptRef.current = 0
       // NOTE: isLoadingOlderRef is intentionally NOT reset here.
       // It is reset in onContentSizeChange after scroll position is adjusted,
       // so the onScroll handler doesn't immediately re-trigger loading.
@@ -5131,7 +5290,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       console.error("[ChatPanel] Failed to load older messages:", err)
       isLoadingOlderRef.current = false
     }
-  }, [currentSessionId, sessionMessages, setMessages])
+  }, [
+    currentSessionId,
+    sessionMessages,
+    setMessages,
+    reportHistoryPaintKeptLiveTail,
+  ])
 
   /** Native: load older only when scroll settles near the top — not on every onScroll frame. */
   const tryLoadOlderNearTopOnScrollEnd = useCallback(
@@ -6364,6 +6528,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
     },
     [isStreaming, handleStop, processMessageQueue, serverQueue],
+  )
+
+  /**
+   * The waiting chip's Resume: deliver the updates a paused session is holding.
+   * The server un-pauses the wake; this window only needs to refresh the queue.
+   */
+  const handleResumeTaskWakes = useCallback(
+    (messageId: string) => {
+      void serverQueue.resumeTaskWake(messageId).catch((error) => {
+        console.warn("[ChatPanel] Failed to resume waiting updates:", error)
+      })
+    },
+    [serverQueue],
   )
 
   const displayedQueue = useMemo(
@@ -8662,6 +8839,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onReorderQueuedMessage={handleReorderQueuedMessage}
                     onEditQueuedMessage={handleEditQueuedMessage}
                     onSendQueuedMessageNow={handleSendQueuedMessageNow}
+                    onResumeTaskWakes={handleResumeTaskWakes}
                     interactionMode={interactionMode}
                     onInteractionModeChange={handleInteractionModeChange}
                     dualPlan={dualPlan}

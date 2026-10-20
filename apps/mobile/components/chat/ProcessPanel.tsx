@@ -39,6 +39,11 @@ export interface RunningProcess {
   elapsedMs?: number
   /** Where the task's work is happening, so pressing the row opens it. */
   link?: TaskLink
+  /**
+   * The task is finished but its update is still queued behind a wake pause:
+   * the dock shows it as waiting on the person rather than done.
+   */
+  waiting?: boolean
 }
 
 export interface ProcessPanelProps {

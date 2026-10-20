@@ -4,6 +4,7 @@
 // Re-export shim. Canonical implementation lives in the MIT-licensed SDK
 // at @shogo-ai/sdk/prefix-fingerprint.
 export {
+  CACHE_BOUNDARY,
   shortHash,
   fingerprintSystem,
   fingerprintTools,

@@ -28,12 +28,16 @@ if (isLocalMode()) installWorkspaceFetchRouter(API_URL!)
 
 export {
   getSDKHttpClient as getDomainHttpClient,
+  getSDKDomainStore as getDomainStore,
+  getDomainActions as getDomainActionsInstance,
   useSDKDomain as useDomain,
+  useSDKDomainOptional as useDomainOptional,
   useSDKHttp as useDomainHttp,
   useSDKHttpOptional as useDomainHttpOptional,
   useSDKReady as useDomainReady,
   useProjectCollection,
   useWorkspaceCollection,
+  useWorkspaceCollectionOptional,
   useMemberCollection,
   useFolderCollection,
   useStarredProjectCollection,
@@ -42,6 +46,7 @@ export {
   useChatSessionCollection,
   useChatMessageCollection,
   useDomainActions,
+  useDomainActionsOptional,
 } from '@shogo/shared-app/domain'
 
 export type { IDomainStore } from '@shogo/domain-stores'
@@ -88,6 +93,7 @@ export function DomainProvider({ children }: { children: ReactNode }) {
       credentials={isNative ? 'omit' : 'include'}
       getAuthCookie={isNative ? getAuthCookie : undefined}
       remoteProxyBaseUrl={remoteProxyBaseUrl}
+      machineWorkspaceId={instance?.source === 'machine' ? (instance.localWorkspaceId ?? null) : null}
       onRemoteError={(error, path) => {
         console.warn('[DomainProvider] Remote request failed:', path, error.message)
       }}

@@ -13,9 +13,9 @@
 
 import { describe, test, expect } from 'bun:test'
 import {
+  calculateGenjutsuUsageCost,
+  calculateHiggsfieldUsageCost,
   calculateImageUsageCost,
-  calculateImageProcessUsageCost,
-  calculateVideoUsageCost,
   IMAGE_USD_CONFIG,
   MARKUP_MULTIPLIER,
 } from '../lib/usage-cost'
@@ -143,40 +143,27 @@ describe('fal and new catalog image pricing', () => {
     expect(standard.rawUsd).toBeLessThan(0.01)
   })
 
-  test('fal list prices', () => {
-    expect(calculateImageUsageCost('nano-banana-pro', 'standard', '1024x1024').rawUsd).toBeCloseTo(0.15, 6)
-    expect(calculateImageUsageCost('nano-banana-pro', 'hd', '1792x1024').rawUsd).toBeCloseTo(0.15, 6)
-    expect(calculateImageUsageCost('seedream-5-pro', 'standard', '1024x1024').rawUsd).toBeCloseTo(0.0675, 6)
-    expect(calculateImageUsageCost('ideogram-3', 'hd', '1024x1024').rawUsd).toBeCloseTo(0.09, 6)
-    expect(calculateImageUsageCost('recraft-3', 'standard', '1024x1024').rawUsd).toBeCloseTo(0.04, 6)
-  })
 })
 
-describe('Video Usage Cost (USD)', () => {
-  test('per-second price times duration, with markup', () => {
-    const { rawUsd, billedUsd } = calculateVideoUsageCost(VIDEO_MODEL_CATALOG['kling-2.5-turbo-pro'], 10)
-    expect(rawUsd).toBeCloseTo(0.7, 6)
-    expect(billedUsd).toBeCloseTo(0.7 * MARKUP_MULTIPLIER, 6)
+describe('Higgsfield price plumbing (USD)', () => {
+  test('the estimate is marked up exactly like every other media charge', () => {
+    const { rawUsd, billedUsd } = calculateHiggsfieldUsageCost({ rawUsd: 0.35 })
+    expect(rawUsd).toBeCloseTo(0.35, 6)
+    expect(billedUsd).toBeCloseTo(0.35 * MARKUP_MULTIPLIER, 6)
   })
 
-  test('audio uses the audio rate only when the model has one', () => {
-    expect(calculateVideoUsageCost(VIDEO_MODEL_CATALOG['veo-3.1-fast'], 8, true).rawUsd).toBeCloseTo(1.2, 6)
-    expect(calculateVideoUsageCost(VIDEO_MODEL_CATALOG['veo-3.1-fast'], 8, false).rawUsd).toBeCloseTo(0.8, 6)
-    expect(calculateVideoUsageCost(VIDEO_MODEL_CATALOG['minimax-h3-max'], 5, true).rawUsd).toBeCloseTo(0.4, 6)
+  test('a negative or zero estimate never credits', () => {
+    expect(calculateHiggsfieldUsageCost({ rawUsd: -5 }).rawUsd).toBe(0)
+    expect(calculateHiggsfieldUsageCost({ rawUsd: 0 }).billedUsd).toBe(0)
   })
 
-  test('negative duration never credits', () => {
-    expect(calculateVideoUsageCost(VIDEO_MODEL_CATALOG['kling-3-pro'], -5).rawUsd).toBe(0)
-  })
-})
-
-describe('Image utility cost (USD)', () => {
-  test('upscale bills per output megapixel with a floor', () => {
-    expect(calculateImageProcessUsageCost('upscale', { width: 2048, height: 2048 }).rawUsd).toBeCloseTo(0.03 * 4.194304, 6)
-    expect(calculateImageProcessUsageCost('upscale', { width: 100, height: 100 }).rawUsd).toBeCloseTo(0.03, 6)
-  })
-
-  test('background removal is a flat fee', () => {
-    expect(calculateImageProcessUsageCost('remove-background').rawUsd).toBeGreaterThan(0)
+  test('Genjutsu bills the rate for the resolution times the source seconds', () => {
+    const entry = VIDEO_MODEL_CATALOG['hf-genjutsu-restyle'] as any
+    expect(entry.usdPerSecondByResolution['720p']).toBeCloseTo(0.681, 6)
+    const charge = calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, '720p', 10)
+    expect(charge?.rawUsd).toBeCloseTo(6.81, 6)
+    expect(charge?.billedUsd).toBeCloseTo(6.81 * MARKUP_MULTIPLIER, 6)
+    // An unknown tier is null, not free.
+    expect(calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, '8k', 10)).toBeNull()
   })
 })

@@ -80,7 +80,7 @@ describe('buildCapabilitiesIndex flags', () => {
     const idx = buildCapabilitiesIndex()
     const line = idx.split('\n').find((l) => l.startsWith('- **media**'))!
     expect(line).toContain('directly')
-    for (const tool of ['generate_image', 'upscale_image', 'remove_background', 'list_media_models', 'transcribe_audio']) {
+    for (const tool of ['generate_image', 'list_media_models', 'transcribe_audio']) {
       expect(line).toContain(tool)
     }
     expect(line).not.toContain('agent_spawn')

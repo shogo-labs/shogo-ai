@@ -293,6 +293,8 @@ export interface CheckpointCallResult<T> {
   /** The card someone has to approve, when `code` is `approval_pending`. */
   approvalId?: string
   expiresAt?: string
+  /** Extra fields the API sent with the error (e.g. `over_by` on `doc_full`). */
+  details?: Record<string, any>
 }
 
 async function checkpointFetch<T>(
@@ -381,6 +383,8 @@ export interface GitHubPullRequestOptions {
   body?: string
   draft?: boolean
   runId?: string
+  /** Card key to link the PR to; absent → derived from the branch or title. */
+  workItem?: string
 }
 
 export interface GitHubPullRequestResult {
@@ -388,6 +392,8 @@ export interface GitHubPullRequestResult {
   url: string
   htmlUrl?: string
   author?: string
+  /** The card this PR was linked to, when its title/branch (or `workItem`) named one. */
+  workItem?: string
   /** `github-app` (App bot), `user-token` (the connection's stored user token), or `requester` (the person who asked). */
   mode?: 'github-app' | 'user-token' | 'requester'
   /** Which account the write used, for the tool call's "as …" label. */
@@ -825,7 +831,16 @@ async function personalFetch<T>(
     if (!res.ok) {
       const err = json?.error
       const message = typeof err === 'string' ? err : err?.message
-      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+      const details = err && typeof err === 'object'
+        ? Object.fromEntries(Object.entries(err).filter(([k]) => k !== 'code' && k !== 'message'))
+        : undefined
+      return {
+        ok: false,
+        status: res.status,
+        error: message ?? `HTTP ${res.status}`,
+        code: err?.code,
+        ...(details && Object.keys(details).length ? { details } : {}),
+      }
     }
     return { ok: true, status: res.status, data: parse ? parse(json) : (json as T) }
   } catch (err: any) {
@@ -1098,6 +1113,8 @@ export async function postAgentChannelMessage(
 ): Promise<CheckpointCallResult<{
   id: string; conversationId: string; threadId: string; runId: string | null; url: string | null
   tasks?: Array<{ task_id: string; title: string; status: 'running' }>
+  /** Plain `@Name`s the server left unresolved because more than one person or agent answers to them. */
+  mention_warnings?: string[]
 }>> {
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages`), {
     method: 'POST',
@@ -1121,6 +1138,8 @@ export async function postAgentChannelMessage(
       runId: j?.message?.runId ?? null,
       url: j?.message?.url ?? null,
       ...(Array.isArray(j?.message?.tasks) ? { tasks: j.message.tasks } : {}),
+      // Plain `@Name`s the server could not resolve (more than one person or agent answers to them).
+      ...(Array.isArray(j?.mention_warnings) && j.mention_warnings.length ? { mention_warnings: j.mention_warnings } : {}),
     }),
   })
 }
@@ -1314,6 +1333,15 @@ export async function stopRunningAgents(
   })
 }
 
+/** How full a channel doc is (see the API's `conversation-doc.service`). */
+export interface AgentDocBudget {
+  chars: number
+  limit: number
+  /** Percent used, one decimal. */
+  pct: number
+  level: 'ok' | 'warn' | 'critical'
+}
+
 /** A channel's shared markdown doc (see the API's `conversation-doc.service`). */
 export interface AgentChannelDoc {
   id: string
@@ -1322,22 +1350,50 @@ export interface AgentChannelDoc {
   content: string
   version: number
   locked: boolean
+  budget?: AgentDocBudget
   updatedBy: { type: 'user' | 'agent'; id: string | null; name: string } | null
   updatedAt: string
 }
 
-export type AgentDocMode = 'replace' | 'append' | 'patch_section'
+/** A section archived out of a channel doc. `content` is only on a single-archive read. */
+export interface AgentDocArchive {
+  id: string
+  conversationId: string
+  title: string
+  heading: string
+  chars: number
+  content?: string
+  archivedBy: { type: 'user' | 'agent'; id: string | null; name: string } | null
+  createdAt: string
+}
+
+export type AgentDocMode = 'replace' | 'append' | 'patch_section' | 'archive_section'
 
 export async function readAgentChannelDoc(
   workspaceId: string,
   channel: string,
   identity: AgentChannelIdentity,
-): Promise<CheckpointCallResult<{ channel: { id: string; name: string | null }; doc: AgentChannelDoc | null; url: string | null }>> {
+  options: { includeArchive?: boolean; archiveId?: string } = {},
+): Promise<CheckpointCallResult<{
+  channel: { id: string; name: string | null }
+  doc: AgentChannelDoc | null
+  url: string | null
+  archives?: AgentDocArchive[]
+  archive?: AgentDocArchive
+}>> {
   const params = new URLSearchParams()
   if (identity.projectId) params.set('projectId', identity.projectId)
+  if (options.includeArchive) params.set('include_archive', '1')
+  if (options.archiveId) params.set('archive_id', options.archiveId)
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/doc?${params}`), {
     method: 'GET',
-    parse: (j) => ({ channel: j?.channel, doc: j?.doc ?? null, url: j?.url ?? null }),
+    parse: (j) => ({
+      channel: j?.channel,
+      doc: j?.doc ?? null,
+      url: j?.url ?? null,
+      ...(j?.archives ? { archives: j.archives } : {}),
+      ...(j?.archive ? { archive: j.archive } : {}),
+    }),
   })
 }
 
@@ -1347,12 +1403,13 @@ export async function updateAgentChannelDoc(
   input: {
     identity: AgentChannelIdentity
     mode: AgentDocMode
-    content: string
+    content?: string
     title?: string
     section?: string
     baseVersion?: number
+    force?: boolean
   },
-): Promise<CheckpointCallResult<{ doc: AgentChannelDoc; url: string | null }>> {
+): Promise<CheckpointCallResult<{ doc: AgentChannelDoc; url: string | null; archive?: AgentDocArchive }>> {
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/doc`), {
     method: 'PUT',
     body: JSON.stringify({
@@ -1362,8 +1419,9 @@ export async function updateAgentChannelDoc(
       title: input.title,
       section: input.section,
       baseVersion: input.baseVersion,
+      force: input.force || undefined,
     }),
-    parse: (j) => ({ doc: j?.doc, url: j?.url ?? null }),
+    parse: (j) => ({ doc: j?.doc, url: j?.url ?? null, ...(j?.archive ? { archive: j.archive } : {}) }),
   })
 }
 
@@ -1973,6 +2031,44 @@ export async function configureProject(
   })
 }
 
+/**
+ * The workspace agent's own settings (`Workspace.settings`), not a project's.
+ * A workspace runtime serves both surfaces, so its capability toggles live
+ * here while a project chat keeps `Project.settings`.
+ */
+export interface WorkspaceConfigSnapshot {
+  id: string
+  name: string
+  kind: string
+  settings: unknown
+}
+
+export interface WorkspaceConfigPatch {
+  settings?: Record<string, unknown>
+}
+
+export async function getWorkspaceConfig(
+  workspaceId: string,
+  timeoutMs?: number,
+): Promise<CheckpointCallResult<WorkspaceConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/config`, {
+    method: 'GET',
+    timeoutMs,
+    parse: (j) => j?.workspace as WorkspaceConfigSnapshot,
+  })
+}
+
+export async function configureWorkspace(
+  workspaceId: string,
+  patch: WorkspaceConfigPatch,
+): Promise<CheckpointCallResult<WorkspaceConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/config`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+    parse: (j) => j?.workspace as WorkspaceConfigSnapshot,
+  })
+}
+
 export interface AgentCallRequest {
   message: string
   /** Pipeline correlation id, threaded into the callee's AgentCostMetric.metadata. */
@@ -2199,8 +2295,37 @@ export async function consumeBackgroundTasks(ids: string[]): Promise<CheckpointC
   })
 }
 
-export async function listBackgroundTasks(chatSessionId: string): Promise<CheckpointCallResult<{ tasks: BackgroundTaskState[] }>> {
+/** One undelivered background update a paused session is holding. */
+export interface WakingTask {
+  taskId: string
+  source: string
+  title: string
+  finishedAt: string | null
+}
+
+/**
+ * What a session is waiting to be told. `paused` means it woke itself too many
+ * times in a row and is waiting for a person; `waiting` is what the queued
+ * wakes are for.
+ */
+export interface SessionWakeState {
+  paused: boolean
+  wakesInARow: number
+  limit: number
+  waiting: WakingTask[]
+}
+
+export async function listBackgroundTasks(
+  chatSessionId: string,
+): Promise<CheckpointCallResult<{ tasks: BackgroundTaskState[]; wake?: SessionWakeState }>> {
   return lifecycleFetch(`${tasksPath}?chatSessionId=${encodeURIComponent(chatSessionId)}`, { method: 'GET', timeoutMs: 10_000 })
+}
+
+/** The session's wake state on its own; used at turn start to tell the agent what is waiting. */
+export async function getSessionWakeState(chatSessionId: string): Promise<SessionWakeState | null> {
+  const res = await listBackgroundTasks(chatSessionId).catch(() => null)
+  if (!res?.ok) return null
+  return res.data?.wake ?? null
 }
 
 /** Hand finished local tasks to the API so it wakes the (idle) session with one queued message. */

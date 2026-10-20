@@ -91,6 +91,25 @@ describe('SHO-30 acceptance: the wake is delivered exactly once', () => {
     expect((await queueRows(session)).filter((r: any) => r.kind === 'task_notification')).toHaveLength(0)
   })
 
+  test('a wake that ran is consumed even when the reply saved no text', async () => {
+    const session = await newSession()
+    await notifyShellTask(session, 't_empt0001')
+    tasks._testing.clearTimers()
+
+    await runChatQueueDrain()
+    await waitFor(async () => dispatched.length > 0)
+    expect(dispatched).toHaveLength(1)
+
+    // The turn ran, so the note is seen — even if that turn wrote nothing back.
+    expect((await db.backgroundTask.findUnique({ where: { id: 't_empt0001' } })).consumed).toBe(true)
+
+    // A later release of the same task cannot wake the session for it again.
+    await db.backgroundTask.update({ where: { id: 't_empt0001' }, data: { notifiedAt: null } })
+    await runChatQueueDrain()
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(dispatched).toHaveLength(1)
+  })
+
   test('a held card watch is not swept before its hold expires', async () => {
     const session = await newSession()
     const row = await tasks.createTask({

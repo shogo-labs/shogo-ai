@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { Hono } from 'hono'
-import { readFile, realpath, stat } from 'fs/promises'
-import { extname, join, resolve, sep } from 'path'
-import { prisma } from '../lib/prisma'
+import { readFile, stat } from 'fs/promises'
+import { extname } from 'path'
 import { verifySharedFileToken } from '../lib/shared-file-token'
+import { resolveLocalSharedFileTarget } from '../lib/local-shared-file-target'
 
 export interface LocalSharedFileRoutesConfig {
   workspacesDir: string
@@ -29,69 +29,9 @@ const MIME_TYPES: Record<string, string> = {
   '.zip': 'application/zip',
 }
 
-function isWithinRoot(root: string, candidate: string): boolean {
-  const normalizedRoot = resolve(root)
-  const normalizedCandidate = resolve(candidate)
-  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${sep}`)
-}
-
 function filenameFor(path: string): string {
   const filename = path.split('/').pop() || 'download'
   return filename.replace(/[\u0000-\u001f\u007f"\\]/g, '_').slice(0, 255) || 'download'
-}
-
-async function projectRoot(projectId: string, workspacesDir: string): Promise<{
-  root: string
-  workspaceId: string
-} | null> {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: {
-      workspaceId: true,
-      workingMode: true,
-      projectFolders: {
-        where: { isPrimary: true },
-        select: { path: true },
-        take: 1,
-      },
-    },
-  })
-  if (!project) return null
-
-  const externalRoot = project.workingMode === 'external' ? project.projectFolders[0]?.path : undefined
-  return {
-    root: externalRoot || join(workspacesDir, projectId),
-    workspaceId: project.workspaceId,
-  }
-}
-
-/** Real path of a project file under its project root, or null when the path leaves it. */
-async function projectFileTarget(root: string, path: string): Promise<string | null> {
-  const realRoot = await realpath(root)
-  const candidate = resolve(realRoot, path)
-  if (!isWithinRoot(realRoot, candidate)) return null
-  const target = await realpath(candidate)
-  return isWithinRoot(realRoot, target) ? target : null
-}
-
-/**
- * Real path of a file in a workspace runtime's merged root
- * (`.workspace-roots/<workspaceId>`), or null when the path leaves it. Member
- * projects are mounted there as `<projectId>` symlinks; a file inside one is
- * allowed only when that project belongs to the same workspace.
- */
-async function workspaceFileTarget(workspaceId: string, path: string, workspacesDir: string): Promise<string | null> {
-  const root = await realpath(join(workspacesDir, '.workspace-roots', workspaceId))
-  const candidate = resolve(root, path)
-  if (!isWithinRoot(root, candidate)) return null
-  const target = await realpath(candidate)
-  if (isWithinRoot(root, target)) return target
-
-  const memberId = path.split('/')[0]
-  const member = memberId ? await projectRoot(memberId, workspacesDir) : null
-  if (!member || member.workspaceId !== workspaceId) return null
-  const memberRoot = await realpath(member.root)
-  return isWithinRoot(memberRoot, target) ? target : null
 }
 
 export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono {
@@ -107,15 +47,13 @@ export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono
     }
 
     try {
-      let target: string | null
-      if (payload.projectId) {
-        const project = await projectRoot(payload.projectId, config.workspacesDir)
-        target = project && project.workspaceId === payload.workspaceId
-          ? await projectFileTarget(project.root, payload.path)
-          : null
-      } else {
-        target = await workspaceFileTarget(payload.workspaceId, payload.path, config.workspacesDir)
-      }
+      const resolvedFile = await resolveLocalSharedFileTarget({
+        projectId: payload.projectId,
+        workspaceId: payload.workspaceId,
+        path: payload.path,
+        workspacesDir: config.workspacesDir,
+      })
+      const target = resolvedFile?.target ?? null
       if (!target) {
         return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
       }

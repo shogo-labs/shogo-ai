@@ -40,6 +40,8 @@ const ARRAY_FIELDS = new Set([
   'schemas', 'affectedPackages', 'applicablePatterns', 'acceptanceCriteria',
   'given', 'then', 'completedTasks', 'failedTasks', 'tags', 'supportedConfig',
   'screenshotUrls',
+  // Social automation keywords (String[] on PG, JSON String on SQLite)
+  'keywords',
   // ProjectAuthConfig allowlist fields
   'allowedEmails', 'allowedDomains',
   // ModelDefinition alias list (Json? on PG, String? JSON on SQLite)
@@ -76,6 +78,8 @@ const JSON_OBJECT_FIELDS = new Set([
   'origin',
   // Work boards
   'fieldsSchema', 'fields', 'eventData', 'occurrenceContext', 'workItemTarget',
+  // Per-column rules (BoardColumn.rules: Json? on PG, JSON String on SQLite)
+  'rules',
   // Marketplace agent packs (Json? on PG, JSON String on SQLite): the parsed
   // pack.yaml on a listing version, the answers an install collected, and the
   // ids it created. Missing these made publishing and installing a pack throw
@@ -84,6 +88,12 @@ const JSON_OBJECT_FIELDS = new Set([
   // Background task destination (Json? on PG, JSON String on SQLite): where the
   // dock opens the agent's thread for a task that handed work off.
   'link',
+  // AgentWake chain state (Json? on PG, JSON String on SQLite). Stored as the
+  // object so the column is queryable on Postgres; SQLite stringifies it here
+  // and `readChain` parses either shape.
+  'chain',
+  // Social posts / targets keep their media URL list as JSON on both sides.
+  'mediaJson',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and
@@ -172,13 +182,44 @@ function wrapForSqlite(client: PrismaClient): PrismaClient {
   }) as unknown as PrismaClient
 }
 
+/**
+ * Switch a SQLite file to WAL mode and report whether it took. Every local
+ * query runs synchronously on the API thread, and in rollback-journal mode
+ * each commit syncs a journal file and locks out readers, which stalls every
+ * request (health checks included) while it waits. A file another process
+ * holds open can refuse the switch; it then stays in rollback-journal mode
+ * rather than failing startup.
+ */
+export async function enableSqliteWal(url: string): Promise<boolean> {
+  const file = url.replace(/^file:/, '')
+  if (file === ':memory:') return false
+  const { Database } = await import('bun:sqlite')
+  let db: InstanceType<typeof Database> | null = null
+  try {
+    db = new Database(file)
+    db.run('PRAGMA busy_timeout = 5000')
+    const row = db.query('PRAGMA journal_mode = WAL').get() as { journal_mode?: string } | null
+    return row?.journal_mode?.toLowerCase() === 'wal'
+  } catch (err) {
+    console.warn(`[prisma] SQLite stays in rollback-journal mode: ${(err as Error).message}`)
+    return false
+  } finally {
+    db?.close()
+  }
+}
+
 export async function createPrismaClient(): Promise<PrismaClient> {
   const logConfig = process.env.NODE_ENV === 'development' ? ['error', 'warn'] as const : ['error'] as const
 
   if (isLocalMode) {
     const { PrismaClient: SqliteClient } = await import('../generated/prisma-sqlite/client')
     const { PrismaBunSqlite } = await import('prisma-adapter-bun-sqlite')
-    const adapter = new PrismaBunSqlite({ url: getSqliteUrl() })
+    const url = getSqliteUrl()
+    const wal = await enableSqliteWal(url)
+    const adapter = new PrismaBunSqlite({
+      url,
+      ...(wal ? { wal: { enabled: true, synchronous: 'NORMAL' as const, busyTimeout: 5000 } } : {}),
+    })
     const client = new SqliteClient({ adapter, log: [...logConfig] })
     return wrapForSqlite(client as unknown as PrismaClient)
   }

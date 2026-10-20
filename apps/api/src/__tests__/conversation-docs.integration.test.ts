@@ -237,6 +237,167 @@ describe('agents and the channel doc', () => {
     expect(invocation.prompt).toContain('<channel_doc>')
     expect(invocation.prompt).toContain('We ship on Fridays.')
     expect(invocation.prompt).toContain('"Team charter"')
+    expect(invocation.prompt).toContain('characters (')
+    expect(invocation.prompt).toContain('per-card narratives in the card thread')
+  })
+})
+
+describe('channel doc budget, doc_full and archives', () => {
+  const internal = (path: string) => `/internal/workspaces/${seed.workspaceId}/agent-channels${path}`
+
+  /** A doc of exactly `chars` characters with two sections, so patching and archiving have targets. */
+  function docOfSize(chars: number) {
+    const head = '# Big doc\n\n## Rules\n\n- ship on Friday\n\n## Archive candidate\n\n'
+    return `${head}${'z'.repeat(Math.max(0, chars - head.length))}`
+  }
+
+  test('every read and write carries the budget, with 70% and 85% as the warn/critical edges', async () => {
+    const id = await newChannel('budget-doc')
+    const created = await call(seed.owner, 'PUT', `/conversations/${id}/doc`, { content: 'x'.repeat(1000), baseVersion: 0 })
+    expect(created.json.doc.budget).toMatchObject({ chars: 1000, limit: 200_000, level: 'ok' })
+
+    expect(docs.docBudget(139_999).level).toBe('ok')
+    expect(docs.docBudget(140_000)).toMatchObject({ level: 'warn', pct: 70 })
+    expect(docs.docBudget(169_999).level).toBe('warn')
+    expect(docs.docBudget(170_000)).toMatchObject({ level: 'critical', pct: 85 })
+    expect(docs.docBudget(175_492)).toMatchObject({ level: 'critical', pct: 87.7 })
+
+    const warn = await call(seed.owner, 'PUT', `/conversations/${id}/doc`, { content: docOfSize(140_000), baseVersion: 1 })
+    expect(warn.json.doc.budget).toMatchObject({ level: 'warn', chars: 140_000 })
+    expect((await call(seed.member, 'GET', `/conversations/${id}/doc`)).json.doc.budget.level).toBe('warn')
+    expect((await call(null, 'GET', internal('/budget-doc/doc'))).json.doc.budget).toMatchObject({ chars: 140_000, level: 'warn' })
+
+    const agentWrite = await call(null, 'PUT', internal('/budget-doc/doc'), { mode: 'patch_section', section: 'Rules', content: '- ship Thursday' })
+    expect(agentWrite.json.doc.budget.chars).toBe(agentWrite.json.doc.content.length)
+  })
+
+  test('a write that would cross the limit returns doc_full with over_by and writes nothing', async () => {
+    const id = await newChannel('full-doc')
+    const base = docOfSize(199_000)
+    const created = await call(seed.owner, 'PUT', `/conversations/${id}/doc`, { content: base, baseVersion: 0 })
+    expect(created.status).toBe(200)
+    expect(created.json.doc.budget.level).toBe('critical')
+
+    const refused = await call(null, 'PUT', internal('/full-doc/doc'), {
+      mode: 'append',
+      content: `## New section\n\n${'y'.repeat(2_000)}`,
+    })
+    expect(refused.status).toBe(400)
+    expect(refused.json.error.code).toBe('doc_full')
+    expect(refused.json.error.limit).toBe(200_000)
+    expect(refused.json.error.chars).toBeGreaterThan(200_000)
+    expect(refused.json.error.over_by).toBe(refused.json.error.chars - 200_000)
+    expect(refused.json.error.next).toContain('archive_section')
+
+    const after = await call(seed.member, 'GET', `/conversations/${id}/doc`)
+    expect(after.json.doc.version).toBe(1)
+    expect(after.json.doc.content).toBe(base)
+
+    // A person hitting the same limit gets the same way out, not a bare 400.
+    const userFull = await call(seed.owner, 'PUT', `/conversations/${id}/doc`, { content: `${base}${'q'.repeat(2_000)}`, baseVersion: 1 })
+    expect(userFull.status).toBe(400)
+    expect(userFull.json.error).toMatchObject({ code: 'doc_full', over_by: 1_000 })
+  })
+
+  test('archive_section moves exactly one section, bumps the version once and keeps the text restorable', async () => {
+    const id = await newChannel('archive-doc')
+    const content = '# Doc\n\nIntro line\n\n## Keep\n\nkeep me\n\n## Old card\n\nold narrative\nline two\n\n## Also keep\n\nalso\n'
+    await call(seed.owner, 'PUT', `/conversations/${id}/doc`, { title: 'Notes', content, baseVersion: 0 })
+
+    const archived = await call(null, 'PUT', internal('/archive-doc/doc'), { mode: 'archive_section', section: 'Old card' })
+    expect(archived.status).toBe(200)
+    expect(archived.json.doc.version).toBe(2)
+    expect(archived.json.doc.content).toContain('_Archived "Old card"')
+    expect(archived.json.doc.content).not.toContain('old narrative')
+    expect(archived.json.doc.content).toContain('## Keep\n\nkeep me')
+    expect(archived.json.doc.content).toContain('## Also keep\n\nalso')
+    expect(archived.json.doc.budget.chars).toBe(archived.json.doc.content.length)
+    expect(archived.json.archive).toMatchObject({ heading: 'Old card', content: 'old narrative\nline two' })
+    expect(archived.json.archive.chars).toBe('## Old card\n\nold narrative\nline two'.length)
+
+    const rows = await db.conversationDocArchive.findMany({ where: { conversationId: id } })
+    expect(rows).toHaveLength(1)
+    expect(rows[0].archivedByType).toBe('agent')
+
+    const listed = await call(null, 'GET', internal('/archive-doc/doc?include_archive=1'))
+    expect(listed.json.archives).toHaveLength(1)
+    expect(listed.json.archives[0]).toMatchObject({ heading: 'Old card' })
+    expect(listed.json.archives[0].content).toBeUndefined()
+
+    const byId = await call(null, 'GET', internal(`/archive-doc/doc?archive_id=${archived.json.archive.id}`))
+    expect(byId.json.archive.content).toBe('old narrative\nline two')
+
+    const restored = await call(seed.owner, 'POST', `/conversations/${id}/doc/archives/${archived.json.archive.id}/restore`, { baseVersion: 2 })
+    expect(restored.status).toBe(200)
+    expect(restored.json.doc.version).toBe(3)
+    expect(restored.json.doc.content).toContain('## Old card\n\nold narrative\nline two')
+    expect(await db.conversationDocArchive.count({ where: { conversationId: id } })).toBe(0)
+  })
+
+  test('missing, duplicate and locked sections are reported instead of guessed', async () => {
+    const id = await newChannel('archive-edges')
+    await call(seed.owner, 'PUT', `/conversations/${id}/doc`, { content: '# Doc\n\n## Dup\n\none\n\n## Dup\n\ntwo\n', baseVersion: 0 })
+
+    const missing = await call(null, 'PUT', internal('/archive-edges/doc'), { mode: 'archive_section', section: 'Nope' })
+    expect(missing.status).toBe(404)
+    expect(missing.json.error.code).toBe('section_not_found')
+
+    const ambiguous = await call(null, 'PUT', internal('/archive-edges/doc'), { mode: 'archive_section', section: 'Dup' })
+    expect(ambiguous.status).toBe(409)
+    expect(ambiguous.json.error.code).toBe('ambiguous_section')
+    expect(ambiguous.json.error.matches).toHaveLength(2)
+    expect(await db.conversationDocArchive.count({ where: { conversationId: id } })).toBe(0)
+
+    const noDoc = await newChannel('archive-none')
+    expect((await call(null, 'PUT', internal('/archive-none/doc'), { mode: 'archive_section', section: 'Dup' })).status).toBe(404)
+
+    const lockedDoc = await newChannel('archive-locked')
+    await call(seed.owner, 'PUT', `/conversations/${lockedDoc}/doc`, { content: '# Doc\n\n## Gone\n\nbody\n', baseVersion: 0 })
+    await call(seed.owner, 'POST', `/conversations/${lockedDoc}/doc/lock`, { locked: true })
+    expect((await call(null, 'PUT', internal('/archive-locked/doc'), { mode: 'archive_section', section: 'Gone' })).status).toBe(403)
+  })
+
+  test('a card-shaped heading is refused with use_card_thread, and force writes it', async () => {
+    const id = await newChannel('card-log')
+    await call(seed.owner, 'PUT', `/conversations/${id}/doc`, { content: '# Doc\n\n## Rules\n\n- be kind\n', baseVersion: 0 })
+
+    const refused = await call(null, 'PUT', internal('/card-log/doc'), { mode: 'append', content: '## SHO-123 QA gate\n\nlong story' })
+    expect(refused.status).toBe(400)
+    expect(refused.json.error.code).toBe('use_card_thread')
+    expect(refused.json.error).toMatchObject({ reason: 'card_heading', card: 'SHO-123' })
+    expect(refused.json.error.next).toContain('work_item_comment')
+    expect((await call(seed.member, 'GET', `/conversations/${id}/doc`)).json.doc.version).toBe(1)
+
+    // The same guard on a patch_section that would create the section.
+    const patched = await call(null, 'PUT', internal('/card-log/doc'), { mode: 'patch_section', section: 'Round 2 shipped', content: 'story' })
+    expect(patched.json.error).toMatchObject({ code: 'use_card_thread', reason: 'card_heading' })
+
+    // A new section over 4,000 characters is refused too.
+    const big = await call(null, 'PUT', internal('/card-log/doc'), { mode: 'append', content: `## Long lesson\n\n${'x'.repeat(4_500)}` })
+    expect(big.json.error).toMatchObject({ code: 'use_card_thread', reason: 'section_size', limit: 4_000 })
+
+    // Editing an existing section is normal use and stays allowed.
+    const edit = await call(null, 'PUT', internal('/card-log/doc'), { mode: 'patch_section', section: 'Rules', content: '- be kinder' })
+    expect(edit.status).toBe(200)
+
+    const forced = await call(null, 'PUT', internal('/card-log/doc'), { mode: 'append', content: '## SHO-123 QA gate\n\nlong story', force: true })
+    expect(forced.status).toBe(200)
+    expect(forced.json.doc.content).toContain('## SHO-123 QA gate')
+  })
+
+  test('replaying the real 199,316-character doc accepts a patch that fits and refuses one that does not', async () => {
+    const id = await newChannel('real-fixture')
+    const base = docOfSize(199_316)
+    expect(base.length).toBe(199_316)
+    expect((await call(seed.owner, 'PUT', `/conversations/${id}/doc`, { content: base, baseVersion: 0 })).status).toBe(200)
+
+    const patched = await call(null, 'PUT', internal('/real-fixture/doc'), { mode: 'patch_section', section: 'Rules', content: '- ship on Friday, always' })
+    expect(patched.status).toBe(200)
+    expect(patched.json.doc.budget.level).toBe('critical')
+
+    const tooBig = await call(null, 'PUT', internal('/real-fixture/doc'), { mode: 'append', content: `## Notes\n\n${'n'.repeat(1_000)}` })
+    expect(tooBig.json.error.code).toBe('doc_full')
+    expect(tooBig.json.error.over_by).toBeGreaterThan(0)
   })
 })
 
@@ -245,5 +406,26 @@ describe('patchSection', () => {
     const md = '# Doc\n\n## A\n\nold a\n\n### A.1\n\nnested\n\n## B\n\nkeep b'
     expect(docs.patchSection(md, 'a', 'new a')).toBe('# Doc\n\n## A\n\nnew a\n\n## B\n\nkeep b')
     expect(docs.patchSection('', 'Notes', 'hi')).toBe('## Notes\n\nhi\n')
+  })
+})
+
+describe('doc section helpers', () => {
+  test('extractSection cuts exactly one section and reports its size', () => {
+    const md = '# Doc\n\nintro\n\n## A\n\nbody a\n\n### A.1\n\nnested\n\n## B\n\nbody b\n'
+    const section = docs.extractSection(md, 'A')!
+    expect(section).toMatchObject({ heading: 'A', level: 2, body: 'body a\n\n### A.1\n\nnested' })
+    expect(section.chars).toBe('## A\n\nbody a\n\n### A.1\n\nnested'.length)
+    expect(docs.extractSection(md, 'Missing')).toBeNull()
+    expect(docs.findSectionHeadings(md, 'B')).toEqual([12])
+  })
+
+  test('card-shaped headings are recognised, durable ones are not', () => {
+    expect(docs.isCardNarrativeHeading('SHO-26 QA gate')).toBe(true)
+    expect(docs.isCardNarrativeHeading('One finish = one message (SHO-33)')).toBe(true)
+    expect(docs.isCardNarrativeHeading('QA gate notes')).toBe(true)
+    expect(docs.isCardNarrativeHeading('Round 2 findings')).toBe(true)
+    expect(docs.isCardNarrativeHeading('What shipped last week')).toBe(true)
+    expect(docs.isCardNarrativeHeading('Working mode flips')).toBe(false)
+    expect(docs.isCardNarrativeHeading('Model catalog & media pricing')).toBe(false)
   })
 })

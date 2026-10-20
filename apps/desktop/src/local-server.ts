@@ -8,7 +8,8 @@ import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } f
 import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
 import { resolveHostTier } from './runtime-memory'
 import { resolveDesktopPath } from './login-shell-path'
-import { LocalApiSupervisor } from './local-api-supervisor'
+import { getOrCreateSecretsEncryptionKey } from './local-secrets'
+import { DEFAULT_HEALTH_WATCHDOG, LocalApiSupervisor } from './local-api-supervisor'
 import {
   appendApiCrashLog,
   appendApiStderr,
@@ -31,8 +32,8 @@ const RESTART_HEALTH_RETRIES = 20
 const HEALTH_RETRY_DELAY_MS = 500
 const SHUTDOWN_TIMEOUT_MS = 5000
 // One watchdog probe's socket budget. The supervisor bounds the whole call as
-// well (see `DEFAULT_HEALTH_WATCHDOG.timeoutMs`), in case `fetch` itself hangs.
-const HEALTH_PROBE_TIMEOUT_MS = 3000
+// well, in case `fetch` itself hangs.
+const HEALTH_PROBE_TIMEOUT_MS = DEFAULT_HEALTH_WATCHDOG.timeoutMs
 
 let apiProcess: ChildProcess | null = null
 let apiPort: number = PREFERRED_PORT
@@ -63,7 +64,7 @@ let intentionalStop = false
  *
  * SHO-60 adds the watchdog: a child that stays alive but stops answering
  * `/health` never fires `exit`, so the respawn policy below would never see it.
- * The probe trips after three misses and `kill` turns that into the same
+ * The probe trips after three unanswered probes and `kill` turns that into the same
  * `exit` → `notifyExit()` path — one restart loop, two ways in.
  */
 const apiSupervisor = new LocalApiSupervisor({
@@ -76,6 +77,9 @@ const apiSupervisor = new LocalApiSupervisor({
   },
   onHealthFailure: ({ failures, maxFailures }) => {
     console.warn(`[Desktop] Local API failed health probe ${failures}/${maxFailures}`)
+  },
+  onSlowHealth: ({ elapsedMs }) => {
+    console.warn(`[Desktop] Local API is slow: health probe answered after ${elapsedMs}ms`)
   },
   onWatchdogTripped: ({ failures }) => {
     console.error(
@@ -502,6 +506,11 @@ export async function startLocalServer(): Promise<void> {
     RUNTIME_BASE_PORT: String(RUNTIME_BASE_PORT),
     NODE_ENV: 'development',
     BETTER_AUTH_SECRET: getOrCreateAuthSecret(),
+    // Cloud supplies this from its environment; a packaged desktop never did,
+    // and `secret-crypto.ts` fails closed, so every at-rest credential write
+    // (provider keys, GitHub, Slack, integrations) threw on a fresh install
+    // (SHO-75). Generated once beside `.auth-secret` and reused forever.
+    SECRETS_ENCRYPTION_KEY: getOrCreateSecretsEncryptionKey(getDataDir()),
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
     SHOGO_BUN_PATH: bunPath,

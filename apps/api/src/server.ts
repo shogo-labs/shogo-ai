@@ -35,7 +35,7 @@ import { workBoardRoutes } from './routes/work-boards'
 // local mode too. Loading them via server-cloud-deps left local 404ing.
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { costAnalyticsRoutes } from './routes/cost-analytics'
-import { AGENT_REPLY_TIMEOUT_MS, configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
+import { configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
 import { registerBuiltInChatProviders } from './services/chat-providers'
 import { chatProviderRoutes } from './routes/chat-providers'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
@@ -46,6 +46,7 @@ import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-ev
 import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
 import { createInviteLinkAfterAccept } from './routes/invite-link-after-accept'
 import { inviteLinkRoutes } from './routes/invite-links'
+import { invitationInfoRoutes } from './routes/invitation-info'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
@@ -87,6 +88,7 @@ import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from
 import { createChatSessionForkRoutes } from './routes/chat-session-fork'
 import { chatQueuedMessageActionsRoutes } from './routes/chat-queued-message-actions'
 import { toolsProxyRoutes } from './routes/tools-proxy'
+import { socialRelayRoutes, socialRoutes, socialWebhookRoutes } from './routes/social'
 import {
   generateTitleCompletion,
   setTitleGenerationModelId,
@@ -151,6 +153,9 @@ import {
 } from './lib/workspace-compute-budget'
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { historyRoutes } from './routes/history'
+// Hosted voice media — imported directly (not via the cloud-only island) so
+// desktop/local mode serves /api/voice/tts and /api/voice/music too.
+import { voiceMediaRoutes } from './routes/voice-media'
 import { chatMentionRoutes } from './routes/chat-mentions'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
 import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
@@ -241,6 +246,7 @@ const evalAdminRoutes: any = cloud.evalAdminRoutes ?? emptyRouter
 const evalInternalRoutes: any = cloud.evalInternalRoutes ?? emptyRouter
 const cliAuthRoutes: any = cloud.cliAuthRoutes ?? emptyRouter
 const instanceRoutes: any = cloud.instanceRoutes ?? emptyRouter
+const machineRoutes: any = cloud.machineRoutes ?? emptyRouter
 const authenticateInstanceWs: any = cloud.authenticateInstanceWs ?? (async () => false)
 const handleInstanceWsOpen: any = cloud.handleInstanceWsOpen ?? (() => {})
 const handleInstanceWsMessage: any = cloud.handleInstanceWsMessage ?? (() => {})
@@ -1146,7 +1152,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     { id: 'openai',     envKey: 'OPENAI_API_KEY' },
     { id: 'google',     envKey: 'GOOGLE_API_KEY' },
     { id: 'openrouter', envKey: 'OPENROUTER_API_KEY' },
-    { id: 'fal',        envKey: 'FAL_KEY' },
     { id: 'tripo',      envKey: 'TRIPO_API_KEY' },
     { id: 'higgsfield', envKey: 'HIGGSFIELD_API_KEY' },
   ] as const
@@ -1590,6 +1595,8 @@ app.route('/api', cliAuthRoutes())
 
 // Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
+// A paired desktop's own workspaces, owner-only (`/api/machines…`).
+app.route('/api', machineRoutes())
 app.route('/api', remoteAuditRoutes())
 app.route('/api', mobilePushRoutes())
 app.route('/api', appInstallRoutes())
@@ -1611,8 +1618,9 @@ app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUs
 app.route('/api', sharedMeetingRoutes())
 // Workspace channels (team chat with @mentionable agents).
 configureConversationAgentDispatcher({ runtimeManager: getRuntimeManager() })
-// Other pods may still be writing replies; only settle those past the longest a run can take.
-void settleOrphanedAgentReplies(AGENT_REPLY_TIMEOUT_MS + 60_000).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
+// A reply another pod is still writing keeps its turn heartbeated, so the
+// heartbeat — not a fixed age — is what tells a dead run from a live one.
+void settleOrphanedAgentReplies(0).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
 registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
@@ -5843,6 +5851,30 @@ app.post('/api/projects/:projectId/chat/stop', async (c) => {
   return router.fetch(newReq)
 })
 
+// POST /api/projects/:projectId/chat/compact - Summarize this chat's context now
+// (the context-usage dock's "Summarize now"). The inner router under
+// `projectChatRoutes` is only reachable through explicit forwarders, so this
+// registration is what makes the route exist at all.
+app.post('/api/projects/:projectId/chat/compact', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  // Region-pin: the session's history lives in the runtime that owns the turn.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
+
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/compact`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
 // POST /api/projects/:projectId/chat/wake - Wake up a scaled-to-zero pod
 app.post('/api/projects/:projectId/chat/wake', async (c) => {
   const authResult = await requireProjectAuth(c)
@@ -8586,11 +8618,26 @@ app.route('/api/v1', publicApi)
 // Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
 const toolsProxy = toolsProxyRoutes()
 app.route('/api', toolsProxy)
+// Social management (Zernio). People talk to the workspace-scoped routes; a
+// desktop forwards its provider calls to the relay, which is the only place
+// the master Zernio key is used.
+app.route('/api', socialRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', socialRelayRoutes())
+// Zernio's webhooks (comments, DMs, account health). Cloud only: the desktop
+// half of the relay applies local-scope events in its own DB.
+app.route('/api', socialWebhookRoutes())
 
 // EZ Mode / voice translator routes (session-auth'd via authMiddleware
 // above). Keeps ELEVENLABS_API_KEY on the server and serves the shared
 // translator persona for both voice (signed URL) and text (streaming chat).
 app.route('/api', voiceRoutes())
+
+// Hosted voice media (`/api/voice/tts`, `/api/voice/music`). Mounted
+// unconditionally — unlike `voiceRoutes()` this module has no cloud-only
+// imports, so desktop (`SHOGO_LOCAL_MODE`) serves the same endpoints and the
+// SDK's runtime-token proxy works there too. Without ELEVENLABS_API_KEY the
+// handlers answer 503 with a specific message.
+app.route('/api', voiceMediaRoutes())
 
 // Public streaming chat route — text-only sibling of the voice signed-
 // URL endpoint. Lets external SDK consumers (`useShogoChat`) drive the
@@ -8989,6 +9036,13 @@ app.get('/api/invite-links/:token/info', async (c) => {
     },
   })
 })
+
+// Get invitation info for the emailed accept link (`/invitations/<id>/accept`).
+// Public on purpose — the page renders before the invitee signs in — and the
+// payload carries no email address. Mounted BEFORE the generated routers so
+// `/:id/info` can't fall through to the generated `GET /:id` (which requires
+// an authenticated session and the invitation to belong to the caller).
+app.route('/api/invitations', invitationInfoRoutes())
 
 // Custom chat-message extension endpoints (truncate-from, etc.).
 // MUST be mounted BEFORE the generated routes so Hono matches the
@@ -9863,6 +9917,26 @@ setTimeout(async () => {
   })()
 }
 
+// Social account monthly meter — `social_account_monthly`. Daily on purpose:
+// the per-account watermark makes an extra tick a no-op, and a monthly-only job
+// misses the 1st after any deploy window. Wrapped in
+// `withGlobalJobLock('social-account-monthly')` so one region charges.
+{
+  ;(async () => {
+    try {
+      const { startSocialAccountMonthlyCron } = await import(
+        './jobs/social-account-monthly'
+      )
+      startSocialAccountMonthlyCron()
+    } catch (err: any) {
+      console.error(
+        '[SocialAccountMonthly] failed to schedule the account meter (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
 // Super-admin grant monthly refill — refills `monthlyIncludedUsd` on
 // free-tier workspaces with active `WorkspaceGrant` rows. Paid plans
 // are refilled by the Stripe `invoice.payment_succeeded` webhook.
@@ -9912,6 +9986,23 @@ setTimeout(async () => {
     } catch (err: any) {
       console.error(
         '[Affiliate] failed to schedule cron jobs (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Cards that know their PR — sweeps stale PR links (a dropped webhook, a repo
+// connected with a personal token rather than the App) so a card never sits on
+// yesterday's checks. Wrapped in withGlobalJobLock: one region per tick.
+{
+  ;(async () => {
+    try {
+      const { startSyncPrLinksCron } = await import('./jobs/sync-pr-links')
+      startSyncPrLinksCron()
+    } catch (err: any) {
+      console.error(
+        '[SyncPrLinks] failed to schedule sweep (non-fatal):',
         err?.message ?? err,
       )
     }

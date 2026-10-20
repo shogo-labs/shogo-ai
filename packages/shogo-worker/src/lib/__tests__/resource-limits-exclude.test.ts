@@ -43,8 +43,8 @@ describe.skipIf(process.platform !== 'win32')('samplePgidRssKb exclusion (Window
     });
     await new Promise((r) => setTimeout(r, 1500));
 
-    const all = samplePgidRssKb(parent.pid!, 'win32');
-    const withoutChild = samplePgidRssKb(parent.pid!, 'win32', [childPid]);
+    const all = await samplePgidRssKb(parent.pid!, 'win32');
+    const withoutChild = await samplePgidRssKb(parent.pid!, 'win32', [childPid]);
     expect(all).not.toBeNull();
     expect(withoutChild).not.toBeNull();
     expect(all! - withoutChild!).toBeGreaterThan(150 * 1024);

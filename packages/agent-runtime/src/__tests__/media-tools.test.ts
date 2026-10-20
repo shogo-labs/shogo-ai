@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Media tools: generate_image references and output paths, image utilities,
+ * Media tools: generate_image references and output paths,
  * list_media_models, generate_video polling / timeout / background jobs, and
  * capability gating.
  *
@@ -14,7 +14,10 @@ import { join } from 'path'
 import { createTools, filterDisabledCapabilityTools, type ToolContext } from '../gateway-tools'
 import { VIDEO_POLL, _testing, readMp4DurationSeconds } from '../media-tools'
 
-const TEST_DIR = '/tmp/test-media-tools'
+// Under the repo rather than /tmp: the path sandbox resolves real paths, and on
+// macOS /tmp is a symlink to /private/tmp, so a /tmp workspace root reads as
+// "outside the allowed folders" and every fixture access fails.
+const TEST_DIR = join(import.meta.dir, '../../../../_tmp/test-media-tools')
 const PROXY = 'http://proxy.test/api/ai/v1'
 const B64_PNG = Buffer.from([137, 80, 78, 71]).toString('base64')
 
@@ -126,6 +129,42 @@ describe('generate_image', () => {
     expect(r.reference_images).toEqual(['refs/a.png', 'refs/b.jpg'])
   })
 
+  test('passes model-specific options through, and keeps the count separate', async () => {
+    let form: FormData | undefined
+    let body: any
+    on(`${PROXY}/images/generations`, (_u, init) => {
+      body = JSON.parse(String(init?.body))
+      return json({ data: [{ b64_json: B64_PNG }] })
+    })
+    on(`${PROXY}/images/edits`, (_u, init) => {
+      form = init?.body as FormData
+      return json({ data: [{ b64_json: B64_PNG }] })
+    })
+
+    // An object means model-specific fields (count stays 1)…
+    const generated = await run('generate_image', {
+      prompt: 'a can',
+      model: 'hf-soul-v2',
+      options: { seed: 42, negative_prompt: 'blurry' },
+    })
+    expect(generated.error).toBeUndefined()
+    expect(body.n).toBe(1)
+    expect(body.options).toEqual({ seed: 42, negative_prompt: 'blurry' })
+
+    // …and with references the same fields ride along on the multipart edit.
+    const edited = await run('generate_image', {
+      prompt: 'a can',
+      model: 'hf-qwen-image-3',
+      reference_images: ['refs/a.png'],
+      options: { seed: 7 },
+    })
+    expect(edited.error).toBeUndefined()
+    expect(JSON.parse(String(form!.get('options')))).toEqual({ seed: 7 })
+
+    // The response names the model that ran.
+    expect(generated.model).toBe('hf-soul-v2')
+  })
+
   test('saves to a path anywhere in the workspace and numbers multiple options', async () => {
     on(`${PROXY}/images/generations`, () => json({ data: [{ b64_json: B64_PNG }, { b64_json: B64_PNG }] }))
     const r = await run('generate_image', { prompt: 'p', path: 'public/assets/cab1/player.png', options: 2 })
@@ -140,7 +179,10 @@ describe('generate_image', () => {
   })
 
   test('rejects an output path outside the workspace', async () => {
-    const r = await run('generate_image', { prompt: 'p', path: '../escape.png' })
+    // The workspace here lives inside the repo, so an escaping relative path
+    // would still land in an allowed root; an absolute outside path is the
+    // unambiguous case.
+    const r = await run('generate_image', { prompt: 'p', path: '/etc/escape.png' })
     expect(r.error).toMatch(/outside/i)
     expect(calls).toHaveLength(0)
   })
@@ -156,37 +198,15 @@ describe('generate_image', () => {
 })
 
 // =========================================================================
-// Image utilities and model listing
+// Model listing
 // =========================================================================
 
-describe('upscale_image / remove_background', () => {
-  test('upscale saves next to the original by default', async () => {
-    let body: any
-    on(`${PROXY}/images/process`, (_u, init) => {
-      body = JSON.parse(String(init?.body))
-      return json({ data: [{ b64_json: B64_PNG, content_type: 'image/png', width: 2048, height: 2048 }] })
-    })
-    const r = await run('upscale_image', { path: 'refs/b.jpg', scale: 4 })
-    expect(body).toMatchObject({ operation: 'upscale', scale: 4 })
-    expect(body.image).toStartWith('data:image/jpeg;base64,')
-    expect(r.path).toBe('refs/b-upscaled.png')
-    expect(existsSync(join(TEST_DIR, 'refs/b-upscaled.png'))).toBe(true)
-  })
-
-  test('remove_background honours output_path', async () => {
-    on(`${PROXY}/images/process`, () => json({ data: [{ b64_json: B64_PNG, content_type: 'image/png' }] }))
-    const r = await run('remove_background', { path: 'refs/a.png', output_path: 'sprites/hero.png' })
-    expect(r.path).toBe('sprites/hero.png')
-  })
-
-  test('missing input image is reported', async () => {
-    const r = await run('remove_background', { path: 'nope.png' })
-    expect(r.error).toContain('Image not found')
-  })
-})
-
 describe('list_media_models', () => {
-  const payload = { images: [{ id: 'nano-banana-pro' }], videos: [{ id: 'kling-3-pro' }], utilities: [], currency: 'USD' }
+  const payload = {
+    images: [{ id: 'hf-soul-v2', options: [{ name: 'prompt' }], endpoints: ['higgsfield-ai/soul/v2/standard'] }],
+    videos: [{ id: 'hf-kling-3.0-std', options: [{ name: 'duration' }], endpoints: ['kling-video/v3.0/std/text-to-video'] }],
+    currency: 'USD',
+  }
 
   test('hides videos while video generation is off', async () => {
     on(`${PROXY}/media/models`, () => json(payload))
@@ -230,11 +250,11 @@ describe('generate_video', () => {
         status,
         model: 'kling-3-pro',
         duration: 5,
-        ...(status === 'completed' ? { video: { url: 'https://cdn.fal/v.mp4', content_type: 'video/mp4' } } : {}),
+        ...(status === 'completed' ? { video: { url: 'https://cdn.higgsfield/clip.mp4', content_type: 'video/mp4' } } : {}),
         ...(status === 'failed' ? { error: 'content policy' } : {}),
       })
     })
-    on('https://cdn.fal/v.mp4', () => new Response(new Uint8Array([0, 0, 0, 24]), { headers: { 'Content-Type': 'video/mp4' } }))
+    on('https://cdn.higgsfield/clip.mp4', () => new Response(new Uint8Array([0, 0, 0, 24]), { headers: { 'Content-Type': 'video/mp4' } }))
     return { submitBody: () => submitBody, polls: () => polls }
   }
 
@@ -247,6 +267,17 @@ describe('generate_video', () => {
     expect(readFileSync(join(TEST_DIR, r.path))).toEqual(Buffer.from([0, 0, 0, 24]))
     expect(flow.polls()).toBe(3)
     expect(flow.submitBody().start_image).toStartWith('data:image/png;base64,')
+  })
+
+  test('forwards model-specific options to the proxy unmodified', async () => {
+    const flow = mockVideoFlow(['completed'])
+    const options = { cfg_scale: 0.6, multi_shots: true, multi_prompt: [{ prompt: 'a', duration: 3 }, { prompt: 'b', duration: 4 }] }
+    const r = await run('generate_video', { prompt: 'a fox runs', model: 'hf-kling-3.0-std', duration: 7, options })
+    expect(r.error).toBeUndefined()
+    // Validation lives in the proxy (which owns the documented schema); the tool
+    // must not drop or reshape what it was given.
+    expect(flow.submitBody().options).toEqual(options)
+    expect(flow.submitBody().duration).toBe(7)
   })
 
   test('reports a failed job', async () => {
@@ -371,7 +402,7 @@ describe('capability gating', () => {
 
   test('imageGenEnabled: false removes the image tools but keeps the listing for video', () => {
     const off = names({ imageGenEnabled: false, videoGenEnabled: true })
-    for (const n of ['generate_image', 'upscale_image', 'remove_background']) expect(off).not.toContain(n)
+    for (const n of ['generate_image']) expect(off).not.toContain(n)
     expect(off).toContain('list_media_models')
     expect(names({ imageGenEnabled: false })).not.toContain('list_media_models')
   })

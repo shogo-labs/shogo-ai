@@ -361,12 +361,33 @@ export const PUBLIC_PREFIXES = [
   '/api/cli/login/',
 ]
 
+/**
+ * Public paths that cannot be expressed as a prefix without exposing a whole
+ * router. Checked alongside `PUBLIC_PREFIXES`.
+ */
+export const PUBLIC_PATTERNS: RegExp[] = [
+  // Emailed invitation links land on `/invitations/<id>/accept`, which has to
+  // render (workspace name, role) before the invitee has a session. The uuid is
+  // the credential and the payload carries no email address — see
+  // `./routes/invitation-info.ts`. Matching the exact subpath keeps the rest of
+  // the generated `/api/invitations` CRUD surface behind `requireAuth`.
+  /^\/api\/invitations\/[^/]+\/info$/,
+]
+
+/** True when `path` is public for `requireAuth` (prefix or pattern list). */
+export function isPublicPath(path: string): boolean {
+  return (
+    PUBLIC_PREFIXES.some((p) => path.startsWith(p)) ||
+    PUBLIC_PATTERNS.some((pattern) => pattern.test(path))
+  )
+}
+
 export async function requireAuth(c: Context, next: Next) {
   const auth = c.get("auth")
 
   if (!auth?.isAuthenticated || !auth.userId) {
     const path = new URL(c.req.url).pathname
-    if (PUBLIC_PREFIXES.some((p) => path.startsWith(p))) {
+    if (isPublicPath(path)) {
       return next()
     }
     if (auth?.authError) {

@@ -74,6 +74,26 @@ describe('autoCheckpointWorkspaceProjects', () => {
     expect(created.map((c) => c.projectId)).toEqual(['p2'])
   })
 
+  it('tells createCheckpoint to snapshot on a ref for a GitHub-connected project', async () => {
+    const modes: Record<string, string | undefined> = {}
+    const { seams } = baseSeams({
+      _loadProjectMeta: async () =>
+        new Map([
+          ['connected', { workingMode: 'managed', hasGithubConnection: true }],
+          ['local', { workingMode: 'managed', hasGithubConnection: false }],
+        ]),
+      _createCheckpoint: async (opts: any) => {
+        modes[opts.projectId] = opts.mode
+        return { id: `cp-${opts.projectId}` }
+      },
+    })
+    await autoCheckpointWorkspaceProjects(['connected', 'local'], seams as any)
+    // SHO-61: the user's branch must not collect AI commits …
+    expect(modes.connected).toBe('ref')
+    // … while a local-only project keeps the commit-history behaviour.
+    expect(modes.local).toBe('branch')
+  })
+
   it('baselines never-tracked projects unconditionally (init auto-commits → tree clean)', async () => {
     // initRepo commits the initial tree, so a post-init dirty check would be
     // false. The baseline must still be recorded (does NOT consult getStatus).

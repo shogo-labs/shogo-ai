@@ -18,6 +18,7 @@ import { accessibleProjects, projectScopeWhere, type Principal } from '../lib/au
 import { withProjectPermissions } from '../lib/authz/project-permissions'
 import { setProjectVisibility } from '../lib/authz/project-access'
 import { hookAccess, hookAuthorize, hookPrincipal, hookRequire } from '../lib/authz/hooks'
+import { resolveTunnelWorkspaceId } from '../lib/tunnel-workspace'
 
 /** projectId -> workspaceId, recorded in beforeDelete for use in afterDelete. */
 const deletingProjectWorkspaces = new Map<string, string>()
@@ -97,10 +98,10 @@ export const projectHooks: ProjectHooks = {
 
     let workspaceId = ctx.query.workspaceId
 
-    // Remap cloud workspaceId to local workspace for tunnel-authenticated requests
+    // Remap a cloud workspaceId to a local one for tunnel-authenticated
+    // requests, keeping a machine workspace id this desktop already knows.
     if (ctx.tunnelAuthenticated && workspaceId) {
-      const localWs = await ctx.prisma.workspace.findFirst({ select: { id: true } })
-      if (localWs) workspaceId = localWs.id
+      workspaceId = await resolveTunnelWorkspaceId(ctx.prisma, workspaceId)
     }
 
     // Workspace members see open projects, owners/admins see all, guests see
@@ -154,14 +155,11 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    // Tunnel-authenticated requests carry the cloud workspaceId which doesn't
-    // exist in the local SQLite DB. Remap to the local workspace so the FK
-    // constraint is satisfied. The desktop only has one workspace.
+    // Tunnel-authenticated requests may carry the cloud workspaceId, which
+    // doesn't exist in the local SQLite DB — remap it so the FK constraint is
+    // satisfied, but keep a machine workspace id this desktop knows.
     if (ctx.tunnelAuthenticated) {
-      const localWs = await ctx.prisma.workspace.findFirst({ select: { id: true } })
-      if (localWs) {
-        input.workspaceId = localWs.id
-      }
+      input.workspaceId = await resolveTunnelWorkspaceId(ctx.prisma, input.workspaceId)
     }
 
     const workspaceId = input.workspaceId

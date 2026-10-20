@@ -206,7 +206,7 @@ describe('createCheckpoint on a repo Shogo does not own (real git)', () => {
     expect(db.checkpoints.size).toBe(0)
   })
 
-  it('still commits the same repo once a GitHubConnection hands it to Shogo', async () => {
+  it('snapshots a connected repo on a private ref instead of committing to its branch', async () => {
     const repo = makeForeignRepo()
     seedProject('p_connected', { githubConnection: true })
     writeFileSync(join(repo, 'app.ts'), 'export const v = 3\n')
@@ -219,9 +219,17 @@ describe('createCheckpoint on a repo Shogo does not own (real git)', () => {
     })
 
     expect(cp.id).toBeTruthy()
-    expect(sh(repo, 'rev-parse', 'HEAD')).not.toBe(headBefore)
+    // SHO-61: the branch belongs to the user — its tip and commit log are
+    // untouched, and the edit stays uncommitted exactly as the user left it.
+    expect(cp.mode).toBe('ref')
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(headBefore)
+    expect(sh(repo, 'rev-list', '--count', 'HEAD')).toBe('1')
+    expect(sh(repo, 'status', '--porcelain')).toContain('app.ts')
+    // …but the snapshot exists, pinned outside refs/heads so no push sees it.
+    expect(sh(repo, 'rev-parse', '--verify', cp.refName as string)).toBe(cp.commitSha)
+    expect(sh(repo, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main')
     expect(db.createdCheckpoints.length).toBe(1)
-    expect(sh(repo, 'status', '--porcelain')).toBe('')
+    expect(db.createdCheckpoints[0]!.mode).toBe('ref')
   })
 
   it('still checkpoints a folder with no origin, initialising the repo as today', async () => {

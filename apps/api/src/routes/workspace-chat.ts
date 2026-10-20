@@ -773,6 +773,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       body = JSON.stringify(parsedBody)
     }
     await stampWorkspacePlan(parsedBody, workspaceId)
+    // Tell the runtime which surface this chat is, so capability toggles and
+    // the prompt block resolve for the WORKSPACE agent even when the runtime
+    // is anchored on the project the user happens to have open. Never trusted
+    // from the client: always overwritten here.
+    parsedBody.chatContext = 'workspace'
     body = JSON.stringify(parsedBody)
 
     // Harden "@" references before forwarding to the runtime:

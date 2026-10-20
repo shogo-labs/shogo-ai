@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /** Tools gated by `imageGenEnabled`. */
-export const IMAGE_TOOL_NAMES = ['generate_image', 'upscale_image', 'remove_background'] as const
+export const IMAGE_TOOL_NAMES = ['generate_image'] as const
 
 /** Tools gated by the opt-in `videoGenEnabled`. */
 export const VIDEO_TOOL_NAMES = ['generate_video'] as const

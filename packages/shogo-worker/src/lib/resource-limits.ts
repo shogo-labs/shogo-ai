@@ -21,7 +21,7 @@
  * The JS-heap env cap (see {@link applyHeapEnvCap}) is a secondary hint layered
  * on top everywhere — OS-level limits are the real enforcement.
  */
-import { spawnSync } from './child-process.ts';
+import { execFile, spawnSync } from './child-process.ts';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -233,65 +233,107 @@ export function readExecPidsFile(path: string): number[] {
   }
 }
 
+/** One process in a {@link snapshotProcesses} table. */
+export interface ProcessRow {
+  pid: number;
+  ppid: number;
+  /** Process group id. Always 0 on Windows, which has no groups. */
+  pgid: number;
+  /** Resident memory: RSS on POSIX, working set on Windows. */
+  kb: number;
+}
+
+const SNAPSHOT_TIMEOUT_MS = 20_000;
+
+const WINDOWS_SNAPSHOT_SCRIPT =
+  `$ErrorActionPreference='SilentlyContinue';` +
+  `foreach($p in Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,WorkingSetSize){` +
+  `"$($p.ProcessId) $($p.ParentProcessId) $([math]::Floor($p.WorkingSetSize/1024))"}`;
+
 /**
- * Sum the resident-set size (KB) of the process group led by `pid`.
+ * Every process on the machine with its parent, group and memory, read in one
+ * asynchronous OS query: one PowerShell pass over Win32_Process on Windows,
+ * one `ps` elsewhere. On desktop this runs in the API process, so it must not
+ * block: a synchronous PowerShell launch stalls every request for ~0.7s.
+ * Resolves `null` when the query fails.
+ */
+export function snapshotProcesses(platform: NodeJS.Platform = process.platform): Promise<ProcessRow[] | null> {
+  const [command, args] = platform === 'win32'
+    ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_SNAPSHOT_SCRIPT]]
+    : ['ps', ['-A', '-o', 'pid=,ppid=,pgid=,rss=']];
+  return new Promise((resolve) => {
+    execFile(command, args, { encoding: 'utf-8', timeout: SNAPSHOT_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      if (err || !stdout) { resolve(null); return; }
+      const rows: ProcessRow[] = [];
+      for (const line of String(stdout).split(/\r?\n/)) {
+        const cols = line.trim().split(/\s+/).map((v) => parseInt(v, 10));
+        if (cols.some((v) => !Number.isFinite(v))) continue;
+        if (platform === 'win32' && cols.length === 3) rows.push({ pid: cols[0]!, ppid: cols[1]!, pgid: 0, kb: cols[2]! });
+        else if (platform !== 'win32' && cols.length === 4) rows.push({ pid: cols[0]!, ppid: cols[1]!, pgid: cols[2]!, kb: cols[3]! });
+      }
+      resolve(rows.length ? rows : null);
+    });
+  });
+}
+
+/**
+ * Resident memory (KB) of the runtime tree rooted at `pid`, from a snapshot.
  *
- *   - POSIX: `ps -o rss= -g <pgid>` (pid is the group leader because the
- *     runtime is spawned `detached`), summed across the group.
- *   - Windows: a PowerShell pass that sums WorkingSet64 of `pid` and all of its
- *     descendants (walking Win32_Process.ParentProcessId).
+ *   - POSIX: the process group led by `pid` (the runtime is spawned
+ *     `detached`, so it leads its group).
+ *   - Windows: `pid` and all of its descendants, by ParentProcessId.
  *
  * `excludePids` (Windows only) prunes those subtrees from the walk. The agent
  * runtime's `exec` shells are listed there: they are the user's workload and
  * the runtime budgets them itself (see SHOGO_EXEC_MEMORY_MB). On POSIX they
  * are already outside the sum, because each exec shell leads its own group.
  *
- * Returns `null` when sampling fails (process gone, tool missing) so the
- * watchdog treats it as "no reading" rather than "0".
+ * Returns `null` when `pid` is not in the snapshot, so the watchdog treats it
+ * as "no reading" rather than "0".
  */
-export function samplePgidRssKb(
+export function treeRssKb(
+  rows: readonly ProcessRow[],
   pid: number,
   platform: NodeJS.Platform = process.platform,
   excludePids: readonly number[] = [],
 ): number | null {
-  try {
-    if (platform === 'win32') {
-      const exclude = excludePids.filter((p) => Number.isInteger(p) && p > 0 && p !== pid);
-      const script =
-        `$ErrorActionPreference='SilentlyContinue';` +
-        `$root=${pid};$exclude=@(${exclude.join(',')});` +
-        `$all=Get-CimInstance Win32_Process;` +
-        `$seen=@{};$stack=New-Object System.Collections.Stack;$stack.Push($root);$sum=0;` +
-        `while($stack.Count -gt 0){$id=$stack.Pop();if($seen[$id]){continue};$seen[$id]=$true;` +
-        `foreach($p in $all){if($p.ProcessId -eq $id){$sum+=$p.WorkingSetSize};` +
-        `if($p.ParentProcessId -eq $id -and $exclude -notcontains $p.ProcessId){$stack.Push($p.ProcessId)}}};` +
-        `[math]::Floor($sum/1024)`;
-      const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-        encoding: 'utf-8',
-        timeout: 10_000,
-        windowsHide: true,
-      });
-      if (r.status !== 0 || !r.stdout) return null;
-      const kb = parseInt(r.stdout.trim(), 10);
-      return Number.isFinite(kb) ? kb : null;
-    }
-
-    // POSIX: sum RSS (KB) of every process in the group.
-    const r = spawnSync('ps', ['-o', 'rss=', '-g', String(pid)], {
-      encoding: 'utf-8',
-      timeout: 5_000,
-    });
-    if (r.status !== 0 || !r.stdout) return null;
-    let total = 0;
-    let sawRow = false;
-    for (const line of r.stdout.split('\n')) {
-      const v = parseInt(line.trim(), 10);
-      if (Number.isFinite(v)) { total += v; sawRow = true; }
-    }
-    return sawRow ? total : null;
-  } catch {
-    return null;
+  if (platform !== 'win32') {
+    const group = rows.filter((r) => r.pgid === pid);
+    return group.length ? group.reduce((sum, r) => sum + r.kb, 0) : null;
   }
+  if (!rows.some((r) => r.pid === pid)) return null;
+  const exclude = new Set(excludePids.filter((p) => p !== pid));
+  const children = new Map<number, ProcessRow[]>();
+  for (const r of rows) {
+    if (r.pid === r.ppid) continue;
+    const list = children.get(r.ppid);
+    if (list) list.push(r);
+    else children.set(r.ppid, [r]);
+  }
+  const byPid = new Map(rows.map((r) => [r.pid, r]));
+  const seen = new Set<number>();
+  const stack = [pid];
+  let sum = 0;
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    sum += byPid.get(id)?.kb ?? 0;
+    for (const child of children.get(id) ?? []) {
+      if (!exclude.has(child.pid)) stack.push(child.pid);
+    }
+  }
+  return sum;
+}
+
+/** Resident memory (KB) of one runtime tree. See {@link treeRssKb}. */
+export async function samplePgidRssKb(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+  excludePids: readonly number[] = [],
+): Promise<number | null> {
+  const rows = await snapshotProcesses(platform);
+  return rows ? treeRssKb(rows, pid, platform, excludePids) : null;
 }
 
 /**
@@ -314,8 +356,45 @@ export interface RssWatchdogOptions {
   onBreach: (rssMB: number) => void;
 }
 
+interface Sampler {
+  key: string;
+  timer: ReturnType<typeof setInterval>;
+  watchdogs: Set<RssWatchdog>;
+  sampling: boolean;
+}
+
+/**
+ * Watchdogs on the same platform and interval share one timer and one process
+ * snapshot per tick, so N runtimes cost one OS query instead of N.
+ */
+const samplers = new Map<string, Sampler>();
+
+function joinSampler(watchdog: RssWatchdog, platform: NodeJS.Platform, intervalMs: number): Sampler {
+  const key = `${platform}:${intervalMs}`;
+  let sampler = samplers.get(key);
+  if (!sampler) {
+    const created: Sampler = { key, watchdogs: new Set(), sampling: false, timer: setInterval(() => { void tick(created, platform); }, intervalMs) };
+    try { created.timer.unref?.(); } catch { /* unref is best-effort */ }
+    samplers.set(key, created);
+    sampler = created;
+  }
+  sampler.watchdogs.add(watchdog);
+  return sampler;
+}
+
+async function tick(sampler: Sampler, platform: NodeJS.Platform): Promise<void> {
+  if (sampler.sampling) return;
+  sampler.sampling = true;
+  try {
+    const rows = await snapshotProcesses(platform);
+    for (const watchdog of [...sampler.watchdogs]) watchdog.observe(rows);
+  } finally {
+    sampler.sampling = false;
+  }
+}
+
 export class RssWatchdog {
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private sampler: Sampler | null = null;
   private consecutive = 0;
   private fired = false;
   private readonly pid: number;
@@ -339,18 +418,23 @@ export class RssWatchdog {
   }
 
   start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(() => this.sample(), Math.max(2000, this.intervalMs));
-    try { this.timer.unref?.(); } catch { /* unref is best-effort */ }
+    if (this.sampler) return;
+    this.sampler = joinSampler(this, this.platform, Math.max(2000, this.intervalMs));
   }
 
   stop(): void {
-    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    this.sampler?.watchdogs.delete(this);
+    if (this.sampler?.watchdogs.size === 0) {
+      clearInterval(this.sampler.timer);
+      samplers.delete(this.sampler.key);
+    }
+    this.sampler = null;
   }
 
-  private sample(): void {
+  /** Judge one snapshot. The shared sampler calls this; exposed for tests. */
+  observe(rows: readonly ProcessRow[] | null): void {
     if (this.fired) return;
-    const kb = samplePgidRssKb(this.pid, this.platform, this.excludePids?.() ?? []);
+    const kb = rows ? treeRssKb(rows, this.pid, this.platform, this.excludePids?.() ?? []) : null;
     if (kb == null) { this.consecutive = 0; return; }
     const rssMB = Math.floor(kb / 1024);
     if (rssMB <= this.ceilingMB) { this.consecutive = 0; return; }

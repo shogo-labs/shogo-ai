@@ -47,11 +47,10 @@ import {
 
 const DEFAULT_VOICE_ID = 'EXAVITQu4vr4xnSDxMaL' // Rachel — calm, concierge-y.
 const DEFAULT_DISPLAY_NAME = 'EZ Mode'
-// ElevenLabs rejects `eleven_turbo_v2_5` for English-only agents on most
-// plans ("English Agents must use turbo or flash v2"). Default to
-// `eleven_turbo_v2`, which is accepted everywhere; override via
-// SHOGO_VOICE_MODE_TTS_MODEL if you need one of the multilingual variants.
-const DEFAULT_TTS_MODEL = 'eleven_turbo_v2'
+// Current-generation realtime model: v4 Turbo is accepted by convai, ~100 ms,
+// and understands audio tags. Override with SHOGO_VOICE_MODE_TTS_MODEL if the
+// account needs one of the multilingual variants.
+const DEFAULT_TTS_MODEL = 'eleven_v4_turbo'
 
 async function main() {
   const apiKey = process.env.ELEVENLABS_API_KEY

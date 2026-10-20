@@ -28,6 +28,16 @@ function git(...args: string[]): string {
   return execFileSync('git', args, { cwd: ws, encoding: 'utf-8', stdio: 'pipe' }).trim()
 }
 
+/** `git` that reports success instead of throwing — `check-ignore` exits 1 on no match. */
+function gitOk(...args: string[]): boolean {
+  try {
+    git(...args)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function write(rel: string, body: string | Buffer = '') {
   const abs = join(ws, rel)
   mkdirSync(join(abs, '..'), { recursive: true })
@@ -148,7 +158,8 @@ describe('initRepo — .gitignore self-heal on existing repo', () => {
     const content = readFileSync(join(ws, '.gitignore'), 'utf-8')
     expect(content).toContain('my-secret/') // user content preserved
     expect(content).toContain('node_modules/')
-    expect(content).toContain('.shogo/')
+    expect(content).toContain('.shogo/*')
+    expect(content).toContain('!.shogo/memory-history/')
     expect(content).toContain('# Added by Shogo AI')
   })
 
@@ -158,13 +169,64 @@ describe('initRepo — .gitignore self-heal on existing repo', () => {
     // Pre-populate with every required entry.
     const required = [
       'node_modules/', '.bun/', 'dist/', 'dist.staging/', 'dist.canvas.staging/', 'dist.publish.staging/',
-      'dist.prev/', 'build/', '.output/', '.nitro/', '.shogo/', '.tmp/', 'nul', 'con', 'prn', 'aux',
+      'dist.prev/', 'build/', '.output/', '.nitro/', '.shogo/*', '!.shogo/memory-history/',
+      '.tmp/', 'nul', 'con', 'prn', 'aux',
     ]
     write('.gitignore', required.join('\n') + '\n')
     const before = readFileSync(join(ws, '.gitignore'), 'utf-8')
     await svc.initRepo(ws)
     const after = readFileSync(join(ws, '.gitignore'), 'utf-8')
     expect(after).toBe(before)
+  })
+
+  it('upgrades a legacy `.shogo/` ignore into `.shogo/*` + the memory-history exception', async () => {
+    git('init', '-b', 'main')
+    configUser()
+    // Every workspace created before 2026-10-19 has this exact line.
+    write('.gitignore', 'node_modules/\n.bun/\ndist/\n.shogo/\n')
+    await svc.initRepo(ws)
+    const content = readFileSync(join(ws, '.gitignore'), 'utf-8')
+    const lines = content.split('\n').map((l) => l.trim()).filter(Boolean)
+    expect(lines).not.toContain('.shogo/') // the whole-dir pattern is gone
+    // Exactly one spelling of each — a rewrite that leaves the appended copy
+    // behind would still pass a plain `toContain`.
+    expect(lines.filter((l) => l === '.shogo/*')).toHaveLength(1)
+    expect(lines.filter((l) => l === '!.shogo/memory-history/')).toHaveLength(1)
+    // The exception must come AFTER the ignore pattern to win.
+    expect(content.indexOf('!.shogo/memory-history/')).toBeGreaterThan(content.indexOf('.shogo/*'))
+    expect(lines.indexOf('!.shogo/memory-history/')).toBe(lines.indexOf('.shogo/*') + 1)
+    // ...and it must actually work: runtime state ignored, memory history not.
+    write('.shogo/index.db', 'sqlite bytes')
+    write('.shogo/memory-history/MEMORY.md/2026-10-19.md', '# Memory\n')
+    expect(gitOk('check-ignore', '-q', '.shogo/index.db')).toBe(true)
+    expect(gitOk('check-ignore', '-q', '.shogo/memory-history/MEMORY.md/2026-10-19.md')).toBe(false)
+  })
+
+  it('puts the exception after the pattern even when the legacy line is last', async () => {
+    git('init', '-b', 'main')
+    configUser()
+    // A hand-edited file can hold the negation *before* the pattern it
+    // re-includes, which makes it dead — last matching pattern wins.
+    write('.gitignore', 'node_modules/\n!.shogo/memory-history/\ndist/\n.shogo/\n')
+    await svc.initRepo(ws)
+    const lines = readFileSync(join(ws, '.gitignore'), 'utf-8')
+      .split('\n').map((l) => l.trim()).filter(Boolean)
+    expect(lines.filter((l) => l === '.shogo/*')).toHaveLength(1)
+    expect(lines.filter((l) => l === '!.shogo/memory-history/')).toHaveLength(1)
+    expect(lines.indexOf('!.shogo/memory-history/')).toBe(
+      lines.indexOf('.shogo/*') + 1,
+    )
+  })
+
+  it('keeps `.shogo/memory-history` trackable while still ignoring runtime state', async () => {
+    await svc.initRepo(ws)
+    write('.shogo/index.db', 'sqlite bytes')
+    write('.shogo/memory-history/MEMORY.md/2026-10-19.md', '# Memory\n')
+    await svc.commit(ws, { message: 'checkpoint', includeUntracked: true })
+
+    const tracked = git('ls-tree', '-r', '--name-only', 'HEAD').split('\n')
+    expect(tracked).toContain('.shogo/memory-history/MEMORY.md/2026-10-19.md')
+    expect(tracked).not.toContain('.shogo/index.db')
   })
 
   it('treats `node_modules` and `node_modules/` as equivalent (trailing slash)', async () => {

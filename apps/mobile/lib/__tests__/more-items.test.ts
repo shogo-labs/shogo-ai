@@ -36,6 +36,16 @@ describe('moreItems', () => {
     expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: false }))).toEqual(['analytics', 'marketplace', 'files', 'settings'])
   })
 
+  test('Social appears only when the workspace has an account connected', () => {
+    expect(ids(moreItems({ kind: 'team', marketplace: false, canvasesHidden: true }))).toEqual([
+      'analytics',
+      'settings',
+    ])
+    const withSocial = moreItems({ kind: 'team', marketplace: false, canvasesHidden: true, social: true })
+    expect(ids(withSocial)).toEqual(['analytics', 'social', 'settings'])
+    expect(withSocial.find((i) => i.id === 'social')?.href).toBe('/(app)/social')
+  })
+
   test('Settings is always last and opens the settings screen', () => {
     const scenarios = [
       { kind: 'personal' as const, marketplace: false, canvasesHidden: true },

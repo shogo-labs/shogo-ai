@@ -452,12 +452,12 @@ describe('gateway-tools', () => {
       // opts in (`filterDisabledCapabilityTools`). Plus the background task
       // tools: wait, task_list, task_cancel. `terminal_exec` is only
       // registered when the desktop terminal bridge (ctx.terminalExec) is wired.
-      // Media tools add list_media_models, upscale_image, remove_background and
-      // generate_video (registered, then hidden unless videoGenEnabled).
+      // Media tools add list_media_models, generate_image and generate_video
+      // (registered, then hidden unless image/video generation is on).
       // The 3D tools add generate_3d_model and edit_3d_model (registered, then
       // hidden unless threeDGenEnabled).
       // `chat_handoff` (SHO-52) adds one more: handing a turn to another chat.
-      expect(createTools(createCtx())).toHaveLength(78)
+      expect(createTools(createCtx())).toHaveLength(76)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()

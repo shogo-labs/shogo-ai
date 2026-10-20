@@ -1,25 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * A paused session holds one paused wake row, not one per retry (SHO-32).
+ * A paused session holds one paused wake row and stops retrying it (SHO-92,
+ * superseding SHO-32's "one row per retry").
  *
  * When a session's wakes are paused, `dispatchNext` fails the claimed row with
- * `Paused: …` and releases its tasks back to the sweep, which retries on a
- * backoff that caps at five minutes. Before SHO-32 every retry wrote another
- * failed `chat_queued_message` row — each carrying a full error column — so a
- * session left paused for a day accumulated hundreds of them while the UI only
- * ever needed one "this session is paused" marker.
+ * `Paused: …` and *holds* its tasks (`holdTaskWakes`), so the sweep leaves them
+ * gone until a person writes. Before this, each wake was released back to the
+ * sweep and retried every five minutes for the task's whole 24 h TTL: one
+ * failed queue row per attempt (1,150 of them across 9 chats) and an `attempts`
+ * counter that climbed to 292.
  *
  * Runs against the real local stack (`E2E_LOCAL_START_STACK=1` boots it with
  * the chat-queue worker on its 15 s tick). The pause is seeded straight into
  * the stack's SQLite file, so the spec does not spend three wake turns creating
- * one, and each retry's backoff is forced due instead of waited out.
+ * one; each retry window is forced due instead of waited out.
  *
- * The other half of the card — a person's message revives the wake inside one
- * backoff step and the marker goes — needs a live model to deliver the turn, so
- * it stays in `task-wake-recovery.test.ts` and `task-wake-paused-churn.test.ts`.
- * Here we pin what only the running stack shows: the row count, and the retry
- * delay a waiting person is actually exposed to.
+ * The delivery half — a person's message hands the held update back and it
+ * arrives exactly once — is pinned in `background-tasks.integration.test.ts`,
+ * because delivering it here needs a live model.
  *
  *   E2E_LOCAL_START_STACK=1 npx playwright test \
  *     --config e2e/local/playwright.config.ts chat-paused-wake-churn --project chromium
@@ -31,11 +30,9 @@ import { DatabaseSync } from "node:sqlite"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
 const REPO_ROOT = resolve(__dirname, "../..")
-/** `run-chat-queue-drain`'s tick, and how long one retry cycle may take. */
+/** `run-chat-queue-drain`'s tick, and how long one retry window may take. */
 const TICK_MS = 15_000
 const CYCLE_DEADLINE_MS = 90_000
-/** `MAX_WAKE_BACKOFF_MS` in background-tasks.service.ts (the card's 5 min cap). */
-const MAX_WAKE_BACKOFF_MS = 300_000
 
 function localDbPath(): string | null {
   if (process.env.E2E_LOCAL_DB) return process.env.E2E_LOCAL_DB
@@ -223,35 +220,32 @@ test.afterAll(async () => {
 
 const cleanupSessions: string[] = []
 
-test("a session that stays paused keeps one failed row, not one per retry", async () => {
+test("a session that stays paused keeps one failed row and stops retrying", async () => {
   const { sessionId, taskId } = seedPausedSession()
   cleanupSessions.push(sessionId)
 
-  let latest = await waitFor("the first paused row", async () => {
+  const paused = await waitFor("the first paused row", async () => {
     const rows = pausedRows(await queuedRows(sessionId))
     return rows[0] ?? null
   })
   expect(await queuedRows(sessionId)).toHaveLength(1)
 
-  // Each cycle is one five-minute retry of a session that is still paused.
-  for (let cycle = 0; cycle < 3; cycle++) {
-    const previous = latest.id
+  // Two retry windows of the drain worker: a paused wake is held, so neither
+  // tick may re-queue it or touch the marker row a person is looking at.
+  for (let window = 0; window < 2; window++) {
     forceRetryDue(taskId)
-    latest = await waitFor(`retry ${cycle + 1} to be written`, async () => {
-      const rows = pausedRows(await queuedRows(sessionId))
-      return rows.find((row) => row.id !== previous) ?? null
-    })
+    await new Promise((r) => setTimeout(r, TICK_MS + 5_000))
     const rows = await queuedRows(sessionId)
-    expect(pausedRows(rows)).toHaveLength(1)
     expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe(paused.id)
+    expect(rows[0].createdAt).toBe(paused.createdAt)
   }
 
   const waiting = db
-    .prepare("SELECT attempts, nextAttemptAt FROM background_tasks WHERE id = ?")
-    .get(taskId) as { attempts: number; nextAttemptAt: string | null } | undefined
-  expect(waiting?.attempts ?? 0).toBeGreaterThanOrEqual(4)
-  // A paused retry stays inside one backoff step, so a person's message revives
-  // the wake in minutes rather than after an hours-long deferral.
-  const dueIn = waiting?.nextAttemptAt ? new Date(waiting.nextAttemptAt).getTime() - Date.now() : 0
-  expect(dueIn).toBeLessThanOrEqual(MAX_WAKE_BACKOFF_MS + TICK_MS)
+    .prepare("SELECT attempts, heldUntil, notifiedAt FROM background_tasks WHERE id = ?")
+    .get(taskId) as { attempts: number; heldUntil: string | null; notifiedAt: string | null }
+  expect(waiting.attempts).toBe(1)
+  expect(waiting.notifiedAt).not.toBeNull()
+  // Held until the task's own expiry, not re-armed on the five-minute backoff.
+  expect(new Date(waiting.heldUntil!).getTime()).toBeGreaterThan(Date.now() + 60_000)
 })

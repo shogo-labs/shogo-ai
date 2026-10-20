@@ -139,6 +139,15 @@ const IN_PROCESS_E2E_SUITES: readonly InProcessE2ESuite[] = [
     files: ['e2e/workspace-tool-failures.integration.test.ts'],
     env: {},
   },
+  // SHO-67: the reported bug end to end — the real `share_file` tool, the real
+  // desktop mint route and the real desktop download route over a merged root
+  // whose projects are symlinks, so the signed path and the resolved path are
+  // checked against each other rather than each against a stub.
+  {
+    name: 'share_file roundtrip',
+    files: ['e2e/share-file-roundtrip.integration.test.ts'],
+    env: {},
+  },
   // SHO-63: `system_apply` against a real HTTP API that answers 401 to an
   // attach from the workspace anchor — the failure that produced six
   // meaningless errors on every workspace apply. Sets its own runtime env,

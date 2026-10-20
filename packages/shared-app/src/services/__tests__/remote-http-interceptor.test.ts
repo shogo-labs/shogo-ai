@@ -11,6 +11,10 @@ import {
   REMOTE_ROUTED_PREFIXES,
   REMOTE_EXCLUDED_PATTERNS,
   ROUTE_TABLE,
+  rewriteMachineWorkspaceParam,
+  rewriteMachineWorkspaceBody,
+  rewriteMachineWorkspacePath,
+  createRemoteAwareHttpClient,
 } from '../remote-http-interceptor'
 
 describe('shouldRouteToRemote', () => {
@@ -128,5 +132,228 @@ describe('configuration', () => {
 
   it('has exclusion patterns', () => {
     expect(REMOTE_EXCLUDED_PATTERNS.length).toBeGreaterThan(0)
+  })
+})
+
+// ─── Machine workspaces (SHO-54) ──────────────────────────────────────────
+//
+// A machine workspace is one of a paired desktop's own workspaces, reached
+// through `/api/machines/<id>/w/<localWorkspaceId>`. The cloud workspace id
+// the UI happens to have selected must not survive the hop: the desktop would
+// filter its projects by an id it has never heard of and answer `200 []`.
+
+describe('rewriteMachineWorkspaceParam', () => {
+  it('replaces the cloud workspaceId with the machine’s own id', () => {
+    expect(rewriteMachineWorkspaceParam('/api/projects?workspaceId=ws-cloud&limit=50', 'lw-1')).toBe(
+      '/api/projects?workspaceId=lw-1&limit=50',
+    )
+  })
+
+  it('leaves paths without a workspaceId untouched', () => {
+    expect(rewriteMachineWorkspaceParam('/api/projects/p-1', 'lw-1')).toBe('/api/projects/p-1')
+    expect(rewriteMachineWorkspaceParam('/api/chat-sessions?limit=5', 'lw-1')).toBe(
+      '/api/chat-sessions?limit=5',
+    )
+  })
+
+  it('is a no-op when the id already matches', () => {
+    expect(rewriteMachineWorkspaceParam('/api/projects?workspaceId=lw-1', 'lw-1')).toBe(
+      '/api/projects?workspaceId=lw-1',
+    )
+  })
+})
+
+describe('rewriteMachineWorkspaceBody', () => {
+  it("points a create at the machine's own workspace", () => {
+    expect(rewriteMachineWorkspaceBody({ name: 'Docs', workspaceId: 'ws-cloud' }, 'lw-1')).toEqual({
+      name: 'Docs',
+      workspaceId: 'lw-1',
+    })
+  })
+
+  it('leaves a matching id, bodies without one and non-objects untouched', () => {
+    const body = { workspaceId: 'lw-1' }
+    expect(rewriteMachineWorkspaceBody(body, 'lw-1')).toBe(body)
+    expect(rewriteMachineWorkspaceBody({ name: 'x' }, 'lw-1')).toEqual({ name: 'x' })
+    expect(rewriteMachineWorkspaceBody('raw', 'lw-1')).toBe('raw')
+    expect(rewriteMachineWorkspaceBody([{ workspaceId: 'ws-cloud' }], 'lw-1')).toEqual([
+      { workspaceId: 'ws-cloud' },
+    ])
+  })
+})
+
+describe('createRemoteAwareHttpClient with a machine workspace', () => {
+  it('rewrites both the base URL and the workspaceId, and leaves cloud routes alone', async () => {
+    const calls: string[] = []
+    const http = {
+      get: async (path: string) => {
+        calls.push(path)
+        return { data: {} }
+      },
+      post: async (path: string) => {
+        calls.push(path)
+        return { data: {} }
+      },
+      patch: async (path: string) => ({ data: {} }),
+      delete: async () => ({ data: {} }),
+      request: async () => ({ data: {} }),
+    } as any
+
+    const proxy = createRemoteAwareHttpClient(http, () => ({
+      remoteProxyBaseUrl: 'https://studio.shogo.ai/api/machines/inst-1/w/lw-1',
+      machineWorkspaceId: 'lw-1',
+    }))
+
+    await proxy.get('/api/projects?workspaceId=ws-cloud')
+    await proxy.get('/api/billing/summary')
+
+    expect(calls[0]).toBe(
+      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/projects?workspaceId=lw-1',
+    )
+    // Billing is cloud-pinned even inside a machine workspace.
+    expect(calls[1]).toBe('/api/billing/summary')
+  })
+})
+
+describe('createRemoteAwareHttpClient body rewrite', () => {
+  it("files a create into the machine's own workspace", async () => {
+    const posts: { path: string; body: unknown }[] = []
+    const http = {
+      get: async () => ({ data: {} }),
+      post: async (path: string, body: unknown) => {
+        posts.push({ path, body })
+        return { data: {} }
+      },
+      patch: async (path: string, body: unknown) => {
+        posts.push({ path, body })
+        return { data: {} }
+      },
+      delete: async () => ({ data: {} }),
+      request: async () => ({ data: {} }),
+    } as any
+
+    const proxy = createRemoteAwareHttpClient(http, () => ({
+      remoteProxyBaseUrl: 'https://studio.shogo.ai/api/machines/inst-1/w/lw-1',
+      machineWorkspaceId: 'lw-1',
+    }))
+
+    await proxy.post('/api/projects', { name: 'Docs', workspaceId: 'ws-cloud' })
+
+    expect(posts[0]).toEqual({
+      path: 'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/projects',
+      body: { name: 'Docs', workspaceId: 'lw-1' },
+    })
+  })
+})
+
+// ─── A paired desktop's own workspace (#SHO-87) ─────────────────────────────
+//
+// While `samasra → Samsara` is open, the workspace agent, its sessions and the
+// workspace's team chat belong to that machine. The same URLs are cloud routes
+// for a cloud workspace, so they only join the remote set with a machine id.
+
+const MACHINE = { machineWorkspaceId: 'lw-1' }
+
+describe('shouldRouteToRemote with a machine workspace', () => {
+  it('routes the machine workspace agent, its chat and its team chat to remote', () => {
+    expect(
+      shouldRouteToRemote('/api/workspaces/ws-cloud/agent-proxy/agent/chat', MACHINE),
+    ).toBe(true)
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/agent-profile', MACHINE)).toBe(true)
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/chat/sess-1/turn', MACHINE)).toBe(true)
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/history/search?q=x', MACHINE)).toBe(true)
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/conversations', MACHINE)).toBe(true)
+    expect(shouldRouteToRemote('/api/conversations/conv-1/messages', MACHINE)).toBe(true)
+    expect(shouldRouteToRemote('/api/conversation-messages/msg-1', MACHINE)).toBe(true)
+    // Every other workspace-scoped surface follows the workspace it names: the
+    // @-mention picker, presence and the inbox are all the machine's while its
+    // workspace is open.
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/mentionables', MACHINE)).toBe(true)
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/presence', MACHINE)).toBe(true)
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/inbox?limit=20', MACHINE)).toBe(true)
+  })
+
+  it('keeps the workspace list, its cloud-only surfaces and this app’s own routes on cloud', () => {
+    for (const path of [
+      '/api/workspaces',
+      '/api/workspaces/ws-cloud',
+      '/api/workspaces/ws-cloud/analytics/overview',
+      '/api/workspaces/ws-cloud/cost-analytics',
+      '/api/workspaces/ws-cloud/chat-installations',
+      '/api/workspaces/ws-cloud/permissions',
+      '/api/workspaces/ws-cloud/leave',
+      '/api/workspaces/ws-cloud/deletion-preview',
+      '/api/workspaces/ws-cloud/member-activity',
+      // Cloud-only API routes (server.ts): the desktop does not mount them.
+      '/api/workspaces/ws-cloud/instance',
+      '/api/workspaces/ws-cloud/metrics?period=24h',
+      '/api/workspaces/ws-cloud/storage',
+      '/api/workspaces/ws-cloud/children',
+      // The export download is a raw fetch to cloud, so its estimate is too.
+      '/api/workspaces/ws-cloud/export',
+      '/api/workspaces/ws-cloud/export/estimate',
+      '/api/billing',
+      '/api/instances',
+      '/api/machines',
+      '/api/auth/session',
+      '/api/invitations',
+    ]) {
+      expect(shouldRouteToRemote(path, MACHINE)).toBe(false)
+    }
+  })
+
+  it('is unchanged without a machine in view', () => {
+    expect(shouldRouteToRemote('/api/workspaces/ws-1/agent-proxy/agent/chat')).toBe(false)
+    expect(shouldRouteToRemote('/api/conversations/conv-1')).toBe(false)
+    expect(shouldRouteToRemote('/api/conversation-messages/msg-1')).toBe(false)
+  })
+})
+
+describe('rewriteMachineWorkspacePath', () => {
+  it("points a workspace-scoped path at the machine's own id", () => {
+    expect(rewriteMachineWorkspacePath('/api/workspaces/ws-cloud/agent-proxy/agent/chat', 'lw-1')).toBe(
+      '/api/workspaces/lw-1/agent-proxy/agent/chat',
+    )
+  })
+
+  it('leaves paths without a workspace id segment alone', () => {
+    expect(rewriteMachineWorkspacePath('/api/projects?workspaceId=ws-cloud', 'lw-1')).toBe(
+      '/api/projects?workspaceId=ws-cloud',
+    )
+    expect(rewriteMachineWorkspacePath('/api/chat-messages', 'lw-1')).toBe('/api/chat-messages')
+  })
+})
+
+describe('createRemoteAwareHttpClient in a machine workspace', () => {
+  it('sends the workspace agent chat through the relay with the local workspace id', async () => {
+    const calls: string[] = []
+    const http = {
+      get: async (path: string) => {
+        calls.push(path)
+        return { data: {} }
+      },
+      post: async (path: string) => {
+        calls.push(path)
+        return { data: {} }
+      },
+      patch: async () => ({ data: {} }),
+      delete: async () => ({ data: {} }),
+      request: async () => ({ data: {} }),
+    } as any
+
+    const proxy = createRemoteAwareHttpClient(http, () => ({
+      remoteProxyBaseUrl: 'https://studio.shogo.ai/api/machines/inst-1/w/lw-1',
+      machineWorkspaceId: 'lw-1',
+    }))
+
+    await proxy.post('/api/workspaces/ws-cloud/agent-proxy/agent/chat')
+    await proxy.get('/api/workspaces/ws-cloud/conversations')
+    await proxy.get('/api/conversations/conv-1')
+
+    expect(calls).toEqual([
+      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/workspaces/lw-1/agent-proxy/agent/chat',
+      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/workspaces/lw-1/conversations',
+      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/conversations/conv-1',
+    ])
   })
 })

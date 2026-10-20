@@ -11,6 +11,8 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View 
 import * as Clipboard from 'expo-clipboard'
 import { useRouter } from 'expo-router'
 import {
+  Archive,
+  ArchiveRestore,
   AtSign,
   Bold,
   Check,
@@ -41,9 +43,15 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
 import type { MentionTarget } from '../chat/file-links'
 import { useConversationDoc } from '../../hooks/useConversationDoc'
-import { describeAuthor } from '../../lib/channel-doc-state'
+import { describeAuthor, docBudgetFor, docSections, formatDocBudget } from '../../lib/channel-doc-state'
 import { applyFormat, insertAt, splitTaskSegments, toggleTask, type DocFormat, type Selection } from '../../lib/doc-markdown'
-import { teamChatApi, type ChannelDocRevision, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
+import {
+  teamChatApi,
+  type ChannelDocArchive,
+  type ChannelDocRevision,
+  type ConversationDetail,
+  type Mentionables,
+} from '../../lib/team-chat-api'
 import { docLink } from '../../lib/team-chat-links'
 import { mentionNames, renderMentionsMarkdown } from '../../lib/team-chat-state'
 import { relativeTime } from '../../lib/activity-feed'
@@ -78,10 +86,13 @@ const TOOLBAR: Array<{ format: DocFormat; label: string; Icon: typeof Bold }> = 
 
 export function DocPane({ conversation, workspaceId, mentionables, onClose, onOpenProfile }: DocPaneProps) {
   const router = useRouter()
-  const { state, doc, dirty, edit, flush, resolve, setLocked, restore } = useConversationDoc(workspaceId, conversation.id)
+  const { state, doc, dirty, edit, flush, resolve, setLocked, restore, archiveSection, restoreArchive } =
+    useConversationDoc(workspaceId, conversation.id)
   const [editing, setEditing] = useState(false)
   const [selection, setSelection] = useState<Selection>({ start: 0, end: 0 })
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [archivePickerOpen, setArchivePickerOpen] = useState(false)
+  const [archivesOpen, setArchivesOpen] = useState(false)
   const [mentionOpen, setMentionOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -103,6 +114,7 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose, onOp
   }, [onOpenProfile, router])
   const exists = !!state.server
   const canEdit = state.canEdit && !conversation.archivedAt
+  const budget = docBudgetFor(doc.content)
 
   useEffect(() => () => void flush(), [flush])
   useEffect(() => {
@@ -300,6 +312,38 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose, onOp
         </ScrollView>
       )}
 
+      {exists ? (
+        <View className="flex-row items-center gap-2 border-t border-border px-4 py-1.5" testID="doc-budget">
+          <View className="h-1 w-14 overflow-hidden rounded-full bg-muted">
+            <View
+              className={cn(
+                'h-1 rounded-full',
+                budget.level === 'critical' ? 'bg-destructive' : budget.level === 'warn' ? 'bg-amber-500' : 'bg-primary',
+              )}
+              style={{ width: `${Math.min(100, Math.max(1, Math.round(budget.pct)))}%` }}
+            />
+          </View>
+          <Text
+            testID="doc-budget-text"
+            className={cn(
+              'text-[11px]',
+              budget.level === 'critical' ? 'text-destructive' : budget.level === 'warn' ? 'text-amber-600' : 'text-muted-foreground',
+            )}
+          >
+            {formatDocBudget(budget)}
+          </Text>
+          <View className="min-w-0 flex-1" />
+          {canEdit ? (
+            <PaneButton label="Archive a section" onPress={() => setArchivePickerOpen(true)}>
+              <Archive size={14} className="text-muted-foreground" />
+            </PaneButton>
+          ) : null}
+          <PaneButton label="Archived sections" onPress={() => setArchivesOpen(true)}>
+            <ArchiveRestore size={14} className="text-muted-foreground" />
+          </PaneButton>
+        </View>
+      ) : null}
+
       {historyOpen ? (
         <HistoryModal
           conversationId={conversation.id}
@@ -315,7 +359,188 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose, onOp
         />
       ) : null}
       {mentionOpen ? <MentionModal mentionables={mentionables} onPick={insertMention} onClose={() => setMentionOpen(false)} /> : null}
+      {archivePickerOpen ? (
+        <ArchiveSectionModal
+          sections={docSections(doc.content)}
+          onArchive={(heading) =>
+            runAction(async () => {
+              await archiveSection(heading)
+              setArchivePickerOpen(false)
+              setEditing(false)
+            })
+          }
+          onClose={() => setArchivePickerOpen(false)}
+        />
+      ) : null}
+      {archivesOpen ? (
+        <ArchivesModal
+          conversationId={conversation.id}
+          canRestore={canEdit}
+          onClose={() => setArchivesOpen(false)}
+          onRestore={(id) =>
+            runAction(async () => {
+              await restoreArchive(id)
+              setArchivesOpen(false)
+              setEditing(false)
+            })
+          }
+        />
+      ) : null}
     </View>
+  )
+}
+
+function ArchiveSectionModal({
+  sections,
+  onArchive,
+  onClose,
+}: {
+  sections: Array<{ heading: string; chars: number }>
+  onArchive: (heading: string) => void
+  onClose: () => void
+}) {
+  const [picked, setPicked] = useState<string | null>(null)
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 items-center justify-center bg-black/40 p-6" onPress={onClose}>
+        <Pressable className="max-h-[80%] w-full max-w-xl rounded-xl bg-card p-5" onPress={() => {}}>
+          <View className="mb-2 flex-row items-center gap-2">
+            <Archive size={16} className="text-muted-foreground" />
+            <Text className="flex-1 text-base font-semibold text-foreground">Archive a section</Text>
+            <Pressable onPress={onClose} accessibilityLabel="Close">
+              <X size={16} className="text-muted-foreground" />
+            </Pressable>
+          </View>
+          <Text className="mb-3 text-xs text-muted-foreground">
+            Every agent woken in this channel reads the whole doc, so finished work belongs in its card thread. Archiving
+            moves a section out of the doc and leaves a one-line pointer behind; you can read or restore it from the archive.
+          </Text>
+          <ScrollView testID="archive-section-list">
+            {sections.map((s) => (
+              <Pressable
+                key={s.heading}
+                onPress={() => setPicked(s.heading)}
+                accessibilityRole="button"
+                accessibilityLabel={`Archive ${s.heading}`}
+                className={cn('flex-row items-center gap-2 rounded-md px-2 py-2 active:bg-muted hover:bg-muted', picked === s.heading && 'bg-muted')}
+              >
+                <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
+                  {s.heading}
+                </Text>
+                <Text className="text-xs text-muted-foreground">{s.chars.toLocaleString('en-US')}</Text>
+              </Pressable>
+            ))}
+            {!sections.length ? <Text className="text-sm text-muted-foreground">This doc has no sections yet.</Text> : null}
+          </ScrollView>
+          {picked ? (
+            <View className="mt-3 flex-row items-center justify-end gap-2">
+              <Text className="flex-1 text-xs text-muted-foreground" numberOfLines={2}>
+                “{picked}” moves to the archive.
+              </Text>
+              <Pressable
+                onPress={() => onArchive(picked)}
+                accessibilityRole="button"
+                accessibilityLabel="Archive section"
+                className="rounded-md bg-primary px-3 py-1.5"
+              >
+                <Text className="text-sm font-medium text-primary-foreground">Archive</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
+
+function ArchivesModal({
+  conversationId,
+  canRestore,
+  onClose,
+  onRestore,
+}: {
+  conversationId: string
+  canRestore: boolean
+  onClose: () => void
+  onRestore: (archiveId: string) => void
+}) {
+  const [archives, setArchives] = useState<ChannelDocArchive[] | null>(null)
+  const [selected, setSelected] = useState<ChannelDocArchive | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.listDocArchives(conversationId).then(setArchives).catch((err) => setError(err?.message ?? 'Could not load the archive'))
+  }, [conversationId])
+
+  const open = async (archive: ChannelDocArchive) => {
+    try {
+      setError(null)
+      setSelected(await api.getDocArchive(conversationId, archive.id))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not open that section')
+    }
+  }
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 items-center justify-center bg-black/40 p-6" onPress={onClose}>
+        <Pressable className="max-h-[85%] w-full max-w-2xl rounded-xl bg-card p-5" onPress={() => {}}>
+          <View className="mb-3 flex-row items-center gap-2">
+            <ArchiveRestore size={16} className="text-muted-foreground" />
+            <Text className="flex-1 text-base font-semibold text-foreground">{selected ? selected.heading : 'Archived sections'}</Text>
+            {selected ? (
+              <Pressable onPress={() => setSelected(null)} className="rounded-md px-2 py-1 active:bg-muted hover:bg-muted">
+                <Text className="text-xs text-muted-foreground">All archived</Text>
+              </Pressable>
+            ) : null}
+            <Pressable onPress={onClose} accessibilityLabel="Close">
+              <X size={16} className="text-muted-foreground" />
+            </Pressable>
+          </View>
+          {error ? <Text className="text-sm text-destructive">{error}</Text> : null}
+          {!archives && !error ? <ActivityIndicator /> : null}
+          {selected ? (
+            <>
+              <ScrollView className="max-h-[60vh] rounded-md border border-border p-3" testID="archive-body">
+                <MarkdownText>{selected.content || '_Empty_'}</MarkdownText>
+              </ScrollView>
+              {canRestore ? (
+                <View className="mt-3 flex-row justify-end">
+                  <Pressable
+                    onPress={() => onRestore(selected.id)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Restore this section"
+                    className="rounded-md bg-primary px-3 py-1.5"
+                  >
+                    <Text className="text-sm font-medium text-primary-foreground">Restore to the doc</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </>
+          ) : (
+            <ScrollView testID="archive-list">
+              {archives?.map((a) => (
+                <Pressable
+                  key={a.id}
+                  onPress={() => void open(a)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${a.heading}`}
+                  className="flex-row items-center gap-2 rounded-md px-2 py-2 active:bg-muted hover:bg-muted"
+                >
+                  <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
+                    {a.heading}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">{a.chars.toLocaleString('en-US')} chars</Text>
+                </Pressable>
+              ))}
+              {archives && !archives.length ? (
+                <Text className="text-sm text-muted-foreground">Nothing archived from this doc.</Text>
+              ) : null}
+            </ScrollView>
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
   )
 }
 

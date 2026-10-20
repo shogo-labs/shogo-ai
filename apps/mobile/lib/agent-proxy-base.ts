@@ -21,12 +21,22 @@ export function agentProxyBase(opts: {
   projectId?: string | null
   /** Workspace-scoped chat (`chatScope === "workspace"`). */
   workspaceId?: string | null
+  /**
+   * A paired desktop's own workspace. The desktop owns that workspace's agent,
+   * so the base goes through the machine relay with the *machine's* workspace
+   * id — the cloud id in `workspaceId` means nothing there.
+   */
+  machine?: { instanceId: string; localWorkspaceId: string } | null
   /** API origin, e.g. `https://shogo.example` or `http://localhost:8002`. */
   apiUrl: string
 }): string | null {
   if (opts.localAgentUrl) return opts.localAgentUrl.replace(/\/+$/, "")
   const apiUrl = opts.apiUrl.replace(/\/+$/, "")
   if (opts.projectId) return `${apiUrl}/api/projects/${opts.projectId}/agent-proxy`
+  if (opts.machine?.localWorkspaceId) {
+    const { instanceId, localWorkspaceId } = opts.machine
+    return `${apiUrl}/api/machines/${instanceId}/w/${localWorkspaceId}/api/workspaces/${localWorkspaceId}/agent-proxy`
+  }
   if (opts.workspaceId) return `${apiUrl}/api/workspaces/${opts.workspaceId}/agent-proxy`
   return null
 }

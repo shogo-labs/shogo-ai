@@ -1492,6 +1492,32 @@ function registerIpcHandlers(): void {
     },
   )
 
+  // Asks for attention on a chat message that arrived while the window is in
+  // the background: bounce the dock (macOS) or flash the taskbar button
+  // (Windows). The renderer picks the mode from this device's settings.
+  ipcMain.handle(
+    'request-attention',
+    (
+      event,
+      args: { dockBounce?: 'off' | 'once' | 'until-focused'; flashTaskbar?: boolean } | undefined,
+    ) => {
+      const window = windowManager.getWindowForWebContents(event.sender)
+      if (!window || window.isFocused()) return { ok: true, attention: false }
+      let attention = false
+      const bounce = args?.dockBounce ?? 'off'
+      if (process.platform === 'darwin' && app.dock && bounce !== 'off') {
+        app.dock.bounce(bounce === 'until-focused' ? 'critical' : 'informational')
+        attention = true
+      }
+      if (process.platform === 'win32' && args?.flashTaskbar) {
+        window.flashFrame(true)
+        window.once('focus', () => window.flashFrame(false))
+        attention = true
+      }
+      return { ok: true, attention }
+    },
+  )
+
   // Source of truth for renderer inactivity detection on desktop —
   // document.hasFocus() is unreliable when another app is foregrounded on
   // macOS, so we defer to BrowserWindow.isFocused().

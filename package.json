@@ -63,6 +63,7 @@
     "check:higgsfield-docs": "bun scripts/check-higgsfield-docs.ts",
     "sync:higgsfield-docs": "bun scripts/sync-higgsfield-docs.ts",
     "derive:higgsfield-catalog": "bun scripts/derive-higgsfield-catalog.ts --write",
+    "generate:media-catalog": "bun scripts/generate-media-catalog.ts --write",
     "db:reset": "npx prisma migrate reset",
     "seed:marketplace": "bun scripts/seed-marketplace.ts",
     "docker:prod": "docker-compose up",

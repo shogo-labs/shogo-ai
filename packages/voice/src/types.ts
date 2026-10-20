@@ -89,7 +89,8 @@ export type PatchCompanionBody = Partial<CreateCompanionBody>
 
 /** Shape of the JSON body for `POST /voice/tts-preview`. */
 export interface TtsPreviewBody {
-  voiceId: string
+  /** ElevenLabs voice id. Optional in proxy mode (the project's voice wins). */
+  voiceId?: string
   text?: string
   audioTags?: string[]
   modelId?: string

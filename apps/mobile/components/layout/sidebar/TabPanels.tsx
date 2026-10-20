@@ -4,11 +4,14 @@
  * The Home (workspace-agent chats) and More panels of the desktop sidebar.
  * Channels, DMs, Agents, Projects and Activity have panels of their own.
  */
+import { useEffect, useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { BarChart3, Bookmark, ChevronRight, FileText, KanbanSquare, ListTodo, Settings, Store } from 'lucide-react-native'
+import { BarChart3, Bookmark, ChevronRight, FileText, KanbanSquare, ListTodo, Settings, Share2, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
+import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { useDomainHttp } from '../../../contexts/domain'
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { TASKS_NAV_HIDDEN } from '../../../../../packages/shared-app/src/hooks/useWorkspaceExperience'
 import { moreItems, type MoreIcon } from '../../../lib/more-items'
@@ -24,6 +27,7 @@ const MORE_ICONS: Record<MoreIcon, React.ElementType> = {
   work: KanbanSquare,
   marketplace: Store,
   files: FileText,
+  social: Share2,
   settings: Settings,
 }
 
@@ -67,7 +71,33 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
   const router = useRouter()
   const experience = useWorkspaceExperience()
   const { features } = usePlatformConfig()
-  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace, workBoards: !!features.workBoards })
+  const http = useDomainHttp()
+  const workspace = useActiveWorkspace()
+  const [social, setSocial] = useState(false)
+
+  // The link follows the accounts, not a flag: `/social/accounts` is a 403 on a
+  // workspace whose social management is off, and any failure simply hides it.
+  useEffect(() => {
+    const workspaceId = workspace?.id
+    if (!workspaceId) {
+      setSocial(false)
+      return
+    }
+    let cancelled = false
+    http
+      .get<{ accounts?: unknown[] }>(`/api/workspaces/${workspaceId}/social/accounts`)
+      .then((res: any) => {
+        if (!cancelled) setSocial(Array.isArray(res?.data?.accounts) && res.data.accounts.length > 0)
+      })
+      .catch(() => {
+        if (!cancelled) setSocial(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [http, workspace?.id])
+
+  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace, workBoards: !!features.workBoards, social })
   const screen = variant === 'screen'
   return (
     <View className={cn(screen ? 'px-2' : 'px-2 pt-1')} testID="more-panel">

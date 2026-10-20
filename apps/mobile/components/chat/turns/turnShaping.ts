@@ -128,8 +128,6 @@ function isShellRunCommand(tool: ToolCallData): boolean {
  */
 const CUSTOM_RENDER_TOOLS = new Set([
   "generate_image",
-  "upscale_image",
-  "remove_background",
   "generate_video",
 ]);
 

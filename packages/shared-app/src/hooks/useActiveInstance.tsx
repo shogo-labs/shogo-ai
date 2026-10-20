@@ -71,6 +71,35 @@ export interface ActiveInstance {
    * workspace switches.
    */
   origin?: string
+  /**
+   * What is being looked at:
+   *  - `'machine'` this is one of a paired desktop's *own* workspaces
+   *    (the "This Mac" group in the workspace switcher), reached through
+   *    `/api/machines/<id>/w/<localWorkspaceId>`. It is deliberately not
+   *    tied to the cloud workspace the UI happens to have selected, so it
+   *    survives a cloud workspace switch.
+   *  - undefined — the older meaning: a device selected inside a cloud
+   *    workspace (Remote Control), routed through `/api/instances/<id>/p`.
+   */
+  source?: 'machine'
+  /**
+   * The desktop's own workspace id, for `source: 'machine'`. Cloud ids and
+   * machine ids live in different databases; every relayed call carries this
+   * so the desktop knows which of its workspaces the user opened.
+   */
+  localWorkspaceId?: string
+  /**
+   * The machine workspace's own name, for `source: 'machine'`. The cloud
+   * workspace on screen has a different one, and while the machine's workspace
+   * is open it is the one the user is looking at.
+   */
+  localWorkspaceName?: string
+  /**
+   * The machine workspace's own kind. The shell (companion vs builder chrome)
+   * follows the open workspace's kind, and a personal cloud workspace must not
+   * dress a team workspace from the machine up as a companion — nor the reverse.
+   */
+  localWorkspaceKind?: 'personal' | 'team'
 }
 
 export type InstanceStatus = 'online' | 'heartbeat' | 'offline' | 'unknown'
@@ -162,10 +191,10 @@ export function ActiveInstanceProvider({
             // remote-API gating depends on it — re-storing here keeps
             // subsequent loads on the new shape so the gate kicks in
             // immediately on the next mount instead of after the first poll.
-            const hydrated: ActiveInstance = result.kind ? { ...restored, kind: result.kind } : restored
+            const hydrated = applyValidation(restored, result)
             setInstanceState(hydrated)
             setInstanceStatus(result.status ?? 'unknown')
-            if (result.kind && restored.kind !== result.kind) {
+            if (hydrated !== restored) {
               storage.setItem(STORAGE_KEY, JSON.stringify(hydrated)).catch(() => {})
             }
           } else {
@@ -208,8 +237,8 @@ export function ActiveInstanceProvider({
       // Late-arriving `kind` (older clients persisted without it). Update
       // the in-memory instance so SDKDomainProvider's remote gating
       // takes effect on the next render without waiting for re-mount.
-      if (result.kind && instance.kind !== result.kind) {
-        const refreshed = { ...instance, kind: result.kind }
+      const refreshed = applyValidation(instance, result)
+      if (refreshed !== instance) {
         setInstanceState(refreshed)
         storage.setItem(STORAGE_KEY, JSON.stringify(refreshed)).catch(() => {})
       }
@@ -239,6 +268,10 @@ export function ActiveInstanceProvider({
 
   const remoteAgentBaseUrl = useMemo(() => {
     if (!instance || !apiUrl) return null
+    if (instance.source === 'machine') {
+      if (!instance.localWorkspaceId) return null
+      return `${apiUrl}/api/machines/${instance.instanceId}/w/${instance.localWorkspaceId}`
+    }
     return `${apiUrl}/api/instances/${instance.instanceId}/p`
   }, [instance, apiUrl])
 
@@ -260,13 +293,43 @@ export function useActiveInstance() {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+/** What a validation poll learned about a live instance. */
+type ValidationResult = {
+  valid: boolean
+  status?: InstanceStatus
+  kind?: InstanceKind
+  /** Machine workspaces only: the machine's own name and kind for the workspace. */
+  localWorkspaceName?: string
+  localWorkspaceKind?: 'personal' | 'team'
+}
+
+/**
+ * Fold a validation result into the stored instance, returning the *same*
+ * object when nothing changed so callers can skip a re-render and a write.
+ */
+function applyValidation(inst: ActiveInstance, result: ValidationResult): ActiveInstance {
+  const kindChanged = !!result.kind && result.kind !== inst.kind
+  const nameChanged =
+    !!result.localWorkspaceName && result.localWorkspaceName !== inst.localWorkspaceName
+  const workspaceKindChanged =
+    !!result.localWorkspaceKind && result.localWorkspaceKind !== inst.localWorkspaceKind
+  if (!kindChanged && !nameChanged && !workspaceKindChanged) return inst
+  return {
+    ...inst,
+    ...(kindChanged ? { kind: result.kind } : {}),
+    ...(nameChanged ? { localWorkspaceName: result.localWorkspaceName } : {}),
+    ...(workspaceKindChanged ? { localWorkspaceKind: result.localWorkspaceKind } : {}),
+  }
+}
+
 async function validateInstance(
   inst: ActiveInstance,
   apiUrl: string,
   fetchFn: typeof fetch,
   fetchOptions?: RequestInit,
-): Promise<{ valid: boolean; status?: InstanceStatus; kind?: InstanceKind }> {
+): Promise<ValidationResult> {
   if (!apiUrl) return { valid: false }
+  if (inst.source === 'machine') return validateMachine(inst, apiUrl, fetchFn, fetchOptions)
   try {
     const res = await fetchFn(`${apiUrl}/api/instances/${inst.instanceId}`, {
       ...fetchOptions,
@@ -281,6 +344,47 @@ async function validateInstance(
     const kind: InstanceKind | undefined =
       data.kind === 'desktop' || data.kind === 'cli-worker' ? data.kind : undefined
     return { valid: true, status, kind }
+  } catch {
+    return { valid: false }
+  }
+}
+
+/**
+ * A machine workspace is validated against `/api/machines`, not
+ * `/api/instances/:id`: the list is already owner-scoped, so a machine that
+ * disappears from it means the device key was revoked or the machine was
+ * unpaired — the stored context is no longer usable and gets cleared.
+ */
+async function validateMachine(
+  inst: ActiveInstance,
+  apiUrl: string,
+  fetchFn: typeof fetch,
+  fetchOptions?: RequestInit,
+): Promise<ValidationResult> {
+  try {
+    const res = await fetchFn(`${apiUrl}/api/machines`, { ...fetchOptions })
+    if (!res.ok) return { valid: false }
+    const data = await res.json()
+    const found = (data?.machines ?? []).find((m: any) => m.id === inst.instanceId)
+    if (!found) return { valid: false }
+    const status: InstanceStatus =
+      found.status === 'online' || found.status === 'heartbeat' || found.status === 'offline'
+        ? found.status
+        : 'unknown'
+    // The heartbeat snapshot is the machine's own workspace list: it keeps the
+    // stored name and kind current (a rename, a machine that was offline at
+    // restore) instead of replaying whatever was persisted months ago.
+    const row = (found.snapshot?.workspaces ?? []).find(
+      (w: any) => w?.id && w.id === inst.localWorkspaceId,
+    )
+    return {
+      valid: true,
+      status,
+      kind: 'desktop',
+      localWorkspaceName: typeof row?.name === 'string' ? row.name : undefined,
+      localWorkspaceKind:
+        row?.kind === 'personal' || row?.kind === 'team' ? row.kind : undefined,
+    }
   } catch {
     return { valid: false }
   }
@@ -329,6 +433,10 @@ export function computeRemoteProxyBaseUrl(
   remoteAgentBaseUrl: string | null,
 ): string | null {
   if (!instance || !remoteAgentBaseUrl) return null
+  // A machine workspace always tunnels: the desktop owns the projects, chats
+  // and tool-call logs of its own workspace, and `remoteAgentBaseUrl` already
+  // points at that machine's relay (`/api/machines/<id>/w/<localWorkspaceId>`).
+  if (instance.source === 'machine') return remoteAgentBaseUrl
   if (instance.kind === 'desktop') return remoteAgentBaseUrl
   return null
 }

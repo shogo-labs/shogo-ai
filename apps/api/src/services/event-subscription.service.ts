@@ -41,7 +41,7 @@ const PROJECT_MODES = ['agent', 'hook'] as const
 
 export class EventSubscriptionError extends Error {
   constructor(
-    public status: 400 | 403 | 404 | 409 | 502 | 503,
+    public status: 400 | 403 | 404 | 409 | 412 | 502 | 503,
     public code: string,
     message: string,
     public details?: Record<string, unknown>,
@@ -66,10 +66,24 @@ function newWebhookSecret(): string {
   return `whsec_${randomBytes(32).toString('base64url')}`
 }
 
-/** Exact native type, a native `prefix.*`, or an exact `composio.<toolkit>.<SLUG>`. */
-export function validateEventType(eventType: unknown): { eventType: string; source: 'shogo' | 'composio' } {
+/**
+ * Exact native type, a native `prefix.*`, an exact `composio.<toolkit>.<SLUG>`,
+ * or a `social.*` type (which arrives from Zernio's webhooks, not from us).
+ */
+export function validateEventType(eventType: unknown): {
+  eventType: string
+  source: 'shogo' | 'composio' | 'zernio'
+} {
   if (typeof eventType !== 'string' || !eventType.trim()) invalid('eventType is required', 'invalid_body')
   const type = eventType.trim()
+  if (type.startsWith('social.')) {
+    // `social.*` subscribes to every social event; anything more specific must
+    // be one the catalog actually emits, or the trigger would never fire.
+    if (type !== 'social.*' && !getEventDefinition(type)) {
+      invalid(`${type} is not a social event. Call trigger_types_list for the available types.`)
+    }
+    return { eventType: type, source: 'zernio' }
+  }
   if (type.startsWith('composio.')) {
     if (type.endsWith('*')) invalid('Composio triggers need an exact event type, e.g. composio.github.GITHUB_STAR_ADDED_EVENT')
     if (!parseComposioEventType(type)) invalid(`${type} is not a valid Composio event type`)
@@ -302,6 +316,18 @@ export async function createSubscription(input: CreateSubscriptionInput): Promis
   const name = typeof input.name === 'string' ? input.name.trim().slice(0, 200) : ''
   if (!name) invalid('name is required', 'invalid_body')
   const { eventType, source } = validateEventType(input.eventType)
+  if (source === 'zernio') {
+    // A social trigger with nothing connected can never fire, and saying so at
+    // creation is the only moment the person can do something about it.
+    const accounts = await db.socialAccount.count({ where: { workspaceId: input.workspaceId, isActive: true } })
+    if (accounts === 0) {
+      throw new EventSubscriptionError(
+        412,
+        'social_not_connected',
+        'Connect a social account before creating a trigger on social events.',
+      )
+    }
+  }
   const filter = validateFilter(input.filter)
   const target = (input.target ?? 'agent') as (typeof TARGETS)[number]
   if (!TARGETS.includes(target)) invalid(`target must be one of ${TARGETS.join(', ')}`)
@@ -566,7 +592,7 @@ export async function redeliver(workspaceId: string, subscriptionId: string, del
   })
 }
 
-/** Shogo events, plus Composio trigger types for the apps `userId` has connected (or `toolkit`). */
+/** Shogo events, the workspace's social events, plus Composio types for connected apps. */
 export async function listTriggerTypes(workspaceId: string, userId: string, opts: { toolkit?: string | null; projectId?: string | null } = {}) {
   const native = NATIVE_EVENTS.map((def) => ({
     type: def.type,
@@ -576,15 +602,41 @@ export async function listTriggerTypes(workspaceId: string, userId: string, opts
     payload: def.payload,
     example: def.example,
   }))
+  const social = await socialTriggerTypes(workspaceId)
   if (!composioTriggersClient()) {
-    return { native, composio: { available: false, connectedToolkits: [], types: [] } }
+    return { native, social, composio: { available: false, connectedToolkits: [], types: [] } }
   }
   try {
     const entityId = await composioEntityFor(workspaceId, userId, opts.projectId)
     const result = await listComposioTriggerTypes({ entityId, toolkit: opts.toolkit })
-    return { native, composio: { available: true, ...result } }
+    return { native, social, composio: { available: true, ...result } }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return { native, composio: { available: true, connectedToolkits: [], types: [], error: message } }
+    return { native, social, composio: { available: true, connectedToolkits: [], types: [], error: message } }
+  }
+}
+
+/**
+ * What `trigger_create` can pick for social: whether anything is connected, the
+ * accounts it could act on, and the usable event types. `connected: false` is
+ * what the agent reads before telling someone to connect an account first.
+ */
+export async function socialTriggerTypes(workspaceId: string) {
+  const accounts = await db.socialAccount.findMany({
+    where: { workspaceId, isActive: true },
+    select: { id: true, platform: true, username: true },
+    orderBy: [{ platform: 'asc' }, { username: 'asc' }],
+  })
+  return {
+    connected: accounts.length > 0,
+    accounts,
+    events: NATIVE_EVENTS.filter((def) => def.type.startsWith('social.')).map((def) => ({
+      type: def.type,
+      version: def.version,
+      description: def.description,
+      scope: def.scope,
+      payload: def.payload,
+      example: def.example,
+    })),
   }
 }

@@ -7,6 +7,7 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { absoluteApiUrl, teamChatApi, type CustomEmoji } from '../lib/team-chat-api'
 import { useTeamChatEvents } from '../lib/team-chat-connection'
+import { emojiOnlyCodes } from '../lib/emoji-text'
 
 const api = teamChatApi()
 const store = new Map<string, Map<string, CustomEmoji>>()
@@ -60,9 +61,5 @@ export function customEmojiFor(code: string, emoji: Map<string, CustomEmoji>): C
 
 /** A message that's only custom/unicode emoji (up to 6) renders large. */
 export function jumboEmojiCodes(text: string, emoji: Map<string, CustomEmoji>): string[] | null {
-  const trimmed = text.trim()
-  if (!trimmed || trimmed.length > 200) return null
-  const parts = trimmed.split(/\s+/)
-  if (parts.length > 6) return null
-  return parts.every((p) => customEmojiFor(p, emoji)) ? parts : null
+  return emojiOnlyCodes(text, (code) => customEmojiFor(code, emoji) !== null)
 }

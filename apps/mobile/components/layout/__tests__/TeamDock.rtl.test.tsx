@@ -40,13 +40,22 @@ mock.module(resolve(import.meta.dir, "../../../hooks/useAgentActivity"), () => (
 
 const { TeamDock } = await import("../TeamDock")
 
+/** The RN mock renders testID as a data attribute, so query that. */
+const allTestIds = (id: string) => Array.from(document.querySelectorAll(`[data-rn-shim="${id}"]`))
+const queryTestId = (id: string) => document.querySelector(`[data-rn-shim="${id}"]`)
+const testId = (id: string) => {
+  const el = queryTestId(id)
+  if (!el) throw new Error(`no element with testID ${id}`)
+  return el
+}
+
 beforeEach(() => {
   cleanup()
   replace.mockClear()
   push.mockClear()
   pathname = "/(app)"
   tasks = []
-  chat = { enabled: true, list: [], counts: { channels: 0, dms: 0, inbox: 0 } }
+  chat = { enabled: true, list: [], counts: { channels: 0, dms: 0, inbox: 0, activityDot: false } }
 })
 
 describe("TeamDock", () => {
@@ -100,5 +109,20 @@ describe("TeamDock", () => {
     render(<TeamDock maxWidth={640} />)
     expect(screen.getByRole("tab", { name: "DMs, 4 unread" })).toBeTruthy()
     expect(screen.getByRole("tab", { name: "Activity, 2 unread" })).toBeTruthy()
+  })
+
+  test("a thread-only unread shows a dot on Activity, not a number", () => {
+    chat.counts = { channels: 0, dms: 0, inbox: 0, activityDot: true }
+    render(<TeamDock maxWidth={640} />)
+    expect(screen.getByRole("tab", { name: "Activity, unread" })).toBeTruthy()
+    expect(queryTestId("dock-badge")).toBeNull()
+    expect(testId("dock-dot")).toBeTruthy()
+  })
+
+  test("no dot when there is a count to show or nothing is unread", () => {
+    chat.counts = { channels: 0, dms: 0, inbox: 3, activityDot: false }
+    render(<TeamDock maxWidth={640} />)
+    expect(queryTestId("dock-dot")).toBeNull()
+    expect(testId("dock-badge")).toBeTruthy()
   })
 })

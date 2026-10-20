@@ -16,7 +16,15 @@ import { useChatSettings } from '../../../hooks/useChatPrefs'
 import { useMentionables } from '../../../hooks/useTeamChat'
 import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
 import { CustomEmojiCard, UserGroupsCard } from '../../../components/team-chat/WorkspaceChatAdmin'
-import type { NotifyLevel } from '../../../lib/team-chat-api'
+import type { HuddleSound, MessageSound, MobilePushDelay, NotifyLevel } from '../../../lib/team-chat-api'
+import { previewMessageSound } from '../../../lib/notification-sound'
+import { previewHuddleSound } from '../../../lib/huddle-ringtone'
+import { readDeviceAlertPrefs, writeDeviceAlertPrefs, type DeviceAlertPrefs, type DockBounce } from '../../../lib/notifications/device-alert-prefs'
+import {
+  getAnnounceHuddleCalls,
+  setAnnounceHuddleCallsPreference,
+  subscribeAnnounceHuddleCalls,
+} from '../../../lib/notifications/huddle-call-prefs'
 import { expiryFrom, type ClearAfter } from '../../../lib/team-chat-state'
 import { leaveChatPreferences } from '../../../lib/settings-back'
 import { WEB_WIDE_MIN_WIDTH } from '../../../lib/native-phone-layout'
@@ -49,6 +57,37 @@ const LEVELS: Array<{ value: NotifyLevel; label: string; hint: string }> = [
   { value: 'mentions', label: 'Mentions and keywords', hint: 'DMs, @mentions, @channel, keywords, and threads you follow' },
   { value: 'none', label: 'Nothing', hint: 'Only direct @mentions still reach you' },
 ]
+
+const MESSAGE_SOUNDS: Array<{ value: MessageSound; label: string }> = [
+  { value: 'default', label: 'Default' },
+  { value: 'subtle', label: 'Subtle' },
+  { value: 'off', label: 'Off' },
+]
+
+const HUDDLE_SOUNDS: Array<{ value: HuddleSound; label: string }> = [
+  { value: 'ring', label: 'Ring' },
+  { value: 'chime', label: 'Chime' },
+  { value: 'off', label: 'Off' },
+]
+
+const PUSH_DELAYS: Array<{ value: MobilePushDelay; label: string }> = [
+  { value: 'immediate', label: 'Right away' },
+  { value: 'inactive', label: 'When I’m away' },
+  { value: 'inactive_5m', label: 'Away for 5 minutes' },
+  { value: 'inactive_10m', label: 'Away for 10 minutes' },
+]
+
+const DOCK_BOUNCE: Array<{ value: DockBounce; label: string }> = [
+  { value: 'off', label: 'Off' },
+  { value: 'once', label: 'Once' },
+  { value: 'until-focused', label: 'Until I look' },
+]
+
+/** True inside the Electron desktop app, where dock and taskbar alerts exist. */
+function isDesktopApp(): boolean {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return false
+  return !!(window as unknown as { shogoDesktop?: { isDesktop?: boolean } }).shogoDesktop?.isDesktop
+}
 
 function localTimezone(): string | null {
   try {
@@ -88,6 +127,36 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   )
 }
 
+/** iPhone only: whether incoming huddles take over the call screen. Stored on this phone. */
+function AnnounceHuddleCallsRow() {
+  const [announce, setAnnounce] = useState<boolean>(() => getAnnounceHuddleCalls())
+  useEffect(() => subscribeAnnounceHuddleCalls(setAnnounce), [])
+  return (
+    <View className="mt-4 border-t border-border pt-4">
+      <Text className="mb-1 text-sm text-foreground">This iPhone</Text>
+      <View className="flex-row items-center gap-3">
+        <Switch
+          value={announce}
+          onValueChange={(on) => void setAnnounceHuddleCallsPreference(on)}
+          accessibilityLabel="Announce huddle calls"
+        />
+        <View className="flex-1">
+          <Text className="text-sm text-foreground">Announce huddle calls</Text>
+          <Text className="text-xs text-muted-foreground">
+            Show incoming huddles on the call screen, even when the app is closed. Off, this phone gets the normal alert instead.
+          </Text>
+        </View>
+      </View>
+    </View>
+  )
+}
+
+function useDeviceAlertPrefs(): [DeviceAlertPrefs, (patch: Partial<DeviceAlertPrefs>) => void] {
+  const [prefs, setPrefs] = useState<DeviceAlertPrefs>(() => readDeviceAlertPrefs())
+  const save = (patch: Partial<DeviceAlertPrefs>) => setPrefs(writeDeviceAlertPrefs(patch))
+  return [prefs, save]
+}
+
 function useDesktopPermission(): [string, () => void] {
   const supported = Platform.OS === 'web' && typeof window !== 'undefined' && 'Notification' in window
   const [perm, setPerm] = useState<string>(supported ? Notification.permission : 'unsupported')
@@ -114,6 +183,7 @@ export default function TeamChatSettings() {
   const [quietStart, setQuietStart] = useState('22:00')
   const [quietEnd, setQuietEnd] = useState('08:00')
   const [perm, requestPerm] = useDesktopPermission()
+  const [deviceAlerts, saveDeviceAlerts] = useDeviceAlertPrefs()
   const mentionables = useMentionables(workspaceId)
   useCustomEmojiFeed(workspaceId)
 
@@ -307,6 +377,101 @@ export default function TeamChatSettings() {
           </Text>
         </Card>
 
+        <Card title="Sounds">
+          <Text className="mb-2 text-xs font-medium text-muted-foreground">Message sound</Text>
+          <View className="flex-row flex-wrap items-center gap-2">
+            {MESSAGE_SOUNDS.map((s) => (
+              <Chip
+                key={s.value}
+                label={s.label}
+                selected={(settings?.messageSound ?? 'default') === s.value}
+                onPress={() => void update({ messageSound: s.value })}
+              />
+            ))}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Preview message sound"
+              disabled={(settings?.messageSound ?? 'default') === 'off'}
+              onPress={() => previewMessageSound(settings?.messageSound ?? 'default')}
+              className="rounded-md px-3 py-1.5 active:bg-accent/50 disabled:opacity-40"
+            >
+              <Text className="text-xs font-semibold text-primary">Preview</Text>
+            </Pressable>
+          </View>
+          <Text className="mt-2 text-xs text-muted-foreground">
+            Plays in the browser and desktop app when a new message arrives in this workspace, even if banners are off.
+            Phones use their system sound.
+          </Text>
+
+          <Text className="mb-2 mt-4 text-xs font-medium text-muted-foreground">Huddle sound</Text>
+          <View className="flex-row flex-wrap items-center gap-2">
+            {HUDDLE_SOUNDS.map((s) => (
+              <Chip
+                key={s.value}
+                label={s.label}
+                selected={(settings?.huddleSound ?? 'ring') === s.value}
+                onPress={() => void update({ huddleSound: s.value })}
+              />
+            ))}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Preview huddle sound"
+              disabled={(settings?.huddleSound ?? 'ring') === 'off'}
+              onPress={() => previewHuddleSound(settings?.huddleSound ?? 'ring')}
+              className="rounded-md px-3 py-1.5 active:bg-accent/50 disabled:opacity-40"
+            >
+              <Text className="text-xs font-semibold text-primary">Preview</Text>
+            </Pressable>
+          </View>
+          <Text className="mt-2 text-xs text-muted-foreground">
+            A direct call rings until it’s answered. A group huddle rings once. Off means no sound and no vibration.
+          </Text>
+
+          {Platform.OS === 'ios' ? <AnnounceHuddleCallsRow /> : null}
+        </Card>
+
+        <Card title="Activity">
+          <View className="flex-row items-center gap-3">
+            <Switch
+              value={!!settings?.dmInActivity}
+              onValueChange={(on) => void update({ dmInActivity: on })}
+              accessibilityLabel="Show direct messages in Activity"
+            />
+            <View className="flex-1">
+              <Text className="text-sm text-foreground">Show direct messages in Activity</Text>
+              <Text className="text-xs text-muted-foreground">Every new direct message also shows up in your Activity list, not just the DMs count.</Text>
+            </View>
+          </View>
+          <View className="mt-4 flex-row items-center gap-3">
+            <Switch
+              value={settings?.threadRepliesInBadge ?? true}
+              onValueChange={(on) => void update({ threadRepliesInBadge: on })}
+              accessibilityLabel="Count thread replies in the badge"
+            />
+            <View className="flex-1">
+              <Text className="text-sm text-foreground">Count thread replies in the badge</Text>
+              <Text className="text-xs text-muted-foreground">Off: thread replies show as a dot on Activity instead of a number.</Text>
+            </View>
+          </View>
+        </Card>
+
+        <Card title="Phone notifications">
+          <Text className="mb-2 text-xs font-medium text-muted-foreground">Send a push to my phone</Text>
+          <View className="flex-row flex-wrap gap-2">
+            {PUSH_DELAYS.map((d) => (
+              <Chip
+                key={d.value}
+                label={d.label}
+                selected={(settings?.mobilePushDelay ?? 'inactive') === d.value}
+                onPress={() => void update({ mobilePushDelay: d.value })}
+              />
+            ))}
+          </View>
+          <Text className="mt-2 text-xs text-muted-foreground">
+            A push is cancelled if you read the conversation before it is sent.
+          </Text>
+        </Card>
+
         <Card title="Email">
           <View className="flex-row items-center gap-3">
             <Switch
@@ -334,6 +499,11 @@ export default function TeamChatSettings() {
         {Platform.OS === 'web' ? (
           <Card title="Desktop notifications">
             <View className="flex-row items-center gap-3">
+              {perm === 'denied' ? (
+                <View testID="desktop-alerts-blocked" className="rounded-full bg-destructive/10 px-2 py-0.5">
+                  <Text className="text-xs font-medium text-destructive">Desktop alerts blocked</Text>
+                </View>
+              ) : null}
               <Text className="flex-1 text-xs text-muted-foreground">
                 {perm === 'granted'
                   ? 'Desktop notifications are on for this browser.'
@@ -349,6 +519,26 @@ export default function TeamChatSettings() {
                 </Pressable>
               ) : null}
             </View>
+            {isDesktopApp() ? (
+              <View className="mt-4 border-t border-border pt-4">
+                <Text className="mb-1 text-sm text-foreground">This computer</Text>
+                <Text className="mb-2 text-xs text-muted-foreground">Stored on this device only.</Text>
+                <Text className="mb-2 text-xs font-medium text-muted-foreground">Bounce dock icon on a new message</Text>
+                <View className="flex-row flex-wrap gap-2">
+                  {DOCK_BOUNCE.map((o) => (
+                    <Chip key={o.value} label={o.label} selected={deviceAlerts.dockBounce === o.value} onPress={() => saveDeviceAlerts({ dockBounce: o.value })} />
+                  ))}
+                </View>
+                <View className="mt-4 flex-row items-center gap-3">
+                  <Switch
+                    value={deviceAlerts.flashTaskbar}
+                    onValueChange={(on) => saveDeviceAlerts({ flashTaskbar: on })}
+                    accessibilityLabel="Flash taskbar on a new message"
+                  />
+                  <Text className="flex-1 text-sm text-foreground">Flash the taskbar button on Windows</Text>
+                </View>
+              </View>
+            ) : null}
           </Card>
         ) : null}
       </View>

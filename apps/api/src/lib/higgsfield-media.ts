@@ -25,7 +25,8 @@
  * changing one here without refreshing the snapshot fails CI.
  */
 
-import type { ImageModelEntry, VideoModelEntry } from '@shogo/model-catalog'
+import type { ImageModelEntry, ModelOptionField, VideoModelEntry } from '@shogo/model-catalog'
+import { optionsForEndpoint } from '@shogo/model-catalog'
 
 export const HIGGSFIELD_DEFAULT_BASE = 'https://api.higgsfield.ai'
 
@@ -52,6 +53,18 @@ export type HiggsfieldErrorCode =
   | 'credits'
   | 'not_found'
   | 'validation'
+  /** A caller-supplied value the endpoint's schema does not allow. */
+  | 'invalid_option'
+  /** A caller-supplied field the endpoint does not document. */
+  | 'option_unsupported'
+  /** A shared argument the model does not have, or a value outside its range. */
+  | 'invalid_duration'
+  | 'invalid_resolution'
+  | 'invalid_aspect_ratio'
+  | 'audio_not_supported'
+  | 'image_to_video_unsupported'
+  | 'text_to_video_unsupported'
+  | 'reference_images_unsupported'
   | 'blocked'
   | 'unavailable'
   | 'server'
@@ -388,6 +401,26 @@ export async function higgsfieldUpload(
   return { publicUrl: target.public_url }
 }
 
+/**
+ * The bytes behind a provider output URL (or a data URI), base64-encoded, for
+ * the OpenAI-shaped routes that answer with `b64_json`.
+ */
+export async function fetchAsBase64(
+  url: string,
+  signal?: AbortSignal,
+): Promise<{ b64: string; contentType: string }> {
+  const dataUri = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(url)
+  if (dataUri) {
+    const contentType = dataUri[1] || 'application/octet-stream'
+    const b64 = dataUri[2] ? dataUri[3] : Buffer.from(decodeURIComponent(dataUri[3])).toString('base64')
+    return { b64, contentType }
+  }
+  const response = await fetch(url, { signal })
+  if (!response.ok) throw new HiggsfieldError(`Downloading the output failed (${response.status})`, 'http', response.status)
+  const contentType = response.headers.get('content-type')?.split(';')[0] || 'application/octet-stream'
+  return { b64: Buffer.from(await response.arrayBuffer()).toString('base64'), contentType }
+}
+
 /** Turn a `data:` URI into a public URL; pass an http(s) URL through untouched. */
 export async function higgsfieldEnsurePublicUrl(
   apiKey: string,
@@ -408,7 +441,7 @@ export async function higgsfieldEnsurePublicUrl(
 }
 
 // -----------------------------------------------------------------------------
-// Request shaping
+// Presets and size helpers
 // -----------------------------------------------------------------------------
 
 export interface HiggsfieldPreset {
@@ -464,102 +497,223 @@ export function nearestHiggsfieldAspectRatio(size: string | undefined, allowed: 
   return best
 }
 
-export const SOUL_ASPECT_RATIOS = ['1:1', '9:16', '16:9', '4:3', '3:4', '2:3', '3:2'] as const
-export const IDEOGRAM_ASPECT_RATIOS = ['1:1', '9:16', '16:9', '4:3', '3:4', '2:3', '3:2'] as const
-export const QWEN_ASPECT_RATIOS = ['1:1', '2:3', '3:2', '3:4', '4:3', '7:9', '9:7', '9:16', '16:9', '21:9'] as const
-export const Z_IMAGE_ASPECT_RATIOS = QWEN_ASPECT_RATIOS
-export const RECRAFT_ASPECT_RATIOS = [
-  '1:1', '2:1', '1:2', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5',
-  '6:10', '14:10', '10:14', '16:9', '9:16',
-] as const
-export const MARKETING_ASPECT_RATIOS = ['auto', '1:1', '3:2', '2:3', '4:3', '3:4', '16:9', '9:16', '21:9'] as const
-export const GROK_ASPECT_RATIOS = ['auto', '1:1', '1:2', '2:1', '3:2', '2:3', '4:3', '3:4', '16:9', '9:16'] as const
-export const ADS_STUDIO_ASPECT_RATIOS = [
-  '1:1', '4:5', '5:4', '16:9', '9:16', '4:3', '3:4', '21:9',
-  '3:2', '2:3', '2:1', '1:2', '3:1', '1:3',
-] as const
+// -----------------------------------------------------------------------------
+// Request shaping
+//
+// The bodies are declarative: the generated catalog already says what each
+// endpoint accepts (enum, range, step, default), so the builder maps the
+// arguments every model shares onto whatever field names this endpoint
+// documents, passes model-specific fields through from `options`, and validates
+// every value against the vendor's own schema. Nothing is sent that the
+// endpoint does not declare (the vendor answers 422 for those), and nothing the
+// caller asked for is dropped silently.
+// -----------------------------------------------------------------------------
 
-/** Resolution tiers as `[standard, hd]`. SOUL calls them 720p/1080p. */
-export const SOUL_RESOLUTIONS = ['720p', '1080p'] as const
-export const IMAGE_RESOLUTIONS = ['1k', '2k'] as const
-export const RECRAFT_1K_RESOLUTIONS = ['1k', '1k'] as const
-export const RECRAFT_2K_RESOLUTIONS = ['2k', '2k'] as const
+type MediaEntry = ImageModelEntry | VideoModelEntry
 
-/**
- * How one Higgsfield image endpoint takes its documented body. This is a
- * table, not a branch: `buildHiggsfieldImageRequest` throws away the idea of
- * per-model if/else, and `check:higgsfield-docs` fails when a catalog entry is
- * missing from it, so a new model cannot ship without someone reading its
- * schema.
- */
-export interface HiggsfieldImageShape {
-  /** Documented `aspect_ratio` values, in the vendor's order. */
-  aspectRatios: readonly string[]
-  /** `[standard, hd]` resolution tiers. Omitted when the endpoint takes none. */
-  resolutions?: readonly [string, string]
-  /** `[standard, hd]` `quality` values. Omitted when the endpoint takes none. */
-  qualities?: readonly [string, string]
-  /** Extra quality tiers a caller may send and we pass through (flare/sunburst). */
-  extendedQualities?: readonly string[]
-  /** Documented reference-image field and whether it is an array. */
-  references?: { field: string; multiple: boolean }
-  /** Send `enhance_prompt: false` (SOUL family). */
-  enhancePrompt?: boolean
-  /** Send `batch_size: 1` (SOUL family). */
-  batchSize?: boolean
-  /** Send `rendering_speed` instead of `quality` (Ideogram). */
-  renderingSpeed?: boolean
-  /** Submit the entry's `editApiModel` when references are present (Qwen). */
-  editWhenReferenced?: boolean
+function fail(message: string, code: HiggsfieldErrorCode): never {
+  throw new HiggsfieldError(message, code)
 }
 
-export const HIGGSFIELD_IMAGE_SHAPES: Record<string, HiggsfieldImageShape> = {
-  'hf-soul-v2': {
-    aspectRatios: SOUL_ASPECT_RATIOS, resolutions: SOUL_RESOLUTIONS, enhancePrompt: true, batchSize: true,
-  },
-  'hf-soul-standard': {
-    aspectRatios: SOUL_ASPECT_RATIOS, resolutions: SOUL_RESOLUTIONS, enhancePrompt: true, batchSize: true,
-    references: { field: 'image_reference_url', multiple: false },
-  },
-  'hf-soul-cinema': {
-    aspectRatios: SOUL_ASPECT_RATIOS, resolutions: SOUL_RESOLUTIONS, enhancePrompt: true, batchSize: true,
-  },
-  'hf-ideogram-4': {
-    aspectRatios: IDEOGRAM_ASPECT_RATIOS, renderingSpeed: true,
-    references: { field: 'image_url', multiple: false },
-  },
-  'hf-qwen-image-3': {
-    aspectRatios: QWEN_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS,
-    references: { field: 'image_urls', multiple: true }, editWhenReferenced: true,
-  },
-  'hf-recraft-v4.1': { aspectRatios: RECRAFT_ASPECT_RATIOS, resolutions: RECRAFT_1K_RESOLUTIONS },
-  'hf-recraft-v4.1-pro': { aspectRatios: RECRAFT_ASPECT_RATIOS, resolutions: RECRAFT_2K_RESOLUTIONS },
-  'hf-recraft-v4.1-utility': { aspectRatios: RECRAFT_ASPECT_RATIOS, resolutions: RECRAFT_1K_RESOLUTIONS },
-  'hf-recraft-v4.1-utility-pro': { aspectRatios: RECRAFT_ASPECT_RATIOS, resolutions: RECRAFT_2K_RESOLUTIONS },
-  'hf-z-image-turbo': { aspectRatios: Z_IMAGE_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS },
-  'hf-marketing-studio': {
-    aspectRatios: MARKETING_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS, qualities: ['medium', 'high'],
-    references: { field: 'image_urls', multiple: true },
-  },
-  'hf-marketing-studio-flare': {
-    aspectRatios: MARKETING_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS, qualities: ['medium', 'high'],
-    extendedQualities: ['xhigh', 'max'],
-    references: { field: 'image_urls', multiple: true },
-  },
-  'hf-marketing-studio-sunburst': {
-    aspectRatios: MARKETING_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS, qualities: ['medium', 'high'],
-    extendedQualities: ['xhigh', 'max'],
-    references: { field: 'image_urls', multiple: true },
-  },
-  'hf-grok-image-2': {
-    // Grok only accepts low|medium, so both of our tiers send medium.
-    aspectRatios: GROK_ASPECT_RATIOS, resolutions: IMAGE_RESOLUTIONS, qualities: ['medium', 'medium'],
-    references: { field: 'image_urls', multiple: true },
-  },
-  'hf-ads-studio': {
-    aspectRatios: ADS_STUDIO_ASPECT_RATIOS,
-    references: { field: 'image_urls', multiple: true },
-  },
+/** `3–15` / `6, 10` — how an allowed set reads in an error. */
+function describeAllowed(field: ModelOptionField): string {
+  if (field.enum && field.enum.length > 0) return field.enum.join(', ')
+  if (field.type === 'integer' || field.type === 'number') {
+    if (field.minimum !== undefined && field.maximum !== undefined) return `${field.minimum}–${field.maximum}`
+    if (field.minimum !== undefined) return `>= ${field.minimum}`
+    if (field.maximum !== undefined) return `<= ${field.maximum}`
+  }
+  return field.type
+}
+
+function describeField(field: ModelOptionField): string {
+  const label = field.title ? `${field.title} (${field.name})` : field.name
+  return `${label}: ${describeAllowed(field)}`
+}
+
+/**
+ * Check one value against the field's documented constraints, returning what to
+ * send. Numbers accept numeric strings; enums compare as strings so an integer
+ * enum (`batch_size: 1 | 4`) validates too.
+ */
+export function checkOptionValue(
+  entry: MediaEntry,
+  endpoint: string,
+  field: ModelOptionField,
+  value: unknown,
+): unknown {
+  const where = `${entry.id} (${endpoint})`
+
+  if (field.enum && field.enum.length > 0) {
+    const asText = String(value)
+    if (!field.enum.includes(asText)) {
+      fail(`${field.name} must be one of ${describeAllowed(field)} for ${where}; got ${JSON.stringify(value)}.`, 'invalid_option')
+    }
+    return field.type === 'integer' || field.type === 'number' ? Number(asText) : asText
+  }
+
+  if (field.type === 'integer' || field.type === 'number') {
+    const numeric = typeof value === 'number' ? value : Number(value)
+    if (typeof value === 'boolean' || !Number.isFinite(numeric)) {
+      fail(`${field.name} must be a ${field.type} for ${where}; got ${JSON.stringify(value)}.`, 'invalid_option')
+    }
+    if (field.type === 'integer' && !Number.isInteger(numeric)) {
+      fail(`${field.name} must be a whole number for ${where}; got ${numeric}.`, 'invalid_option')
+    }
+    if (field.minimum !== undefined && numeric < field.minimum) {
+      fail(`${field.name} must be ${describeAllowed(field)} for ${where}; got ${numeric}.`, 'invalid_option')
+    }
+    if (field.maximum !== undefined && numeric > field.maximum) {
+      fail(`${field.name} must be ${describeAllowed(field)} for ${where}; got ${numeric}.`, 'invalid_option')
+    }
+    if (field.multipleOf && Math.abs(Math.round(numeric / field.multipleOf) * field.multipleOf - numeric) > 1e-9) {
+      fail(`${field.name} must be a multiple of ${field.multipleOf} for ${where}; got ${numeric}.`, 'invalid_option')
+    }
+    return numeric
+  }
+
+  if (field.type === 'boolean') {
+    if (typeof value !== 'boolean') {
+      fail(`${field.name} must be true or false for ${where}; got ${JSON.stringify(value)}.`, 'invalid_option')
+    }
+    return value
+  }
+
+  if (field.type === 'array') {
+    if (!Array.isArray(value)) {
+      fail(`${field.name} must be an array for ${where}.`, 'invalid_option')
+    }
+    if (field.minItems !== undefined && value.length < field.minItems) {
+      fail(`${field.name} needs at least ${field.minItems} item(s) for ${where}.`, 'invalid_option')
+    }
+    if (field.maxItems !== undefined && value.length > field.maxItems) {
+      fail(`${field.name} takes at most ${field.maxItems} item(s) for ${where}.`, 'invalid_option')
+    }
+    if (field.itemFields) {
+      return value.map((item, index) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          fail(`${field.name}[${index}] must be an object for ${where}.`, 'invalid_option')
+        }
+        const out: Record<string, unknown> = {}
+        for (const [key, nested] of Object.entries(item as Record<string, unknown>)) {
+          const spec = field.itemFields![key]
+          if (!spec) {
+            fail(
+              `${field.name}[${index}] has no field '${key}' for ${where}; allowed: ${Object.keys(field.itemFields!).join(', ')}.`,
+              'invalid_option',
+            )
+          }
+          out[key] = checkOptionValue(entry, endpoint, spec, nested)
+        }
+        return out
+      })
+    }
+    if (field.items && field.items !== 'any') {
+      return value.map((item, index) => {
+        if (field.items === 'string' && typeof item !== 'string') {
+          fail(`${field.name}[${index}] must be a string for ${where}.`, 'invalid_option')
+        }
+        return item
+      })
+    }
+    return value
+  }
+
+  if (field.type === 'string') {
+    if (typeof value !== 'string') {
+      fail(`${field.name} must be a string for ${where}; got ${JSON.stringify(value)}.`, 'invalid_option')
+    }
+    if (field.maxLength !== undefined && value.length > field.maxLength) {
+      fail(`${field.name} is limited to ${field.maxLength} characters for ${where}.`, 'invalid_option')
+    }
+    return value
+  }
+
+  return value
+}
+
+function optionFor(entry: MediaEntry, endpoint: string, name: string): ModelOptionField | undefined {
+  return optionsForEndpoint(entry, endpoint).find((field) => field.name === name)
+}
+
+/**
+ * First documented field among `names` — how the shared argument names
+ * (`audio` → `sound` | `generate_audio`, `start_image` → `image_url` | …) find
+ * the endpoint's own spelling.
+ */
+function firstDeclared(entry: MediaEntry, endpoint: string, names: readonly string[]): string | undefined {
+  return names.find((name) => !!optionFor(entry, endpoint, name))
+}
+
+function setField(
+  entry: MediaEntry,
+  endpoint: string,
+  input: Record<string, unknown>,
+  name: string,
+  value: unknown,
+): void {
+  const field = optionFor(entry, endpoint, name)
+  if (!field) {
+    fail(
+      `${entry.id} does not take '${name}' on ${endpoint}. Supported fields: ${optionsForEndpoint(entry, endpoint).map((option) => option.name).join(', ') || 'none'}.`,
+      'option_unsupported',
+    )
+  }
+  input[name] = checkOptionValue(entry, endpoint, field, value)
+}
+
+/**
+ * The arguments every model shares (`duration`, `aspect_ratio`, `resolution`)
+ * get their own error code when the model does not have the field at all, so a
+ * caller can tell "this model has no aspect ratio" (fix: drop it) from "that
+ * value is not allowed" (fix: use another value).
+ */
+function setShared(
+  entry: MediaEntry,
+  endpoint: string,
+  input: Record<string, unknown>,
+  name: string,
+  value: unknown,
+  code: HiggsfieldErrorCode,
+  hint?: string,
+): void {
+  if (!optionFor(entry, endpoint, name)) {
+    const supported = optionsForEndpoint(entry, endpoint).map((option) => option.name)
+    fail(
+      `${entry.displayName} has no ${name}${hint ? ` — ${hint}` : ''}. Supported fields: ${supported.join(', ') || 'none'}.`,
+      code,
+    )
+  }
+  try {
+    setField(entry, endpoint, input, name, value)
+  } catch (error) {
+    // Re-code an out-of-range / not-allowed value so the caller learns which
+    // argument was wrong, not just that something was.
+    if (error instanceof HiggsfieldError && error.code === 'invalid_option') {
+      throw new HiggsfieldError(error.message, code)
+    }
+    throw error
+  }
+}
+
+/** Apply the caller's model-specific `options`, rejecting anything undeclared. */
+function applyOptions(
+  entry: MediaEntry,
+  endpoint: string,
+  input: Record<string, unknown>,
+  options: Record<string, unknown> | undefined,
+): void {
+  for (const [name, value] of Object.entries(options ?? {})) {
+    if (value === undefined) continue
+    setField(entry, endpoint, input, name, value)
+  }
+}
+
+/** The declared field that carries an input array of reference images. */
+function referenceArrayField(entry: MediaEntry, endpoint: string): ModelOptionField | undefined {
+  return optionsForEndpoint(entry, endpoint).find(
+    (field) => field.type === 'array' && /image/i.test(field.name),
+  )
 }
 
 export interface HiggsfieldImageParams {
@@ -568,48 +722,97 @@ export interface HiggsfieldImageParams {
   quality?: string
   /** Public URLs of reference images (Higgsfield takes URLs only). */
   referenceUrls?: string[]
+  /** Model-specific documented fields (`seed`, `negative_prompt`, `style_id`, …). */
+  options?: Record<string, unknown>
 }
 
 /** `hd`/`high`/`xhigh`/`max` pick the higher documented tier; the rest the lower. */
-function imageQualityTier(quality: string | undefined): 0 | 1 {
-  return quality && ['hd', 'high', 'xhigh', 'max'].includes(quality) ? 1 : 0
+function highTier(quality: string | undefined): boolean {
+  return !!quality && ['hd', 'high', 'xhigh', 'max'].includes(quality)
 }
 
 /**
  * One submission per image: the proxy fans out `n` copies and sums the
- * estimates. Every field sent here is one the vendor documents for that
- * endpoint — an undocumented extra is a 422, so the shape table decides.
+ * estimates, so `batch_size` stays at its documented default of one.
  */
 export function buildHiggsfieldImageRequest(
   entry: ImageModelEntry,
   params: HiggsfieldImageParams,
 ): { endpoint: string; input: Record<string, unknown> } {
-  const shape = HIGGSFIELD_IMAGE_SHAPES[entry.id]
   const referenceUrls = params.referenceUrls ?? []
-  const endpoint = shape?.editWhenReferenced && referenceUrls.length > 0 && entry.editApiModel
+  const declaredReferences = entry.referenceField
+    ? !!optionFor(entry, entry.apiModel, entry.referenceField.name)
+    : false
+  // A model whose reference field lives on a separate endpoint (Qwen) switches
+  // to it only when there are references to send.
+  const endpoint = referenceUrls.length > 0 && entry.editApiModel && !declaredReferences
     ? entry.editApiModel
     : entry.apiModel
 
-  // `prompt` is the only field every endpoint requires: a catalog entry with no
-  // documented shape still produces a valid request instead of rejecting the
-  // whole `list_media_models` call.
-  if (!shape) return { endpoint, input: { prompt: params.prompt } }
+  if (referenceUrls.length > 0 && !entry.referenceField) {
+    fail(`${entry.id} does not accept reference images. Call list_media_models to find one that does.`, 'reference_images_unsupported')
+  }
 
-  const tier = imageQualityTier(params.quality)
-  const input: Record<string, unknown> = {
-    prompt: params.prompt,
-    aspect_ratio: nearestHiggsfieldAspectRatio(params.size, shape.aspectRatios),
+  const input: Record<string, unknown> = {}
+  setField(entry, endpoint, input, 'prompt', params.prompt)
+
+  const aspect = optionFor(entry, endpoint, 'aspect_ratio')
+  if (aspect?.enum && aspect.enum.length > 0) {
+    input.aspect_ratio = nearestHiggsfieldAspectRatio(params.size, aspect.enum)
   }
-  if (shape.resolutions) input.resolution = shape.resolutions[tier]
-  if (shape.qualities) {
-    const extended = params.quality && shape.extendedQualities?.includes(params.quality)
-    input.quality = extended ? params.quality : shape.qualities[tier]
+
+  if (entry.quality) {
+    const target = highTier(params.quality) ? entry.quality.hd : entry.quality.standard
+    setField(entry, endpoint, input, entry.quality.field, target)
+  } else {
+    const qualityField = optionFor(entry, endpoint, 'quality')
+    if (qualityField?.enum && qualityField.enum.length > 0) {
+      const requested = params.quality ?? 'standard'
+      const target = qualityField.enum.includes(requested)
+        ? requested
+        : highTier(requested)
+          ? (qualityField.enum.find((value) => value === 'high') ?? qualityField.enum[qualityField.enum.length - 1])
+          : (qualityField.enum.find((value) => value === 'medium') ?? qualityField.enum[0])
+      setField(entry, endpoint, input, 'quality', target)
+    }
   }
-  if (shape.renderingSpeed) input.rendering_speed = tier === 1 ? 'QUALITY' : 'DEFAULT'
-  if (shape.enhancePrompt) input.enhance_prompt = false
-  if (shape.batchSize) input.batch_size = 1
-  if (shape.references && referenceUrls.length > 0) {
-    input[shape.references.field] = shape.references.multiple ? referenceUrls : referenceUrls[0]
+
+  const resolution = optionFor(entry, endpoint, 'resolution')
+  if (resolution?.enum && resolution.enum.length > 0) {
+    const tier = highTier(params.quality) ? 1 : 0
+    const index = Math.min(tier, resolution.enum.length - 1)
+    setField(entry, endpoint, input, 'resolution', resolution.enum[index])
+  }
+
+  if (referenceUrls.length > 0 && entry.referenceField) {
+    setField(
+      entry,
+      endpoint,
+      input,
+      entry.referenceField.name,
+      entry.referenceField.multiple ? referenceUrls : referenceUrls[0],
+    )
+  }
+
+  // Our contract is one image per request (the proxy fans out `n` copies and
+  // sums the estimates), so `batch_size` is pinned to 1 wherever the endpoint
+  // documents it — including endpoints whose schema states no default.
+  if (optionFor(entry, endpoint, 'batch_size')) setField(entry, endpoint, input, 'batch_size', 1)
+  // Prompt enhancement rewrites the prompt and changes the output (and, at some
+  // vendors, the price), so it is sent at its documented default rather than
+  // left to whichever default the vendor may adopt later.
+  const enhance = optionFor(entry, endpoint, 'enhance_prompt')
+  if (enhance && enhance.default !== undefined) {
+    setField(entry, endpoint, input, 'enhance_prompt', enhance.default)
+  }
+
+  applyOptions(entry, endpoint, input, params.options)
+
+  if (input.batch_size !== undefined && Number(input.batch_size) !== 1) {
+    fail(
+      `batch_size is always 1 for ${entry.id}: ask for several images with the options count instead.`,
+      'invalid_option',
+    )
   }
   return { endpoint, input }
 }
@@ -619,6 +822,8 @@ export interface HiggsfieldVideoParams {
   duration?: number
   aspectRatio?: string
   resolution?: string
+  /** Native audio on/off. Errors as `audio_not_supported` when the model has no audio field. */
+  audio?: boolean
   /** Public URL of the first frame (image-to-video). */
   startImageUrl?: string
   /** Public URLs of character/object references. */
@@ -627,6 +832,8 @@ export interface HiggsfieldVideoParams {
   sourceVideoUrl?: string
   /** Restyle style UUID. */
   presetId?: string
+  /** Model-specific documented fields (`cfg_scale`, `multi_shots`, `multi_prompt`, …). */
+  options?: Record<string, unknown>
 }
 
 /** Build the submit body for one video generation or Genjutsu edit. */
@@ -634,44 +841,83 @@ export function buildHiggsfieldVideoRequest(
   entry: VideoModelEntry,
   params: HiggsfieldVideoParams,
 ): { endpoint: string; input: Record<string, unknown> } {
-  if (entry.genjutsu) {
+  if (entry.sourceVideo) {
     if (!params.sourceVideoUrl) {
-      throw new HiggsfieldError(`${entry.displayName} needs a source video (source_video).`, 'validation')
+      fail(`${entry.displayName} needs a source video (source_video).`, 'validation')
     }
-    const base: Record<string, unknown> = {
-      video_url: params.sourceVideoUrl,
-      image_urls: params.referenceUrls ?? [],
-      ...(params.prompt ? { prompt: params.prompt } : {}),
-      ...(params.resolution ? { resolution: params.resolution } : {}),
+    const endpoint = entry.textToVideoApiModel ?? entry.endpoints?.[0]
+    if (!endpoint) fail(`${entry.displayName} has no endpoint.`, 'validation')
+    const input: Record<string, unknown> = {}
+    setField(entry, endpoint, input, 'video_url', params.sourceVideoUrl)
+    if (params.prompt) setField(entry, endpoint, input, 'prompt', params.prompt)
+    if (params.resolution) setField(entry, endpoint, input, 'resolution', params.resolution)
+    if (params.referenceUrls && params.referenceUrls.length > 0) {
+      setField(entry, endpoint, input, 'image_urls', params.referenceUrls)
     }
     if (entry.genjutsu === 'restyle') {
       if (!params.presetId) {
-        throw new HiggsfieldError('Genjutsu Restyle needs a preset_id — see the presets list.', 'validation')
+        fail('Genjutsu Restyle needs a preset_id — see the presets list.', 'validation')
       }
-      return { endpoint: entry.textToVideoApiModel, input: { ...base, preset_id: params.presetId } }
+      setField(entry, endpoint, input, 'preset_id', params.presetId)
     }
-    return { endpoint: entry.textToVideoApiModel, input: base }
+    applyOptions(entry, endpoint, input, params.options)
+    return { endpoint, input }
   }
 
-  const imageToVideo = !!params.startImageUrl
-  const endpoint = imageToVideo ? entry.imageToVideoApiModel : entry.textToVideoApiModel
-  if (!endpoint) throw new HiggsfieldError(`${entry.displayName} does not support image-to-video`, 'validation')
+  const wantsImage = !!params.startImageUrl
+  const endpoint = wantsImage ? entry.imageToVideoApiModel : entry.textToVideoApiModel
+  if (!endpoint) {
+    fail(
+      wantsImage
+        ? `${entry.displayName} does not support image-to-video.`
+        : `${entry.displayName} generates from an image only — pass start_image.`,
+      wantsImage ? 'image_to_video_unsupported' : 'text_to_video_unsupported',
+    )
+  }
 
   const input: Record<string, unknown> = {}
-  if (params.prompt) input.prompt = params.prompt
-  // Hailuo, Kling and Wan ignore anything but the documented fields; sending
-  // an unsupported one is a 422, so each family only gets what it accepts.
-  if (entry.id === 'hf-ltx-2.5-fast') {
-    input.duration = params.duration ?? entry.defaultDuration
-    input.resolution = params.resolution ?? entry.defaultResolution ?? '720p'
-    if (params.aspectRatio) input.aspect_ratio = params.aspectRatio
-  } else if (entry.id === 'hf-wan-2.6') {
-    input.duration = params.duration ?? entry.defaultDuration
-    input.resolution = params.resolution ?? entry.defaultResolution ?? '720p'
-  } else {
-    input.duration = params.duration ?? entry.defaultDuration
+  if (params.prompt) setField(entry, endpoint, input, 'prompt', params.prompt)
+  if (params.duration !== undefined) setShared(entry, endpoint, input, 'duration', params.duration, 'invalid_duration')
+  if (params.aspectRatio) {
+    setShared(entry, endpoint, input, 'aspect_ratio', params.aspectRatio, 'invalid_aspect_ratio', 'output framing follows the start image')
   }
-  if (imageToVideo) input.image_url = params.startImageUrl
+  if (params.resolution) {
+    setShared(entry, endpoint, input, 'resolution', params.resolution, 'invalid_resolution', 'it has a fixed resolution')
+  }
+
+  if (params.audio !== undefined) {
+    const sound = optionFor(entry, endpoint, 'sound')
+    const generateAudio = optionFor(entry, endpoint, 'generate_audio')
+    if (sound) {
+      setField(entry, endpoint, input, 'sound', params.audio ? sound.enum?.[0] ?? 'on' : sound.enum?.[1] ?? 'off')
+    } else if (generateAudio) {
+      setField(entry, endpoint, input, 'generate_audio', params.audio)
+    } else if (params.audio) {
+      fail(
+        `${entry.displayName} has no native audio — pick a model with audio, or drop audio.`,
+        'audio_not_supported',
+      )
+    }
+  }
+
+  if (params.startImageUrl) {
+    const imageField = firstDeclared(entry, endpoint, ['image_url', 'start_image', 'image'])
+    if (!imageField) {
+      fail(`${entry.displayName} does not take a start image on ${endpoint}.`, 'image_to_video_unsupported')
+    }
+    setField(entry, endpoint, input, imageField, params.startImageUrl)
+  }
+
+  const references = params.referenceUrls ?? []
+  if (references.length > 0) {
+    const field = entry.maxReferenceImages > 0 ? referenceArrayField(entry, endpoint) : undefined
+    if (!field) {
+      fail(`${entry.displayName} does not accept reference images.`, 'reference_images_unsupported')
+    }
+    setField(entry, endpoint, input, field.name, references)
+  }
+
+  applyOptions(entry, endpoint, input, params.options)
   return { endpoint, input }
 }
 

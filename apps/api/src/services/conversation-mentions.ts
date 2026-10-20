@@ -149,8 +149,15 @@ export interface MentionDirectoryEntry {
   names: string[]
 }
 
-/** Lowercased name → token. Names claimed by more than one token are dropped. */
-export function buildMentionLookup(entries: MentionDirectoryEntry[]): Map<string, string> {
+export interface MentionLookupIndex {
+  /** Lowercased name → token. Names claimed by more than one token are absent. */
+  lookup: Map<string, string>
+  /** Lowercased name → how many tokens claim it, for names the lookup drops. */
+  ambiguous: Map<string, number>
+}
+
+/** Both halves of the directory index: what resolves, and what cannot because it is ambiguous. */
+export function buildMentionLookupIndex(entries: MentionDirectoryEntry[]): MentionLookupIndex {
   const claims = new Map<string, Set<string>>()
   for (const entry of entries) {
     for (const raw of entry.names) {
@@ -162,14 +169,47 @@ export function buildMentionLookup(entries: MentionDirectoryEntry[]): Map<string
     }
   }
   const lookup = new Map<string, string>()
+  const ambiguous = new Map<string, number>()
   for (const [name, tokens] of claims) {
     if (tokens.size === 1) lookup.set(name, [...tokens][0])
+    else ambiguous.set(name, tokens.size)
   }
-  return lookup
+  return { lookup, ambiguous }
+}
+
+/** Lowercased name → token. Names claimed by more than one token are dropped. */
+export function buildMentionLookup(entries: MentionDirectoryEntry[]): Map<string, string> {
+  return buildMentionLookupIndex(entries).lookup
 }
 
 const CODE_RE = /```[\s\S]*?```|`[^`\n]*`/g
 const NAME_CHAR_RE = /[\p{L}\p{N}_@-]/u
+
+/** Text split into prose and code spans, so `@Name` inside backticks is left alone. */
+function segmentsOutsideCode(text: string): Array<{ text: string; code: boolean }> {
+  const out: Array<{ text: string; code: boolean }> = []
+  let last = 0
+  for (const match of text.matchAll(CODE_RE)) {
+    if ((match.index ?? 0) > last) out.push({ text: text.slice(last, match.index), code: false })
+    out.push({ text: match[0], code: true })
+    last = (match.index ?? 0) + match[0].length
+  }
+  if (last < text.length) out.push({ text: text.slice(last), code: false })
+  return out
+}
+
+/** The `@` at `i` starts a name, rather than closing an email or sitting inside one. */
+function startsMention(segment: string, i: number): boolean {
+  const prev = i > 0 ? segment[i - 1] : ''
+  return !(prev && (NAME_CHAR_RE.test(prev) || prev === '<' || prev === '.'))
+}
+
+/** The longest known name starting right after the `@` at `i`, or null when none ends on a boundary. */
+function nameAt(segment: string, i: number, names: string[]): string | null {
+  const rest = segment.slice(i + 1)
+  const lower = rest.toLowerCase()
+  return names.find((n) => lower.startsWith(n) && !NAME_CHAR_RE.test(rest.charAt(n.length))) ?? null
+}
 
 /**
  * Turn plain `@Name` / `@email` / `@handle` into mention tokens. Longest
@@ -182,18 +222,14 @@ export function resolveFriendlyMentionsWith(text: string, lookup: Map<string, st
     let out = ''
     let i = 0
     while (i < segment.length) {
-      const ch = segment[i]
-      const prev = i > 0 ? segment[i - 1] : ''
-      if (ch !== '@' || (prev && (NAME_CHAR_RE.test(prev) || prev === '<' || prev === '.'))) {
-        out += ch
+      if (segment[i] !== '@' || !startsMention(segment, i)) {
+        out += segment[i]
         i++
         continue
       }
-      const rest = segment.slice(i + 1)
-      const lower = rest.toLowerCase()
-      const name = names.find((n) => lower.startsWith(n) && !NAME_CHAR_RE.test(rest.charAt(n.length)))
+      const name = nameAt(segment, i, names)
       if (!name) {
-        out += ch
+        out += segment[i]
         i++
         continue
       }
@@ -202,13 +238,46 @@ export function resolveFriendlyMentionsWith(text: string, lookup: Map<string, st
     }
     return out
   }
-  let result = ''
-  let last = 0
-  for (const match of text.matchAll(CODE_RE)) {
-    result += resolveSegment(text.slice(last, match.index)) + match[0]
-    last = (match.index ?? 0) + match[0].length
+  return segmentsOutsideCode(text).map((segment) => (segment.code ? segment.text : resolveSegment(segment.text))).join('')
+}
+
+export interface AmbiguousMention {
+  /** The name as the author wrote it, without the `@`. */
+  name: string
+  /** How many people, agents or groups answer to it. */
+  count: number
+}
+
+/**
+ * Names in `text` that the lookup dropped for ambiguity, so a caller can tell
+ * the author why nothing was tagged. Scanned exactly like the resolver, so a
+ * longer unambiguous name (`@New Project Alpha` over an ambiguous
+ * `@New Project`) is not reported.
+ */
+export function ambiguousMentionsIn(text: string, index: MentionLookupIndex): AmbiguousMention[] {
+  if (!text.includes('@') || !index.ambiguous.size) return []
+  const names = [...index.lookup.keys(), ...index.ambiguous.keys()].sort((a, b) => b.length - a.length)
+  /** Lowercased name → the first spelling the text used. */
+  const found = new Map<string, string>()
+  for (const segment of segmentsOutsideCode(text)) {
+    if (segment.code) continue
+    const line = segment.text
+    let i = 0
+    while (i < line.length) {
+      if (line[i] !== '@' || !startsMention(line, i)) {
+        i++
+        continue
+      }
+      const name = nameAt(line, i, names)
+      if (!name) {
+        i++
+        continue
+      }
+      if (index.ambiguous.has(name) && !found.has(name)) found.set(name, line.slice(i + 1, i + 1 + name.length))
+      i += 1 + name.length
+    }
   }
-  return result + resolveSegment(text.slice(last))
+  return [...found].map(([name, written]) => ({ name: written, count: index.ambiguous.get(name) ?? 0 }))
 }
 
 const COLLAPSIBLE_TOKEN = '<(?:@[uagc]:[A-Za-z0-9_:-]+|@a:ws)>'

@@ -448,9 +448,44 @@ describe('chat-notifier.web — subscribeNotificationClicks', () => {
 
     const Ctor = (globalThis as any).Notification as FakeNotificationCtor
     expect(Ctor.instances[0].title).toBe('ada in #general')
-    expect(Ctor.instances[0].options.tag).toBe('channel:c1')
+    expect(Ctor.instances[0].options.tag).toBe('thread:r1')
     Ctor.instances[0].onclick!()
     expect(received).toEqual([{ conversationId: 'c1', threadRootId: 'r1' }])
+  })
+
+  test('each reply in a thread shares a tag and re-alerts with renotify', async () => {
+    installEnv({ document: makeFakeDocument(), withNotification: true, initialPermission: 'granted' })
+    const mod = await freshModule()
+    const reply = { conversationId: 'c1', messageId: 'm', threadRootId: 'r9', title: 'ada', body: 'x' }
+    await mod.notifyChannelMessage({ ...reply, messageId: 'm1' })
+    await mod.notifyChannelMessage({ ...reply, messageId: 'm2' })
+    const Ctor = (globalThis as any).Notification as FakeNotificationCtor
+    expect(Ctor.instances.map((i) => i.options.tag)).toEqual(['thread:r9', 'thread:r9'])
+    expect(Ctor.instances.every((i) => i.options.renotify === true)).toBe(true)
+  })
+
+  test('a channel message without a thread is tagged by its conversation', async () => {
+    installEnv({ document: makeFakeDocument(), withNotification: true, initialPermission: 'granted' })
+    const mod = await freshModule()
+    await mod.notifyChannelMessage({
+      conversationId: 'c5', messageId: 'm', threadRootId: null, title: 'ada', body: 'hi',
+    })
+    const Ctor = (globalThis as any).Notification as FakeNotificationCtor
+    expect(Ctor.instances[0].options.tag).toBe('channel:c5')
+  })
+
+  test('the title carries the reason label when one is given', async () => {
+    installEnv({ document: makeFakeDocument(), withNotification: true, initialPermission: 'granted' })
+    const mod = await freshModule()
+    await mod.notifyChannelMessage({
+      conversationId: 'dm1', messageId: 'm', threadRootId: null, title: 'ada', body: 'hi', reason: 'dm',
+    })
+    await mod.notifyChannelMessage({
+      conversationId: 'c1', messageId: 'm2', threadRootId: 'r1', title: 'ada replied in #general', body: 'ok', reason: 'thread',
+    })
+    const Ctor = (globalThis as any).Notification as FakeNotificationCtor
+    expect(Ctor.instances[0].title).toBe('Direct message · ada')
+    expect(Ctor.instances[1].title).toBe('Thread reply · ada replied in #general')
   })
 
   test('delivers browser click via the in-page bus', async () => {
@@ -501,5 +536,58 @@ describe('chat-notifier.web — subscribeNotificationClicks', () => {
 
     unsubscribe()
     expect(desktop!.removeListenerCalls).toBe(1)
+  })
+})
+
+describe('chat-notifier.web — desktop attention', () => {
+  beforeEach(() => uninstallEnv())
+  afterEach(() => uninstallEnv())
+
+  test('asks the desktop shell for attention with this device’s settings for a DM', async () => {
+    const calls: any[] = []
+    installEnv({ document: makeFakeDocument(), desktop: { isDesktop: true } })
+    ;((globalThis as any).window.shogoDesktop as any).requestAttention = async (args: any) => {
+      calls.push(args)
+      return { ok: true, attention: true }
+    }
+    const mod = await freshModule()
+    await mod.requestAttention('dm')
+    expect(calls).toEqual([{ dockBounce: 'once', flashTaskbar: true }])
+  })
+
+  test('ignores reasons that do not ask for attention, and does nothing in a browser', async () => {
+    const calls: any[] = []
+    installEnv({ document: makeFakeDocument(), desktop: { isDesktop: true } })
+    ;((globalThis as any).window.shogoDesktop as any).requestAttention = async (args: any) => {
+      calls.push(args)
+      return { ok: true }
+    }
+    const mod = await freshModule()
+    await mod.requestAttention('keyword')
+    expect(calls).toHaveLength(0)
+
+    installEnv({ document: makeFakeDocument() })
+    const browser = await freshModule()
+    await expect(browser.requestAttention('dm')).resolves.toBeUndefined()
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe('chat-notifier.web — channel alert sound', () => {
+  beforeEach(() => uninstallEnv())
+  afterEach(() => uninstallEnv())
+
+  test('a channel alert whose cue already played is silent, otherwise the OS sound is left alone', async () => {
+    installEnv({ document: makeFakeDocument(), withNotification: true, initialPermission: 'granted' })
+    const mod = await freshModule()
+    await mod.notifyChannelMessage({
+      conversationId: 'c1', messageId: 'm1', threadRootId: null, title: 'ada', body: 'hi', silent: true,
+    })
+    await mod.notifyChannelMessage({
+      conversationId: 'c2', messageId: 'm2', threadRootId: null, title: 'bo', body: 'yo',
+    })
+    const Ctor = (globalThis as any).Notification as FakeNotificationCtor
+    expect(Ctor.instances[0].options.silent).toBe(true)
+    expect(Ctor.instances[1].options.silent).toBe(false)
   })
 })

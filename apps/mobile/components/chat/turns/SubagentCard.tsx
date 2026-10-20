@@ -148,7 +148,7 @@ function truncate(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
 
-const IMAGE_RESULT_TOOL_NAMES = new Set(["generate_image", "upscale_image", "remove_background"]);
+const IMAGE_RESULT_TOOL_NAMES = new Set(["generate_image"]);
 const VIDEO_RESULT_TOOL_NAMES = new Set(["generate_video"]);
 
 function extractMediaTools(

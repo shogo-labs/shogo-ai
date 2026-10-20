@@ -5,7 +5,8 @@
  * file, or jump to the message that shared it.
  */
 import { useState } from 'react'
-import { ActivityIndicator, FlatList, Image, Linking, Pressable, Text, TextInput, View } from 'react-native'
+import { ActivityIndicator, FlatList, Image, Pressable, Text, TextInput, View } from 'react-native'
+import { useRouter } from 'expo-router'
 import { Download, MessageSquare, Paperclip, Search, X } from 'lucide-react-native'
 import { SegmentedFilter } from '../phone/SegmentedFilter'
 import { useConversationFiles } from '../../hooks/useConversationFiles'
@@ -91,12 +92,18 @@ export function FilesPane({ workspaceId, conversationId, title, onClose, onShowI
 }
 
 function FileRow({ file, onShowInChat }: { file: ConversationFile; onShowInChat: () => void }) {
+  const router = useRouter()
   const url = absoluteApiUrl(file.url)
   const meta = fileTypeMeta(file.name, file.mimeType)
   const date = new Date(file.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   return (
     <View className="flex-row items-center gap-3 border-b border-border/60 px-3 py-2" testID={`file-row-${file.id}`}>
-      <Pressable onPress={() => void Linking.openURL(url)} accessibilityRole="link" accessibilityLabel={`Open ${file.name}`} className="min-w-0 flex-1 flex-row items-center gap-3">
+      <Pressable
+        onPress={() => router.push({ pathname: '/(app)/f/[attachmentId]', params: { attachmentId: file.id, name: file.name } } as never)}
+        accessibilityRole="link"
+        accessibilityLabel={`Open ${file.name}`}
+        className="min-w-0 flex-1 flex-row items-center gap-3"
+      >
         {file.kind === 'image' ? (
           <Image source={{ uri: url }} className="rounded border border-border" style={{ width: 36, height: 36 }} resizeMode="cover" />
         ) : (

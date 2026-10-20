@@ -284,6 +284,10 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.removeAllListeners('notification-clicked')
   },
   isWindowFocused: () => ipcRenderer.invoke('get-window-focused'),
+  requestAttention: (args: {
+    dockBounce?: 'off' | 'once' | 'until-focused'
+    flashTaskbar?: boolean
+  }): Promise<{ ok: boolean; attention?: boolean }> => ipcRenderer.invoke('request-attention', args),
 
   // Cloud login (replaces the old paste-API-key flow)
   getDeviceInfo: (): Promise<{ id: string; name: string; platform: string; appVersion: string }> =>

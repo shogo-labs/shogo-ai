@@ -10,6 +10,7 @@ import { createReactNativeMock } from "../../../../test/react-native-mock"
 const push = mock((_href: string) => {})
 let kind: "personal" | "team" = "team"
 let features: { marketplace: boolean; workBoards: boolean } = { marketplace: true, workBoards: true }
+const http = { get: mock(async (_path: string) => ({ data: { accounts: [] as unknown[] } })) }
 
 mock.module("react-native", () =>
   createReactNativeMock({
@@ -29,6 +30,15 @@ mock.module(resolve(import.meta.dir, "../../../../hooks/useWorkspaceExperience")
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/platform-config"), () => ({
   usePlatformConfig: () => ({ features }),
+  isLocalMode: () => false,
+  isWorkspaceRuntimeEnabled: () => false,
+  isProjectWorkspaceRuntimeEnabled: () => false,
+}))
+mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
+  useDomainHttp: () => http,
+}))
+mock.module(resolve(import.meta.dir, "../../../../hooks/useActiveWorkspace"), () => ({
+  useActiveWorkspace: () => ({ id: "ws-1" }),
 }))
 mock.module(resolve(import.meta.dir, "../../../team-chat/TeamChatSidebarProvider"), () => ({
   useTeamChatNav: () => ({ enabled: false, list: [], counts: {} }),

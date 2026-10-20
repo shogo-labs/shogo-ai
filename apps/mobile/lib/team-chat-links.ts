@@ -40,6 +40,38 @@ export function docLink(conversationId: string, base = linkBase()): string {
   return `${base}/c/${encodeURIComponent(conversationId)}?doc=1`
 }
 
+/**
+ * The channel a `/c/<id>` link points at, with the pane the link asked for:
+ * `msg` for a message, `thread` for one of its replies, `doc`, `files`,
+ * `card`/`board` for a side pane. Every shape our own links produce has to come
+ * back here, or the link leaves the app on web and reloads the page.
+ */
+export interface ConversationLinkTarget {
+  conversationId: string
+  params: Record<string, string>
+}
+
+/** Query params the channel route understands; anything else is dropped. */
+const CHANNEL_PARAMS = ['msg', 'thread', 'doc', 'files', 'card', 'board', 'project', 'profile'] as const
+
+export function parseConversationLink(href: string, hosts: Set<string> = ownHosts()): ConversationLinkTarget | null {
+  let url: URL
+  try {
+    url = new URL(href)
+  } catch {
+    return null
+  }
+  if (!hosts.has(url.host)) return null
+  const match = url.pathname.match(/^\/c\/([^/]+)\/?$/)
+  if (!match) return null
+  const params: Record<string, string> = {}
+  for (const key of CHANNEL_PARAMS) {
+    const value = url.searchParams.get(key)
+    if (value) params[key] = value
+  }
+  return { conversationId: decodeURIComponent(match[1]!), params }
+}
+
 function ownHosts(): Set<string> {
   const hosts = new Set<string>()
   try {
@@ -66,4 +98,23 @@ export function parseMessageLink(href: string, hosts: Set<string> = ownHosts()):
     messageId,
     threadRootId: url.searchParams.get('thread'),
   }
+}
+
+/**
+ * The attachment a shared file link points at. Both shapes count: the
+ * capability URL an attachment carries (`/api/conversation-files/<id>?t=…`)
+ * and the in-app viewer's own path (`/f/<id>`), because either can end up in
+ * a message, a doc or a person's clipboard.
+ */
+export function parseFileLink(href: string, hosts: Set<string> = ownHosts()): { attachmentId: string } | null {
+  let url: URL
+  try {
+    url = new URL(href)
+  } catch {
+    return null
+  }
+  if (!hosts.has(url.host)) return null
+  const match = url.pathname.match(/^\/(?:api\/conversation-files|f)\/([^/]+)\/?$/)
+  if (!match) return null
+  return { attachmentId: decodeURIComponent(match[1]!) }
 }

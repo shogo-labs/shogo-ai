@@ -19,6 +19,130 @@ import type { Message, UserMessage, AssistantMessage, ToolResultMessage, TextCon
 /** Rough per-image token cost (a ~1MP image on Anthropic is ~1,600 tokens). */
 const IMAGE_TOKEN_ESTIMATE = 1_600
 
+/**
+ * Everything the provider is billed for, not just prose: tool-call arguments
+ * (write_file/edit_file bodies are often the bulk of a long turn) and images.
+ * Undercounting these kept autocompact from ever firing and left sessions
+ * stuck on "prompt is too long".
+ *
+ * Exported so the mid-turn compactor measures requests with the same ruler the
+ * session does — a second estimator is how the dock and the wire drifted.
+ */
+export function estimateMessageTokens(msg: Message): number {
+  const content = (msg as any).content
+  if (typeof content === 'string') return Math.ceil(content.length / 4)
+  if (!Array.isArray(content)) return 0
+  let chars = 0
+  let tokens = 0
+  for (const block of content) {
+    if (block?.type === 'text') chars += block.text?.length ?? 0
+    else if (block?.type === 'thinking') chars += block.thinking?.length ?? 0
+    else if (block?.type === 'toolCall') {
+      chars += (block.name?.length ?? 0) + JSON.stringify(block.arguments ?? {}).length
+    } else if (block?.type === 'image') tokens += IMAGE_TOKEN_ESTIMATE
+  }
+  return tokens + Math.ceil(chars / 4)
+}
+
+/**
+ * Index at which a compaction splits: the first `user` message at or after
+ * `length - keepRecentMessages`, so the kept tail starts on a clean turn
+ * boundary instead of mid tool-result chain.
+ */
+export function splitIndexForCompaction(messages: Message[], keepRecentMessages: number): number | null {
+  if (messages.length <= keepRecentMessages) return null
+  let splitIndex = messages.length - keepRecentMessages
+  while (splitIndex > 0 && splitIndex < messages.length) {
+    if (messages[splitIndex].role === 'user') break
+    splitIndex++
+  }
+  if (splitIndex >= messages.length - 1) {
+    splitIndex = Math.max(0, messages.length - keepRecentMessages)
+    while (splitIndex < messages.length && messages[splitIndex].role === 'toolResult') {
+      splitIndex++
+    }
+  }
+  return splitIndex > 0 && splitIndex < messages.length ? splitIndex : null
+}
+
+/** Estimated tokens of a message array, using the same ruler as `estimateMessageTokens`. */
+export function estimateMessageArrayTokens(messages: Message[], tokensPerMessage = 0): number {
+  let tokens = 0
+  for (const msg of messages) tokens += Math.max(tokensPerMessage, estimateMessageTokens(msg))
+  return tokens
+}
+
+/**
+ * Split index that also bounds the *kept tail* by tokens.
+ *
+ * `splitIndexForCompaction` keeps a fixed number of messages, which assumes the
+ * recent ones are small. Production says otherwise: a single tool result can be
+ * 300k tokens, so ten kept messages can still exceed the cap the compaction was
+ * called to enforce — the request stays over budget and the next one overruns
+ * the model's window. This folds *more* (the split moves later) until the tail
+ * fits `tailBudgetTokens`, always keeping at least `minKeepMessages`.
+ *
+ * Returns `null` when there is nothing to fold away, so a short conversation is
+ * never compacted just because it holds one large message.
+ */
+export function splitIndexForTokenBudget(
+  messages: Message[],
+  opts: { tailBudgetTokens: number; minKeepMessages: number; maxKeepMessages: number; tokensPerMessage?: number },
+): number | null {
+  const countSplit = splitIndexForCompaction(messages, opts.maxKeepMessages)
+  if (countSplit === null) return null
+
+  const tokensOf = (msg: Message) => Math.max(opts.tokensPerMessage ?? 0, estimateMessageTokens(msg))
+  const minKeep = Math.max(1, opts.minKeepMessages)
+  // Split index above which fewer than `minKeep` messages would survive.
+  const hardMax = Math.max(1, messages.length - minKeep)
+
+  let split = Math.min(countSplit, hardMax)
+  let tailTokens = 0
+  for (let i = split; i < messages.length; i++) tailTokens += tokensOf(messages[i])
+
+  while (split < hardMax && tailTokens > opts.tailBudgetTokens) {
+    tailTokens -= tokensOf(messages[split])
+    split++
+  }
+  // Never hand the provider a tail that starts mid tool-result chain: a
+  // toolResult whose toolCall was summarized away is an invalid request, so
+  // the result is folded too (the tail then keeps only what follows it).
+  while (split < messages.length - 1 && messages[split].role === 'toolResult') {
+    tailTokens -= tokensOf(messages[split])
+    split++
+  }
+
+  return split > 0 && split < messages.length ? split : countSplit
+}
+
+/**
+ * The two messages that stand in for everything a compaction folded away.
+ *
+ * One builder for both the turn-boundary history (`buildHistory`) and the
+ * mid-turn compactor, so a summary looks byte-identical to the provider
+ * whichever path wrote it.
+ */
+export function buildSummaryPrefixMessages(summary: string): Message[] {
+  return [
+    {
+      role: 'user',
+      content: `[Previous conversation summary]\n${summary}`,
+      timestamp: Date.now(),
+    } as UserMessage,
+    {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Understood, I have the context from our previous conversation.' }],
+      api: 'anthropic-messages',
+      provider: 'anthropic',
+      model: 'system',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: 'stop',
+      timestamp: Date.now(),
+    } as AssistantMessage,
+  ]
+}
+
 // ---------------------------------------------------------------------------
 // Session Persistence Interface
 // ---------------------------------------------------------------------------
@@ -88,14 +212,28 @@ export interface SessionManagerConfig {
   pruneIntervalSeconds: number
   /** Tool result pruning config (false to disable) */
   pruning?: Partial<PruningConfig> | false
-  /** Model context window size in tokens for auto-compact threshold (default: 200000) */
+  /**
+   * The *model's* context window in tokens. The summarize threshold is
+   * derived from it (minus output/buffer reserve) and capped at
+   * `AGENT_AUTOCOMPACT_TOKENS` — see `resolveAutoCompactTokens`.
+   * Leave unset to inherit the 200k cap.
+   */
   contextWindowTokens?: number
   /** Max output tokens reserved for the model response (default: 16384) */
   maxOutputTokens?: number
   /** Buffer tokens reserved for system prompt and safety margin (default: 15000) */
   bufferTokens?: number
+  /** Max tokens passed to the summarizer per call (default: 24000) */
+  summarizeChunkTokens?: number
   /** Max consecutive summarization failures before circuit breaker trips (default: 3) */
   maxSummarizeFailures?: number
+  /**
+   * Token budget for the messages kept verbatim behind a summary
+   * (default: 40% of the autocompact threshold).
+   */
+  compactionTailBudgetTokens?: number
+  /** Messages that always survive a compaction, however large (default: 2) */
+  compactionMinKeepMessages?: number
 }
 
 export interface ManagedSession {
@@ -131,6 +269,54 @@ export interface SessionStats {
   createdAt: string
 }
 
+// ---------------------------------------------------------------------------
+// Auto-compact budget
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard cap on the context we are willing to send on ONE request, independent
+ * of how large the model's window is. Documented next to
+ * `DEFAULT_INLOOP_CONTEXT_BUDGET_TOKENS` (stable-compaction.ts) for the same
+ * reason: every step of an agent turn re-sends the whole context, so a 1M
+ * window is never a reason to send 1M tokens.
+ *
+ * Override with `AGENT_AUTOCOMPACT_TOKENS`.
+ */
+export const DEFAULT_AUTOCOMPACT_TOKENS = 200_000
+
+/** Default output + safety reserve subtracted from a model's window. */
+const DEFAULT_MAX_OUTPUT_TOKENS = 16_384
+const DEFAULT_BUFFER_TOKENS = 15_000
+/** Window assumed when the catalog does not know the model's real one. */
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000
+
+/**
+ * The token count at which LLM summarization fires: the model's window minus
+ * the output/buffer reserve, capped at `AGENT_AUTOCOMPACT_TOKENS` (200k).
+ *
+ * `contextWindowTokens` is the *model's* window (from the catalog, or an
+ * explicit override); the cap is what keeps a 1M-window model — haiku-5-5,
+ * opus-5-5 — summarizing at 200k instead of at 968k. An unknown model keeps
+ * the historical 200k window.
+ */
+export function resolveAutoCompactTokens(input: {
+  contextWindowTokens?: number
+  maxOutputTokens?: number
+  bufferTokens?: number
+} = {}): number {
+  const fromEnv = Number(process.env.AGENT_AUTOCOMPACT_TOKENS)
+  const cap = Number.isFinite(fromEnv) && fromEnv > 0 ? Math.floor(fromEnv) : DEFAULT_AUTOCOMPACT_TOKENS
+  const windowTokens = input.contextWindowTokens && input.contextWindowTokens > 0
+    ? input.contextWindowTokens
+    : DEFAULT_CONTEXT_WINDOW_TOKENS
+  const reserve =
+    (input.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS) + (input.bufferTokens ?? DEFAULT_BUFFER_TOKENS)
+  const room = windowTokens - reserve
+  // A window smaller than the reserve (tiny test models) keeps its own
+  // negative/zero threshold rather than silently inheriting the 200k cap.
+  return room > 0 ? Math.min(room, cap) : room
+}
+
 /** A chat session other chats in this workspace may be running. */
 export interface ChatSessionSummary {
   id: string
@@ -155,8 +341,17 @@ export interface CompactionResult {
   summary: string
 }
 
-/** Function signature for the summarization backend */
-export type SummarizeFn = (messages: Message[]) => Promise<string>
+/**
+ * Function signature for the summarization backend.
+ *
+ * Called once per chunk of the head being folded away. `previousSummary` is
+ * the running fold (undefined for the first chunk), so a 400k head survives
+ * as a real summary instead of the first 12k characters of it.
+ */
+export type SummarizeFn = (messages: Message[], previousSummary?: string) => Promise<string>
+
+/** Max tokens of message text handed to the summarizer in one call. */
+export const DEFAULT_SUMMARIZE_CHUNK_TOKENS = 24_000
 
 const DEFAULT_CONFIG: SessionManagerConfig = {
   sessionTtlSeconds: 3600,
@@ -185,12 +380,26 @@ export class SessionManager {
     return this.config.contextWindowTokens ?? 200_000
   }
 
-  /** Token threshold above which Layer 4 autocompact triggers */
+  /**
+   * Pin the summarize threshold to a specific model's window for the next
+   * turn. Called per turn from the gateway with the resolved model's catalog
+   * window, since one gateway serves sessions on different models.
+   */
+  setContextWindowTokens(tokens: number | undefined): void {
+    this.config.contextWindowTokens = tokens && tokens > 0 ? tokens : undefined
+  }
+
+  /**
+   * Token threshold above which Layer 4 autocompact triggers: the model's
+   * window minus the output/buffer reserve, capped at
+   * `AGENT_AUTOCOMPACT_TOKENS` (default 200k).
+   */
   get autocompactThreshold(): number {
-    const contextWindow = this.config.contextWindowTokens ?? 200_000
-    const maxOutput = this.config.maxOutputTokens ?? 16_384
-    const buffer = this.config.bufferTokens ?? 15_000
-    return contextWindow - maxOutput - buffer
+    return resolveAutoCompactTokens({
+      contextWindowTokens: this.config.contextWindowTokens,
+      maxOutputTokens: this.config.maxOutputTokens,
+      bufferTokens: this.config.bufferTokens,
+    })
   }
 
   /** Whether the summarization circuit breaker has tripped */
@@ -378,31 +587,97 @@ export class SessionManager {
       tokens += Math.ceil(session.compactedSummary.length / 4)
     }
     for (const msg of session.messages) {
-      tokens += Math.max(this.config.estimatedTokensPerMessage, this.estimateMessageTokens(msg))
+      tokens += Math.max(this.config.estimatedTokensPerMessage, estimateMessageTokens(msg))
+    }
+    return tokens
+  }
+
+  /** Estimated tokens of a message array, using the same ruler as `estimateTokens`. */
+  estimateMessagesTokens(messages: Message[]): number {
+    let tokens = 0
+    for (const msg of messages) {
+      tokens += Math.max(this.config.estimatedTokensPerMessage, estimateMessageTokens(msg))
     }
     return tokens
   }
 
   /**
-   * Everything the provider is billed for, not just prose: tool-call
-   * arguments (write_file/edit_file bodies are often the bulk of a long
-   * turn) and images. Undercounting these kept autocompact from ever firing
-   * and left sessions stuck on "prompt is too long".
+   * Token budget for the messages kept verbatim behind a summary. 40% of the
+   * autocompact threshold by default, so the request after a compaction lands
+   * well below the cap instead of immediately needing another one.
    */
-  private estimateMessageTokens(msg: Message): number {
-    const content = (msg as any).content
-    if (typeof content === 'string') return Math.ceil(content.length / 4)
-    if (!Array.isArray(content)) return 0
-    let chars = 0
-    let tokens = 0
-    for (const block of content) {
-      if (block?.type === 'text') chars += block.text?.length ?? 0
-      else if (block?.type === 'thinking') chars += block.thinking?.length ?? 0
-      else if (block?.type === 'toolCall') {
-        chars += (block.name?.length ?? 0) + JSON.stringify(block.arguments ?? {}).length
-      } else if (block?.type === 'image') tokens += IMAGE_TOKEN_ESTIMATE
+  get compactionTailBudgetTokens(): number {
+    if (this.config.compactionTailBudgetTokens) return this.config.compactionTailBudgetTokens
+    const threshold = this.autocompactThreshold
+    return threshold > 0 ? Math.max(1, Math.floor(threshold * 0.4)) : Number.MAX_SAFE_INTEGER
+  }
+
+  /** Split index bounded by the message count *and* the tail token budget. */
+  splitIndexForCompactionTokens(messages: Message[], maxKeepMessages: number): number | null {
+    return (
+      splitIndexForTokenBudget(messages, {
+        tailBudgetTokens: this.compactionTailBudgetTokens,
+        minKeepMessages: this.config.compactionMinKeepMessages ?? 2,
+        maxKeepMessages,
+        tokensPerMessage: this.config.estimatedTokensPerMessage,
+      }) ?? splitIndexForCompaction(messages, maxKeepMessages)
+    )
+  }
+
+  /**
+   * Summarize a head of history in chunks and fold each chunk into a running
+   * summary (map-reduce). The old single-shot path sent `12k chars` of a head
+   * that could be 400k tokens — a "successful" summarize that dropped the
+   * decisions it exists to preserve.
+   *
+   * `previousSummary` continues an earlier fold (a second mid-turn
+   * compaction), so the new summary supersedes the old one instead of
+   * duplicating it.
+   */
+  async summarizeHead(head: Message[], previousSummary?: string): Promise<string> {
+    if (head.length === 0) return '(summary unavailable)'
+    const chunkBudget = this.config.summarizeChunkTokens ?? DEFAULT_SUMMARIZE_CHUNK_TOKENS
+    const chunks: Message[][] = []
+    let current: Message[] = []
+    let currentTokens = 0
+    for (const msg of head) {
+      const tokens = Math.max(this.config.estimatedTokensPerMessage, estimateMessageTokens(msg))
+      if (current.length > 0 && currentTokens + tokens > chunkBudget) {
+        chunks.push(current)
+        current = []
+        currentTokens = 0
+      }
+      current.push(msg)
+      currentTokens += tokens
     }
-    return tokens + Math.ceil(chars / 4)
+    if (current.length > 0) chunks.push(current)
+
+    if (!this.summarizeFn || this.circuitBreakerTripped) return this.fallbackSummarize(head)
+
+    const maxFailures = this.config.maxSummarizeFailures ?? 3
+    let summary: string | undefined = previousSummary
+    for (const chunk of chunks) {
+      try {
+        summary = await this.summarizeFn(chunk, summary)
+        this.consecutiveSummarizeFailures = 0
+      } catch (err: any) {
+        this.consecutiveSummarizeFailures++
+        console.error(
+          `[SessionManager] Summarization failed (${this.consecutiveSummarizeFailures}/${maxFailures}):`,
+          err.message,
+        )
+        if (this.consecutiveSummarizeFailures >= maxFailures) {
+          this.circuitBreakerTripped = true
+          console.warn(`[SessionManager] Circuit breaker tripped — falling back to extractive summary`)
+          return this.fallbackSummarize(head)
+        }
+        // A failed chunk must not silently drop its content: keep the
+        // extractive text for that chunk and keep folding.
+        const extract = this.fallbackSummarize(chunk)
+        summary = summary ? `${summary}\n\n${extract}` : extract
+      }
+    }
+    return summary ?? this.fallbackSummarize(head)
   }
 
   /**
@@ -420,52 +695,35 @@ export class SessionManager {
     if (!session) return null
 
     const keepRecentMessages = aggressiveKeep ?? this.config.keepRecentMessages
-    if (session.messages.length <= keepRecentMessages) return null
+    const splitIndex = this.splitIndexForCompactionTokens(session.messages, keepRecentMessages)
+    if (splitIndex === null) return null
 
-    let splitIndex = session.messages.length - keepRecentMessages
-    while (splitIndex > 0 && splitIndex < session.messages.length) {
-      const msg = session.messages[splitIndex]
-      if (msg.role === 'user') break
-      splitIndex++
-    }
+    const toCompact = session.messages.slice(0, splitIndex)
+    if (toCompact.length === 0) return null
 
-    if (splitIndex >= session.messages.length - 1) {
-      splitIndex = Math.max(0, session.messages.length - keepRecentMessages)
-      while (splitIndex < session.messages.length && session.messages[splitIndex].role === 'toolResult') {
-        splitIndex++
-      }
-    }
+    const summary = await this.summarizeHead(toCompact)
+    return this.applyCompaction(id, { summary, splitIndex, extraContext })
+  }
+
+  /**
+   * Apply an already-computed summary: drop `splitIndex` messages of head,
+   * prepend the summary, persist. Shared by turn-boundary compaction and the
+   * mid-turn compactor so both produce the same session shape.
+   */
+  applyCompaction(
+    id: string,
+    opts: { summary: string; splitIndex: number; extraContext?: string; replaceSummary?: boolean },
+  ): CompactionResult | null {
+    const session = this.sessions.get(id)
+    if (!session) return null
+    const { summary, splitIndex, extraContext, replaceSummary } = opts
+    if (splitIndex <= 0 || splitIndex >= session.messages.length) return null
 
     const toCompact = session.messages.slice(0, splitIndex)
     const toKeep = session.messages.slice(splitIndex)
-
     if (toCompact.length === 0) return null
 
-    let summary: string
-    const maxFailures = this.config.maxSummarizeFailures ?? 3
-    const useLlm = this.summarizeFn && !this.circuitBreakerTripped
-
-    if (useLlm) {
-      try {
-        summary = await this.summarizeFn!(toCompact)
-        this.consecutiveSummarizeFailures = 0
-      } catch (err: any) {
-        this.consecutiveSummarizeFailures++
-        console.error(
-          `[SessionManager] Summarization failed for ${id} (${this.consecutiveSummarizeFailures}/${maxFailures}):`,
-          err.message,
-        )
-        if (this.consecutiveSummarizeFailures >= maxFailures) {
-          this.circuitBreakerTripped = true
-          console.warn(`[SessionManager] Circuit breaker tripped — falling back to extractive summary`)
-        }
-        summary = this.fallbackSummarize(toCompact)
-      }
-    } else {
-      summary = this.fallbackSummarize(toCompact)
-    }
-
-    const existingSummary = session.compactedSummary
+    const existingSummary = session.compactedSummary && !replaceSummary
       ? `${session.compactedSummary}\n\n`
       : ''
 
@@ -497,21 +755,7 @@ export class SessionManager {
     const msgs: Message[] = []
 
     if (session.compactedSummary) {
-      msgs.push({
-        role: 'user',
-        content: `[Previous conversation summary]\n${session.compactedSummary}`,
-        timestamp: Date.now(),
-      } as UserMessage)
-      msgs.push({
-        role: 'assistant',
-        content: [{ type: 'text', text: 'Understood, I have the context from our previous conversation.' }],
-        api: 'anthropic-messages',
-        provider: 'anthropic',
-        model: 'system',
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-        stopReason: 'stop',
-        timestamp: Date.now(),
-      } as AssistantMessage)
+      msgs.push(...buildSummaryPrefixMessages(session.compactedSummary))
     }
 
     msgs.push(...session.messages)
@@ -631,27 +875,17 @@ export class SessionManager {
   }
 
   private extractText(msg: Message): string {
-    if (msg.role === 'user') {
-      return typeof msg.content === 'string'
-        ? msg.content
-        : (msg.content as any[])
-            .filter((b: any) => b.type === 'text')
-            .map((b: any) => b.text)
-            .join(' ')
-    }
-    if (msg.role === 'assistant') {
-      return msg.content
-        .filter((c): c is TextContent => c.type === 'text')
-        .map((c) => c.text)
-        .join(' ')
-    }
-    if (msg.role === 'toolResult') {
-      return msg.content
-        .filter((c): c is TextContent => c.type === 'text')
-        .map((c) => c.text)
-        .join(' ')
-    }
-    return ''
+    // `content` is a string for plain user/assistant text and a block array for
+    // tool calls/results, so every role has to handle both shapes: a resumed
+    // session hydrated from JSON has assistant text as strings, and a summarizer
+    // that assumed blocks threw mid-turn instead of compacting.
+    const content = (msg as any).content
+    if (typeof content === 'string') return content
+    if (!Array.isArray(content)) return ''
+    return content
+      .filter((c: any) => c?.type === 'text')
+      .map((c: any) => c.text)
+      .join(' ')
   }
 
   private fallbackSummarize(messages: Message[]): string {

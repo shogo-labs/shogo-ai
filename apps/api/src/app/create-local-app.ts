@@ -35,6 +35,7 @@ import { checkpointRoutes } from '../routes/checkpoints'
 import { aiProxyRoutes } from '../routes/ai-proxy'
 import { aiLiveRoutes } from '../routes/ai-live'
 import { voiceRoutes } from '../routes/voice'
+import { voiceMediaRoutes } from '../routes/voice-media'
 import { rbacRoutes } from '../routes/rbac'
 import { chatRoutes } from '../routes/chat'
 import { createChatMessageEditRoutes } from '../routes/chat-message-edits'
@@ -42,6 +43,7 @@ import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from
 import { createChatSessionForkRoutes } from '../routes/chat-session-fork'
 import { chatQueuedMessageActionsRoutes } from '../routes/chat-queued-message-actions'
 import { toolsProxyRoutes } from '../routes/tools-proxy'
+import { socialEventRoutes, socialRoutes } from '../routes/social'
 import { techStackRoutes } from '../routes/tech-stacks'
 import { apiKeyRoutes } from '../routes/api-keys'
 import { integrationRoutes } from '../routes/integrations'
@@ -51,6 +53,7 @@ import { localUserRoutes } from '../routes/local-user'
 import { localProjectsRoutes } from '../routes/local-projects'
 import { localRemoteHostsRoutes } from '../routes/local-remote-hosts'
 import { localLogsRoutes } from '../routes/local-logs'
+import { localMachineRoutes } from '../routes/local-machine'
 import { meetingRoutes } from '../routes/meetings'
 import { historyRoutes } from '../routes/history'
 import { chatMentionRoutes } from '../routes/chat-mentions'
@@ -60,6 +63,7 @@ import { localSystemRoutes } from '../routes/local-system'
 import { cloudWorkspaceListMiddleware, localCloudWorkspaceRoutes } from '../routes/local-cloud-proxy'
 import { localPlatformRoutes } from '../routes/local-platform'
 import { localSharedFileRoutes } from '../routes/local-shared-files'
+import { resolveLocalSharedFileTarget } from '../lib/local-shared-file-target'
 import { marketplaceRoutes } from '../routes/marketplace'
 import { appActionsRoutes } from '../routes/app-actions'
 import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '../lib/federated-upstream'
@@ -120,9 +124,11 @@ export function createLocalApp(): LocalAppBundle {
       authenticate: authenticateRuntimeToken,
       loadProjectLifecycle: () => import('../services/project-lifecycle.service'),
       loadAgentCall: () => import('../services/agent-call.service'),
+      resolveSharedFileTarget: (scope) => resolveLocalSharedFileTarget({ ...scope, workspacesDir }),
     }),
   )
   app.route('/api/local', localLogsRoutes())
+  app.route('/api/local', localMachineRoutes())
   app.route('/api/local', localRemoteHostsRoutes({ runtimeManager }))
   app.route('/api', localAuthRoutes())
   app.route('/api', localUserRoutes())
@@ -179,9 +185,30 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', aiProxyRoutes())
   app.route('/api', aiLiveRoutes())
   app.route('/api', voiceRoutes())
+  // The desktop composer must serve TTS too. `server.ts` (cloud) mounts this
+  // next to `voiceRoutes()`, but this composer is the one desktop boots
+  // (`entry.ts` → `local-server.ts` → `createLocalApp()`), so without it
+  // `POST /api/voice/tts` — and with it every pod-shaped TTS call that the SDK
+  // proxy forwards here — 404s on desktop.
+  app.route('/api', voiceMediaRoutes())
   app.route('/api', rbacRoutes())
   app.route('/api', chatRoutes())
   app.route('/api', toolsProxyRoutes())
+  // Social management: the desktop owns its own account/post rows and forwards
+  // every Zernio call to the cloud relay inside services/social/client.ts.
+  app.route('/api', socialRoutes({ resolveUserId: getAuthUserId }))
+  // Relayed Zernio events for a local scope: the cloud verified and routed
+  // them, and this applies them here, idempotent on the provider's event id.
+  app.route(
+    '/api',
+    socialEventRoutes({
+      authorize: async (c) => {
+        const identity = await authenticateRuntimeToken(c)
+        if (!identity) return null
+        return identity.kind === 'workspace' ? { workspaceId: identity.workspaceId } : {}
+      },
+    }),
+  )
   app.route('/api', techStackRoutes())
   app.route('/api', apiKeyRoutes())
   // Settings > Integrations is shown on desktop; the routes forward to cloud

@@ -38,6 +38,8 @@ export type SyncEventType =
   | 'AGENT_CREATED'
   | 'AGENT_UPDATED'
   | 'AGENT_DELETED'
+  /** A Zernio webhook routed to one of this machine's local scopes (SHO-71). */
+  | 'SOCIAL_EVENT'
 
 export interface SyncEvent {
   id: string

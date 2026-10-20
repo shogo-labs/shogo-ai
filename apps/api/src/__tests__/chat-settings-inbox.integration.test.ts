@@ -67,6 +67,7 @@ describe('settings', () => {
   test('defaults, validation, and status expiry', async () => {
     expect(await settings.getChatSettings(seed.workspaceId, seed.member)).toMatchObject({
       notifyDefault: 'mentions', keywords: [], emailDigest: 'off', statusText: null,
+      messageSound: 'default', huddleSound: 'ring',
     })
     await expect(settings.updateChatSettings(seed.workspaceId, seed.member, { quietHours: '25:00-08:00' }))
       .rejects.toThrow('quietHours')
@@ -81,6 +82,18 @@ describe('settings', () => {
 
     await settings.updateChatSettings(seed.workspaceId, seed.member, { statusExpiresAt: new Date(Date.now() - 1000).toISOString() })
     expect((await settings.listStatuses(seed.workspaceId))[seed.member]).toBeUndefined()
+  })
+
+  test('message and huddle sounds are validated and saved per person', async () => {
+    await expect(settings.updateChatSettings(seed.workspaceId, seed.member, { messageSound: 'loud' }))
+      .rejects.toThrow('messageSound')
+    await expect(settings.updateChatSettings(seed.workspaceId, seed.member, { huddleSound: 'siren' }))
+      .rejects.toThrow('huddleSound')
+
+    const saved = await settings.updateChatSettings(seed.workspaceId, seed.member, { messageSound: 'subtle', huddleSound: 'chime' })
+    expect(saved).toMatchObject({ messageSound: 'subtle', huddleSound: 'chime' })
+    expect(await settings.getChatSettings(seed.workspaceId, seed.member)).toMatchObject({ messageSound: 'subtle', huddleSound: 'chime' })
+    expect(await settings.getChatSettings(seed.workspaceId, seed.viewer)).toMatchObject({ messageSound: 'default', huddleSound: 'ring' })
   })
 
   test('quiet hours handle windows that cross midnight', () => {
@@ -118,11 +131,37 @@ describe('notification preferences', () => {
     const recipients = await notifications.notifyForMessage(
       await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.member)} urgent` }),
     )
-    expect(recipients).toEqual([{ userId: seed.member, reason: 'mention', silenced: true }])
+    expect(recipients).toMatchObject([{ userId: seed.member, reason: 'mention', silenced: true, messageSound: 'default' }])
     expect(pushes).toHaveLength(0)
     const { items, unread } = await inbox.listInbox(seed.workspaceId, seed.member)
     expect(unread).toBe(1)
     expect(items[0]).toMatchObject({ kind: 'mention', conversationId: generalId, title: 'owner in #general' })
+  })
+})
+
+describe('message sound on phone pushes', () => {
+  test('pushes play the system sound unless that person turned message sounds off', async () => {
+    const sounds = new Map<string, unknown>()
+    notifications._setPushSenderForTests(async (userId, payload) => {
+      sounds.set(userId, payload.sound)
+    })
+    await settings.updateChatSettings(seed.workspaceId, seed.member, { messageSound: 'off' })
+    await notifications.notifyForMessage(await post({
+      authorUserId: seed.owner,
+      text: `${userMentionToken(seed.member)} ${userMentionToken(seed.viewer)} ping`,
+    }))
+    expect(sounds.get(seed.member)).toBeNull()
+    expect(sounds.get(seed.viewer)).toBe('default')
+  })
+
+  test('subtle keeps the phone push sound; only off silences it', async () => {
+    const sounds = new Map<string, unknown>()
+    notifications._setPushSenderForTests(async (userId, payload) => {
+      sounds.set(userId, payload.sound)
+    })
+    await settings.updateChatSettings(seed.workspaceId, seed.member, { messageSound: 'subtle' })
+    await notifications.notifyForMessage(await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.member)} hi` }))
+    expect(sounds.get(seed.member)).toBe('default')
   })
 })
 

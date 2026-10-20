@@ -41,6 +41,12 @@ export function Badge({ count }: { count: number }) {
   )
 }
 
+/** A small dot with no number: something unread that the user chose not to count. */
+export function DotBadge({ visible }: { visible: boolean }) {
+  if (!visible) return null
+  return <View testID="rail-dot" className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-sidebar bg-destructive" />
+}
+
 /**
  * The rail shows icons only. The name appears in a bubble beside the icon on
  * hover or keyboard focus (web only: the rail is a wide-web layout).
@@ -87,6 +93,8 @@ export interface IconRailProps {
   tabs: SidebarTabId[]
   active: SidebarTabId
   badges: Partial<Record<SidebarTabId, number>>
+  /** Tabs with unread activity that is shown as a dot, used when the count is zero. */
+  dots?: Partial<Record<SidebarTabId, boolean>>
   onSelect: (tab: SidebarTabId) => void
   showAdmin?: boolean
   /** The workspace tile that opens the workspace menu. Falls back to the logo. */
@@ -97,7 +105,7 @@ export interface IconRailProps {
   onSearch?: () => void
 }
 
-export function IconRail({ tabs, active, badges, onSelect, showAdmin, switcher, invites, onSearch }: IconRailProps) {
+export function IconRail({ tabs, active, badges, dots, onSelect, showAdmin, switcher, invites, onSearch }: IconRailProps) {
   const router = useRouter()
   return (
     <View role="navigation" accessibilityLabel="Workspace tabs" className="relative z-20 w-16 shrink-0 items-center bg-sidebar pb-3 pt-3">
@@ -120,17 +128,19 @@ export function IconRail({ tabs, active, badges, onSelect, showAdmin, switcher, 
           const { label, icon: Icon } = TAB_META[id]
           const selected = id === active
           const count = badges[id] ?? 0
+          const dot = count === 0 && !!dots?.[id]
           return (
             <RailTooltip key={id} label={label}>
               <Pressable
                 accessibilityRole="tab"
-                accessibilityLabel={count ? `${label}, ${count} unread` : label}
+                accessibilityLabel={count ? `${label}, ${count} unread` : dot ? `${label}, unread` : label}
                 aria-selected={selected}
                 onPress={() => onSelect(id)}
                 className={cn('h-11 w-11 items-center justify-center rounded-xl', selected ? 'bg-sidebar-accent' : 'web:hover:bg-sidebar-accent/60')}
               >
                 <Icon size={22} className={selected ? 'text-sidebar-accent-foreground' : 'text-sidebar-foreground/70'} />
                 <Badge count={count} />
+                <DotBadge visible={dot} />
               </Pressable>
             </RailTooltip>
           )

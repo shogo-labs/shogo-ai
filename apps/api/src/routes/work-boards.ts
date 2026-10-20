@@ -128,6 +128,9 @@ function columnInput(body: Record<string, any>) {
     wipLimit: pick(body, 'wipLimit', 'wip_limit'),
     agentRef: pick(body, 'agentRef', 'agent', 'agent_ref'),
     slaHours: pick(body, 'slaHours', 'sla_hours'),
+    // `rules: null` clears the rule, so it must survive this pick — `??` would
+    // turn it into "no change".
+    rules: 'rules' in body ? body.rules : (typeof body.allowAutoMerge === 'boolean' ? { allowAutoMerge: body.allowAutoMerge } : undefined),
     position: body.position,
     after: body.after,
     before: body.before,

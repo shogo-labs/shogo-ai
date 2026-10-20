@@ -73,16 +73,40 @@ export function useUserStatus(workspaceId: string | null | undefined, userId: st
 
 // ─── Own settings ────────────────────────────────────────────────────────────
 
+// Own settings are shared per workspace, so the notifier hears a change made
+// on the settings screen without reloading.
+const settingsStore = new Map<string, ChatSettings>()
+const settingsListeners = new Set<(workspaceId: string) => void>()
+
+function publishSettings(workspaceId: string, next: ChatSettings) {
+  settingsStore.set(workspaceId, next)
+  settingsListeners.forEach((l) => l(workspaceId))
+}
+
+/** Own chat settings for a workspace, read by any component that needs them. */
 export function useChatSettings(workspaceId: string | null | undefined) {
-  const [settings, setSettings] = useState<ChatSettings | null>(null)
+  const [settings, setSettings] = useState<ChatSettings | null>(() =>
+    workspaceId ? settingsStore.get(workspaceId) ?? null : null,
+  )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (!workspaceId) return
+    const sync = (id: string) => {
+      if (id !== workspaceId) return
+      const cached = settingsStore.get(id)
+      if (cached) setSettings(cached)
+    }
+    settingsListeners.add(sync)
+    return () => { settingsListeners.delete(sync) }
+  }, [workspaceId])
+
+  useEffect(() => {
+    if (!workspaceId) return
     let cancelled = false
     api.chatSettings(workspaceId)
-      .then((s) => { if (!cancelled) setSettings(s) })
+      .then((s) => { if (!cancelled) publishSettings(workspaceId, s) })
       .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Could not load settings') })
     return () => { cancelled = true }
   }, [workspaceId])
@@ -90,13 +114,14 @@ export function useChatSettings(workspaceId: string | null | undefined) {
   const update = useCallback(async (patch: Partial<ChatSettings>) => {
     if (!workspaceId) return
     setSaving(true)
-    setSettings((s) => (s ? { ...s, ...patch } : s))
+    const optimistic = { ...(settingsStore.get(workspaceId) ?? {}), ...patch } as ChatSettings
+    publishSettings(workspaceId, optimistic)
     try {
-      setSettings(await api.updateChatSettings(workspaceId, patch))
+      publishSettings(workspaceId, await api.updateChatSettings(workspaceId, patch))
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save')
-      api.chatSettings(workspaceId).then(setSettings).catch(() => {})
+      api.chatSettings(workspaceId).then((s) => publishSettings(workspaceId, s)).catch(() => {})
     } finally {
       setSaving(false)
     }
@@ -107,38 +132,63 @@ export function useChatSettings(workspaceId: string | null | undefined) {
 
 // ─── Inbox ───────────────────────────────────────────────────────────────────
 
-const unreadStore = new Map<string, number>()
+/** Unread inbox items in total, and how many of them are thread replies. */
+export interface InboxCounts {
+  unread: number
+  unreadThreads: number
+}
+
+const NO_INBOX: InboxCounts = { unread: 0, unreadThreads: 0 }
+const unreadStore = new Map<string, InboxCounts>()
 const unreadListeners = new Set<() => void>()
 
-function setUnread(workspaceId: string, n: number) {
-  if (unreadStore.get(workspaceId) === n) return
-  unreadStore.set(workspaceId, Math.max(0, n))
+function setUnread(workspaceId: string, next: Partial<InboxCounts> & { unread: number }) {
+  const prev = unreadStore.get(workspaceId) ?? NO_INBOX
+  const unread = Math.max(0, next.unread)
+  const unreadThreads = Math.max(0, Math.min(next.unreadThreads ?? prev.unreadThreads, unread))
+  if (prev.unread === unread && prev.unreadThreads === unreadThreads) return
+  unreadStore.set(workspaceId, { unread, unreadThreads })
   unreadListeners.forEach((l) => l())
 }
 
-/** Live count of unread inbox items; mount the feed once via `useInboxFeed`. */
-export function useInboxUnread(workspaceId: string | null | undefined): number {
+/** Live unread counts for the Activity inbox; mount the feed once via `useInboxFeed`. */
+export function useInboxCounts(workspaceId: string | null | undefined): InboxCounts {
   return useSyncExternalStore(
     (cb) => {
       unreadListeners.add(cb)
       return () => unreadListeners.delete(cb)
     },
-    () => (workspaceId ? unreadStore.get(workspaceId) ?? 0 : 0),
-    () => (workspaceId ? unreadStore.get(workspaceId) ?? 0 : 0),
+    () => (workspaceId ? unreadStore.get(workspaceId) ?? NO_INBOX : NO_INBOX),
+    () => (workspaceId ? unreadStore.get(workspaceId) ?? NO_INBOX : NO_INBOX),
   )
+}
+
+/** Live count of unread inbox items; mount the feed once via `useInboxFeed`. */
+export function useInboxUnread(workspaceId: string | null | undefined): number {
+  return useInboxCounts(workspaceId).unread
 }
 
 export function useInboxFeed(workspaceId: string | null | undefined): void {
   const load = useCallback(() => {
     if (!workspaceId) return
-    api.inbox(workspaceId, { unreadOnly: true, limit: 1 }).then((p) => setUnread(workspaceId, p.unread)).catch(() => {})
+    api.inbox(workspaceId, { unreadOnly: true, limit: 1 })
+      .then((p) => setUnread(workspaceId, { unread: p.unread, unreadThreads: p.unreadThreads ?? 0 }))
+      .catch(() => {})
   }, [workspaceId])
   useEffect(load, [load])
   useTeamChatEvents(workspaceId, (event) => {
     if (!workspaceId) return
     if (event.type === 'ready') load()
-    else if (event.type === 'inbox.created') setUnread(workspaceId, (unreadStore.get(workspaceId) ?? 0) + 1)
-    else if (event.type === 'inbox.read') setUnread(workspaceId, event.unread)
+    else if (event.type === 'inbox.created') {
+      const prev = unreadStore.get(workspaceId) ?? NO_INBOX
+      setUnread(workspaceId, {
+        unread: prev.unread + 1,
+        unreadThreads: prev.unreadThreads + (event.item.kind === 'thread' ? 1 : 0),
+      })
+    }
+    else if (event.type === 'inbox.read') {
+      setUnread(workspaceId, { unread: event.unread, unreadThreads: event.unreadThreads })
+    }
   })
 }
 
@@ -158,7 +208,7 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
       if (id !== req.current) return
       setItems((prev) => (before ? [...prev, ...page.items] : page.items))
       setHasMore(page.hasMore)
-      setUnread(workspaceId, page.unread)
+      setUnread(workspaceId, { unread: page.unread, unreadThreads: page.unreadThreads ?? 0 })
       setError(null)
     } catch (err) {
       if (id === req.current) setError(err instanceof Error ? err.message : 'Could not load inbox')

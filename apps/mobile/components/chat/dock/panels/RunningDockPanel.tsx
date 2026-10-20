@@ -84,6 +84,9 @@ const EXIT_TRANSITION = {
 const ROW_STYLE = { overflow: "hidden" as const }
 
 function finishedLabel(proc: RunningProcess): string {
+  // A finished task whose update the session has not been given yet is waiting
+  // on the person (the paused wake), not merely done.
+  if (proc.waiting) return "waiting"
   if (proc.status === "failed") return "failed"
   if (proc.status === "cancelled") return "cancelled"
   return "completed"

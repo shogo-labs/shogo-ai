@@ -14,6 +14,7 @@ import { startEventDeliveryWorker, stopEventDeliveryWorker } from '../jobs/run-e
 import { startChatQueueWorker, stopChatQueueWorker } from '../jobs/run-chat-queue-drain'
 import { startChannelWorkers, stopChannelWorkers } from '../jobs/run-channel-workers'
 import { getLocalHeartbeatScheduler, startLocalHeartbeatScheduler } from './local-heartbeat-scheduler'
+import { startSocialRelayConsumer, stopSocialRelayConsumer } from '../services/social/relay-consumer'
 
 export interface LocalBackgroundWorkersOptions {
   /** Wakes a sleeping project when one of its heartbeats comes due. */
@@ -38,6 +39,10 @@ export async function startLocalBackgroundWorkers({
   startEventDeliveryWorker(runtimeManager)
   startChatQueueWorker()
   startChannelWorkers()
+  // Relayed Zernio events for this machine's local workspaces: the cloud
+  // verified and stored them, this applies them locally and acks. A no-op
+  // unless this process is a desktop in relay mode.
+  startSocialRelayConsumer()
   try {
     await startLocalHeartbeatScheduler(runtimeManager)
   } catch (err: any) {
@@ -45,11 +50,12 @@ export async function startLocalBackgroundWorkers({
   }
 }
 
-/** Stop all five, so a SIGTERM leaves no interval behind. */
+/** Stop all of them, so a SIGTERM leaves no interval behind. */
 export function stopLocalBackgroundWorkers(): void {
   stopAgentScheduleWorker()
   stopEventDeliveryWorker()
   stopChatQueueWorker()
   stopChannelWorkers()
+  stopSocialRelayConsumer()
   getLocalHeartbeatScheduler().stop()
 }

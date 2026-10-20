@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
-import { taskWakeIdsFromBody } from './background-tasks.service'
+import { MAX_WAKE_ATTEMPTS, taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAUSED, type WakeRelease } from './background-tasks.service'
 
 /** Well above TURN_REATTACH_AFTER_MS, so the reattach job gets to a dead tracker's turn first. */
 const ACTIVE_TURN_STALE_AFTER_MS = 10 * 60 * 1000
@@ -243,9 +243,6 @@ async function dispatchRow(row: QueueRow): Promise<void> {
   })
 }
 
-const WAKE_PAUSED =
-  'Paused: background tasks finished several times in a row without anyone writing. Send a message to continue.'
-
 /** The tasks a task-notification row was queued for. */
 function taskWakeIds(row: QueueRow): string[] {
   return taskWakeIdsFromBody(row.body)
@@ -255,6 +252,9 @@ function taskWakeIds(row: QueueRow): string[] {
  * Why a queued task wake should not run: every task in it was already seen
  * (`consumed`), or the session has auto-woken too many times in a row. Either
  * way the row goes; the caller decides whether the tasks are still owed a wake.
+ *
+ * A wake a person resumed from the composer (`wakeRunReset`) is never paused:
+ * resuming *is* the pause lifting, and its turn starts the count again.
  */
 async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | null> {
   const ids = taskWakeIds(row)
@@ -267,6 +267,7 @@ async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | 
     if (!tasks.some((t) => !t.consumed)) return 'consumed'
     cardsOnly = tasks.every((t) => t.source === 'work_item')
   }
+  if (taskWakeBodyResetsRun(row.body)) return null
   const { MAX_CONSECUTIVE_WAKES, MAX_CONSECUTIVE_CARD_WAKES, consecutiveWakeWaits } =
     await import('./background-tasks.service')
   const limit = cardsOnly ? MAX_CONSECUTIVE_CARD_WAKES : MAX_CONSECUTIVE_WAKES
@@ -275,13 +276,24 @@ async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | 
 }
 
 /**
- * Keep one paused row per session instead of one per attempt.
+ * Mark a paused wake on the row itself, so the composer can show it as a
+ * waiting update with a Resume action instead of as a queued chat message that
+ * failed. Read off `body.taskNotification.paused` by the client.
+ */
+function pausedBody(body: string | null | undefined): string {
+  const parsed = parseJson<Record<string, any>>(body, {})
+  const taskNotification = parsed.taskNotification && typeof parsed.taskNotification === 'object' ? parsed.taskNotification : {}
+  return JSON.stringify({ ...parsed, taskNotification: { ...taskNotification, paused: true } })
+}
+
+/**
+ * Keep one paused row per session instead of one per wake.
  *
- * A paused wake is released back to the sweep and retried every few minutes for
- * as long as the session stays paused, so a fresh failed row per attempt would
- * accumulate for hours, each with its own error text. The newest row is the
- * signal; older copies (and the signal itself, once a wake lands and the
- * session is evidently awake again) are dropped.
+ * The owed updates are held (`holdTaskWakes`), so a paused session produces one
+ * marker row per wake it could not deliver; a second marker for the same batch
+ * would only be a duplicate. The newest row is the signal; older copies (and
+ * the signal itself, once a wake lands and the session is evidently awake
+ * again) are dropped.
  */
 async function clearPausedWakeRows(chatSessionId: string, keepId?: string): Promise<void> {
   await (prisma as any).chatQueuedMessage.deleteMany({
@@ -299,10 +311,10 @@ async function clearPausedWakeRows(chatSessionId: string, keepId?: string): Prom
  * again once the session can take it. A message persisted for a dispatch that
  * never started a turn is removed with it, so the retry is not a second copy.
  */
-async function releaseTaskWake(row: QueueRow, opts: { dropPersisted?: boolean } = {}): Promise<void> {
+async function releaseTaskWake(row: QueueRow, opts: { dropPersisted?: boolean } = {}): Promise<WakeRelease> {
   const { releaseTaskWakes } = await import('./background-tasks.service')
-  await releaseTaskWakes(taskWakeIds(row)).catch(() => {})
-  if (!opts.dropPersisted) return
+  const outcome = await releaseTaskWakes(taskWakeIds(row)).catch(() => ({ released: 0, capped: [] }))
+  if (!opts.dropPersisted) return outcome
   const session = await (prisma as any).chatSession.findUnique({
     where: { id: row.sessionId },
     select: { activeTurnId: true },
@@ -310,6 +322,43 @@ async function releaseTaskWake(row: QueueRow, opts: { dropPersisted?: boolean } 
   if (!session?.activeTurnId) {
     await (prisma as any).chatMessage.deleteMany({ where: { id: row.id } }).catch(() => {})
   }
+  return outcome
+}
+
+/**
+ * A paused session's wake is held, not retried: `holdTaskWakes` parks the tasks
+ * until the session's pause lifts (see `releaseLiftedPauseHolds`), so a session
+ * nobody writes in keeps one row instead of one per five-minute attempt.
+ */
+async function holdPausedWake(row: QueueRow): Promise<void> {
+  const { holdTaskWakes } = await import('./background-tasks.service')
+  await holdTaskWakes(taskWakeIds(row)).catch(() => {})
+}
+
+/**
+ * One failed row per wake, not one per attempt: a wake that keeps failing wrote
+ * a copy of itself into the queue on every retry, and the row a person needs is
+ * the latest one. The pause marker is left alone — that is the client's state.
+ */
+async function collapseFailedWakeRows(chatSessionId: string, keepId: string, taskIds: string[]): Promise<void> {
+  const wanted = new Set(taskIds)
+  if (!wanted.size) return
+  const rows: Array<{ id: string; body: string | null }> = await (prisma as any).chatQueuedMessage
+    .findMany({
+      where: {
+        sessionId: chatSessionId,
+        kind: 'task_notification',
+        status: 'failed',
+        id: { not: keepId },
+        NOT: { error: WAKE_PAUSED },
+      },
+      select: { id: true, body: true },
+      take: 100,
+    })
+    .catch(() => [])
+  const stale = rows.filter((row) => taskWakeIdsFromBody(row.body).some((id) => wanted.has(id))).map((row) => row.id)
+  if (!stale.length) return
+  await (prisma as any).chatQueuedMessage.deleteMany({ where: { id: { in: stale } } }).catch(() => {})
 }
 
 /**
@@ -326,7 +375,8 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
   if (!(await isSessionIdle(chatSessionId))) return false
   let row = await claimNext(chatSessionId)
   // Wakes whose tasks the agent already saw (a turn started in between) are
-  // dropped; a paused one hands its tasks back so they are not lost with it.
+  // dropped; a paused one is held so it survives the pause without being
+  // retried while it lasts.
   while (row && row.kind === 'task_notification') {
     const skip = await taskWakeSkipReason(row)
     if (!skip) break
@@ -335,10 +385,10 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
     } else {
       await (prisma as any).chatQueuedMessage.updateMany({
         where: { id: row.id, status: 'dispatching' },
-        data: { status: 'failed', error: skip },
+        data: { status: 'failed', error: skip, body: pausedBody(row.body) },
       }).catch(() => {})
       await clearPausedWakeRows(chatSessionId, row.id)
-      await releaseTaskWake(row)
+      await holdPausedWake(row)
     }
     row = await claimNext(chatSessionId)
   }
@@ -348,6 +398,14 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
     const body = parseJson<QueueBody>(row.body, {})
     await persistQueuedUserMessage(row, body)
     await dispatchRow(row)
+    // A wake that ran is consumed even when the reply saved no text: the note
+    // was part of the turn that just started, and leaving it unconsumed lets the
+    // next release queue it again for work the session has already been told
+    // about (the repeat every sweep tick that reads as an empty-reply loop).
+    if (row.kind === 'task_notification') {
+      const { consumeTasks } = await import('./background-tasks.service')
+      await consumeTasks(taskWakeIds(row)).catch(() => {})
+    }
     await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } })
     // A wake landed (or a person's message went through): the pause is over.
     await clearPausedWakeRows(chatSessionId)
@@ -359,8 +417,19 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
       data: { status: 'failed', error: message.slice(0, 4_000) },
     }).catch(() => {})
     // A wake that never ran hands its tasks back: the drain sweep queues the
-    // message again once the runtime answers, so the results are not lost.
-    if (row.kind === 'task_notification') await releaseTaskWake(row, { dropPersisted: true })
+    // message again once the runtime answers, so the results are not lost — up
+    // to `MAX_WAKE_ATTEMPTS`, where it stops and says so once.
+    if (row.kind === 'task_notification') {
+      const taskIds = taskWakeIds(row)
+      const { capped } = await releaseTaskWake(row, { dropPersisted: true })
+      await collapseFailedWakeRows(chatSessionId, row.id, taskIds)
+      if (capped.length) {
+        await (prisma as any).chatQueuedMessage.updateMany({
+          where: { id: row.id, status: 'failed' },
+          data: { error: `Could not deliver this update after ${MAX_WAKE_ATTEMPTS} attempts: ${message}`.slice(0, 4_000) },
+        }).catch(() => {})
+      }
+    }
     console.error(`[ChatQueue] Failed to dispatch ${row.id}:`, error)
     return false
   }

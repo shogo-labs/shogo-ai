@@ -13,11 +13,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { usePathname, useRouter } from 'expo-router'
 import { nativeChatVisible, type ConversationSummary, type Mentionables } from '../../lib/team-chat-api'
+import { countUnread, type TeamChatCounts } from '../../lib/team-chat-counts'
 import type { SidebarGroups } from '../../lib/team-chat-state'
 import { setChatBadgeCount } from '../../lib/team-chat-badge'
 import { useWorkspaceChatMode } from '../../hooks/useWorkspaceChatMode'
 import { invalidateConversationList, useConversationList, useMentionables, useMyUserId } from '../../hooks/useTeamChat'
-import { useInboxFeed, useInboxUnread, useStatusFeed } from '../../hooks/useChatPrefs'
+import { useChatSettings, useInboxCounts, useInboxFeed, useStatusFeed } from '../../hooks/useChatPrefs'
 import { usePresenceFeed } from '../../hooks/usePresence'
 import { useDraftsFeed, useSavedFeed } from '../../hooks/useChatItems'
 import { useCustomEmojiFeed } from '../../hooks/useCustomEmoji'
@@ -25,15 +26,6 @@ import { ShortcutsHelp, useChatShortcuts } from '../../hooks/useChatShortcuts'
 import { NewConversationModal, type NewConversationMode } from './NewConversationModal'
 import { conversationHref } from './ConversationRows'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
-
-export interface TeamChatCounts {
-  /** Mentions in channels. */
-  channels: number
-  /** Unread in direct messages, people and agents together. */
-  dms: number
-  /** Unread inbox items. */
-  inbox: number
-}
 
 export interface TeamChatNav {
   enabled: boolean
@@ -50,6 +42,9 @@ export interface TeamChatNav {
   openShortcuts: () => void
 }
 
+export type { TeamChatCounts }
+export { countUnread }
+
 const EMPTY_GROUPS: SidebarGroups = { starred: [], channels: [], directMessages: [], agents: [] }
 
 const DISABLED: TeamChatNav = {
@@ -57,7 +52,7 @@ const DISABLED: TeamChatNav = {
   workspaceId: null,
   list: [],
   groups: EMPTY_GROUPS,
-  counts: { channels: 0, dms: 0, inbox: 0 },
+  counts: { channels: 0, dms: 0, inbox: 0, activityDot: false },
   activeId: null,
   me: null,
   mentionables: null,
@@ -70,18 +65,6 @@ const Context = createContext<TeamChatNav>(DISABLED)
 
 export function useTeamChatNav(): TeamChatNav {
   return useContext(Context)
-}
-
-/** Unread counts for the rail and dock badges. Pure so it can be tested. */
-export function countUnread(list: ConversationSummary[], inboxUnread: number): TeamChatCounts {
-  let channels = 0
-  let dms = 0
-  for (const c of list) {
-    if (c.archivedAt || c.muted) continue
-    if (c.kind === 'dm' || c.kind === 'group_dm') dms += c.unreadCount
-    else channels += c.mentionCount
-  }
-  return { channels, dms, inbox: inboxUnread }
 }
 
 export interface TeamChatSidebarProviderProps {
@@ -140,11 +123,15 @@ function Feeds({
   useSavedFeed(workspaceId)
   useDraftsFeed(workspaceId)
   useCustomEmojiFeed(workspaceId)
-  const inboxUnread = useInboxUnread(workspaceId)
+  const inboxCounts = useInboxCounts(workspaceId)
+  const threadRepliesInBadge = useChatSettings(workspaceId).settings?.threadRepliesInBadge ?? true
 
   const rawActive = pathname.match(/\/c\/([^/?]+)/)?.[1]
   const activeId = rawActive ? decodeURIComponent(rawActive) : null
-  const counts = useMemo(() => countUnread(list, inboxUnread), [list, inboxUnread])
+  const counts = useMemo(
+    () => countUnread(list, inboxCounts, threadRepliesInBadge),
+    [list, inboxCounts, threadRepliesInBadge],
+  )
   useEffect(() => setChatBadgeCount(counts.dms + counts.inbox), [counts.dms, counts.inbox])
   useEffect(() => () => setChatBadgeCount(0), [])
 

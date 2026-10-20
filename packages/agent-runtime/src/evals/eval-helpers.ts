@@ -733,3 +733,144 @@ export function lastSchemaPreservesModel(result: EvalResult, modelName: string):
   const content = String((last.input as any).content ?? '')
   return content.includes(`model ${modelName}`)
 }
+
+// ---------------------------------------------------------------------------
+// Cache efficiency
+// ---------------------------------------------------------------------------
+//
+// A turn's cache numbers only mean something next to the prefix they were
+// measured on, so every helper here reads `perTurnUsage` (which carries the
+// `data-usage.prefix` hashes) rather than the run totals.
+
+/** Prompt tokens the provider billed: uncached + cache-read + cache-write. */
+export function totalInputTokens(u: { input: number; cacheRead: number; cacheWrite: number }): number {
+  return u.input + u.cacheRead + u.cacheWrite
+}
+
+/**
+ * Share of the prompt served from cache: `cacheRead / (input + cacheRead +
+ * cacheWrite)`. 0 when the turn carried no prompt at all.
+ */
+export function cacheHitRatio(u: { input: number; cacheRead: number; cacheWrite: number }): number {
+  const total = totalInputTokens(u)
+  return total > 0 ? u.cacheRead / total : 0
+}
+
+/** Usage of turn `turn` (1-based), or undefined when the turn didn't run. */
+export function turnUsage(result: EvalResult, turn: number) {
+  return (result.perTurnUsage ?? []).find(u => u.turn === turn)
+}
+
+/** Cache-hit ratio of one turn, or null when that turn has no usage. */
+export function turnCacheRatio(result: EvalResult, turn: number): number | null {
+  const u = turnUsage(result, turn)
+  return u ? cacheHitRatio(u) : null
+}
+
+/** Cache-hit ratio of the last turn that ran. */
+export function finalTurnCacheRatio(result: EvalResult): number | null {
+  const turns = result.perTurnUsage ?? []
+  const last = turns[turns.length - 1]
+  return last ? cacheHitRatio(last) : null
+}
+
+/** Cache-hit ratio across every turn of the run. */
+export function runCacheRatio(result: EvalResult): number {
+  return cacheHitRatio(result.metrics.tokens)
+}
+
+/**
+ * Prompt tokens by zone, from the first turn's `promptBreakdown`. `stable` is
+ * the zone a provider can cache across turns; `dynamic` is rebuilt every turn.
+ */
+export function prefixTokens(result: EvalResult): {
+  stable: number
+  dynamic: number
+  total: number
+  stableShare: number
+} {
+  const sections = result.promptBreakdown?.sections ?? []
+  let stable = 0
+  let dynamic = 0
+  for (const s of sections) {
+    if (s.zone === 'stable') stable += s.estTokens
+    else dynamic += s.estTokens
+  }
+  const schema = result.promptBreakdown?.toolSchemaEstTokens ?? 0
+  const total = stable + dynamic + schema
+  return { stable, dynamic, total, stableShare: total > 0 ? stable / total : 0 }
+}
+
+/** Every prefix the run recorded, in turn order (gateways that report them only). */
+export function recordedPrefixes(result: EvalResult) {
+  return (result.perTurnUsage ?? []).map(u => u.prefix).filter((p): p is NonNullable<typeof p> => !!p)
+}
+
+/**
+ * True when the cached zone was byte-identical on every turn of the run.
+ * Needs at least `minTurns` recorded prefixes — a ratio measured across a
+ * moving prefix is meaningless, so the ratio tests assert this too.
+ */
+export function stablePrefixHeld(result: EvalResult, minTurns = 2): boolean {
+  const hashes = recordedPrefixes(result).map(p => p.stableHash)
+  if (hashes.length < minTurns) return false
+  return hashes.every(h => h === hashes[0])
+}
+
+/** True when the tool block was byte-identical on every turn of the run. */
+export function toolBlockHeld(result: EvalResult, minTurns = 2): boolean {
+  const hashes = recordedPrefixes(result).map(p => p.toolsHash)
+  if (hashes.length < minTurns) return false
+  return hashes.every(h => h === hashes[0])
+}
+
+/** Median of a list (0 for an empty list). */
+export function median(values: number[]): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+/**
+ * Cache-write vs cache-read for the model calls after the first one in a
+ * tool loop. A prefix that is rebuilt per iteration shows write ≈ read; a
+ * shared prefix shows write well under read.
+ */
+export function toolLoopRewrite(result: EvalResult): {
+  calls: number
+  medianWrite: number
+  medianRead: number
+  ratio: number
+} {
+  const calls = (result.perCallUsage ?? []).filter(c => !c.discarded)
+  const afterFirst = calls.slice(1)
+  const medianWrite = median(afterFirst.map(c => c.cacheWrite))
+  const medianRead = median(afterFirst.map(c => c.cacheRead))
+  return {
+    calls: calls.length,
+    medianWrite,
+    medianRead,
+    ratio: medianRead > 0 ? medianWrite / medianRead : medianWrite > 0 ? Infinity : 0,
+  }
+}
+
+/** The cache-hit ratio a fork subagent's own first model call achieved, or null. */
+export function forkCacheRatio(result: EvalResult): number | null {
+  const forks = (result.subagentUsage ?? []).filter(s => s.subagent === 'fork')
+  if (forks.length === 0) return null
+  const summed = forks.reduce(
+    (acc, f) => ({
+      input: acc.input + f.input,
+      cacheRead: acc.cacheRead + f.cacheRead,
+      cacheWrite: acc.cacheWrite + f.cacheWrite,
+    }),
+    { input: 0, cacheRead: 0, cacheWrite: 0 },
+  )
+  return cacheHitRatio(summed)
+}
+
+/** A prefix probe by session id (structural `noLlm` tests), or undefined. */
+export function cacheProbe(result: EvalResult, sessionId = 'chat') {
+  return (result.cachePrefixSamples ?? []).find(p => p.sessionId === sessionId)
+}

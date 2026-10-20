@@ -109,6 +109,51 @@ function encodeRuntimePath(path: string): string {
   return path.split('/').map((segment) => encodeURIComponent(segment)).join('/')
 }
 
+export interface SharedFileDownloadShape {
+  path: string
+  /**
+   * `project` asks the runtime for its own project root. Without it the
+   * runtime reads the merged workspace root, where a project is mounted at
+   * `<projectId>/…`.
+   */
+  scope?: 'project'
+}
+
+/**
+ * The roots a signed path can be read from, in the order worth trying.
+ *
+ * A project link signs `path` relative to the *project* root (SHO-67), but a
+ * workspace runtime mounts that project at `<workspaceDir>/<projectId>` inside
+ * the merged root that an unscoped read walks — so the merged-root read needs
+ * the prefix back. `?scope=project` is the same file when the runtime's own
+ * project is this one. The path as signed covers links minted before SHO-67
+ * (workspace-relative, sometimes already carrying `<projectId>/`).
+ *
+ * The mint cannot check this: the API signs what the runtime reported and has
+ * only the pod's word for where the file is (the local app resolves it, the
+ * cloud app cannot reach the filesystem), so the read side has to know every
+ * shape a link can legitimately mean.
+ */
+export function sharedFileDownloadShapes(
+  signedPath: string,
+  projectId?: string,
+): SharedFileDownloadShape[] {
+  if (!projectId) return [{ path: signedPath }]
+
+  if (signedPath.startsWith(`${projectId}/`)) {
+    const stripped = signedPath.slice(projectId.length + 1)
+    const shapes: SharedFileDownloadShape[] = [{ path: signedPath }]
+    if (stripped) shapes.push({ path: stripped }, { path: stripped, scope: 'project' })
+    return shapes
+  }
+
+  return [
+    { path: `${projectId}/${signedPath}` },
+    { path: signedPath, scope: 'project' },
+    { path: signedPath },
+  ]
+}
+
 export interface SharedFileRouteDeps {
   pinChatToHomeRegion?: typeof pinChatToHomeRegion
   pinWorkspaceToHomeRegion?: typeof pinWorkspaceToHomeRegion
@@ -160,62 +205,96 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
     const pinned = projectId ? await pinHome(c, projectId) : await pinWorkspaceHome(c, workspaceId)
     if (pinned) return pinned
 
-    const agentPath = `/agent/workspace/download/${encodeRuntimePath(payload.path)}`
-    const fetchRuntime = (url: string, runtimeToken: string) =>
-      fetch(`${url.replace(/\/+$/, '')}${agentPath}`, {
-        method: 'GET',
-        headers: { 'x-runtime-token': runtimeToken },
-        signal: c.req.raw.signal,
-      })
+    // A project link's `path` is relative to the project root, so the merged
+    // root this route reads needs `<projectId>/` back in front of it — see
+    // `sharedFileDownloadShapes`. Trying every shape it can mean is what keeps
+    // a link a Free user just received from 404ing.
+    const shapes = sharedFileDownloadShapes(payload.path, projectId)
 
     let lastFailure = ''
-    for (let attempt = 0; attempt <= RUNTIME_RETRY_DELAYS_MS.length; attempt++) {
-      if (attempt > 0) {
-        await (projectId ? invalidateRuntimeUrl(projectId) : invalidateWorkspaceRuntimeUrl(workspaceId)).catch(() => {})
-        await sleep(RUNTIME_RETRY_DELAYS_MS[attempt - 1])
-        if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
-      }
-      try {
-        let upstream: Response
-        if (!projectId) {
-          upstream = await fetchRuntime(await resolveWorkspaceRuntimeUrl(workspaceId), deriveWorkspaceToken(workspaceId))
-        } else {
-          const resolution = await resolveRuntime(projectId)
-          if (!resolution.ok) {
-            lastFailure = `resolve ${resolution.status} ${resolution.body.error.code}`
-            continue
+    let fileNotFound = false
+    let runtimeDown = false
+
+    for (const shape of shapes) {
+      const agentPath = `/agent/workspace/download/${encodeRuntimePath(shape.path)}`
+      const agentUrlPath = shape.scope ? `${agentPath}?scope=${shape.scope}` : agentPath
+      const fetchRuntime = (url: string, runtimeToken: string) =>
+        fetch(`${url.replace(/\/+$/, '')}${agentUrlPath}`, {
+          method: 'GET',
+          headers: { 'x-runtime-token': runtimeToken },
+          signal: c.req.raw.signal,
+        })
+
+      let runtimeLabel = ''
+      let retryable = true
+      for (let attempt = 0; attempt <= RUNTIME_RETRY_DELAYS_MS.length; attempt++) {
+        if (attempt > 0) {
+          await (projectId ? invalidateRuntimeUrl(projectId) : invalidateWorkspaceRuntimeUrl(workspaceId)).catch(() => {})
+          await sleep(RUNTIME_RETRY_DELAYS_MS[attempt - 1])
+          if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
+        }
+        try {
+          let upstream: Response
+          if (!projectId) {
+            const url = await resolveWorkspaceRuntimeUrl(workspaceId)
+            runtimeLabel = url
+            upstream = await fetchRuntime(url, deriveWorkspaceToken(workspaceId))
+          } else {
+            const resolution = await resolveRuntime(projectId)
+            if (!resolution.ok) {
+              lastFailure = `resolve ${resolution.status} ${resolution.body.error.code}`
+              continue
+            }
+
+            runtimeLabel = resolution.kind === 'tunnel' ? `tunnel ${resolution.instanceId}` : resolution.url
+            const runtimeToken = await deriveToken(projectId, { workspaceId })
+            upstream = resolution.kind === 'tunnel'
+              ? await relayTunnel({
+                  c,
+                  instanceId: resolution.instanceId,
+                  workspaceId: resolution.workspaceId,
+                  projectId,
+                  agentPath: agentUrlPath,
+                  cleanPath: agentPath,
+                  method: 'GET',
+                  headers: { 'x-runtime-token': runtimeToken },
+                })
+              : await fetchRuntime(resolution.url, runtimeToken)
           }
 
-          const runtimeToken = await deriveToken(projectId, { workspaceId })
-          upstream = resolution.kind === 'tunnel'
-            ? await relayTunnel({
-                c,
-                instanceId: resolution.instanceId,
-                workspaceId: resolution.workspaceId,
-                projectId,
-                agentPath,
-                cleanPath: agentPath,
-                method: 'GET',
-                headers: { 'x-runtime-token': runtimeToken },
-              })
-            : await fetchRuntime(resolution.url, runtimeToken)
+          if (upstream.ok) {
+            return new Response(upstream.body, {
+              status: upstream.status,
+              headers: downloadHeaders(shape.path, upstream.headers),
+            })
+          }
+          await upstream.body?.cancel().catch(() => {})
+          if (!isTransientRuntimeStatus(upstream.status)) {
+            // This root has no such file — say which one, so a reported 404
+            // never has to be diagnosed by guessing again.
+            console.warn(
+              `[SharedFiles] No file for ${projectId ? `project ${projectId}` : `workspace ${workspaceId}`} ` +
+                `at ${shape.path}${shape.scope ? ` (scope=${shape.scope})` : ''} — ` +
+                `${runtimeLabel || 'runtime'} answered ${upstream.status}`,
+            )
+            retryable = false
+            fileNotFound = true
+            break
+          }
+          lastFailure = `runtime ${upstream.status}`
+        } catch (error: any) {
+          if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
+          lastFailure = error?.message || String(error)
         }
-
-        if (upstream.ok) {
-          return new Response(upstream.body, {
-            status: upstream.status,
-            headers: downloadHeaders(payload.path, upstream.headers),
-          })
-        }
-        await upstream.body?.cancel().catch(() => {})
-        if (!isTransientRuntimeStatus(upstream.status)) {
-          return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
-        }
-        lastFailure = `runtime ${upstream.status}`
-      } catch (error: any) {
-        if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
-        lastFailure = error?.message || String(error)
       }
+      if (retryable) {
+        runtimeDown = true
+        break
+      }
+    }
+
+    if (!runtimeDown && fileNotFound) {
+      return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
     }
 
     console.error(`[SharedFiles] Download failed for ${projectId ?? `workspace ${workspaceId}`}: ${lastFailure}`)

@@ -1,0 +1,210 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import {
+  MESSAGE_SOUND_THROTTLE_MS,
+  _resetNotificationAudioForTests,
+  messageSoundKindFor,
+  playMessageSound,
+  previewMessageSound,
+  sharedAudioContext,
+  unlockNotificationAudio,
+} from '../notification-sound'
+
+class FakeOscillator {
+  type = 'sine'
+  frequency = { value: 0 }
+  started: number[] = []
+  stopped: number[] = []
+  connect(node: unknown) {
+    return node
+  }
+  start(t: number) {
+    this.started.push(t)
+  }
+  stop(t: number) {
+    this.stopped.push(t)
+  }
+}
+
+class FakeGain {
+  peaks: number[] = []
+  gain = {
+    setValueAtTime: (_v: number, _t: number) => {},
+    linearRampToValueAtTime: (v: number, _t: number) => {
+      this.peaks.push(v)
+    },
+    exponentialRampToValueAtTime: (_v: number, _t: number) => {},
+  }
+  connect(node: unknown) {
+    return node
+  }
+}
+
+class FakeAudioContext {
+  static instances: FakeAudioContext[] = []
+  state: 'suspended' | 'running' = 'suspended'
+  currentTime = 0
+  destination = {}
+  resumeCalls = 0
+  oscillators: FakeOscillator[] = []
+  gains: FakeGain[] = []
+  constructor() {
+    FakeAudioContext.instances.push(this)
+  }
+  resume() {
+    this.resumeCalls += 1
+    this.state = 'running'
+    return Promise.resolve()
+  }
+  createOscillator() {
+    const osc = new FakeOscillator()
+    this.oscillators.push(osc)
+    return osc
+  }
+  createGain() {
+    const gain = new FakeGain()
+    this.gains.push(gain)
+    return gain
+  }
+}
+
+const listeners = new Map<string, Array<(event?: unknown) => void>>()
+const originalWindow = (globalThis as any).window
+
+function fire(type: string) {
+  for (const fn of listeners.get(type) ?? []) fn({})
+}
+
+function installWindow() {
+  listeners.clear()
+  ;(globalThis as any).window = {
+    AudioContext: FakeAudioContext,
+    addEventListener: (type: string, fn: (event?: unknown) => void) => {
+      listeners.set(type, [...(listeners.get(type) ?? []), fn])
+    },
+  }
+}
+
+function lastContext(): FakeAudioContext {
+  return FakeAudioContext.instances[FakeAudioContext.instances.length - 1]
+}
+
+beforeEach(() => {
+  FakeAudioContext.instances = []
+  installWindow()
+  _resetNotificationAudioForTests()
+})
+
+afterEach(() => {
+  if (originalWindow === undefined) delete (globalThis as any).window
+  else (globalThis as any).window = originalWindow
+})
+
+describe('notification-sound: unlock on a user gesture', () => {
+  test('the first click or key press creates and resumes one shared context', () => {
+    unlockNotificationAudio()
+    expect(FakeAudioContext.instances).toHaveLength(0)
+    fire('pointerdown')
+    expect(FakeAudioContext.instances).toHaveLength(1)
+    expect(lastContext().resumeCalls).toBe(1)
+    expect(lastContext().state).toBe('running')
+    fire('keydown')
+    expect(FakeAudioContext.instances).toHaveLength(1)
+    expect(sharedAudioContext()).toBe(lastContext() as unknown as AudioContext)
+  })
+
+  test('installing the unlock listeners twice still installs one set', () => {
+    unlockNotificationAudio()
+    unlockNotificationAudio()
+    expect(listeners.get('pointerdown')).toHaveLength(1)
+    expect(listeners.get('keydown')).toHaveLength(1)
+  })
+})
+
+describe('notification-sound: playMessageSound', () => {
+  test('stays silent while the context is suspended (no gesture yet)', () => {
+    unlockNotificationAudio()
+    expect(playMessageSound('dm', 'default', 10_000)).toBe(false)
+    expect(FakeAudioContext.instances).toHaveLength(1)
+    expect(lastContext().oscillators).toHaveLength(0)
+  })
+
+  test('plays a two-note knock for a direct message once unlocked', () => {
+    unlockNotificationAudio()
+    fire('pointerdown')
+    expect(playMessageSound('dm', 'default', 10_000)).toBe(true)
+    expect(lastContext().oscillators.map((o) => o.frequency.value)).toEqual([880, 1318.5])
+  })
+
+  test('mentions and broadcasts get their own knock, thread replies and others one note', () => {
+    unlockNotificationAudio()
+    fire('pointerdown')
+    playMessageSound('mention', 'default', 10_000)
+    expect(lastContext().oscillators).toHaveLength(2)
+    playMessageSound('thread', 'default', 20_000)
+    expect(lastContext().oscillators).toHaveLength(3)
+    playMessageSound('other', 'default', 30_000)
+    expect(lastContext().oscillators).toHaveLength(4)
+  })
+
+  test('off plays nothing, even when unlocked', () => {
+    unlockNotificationAudio()
+    fire('pointerdown')
+    expect(playMessageSound('dm', 'off', 10_000)).toBe(false)
+    expect(lastContext().oscillators).toHaveLength(0)
+  })
+
+  test('subtle plays at a lower peak than default', () => {
+    unlockNotificationAudio()
+    fire('pointerdown')
+    playMessageSound('dm', 'default', 10_000)
+    const defaultPeak = Math.max(...lastContext().gains.flatMap((g) => g.peaks))
+    _resetNotificationAudioForTests()
+    installWindow()
+    unlockNotificationAudio()
+    fire('pointerdown')
+    playMessageSound('dm', 'subtle', 10_000)
+    const subtlePeak = Math.max(...lastContext().gains.flatMap((g) => g.peaks))
+    expect(subtlePeak).toBeGreaterThan(0)
+    expect(subtlePeak).toBeLessThan(defaultPeak)
+  })
+
+  test('plays at most once per throttle window', () => {
+    unlockNotificationAudio()
+    fire('pointerdown')
+    expect(playMessageSound('dm', 'default', 10_000)).toBe(true)
+    expect(playMessageSound('mention', 'default', 10_000 + 200)).toBe(false)
+    expect(playMessageSound('thread', 'default', 10_000 + MESSAGE_SOUND_THROTTLE_MS - 1)).toBe(false)
+    expect(playMessageSound('thread', 'default', 10_000 + MESSAGE_SOUND_THROTTLE_MS)).toBe(true)
+  })
+
+  test('a refused cue does not start the throttle window', () => {
+    unlockNotificationAudio()
+    expect(playMessageSound('dm', 'default', 10_000)).toBe(false)
+    fire('pointerdown')
+    expect(playMessageSound('dm', 'default', 10_100)).toBe(true)
+  })
+
+  test('preview ignores the throttle but still respects off', () => {
+    unlockNotificationAudio()
+    fire('pointerdown')
+    playMessageSound('dm', 'default', Date.now())
+    expect(previewMessageSound('default')).toBe(true)
+    expect(previewMessageSound('off')).toBe(false)
+  })
+})
+
+describe('notification-sound: reason mapping', () => {
+  test('maps server reasons to cue kinds', () => {
+    expect(messageSoundKindFor('dm')).toBe('dm')
+    expect(messageSoundKindFor('group_dm')).toBe('dm')
+    expect(messageSoundKindFor('mention')).toBe('mention')
+    expect(messageSoundKindFor('broadcast')).toBe('mention')
+    expect(messageSoundKindFor('thread')).toBe('thread')
+    expect(messageSoundKindFor('keyword')).toBe('other')
+    expect(messageSoundKindFor('message')).toBe('other')
+    expect(messageSoundKindFor(undefined)).toBe('other')
+  })
+})
