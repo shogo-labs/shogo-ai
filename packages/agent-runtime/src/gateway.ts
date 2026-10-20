@@ -59,6 +59,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
 import { buildCapabilityStatusSection, resolveRuntimeCapabilities } from './capability-status-prompt'
+import { buildWakeStatusSection } from './wake-status-prompt'
 import { BOARDS_GUIDE, COMPANY_OPS_GUIDE } from './board-tools'
 import { TASK_WAKE_RETRY_MS } from './remote-tasks'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
@@ -103,7 +104,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, getProjectConfig, getSessionWakeState, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, type SessionWakeState } from './internal-api'
 import { mergeCapabilitySettingsIntoConfig } from '@shogo/shared-runtime/capability-settings'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
@@ -790,6 +791,12 @@ export class AgentGateway {
   private teamManager?: TeamManager
   /** Per-session shell cwd tracking — persists cd across exec calls */
   private shellCwd = new Map<string, string>()
+  /**
+   * Per-session background-wake state, refreshed at turn start. The prompt is
+   * built synchronously, so the API's answer is cached here rather than fetched
+   * mid-build (see `wake-status-prompt.ts`).
+   */
+  private wakeStates = new Map<string, SessionWakeState | null>()
   /** Per-session backgrounded command registry — soft-timed-out exec runs */
   private commandRegistries = new Map<string, TaskRegistry>()
   /**
@@ -2380,6 +2387,28 @@ export class AgentGateway {
     if (reg && taskIds.length > 0) reg.markConsumed(taskIds)
   }
 
+  /**
+   * Read what the session is waiting to be told, so this turn's prompt can say
+   * so. Called at turn start (before the turn is buffered) because the prompt
+   * is assembled synchronously; a failure keeps the last known state.
+   */
+  async refreshWakeState(sessionId: string): Promise<void> {
+    if (!hasInternalApiCredentials()) return
+    // Bounded: a slow API must not hold the turn's first token back. A miss
+    // (null) keeps the last known state rather than claiming the pause is over.
+    const timeout = new Promise<null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), 1_500)
+      ;(timer as any).unref?.()
+    })
+    const state = await Promise.race([getSessionWakeState(sessionId).catch(() => null), timeout])
+    if (state) this.wakeStates.set(sessionId, state)
+  }
+
+  /** The cached wake state, for the prompt and for tests. */
+  wakeStateFor(sessionId: string): SessionWakeState | null {
+    return this.wakeStates.get(sessionId) ?? null
+  }
+
   /** List the tasks still running for a chat thread. */
   listSessionProcesses(sessionId: string): import('./command-registry').RunningProcess[] {
     return this.getOrCreateCommandRegistry(sessionId).listVisible()
@@ -2393,7 +2422,11 @@ export class AgentGateway {
     // empty first response would never be retried.
     await this.hydratingRegistries.get(sessionId)
     if (reg.hasRunningRemote()) await reg.refreshRemote()
-    return reg.listDock()
+    // A paused session's tasks are finished but not yet delivered: show them as
+    // waiting, so the dock does not read "completed" for something the agent was
+    // never told.
+    const waiting = new Set((this.wakeStates.get(sessionId)?.waiting ?? []).map((task) => task.taskId))
+    return reg.listDock().map((proc) => (waiting.has(proc.id) ? { ...proc, waiting: true } : proc))
   }
 
   /**
@@ -4904,6 +4937,14 @@ export class AgentGateway {
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
       if (teamCtx) pushDynamic('team-context', teamCtx)
+    }
+
+    // 12b. Background updates this session is holding. After the cache
+    // boundary on purpose: a pause comes and goes, and putting it in the cached
+    // prefix would invalidate the prompt every time it changed (SHO-82).
+    if (sessionId) {
+      const wake = buildWakeStatusSection(this.wakeStates.get(sessionId))
+      if (wake) pushDynamic('wake-status', wake)
     }
 
     this.lastPromptBreakdown = sections

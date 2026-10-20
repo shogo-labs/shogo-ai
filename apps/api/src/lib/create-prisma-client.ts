@@ -88,6 +88,10 @@ const JSON_OBJECT_FIELDS = new Set([
   // Background task destination (Json? on PG, JSON String on SQLite): where the
   // dock opens the agent's thread for a task that handed work off.
   'link',
+  // AgentWake chain state (Json? on PG, JSON String on SQLite). Stored as the
+  // object so the column is queryable on Postgres; SQLite stringifies it here
+  // and `readChain` parses either shape.
+  'chain',
   // Social posts / targets keep their media URL list as JSON on both sides.
   'mediaJson',
 ])

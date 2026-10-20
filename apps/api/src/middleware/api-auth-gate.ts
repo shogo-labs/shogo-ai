@@ -13,7 +13,7 @@
  * Don't repeat a `PUBLIC_PREFIXES` entry here.
  */
 import type { Context, Next } from 'hono'
-import { PUBLIC_PREFIXES, requireAuth } from './auth'
+import { isPublicPath, requireAuth } from './auth'
 
 export const GATE_PUBLIC_PREFIXES = [
   '/api/billing/ios/notifications',
@@ -77,7 +77,7 @@ export function isTokenGatedUserAvatarPath(path: string): boolean {
 
 /** True when the global gate lets `path` through without a session. */
 export function isGatePublicPath(path: string): boolean {
-  if (PUBLIC_PREFIXES.some((p) => path.startsWith(p))) return true
+  if (isPublicPath(path)) return true
   if (GATE_PUBLIC_PREFIXES.some((p) => path.startsWith(p))) return true
   if (isAllowedUnauthWebchatProxyPath(path)) return true
   if (isTokenGatedThumbnailPath(path)) return true

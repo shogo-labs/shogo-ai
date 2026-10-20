@@ -122,6 +122,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   AffiliatePostSnapshot: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
   AffiliateSocialAccount: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
   AgentCall: { decision: 'exclude', reason: 'In-flight runtime state: a project_call record is a 7-day lease on a live call. The answer that matters is written into its ChatMessage, which is exported.' },
+  AgentWake: { decision: 'exclude', reason: 'In-flight runtime state: a row is a pointer at a message no one has replied to yet (queued or waiting out its debounce). The reply it produces is exported as the ChatMessage.' },
   AgentCallSessionLink: { decision: 'exclude', reason: 'In-flight runtime state: maps a call to its callee chat for reconciliation on read, and expires with the AgentCall. Rebuilt on demand, never restored.' },
   AgentCostMetric: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   AgentEvalResult: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },

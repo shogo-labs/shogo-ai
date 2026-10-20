@@ -2535,12 +2535,17 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
   })
 
-  /** GET /api/internal/tasks?chatSessionId= — running tasks for a session (the dock). */
+  /**
+   * GET /api/internal/tasks?chatSessionId= — running tasks for a session (the
+   * dock), plus what the session is waiting to be told: a pause, and the titles
+   * its undelivered wakes are for.
+   */
   app.get('/tasks', async (c) => {
     const chatSessionId = c.req.query('chatSessionId') ?? ''
     if (!chatSessionId || !(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
-    const { listTasks, viewOf } = await tasksSvc()
-    return c.json({ tasks: (await listTasks(chatSessionId)).map((row) => viewOf(row)) })
+    const { listTasks, viewOf, sessionWakeState } = await tasksSvc()
+    const [tasks, wake] = await Promise.all([listTasks(chatSessionId), sessionWakeState(chatSessionId).catch(() => null)])
+    return c.json({ tasks: tasks.map((row) => viewOf(row)), ...(wake ? { wake } : {}) })
   })
 
   /** POST /api/internal/tasks/consume  body: { ids } — the agent saw these results. */

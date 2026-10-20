@@ -250,7 +250,7 @@ export default observer(function ProfilePage() {
                   key={workspace.id}
                   workspace={workspace}
                   role={getRoleForWorkspace(workspace.id)}
-                  onManage={() => router.push('/(app)/settings')}
+                  onManage={() => router.push('/(app)/settings?tab=billing')}
                   comfortable={isNativePhone}
                 />
               ))}
