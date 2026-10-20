@@ -357,6 +357,49 @@ describe('when the run did hand the card on', () => {
   })
 })
 
+describe('when a person is in the thread', () => {
+  test('a run that answered a person is not re-handed, and the card stays put', async () => {
+    const b = await board('person')
+    const card = await cardOn(b, 'What is blocking you?')
+
+    await call('POST', `/conversations/${channelId}/messages`, {
+      text: `<@a:p:${dev}> what is blocking you on this one?`,
+      threadRootId: card.threadRootMessageId,
+    })
+    await waitFor(() => calls.length === 1, 4000)
+    calls[0]!.release('Nothing is blocking me: I am on the last test.')
+    // The run ended cleanly against the person's question, without moving the card.
+    await waitFor(async () => (await events(card, 'agent_stopped')).length === 1, 6000)
+    await new Promise((r) => setTimeout(r, 700))
+
+    expect(calls).toHaveLength(1)
+    expect(await events(card, 'agent_retry')).toHaveLength(0)
+    expect(await events(card, 'agent_escalated')).toHaveLength(0)
+    expect((await reload(card)).column.name).toBe('Backlog')
+  }, 20_000)
+
+  test('a run that failed after a person asked is still re-handed: the person got an error', async () => {
+    const b = await board('asked-then-died')
+    const card = await cardOn(b, 'Died on a question')
+    await db.conversationMessage.create({
+      data: {
+        conversationId: card.conversationId,
+        workspaceId: seed.workspaceId,
+        seq: 91_000,
+        threadRootId: card.threadRootMessageId,
+        authorType: 'user',
+        authorUserId: seed.member,
+        text: 'Where is this at?',
+      },
+    })
+    const failed = await failedReply(card, dev)
+
+    await service.noteCardRunEnded({ threadRootId: card.threadRootMessageId, projectId: dev, messageId: failed.id, agentStatus: 'error' })
+    expect(await events(card, 'agent_retry')).toHaveLength(1)
+    expect(await db.agentWake.count({ where: { threadRootId: card.threadRootMessageId, status: 'pending' } })).toBe(1)
+  })
+})
+
 describe('a person re-waking the agent inside the backoff', () => {
   test('supersedes the re-hand, so the window closes with exactly one run', async () => {
     const b = await board('supersede')

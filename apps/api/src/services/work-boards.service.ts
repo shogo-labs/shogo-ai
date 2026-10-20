@@ -2100,13 +2100,14 @@ function cardHolderRefs(item: any): string[] {
 
 export type StrandedCheck =
   | { stranded: true; agentRef: string; since: Date }
-  | { stranded: false; reason: 'not_a_holder' | 'terminal' | 'stopped_by_person' | 'moved' | 'asked' | 'escalation_open' | 'live_run' }
+  | { stranded: false; reason: 'not_a_holder' | 'terminal' | 'stopped_by_person' | 'moved' | 'person_asked' | 'asked' | 'escalation_open' | 'live_run' }
 
 /**
  * Did this run end with nobody on the card? True when its agent holds the card,
  * the card is not closed, the run was not stopped by a person, the card has not
- * moved since the run started, that agent has no question open in the thread, no
- * escalation is already waiting on a person, and nothing else is running there.
+ * moved since the run started, the run was not answering somebody who is still in
+ * the thread, that agent has no question open in the thread, no escalation is
+ * already waiting on a person, and nothing else is running there.
  */
 export async function strandedFor(item: any, run: CardRun, row?: { createdAt?: Date } | null): Promise<StrandedCheck> {
   const agentRef = agentRefFor(run.projectId)
@@ -2120,6 +2121,7 @@ export async function strandedFor(item: any, run: CardRun, row?: { createdAt?: D
     select: { id: true },
   })
   if (moved) return { stranded: false, reason: 'moved' }
+  if (run.agentStatus !== 'error' && (await answeredAPerson(run, row))) return { stranded: false, reason: 'person_asked' }
   const posts = await db.conversationMessage.findMany({
     where: { threadRootId: run.threadRootId, authorType: 'agent', deletedAt: null, createdAt: { gte: since } },
     select: { id: true, authorAgentRef: true, blocks: true },
@@ -2162,6 +2164,34 @@ async function liveRunInThread(threadRootId: string | null, exceptMessageId: str
     select: { id: true },
   })
   return !!row
+}
+
+/**
+ * Was this run answering a person? The card is not unattended when somebody just
+ * spoke on it: a question in a card thread wakes the holder, the holder answers
+ * without moving the card, and re-handing that would run the agent twice and then
+ * ask "who takes it?" with the asker still in the thread. Measured from the
+ * thread, not from `startedAt`: the message that woke the run was posted before
+ * the run began.
+ *
+ * A run that **failed** is not exempt however recently a person spoke — the
+ * person asked and got an error, so there is still nobody on the card.
+ */
+async function answeredAPerson(run: CardRun, row?: { createdAt?: Date } | null): Promise<boolean> {
+  if (!run.threadRootId) return false
+  const before = row?.createdAt ?? run.startedAt
+  const last = await db.conversationMessage.findFirst({
+    where: {
+      threadRootId: run.threadRootId,
+      deletedAt: null,
+      authorType: { in: ['user', 'agent'] },
+      id: { not: run.messageId },
+      ...(before ? { createdAt: { lt: before } } : {}),
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { authorType: true },
+  })
+  return last?.authorType === 'user'
 }
 
 /** Has this run already been re-handed or escalated? A reply only dies once. */

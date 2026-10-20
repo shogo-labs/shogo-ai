@@ -146,20 +146,24 @@ export async function settleOrphanedAgentReplies(minAgeMs = 0): Promise<number> 
     take: 500,
   })
   const orphans = await withoutLiveTurn(stale)
-  const ids = orphans.map((m: { id: string }) => m.id)
-  if (!ids.length) return 0
-  const { count } = await db.conversationMessage.updateMany({
-    where: { id: { in: ids }, agentStatus: 'running' },
-    data: { agentStatus: 'error', text: 'This reply was interrupted because the server restarted. Mention the agent again to retry.' },
-  })
+  if (!orphans.length) return 0
   const { noteCardRunEnded } = await import('./work-boards.service')
+  let settled = 0
   for (const m of orphans) {
+    // Only the pod that flips the row may act on it: two pods booting at once
+    // compute the same list, and each would otherwise re-hand the card again.
+    const { count } = await db.conversationMessage.updateMany({
+      where: { id: m.id, agentStatus: 'running' },
+      data: { agentStatus: 'error', text: 'This reply was interrupted because the server restarted. Mention the agent again to retry.' },
+    }).catch(() => ({ count: 0 }))
+    if (count !== 1) continue
+    settled++
     if (!m.threadRootId) continue
     const projectId = (m.authorAgentRef as { projectId?: string | null } | null)?.projectId ?? null
     await noteCardRunEnded({ threadRootId: m.threadRootId, projectId, messageId: m.id, agentStatus: 'error', startedAt: m.createdAt })
       .catch((err: Error) => console.error('[ChannelAgent] orphaned card run note failed:', err.message))
   }
-  return count
+  return settled
 }
 
 /** A reply this pod is not writing and whose turn has not heartbeated inside the window. */
