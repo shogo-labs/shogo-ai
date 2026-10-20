@@ -150,4 +150,17 @@ describe('withShogoCommitTrailer', () => {
       withShogoCommitTrailer(['commit', `--message=fix: thing\n\nCo-authored-by: Shogo <noreply@shogo.ai>`], env),
     ).toEqual(['commit', '--message=fix: thing', '--trailer', canonical])
   })
+
+  test('tolerates a missing message value instead of throwing', () => {
+    // `commit()` reaches this with an undefined message when a caller uses the
+    // API's legacy positional signature, so the array has an undefined element.
+    expect(withShogoCommitTrailer(['commit', '-m', undefined as any], env)).toEqual([
+      'commit',
+      '-m',
+      undefined,
+      '--trailer',
+      canonical,
+    ])
+    expect(withShogoCommitTrailer(['commit', '-m'], env)).toEqual(['commit', '-m', '--trailer', canonical])
+  })
 })

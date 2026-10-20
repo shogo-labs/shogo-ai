@@ -100,9 +100,13 @@ export function withShogoCommitTrailer(
   const trailer = shogoCoAuthorTrailer(env)
   const result = [...args]
   for (let index = 1; index < result.length; index += 1) {
-    const arg = result[index]!
+    const arg = result[index]
     if (arg === '--') break
-    if ((arg === '-m' || arg === '--message') && result[index + 1] !== undefined) {
+    // Callers hand us arrays built from optional values (`commit -m <message>`
+    // with an undefined message is reachable through the API's legacy positional
+    // signature), so an element can be missing even though the type says string.
+    if (typeof arg !== 'string') continue
+    if ((arg === '-m' || arg === '--message') && typeof result[index + 1] === 'string') {
       result[index + 1] = normalizeAgentAttribution(result[index + 1]!, env, { appendWhenMissing: false }).message
       index += 1
       continue
