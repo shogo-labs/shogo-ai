@@ -21,6 +21,7 @@ import { projectHooks, type HookContext } from '../generated/project.hooks'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
 import { canRunTechStackOnInstanceSize } from './billing-runtime'
 import { HeartbeatConfigError, buildAgentConfigCreateData, updateHeartbeatConfig } from './heartbeat-config.service'
+import { readProjectToolUsage } from './tool-usage.service'
 import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 
 export type ProjectLifecycleErrorCode =
@@ -187,6 +188,16 @@ export interface ConfiguredProject {
   workingMode: string
   settings: unknown
   slackEnabled: boolean
+  /**
+   * The project's most-called tools over the last 30 days (SHO-97). The agent
+   * runtime keeps these tool definitions advertised on every API call and
+   * defers the rest, so this is what makes the advertised set learned rather
+   * than a fixed list.
+   */
+  toolUsage: {
+    totalCalls: number
+    tools: Array<{ name: string; calls: number }>
+  }
   agent: {
     heartbeatEnabled: boolean
     heartbeatInterval: number
@@ -407,6 +418,7 @@ export async function readProjectConfig(projectId: string): Promise<ConfiguredPr
       lastHeartbeatAt: true,
     },
   })) as ConfiguredProject['agent']
+  const toolUsage = await readProjectToolUsage(projectId)
   return {
     id: project.id,
     name: project.name,
@@ -414,6 +426,7 @@ export async function readProjectConfig(projectId: string): Promise<ConfiguredPr
     workingMode: project.workingMode ?? 'managed',
     settings: normalizeProjectSettings(project.settings),
     slackEnabled: project.slackEnabled,
+    toolUsage,
     agent,
   }
 }

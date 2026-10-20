@@ -1991,6 +1991,15 @@ export interface ProjectConfigSnapshot {
   workingMode: string
   settings: unknown
   slackEnabled: boolean
+  /**
+   * The project's most-called tools over the last 30 days (SHO-97), used to
+   * learn which tool definitions to keep advertised. Additive — older APIs omit
+   * it and the runtime falls back to its static ranking.
+   */
+  toolUsage?: {
+    totalCalls: number
+    tools: Array<{ name: string; calls: number }>
+  }
   agent: {
     heartbeatEnabled: boolean
     heartbeatInterval: number
@@ -2018,6 +2027,23 @@ export async function getProjectConfig(
     timeoutMs,
     parse: (j) => j?.project as ProjectConfigSnapshot,
   })
+}
+
+/**
+ * The project's most-called tools over the last 30 days, for the advertised
+ * tool set (SHO-97). Null when the API does not report it.
+ */
+export async function getProjectToolUsage(
+  projectId: string,
+  timeoutMs = 3_000,
+): Promise<{ order: string[]; totalCalls: number } | null> {
+  const res = await getProjectConfig(projectId, timeoutMs)
+  const usage = res.ok ? res.data?.toolUsage : undefined
+  if (!usage || !Array.isArray(usage.tools)) return null
+  return {
+    totalCalls: usage.totalCalls ?? 0,
+    order: usage.tools.map((t) => t.name).filter((n): n is string => typeof n === 'string'),
+  }
 }
 
 export async function configureProject(
