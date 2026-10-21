@@ -265,17 +265,27 @@ describe('stableTransformContext: prefix-stability invariant', () => {
 
   test('consumed large results get replaced with a snip placeholder', () => {
     const state = createContentReplacementState()
-    const msgs = buildToolLoop(5)
+    // SHO-122 protects a FINISHED turn whole, so the loop on its own is one
+    // protected turn. An older turn ahead of it is what sits outside the
+    // boundary and gives snipConsumedResults something to replace.
+    const olderTurn: Message[] = [
+      user('an earlier prompt'),
+      assistantToolCall('exec', 'tc_old', { cmd: 'older' }),
+      toolResult('X'.repeat(10_000), 'tc_old'),
+      assistantText('older turn done'),
+    ]
+    const msgs = [...olderTurn, ...buildToolLoop(5)]
     const budget = 1_000_000 // no budget pressure; snip should still fire
 
     stableTransformContext(msgs, state, budget)
 
-    // tc_0..tc_1 are out of the protected window AND have following
-    // assistant messages AND are >200 chars → snipConsumedResults should
-    // have replaced them.
-    expect(state.replacements.has('tc_0')).toBe(true)
-    expect(state.replacements.has('tc_1')).toBe(true)
-    expect(state.replacements.get('tc_0')).toContain('[Tool output processed')
+    // tc_old is out of the protected window AND has a following assistant
+    // message AND is >200 chars → snipConsumedResults replaced it.
+    expect(state.replacements.has('tc_old')).toBe(true)
+    expect(state.replacements.get('tc_old')).toContain('[Tool output processed')
+    // The finished loop below it is the previous turn: every result kept
+    // original, not snipped, not budget-trimmed.
+    for (let i = 0; i < 5; i++) expect(state.replacements.has(`tc_${i}`)).toBe(false)
   })
 
   // -------------------------------------------------------------------------

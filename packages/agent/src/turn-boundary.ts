@@ -192,7 +192,8 @@ export function turnInProgress(messages: readonly Message[]): boolean {
  *
  *   - history ends on a finished turn → its start is the boundary
  *     (`buildHistory` at a turn boundary, which is where the previous turn
- *     used to be summarized away);
+ *     used to be summarized away). This holds for a history of exactly one
+ *     finished turn too — the shape of *every* pre-turn boundary;
  *   - the turn is still running → the boundary moves back one turn, so the
  *     previous turn survives while the current one is being worked on;
  *   - a single in-progress turn (no earlier turn to protect) → the layer's own
@@ -205,12 +206,14 @@ export function turnInProgress(messages: readonly Message[]): boolean {
 export function protectedStart(messages: readonly Message[], assistantTurns: number): number {
   const boundary = assistantWindowStart(messages, assistantTurns)
   if (!turnAwareCompactionEnabled()) return boundary
-  // A history holding one turn has nothing older to protect: keep the layer's
-  // own sliding window so a single runaway turn still gets bounded in-loop.
-  if (turnCount(messages) < 2) return boundary
+  const turns = turnCount(messages)
+  if (turns === 0) return boundary
   if (turnInProgress(messages)) {
-    return Math.min(boundary, nthTurnStart(messages, 2))
+    // Nothing older to protect while the first turn is still running: keep the
+    // layer's own sliding window so a single runaway turn gets bounded in-loop.
+    return turns < 2 ? boundary : Math.min(boundary, nthTurnStart(messages, 2))
   }
+  // A FINISHED turn is never cut, however many turns the history holds.
   return Math.min(boundary, lastTurnStart(messages))
 }
 
