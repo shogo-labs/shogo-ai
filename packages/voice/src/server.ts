@@ -63,9 +63,26 @@ import {
   type ComposeMusicParams,
   type ConvaiClientTool,
   type ElevenLabsClientConfig,
+  type SoundEffectsParams,
+  type SpeechToSpeechParams,
   type TextToSpeechParams,
   type TextToSpeechResult,
+  type TranscribeParams,
+  type TranscriptionResult,
 } from './elevenlabs.js'
+import {
+  VOICE_OP_IDS,
+  getVoiceOp,
+  parseVoiceOpForm,
+  parseVoiceOpJsonBody,
+  voiceOpCredentialError,
+  voiceOpForwardPath,
+  voiceOpPathParams,
+  voiceOpReturnsAudio,
+  voiceOpUpstreamBody,
+  voiceOpUpstreamPath,
+  type VoiceOp,
+} from './ops.js'
 import { extractBasePrompt } from './prompt.js'
 import type {
   Companion,
@@ -186,6 +203,13 @@ export interface VoiceHandlers {
   }
   /** `GET /voice/audio-tags` — static catalog + defaults (no auth required). */
   audioTags: (req: Request) => Promise<Response>
+  /**
+   * Any op in the {@link VOICE_OPS} registry — `handlers.op(req, 'speech-to-speech')`.
+   * `opId` may be omitted when the request URL carries it (last path segment,
+   * e.g. `/api/voice/op/speech-to-speech`). Adding a registry row makes it
+   * callable here with no other change.
+   */
+  op: (req: Request, opId?: string) => Promise<Response>
   /**
    * The underlying ElevenLabsClient, exposed for consumers who need to build
    * additional endpoints (e.g. an agent-driven God Mode settings editor).
@@ -322,21 +346,102 @@ const LOG_WARN_CACHE = {
 }
 
 /**
+ * The op id for a request: an explicit argument wins, then `?op=`, then the
+ * last path segment (`/api/voice/op/speech-to-speech`).
+ */
+function resolveOpId(req: Request, opId?: string): string | undefined {
+  if (opId) return opId
+  try {
+    const url = new URL(req.url)
+    const fromQuery = url.searchParams.get('op')
+    if (fromQuery) return fromQuery
+    const segments = url.pathname.split('/').filter(Boolean)
+    const last = segments[segments.length - 1]
+    // `/voice/op/speech-to-speech` → `speech-to-speech`; `/voice/audio-tags`
+    // and friends fall through to `undefined` (an unknown op, reported by the
+    // caller) rather than being mistaken for an id.
+    if (last && segments[segments.length - 2] === 'op') return last
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Parsed request body for an op, or the 400 Response to send instead. */
+type ParsedOpBody =
+  | { kind: 'none' }
+  | { kind: 'json'; fields: Record<string, unknown> }
+  | { kind: 'form'; form: FormData; fields: Record<string, unknown> }
+
+/**
+ * Read + validate an op request against its registry row. The caller's body is
+ * forwarded exactly as sent — defaults are applied at the upstream call, not
+ * by rewriting the request.
+ */
+async function readVoiceOpBody(
+  op: VoiceOp,
+  req: Request,
+): Promise<ParsedOpBody | Response> {
+  if (op.method === 'GET') return { kind: 'none' }
+  if (op.transport === 'multipart-binary' || op.transport === 'multipart-json') {
+    let form: FormData
+    try {
+      // `Request.formData()` is typed against Node's FormData while the
+      // registry is written against the DOM one (it is browser-safe); they are
+      // the same object at runtime in every host we support.
+      form = (await req.formData()) as unknown as FormData
+    } catch {
+      return json({ error: 'Invalid multipart body', detail: 'send a multipart/form-data body' }, 400)
+    }
+    const parsed = parseVoiceOpForm(op, form)
+    if (!parsed.ok) {
+      return json(
+        {
+          error: parsed.error,
+          ...(parsed.detail ? { detail: parsed.detail } : {}),
+          ...(parsed.allowed ? { allowed: parsed.allowed } : {}),
+        },
+        parsed.status,
+      )
+    }
+    return { kind: 'form', form: parsed.form, fields: parsed.fields }
+  }
+  const raw = await readJson(req)
+  const parsed = parseVoiceOpJsonBody(op, raw)
+  if (!parsed.ok) {
+    return json(
+      {
+        error: parsed.error,
+        ...(parsed.detail ? { detail: parsed.detail } : {}),
+        ...(parsed.allowed ? { allowed: parsed.allowed } : {}),
+      },
+      parsed.status,
+    )
+  }
+  return { kind: 'json', fields: parsed.fields }
+}
+
+/**
  * Build proxy handlers that forward requests to the Shogo API using the
  * runtime token. Mirrors the shape of {@link VoiceHandlers}: the same
  * method names, so templates that mount voice routes never need to
  * branch on mode.
  *
+ * Every media op in the {@link VOICE_OPS} registry is reachable through
+ * `handlers.op(req, opId)`; `tts` and `music` are aliases onto the same
+ * forwarder so a mounted route keeps working unchanged.
+ *
  * Only endpoints that make sense for a project-scoped, user-less pod
  * context are implemented end-to-end:
  *   - `signedUrl` — proxies to `GET /api/voice/signed-url?projectId=…`
  *   - `audioTags` — static catalog; never hits the network
+ *   - every registry op — proxies to its hosted path
  *
- * User-scoped companion/agent CRUD (`agent.create/patch/delete`, `tts`)
- * assume a `getUser` context that doesn't exist in runtime-token mode;
- * those handlers return `501 Not Implemented` with a clear message. A
- * pod app that needs per-end-user voice should either (a) stay in
- * BYO-EL mode, or (b) wait for the hosted user-voice API.
+ * User-scoped companion/agent CRUD (`agent.create/patch/delete`) assume a
+ * `getUser` context that doesn't exist in runtime-token mode; those
+ * handlers return `501 Not Implemented` with a clear message. A pod app
+ * that needs per-end-user voice should either (a) stay in BYO-EL mode, or
+ * (b) wait for the hosted user-voice API.
  */
 function createProxyHandlers(
   proxy: VoiceProxyOptions,
@@ -443,50 +548,99 @@ function createProxyHandlers(
   }
 
   /**
-   * Music generation proxies to the Shogo API, which holds the pooled
-   * EL key. Unlike companion CRUD this is project-scoped (not per-end-user),
-   * so it works in runtime-token mode. We forward the validated JSON body
-   * and stream the audio response straight back.
+   * Forward one registry op to the Shogo API, which holds the pooled EL
+   * key. The registry decides the path, the transport and what the body may
+   * contain; this function only adds the runtime token + project id, maps
+   * "upstream has no such route" to 501 and everything else straight
+   * through. `tts` and `music` are thin aliases over it.
    */
-  async function doMusic(req: Request): Promise<Response> {
-    if (req.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405)
-    const raw = await readJson(req)
-    const parsed = parseMusicBody(raw)
-    if ('error' in parsed) return json({ error: parsed.error }, 400)
+  async function doOp(req: Request, opId?: string): Promise<Response> {
+    const id = resolveOpId(req, opId)
+    const op = getVoiceOp(id)
+    if (!op) {
+      return json(
+        { error: 'unknown_op', detail: `Unknown voice op '${id ?? ''}'`, allowed: VOICE_OP_IDS },
+        404,
+      )
+    }
+    if (req.method !== op.method) return json({ error: 'Method Not Allowed' }, 405)
+
+    // Validation runs before the host is resolved: a bad body is the
+    // caller's bug and must read as 400 even on a host with no API URL.
+    const parsed = await readVoiceOpBody(op, req)
+    if (parsed instanceof Response) return parsed
+
     const base = resolveApiBase()
+    const forward: Record<string, string | null> = {}
+    let incomingUrl: URL | null = null
     try {
-      const upstream = await fetchImpl(proxyUrl(base, '/api/voice/music', {}), {
-        method: 'POST',
-        headers: {
-          'x-runtime-token': proxy.runtimeToken,
-          'content-type': 'application/json',
-          accept: 'audio/mpeg',
-        },
-        body: JSON.stringify(parsed.params),
+      incomingUrl = new URL(req.url)
+    } catch {
+      // Non-absolute request URL (some test transports): nothing to forward.
+    }
+    if (incomingUrl) {
+      for (const key of [...(op.pathParams ?? []), ...(op.queryForward ?? [])]) {
+        const value = incomingUrl.searchParams.get(key)
+        if (value != null) forward[key] = value
+      }
+    }
+    // A multipart request's path params cannot travel in the rebuilt form, so
+    // they go upstream as query params; a JSON body already carries them.
+    if (parsed.kind === 'form') {
+      for (const name of op.pathParams ?? []) {
+        const value = parsed.fields[name]
+        if (typeof value === 'string' && value.length > 0) forward[name] = value
+      }
+    }
+
+    const hostedPath = `/api${voiceOpForwardPath(op)}`
+    const headers: Record<string, string> = { 'x-runtime-token': proxy.runtimeToken }
+    let body: BodyInit | undefined
+    if (parsed.kind === 'json') {
+      headers['content-type'] = 'application/json'
+      body = JSON.stringify(parsed.fields)
+    } else if (parsed.kind === 'form') {
+      // `fetch` sets the multipart boundary for a FormData body; copying a
+      // content-type here would freeze the caller's boundary instead.
+      body = parsed.form
+    }
+    if (op.accept) headers.accept = op.accept
+
+    try {
+      const upstream = await fetchImpl(proxyUrl(base, hostedPath, forward), {
+        method: op.method,
+        headers,
+        ...(body !== undefined ? { body } : {}),
         credentials: 'omit',
       })
       if (upstream.status === 404) {
         return json(
           {
             error: 'Not Implemented',
-            detail:
-              'this Shogo API has no voice routes (desktop without ELEVENLABS_API_KEY?) — /api/voice/music returned 404 upstream',
+            detail: `this Shogo API has no voice routes (desktop without ELEVENLABS_API_KEY?) — ${hostedPath} returned 404 upstream`,
           },
           501,
         )
       }
       const buf = await upstream.arrayBuffer()
-      const headers: Record<string, string> = {}
+      const responseHeaders: Record<string, string> = {}
       const ct = upstream.headers.get('content-type')
-      if (ct) headers['content-type'] = ct
-      return new Response(buf, { status: upstream.status, headers })
+      if (ct) responseHeaders['content-type'] = ct
+      for (const name of op.responseHeaders ?? []) {
+        const value = upstream.headers.get(name)
+        if (value) responseHeaders[name] = value
+      }
+      return new Response(buf, { status: upstream.status, headers: responseHeaders })
     } catch (err) {
-      log('error', 'proxy music failed', {
+      log('error', `proxy ${op.id} failed`, {
         error: err instanceof Error ? err.message : String(err),
       })
-      return json({ error: 'music proxy failed' }, 502)
+      return json({ error: `${op.id} proxy failed` }, 502)
     }
   }
+
+  /** `POST /voice/music` — alias onto the `music` registry row. */
+  const doMusic = (req: Request): Promise<Response> => doOp(req, 'music')
 
   function notImplemented(label: string): (req: Request) => Promise<Response> {
     return async () =>
@@ -500,66 +654,42 @@ function createProxyHandlers(
   }
 
   /**
-   * One-shot TTS through the Shogo API's `/voice/tts`. Project-scoped
-   * (not per-end-user), so this works in runtime-token mode. The hosted
-   * route owns the pooled EL key, model validation and character caps;
-   * we forward the body and pass the audio + model headers straight back.
+   * `POST /voice/tts` — alias onto the `text-to-speech` registry row, keeping
+   * the alias's own nicety: a body of only `audioTags` is a preview request,
+   * so the line it builds is spliced in as the `text` the row requires. The op
+   * itself has no audioTags handling and still requires `text`.
    */
   async function doTts(req: Request): Promise<Response> {
-    if (req.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405)
-    const raw = await readJson(req)
-    if (raw === null || typeof raw !== 'object') return json({ error: 'Invalid JSON body' }, 400)
-    const body = raw as Partial<TtsPreviewBody> & { voiceId?: string }
-    const text = typeof body.text === 'string' ? body.text : ''
-    if (!text.trim()) return json({ error: 'Missing text' }, 400)
-
-    const base = resolveApiBase()
-    try {
-      const upstream = await fetchImpl(proxyUrl(base, '/api/voice/tts', {}), {
-        method: 'POST',
-        headers: {
-          'x-runtime-token': proxy.runtimeToken,
-          'content-type': 'application/json',
-          accept: 'audio/mpeg',
-        },
-        body: JSON.stringify({
-          text,
-          ...(typeof body.voiceId === 'string' && body.voiceId
-            ? { voiceId: body.voiceId }
-            : {}),
-          ...(typeof body.modelId === 'string' && body.modelId
-            ? { modelId: body.modelId }
-            : {}),
-          ...(body.voiceSettings ? { voiceSettings: body.voiceSettings } : {}),
-          ...(Array.isArray(body.audioTags) ? { audioTags: body.audioTags } : {}),
-        }),
-        credentials: 'omit',
-      })
-      if (upstream.status === 404) {
-        return json(
-          {
-            error: 'Not Implemented',
-            detail:
-              'this Shogo API has no voice routes (desktop without ELEVENLABS_API_KEY?) — /api/voice/tts returned 404 upstream',
-          },
-          501,
-        )
+    if (req.method === 'POST') {
+      let raw: Record<string, unknown> | null = null
+      try {
+        const parsed = (await req.clone().json()) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          raw = parsed as Record<string, unknown>
+        }
+      } catch {
+        // Malformed JSON is doOp's 400 to report; there is nothing to splice.
       }
-      const buf = await upstream.arrayBuffer()
-      const headers: Record<string, string> = {}
-      const ct = upstream.headers.get('content-type')
-      if (ct) headers['content-type'] = ct
-      for (const h of ['x-tts-model-used', 'x-tts-model-requested', 'warning']) {
-        const v = upstream.headers.get(h)
-        if (v) headers[h] = v
+      if (raw && (typeof raw.text !== 'string' || raw.text.trim().length === 0)) {
+        // Only an audioTags body is a preview request. A body with no text and
+        // no tags stays a 400, exactly as before the registry existed.
+        const sentTags = Array.isArray(raw.audioTags) && raw.audioTags.length > 0
+        if (sentTags) {
+          const tags = normalizeAudioTags(raw.audioTags) ?? []
+          const characterName = typeof raw.characterName === 'string' ? raw.characterName : undefined
+          const text = buildPreviewLine(tags, characterName ?? 'your companion')
+          return doOp(
+            new Request(req.url, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ ...raw, text }),
+            }),
+            'text-to-speech',
+          )
+        }
       }
-      return new Response(buf, { status: upstream.status, headers })
-    } catch (err) {
-      log('error', 'proxy tts failed', {
-        error: err instanceof Error ? err.message : String(err),
-      })
-      return json({ error: 'tts proxy failed' }, 502)
     }
+    return doOp(req, 'text-to-speech')
   }
 
   /**
@@ -570,7 +700,7 @@ function createProxyHandlers(
   function createProxyElevenLabs(): ElevenLabsClient {
     const unsupported = (prop: string): never => {
       throw new Error(
-        `createVoiceHandlers: elevenLabs.${prop} is not available in runtime-token proxy mode (only textToSpeech and composeMusic are hosted); pass mode: 'byo' with an apiKey`,
+        `createVoiceHandlers: elevenLabs.${prop} is not available in runtime-token proxy mode (textToSpeech, composeMusic, speechToSpeech, soundEffects and transcribe are hosted); pass mode: 'byo' with an apiKey`,
       )
     }
 
@@ -643,10 +773,116 @@ function createProxyHandlers(
       }
     }
 
+    /**
+     * Run a registry op through the proxy and return its Response, throwing
+     * the same errors the BYO client throws. Keeps the typed conveniences on
+     * `elevenLabs` one-liners over {@link doOp} instead of a third copy of the
+     * forwarding logic.
+     */
+    const opResponse = async (opId: string, req: Request): Promise<Response> => {
+      const op = getVoiceOp(opId)!
+      const res = await doOp(req, opId)
+      if (res.status === 404) {
+        throw new Error(
+          `this Shogo API has no voice routes (desktop without ELEVENLABS_API_KEY?) — /api${voiceOpForwardPath(op)} returned 404 upstream`,
+        )
+      }
+      if (!res.ok) {
+        throw new ElevenLabsApiError(
+          `${opId} failed: ${res.status}`,
+          res.status,
+          await res.text(),
+        )
+      }
+      return res
+    }
+
+    const opAudio = async (
+      opId: string,
+      req: Request,
+    ): Promise<{ audio: ArrayBuffer; contentType: string }> => {
+      const res = await opResponse(opId, req)
+      return {
+        audio: await res.arrayBuffer(),
+        contentType: res.headers.get('content-type') ?? 'audio/mpeg',
+      }
+    }
+
+    const speechToSpeech = (params: SpeechToSpeechParams) => {
+      const form = new FormData()
+      form.set('audio', params.audio, params.fileName ?? 'audio')
+      if (params.modelId) form.set('modelId', params.modelId)
+      if (params.voiceSettings) form.set('voiceSettings', JSON.stringify(params.voiceSettings))
+      if (params.outputFormat) form.set('outputFormat', params.outputFormat)
+      if (params.fileFormat) form.set('fileFormat', params.fileFormat)
+      if (params.seed !== undefined) form.set('seed', String(params.seed))
+      if (params.removeBackgroundNoise !== undefined) {
+        form.set('removeBackgroundNoise', String(params.removeBackgroundNoise))
+      }
+      const query = `?voiceId=${encodeURIComponent(params.voiceId)}`
+      return opAudio(
+        'speech-to-speech',
+        new Request(`http://voice.invalid/voice/op/speech-to-speech${query}`, {
+          method: 'POST',
+          body: form,
+        }),
+      )
+    }
+
+    const soundEffects = (params: SoundEffectsParams) =>
+      opAudio(
+        'sound-generation',
+        new Request(
+          // `output_format` is a query param on this endpoint (see the row's
+          // `queryForward`); sending it in the body would be dropped at EL.
+          `http://voice.invalid/voice/op/sound-generation${
+            params.outputFormat ? `?output_format=${encodeURIComponent(params.outputFormat)}` : ''
+          }`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              text: params.text,
+              ...(params.durationSeconds !== undefined
+                ? { durationSeconds: params.durationSeconds }
+                : {}),
+              ...(params.promptInfluence !== undefined
+                ? { promptInfluence: params.promptInfluence }
+                : {}),
+              ...(params.loop !== undefined ? { loop: params.loop } : {}),
+              ...(params.modelId ? { modelId: params.modelId } : {}),
+            }),
+          },
+        ),
+      )
+
+    const transcribe = async (params: TranscribeParams): Promise<TranscriptionResult> => {
+      const form = new FormData()
+      form.set('file', params.file, params.fileName ?? 'audio')
+      if (params.modelId) form.set('modelId', params.modelId)
+      if (params.languageCode) form.set('languageCode', params.languageCode)
+      if (params.diarize !== undefined) form.set('diarize', String(params.diarize))
+      if (params.tagAudioEvents !== undefined) {
+        form.set('tagAudioEvents', String(params.tagAudioEvents))
+      }
+      if (params.numSpeakers !== undefined) form.set('numSpeakers', String(params.numSpeakers))
+      const res = await opResponse(
+        'speech-to-text',
+        new Request('http://voice.invalid/voice/op/speech-to-text', {
+          method: 'POST',
+          body: form,
+        }),
+      )
+      return (await res.json()) as TranscriptionResult
+    }
+
     return new Proxy({} as ElevenLabsClient, {
       get(_t, prop) {
         if (prop === 'textToSpeech') return textToSpeech
         if (prop === 'composeMusic') return composeMusic
+        if (prop === 'speechToSpeech') return speechToSpeech
+        if (prop === 'soundEffects') return soundEffects
+        if (prop === 'transcribe') return transcribe
         return unsupported(String(prop))
       },
     })
@@ -662,6 +898,7 @@ function createProxyHandlers(
       delete: notImplemented('agent.delete'),
     },
     audioTags: doAudioTags,
+    op: doOp,
     // In proxy mode we don't own an EL client: media calls go through the
     // Shogo API, anything else is a loud error.
     elevenLabs: createProxyElevenLabs(),
@@ -881,6 +1118,124 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     }
   }
 
+  /**
+   * Any registry op, called with the caller's own ElevenLabs key. The
+   * registry supplies the path, the transport and the validation; this
+   * function only turns validated fields into an ElevenLabs call.
+   */
+  async function doOp(req: Request, opId?: string): Promise<Response> {
+    const id = resolveOpId(req, opId)
+    const op = getVoiceOp(id)
+    if (!op) {
+      return json(
+        { error: 'unknown_op', detail: `Unknown voice op '${id ?? ''}'`, allowed: VOICE_OP_IDS },
+        404,
+      )
+    }
+    if (req.method !== op.method) return json({ error: 'Method Not Allowed' }, 405)
+
+    const parsed = await readVoiceOpBody(op, req)
+    if (parsed instanceof Response) return parsed
+
+    // A multipart request's path params live only in `fields` (the rebuilt
+    // form drops them), so using `{}` for a form here would send the request
+    // to the project default voice without a word.
+    const fields = parsed.kind === 'none' ? {} : parsed.fields
+    let query: URLSearchParams
+    try {
+      query = new URL(req.url).searchParams
+    } catch {
+      query = new URLSearchParams()
+    }
+    const pathParams = voiceOpPathParams(op, fields, query)
+    const upstream = voiceOpUpstreamPath(op, pathParams)
+    if (typeof upstream !== 'string') {
+      return json({ error: upstream.error, detail: `set it in the body or as ?${op.pathParams?.[0]}=` }, 400)
+    }
+
+    const forwardedQuery: Record<string, string> = {}
+    for (const key of op.queryForward ?? []) {
+      const value = query.get(key)
+      if (value) forwardedQuery[key] = value
+    }
+    if (op.defaultVoiceId && !pathParams.voiceId) {
+      return json(
+        {
+          error: 'Missing `voiceId`',
+          detail: `BYO mode has no project default voice — pass voiceId (or ?voiceId=)`,
+        },
+        400,
+      )
+    }
+
+    try {
+      if (op.call === 'textToSpeech') {
+        const result = await el.textToSpeech({
+          voiceId: pathParams.voiceId ?? String(fields.voiceId ?? ''),
+          text: String(fields.text ?? ''),
+          ...(typeof fields.modelId === 'string' ? { modelId: fields.modelId } : {}),
+          ...(fields.voiceSettings
+            ? { voiceSettings: fields.voiceSettings as TextToSpeechParams['voiceSettings'] }
+            : {}),
+          ...(op.accept ? { accept: op.accept } : {}),
+        })
+        const headers: Record<string, string> = {
+          'content-type': result.contentType,
+          'cache-control': 'private, max-age=3600',
+          'x-tts-model-used': result.modelId,
+          'x-tts-model-requested': result.requestedModel,
+        }
+        if (result.fellBack) {
+          headers.warning = `199 - "model ${result.requestedModel} not available, used ${result.modelId}"`
+        }
+        return new Response(result.audio, { headers })
+      }
+
+      if (op.call === 'composeMusic') {
+        const { audio, contentType } = await el.composeMusic({
+          ...(typeof fields.prompt === 'string' ? { prompt: fields.prompt } : {}),
+          ...(fields.compositionPlan
+            ? { compositionPlan: fields.compositionPlan as Record<string, unknown> }
+            : {}),
+          ...(typeof fields.musicLengthMs === 'number' ? { musicLengthMs: fields.musicLengthMs } : {}),
+          ...(typeof fields.modelId === 'string' ? { modelId: fields.modelId } : {}),
+          ...(typeof fields.forceInstrumental === 'boolean'
+            ? { forceInstrumental: fields.forceInstrumental }
+            : {}),
+          ...(typeof fields.outputFormat === 'string' ? { outputFormat: fields.outputFormat } : {}),
+        })
+        return new Response(audio, {
+          headers: {
+            'content-type': contentType,
+            'cache-control': 'private, max-age=3600',
+          },
+        })
+      }
+
+      const upstreamBody = voiceOpUpstreamBody(op, fields)
+      if (op.defaultModel && upstreamBody.model_id === undefined) {
+        upstreamBody.model_id = op.defaultModel
+      }
+      const response = await el.request({
+        method: op.method,
+        path: upstream,
+        ...(parsed.kind === 'form'
+          ? { body: parsed.form }
+          : parsed.kind === 'json'
+            ? { body: upstreamBody }
+            : {}),
+        ...(Object.keys(forwardedQuery).length ? { query: forwardedQuery } : {}),
+        ...(op.accept ? { accept: op.accept } : {}),
+      })
+      const headers: Record<string, string> = { 'content-type': response.contentType }
+      if (voiceOpReturnsAudio(op)) headers['cache-control'] = 'private, max-age=3600'
+      const body = response.audio ?? JSON.stringify(response.json ?? {})
+      return new Response(body, { status: response.status, headers })
+    } catch (e) {
+      return handleElError(e, `${op.id} failed`)
+    }
+  }
+
   async function doAgentCreate(req: Request): Promise<Response> {
     if (req.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405)
     const u = await resolveUser(req)
@@ -1068,6 +1423,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
       delete: doAgentDelete,
     },
     audioTags: doAudioTags,
+    op: doOp,
     elevenLabs: el,
   }
 }
