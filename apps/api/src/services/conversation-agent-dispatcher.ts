@@ -59,6 +59,7 @@ import { docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
 import { publishReplyMedia } from './agent-reply-media'
 import { resolveAgentRunModel } from './agent-run-model.service'
+import { budgetThreadContext, historySeedFor, noteCarriedContext } from './chat-history-seed.service'
 import {
   DEFAULT_STALE_AFTER_MS,
   markTurnEnded,
@@ -75,7 +76,8 @@ const DEFAULT_START_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 15_000]
 const DEFAULT_START_RETRY_BUDGET_MS = 3 * 60_000
 /** Safety cap so a zero delay cannot spin for the whole budget. */
 const MAX_START_RETRIES = 20
-const CONTEXT_MESSAGES = 20
+/** How many thread messages to scan when fitting the prompt budget. */
+const THREAD_CONTEXT_SCAN = 400
 /** Each streamed-reply update is a database write plus a broadcast; once a second reads as live. */
 const DELTA_THROTTLE_MS = 1_000
 /** A workspace file read for a reply's media; a slow runtime must not hold the reply. */
@@ -256,6 +258,8 @@ export interface InvokeArgs {
   userId: string
   prompt: string
   signal: AbortSignal
+  /** The conversation this one-message turn must carry (see chat-history-seed). */
+  historySeed?: { summary: string | null; messages: Array<{ role: 'user' | 'assistant'; text: string }> } | null
 }
 
 const running = new Map<string, AbortController>()
@@ -1073,41 +1077,48 @@ async function buildPrompt(args: {
   workspaceName: string
   chain: AgentChain
   contextMode?: string
+  /** The ChatSession this reply runs in — where the durable summary lives. */
+  chatSessionId?: string | null
 }): Promise<string> {
-  const { conversation, trigger, threadRootId, reusedSession, name, workspaceName, chain } = args
+  const { conversation, trigger, threadRootId, name, workspaceName, chain } = args
   if (args.contextMode === 'isolated') {
     return buildIsolatedPrompt({ conversation, trigger, threadRootId, name, workspaceName, chain })
   }
+  // The thread is the transcript, whoever the agent is and whatever this pod's
+  // runtime happens to remember. This used to be short-circuited — six
+  // messages, then everything after the last agent reply — on the assumption
+  // that the runtime still held the rest. After an eviction, a pod restart or
+  // an idle night it holds nothing, so the agent woke to a one-line note and
+  // asked what everyone was talking about (SHO-137).
   let history: any[]
   if (threadRootId) {
     history = await db.conversationMessage.findMany({
       where: { conversationId: conversation.id, OR: [{ id: threadRootId }, { threadRootId }], deletedAt: null },
       orderBy: { seq: 'desc' },
-      take: CONTEXT_MESSAGES,
+      take: THREAD_CONTEXT_SCAN,
       include: TRANSCRIPT_INCLUDE,
     })
   } else {
     history = await db.conversationMessage.findMany({
       where: { conversationId: conversation.id, threadRootId: null, deletedAt: null, seq: { lte: trigger.seq } },
       orderBy: { seq: 'desc' },
-      take: reusedSession ? 6 : CONTEXT_MESSAGES,
+      take: THREAD_CONTEXT_SCAN,
       include: TRANSCRIPT_INCLUDE,
     })
   }
   history = history.reverse().filter((m) =>
     (m.text?.trim() || m.attachments?.length) && !(m.authorType === 'agent' && m.agentStatus === 'running'))
 
-  if (reusedSession) {
-    const lastAgentIdx = history.map((m) => m.authorType).lastIndexOf('agent')
-    const triggerIdx = history.findIndex((m) => m.id === trigger.id)
-    // Normally the wake is the newest thing here, so drop what the session already
-    // has. A wake queued behind a live reply can predate it (a settled reply moves
-    // to the end of the thread), and then its own tail is what it needs to see —
-    // never an empty prompt.
-    if (lastAgentIdx >= 0 && triggerIdx >= 0) {
-      history = triggerIdx > lastAgentIdx ? history.slice(lastAgentIdx + 1) : history.slice(triggerIdx)
-    }
-  }
+  const budgeted = await budgetThreadContext(history, args.chatSessionId ?? null, conversation)
+  history = budgeted.kept
+  const summary = budgeted.summary
+  // A prompt that suddenly carries less of the conversation than the last one
+  // is the failure this card exists for. Say so in the turn log — a confused
+  // reply is not a diagnosis (SHO-137).
+  noteCarriedContext(args.chatSessionId ?? null, history.length, {
+    elided: budgeted.elided,
+    summarised: !!budgeted.summary,
+  })
 
   const transcript = await renderTranscript(conversation.workspaceId, history, trigger.id)
 
@@ -1117,16 +1128,21 @@ async function buildPrompt(args: {
       ? 'a direct message between teammates'
       : `the #${conversation.name ?? 'channel'} channel`
   const surface = PROVIDER_SURFACE[conversation.provider] ?? 'Shogo'
+  const channelDocContextLines = await channelDocContext(conversation)
   const lines = [
     `You are ${name}, a teammate in ${where} of the "${workspaceName}" workspace's team chat in ${surface}.`,
     threadRootId ? 'You are replying inside a thread; the thread so far is below.' : 'Recent messages are below.',
+    ...(summary
+      ? ['Older messages are condensed into a summary below; the most recent ones are verbatim after it.']
+      : []),
     'Reply to the latest message addressed to you. Write concise Markdown suitable for a chat message.',
     'Do real work with your tools when asked. The team sees only your final reply here; your full session is linked from it.',
     ...chainContext(conversation, trigger, threadRootId, chain),
     ...(history.some((m) => m.attachments?.length)
       ? ['Files attached below can be read or searched with fetch_chat_files (pass the file id); download one only when you need the raw file.']
       : []),
-    ...(await channelDocContext(conversation)),
+    ...channelDocContextLines,
+    ...(summary ? ['', '[Earlier in this conversation]', summary] : []),
     '',
     transcript,
   ]
@@ -1215,9 +1231,21 @@ export async function agentModeFor(projectId: string | null, workspaceId?: strin
 }
 
 async function invokeChat(args: InvokeArgs): Promise<Response> {
-  if (config.invoke) return config.invoke(args)
+  // Every turn this module starts carries exactly one message, so the runtime
+  // has nothing to rebuild an evicted session from. Attach the conversation
+  // the API already stores, with the durable summary for anything older than
+  // the tail (SHO-137).
+  const historySeed = args.historySeed !== undefined
+    ? args.historySeed
+    : await historySeedFor(args.sessionId, { excludeNewestUserMessage: true }).catch((err: Error) => {
+        console.warn(`[ChannelAgent] history seed for ${args.sessionId} failed:`, err.message)
+        return null
+      })
+  const call = { ...args, historySeed }
+  if (config.invoke) return config.invoke(call)
   const body = JSON.stringify({
     messages: [{ role: 'user', parts: [{ type: 'text', text: args.prompt }] }],
+    ...(historySeed ? { historySeed } : {}),
     chatSessionId: args.sessionId,
     userId: args.userId,
     agentMode: await agentModeFor(args.projectId, args.workspaceId),
@@ -1702,6 +1730,7 @@ async function runReservedReply(
     // or still waking already shows what was asked.
     const prompt = await buildPrompt({
       conversation, trigger, threadRootId, reusedSession: !!reused, name, workspaceName: workspace?.name ?? 'workspace', chain, contextMode,
+      chatSessionId: sessionId,
     })
     const dispatch = await channelDispatchFor({ conversation, trigger, threadRootId, name, contextMode })
     await db.chatMessage.create({

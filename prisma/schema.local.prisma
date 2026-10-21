@@ -1412,6 +1412,11 @@ model ChatSession {
   cachedMessageCount    Int       @default(0)
   contextUsageTokens    Int       @default(0)
   contextWindowTokens   Int       @default(0)
+  // Durable summary of everything up to `contextSummaryThroughCount` messages
+  // (see schema.prisma — kept in the DB, not the runtime's sessions.db, so an
+  // evicted session cannot take it with it; SHO-137).
+  contextSummary              String?
+  contextSummaryThroughCount  Int       @default(0)
   isPrimary             Boolean   @default(false)
   isPinned              Boolean   @default(false)
   isArchived            Boolean   @default(false)

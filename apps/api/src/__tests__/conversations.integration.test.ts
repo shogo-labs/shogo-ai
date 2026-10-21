@@ -459,7 +459,12 @@ describe('@agent threads', () => {
     expect(invocations).toHaveLength(2)
     expect(invocations[1].sessionId).toBe(invocations[0].sessionId)
     expect(invocations[1].prompt).toContain('and last month?')
-    expect(invocations[1].prompt).not.toContain('summarize the invoices')
+    // The thread is the transcript on every turn. It used to be trimmed to
+    // "everything after the agent's last reply" because the runtime was assumed
+    // to still hold the rest — which is exactly how a woken agent ended up with
+    // a one-line prompt and no idea what the conversation was about (SHO-137).
+    expect(invocations[1].prompt).toContain('summarize the invoices')
+    expect(invocations[1].prompt).toContain('Here is the summary.')
   })
 
   test('the workspace agent gets a workspace session; agent DMs reply without an @mention', async () => {

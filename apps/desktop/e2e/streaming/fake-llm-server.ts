@@ -48,6 +48,12 @@ export interface FakeTurn {
   /** Name of the tool called at the end of this request, if any. */
   toolCalled?: string
   userText: string
+  /**
+   * The whole request body as sent. `userText` is only the last user message,
+   * so a spec that has to prove what *history* reached the model (a restored
+   * session, a summary block) reads `messages` from here.
+   */
+  body?: any
 }
 
 interface Marker {
@@ -275,6 +281,7 @@ export class FakeLlmServer {
       startedAt: Date.now(),
       sentAt: [],
       userText,
+      body,
     }
     this.turns.push(turn)
 
