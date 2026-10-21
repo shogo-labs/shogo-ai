@@ -10,6 +10,8 @@ export type {
   AccountMenuProps,
 } from "./AccountMenu";
 export { ChatTreeItem } from "./ChatTreeItem";
+export { ChatSessionList } from "./ChatSessionList";
+export { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
 export { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 export { InboxPanel } from "./InboxPanel";
 export type { InboxPanelProps, InviteProcessingState } from "./InboxPanel";

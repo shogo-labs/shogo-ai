@@ -538,6 +538,8 @@ if (typeof document !== "undefined") {
 }
 
 chatActivityEvents.subscribe((event) => {
+  // Workspace-agent chats have no notch rows — the island is project-scoped.
+  if (!event.projectId) return
   activityByProject.set(event.projectId, {
     streamingSessionIds: new Set(event.streamingSessionIds),
     completedSessionIds: new Set(event.completedSessionIds),
