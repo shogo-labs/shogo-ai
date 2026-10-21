@@ -9,10 +9,12 @@ import {
   teamChatApi,
   type ChatSettings,
   type InboxItem,
+  type SentMessage,
   type UserStatus,
 } from '../lib/team-chat-api'
 import { useTeamChatEvents } from '../lib/team-chat-connection'
 import { useMentionables } from './useTeamChat'
+import { useWorkspaceUser } from './useWorkspaceUser'
 
 const api = teamChatApi()
 
@@ -237,4 +239,80 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
   }, [items, hasMore, loading, load])
 
   return { items, hasMore, loading, error, markRead, loadMore, refresh: load }
+}
+
+/**
+ * The messages the viewer sent, for the Activity panel's Sent view. Nothing is
+ * fetched until the view is opened (`enabled`), so people who never look at it
+ * pay for nothing.
+ *
+ * The server stays the truth: a send from another window triggers a refetch
+ * rather than splicing a row into the list here.
+ */
+export function useSentMessages(workspaceId: string | null | undefined, enabled: boolean) {
+  const viewer = useWorkspaceUser(workspaceId)
+  const [items, setItems] = useState<SentMessage[]>([])
+  const [hasMore, setHasMore] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const req = useRef(0)
+  const lastRefetch = useRef(0)
+
+  const load = useCallback(async (
+    cursor?: { before: string; beforeId: string },
+    opts: { manual?: boolean } = {},
+  ) => {
+    if (!workspaceId || !enabled) return
+    const id = ++req.current
+    if (opts.manual) setRefreshing(true)
+    else setLoading(true)
+    try {
+      const page = await api.sentMessages(workspaceId, cursor ?? {})
+      if (id !== req.current) return
+      setItems((prev) => (cursor ? [...prev, ...page.items] : page.items))
+      setHasMore(page.hasMore)
+      setError(null)
+    } catch (err) {
+      if (id === req.current) setError(err instanceof Error ? err.message : 'Could not load sent messages')
+    } finally {
+      if (id === req.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
+    }
+  }, [workspaceId, enabled])
+
+  useEffect(() => {
+    if (enabled) void load()
+  }, [enabled, load])
+
+  useTeamChatEvents(workspaceId, (event) => {
+    if (!enabled || !workspaceId) return
+    if (event.type === 'ready') {
+      void load()
+      return
+    }
+    if (event.type !== 'message.created') return
+    // Only our own sends, and at most one refetch a second, so a burst of
+    // messages cannot turn into a burst of list requests.
+    if (event.message.authorType !== 'user') return
+    if (viewer && event.message.authorUserId && event.message.authorUserId !== viewer.id) return
+    const now = Date.now()
+    if (now - lastRefetch.current < 1000) return
+    lastRefetch.current = now
+    void load()
+  })
+
+  const loadMore = useCallback(() => {
+    const last = items[items.length - 1]
+    if (!hasMore || loading || !last) return
+    void load({ before: last.createdAt, beforeId: last.id })
+  }, [items, hasMore, loading, load])
+
+  const refresh = useCallback(() => {
+    void load(undefined, { manual: true })
+  }, [load])
+
+  return { items, hasMore, loading, refreshing, error, loadMore, refresh }
 }

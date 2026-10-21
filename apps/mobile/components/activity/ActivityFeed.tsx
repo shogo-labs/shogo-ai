@@ -4,6 +4,9 @@
  * Everything that happened, by people and by agents, in one list: filter
  * chips, a strip of agents working right now, and a row per event. Used as
  * the Activity tab on mobile and the Activity panel on desktop.
+ *
+ * The `Sent` chip is the one view of what *you* did: it swaps the inbound feed
+ * for the team-chat messages you sent, newest first.
  */
 import { useCallback, useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
@@ -12,7 +15,7 @@ import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageC
 import { cn } from '@shogo/shared-ui/primitives'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useAgentActivity } from '../../hooks/useAgentActivity'
-import { useInbox } from '../../hooks/useChatPrefs'
+import { useInbox, useSentMessages } from '../../hooks/useChatPrefs'
 import { useOpenQuestionCount } from '../../hooks/useOpenQuestions'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { openActiveChat } from '../../lib/open-active-chat'
@@ -58,18 +61,38 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
   const [filter, setFilter] = useState<ActivityFilter>('all')
   const [unreadOnly, setUnreadOnly] = useState(false)
   const inbox = useInbox(workspaceId, false)
+  const sent = useSentMessages(workspaceId, filter === 'sent')
   const agents = useAgentActivity({ polling: focused, light: true })
   const experience = useWorkspaceExperience()
   const waitingOnYou = useOpenQuestionCount(experience.kind === 'team' ? workspaceId : null)
 
   const feed = useMemo(
-    () => buildFeed({ inbox: inbox.items, tasks: agents.tasks, activeChats: agents.activeChats, filter, unreadOnly }),
-    [inbox.items, agents.tasks, agents.activeChats, filter, unreadOnly],
+    () => buildFeed({
+      inbox: inbox.items,
+      tasks: agents.tasks,
+      activeChats: agents.activeChats,
+      sent: filter === 'sent' ? sent.items : [],
+      filter,
+      unreadOnly,
+    }),
+    [inbox.items, agents.tasks, agents.activeChats, sent.items, filter, unreadOnly],
   )
-  const loading = (inbox.loading && inbox.items.length === 0) || (agents.loading && agents.tasks.length === 0)
+  const loading = filter === 'sent'
+    ? sent.loading && sent.items.length === 0
+    : (inbox.loading && inbox.items.length === 0) || (agents.loading && agents.tasks.length === 0)
   const empty = !loading && feed.running.length === 0 && feed.entries.length === 0
 
   const open = (entry: ActivityEntry) => {
+    if (entry.sent) {
+      const message = entry.sent
+      router.push({
+        pathname: '/(app)/c/[conversationId]',
+        params: message.threadRootId
+          ? { conversationId: message.conversationId, thread: message.threadRootId }
+          : { conversationId: message.conversationId },
+      } as any)
+      return
+    }
     if (entry.inbox) {
       const item = entry.inbox
       if (!item.readAt) void inbox.markRead([item.id])
@@ -89,6 +112,13 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
     if (task) openTask(router, task)
   }
 
+  const pickFilter = (id: ActivityFilter) => {
+    setFilter(id)
+    // Sent has nothing unread, and the pill is hidden there — carrying the
+    // filter over would empty the view with no way to see why.
+    if (id === 'sent') setUnreadOnly(false)
+  }
+
   return (
     <View className="flex-1 bg-background">
       <ScrollView
@@ -102,7 +132,7 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
             key={id}
             accessibilityRole="button"
             aria-selected={filter === id}
-            onPress={() => setFilter(id)}
+            onPress={() => pickFilter(id)}
             className={cn('rounded-full border px-3 py-1', filter === id ? 'border-primary bg-primary/10' : 'border-border active:bg-accent/50')}
           >
             <Text className={cn('text-xs', filter === id ? 'font-medium text-primary' : 'text-muted-foreground')}>{label}</Text>
@@ -115,15 +145,16 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
         contentContainerClassName="pb-28"
         refreshControl={
           <RefreshControl
-            refreshing={agents.refreshing}
+            refreshing={agents.refreshing || sent.refreshing}
             onRefresh={() => {
               void agents.refresh({ manual: true })
               void inbox.refresh()
+              if (filter === 'sent') sent.refresh()
             }}
           />
         }
       >
-        {waitingOnYou > 0 ? (
+        {waitingOnYou > 0 && filter !== 'sent' ? (
           <Pressable
             onPress={() => router.push('/(app)/c/questions' as any)}
             accessibilityRole="link"
@@ -140,32 +171,57 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
         ) : null}
         {feed.running.length > 0 && <RunningNow entries={feed.running} compact={compact} onOpen={open} />}
         {loading ? <ActivityIndicator className="mt-8" /> : null}
-        {inbox.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{inbox.error}</Text> : null}
-        {agents.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{readableAgentTaskError(agents.error, 'We could not refresh agent activity.')}</Text> : null}
+        {filter !== 'sent' && inbox.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{inbox.error}</Text> : null}
+        {filter !== 'sent' && agents.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{readableAgentTaskError(agents.error, 'We could not refresh agent activity.')}</Text> : null}
+        {filter === 'sent' && sent.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{sent.error}</Text> : null}
         {feed.entries.map((entry) => (
           <ActivityRow key={entry.id} entry={entry} compact={compact} onPress={() => open(entry)} />
         ))}
+        {filter === 'sent' && sent.hasMore ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Show older messages"
+            disabled={sent.loading}
+            onPress={() => sent.loadMore()}
+            className="items-center py-3 active:bg-accent/50"
+            testID="sent-show-older"
+          >
+            {sent.loading ? (
+              <ActivityIndicator size="small" />
+            ) : (
+              <Text className="text-xs font-medium text-muted-foreground">Show older</Text>
+            )}
+          </Pressable>
+        ) : null}
         {empty ? (
           <Text className="px-6 pt-10 text-center text-sm text-muted-foreground">
-            {unreadOnly ? "You're all caught up." : filter === 'agents' ? 'Agent work shows up here.' : 'Messages, mentions, and agent work show up here.'}
+            {unreadOnly
+              ? "You're all caught up."
+              : filter === 'agents'
+                ? 'Agent work shows up here.'
+                : filter === 'sent'
+                  ? 'Messages you send show up here.'
+                  : 'Messages, mentions, and agent work show up here.'}
           </Text>
         ) : null}
       </ScrollView>
 
-      <Pressable
-        accessibilityRole="button"
-        aria-selected={unreadOnly}
-        accessibilityLabel="Unreads only"
-        onPress={() => setUnreadOnly((v) => !v)}
-        className={cn(
-          // Phones keep the right corner for the floating "+".
-          compact ? 'absolute bottom-4 right-4' : 'absolute bottom-7 left-4',
-          'rounded-full border px-4 py-2 shadow-sm',
-          unreadOnly ? 'border-primary bg-primary' : 'border-border bg-card active:bg-accent/50',
-        )}
-      >
-        <Text className={cn('text-xs font-medium', unreadOnly ? 'text-primary-foreground' : 'text-foreground')}>Unreads</Text>
-      </Pressable>
+      {filter === 'sent' ? null : (
+        <Pressable
+          accessibilityRole="button"
+          aria-selected={unreadOnly}
+          accessibilityLabel="Unreads only"
+          onPress={() => setUnreadOnly((v) => !v)}
+          className={cn(
+            // Phones keep the right corner for the floating "+".
+            compact ? 'absolute bottom-4 right-4' : 'absolute bottom-7 left-4',
+            'rounded-full border px-4 py-2 shadow-sm',
+            unreadOnly ? 'border-primary bg-primary' : 'border-border bg-card active:bg-accent/50',
+          )}
+        >
+          <Text className={cn('text-xs font-medium', unreadOnly ? 'text-primary-foreground' : 'text-foreground')}>Unreads</Text>
+        </Pressable>
+      )}
     </View>
   )
 }

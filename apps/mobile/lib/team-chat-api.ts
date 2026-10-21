@@ -447,6 +447,22 @@ export interface InboxPage {
   hasMore: boolean
 }
 
+/** One team-chat message the viewer sent — the Activity panel's Sent view. */
+export interface SentMessage {
+  id: string
+  conversationId: string
+  threadRootId: string | null
+  /** Sliced to a single-row preview server-side. */
+  text: string
+  createdAt: string
+  conversation: ConversationRef | null
+}
+
+export interface SentPage {
+  items: SentMessage[]
+  hasMore: boolean
+}
+
 export interface MessagePage {
   messages: ChatMessage[]
   hasMore: boolean
@@ -742,6 +758,16 @@ export function teamChatApi() {
       if (opts.before) q.set('before', opts.before)
       if (opts.limit) q.set('limit', String(opts.limit))
       return (await http.get<InboxPage>(`${ws(workspaceId)}/inbox?${q}`)).data
+    },
+    async sentMessages(
+      workspaceId: string,
+      opts: { before?: string; beforeId?: string; limit?: number } = {},
+    ): Promise<SentPage> {
+      const q = new URLSearchParams()
+      if (opts.before) q.set('before', opts.before)
+      if (opts.beforeId) q.set('beforeId', opts.beforeId)
+      if (opts.limit) q.set('limit', String(opts.limit))
+      return (await http.get<SentPage>(`${ws(workspaceId)}/sent-messages?${q}`)).data
     },
     async markInboxRead(
       workspaceId: string,
