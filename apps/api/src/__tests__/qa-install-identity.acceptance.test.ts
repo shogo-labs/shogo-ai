@@ -86,13 +86,11 @@ async function seed() {
   workspaceId = ws.id
   otherWorkspaceId = other.id
 
-  let n = 0
-  for (const row of FIXTURE) {
-    n += 1
-    await db.apiKey.create({
+  const creates = FIXTURE.map((row, index) =>
+    db.apiKey.create({
       data: {
-        name: `device-${row.deviceId}-${n}`,
-        keyHash: `qa-hash-${row.deviceId}-${n}`,
+        name: `device-${row.deviceId}-${index}`,
+        keyHash: `qa-hash-${row.deviceId}-${index}`,
         keyPrefix: 'shogo_dev',
         workspaceId: row.workspace === 'other' ? otherWorkspaceId : workspaceId,
         userId,
@@ -105,8 +103,9 @@ async function seed() {
         createdAt: row.createdAt,
         revokedAt: row.revoked ? ago(1 * DAY) : null,
       },
-    })
-  }
+    }),
+  )
+  await db.$transaction(creates)
 
   await db.appInstall.create({
     data: {
@@ -142,7 +141,7 @@ beforeAll(async () => {
   analytics = await import('../services/analytics.service')
   deviceVersionEvents = await import('../lib/device-version-events')
   await seed()
-})
+}, 120_000)
 
 afterAll(() => {
   delete process.env.APP_VERSION
