@@ -764,6 +764,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                         <ChatSessionList
                           sessions={sideChats}
                           archivedSessions={[]}
+                          renderAll
                           loaded={!workspaceChats.loading}
                           loadingLabel="Loading chats…"
                           emptyLabel={
@@ -833,6 +834,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                               <ChatSessionList
                                 sessions={archivedSideChats}
                                 archivedSessions={[]}
+                                renderAll
                                 loaded={!workspaceChats.loading}
                                 loadingLabel="Loading chats…"
                                 emptyLabel="No archived chats."
