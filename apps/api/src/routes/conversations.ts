@@ -1752,10 +1752,13 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       if (access) runs.push(runView(row, access))
       if (runs.length >= 50) break
     }
-    return c.json({ runs })
+    // The pause is part of the answer: a wake that finds nothing to do still
+    // needs to know why nothing starts (SHO-118).
+    const { readWorkspacePause } = await import('../services/workspace-pause.service')
+    return c.json({ runs, paused: await readWorkspacePause(auth.workspaceId) })
   })
 
-  /** Stop one agent reply (`messageId`), or every agent running in a thread (`channel` + `threadRootId`). */
+  /** Stop one agent reply (`messageId`), every agent in a thread (`channel` + `threadRootId`), or every lane in the workspace (`scope: 'workspace'`,  which also pauses automatic starts until `resume: true`). */
   router.post(`${base}/running-agents/stop`, async (c) => {
     const auth = await config.authorize(c)
     if (auth instanceof Response) return auth
@@ -1767,7 +1770,48 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     const channel = optionalString(body.channel)
     const threadRootId = optionalString(body.threadRootId)
     const sessionId = optionalString(body.sessionId)
+    const scope = optionalString(body.scope)
+    const resume = body.resume === true
     const include = { conversation: { select: { name: true, kind: true } } }
+
+    if (scope === 'workspace') {
+      const { readWorkspacePause, setWorkspacePause, resumeWorkspaceAgents } = await import('../services/workspace-pause.service')
+      if (resume) {
+        await resumeWorkspaceAgents(auth.workspaceId)
+        return c.json({ paused: null, stopped: [], skipped: [], resumed: true })
+      }
+      await setWorkspacePause(auth.workspaceId, {
+        at: new Date().toISOString(),
+        by: userId,
+        ...(optionalString(body.reason) ? { reason: optionalString(body.reason)! } : {}),
+      })
+      const running = await db.conversationMessage.findMany({
+        where: { workspaceId: auth.workspaceId, authorType: 'agent', agentStatus: 'running', deletedAt: null },
+        include,
+        take: 200,
+      })
+      const stopped: ReturnType<typeof runView>[] = []
+      const skipped: Array<{ messageId: string; reason: 'not_running' | 'self' | 'not_visible' }> = []
+      for (const row of running) {
+        const access = await accessOrNull(row.conversationId, userId, cache)
+        if (!access) {
+          skipped.push({ messageId: row.id, reason: 'not_visible' })
+          continue
+        }
+        if (access.role === 'viewer') {
+          skipped.push({ messageId: row.id, reason: 'not_visible' })
+          continue
+        }
+        if (sessionId && row.agentSessionId === sessionId) {
+          skipped.push({ messageId: row.id, reason: 'self' })
+          continue
+        }
+        await stopAgentReply(row, userId)
+        stopped.push(runView(row, access))
+      }
+      return c.json({ paused: await readWorkspacePause(auth.workspaceId), stopped, skipped, resumed: false })
+    }
+
     let rows: any[]
     if (messageId) {
       const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include })

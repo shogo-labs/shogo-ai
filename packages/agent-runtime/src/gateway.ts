@@ -109,7 +109,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, runtimeServesProjectId, type SessionWakeState } from './internal-api'
+import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
 import {
   createToolProfile,
   deferredToolsEnabled,
@@ -127,7 +127,7 @@ import {
   BROWSER_TOOL_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
-import { defaultShellCwd, workspaceKind } from './workspace-runtime-mode'
+import { defaultShellCwd, resolveRuntimeIdentity, workspaceKind } from './workspace-runtime-mode'
 import { applyCapabilityProfile, CAPABILITY_PROFILES, type CapabilityProfileName } from './capability-profiles'
 import { FileStateCache } from './file-state-cache'
 import { buildMemorySection } from './memory-section'
@@ -751,6 +751,13 @@ export class AgentGateway {
   private _onLog?: (line: string) => void
   /** Per-section prompt overrides set by DSPy optimization via POST /agent/prompt-override */
   private promptOverrides = new Map<string, string>()
+  /**
+   * This turn's API-side facts, read once before the prompt is built and dropped
+   * at the next turn: the chats the acting person can actually open, and the
+   * workspace agent pause in force (SHO-118). Absent means "render as before".
+   */
+  private turnReachable = new Map<string, string[]>()
+  private turnPause = new Map<string, WorkspaceAgentsPause | null>()
   /** Current guide registry built during loadBootstrapContext, consumed by tool context */
   private currentGuideRegistry?: Map<string, string>
   /** Per-section prompt breakdown from the last loadBootstrapContext() call */
@@ -2942,6 +2949,7 @@ export class AgentGateway {
       if (wt) sessionWorkspaceDir = wt
     }
 
+    await this.primeTurnFacts(sessionId)
     let systemPrompt = this.loadBootstrapContext(sessionId, turnConfig, resolvedChatContext)
 
     console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
@@ -5089,6 +5097,9 @@ export class AgentGateway {
       if (teamCtx) parts.push(teamCtx)
     }
 
+    const workspacePaused = this.buildWorkspacePausedContext(sessionId)
+    if (workspacePaused) parts.push(workspacePaused)
+
     const concurrentChats = this.buildConcurrentChatsContext(sessionId)
     if (concurrentChats) parts.push(concurrentChats)
 
@@ -5159,6 +5170,9 @@ export class AgentGateway {
       const teamCtx = this.buildTeamContext(sessionId)
       if (teamCtx) parts.push(teamCtx)
     }
+
+    const workspacePaused = this.buildWorkspacePausedContext(sessionId)
+    if (workspacePaused) parts.push(workspacePaused)
 
     const concurrentChats = this.buildConcurrentChatsContext(sessionId)
     if (concurrentChats) parts.push(concurrentChats)
@@ -5527,6 +5541,9 @@ export class AgentGateway {
       ...this.buildShellNavLines(),
     ].join('\n'))
 
+    const workspacePaused = this.buildWorkspacePausedContext(sessionId)
+    if (workspacePaused) pushDynamic('workspace-paused', workspacePaused)
+
     const concurrentChats = this.buildConcurrentChatsContext(sessionId)
     if (concurrentChats) pushDynamic('concurrent-chats', concurrentChats)
 
@@ -5796,26 +5813,89 @@ export class AgentGateway {
   }
 
   /**
-   * Build a system prompt section listing the other chats live in this
-   * workspace: several chats share one pod, so their turns overlap and their
-   * edits, builds and DB pushes land mid-turn. Excludes the calling session,
-   * and returns null when this chat has the workspace to itself.
+   * The other chats live in this workspace, as rows the prompt renders. Excludes
+   * the calling session; `[]` when this chat has the workspace to itself.
    */
-  private buildConcurrentChatsContext(sessionId?: string): string | null {
+  private concurrentChatsFor(sessionId?: string): ConcurrentChat[] {
     const others = this.sessionManager
       .listChatSessions(20 * 60_000)
       .filter((chat) => chat.id !== sessionId)
-    if (others.length === 0) return null
-
+    if (others.length === 0) return []
     const now = Date.now()
-    const chats: ConcurrentChat[] = others.map((chat) => ({
+    return others.map((chat) => ({
       id: chat.id,
       label: concurrentChatLabel({ id: chat.id, title: chat.title, firstUserText: chat.firstUserText }),
       running: this.turnLocks.has(chat.id),
       idleSeconds: Math.max(0, Math.floor((now - chat.lastActivityAt) / 1000)),
     }))
+  }
 
-    return buildConcurrentChatsPrompt(chats, { isolatedEdits: this.isWorktreesEnabled() })
+  /**
+   * Build a system prompt section listing the other chats live in this
+   * workspace: several chats share one pod, so their turns overlap and their
+   * edits, builds and DB pushes land mid-turn. Excludes the calling session,
+   * and returns null when this chat has the workspace to itself.
+   *
+   * `turnReachable` is this turn's `chat-reachable` answer (primed before the
+   * prompt is built). Without it the list renders unlabelled — the prompt never
+   * waits on the API.
+   */
+  private buildConcurrentChatsContext(sessionId?: string): string | null {
+    const chats = this.concurrentChatsFor(sessionId)
+    if (chats.length === 0) return null
+    const reachable = sessionId ? this.turnReachable.get(sessionId) : undefined
+    return buildConcurrentChatsPrompt(chats, {
+      isolatedEdits: this.isWorktreesEnabled(),
+      ...(reachable ? { reachable } : {}),
+    })
+  }
+
+  /**
+   * Tell a woken agent the workspace is paused, so it reports and stops instead
+   * of starting work. `agent_run_stop({ scope: "workspace" })` is what a person
+   * uses to set and lift it (SHO-118).
+   */
+  private buildWorkspacePausedContext(sessionId?: string): string | null {
+    const pause = sessionId ? this.turnPause.get(sessionId) : null
+    if (!pause) return null
+    const since = (() => {
+      const at = new Date(pause.at)
+      return Number.isNaN(at.getTime()) ? pause.at : at.toISOString()
+    })()
+    const lines = [
+      '## Workspace paused (agent lanes)',
+      `Every automatic agent start in this workspace is paused since ${since}${pause.by ? ` by ${pause.by}` : ''}.`,
+    ]
+    if (pause.reason) lines.push(`Reason: ${pause.reason}`)
+    lines.push(
+      '- Do not start new work, hand off cards, create cards or message other agents. Finish nothing that is not already in flight: report what you stopped and stop.',
+      '- A person\'s own message still runs; this pause holds automatic starts (task updates, schedules, triggers, card hand-offs, team-chat tags).',
+      '- The person lifts it with `agent_run_stop({ scope: "workspace", resume: true })` — do not lift it yourself unless that person asks you to.',
+    )
+    return lines.join('\n')
+  }
+
+  /**
+   * Read this turn's two API-side facts once, before the prompt is built: which
+   * of the listed chats the person can actually open, and whether the workspace
+   * is paused. Both fail open (an error, a missing API or a slow answer renders
+   * exactly what the prompt showed before), and both are skipped unless there is
+   * something worth asking: reachability only when another chat is listed, and
+   * the pause only in a workspace runtime.
+   */
+  private async primeTurnFacts(sessionId?: string): Promise<void> {
+    if (!sessionId) return
+    const workspaceId = resolveRuntimeIdentity().workspaceId || undefined
+    this.turnPause.delete(sessionId)
+    this.turnReachable.delete(sessionId)
+    if (!workspaceId || !hasInternalApiCredentials()) return
+    const chatIds = this.concurrentChatsFor(sessionId).map((chat) => chat.id)
+    const [reachable, pause] = await Promise.all([
+      chatIds.length ? fetchReachableChats(workspaceId, chatIds).catch(() => null) : null,
+      fetchWorkspacePause(workspaceId).catch(() => null),
+    ])
+    if (reachable?.ok && reachable.data) this.turnReachable.set(sessionId, reachable.data.reachable)
+    if (pause?.ok && pause.data) this.turnPause.set(sessionId, pause.data.paused)
   }
 
   /**

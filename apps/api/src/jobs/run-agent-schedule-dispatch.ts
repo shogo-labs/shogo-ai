@@ -249,8 +249,15 @@ export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Pro
     take: Math.min(SCHEDULE_BATCH_SIZE, capacity),
   })
 
+  const { isWorkspaceAgentsPaused } = await import('../services/workspace-pause.service')
   for (const schedule of due) {
     if (inFlightRuns.size >= MAX_CONCURRENT_SCHEDULE_RUNS) break
+    // A workspace-wide pause skips the tick and leaves `nextRunAt` alone, so the
+    // schedule is due again the moment the pause lifts (SHO-118).
+    if (await isWorkspaceAgentsPaused(schedule.workspaceId)) {
+      console.log(`[AgentSchedule] ${schedule.id} held: agents are paused in workspace ${schedule.workspaceId}`)
+      continue
+    }
     let nextRunAt: Date
     try {
       nextRunAt = nextAgentScheduleRun(schedule.cronExpression, schedule.timezone, now)

@@ -805,6 +805,11 @@ async function supersedePendingMoveNudges(threadRootId: string | null, agentRef:
   }).catch((err: Error) => console.warn('[ChannelAgent] superseding a pending hint failed:', err.message))
 }
 
+/** Is every automatic agent start held in this workspace? */
+function workspaceAgentsPaused(workspaceId: string): Promise<boolean> {
+  return import('./workspace-pause.service').then((module) => module.isWorkspaceAgentsPaused(workspaceId))
+}
+
 /**
  * Start this (agent, thread)'s pending wakes if nothing is running. One entry
  * point for the settle drain, the post-enqueue timer and the 15s sweep, so two
@@ -817,6 +822,12 @@ async function startDrainIfIdle(row: { conversationId: string; threadRootId: str
   draining.add(key)
   let started = false
   try {
+    // A paused workspace starts nothing; the rows stay pending for the resume.
+    const conversation = await db.conversation.findUnique({
+      where: { id: row.conversationId },
+      select: { workspaceId: true },
+    })
+    if (conversation && (await workspaceAgentsPaused(conversation.workspaceId))) return false
     if (!(await agentRunningInThread(row.conversationId, row.threadRootId, row.agentRef))) {
       started = true
       void drainWakes(row.conversationId, row.threadRootId, row.agentRef)
@@ -1520,6 +1531,25 @@ export async function runAgentReply(args: RunAgentReplyArgs, opts: { drained?: b
   // Any wake that reaches this point carries its own instruction, so a move
   // hint still waiting out its window for this agent is now redundant.
   await supersedePendingMoveNudges(threadRootId, agentRefForTarget(target))
+  // A workspace-wide pause stops automatic starts, not people: a person's own
+  // tag still runs, and an automatic one (board hand-off, agent-to-agent tag,
+  // chain continuation) is parked as a durable wake so it replays on resume.
+  if (trigger.authorType !== 'user' && (await workspaceAgentsPaused(conversation.workspaceId))) {
+    const held = await enqueueAgentWake({
+      conversationId: conversation.id,
+      threadRootId,
+      triggerMessageId: trigger.id,
+      agentRef: agentRefForTarget(target),
+      userId,
+      chain: args.chain ?? null,
+      reason: 'paused',
+    }).catch((err: Error) => {
+      console.warn('[ChannelAgent] holding a wake for the workspace pause failed:', err.message)
+      return null
+    })
+    console.log(`[ChannelAgent] workspace paused — held ${held ?? 'no'} wake for ${conversation.id}`)
+    return null
+  }
   const key = runKey(conversation.id, threadRootId, target)
   const holder = liveRuns.get(key)
   if (holder) {
