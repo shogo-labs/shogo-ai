@@ -24,6 +24,7 @@ import { armPermissionNudge } from '../../lib/notifications/permission-nudge'
 import {
   messageSoundKindFor,
   playMessageSound,
+  setPreferredMessageTone,
   unlockNotificationAudio,
 } from '../../lib/notification-sound'
 
@@ -42,10 +43,17 @@ export function TeamChatNotifier() {
   const { settings } = useChatSettings(Platform.OS === 'web' ? workspaceId : null)
   const messageSoundRef = useRef(settings?.messageSound ?? 'default')
   messageSoundRef.current = settings?.messageSound ?? 'default'
+  const messageTone = settings?.messageTone ?? 'knock'
+  const messageToneRef = useRef(messageTone)
+  messageToneRef.current = messageTone
 
   useEffect(() => {
     unlockNotificationAudio()
   }, [])
+
+  useEffect(() => {
+    setPreferredMessageTone(messageTone)
+  }, [messageTone])
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (s) => {
@@ -65,7 +73,7 @@ export function TeamChatNotifier() {
       armPermissionNudge(event.reason)
       // Plays whether or not banner permission is granted; the server already
       // skipped users in DND or quiet hours.
-      const played = playMessageSound(messageSoundKindFor(event.reason), messageSoundRef.current)
+      const played = playMessageSound(messageSoundKindFor(event.reason), messageSoundRef.current, messageToneRef.current)
       void requestAttention(event.reason)
       await notifyChannelMessage({
         // Reminders without a message have no conversation; `/c/inbox` is the inbox screen.
