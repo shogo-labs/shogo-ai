@@ -2,9 +2,12 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, mock, test } from 'bun:test'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import {
   RuntimeManager,
   projectWorkspaceRuntimeKey,
+  resolveWorkspacePreviewMax,
   workspaceRuntimeKey,
 } from '../lib/runtime/manager'
 
@@ -33,6 +36,7 @@ type PrivateRM = RuntimeManager & {
   resolveRuntimeKey: (projectId: string) => string
   recordWorkspaceMru: (key: string) => void
   enforceWorkspacePreviewCap: () => Promise<void>
+  workspacePreviewMax: number
 }
 
 function newManager(): PrivateRM {
@@ -40,6 +44,26 @@ function newManager(): PrivateRM {
   // Neutralize the embedded worker manager so touch/stop don't do real work.
   rm.agentManager = { touch: mock(() => {}), stop: mock(async () => {}) }
   return rm
+}
+
+/**
+ * A manager built as if it were running on a `low`-tier host (≤8 GB RAM /
+ * ≤4 cores — the normal Windows laptop from SHO-107), where the warm-preview
+ * cap is 1. `workspacePreviewMax` is read once at construction, so the env has
+ * to be set around the constructor and restored afterwards.
+ */
+function newLowTierManager(): PrivateRM {
+  const prevTier = process.env.SHOGO_HOST_TIER
+  const prevMax = process.env.WORKSPACE_PREVIEW_MAX
+  delete process.env.WORKSPACE_PREVIEW_MAX
+  process.env.SHOGO_HOST_TIER = 'low'
+  try {
+    return newManager()
+  } finally {
+    if (prevTier === undefined) delete process.env.SHOGO_HOST_TIER
+    else process.env.SHOGO_HOST_TIER = prevTier
+    if (prevMax !== undefined) process.env.WORKSPACE_PREVIEW_MAX = prevMax
+  }
 }
 
 function seedAnchored(rm: PrivateRM, projectId: string, port: number) {
@@ -239,5 +263,199 @@ describe('RuntimeManager — workspace-session runtimes share the warm cap', () 
 
     rm.runtimes.delete(key)
     expect(await rm.workspaceActivity('w5')).toEqual({ running: false, inFlight: false })
+  })
+})
+
+/**
+ * SHO-107. On a `low`-tier Windows host the desktop boot prewarm looked at the
+ * newest workspace and spawned `ws:<workspaceId>` for it while the same
+ * workspace's anchored runtime `ws:proj:<anchor>` was still starting — two
+ * merged roots, two agent-runtime processes, one folder. The preview LRU
+ * (cap=1 there) then evicted the anchored one, killing the PTY the user was
+ * typing into ("1011 Connection ended").
+ */
+describe('RuntimeManager — one folder, one runtime', () => {
+  test('a workspace-level start joins the anchor start already in flight', async () => {
+    const rm = newManager()
+    ;(rm as any).getProjectInfo = mock(async () => ({}))
+
+    const anchorKey = projectWorkspaceRuntimeKey('p1')
+    const anchorRuntime = {
+      id: anchorKey,
+      port: 37400,
+      agentPort: 38400,
+      status: 'running',
+      url: 'http://localhost:37400',
+      startedAt: Date.now(),
+      process: null,
+      agentProcess: fakeProcess(),
+    }
+    let releaseAnchor!: (runtime: any) => void
+    const spawn = mock(
+      async (_spec: any) =>
+        new Promise((resolve) => {
+          releaseAnchor = (runtime) => resolve(runtime)
+        }),
+    )
+    ;(rm as any).doStartMergedRuntime = spawn
+
+    // The anchored start is kicked off first and is still in flight (it has
+    // not resolved) when the workspace-level resolve arrives — exactly the
+    // ordering in the failing Windows run's API log.
+    const anchorStart = rm.startProjectWorkspace('p1', { workspaceId: 'w1' })
+    const workspaceStart = rm.startWorkspace('w1', { attachedProjectIds: [] })
+
+    // Give the workspace resolve time to discover the in-flight anchor.
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    releaseAnchor(anchorRuntime)
+
+    const [anchorResult, workspaceResult] = await Promise.all([anchorStart, workspaceStart])
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(anchorResult.id).toBe(anchorKey)
+    expect(workspaceResult.id).toBe(anchorKey)
+    expect(rm.runtimes.has(workspaceRuntimeKey('w1'))).toBe(false)
+  })
+
+  test('a live anchored runtime is reused instead of spawning ws:<id>', async () => {
+    const rm = newManager()
+    const anchorKey = seedAnchored(rm, 'p2', 37410)
+    ;(rm as any).runtimeOwners.set(anchorKey, { workspaceId: 'w2', anchorProjectId: 'p2' })
+    const spawn = mock(async () => {
+      throw new Error('must not spawn a second merged root')
+    })
+    ;(rm as any).doStartMergedRuntime = spawn
+
+    const result = await rm.startWorkspace('w2', { attachedProjectIds: [] })
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(result.id).toBe(anchorKey)
+    expect(rm.workspacePreviewMru[0]).toBe(anchorKey)
+  })
+
+  test('a workspace that mounts its own members still gets its ws:<id> runtime', async () => {
+    const rm = newManager()
+    const anchorKey = seedAnchored(rm, 'p3', 37420)
+    ;(rm as any).runtimeOwners.set(anchorKey, { workspaceId: 'w3', anchorProjectId: 'p3' })
+    ;(rm as any).getProjectInfo = mock(async () => ({}))
+    const spawn = mock(async (spec: any) => ({
+      id: spec.key,
+      port: 37430,
+      agentPort: 38430,
+      status: 'running',
+      url: 'http://localhost:37430',
+      startedAt: Date.now(),
+      process: null,
+      agentProcess: fakeProcess(),
+    }))
+    ;(rm as any).doStartMergedRuntime = spawn
+
+    const result = await rm.startWorkspace('w3', { attachedProjectIds: ['p9'] })
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(result.id).toBe(workspaceRuntimeKey('w3'))
+  })
+})
+
+/**
+ * SHO-107 part 2. A runtime hosting an open terminal is never the LRU victim,
+ * whatever the cap is.
+ */
+describe('RuntimeManager — an open terminal pins its runtime', () => {
+  test('cap=1: the runtime with a live terminal session is not evicted', async () => {
+    const rm = newLowTierManager()
+    expect(rm.workspacePreviewMax).toBe(1)
+    const newest = seedAnchored(rm, 'p1', 37440)
+    const oldest = seedAnchored(rm, 'p2', 37441)
+    rm.workspacePreviewMru = [newest, oldest]
+    // The user has a shell open in the least-recently-used runtime.
+    rm.noteTerminalSession('p2', 1)
+
+    const stopped: string[] = []
+    ;(rm as any).stop = mock(async (key: string) => {
+      stopped.push(key)
+      rm.runtimes.delete(key)
+    })
+
+    await rm.enforceWorkspacePreviewCap()
+
+    expect(stopped).toEqual([])
+    expect(rm.runtimes.has(oldest)).toBe(true)
+  })
+
+  test('once the terminal closes the runtime is evictable again', async () => {
+    const rm = newLowTierManager()
+    const newest = seedAnchored(rm, 'p3', 37450)
+    const oldest = seedAnchored(rm, 'p4', 37451)
+    rm.workspacePreviewMru = [newest, oldest]
+    rm.noteTerminalSession('p4', 1)
+    rm.noteTerminalSession('p4', -1)
+
+    expect(rm.terminalSessionCount('p4')).toBe(0)
+
+    const stopped: string[] = []
+    ;(rm as any).stop = mock(async (key: string) => {
+      stopped.push(key)
+      rm.runtimes.delete(key)
+    })
+
+    await rm.enforceWorkspacePreviewCap()
+
+    expect(stopped).toEqual([oldest])
+  })
+
+  test('a closing socket never drives the count negative', () => {
+    const rm = newManager()
+    rm.noteTerminalSession('p5', -1)
+    expect(rm.terminalSessionCount('p5')).toBe(0)
+  })
+})
+
+/**
+ * SHO-107 part 3. Boot must never warm more than the manager will keep: the
+ * prewarm used to read `WORKSPACE_PREVIEW_MAX || '3'` while the manager kept 1
+ * on a `low`-tier host, so an eviction right after boot was guaranteed.
+ */
+describe('RuntimeManager — one cap, one place', () => {
+  test('a low-tier host resolves to 1, and the manager uses that number', () => {
+    const prevTier = process.env.SHOGO_HOST_TIER
+    const prevMax = process.env.WORKSPACE_PREVIEW_MAX
+    delete process.env.WORKSPACE_PREVIEW_MAX
+    process.env.SHOGO_HOST_TIER = 'low'
+    try {
+      expect(resolveWorkspacePreviewMax()).toBe(1)
+      expect(newLowTierManager().workspacePreviewMax).toBe(1)
+    } finally {
+      if (prevTier === undefined) delete process.env.SHOGO_HOST_TIER
+      else process.env.SHOGO_HOST_TIER = prevTier
+      if (prevMax !== undefined) process.env.WORKSPACE_PREVIEW_MAX = prevMax
+    }
+  })
+
+  test('a normal host keeps 3, and WORKSPACE_PREVIEW_MAX wins', () => {
+    const prevTier = process.env.SHOGO_HOST_TIER
+    const prevMax = process.env.WORKSPACE_PREVIEW_MAX
+    delete process.env.SHOGO_HOST_TIER
+    delete process.env.WORKSPACE_PREVIEW_MAX
+    try {
+      expect(resolveWorkspacePreviewMax()).toBe(3)
+      process.env.WORKSPACE_PREVIEW_MAX = '2'
+      expect(resolveWorkspacePreviewMax()).toBe(2)
+      process.env.WORKSPACE_PREVIEW_MAX = 'not-a-number'
+      expect(resolveWorkspacePreviewMax()).toBe(3)
+    } finally {
+      if (prevTier !== undefined) process.env.SHOGO_HOST_TIER = prevTier
+      if (prevMax === undefined) delete process.env.WORKSPACE_PREVIEW_MAX
+      else process.env.WORKSPACE_PREVIEW_MAX = prevMax
+    }
+  })
+
+  test('the desktop startup prewarm takes its take from the shared cap', () => {
+    // server.ts is a 10k-line module that starts timers on import, so its boot
+    // prewarm cannot be executed here. Pin the wiring instead: the prewarm must
+    // ask the manager for the cap, never resolve WORKSPACE_PREVIEW_MAX itself.
+    const source = readFileSync(join(import.meta.dir, '..', 'server.ts'), 'utf8')
+    expect(source).toContain('resolveWorkspacePreviewMax()')
+    expect(source).not.toContain('parseInt(process.env.WORKSPACE_PREVIEW_MAX')
   })
 })

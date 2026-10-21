@@ -48,6 +48,11 @@ export interface PtyPodBridgeData {
   readonly __kind: typeof PTY_PROXY_KIND
   /** http(s):// origin of the per-project runtime pod. Resolved at upgrade time. */
   podUrl: string
+  /**
+   * Project whose runtime hosts the PTY. Used by the host runtime manager to
+   * pin that runtime against LRU eviction while the shell is open (SHO-107).
+   */
+  projectId?: string
   /** Pod-generated session id from the prior REST POST. */
   sessionId: string
   /** Client's last byte offset for replay (0 = full replay or fresh session). */
@@ -75,10 +80,12 @@ export function buildPtyPodBridgeData(input: {
   sessionId: string
   since: number
   runtimeToken: string
+  projectId?: string
 }): PtyPodBridgeData {
   return {
     __kind: PTY_PROXY_KIND,
     podUrl: input.podUrl,
+    projectId: input.projectId,
     sessionId: input.sessionId,
     since: input.since,
     runtimeToken: input.runtimeToken,

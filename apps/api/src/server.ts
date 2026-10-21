@@ -9475,6 +9475,24 @@ import {
 } from './lib/pty-pod-bridge'
 const ptyPodBridge = createPtyPodBridgeHandlers()
 
+/**
+ * Pin / unpin the runtime that hosts a terminal bridge socket.
+ *
+ * While a PTY socket is open its runtime counts as doing active work, so the
+ * warm-preview LRU skips it — a sweep must never evict the runtime the user is
+ * typing into (SHO-107: the Windows smoke terminal died with "1011 Connection
+ * ended" because the boot prewarm's LRU evicted its runtime mid-command).
+ */
+function countTerminalSession(data: PtyPodBridgeData, delta: 1 | -1): void {
+  const projectId = data.projectId
+  if (!projectId) return
+  try {
+    getRuntimeManager().noteTerminalSession?.(projectId, delta)
+  } catch (err: any) {
+    console.warn('[TerminalProxy] terminal-session pin failed:', err?.message ?? err)
+  }
+}
+
 // Match a path like `/api/projects/<projectId>/ports/<port>/tunnel`.
 // Port capture group mirrors `parsePortParam()` in
 // `packages/agent-runtime/src/port-bridge.ts` (no leading zeros, e.g. `"0443"`
@@ -9591,6 +9609,7 @@ export default {
           const podUrl = await resolveRuntimeBaseUrl(projectId)
           const data: PtyPodBridgeData = buildPtyPodBridgeData({
             podUrl,
+            projectId,
             sessionId,
             since,
             runtimeToken: await deriveProjectRuntimeToken(projectId),
@@ -9694,8 +9713,10 @@ export default {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
       else if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamOpen(ws)
-      else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
-      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
+      else if (isPtyPodBridgeData(ws.data)) {
+        countTerminalSession(ws.data, 1)
+        ptyPodBridge.open(ws)
+      } else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
       else handleInstanceWsOpen(ws)
     },
     message(ws: any, msg: any) {
@@ -9710,8 +9731,10 @@ export default {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
       else if (isLiveRelayData(ws.data)) liveRelayClose(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamClose(ws)
-      else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
-      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
+      else if (isPtyPodBridgeData(ws.data)) {
+        countTerminalSession(ws.data, -1)
+        ptyPodBridge.close(ws, code, reason)
+      } else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)
     },
   },
@@ -9825,8 +9848,14 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
   setTimeout(async () => {
     try {
       const { resolveWorkspaceRuntimeUrl } = await import('./lib/resolve-workspace-runtime-url')
-      const previewMax = parseInt(process.env.WORKSPACE_PREVIEW_MAX || '3', 10)
-      const take = Number.isFinite(previewMax) && previewMax > 0 ? previewMax : 3
+      const { resolveWorkspacePreviewMax } = await import('./lib/runtime/manager')
+      // The SAME cap the manager evicts down to. Reading
+      // `WORKSPACE_PREVIEW_MAX || '3'` here instead warmed more workspaces than
+      // the manager keeps on a `low`-tier host (cap 1), so boot guaranteed an
+      // eviction right after boot — and the eviction could land on the runtime
+      // hosting the user's terminal (SHO-107).
+      const previewMax = resolveWorkspacePreviewMax()
+      const take = previewMax
       const workspaces = await prisma.workspace.findMany({
         orderBy: { updatedAt: 'desc' },
         take,
@@ -9844,7 +9873,10 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
           )
       }
 
-      const projectCount = Math.max(0, parseInt(process.env.DESKTOP_STARTUP_PREWARM_PROJECTS || '1', 10))
+      const projectCount = Math.min(
+        Math.max(0, parseInt(process.env.DESKTOP_STARTUP_PREWARM_PROJECTS || '1', 10)),
+        previewMax,
+      )
       if (projectCount > 0) {
         const projects = await prisma.project.findMany({
           orderBy: { updatedAt: 'desc' },
