@@ -9473,25 +9473,8 @@ import {
   isPtyPodBridgeData,
   type PtyPodBridgeData,
 } from './lib/pty-pod-bridge'
+import { countTerminalSession } from './lib/terminal-session-pin'
 const ptyPodBridge = createPtyPodBridgeHandlers()
-
-/**
- * Pin / unpin the runtime that hosts a terminal bridge socket.
- *
- * While a PTY socket is open its runtime counts as doing active work, so the
- * warm-preview LRU skips it — a sweep must never evict the runtime the user is
- * typing into (SHO-107: the Windows smoke terminal died with "1011 Connection
- * ended" because the boot prewarm's LRU evicted its runtime mid-command).
- */
-function countTerminalSession(data: PtyPodBridgeData, delta: 1 | -1): void {
-  const projectId = data.projectId
-  if (!projectId) return
-  try {
-    getRuntimeManager().noteTerminalSession?.(projectId, delta)
-  } catch (err: any) {
-    console.warn('[TerminalProxy] terminal-session pin failed:', err?.message ?? err)
-  }
-}
 
 // Match a path like `/api/projects/<projectId>/ports/<port>/tunnel`.
 // Port capture group mirrors `parsePortParam()` in
@@ -9714,7 +9697,7 @@ export default {
       else if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamOpen(ws)
       else if (isPtyPodBridgeData(ws.data)) {
-        countTerminalSession(ws.data, 1)
+        countTerminalSession(getRuntimeManager(), ws.data, 1)
         ptyPodBridge.open(ws)
       } else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
       else handleInstanceWsOpen(ws)
@@ -9732,7 +9715,7 @@ export default {
       else if (isLiveRelayData(ws.data)) liveRelayClose(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamClose(ws)
       else if (isPtyPodBridgeData(ws.data)) {
-        countTerminalSession(ws.data, -1)
+        countTerminalSession(getRuntimeManager(), ws.data, -1)
         ptyPodBridge.close(ws, code, reason)
       } else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)

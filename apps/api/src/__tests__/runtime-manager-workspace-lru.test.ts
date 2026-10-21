@@ -10,6 +10,7 @@ import {
   resolveWorkspacePreviewMax,
   workspaceRuntimeKey,
 } from '../lib/runtime/manager'
+import { countTerminalSession } from '../lib/terminal-session-pin'
 
 function fakeProcess() {
   const proc = {
@@ -412,9 +413,102 @@ describe('RuntimeManager — an open terminal pins its runtime', () => {
 })
 
 /**
+ * SHO-107 QA round 1. The pin has to be wired in the composer the desktop
+ * actually loads: `local-server.ts` (picked by `entry.ts` when
+ * `SHOGO_LOCAL_MODE === 'true'`), not only `server.ts`.
+ */
+describe('terminal session pin — wired in every composer', () => {
+  test('the shared helper counts ±1 against the project of the socket', () => {
+    const manager = { noteTerminalSession: mock(() => {}) }
+    countTerminalSession(manager, { projectId: 'p1' }, 1)
+    countTerminalSession(manager, { projectId: 'p1' }, -1)
+    expect(manager.noteTerminalSession.mock.calls).toEqual([
+      ['p1', 1],
+      ['p1', -1],
+    ])
+  })
+
+  test('a socket without a project id, or a manager without the hook, is a no-op', () => {
+    const manager = { noteTerminalSession: mock(() => {}) }
+    countTerminalSession(manager, {}, 1)
+    countTerminalSession(manager, null, 1)
+    countTerminalSession(null, { projectId: 'p1' }, 1)
+    countTerminalSession({}, { projectId: 'p2' }, 1)
+    expect(manager.noteTerminalSession).not.toHaveBeenCalled()
+  })
+
+  test('a throwing manager never breaks the socket', () => {
+    const manager = {
+      noteTerminalSession: mock(() => {
+        throw new Error('boom')
+      }),
+    }
+    const warn = mock(() => {})
+    const prevWarn = console.warn
+    console.warn = warn as any
+    try {
+      expect(() => countTerminalSession(manager, { projectId: 'p1' }, 1)).not.toThrow()
+    } finally {
+      console.warn = prevWarn
+    }
+    expect(warn).toHaveBeenCalled()
+  })
+
+  test('both composers count terminal sockets around their PTY bridge', () => {
+    // The Windows smoke run was desktop/local mode, where `server.ts` is never
+    // evaluated — a pin wired only there leaves the failing surface unguarded.
+    for (const composer of ['server.ts', 'local-server.ts']) {
+      const source = readFileSync(join(import.meta.dir, '..', composer), 'utf8')
+      expect(source).toContain("from './lib/terminal-session-pin'")
+      expect(source).toContain(', ws.data, 1)')
+      expect(source).toContain(', ws.data, -1)')
+    }
+  })
+})
+
+/**
+ * SHO-107 QA round 1, minors.
+ */
+describe('RuntimeManager — start claims and session counts do not leak', () => {
+  test('a start that throws before spawning releases its anchored claim', async () => {
+    const rm = newManager()
+    ;(rm as any).getProjectInfo = mock(async (id: string) =>
+      id === 'remote1' ? { remoteHostId: 'host-1' } : {},
+    )
+    const anchorKey = projectWorkspaceRuntimeKey('p1')
+    const spawn = mock(async () => {
+      throw new Error('must not spawn')
+    })
+    ;(rm as any).doStartMergedRuntime = spawn
+
+    await expect(
+      rm.startProjectWorkspace('p1', { workspaceId: 'w1', attachedProjectIds: ['remote1'] }),
+    ).rejects.toThrow(/Remote-SSH projects cannot be attached/)
+    expect(spawn).not.toHaveBeenCalled()
+    // Without this release, every later workspace-level resolve waits out
+    // ANCHORED_REUSE_WAIT_MS for a start that is never coming.
+    expect((rm as any).runtimeOwners.has(anchorKey)).toBe(false)
+    expect((rm as any).hasAnchoredRuntime('w1')).toBe(false)
+  })
+
+  test('stopping a runtime clears its terminal session count', async () => {
+    const rm = newManager()
+    const key = seedAnchored(rm, 'p1', 37460)
+    rm.noteTerminalSession('p1', 1)
+    expect(rm.terminalSessionCount('p1')).toBe(1)
+
+    await rm.stop(key, 'test')
+
+    expect(rm.terminalSessionCount('p1')).toBe(0)
+  })
+})
+
+/**
  * SHO-107 part 3. Boot must never warm more than the manager will keep: the
  * prewarm used to read `WORKSPACE_PREVIEW_MAX || '3'` while the manager kept 1
- * on a `low`-tier host, so an eviction right after boot was guaranteed.
+ * on a `low`-tier host, so an eviction right after boot was guaranteed. This
+ * block covers the docker/self-host composer's `[StartupPrewarm]`; the desktop
+ * boot warm is `[local-projects] prewarm` (one project, which then dedupes).
  */
 describe('RuntimeManager — one cap, one place', () => {
   test('a low-tier host resolves to 1, and the manager uses that number', () => {

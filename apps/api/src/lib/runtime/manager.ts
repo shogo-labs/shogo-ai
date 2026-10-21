@@ -1849,19 +1849,15 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // spawning a second merged root for the same folder (SHO-107).
     this.runtimeOwners.set(key, { workspaceId: opts.workspaceId, anchorProjectId })
 
-    const anchorProjectInfo = await this.getProjectInfo(anchorProjectId)
-    const isRemote = !!anchorProjectInfo.remoteHostId
-    if (!isRemote && memberProjectIds.length > 1) {
-      const attachedInfos = await Promise.all(
-        memberProjectIds.slice(1).map((projectId) => this.getProjectInfo(projectId)),
-      )
-      if (attachedInfos.some((info) => !!info.remoteHostId)) {
-        throw new Error(
-          'Remote-SSH projects cannot be attached to a local project runtime; ' +
-            'open the remote project directly.',
-        )
-      }
-    }
+    // A throw before anything is spawned must release that claim, or every
+    // later workspace-level resolve waits out ANCHORED_REUSE_WAIT_MS for a
+    // start that is never coming.
+    const { isRemote, anchorProjectInfo } = await this
+      .assertSingleTransport(anchorProjectId, memberProjectIds)
+      .catch((err) => {
+        this.releaseRuntimeOwner(key)
+        throw err
+      })
     let existing = this.runtimes.get(key)
     // A project can be rebound between local and Remote-SSH storage while its
     // old runtime is still cached. Never reuse a runtime with the wrong
@@ -2964,6 +2960,42 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
+   * Validate that the anchor and every attached project share one transport.
+   * Extracted so {@link startProjectWorkspace} can release its runtime-key claim
+   * when this throws (a remote project attached to a local runtime) — the claim
+   * is made before the lookups this needs.
+   */
+  private async assertSingleTransport(
+    anchorProjectId: string,
+    memberProjectIds: string[],
+  ): Promise<{ isRemote: boolean; anchorProjectInfo: ProjectInfo }> {
+    const anchorProjectInfo = await this.getProjectInfo(anchorProjectId)
+    const isRemote = !!anchorProjectInfo.remoteHostId
+    if (!isRemote && memberProjectIds.length > 1) {
+      const attachedInfos = await Promise.all(
+        memberProjectIds.slice(1).map((projectId) => this.getProjectInfo(projectId)),
+      )
+      if (attachedInfos.some((info) => !!info.remoteHostId)) {
+        throw new Error(
+          'Remote-SSH projects cannot be attached to a local project runtime; ' +
+            'open the remote project directly.',
+        )
+      }
+    }
+    return { isRemote, anchorProjectInfo }
+  }
+
+  /**
+   * Drop a start claim that will never produce a runtime — a lookup or
+   * validation throw before the spawn. A claim that already published a
+   * runtime or an in-flight promise is left alone; those clean up themselves.
+   */
+  private releaseRuntimeOwner(key: string): void {
+    if (this.runtimes.has(key) || this.startingPromises.has(key)) return
+    this.runtimeOwners.delete(key)
+  }
+
+  /**
    * Whether this workspace has a project-anchored runtime slot at all — live,
    * starting, or claimed but not yet published. Synchronous so
    * {@link startWorkspace} can skip its anchored-reuse wait entirely (and stay
@@ -3263,6 +3295,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     this.releasePort(runtime.port)
     this.runtimes.delete(key)
     this.runtimeOwners.delete(key)
+    // A leaked count must not pin the next runtime for this key forever. If a
+    // terminal socket is somehow still open, its close event clamps at zero.
+    this.liveTerminalSessions.delete(key)
     const mi = this.workspacePreviewMru.indexOf(key)
     if (mi >= 0) this.workspacePreviewMru.splice(mi, 1)
     this.dropBackgroundMru(key)
