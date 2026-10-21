@@ -105,7 +105,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, getSessionWakeState, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, type SessionWakeState } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, getProjectConfig, getSessionWakeState, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, runtimeServesProjectId, type SessionWakeState } from './internal-api'
 import { mergeCapabilitySettingsIntoConfig } from '@shogo/shared-runtime/capability-settings'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
@@ -6057,8 +6057,10 @@ export class AgentGateway {
    * be reached, the file is left as-is.
    *
    * Workspace runtimes (no project id) and processes without internal-API
-   * credentials skip the pull. Tests pass `fetchConfig` to skip the
-   * credential check and the network.
+   * credentials skip the pull, as does a gateway whose project id is not one
+   * this process serves (`PROJECT_ID` / `WORKSPACE_ANCHOR_PROJECT_ID` name
+   * something else). Tests pass `fetchConfig` to skip the credential and scope
+   * checks and the network.
    *
    * Returns true when the database was applied.
    */
@@ -6067,7 +6069,24 @@ export class AgentGateway {
   ): Promise<boolean> {
     const projectId = projectScopedId(this.projectId)
     if (!projectId) return false
-    if (!fetchConfig && !hasInternalApiCredentials()) return false
+    if (!fetchConfig) {
+      if (!hasInternalApiCredentials()) return false
+      // Write target is *this* gateway's config.json, so scope the pull to the
+      // project this gateway was built for. The `projectId` getter prefers the
+      // live env id (pool re-assignment), which would make every pod fetch the
+      // env project's settings into whatever directory it happens to serve. A
+      // pool placeholder names no project, so it keeps using the live env id.
+      const ownedProjectId = projectScopedId(this._constructedProjectId) ?? projectId
+      if (!runtimeServesProjectId(ownedProjectId)) {
+        const declared = [...new Set([process.env.PROJECT_ID, process.env.WORKSPACE_ANCHOR_PROJECT_ID])]
+          .filter(Boolean)
+          .join(', ')
+        console.warn(
+          `[AgentGateway] capability sync skipped: this runtime serves "${declared}", gateway project is "${ownedProjectId}"`,
+        )
+        return false
+      }
+    }
 
     let result: { ok: boolean; data?: { settings?: unknown } | null }
     try {

@@ -61,6 +61,29 @@ export function projectScopedId(projectId: string | null | undefined): string | 
 }
 
 /**
+ * True when `projectId` is one of the projects this process actually serves.
+ *
+ * A runtime is told which project(s) it serves by `PROJECT_ID` /
+ * `WORKSPACE_ANCHOR_PROJECT_ID`. When those are set and name something else —
+ * a test fixture, or a `projectId` left over from another process — a
+ * project-scoped internal call would pull a stranger's settings into this
+ * runtime's `config.json`. With neither env id set there is nothing to compare
+ * against, so the call is allowed (unchanged behaviour for callers that pass an
+ * explicit id).
+ */
+export function runtimeServesProjectId(
+  projectId: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const scoped = projectScopedId(projectId)
+  if (!scoped) return false
+  const served = [projectScopedId(env.PROJECT_ID), projectScopedId(env.WORKSPACE_ANCHOR_PROJECT_ID)]
+    .filter((id): id is string => !!id)
+  if (served.length === 0) return true
+  return served.includes(scoped)
+}
+
+/**
  * True when this process can authenticate an `/api/internal` call.
  * Tests and unassigned processes have neither, and calling the API would
  * only burn a timeout before failing.
