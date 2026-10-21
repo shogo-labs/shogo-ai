@@ -574,6 +574,19 @@ jobs:
           # chat-task-wake-refocus covers the window that was in the background
           # while the wake ran: one catch-up on refocus, then quiet again.
           - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks chat-task-thread-pane chat-task-wake-live-attach chat-task-wake-refocus' }
+          # machine-workspace-agent-turn-live is not a chat spec, but it needs
+          # the same fake-model stack and nothing else: its SHO-130 AC 5
+          # assertion reads the continuation request's tool-result text, and its
+          # cloud control depends on the API *not* having the machine's canary.
+          # It cannot ride a shard (a shard sets E2E_LOCAL_START_STACK only, so
+          # the spec skipped itself and ran nowhere), and it must not trail
+          # another job's spec list either: with `workers: 1` Playwright runs
+          # files in filesystem order, so whatever sits in that list runs after
+          # the flaky ones — and their retries starve the tail of the job
+          # (`E2E (chat resume)` finished at 34m37s of its 35m cap, and #1621
+          # was cancelled at the cap, SHO-133). Its own entry gets its own
+          # stack and its own timeout.
+          - { name: 'E2E (machine agent turn)', spec: 'machine-workspace-agent-turn-live' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
