@@ -20,15 +20,25 @@ export {
 } from './capability-settings'
 
 export {
+  CO_AUTHOR_TRAILER_KEY,
   DEFAULT_SHOGO_AGENT_EMAIL,
   DEFAULT_SHOGO_AGENT_NAME,
   SHOGO_PR_FOOTER_MARKER,
+  agentIdentityFromConfig,
   getShogoAgentEmail,
   getShogoAgentName,
+  inspectAgentAttribution,
+  isCanonicalShogoAgentIdentity,
+  isShogoAgentEmail,
+  isShogoAgentIdentity,
+  normalizeAgentAttribution,
   shogoCoAuthorTrailer,
   shogoPrFooter,
   withShogoCommitTrailer,
   withShogoPrFooter,
+  type AgentIdentity,
+  type AttributionReport,
+  type NormalizeAttributionOptions,
 } from './agent-attribution'
 
 export {

@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Shared Web Audio engine for in-app sounds: chat message cues, huddle rings,
- * and island cues. One module-level `AudioContext` is reused for all of them.
+ * Shared Web Audio engine for in-app sounds: chat message cues, huddle rings
+ * (`huddle-ringtone.ts`), and island cues. One module-level `AudioContext` is reused for all of them.
  *
  * Browsers only let audio start after a user gesture, so the context is
  * created and resumed on the first `pointerdown` or `keydown`. Until then,
  * message sounds stay silent instead of queueing up. Phones use the system
  * push sound, so the native build uses `notification-sound.native.ts`.
+ *
+ * Messages play the Soft Knock recording (`assets/sounds/soft-knock.mp3`),
+ * decoded once after the first gesture. Until it has loaded, or where it
+ * can't be fetched or decoded, the synthesized cues below play instead.
  */
 
 export type MessageSoundKind = 'dm' | 'mention' | 'thread' | 'other'
@@ -21,11 +25,14 @@ export interface Tone {
   type?: OscillatorType
 }
 
-/** At most one message cue every this many milliseconds. */
-export const MESSAGE_SOUND_THROTTLE_MS = 1_500
+/** At most one message cue every this many milliseconds; the recording is 2 s long. */
+export const MESSAGE_SOUND_THROTTLE_MS = 2_000
 
 const DEFAULT_PEAK = 0.18
 const SUBTLE_PEAK = 0.06
+
+/** Playback gain for the recording, which is mastered near -7 dBFS. */
+const KNOCK_GAIN = { default: 0.7, subtle: 0.25 } as const
 
 const MESSAGE_TONES: Record<MessageSoundKind, Tone[]> = {
   // A two-note knock: the cue for a direct message or a mention.
@@ -47,6 +54,8 @@ type AudioCtor = typeof AudioContext
 let context: AudioContext | null = null
 let lastMessageSoundAt = Number.NEGATIVE_INFINITY
 let unlockInstalled = false
+let knockBuffer: AudioBuffer | null = null
+let knockLoad: Promise<AudioBuffer | null> | null = null
 
 function audioCtor(): AudioCtor | undefined {
   if (typeof window === 'undefined') return undefined
@@ -79,7 +88,9 @@ export function unlockNotificationAudio(): void {
   unlockInstalled = true
   const unlock = () => {
     const ctx = sharedAudioContext()
-    if (ctx && ctx.state !== 'running') void ctx.resume().catch(() => {})
+    if (!ctx) return
+    if (ctx.state !== 'running') void ctx.resume().catch(() => {})
+    void loadKnock(ctx)
   }
   window.addEventListener('pointerdown', unlock, { capture: true, passive: true })
   window.addEventListener('keydown', unlock, { capture: true })
@@ -111,6 +122,43 @@ export function scheduleTones(ctx: AudioContext, tones: Tone[], peak: number): v
   }
 }
 
+/** True where a recording can be fetched and decoded on this context. */
+export function canDecodeSounds(ctx: AudioContext): boolean {
+  return typeof fetch === 'function' && typeof ctx.decodeAudioData === 'function'
+}
+
+/** Fetches and decodes a recording. Resolves null when the URL is missing or the fetch fails. */
+export function fetchAudioBuffer(ctx: AudioContext, url: string | null): Promise<AudioBuffer | null> {
+  if (!url) return Promise.resolve(null)
+  return fetch(url)
+    .then((res) => (res.ok ? res.arrayBuffer() : null))
+    .then((data) => (data ? ctx.decodeAudioData(data) : null))
+}
+
+/** Fetches and decodes the recording once. Resolves null where that isn't possible. */
+function loadKnock(ctx: AudioContext): Promise<AudioBuffer | null> {
+  if (knockBuffer) return Promise.resolve(knockBuffer)
+  if (knockLoad) return knockLoad
+  if (!canDecodeSounds(ctx)) return Promise.resolve(null)
+  knockLoad = import('./notification-sound-asset')
+    .then(({ messageSoundUrl }) => fetchAudioBuffer(ctx, messageSoundUrl()))
+    .then((buffer) => {
+      knockBuffer = buffer
+      return buffer
+    })
+    .catch(() => null)
+  return knockLoad
+}
+
+function playKnock(ctx: AudioContext, buffer: AudioBuffer, gainValue: number): void {
+  const source = ctx.createBufferSource()
+  const gain = ctx.createGain()
+  source.buffer = buffer
+  gain.gain.value = gainValue
+  source.connect(gain).connect(ctx.destination)
+  source.start(ctx.currentTime + 0.01)
+}
+
 /**
  * Plays the cue for a chat message. Returns true when it played, so the caller
  * can leave the OS notification silent and avoid a double sound.
@@ -132,6 +180,12 @@ export function playMessageSound(
     return false
   }
   lastMessageSoundAt = now
+  if (knockBuffer) {
+    // Every kind of message plays the same recording.
+    playKnock(ctx, knockBuffer, KNOCK_GAIN[level])
+    return true
+  }
+  void loadKnock(ctx)
   scheduleTones(ctx, MESSAGE_TONES[kind], level === 'subtle' ? SUBTLE_PEAK : DEFAULT_PEAK)
   return true
 }
@@ -145,7 +199,10 @@ export function previewMessageSound(level: MessageSoundLevel): boolean {
   const ctx = sharedAudioContext()
   if (!ctx) return false
   if (ctx.state !== 'running') void ctx.resume().catch(() => {})
-  scheduleTones(ctx, MESSAGE_TONES.dm, level === 'subtle' ? SUBTLE_PEAK : DEFAULT_PEAK)
+  void loadKnock(ctx).then((buffer) => {
+    if (buffer) playKnock(ctx, buffer, KNOCK_GAIN[level])
+    else scheduleTones(ctx, MESSAGE_TONES.dm, level === 'subtle' ? SUBTLE_PEAK : DEFAULT_PEAK)
+  })
   return true
 }
 
@@ -170,4 +227,6 @@ export function _resetNotificationAudioForTests(): void {
   context = null
   lastMessageSoundAt = Number.NEGATIVE_INFINITY
   unlockInstalled = false
+  knockBuffer = null
+  knockLoad = null
 }

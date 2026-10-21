@@ -1,0 +1,55 @@
+# =============================================================================
+# Agent attribution audit
+# =============================================================================
+# Every commit Shogo writes must carry the one canonical identity —
+# `Shogo Agent <agent@shogo.ai>` as author/committer and exactly one
+# `Co-authored-by` line naming it. A wrong identity (`dev2@shogo.local`,
+# `noreply@shogo.ai`, `qa@shogo.local`) has no GitHub account behind it, which
+# is what paints the gray avatar on `main`.
+#
+# Attribution is enforced by tracked code now: `.githooks/commit-msg` normalizes
+# the trailer, the pre-commit/pre-push guards refuse another identity, and every
+# call site writes the canonical trailer itself. This workflow is the proof that
+# it holds over time — a report, never a gate:
+#
+#   - `push: main` and manual dispatch only; no `pull_request` trigger, so it
+#     can never block a card (channel doc: attribution must not hold a merge)
+#   - not part of the required "Lint, Typecheck, Test" aggregate
+#   - pre-existing wrong entries are the fixed baseline: everything reachable
+#     from the commit that introduced `.githooks/commit-msg` is reported as
+#     legacy, and only later commits can turn the run red
+#
+# The check itself lives in scripts/attribution-audit.ts.
+# =============================================================================
+
+name: Attribution audit
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit agent commit attribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # Full history: the baseline is the commit that added the hook, and the
+      # legacy window is reported alongside it.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      # No `bun install`: the script imports `node:child_process`,
+      # `node:fs` and one dependency-free module from packages/shared-runtime.
+      - name: Audit attribution since the tracked hook landed
+        run: bun scripts/attribution-audit.ts

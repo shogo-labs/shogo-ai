@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Daily-driver channel endpoints: chat settings and status, the activity
- * inbox, pins, saved items, drafts, scheduled messages, reminders, custom
- * emoji, and user groups. Mounted onto the conversations router.
+ * inbox and the sent-messages view, pins, saved items, drafts, scheduled
+ * messages, reminders, custom emoji, and user groups. Mounted onto the
+ * conversations router.
  */
 
 import type { Hono } from 'hono'
@@ -21,6 +22,7 @@ import {
 } from '../services/chat-customization'
 import { getChatSettings, listStatuses, updateChatSettings } from '../services/chat-settings'
 import { listInbox, markInboxRead } from '../services/chat-inbox'
+import { listSentMessages } from '../services/chat-sent'
 import {
   cancelScheduled,
   createReminder,
@@ -90,6 +92,17 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     return c.json(await listInbox(auth.workspaceId, auth.userId, {
       unreadOnly: c.req.query('filter') === 'unread',
       before: c.req.query('before') ?? null,
+      limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+    }))
+  })
+
+  router.get('/workspaces/:workspaceId/sent-messages', async (c) => {
+    const auth = await h.requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const limit = Number(c.req.query('limit'))
+    return c.json(await listSentMessages(auth.workspaceId, auth.userId, {
+      before: c.req.query('before') ?? null,
+      beforeId: c.req.query('beforeId') ?? null,
       limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
     }))
   })
