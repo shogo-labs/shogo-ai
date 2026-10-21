@@ -57,6 +57,11 @@ export type ReattachDeps = {
   dispatchNext: (chatSessionId: string) => Promise<unknown>
   getCallLink: typeof import('../lib/agent-call-store').getAgentCallSessionLink
   settleCall: typeof import('../services/agent-call.service').settleAgentCallFromTurn
+  /**
+   * Say the turn was interrupted, and queue its one resume. Injected so the
+   * dead-runtime path is testable without a database write (SHO-121).
+   */
+  announceInterrupted: typeof import('../services/chat-resume.service').postInterruptedResume
   homeSessionWhere: () => Record<string, unknown> | null
   now: () => number
 }
@@ -121,6 +126,7 @@ async function defaultDeps(): Promise<ReattachDeps> {
     dispatchNext: dispatcher.dispatchNext,
     getCallLink: callStore.getAgentCallSessionLink,
     settleCall: agentCall.settleAgentCallFromTurn,
+    announceInterrupted: (await import('../services/chat-resume.service')).postInterruptedResume,
     homeSessionWhere: () => {
       const home = region.homeRegionWorkspaceWhere()
       return home ? { OR: [{ project: { workspace: home } }, { workspace: home }] } : null
@@ -187,7 +193,14 @@ async function reattachTurn(session: StaleTurn, deps: ReattachDeps): Promise<voi
   try {
     const target = await deps.resolveTarget(session)
     if (!target) {
-      console.warn(`[ChatTurnReattach] No runtime for ${chatSessionId}; ending its turn`)
+      // The runtime that was running this turn is gone, so its stream buffer is
+      // gone with it and there is nothing left to follow. Ending the turn
+      // silently is what left the user with no final message: say the turn was
+      // interrupted and queue its one resume instead (SHO-121).
+      console.warn(`[ChatTurnReattach] No runtime for ${chatSessionId}; announcing the interruption`)
+      await deps.announceInterrupted(chatSessionId).catch((err: any) =>
+        console.warn(`[ChatTurnReattach] Interruption note for ${chatSessionId} failed:`, err?.message ?? err),
+      )
       return
     }
     const assistant = await deps.db.chatMessage.findFirst({
@@ -199,7 +212,12 @@ async function reattachTurn(session: StaleTurn, deps: ReattachDeps): Promise<voi
     const res = await target.fetchRuntime(streamPath(0)).catch(() => null)
     if (!res || res.status !== 200 || !res.body) {
       await res?.body?.cancel().catch(() => {})
-      console.log(`[ChatTurnReattach] Runtime buffer for ${chatSessionId} is gone (${res?.status ?? 'unreachable'}); ending its turn`)
+      console.log(`[ChatTurnReattach] Runtime buffer for ${chatSessionId} is gone (${res?.status ?? 'unreachable'}); announcing the interruption`)
+      // Same dead end as the branch above: the buffer this job exists to replay
+      // is unreachable, so the turn ends without a word unless we say something.
+      await deps.announceInterrupted(chatSessionId).catch((err: any) =>
+        console.warn(`[ChatTurnReattach] Interruption note for ${chatSessionId} failed:`, err?.message ?? err),
+      )
       return
     }
     console.log(`[ChatTurnReattach] Reattaching turn ${turnId} for ${chatSessionId}`)
