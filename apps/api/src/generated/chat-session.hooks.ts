@@ -340,20 +340,70 @@ export const chatSessionHooks: ChatSessionHooks = {
     return access
   },
 
-  afterDelete: async (id, ctx) => {
-    try {
-      await deleteChatAttachmentPrefix(id)
-    } catch (error: any) {
-      // Database deletion has already succeeded; cleanup is best-effort and
-      // can be retried by the storage maintenance job.
-      console.warn(`[chatSession.afterDelete] attachment cleanup failed for ${id}:`, error?.message || error)
-    }
+  afterDelete: cleanupDeletedSession,
+}
 
-    // The runtime's sessions.db is the durable copy (S3-synced), so deleting
-    // the row is not enough — idle eviction no longer wipes it, by design
-    // (SHO-137). Best-effort: never fails the delete.
-    const scope = pendingHistoryPurge.get(ctx)
-    pendingHistoryPurge.delete(ctx)
-    await purgeChatSessionHistory({ id, ...(scope ?? {}) })
+/**
+ * The purge resolves a runtime URL, which can create or wake one. The DELETE
+ * must not wait on that: past this deadline the purge is left to finish on its
+ * own and the request returns.
+ */
+const PURGE_WAIT_MS = 6_000
+
+async function purgeWithinDeadline(id: string, scope: Omit<DeletedChatScope, "id">): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[chatSession.afterDelete] history purge for ${id} is still resolving; leaving it to finish on its own`)
+      resolve()
+    }, PURGE_WAIT_MS)
+    ;(timer as any).unref?.()
+  })
+  try {
+    await Promise.race([purgeChatSessionHistory({ id, ...scope }).then(() => undefined), deadline])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Everything a delete has to do after the row is gone, shared by the cloud and
+ * local hook sets so the desktop track cannot quietly lose the transcript wipe
+ * (it did once: `local-routes.ts` never installed any ChatSession hooks).
+ */
+async function cleanupDeletedSession(id: string, ctx: HookContext): Promise<void> {
+  try {
+    await deleteChatAttachmentPrefix(id)
+  } catch (error: any) {
+    // Database deletion has already succeeded; cleanup is best-effort and
+    // can be retried by the storage maintenance job.
+    console.warn(`[chatSession.afterDelete] attachment cleanup failed for ${id}:`, error?.message || error)
+  }
+
+  // The runtime's sessions.db is the durable copy (S3-synced), so deleting the
+  // row is not enough — idle eviction no longer wipes it, by design (SHO-137).
+  // Best-effort: never fails the delete.
+  const scope = pendingHistoryPurge.get(ctx)
+  pendingHistoryPurge.delete(ctx)
+  await purgeWithinDeadline(id, scope ?? {})
+}
+
+/**
+ * Local/desktop hook set (SHO-137).
+ *
+ * `createLocalGeneratedRoutes()` builds the CRUD surface without the cloud hook
+ * aggregator, so it has to install this explicitly — otherwise a deleted chat
+ * keeps its transcript in the local `sessions.db`. Local mode has no cloud
+ * authz to apply here, so `beforeDelete` only records the scope the purge
+ * needs; authorization stays exactly what it was before this hook existed.
+ */
+export const localChatSessionHooks: ChatSessionHooks = {
+  beforeDelete: async (id, ctx) => {
+    const session = (await ctx.prisma.chatSession.findUnique({
+      where: { id },
+      select: CHAT_SESSION_SCOPE_SELECT,
+    })) as ChatSessionScope | null
+    rememberScopeForPurge(ctx, session)
   },
+  afterDelete: cleanupDeletedSession,
 }

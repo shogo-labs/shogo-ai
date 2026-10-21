@@ -23,7 +23,12 @@ import { createSubscriptionRoutes, setPrisma as setPrismaSubscription } from './
 import { createUsageWalletRoutes, setPrisma as setPrismaUsageWallet } from './usage-wallet.routes'
 import { createUsageEventRoutes, setPrisma as setPrismaUsageEvent } from './usage-event.routes'
 import { createWorkspaceGrantRoutes, setPrisma as setPrismaWorkspaceGrant } from './workspace-grant.routes'
-import { createChatSessionRoutes, setPrisma as setPrismaChatSession } from './chat-session.routes'
+import {
+  createChatSessionRoutes,
+  setPrisma as setPrismaChatSession,
+  setChatSessionHooks,
+} from './chat-session.routes'
+import { localChatSessionHooks } from './chat-session.hooks'
 import { createChatSessionProjectRoutes, setPrisma as setPrismaChatSessionProject } from './chat-session-project.routes'
 import { createChatMessageRoutes, setPrisma as setPrismaChatMessage } from './chat-message.routes'
 import {
@@ -62,6 +67,10 @@ export function createLocalGeneratedRoutes(prisma: any): Hono {
   setPrismaUsageEvent(prisma)
   setPrismaWorkspaceGrant(prisma)
   setPrismaChatSession(prisma)
+  // Without this a deleted chat keeps its transcript in the local sessions.db
+  // (SHO-137): `pruneExpired()` no longer deletes persisted history, so a real
+  // delete is the only thing that may wipe it.
+  setChatSessionHooks(localChatSessionHooks)
   setPrismaChatSessionProject(prisma)
   setPrismaChatMessage(prisma)
   setPrismaChatQueuedMessage(prisma)

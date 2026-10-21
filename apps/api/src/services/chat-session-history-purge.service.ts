@@ -92,7 +92,11 @@ export async function purgeChatSessionHistory(
       console.warn(`[ChatSession] no runtime to purge history for ${scope.id} (no project or workspace scope)`)
       return { purged: false, reason: 'no_runtime_scope' }
     }
-    if (!response.ok) {
+    if (response.ok) {
+      // One line per deleted chat: without it a working purge and a purge that
+      // never ran look identical in the logs (SHO-137 round 2).
+      console.log(`[ChatSession] purged runtime history for ${scope.id} on ${target}`)
+    } else {
       console.warn(
         `[ChatSession] history purge for ${scope.id} on ${target} answered ${response.status}; ` +
           'the transcript stays in the runtime\'s sessions.db (unreachable, but retained)',
