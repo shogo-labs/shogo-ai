@@ -253,6 +253,36 @@ const EXT_BY_KIND: Record<ContentKind, string> = {
 }
 
 /**
+ * The name a paste is uploaded under: `Pasted markdown.md`, then
+ * `Pasted markdown (2).md` for a second paste of the same kind in the batch.
+ * One rule, so the matcher below cannot drift from what the builder produces.
+ */
+function pastedAttachmentName(kind: ContentKind, kindIndex: number): string {
+  const base = `Pasted ${kindLabel(kind).toLowerCase()}`
+  return kindIndex === 0 ? `${base}.${EXT_BY_KIND[kind]}` : `${base} (${kindIndex + 1}).${EXT_BY_KIND[kind]}`
+}
+
+const PASTED_NAME = /^Pasted (.+?)(?: \((\d+)\))?\.([A-Za-z0-9]+)$/
+
+/**
+ * Whether a chat attachment is a markdown block this app pasted into a
+ * message — the name and type `pastedEntryToAttachment` gives one.
+ *
+ * Only these render inline as markdown: a file someone uploaded is their own
+ * document, and interpreting its body is a different decision.
+ */
+export function isPastedMarkdownAttachment(
+  name?: string | null,
+  mimeType?: string | null
+): boolean {
+  if (!name) return false
+  const match = PASTED_NAME.exec(name.trim())
+  if (!match) return false
+  if ((mimeType ?? "").toLowerCase() !== MEDIA_TYPE_BY_KIND.markdown) return false
+  return match[1].toLowerCase() === kindLabel("markdown").toLowerCase() && match[3].toLowerCase() === EXT_BY_KIND.markdown
+}
+
+/**
  * Convert a pasted long-text entry to a file attachment so the chat can
  * render it as a discrete chip (one chip per paste) instead of merging
  * everything into a single blob.
@@ -267,12 +297,9 @@ export function pastedEntryToAttachment(
 ): { dataUrl: string; name: string; type: string } {
   const { content, info } = entry
   const mediaType = MEDIA_TYPE_BY_KIND[info.kind]
-  const ext = EXT_BY_KIND[info.kind]
-  const base = `Pasted ${kindLabel(info.kind).toLowerCase()}`
-  const name = kindIndex === 0 ? `${base}.${ext}` : `${base} (${kindIndex + 1}).${ext}`
   return {
     dataUrl: encodeTextAsDataUrl(content, mediaType),
-    name,
+    name: pastedAttachmentName(info.kind, kindIndex),
     type: mediaType,
   }
 }

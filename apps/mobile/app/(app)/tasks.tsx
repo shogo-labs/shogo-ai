@@ -6,11 +6,11 @@ import { ActivityIndicator, Alert, Keyboard, Pressable, RefreshControl, ScrollVi
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { Check, CheckCircle2, CircleAlert, Clock3, Folder, KanbanSquare, List, ListTodo, LoaderCircle, Play, Plus, Search, Trash2, X, XCircle } from 'lucide-react-native'
-import { useProjectCollection, type IProject } from '../../contexts/domain'
+import { useDomainHttp, useProjectCollection, type IProject } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
 import { useIsRemoteSource } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { api, createHttpClient, type AgentTask, type AgentTaskStatus } from '../../lib/api'
+import { api, type AgentTask, type AgentTaskStatus } from '../../lib/api'
 import { agentTaskEvents } from '../../lib/agent-task-events'
 import { NativePhoneSheet } from '../../components/phone/NativePhoneSheet'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
@@ -79,7 +79,9 @@ function StatusBadge({ status }: { status: AgentTaskStatus }) {
 
 const TasksScreen = observer(function TasksScreen() {
   const router = useRouter()
-  const http = useMemo(() => createHttpClient(), [])
+  // The domain client, so `/api/agent-tasks` follows the workspace in view: a
+  // paired computer's own workspace answers its own task board (SHO-108).
+  const http = useDomainHttp()
   const workspace = useActiveWorkspace()
   const projects = useProjectCollection()
   const isRemoteSource = useIsRemoteSource()

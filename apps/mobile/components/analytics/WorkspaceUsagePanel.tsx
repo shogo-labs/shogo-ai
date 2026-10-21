@@ -27,6 +27,7 @@ import { useCloudBillingSummary } from "../../hooks/useCloudBillingSummary";
 import { useBillingData } from "@shogo/shared-app/hooks";
 import { getWindowDisplays } from "../../lib/billing-config";
 import { api } from "../../lib/api";
+import { useUsageLogCsvUrl } from "../../lib/usage-log-csv";
 import { usePlatformConfig } from "../../lib/platform-config";
 import { useVisibleModels } from "../../lib/visible-models";
 import { BillingProgressCard } from "../billing/BillingProgressCard";
@@ -279,7 +280,9 @@ export function WorkspaceUsagePanel() {
   const includedSpend = spend.data?.totals.totalIncludedUsd ?? 0;
   const onDemandSpend = spend.data?.totals.totalOnDemandUsd ?? 0;
 
-  const csvUrl = api.getUsageLogCsvUrl(workspaceId, { period });
+  // The tab and the download describe one workspace: while a paired computer's
+  // workspace is open, both come from that machine (SHO-108/SHO-91).
+  const csvUrl = useUsageLogCsvUrl(workspaceId, { period });
   const handleExportCsv = () => {
     if (typeof window !== "undefined") {
       window.open(csvUrl, "_blank", "noopener");

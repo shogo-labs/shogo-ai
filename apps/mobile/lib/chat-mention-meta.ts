@@ -10,9 +10,7 @@
  * currently in: the screen asks here, then adopts the workspace.
  */
 
-import { Platform } from "react-native"
-import { API_URL } from "./api-url"
-import { authClient } from "./auth-client"
+import { workspaceHttp } from "./workspace-http"
 
 export interface ChatMentionMeta {
   id: string
@@ -46,20 +44,17 @@ function notifyMeta(): void {
   for (const listener of [...listeners]) listener()
 }
 
-export function chatMentionAuthHeaders(): Record<string, string> {
-  if (Platform.OS === "web") return {}
-  const cookie = (authClient as any).getCookie?.()
-  return cookie ? { Cookie: cookie } : {}
-}
-
+/**
+ * The lookup is cross-*chat*, not cross-workspace: a machine workspace's chats
+ * live on that machine, so the request must go to whichever backend the open
+ * workspace belongs to (`workspaceHttp`), or a tag on a machine reply resolves
+ * against the cloud's chats and never finds its title.
+ */
 async function fetchMetas(ids: string[]): Promise<void> {
-  const params = new URLSearchParams({ ids: ids.join(","), limit: String(ids.length) })
-  const response = await fetch(`${API_URL}/api/chat-mentionables?${params}`, {
-    headers: chatMentionAuthHeaders(),
-    credentials: Platform.OS === "web" ? "include" : undefined,
-  } as any)
-  if (!response.ok) return
-  const data = await response.json().catch(() => null)
+  const { data } = await workspaceHttp().get<{ chats?: any[] }>("/api/chat-mentionables", {
+    ids: ids.join(","),
+    limit: String(ids.length),
+  })
   for (const chat of Array.isArray(data?.chats) ? data.chats : []) {
     cache.set(chat.id, {
       id: chat.id,

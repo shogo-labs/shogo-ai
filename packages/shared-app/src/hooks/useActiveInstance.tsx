@@ -74,7 +74,7 @@ export interface ActiveInstance {
   /**
    * What is being looked at:
    *  - `'machine'` this is one of a paired desktop's *own* workspaces
-   *    (the "This Mac" group in the workspace switcher), reached through
+   *    (listed with the cloud workspaces in the workspace switcher), reached through
    *    `/api/machines/<id>/w/<localWorkspaceId>`. It is deliberately not
    *    tied to the cloud workspace the UI happens to have selected, so it
    *    survives a cloud workspace switch.

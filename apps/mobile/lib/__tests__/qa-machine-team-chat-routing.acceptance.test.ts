@@ -90,13 +90,19 @@ describe("SHO-87 — a machine workspace's team chat reads the machine", () => {
 describe("SHO-87 — cloud-only surfaces keep going to cloud", () => {
   const cloudOnly = [
     "/api/workspaces",
-    `/api/workspaces/${CLOUD_WORKSPACE}/analytics/overview`,
-    `/api/workspaces/${CLOUD_WORKSPACE}/analytics/usage-summary`,
+    // The workspace's own analytics are the workspace's: SHO-108 made them the
+    // machine's while its workspace is open, so the tab and the CSV describe the
+    // workspace in view. Only the cloud *account* families stay here.
     "/api/billing/subscription",
     "/api/auth/session",
+    "/api/members",
+    "/api/invitations",
+    "/api/marketplace/listings",
+    "/api/instances",
+    "/api/machines",
   ];
 
-  test("a machine workspace does not swallow the workspace list, analytics or billing", () => {
+  test("a machine workspace does not swallow the workspace list or the cloud account", () => {
     expect(
       cloudOnly.filter((path) => shouldRouteToRemote(path, { machineWorkspaceId: LOCAL_WORKSPACE })),
     ).toEqual([]);

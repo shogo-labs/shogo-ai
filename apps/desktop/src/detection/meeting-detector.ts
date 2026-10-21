@@ -151,6 +151,39 @@ function isSlackHuddle(entry: PsListEntry, ctx: DetectionContext): boolean {
   return /huddle|AudioHelper|WebRTC/i.test(entry.cmd ?? '')
 }
 
+/**
+ * macOS only: is this native app currently capturing input?
+ *
+ * Zoom, Teams and Webex keep their process — and their capture helpers — alive
+ * for as long as the app is open, so "the process exists" only ever means "the
+ * app is running", never "a call is up". Core Audio's per-process
+ * `IsRunningInput` flag does say when a call is live: both the app and its
+ * capture helper show up there under the vendor's bundle prefix (measured on
+ * macOS 14: `us.zoom.xos` for the app, `us.zoom.caphost` for its helper).
+ *
+ * Returns `null` when the process heuristic should decide instead: off macOS
+ * (Windows exposes no per-process mic state — `Zoom.exe` is not even matched
+ * yet, a separate gap) and when `micUsers` is unknown because the `mic-users`
+ * query failed or the helper is missing. Unknown must never read as "nobody has
+ * the mic": that would end a live recording on a flaky poll, and suppress a
+ * call start when the helper cannot run. Slack keeps its stricter rule
+ * (unknown → not a huddle), see `isSlackHuddle`.
+ */
+function micHeld(entry: PsListEntry, ctx: DetectionContext, bundleIds: RegExp): boolean | null {
+  if (ctx.platform !== 'darwin') return null
+  if (ctx.micUsers === null) return null
+  return ctx.micUsers.some((user) => user.pid === entry.pid || bundleIds.test(user.bundleId))
+}
+
+/** A native meeting app: the process is the identity of the app, the mic
+ *  decides whether it is in a call (see `micHeld` for the fallback). */
+function nativeCall(
+  isAppProcess: (entry: PsListEntry) => boolean,
+  bundleIds: RegExp,
+): (entry: PsListEntry, ctx: DetectionContext) => boolean {
+  return (entry, ctx) => isAppProcess(entry) && (micHeld(entry, ctx, bundleIds) ?? true)
+}
+
 interface BrowserInfo {
   name: string
   bundleId: RegExp
@@ -191,22 +224,32 @@ function browserCallLabel(browser: BrowserInfo, titles: WindowTitle[]): string {
   return browser.name
 }
 
+/** Bundle prefixes of the app plus its capture helpers. Zoom attributes a
+ *  call to `us.zoom.xos` or to `us.zoom.caphost`; Teams to
+ *  `com.microsoft.teams`/`com.microsoft.teams2`; Webex to `com.cisco.webex…`. */
+const ZOOM_BUNDLES = /^us\.zoom\./i
+const TEAMS_BUNDLES = /^com\.microsoft\.teams/i
+const WEBEX_BUNDLES = /^com\.(cisco\.webex|webex\.)/i
+
 const MEETING_APPS: AppMatcher[] = [
   {
     id: 'zoom',
     label: 'Zoom',
     // Covers both packaged ("zoom.us") and the legacy CFBundle name ("Zoom").
-    test: (e) => /^zoom(\.us)?$/i.test(e.name) || /CptHost/.test(e.name),
+    // `caphost` (Zoom's capture helper) is not needed as an identity: the app
+    // process is always there whenever a call is, and the mic gate below
+    // accepts either bundle.
+    test: nativeCall((e) => /^zoom(\.us)?$/i.test(e.name), ZOOM_BUNDLES),
   },
   {
     id: 'teams',
     label: 'Microsoft Teams',
-    test: (e) => /^(Microsoft Teams|Teams|Teams Helper|ms-teams)$/i.test(e.name),
+    test: nativeCall((e) => /^(Microsoft Teams|Teams|Teams Helper|ms-teams)$/i.test(e.name), TEAMS_BUNDLES),
   },
   {
     id: 'webex',
     label: 'Webex',
-    test: (e) => /(Webex|Cisco Webex)/i.test(e.name),
+    test: nativeCall((e) => /(Webex|Cisco Webex)/i.test(e.name), WEBEX_BUNDLES),
   },
   {
     id: 'slack-huddle',

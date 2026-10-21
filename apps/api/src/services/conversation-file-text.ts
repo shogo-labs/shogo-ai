@@ -106,14 +106,18 @@ function isMarkup(mimeType: string, name: string): boolean {
   return /\.(html?|svg|xml)$/i.test(name) || /html|xml|svg/i.test(mimeType)
 }
 
-type DecodedText = { raw: string; search: string | null; markup: boolean }
+export type DecodedText = { raw: string; search: string | null; markup: boolean }
 
 /**
  * Decode a text-like file once. The preview needs `raw` because `tidy`
  * collapses runs of spaces and tabs, which destroys a source file's
  * indentation; search needs the tidied text.
+ *
+ * Also the source of the verbatim body the reading route hands a renderer
+ * (`readFileText` with `opts.raw`): `search` is deliberately lossy, so markdown
+ * read back through it loses its blank lines and fenced-code indentation.
  */
-function decodeTextBytes(bytes: Uint8Array, mimeType: string, name: string): DecodedText | null {
+export function decodeTextBytes(bytes: Uint8Array, mimeType: string, name: string): DecodedText | null {
   const slice = bytes.subarray(0, MAX_SCAN_BYTES)
   for (let i = 0; i < Math.min(slice.length, 8192); i++) if (slice[i] === 0) return null
   const decoded = new TextDecoder('utf-8', { fatal: false }).decode(slice)

@@ -15,7 +15,7 @@ import { ChatMarkdown } from '../chat/ChatMarkdown'
 import type { MentionTarget } from '../chat/file-links'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
-import { messageLink, parseConversationLink, parseFileLink } from '../../lib/team-chat-links'
+import { messageLink, openMessageLinkInApp } from '../../lib/team-chat-links'
 import { extractMessageQuotes } from '../../lib/message-quotes'
 import { previewOptOutMatcher } from '../../lib/link-preview-consent'
 import { MessageQuoteCards } from './MessageQuoteCard'
@@ -37,6 +37,8 @@ import { renderMentions, renderMentionsMarkdown, type MentionNames } from '../..
 import { isVoiceNote } from '../../lib/voice-note'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
 import { DownloadBadge, FileAttachmentCard } from './FileAttachmentCard'
+import { PastedMarkdownCard } from './MarkdownAttachmentBody'
+import { isPastedMarkdownAttachment } from '../chat/long-text-utils'
 import { VideoAttachment } from './VideoAttachment'
 import { hasReacted, reactionTooltip } from '../../lib/team-chat-reactions'
 import { WebTooltip } from '../chat/WebTooltip'
@@ -105,34 +107,10 @@ export interface MessageRowProps {
 }
 
 /**
- * Links this app can open in place: a channel (with whatever pane it asked for
- * — a message, a thread, its doc, a card), or a shared file.
+ * Links this app can open in place — see `team-chat-links`; re-exported here
+ * because the row is where a message's links are handled.
  */
-export function openMessageLinkInApp(href: string): boolean {
-  // Every `/c/<id>` link is ours to open, not just the ones carrying `msg`:
-  // `?doc=1` and `?card=<id>` are shapes our own links produce, and falling
-  // through to the browser there is a full page reload on web.
-  const target = parseConversationLink(href)
-  if (target) {
-    void import('expo-router').then(({ router }) =>
-      router.push({
-        pathname: '/(app)/c/[conversationId]',
-        params: { conversationId: target.conversationId, ...target.params },
-      } as any),
-    )
-    return true
-  }
-  // A shared file link is the attachment's own URL; opening it in the viewer
-  // is what keeps it out of a browser tab.
-  const file = parseFileLink(href)
-  if (file) {
-    void import('expo-router').then(({ router }) =>
-      router.push({ pathname: '/(app)/f/[attachmentId]', params: { attachmentId: file.attachmentId } } as any),
-    )
-    return true
-  }
-  return false
-}
+export { openMessageLinkInApp } from '../../lib/team-chat-links'
 
 /**
  * Wraps a message time so hovering it underlines the time and shows the full
@@ -852,6 +830,22 @@ function MessageRowImpl(props: MessageRowProps) {
                   <VideoAttachment url={absoluteApiUrl(a.url)} name={a.name} width={a.width} height={a.height} />
                   <DownloadBadge url={absoluteApiUrl(a.url)} name={a.name} />
                 </View>
+              ) : isPastedMarkdownAttachment(a.name, a.mimeType) ? (
+                <PastedMarkdownCard
+                  key={a.id}
+                  attachmentId={a.id}
+                  name={a.name}
+                  mimeType={a.mimeType}
+                  size={a.size}
+                  url={absoluteApiUrl(a.url)}
+                  preview={a.preview}
+                  onOpen={() =>
+                    router.push({
+                      pathname: '/(app)/f/[attachmentId]',
+                      params: { attachmentId: a.id, name: a.name },
+                    } as never)
+                  }
+                />
               ) : (
                 <FileAttachmentCard
                   key={a.id}

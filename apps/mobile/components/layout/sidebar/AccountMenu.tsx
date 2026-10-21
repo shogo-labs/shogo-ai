@@ -27,7 +27,7 @@ import { NativeAccountSettingsSection } from "./NativeAccountSettingsSection";
 import { AccountNavLinks } from "./AccountNavLinks";
 import { type UserMenuProps } from "./UserMenuContent";
 import { WorkspaceMenuSection } from "./WorkspaceMenuSection";
-import type { MachineGroupData, MachineWorkspaceRow } from "./MachineWorkspacesGroup";
+import type { WorkspaceEntry } from "../../../lib/workspace-entries";
 import type { AccountSettingsSheetTab } from "../../settings/account-settings-sheets";
 
 function noopNativeSettingsTab(_tab: AccountSettingsSheetTab) {}
@@ -49,13 +49,18 @@ function getInitials(name: string | null | undefined): string {
 }
 
 export interface AccountMenuProps extends UserMenuProps {
-  workspaces: any[];
+  /** Every workspace the switcher lists — cloud and machine, one list (SHO-108). */
+  entries: WorkspaceEntry[];
+  /** `WorkspaceEntry.key` of the workspace in view. */
+  currentKey: string | null;
+  onSelectEntry: (entry: WorkspaceEntry) => void;
   currentWorkspace: any;
   billingData: any;
   workspacePlan: { planId: string; status: string | null } | null;
   allPlans: Record<string, { planId: string; status: string | null }>;
   showBilling: boolean;
-  onSwitchWorkspace: (workspaceId: string) => void;
+  /** Joining a workspace from a pending invitation (not a list switch). */
+  onSwitchWorkspace?: (workspaceId: string) => void;
   onCreateWorkspace: () => void;
   /** See `WorkspaceMenuSectionProps.hasPersonalWorkspace`. */
   hasPersonalWorkspace?: boolean;
@@ -65,13 +70,6 @@ export interface AccountMenuProps extends UserMenuProps {
   onOpenNativeSettingsTab?: (tab: AccountSettingsSheetTab) => void;
   /** Wide-web rail: just the workspace tile, opening the menu beside the rail. */
   tile?: boolean;
-  /**
-   * Paired desktops whose own workspaces are listed under "This Mac"
-   * (SHO-54). Omitted when the caller has not loaded them yet — the group
-   * simply does not render.
-   */
-  machineWorkspaces?: MachineGroupData[];
-  onOpenMachineWorkspace?: (machine: MachineGroupData, workspace: MachineWorkspaceRow) => void;
 }
 
 export function AccountMenu({
@@ -81,7 +79,9 @@ export function AccountMenu({
   isSuperAdmin,
   isWide = true,
   collapsed,
-  workspaces,
+  entries,
+  currentKey,
+  onSelectEntry,
   currentWorkspace,
   billingData,
   workspacePlan,
@@ -93,8 +93,6 @@ export function AccountMenu({
   onCreatePersonalWorkspace,
   localMode,
   tile,
-  machineWorkspaces,
-  onOpenMachineWorkspace,
 }: AccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
@@ -221,7 +219,9 @@ export function AccountMenu({
           >
             {tile ? (
               <WorkspaceMenuSection
-                workspaces={workspaces}
+                entries={entries}
+                currentKey={currentKey}
+                onSelect={onSelectEntry}
                 currentWorkspace={currentWorkspace}
                 billingData={billingData}
                 workspacePlan={workspacePlan}
@@ -235,8 +235,6 @@ export function AccountMenu({
                 localMode={localMode}
                 onClose={close}
                 presentation="switcher"
-                machineWorkspaces={machineWorkspaces}
-                onOpenMachineWorkspace={onOpenMachineWorkspace}
               />
             ) : (
             <AccountMenuBody
@@ -244,7 +242,9 @@ export function AccountMenu({
               onSignOut={onSignOut}
               onNavigate={onNavigate}
               isSuperAdmin={isSuperAdmin}
-              workspaces={workspaces}
+              entries={entries}
+              currentKey={currentKey}
+              onSelectEntry={onSelectEntry}
               currentWorkspace={currentWorkspace}
               billingData={billingData}
               workspacePlan={workspacePlan}
@@ -257,8 +257,6 @@ export function AccountMenu({
               localMode={localMode}
               onClose={close}
               isNative={false}
-              machineWorkspaces={machineWorkspaces}
-              onOpenMachineWorkspace={onOpenMachineWorkspace}
             />
             )}
           </ScrollView>
@@ -271,7 +269,9 @@ export function AccountMenu({
 /** The bold workspace name in the wide panel header. Opens settings, usage, and links. */
 export function WorkspaceHeaderButton({
   onNavigate,
-  workspaces,
+  entries,
+  currentKey,
+  onSelectEntry,
   currentWorkspace,
   billingData,
   workspacePlan,
@@ -282,8 +282,6 @@ export function WorkspaceHeaderButton({
   hasPersonalWorkspace,
   onCreatePersonalWorkspace,
   localMode,
-  machineWorkspaces,
-  onOpenMachineWorkspace,
 }: AccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
@@ -322,7 +320,9 @@ export function WorkspaceHeaderButton({
             overScrollMode="never"
           >
             <WorkspaceMenuSection
-              workspaces={workspaces}
+              entries={entries}
+              currentKey={currentKey}
+              onSelect={onSelectEntry}
               currentWorkspace={currentWorkspace}
               billingData={billingData}
               workspacePlan={workspacePlan}
@@ -351,7 +351,9 @@ export function AccountMenuBody({
   onSignOut,
   onNavigate,
   isSuperAdmin,
-  workspaces,
+  entries,
+  currentKey,
+  onSelectEntry,
   currentWorkspace,
   billingData,
   workspacePlan,
@@ -365,8 +367,6 @@ export function AccountMenuBody({
   onClose,
   isNative = false,
   onOpenNativeSettingsTab,
-  machineWorkspaces,
-  onOpenMachineWorkspace,
 }: AccountMenuProps & { onClose: () => void; isNative?: boolean }) {
   const openNativeTab = onOpenNativeSettingsTab ?? noopNativeSettingsTab;
   const openProfileSheet = useCallback(() => {
@@ -380,7 +380,9 @@ export function AccountMenuBody({
     return (
       <>
         <WorkspaceMenuSection
-          workspaces={workspaces}
+          entries={entries}
+          currentKey={currentKey}
+          onSelect={onSelectEntry}
           currentWorkspace={currentWorkspace}
           billingData={billingData}
           workspacePlan={workspacePlan}
@@ -394,8 +396,6 @@ export function AccountMenuBody({
           localMode={localMode}
           onClose={onClose}
           isNative
-          machineWorkspaces={machineWorkspaces}
-          onOpenMachineWorkspace={onOpenMachineWorkspace}
           settingsItems={
             <NativeAccountSettingsSection
               hasWorkspace={!!currentWorkspace}
@@ -434,7 +434,9 @@ export function AccountMenuBody({
   return (
     <>
       <WorkspaceMenuSection
-        workspaces={workspaces}
+        entries={entries}
+        currentKey={currentKey}
+        onSelect={onSelectEntry}
         currentWorkspace={currentWorkspace}
         billingData={billingData}
         workspacePlan={workspacePlan}
@@ -448,8 +450,6 @@ export function AccountMenuBody({
         localMode={localMode}
         onClose={onClose}
         isNative={false}
-        machineWorkspaces={machineWorkspaces}
-        onOpenMachineWorkspace={onOpenMachineWorkspace}
       />
       <View className="h-px bg-border" />
       <AccountNavLinks
