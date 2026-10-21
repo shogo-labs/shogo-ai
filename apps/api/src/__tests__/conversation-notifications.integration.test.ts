@@ -118,6 +118,27 @@ describe('recipients', () => {
     expect(await notified(reply)).toEqual([`${seed.owner}:thread`, `${seed.viewer}:thread`])
   })
 
+  test('someone mentioned in the thread root follows later replies without replying', async () => {
+    const root = await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.member)} quick question` })
+    expect(await notified(root)).toEqual([`${seed.member}:mention`])
+    const reply = await post({ authorUserId: seed.owner, text: 'how are you', threadRootId: root.row.id })
+    expect(await notified(reply)).toEqual([`${seed.member}:thread`])
+  })
+
+  test('someone mentioned in an earlier reply follows the rest of the thread', async () => {
+    const root = await post({ authorUserId: seed.owner, text: 'proposal' })
+    await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.viewer)} thoughts?`, threadRootId: root.row.id })
+    const reply = await post({ authorUserId: seed.owner, text: 'any update', threadRootId: root.row.id })
+    expect(await notified(reply)).toEqual([`${seed.viewer}:thread`])
+  })
+
+  test('mentioned followers who muted the channel or left it hear nothing about plain replies', async () => {
+    const root = await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.member)} ${userMentionToken(seed.outsider)} look` })
+    await db.conversationMember.updateMany({ where: { conversationId: generalId, userId: seed.member }, data: { muted: true } })
+    const reply = await post({ authorUserId: seed.owner, text: 'following up', threadRootId: root.row.id })
+    expect(await notified(reply)).toEqual([])
+  })
+
   test('every DM message notifies the other participants', async () => {
     const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
     const result = await service.postMessage({ conversationId: dm.id, authorType: 'user', authorUserId: seed.owner, text: 'hey' })

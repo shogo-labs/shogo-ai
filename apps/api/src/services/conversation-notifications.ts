@@ -148,16 +148,27 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
   }
 
   if (row.threadRootId) {
-    const [root, repliers] = await Promise.all([
-      db.conversationMessage.findUnique({ where: { id: row.threadRootId }, select: { authorUserId: true } }),
+    // Followers: whoever started the thread, everyone who replied, and everyone
+    // @mentioned in it, as in Slack. Non-members and muted members are skipped by `quiet`.
+    const inThread = { OR: [{ id: row.threadRootId }, { threadRootId: row.threadRootId }], deletedAt: null }
+    const [authors, mentioned] = await Promise.all([
       db.conversationMessage.findMany({
-        where: { threadRootId: row.threadRootId, authorUserId: { not: null }, deletedAt: null },
+        where: { ...inThread, authorUserId: { not: null } },
         select: { authorUserId: true },
         distinct: ['authorUserId'],
         take: 50,
       }),
+      db.conversationMention.findMany({
+        where: { targetType: 'user', targetUserId: { not: null }, message: inThread },
+        select: { targetUserId: true },
+        distinct: ['targetUserId'],
+        take: 50,
+      }),
     ])
-    const followers = [root?.authorUserId, ...repliers.map((r: any) => r.authorUserId)].filter(Boolean) as string[]
+    const followers = [
+      ...authors.map((r: any) => r.authorUserId),
+      ...mentioned.map((m: any) => m.targetUserId),
+    ].filter(Boolean) as string[]
     for (const id of followers) if (!quiet(id)) add(id, 'thread')
   }
 
