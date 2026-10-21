@@ -22,7 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AppState } from "react-native"
 import { API_URL } from "../lib/api"
-import type { MachineGroupData, MachinePresence } from "../components/layout/sidebar/MachineWorkspacesGroup"
+import type { MachineGroupData, MachinePresence } from "../lib/workspace-entries"
 
 /** Cloud presence is heartbeat-driven; one read per window keeps it inside 60 s. */
 const POLL_MS = 30_000

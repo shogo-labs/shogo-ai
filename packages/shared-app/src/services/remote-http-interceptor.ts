@@ -85,16 +85,15 @@ const ROUTE_TABLE: RouteEntry[] = [
  * workspace-scoped is the machine's while you are looking at the machine's
  * workspace. What it needs is the opposite — the few families that stay the
  * *cloud* workspace's, because a machine has no billing account, no cloud
- * analytics and no Slack/Discord install to read. Those are pinned here and
- * checked before the machine rule.
+ * membership and no Slack/Discord install to read. Those are pinned here and
+ * checked before the machine rule. Its own analytics *are* the machine's — a
+ * workspace's usage numbers describe the workspace you are looking at.
  *
  * The workspace *collection* (`/api/workspaces`, no id) is not workspace-scoped
  * and is untouched by the rule below: a machine workspace must never replace
  * the switcher's own workspace list.
  */
 const MACHINE_WORKSPACE_CLOUD_ONLY: RouteEntry[] = [
-  { pattern: /^\/api\/workspaces\/[^/]+\/analytics(\/|$)/,         target: 'cloud' },
-  { pattern: /^\/api\/workspaces\/[^/]+\/cost-analytics(\/|$)/,    target: 'cloud' },
   // A Slack/Discord/Teams install is configured cloud-side for a cloud
   // workspace; a machine workspace has no install to show.
   { pattern: /^\/api\/workspaces\/[^/]+\/chat-installations(\/|$)/, target: 'cloud' },
@@ -109,6 +108,27 @@ const MACHINE_WORKSPACE_CLOUD_ONLY: RouteEntry[] = [
   { pattern: /^\/api\/workspaces\/[^/]+\/(instance|metrics|storage|children|export)(\/|$)/, target: 'cloud' },
   // Cloud-account integrations (OAuth credentials live cloud-side).
   { pattern: /^\/api\/workspaces\/[^/]+\/(social|integrations)(\/|$)/, target: 'cloud' },
+
+  // ── Cloud-account families, by declaration ────────────────────────
+  // A machine has no billing account, no cloud membership and no cloud
+  // marketplace install. These are the cloud workspace's while its rows are on
+  // screen — named here with their reason so the choice is a decision, not a
+  // fall-through someone might "fix" later.
+  { pattern: /^\/api\/billing(\/|$)/,       target: 'cloud' }, // no billing account on a machine
+  { pattern: /^\/api\/subscriptions(\/|$)/, target: 'cloud' }, // same account, same reason
+  { pattern: /^\/api\/members(\/|$)/,       target: 'cloud' }, // cloud membership, not the machine's
+  { pattern: /^\/api\/invitations(\/|$)/,   target: 'cloud' }, // you join cloud workspaces, not machines
+  { pattern: /^\/api\/marketplace(\/|$)/,   target: 'cloud' }, // listings live in the cloud
+  { pattern: /^\/api\/admin(\/|$)/,         target: 'cloud' }, // platform administration
+  { pattern: /^\/api\/auth(\/|$)/,          target: 'cloud' }, // the session that authorises this app
+  { pattern: /^\/api\/instances(\/|$)/,     target: 'cloud' }, // the cloud's instance registry
+  { pattern: /^\/api\/machines(\/|$)/,      target: 'cloud' }, // the machine list itself
+  // Compose port preview is served by the cloud API only (`server.ts`); the
+  // desktop app does not mount it. The caller is still a bare client today, so
+  // nothing breaks — but the day it converts to the workspace client,
+  // `/api/projects` would take it to the machine and 404.
+  { pattern: /^\/api\/projects\/[^/]+\/ports(\/|$)/, target: 'cloud' },
+  { pattern: /^\/api\/sync(\/|$)/,          target: 'cloud' }, // cloud sync transport
 ]
 
 /**
@@ -118,13 +138,39 @@ const MACHINE_WORKSPACE_CLOUD_ONLY: RouteEntry[] = [
 const MACHINE_WORKSPACE_SCOPE = /^\/api\/workspaces\/[^/?#]+\//
 
 /**
+ * Workspace features the machine serves from a *top-level* path: they name a
+ * board, a card or the agent in the path or query rather than a workspace, so
+ * the `/api/workspaces/:id/…` scope never sees them. Declared here once, so a
+ * new one is added to the list instead of silently reading the cloud.
+ */
+const MACHINE_WORKSPACE_OWNED: RouteEntry[] = [
+  // Boards and the cards on them: the board list, a board's view, a card's
+  // detail, its move, comments, history, links, follow and archive.
+  { pattern: /^\/api\/boards(\/|\?|$)/,          target: 'remote' },
+  { pattern: /^\/api\/work-items(\/|\?|$)/,      target: 'remote' },
+  // A folder of projects and a session's project membership are rows the
+  // workspace's own database holds (`/api/project-folders`,
+  // `/api/chat-session-projects` are mounted locally), so a board/card screen
+  // and a session pane read them from the machine that owns them.
+  { pattern: /^\/api\/project-folders(\/|\?|$)/,        target: 'remote' },
+  { pattern: /^\/api\/chat-session-projects(\/|\?|$)/,  target: 'remote' },
+  // The agent task board and the agent pickers the composer asks for.
+  { pattern: /^\/api\/agent-tasks(\/|\?|$)/,     target: 'remote' },
+  { pattern: /^\/api\/chat-mentionables(\/|\?|$)/,    target: 'remote' },
+  { pattern: /^\/api\/chat-mention-status(\/|\?|$)/,  target: 'remote' },
+  // Chat plumbing that names the file or message rather than the workspace.
+  { pattern: /^\/api\/conversation-files(\/|\?|$)/,    target: 'remote' },
+  { pattern: /^\/api\/chat-attachments(\/|\?|$)/,      target: 'remote' },
+  { pattern: /^\/api\/chat-queued-messages(\/|\?|$)/,  target: 'remote' },
+]
+
+/**
  * Team-chat families that name their workspace in the query string or in a
  * nested id rather than in the path, so they never reach the rule above.
  */
 const MACHINE_WORKSPACE_FAMILIES: RouteEntry[] = [
   { pattern: /^\/api\/conversations(\/|$)/,                 target: 'remote' },
   { pattern: /^\/api\/conversation-messages(\/|$)/,         target: 'remote' },
-  { pattern: /^\/api\/conversation-message-edits(\/|$)/,    target: 'remote' },
   { pattern: /^\/api\/scheduled-messages(\/|$)/,            target: 'remote' },
   { pattern: /^\/api\/reminders(\/|$)/,                     target: 'remote' },
   { pattern: /^\/api\/custom-emoji(\/|$)/,                  target: 'remote' },
@@ -265,11 +311,14 @@ export function shouldRouteToRemote(
   // to add it to a list.
   if (opts?.machineWorkspaceId) {
     // …except the families that are still the *cloud* workspace's (billing,
-    // analytics, membership, installs) — a machine has none of them.
+    // membership, installs) — a machine has none of them.
     for (const entry of MACHINE_WORKSPACE_CLOUD_ONLY) {
       if (entry.pattern.test(pathOnly)) return false
     }
     if (MACHINE_WORKSPACE_SCOPE.test(pathOnly)) return true
+    for (const entry of MACHINE_WORKSPACE_OWNED) {
+      if (entry.pattern.test(pathOnly)) return true
+    }
     for (const entry of MACHINE_WORKSPACE_FAMILIES) {
       if (entry.pattern.test(pathOnly)) return true
     }
@@ -439,6 +488,7 @@ export {
   REMOTE_EXCLUDED_PATTERNS,
   ROUTE_TABLE,
   MACHINE_WORKSPACE_CLOUD_ONLY,
+  MACHINE_WORKSPACE_OWNED,
   MACHINE_WORKSPACE_FAMILIES,
   type RouteTarget,
   type RouteEntry,

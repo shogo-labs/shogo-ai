@@ -90,6 +90,7 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/active-instance"), ()
 }))
 
 const { WorkspaceMenuSection, workspaceKindBadge } = await import("../WorkspaceMenuSection")
+const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")
 
 const localWorkspaces = [
   { id: "local-personal", name: "Personal", kind: "personal" },
@@ -101,7 +102,9 @@ const createWorkspace = mock(() => {})
 function renderSection(workspaces: any[]) {
   return render(
     <WorkspaceMenuSection
-      workspaces={workspaces}
+      entries={buildWorkspaceEntries({ workspaces })}
+      currentKey={cloudWorkspaceKey(workspaces[0]?.id)}
+      onSelect={() => {}}
       currentWorkspace={workspaces[0]}
       billingData={{ hasActiveSubscription: false }}
       workspacePlan={null}

@@ -161,6 +161,7 @@ import { markStoppedTail, mergeStoppedSnapshot } from "./stopped-turn"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useBillingData } from "@shogo/shared-app/hooks"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import { workspaceHttp } from "../../lib/workspace-http"
 import { agentProxyBase } from "../../lib/agent-proxy-base"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { workspaceProjectFilter } from "../../lib/project-load"
@@ -1202,27 +1203,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const chatMentionables = useCallback(
     async (query: string): Promise<ChatMentionable[]> => {
       try {
-        const fetchFn = expoFetch ?? globalThis.fetch
-        const headers: Record<string, string> = nativeHeaders
-          ? nativeHeaders()
-          : {}
-        const params = new URLSearchParams({ q: query, limit: "8" })
-        if (chatSessionId) params.set("exclude", chatSessionId)
-        const response = await fetchFn(
-          `${API_URL}/api/chat-mentionables?${params}`,
-          {
-            headers,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          } as any,
+        const params: Record<string, string> = { q: query, limit: "8" }
+        if (chatSessionId) params.exclude = chatSessionId
+        const { data } = await workspaceHttp().get<{ chats?: ChatMentionable[] }>(
+          "/api/chat-mentionables",
+          params,
         )
-        if (!response.ok) return []
-        const data = await response.json()
         return Array.isArray(data?.chats) ? data.chats : []
       } catch {
         return []
       }
     },
-    [chatSessionId, nativeHeaders, expoFetch],
+    [chatSessionId],
   )
 
   // Quick actions state
@@ -1280,7 +1272,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (!isPlaceholderSessionName(sessionName)) return
 
       hasTriggeredNamingRef.current = true
-      const http = createHttpClient()
+      const http = workspaceHttp()
       void autoNameSession({
         sessionId,
         userText,
@@ -7667,7 +7659,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setPendingPermissionRequest(null)
       try {
         if (projectId) {
-          const http = createHttpClient()
+          const http = workspaceHttp()
           await api.sendPermissionResponse(http, projectId, response)
         }
       } catch (err) {
