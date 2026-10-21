@@ -235,6 +235,26 @@ export function adminRoutes(): Hono {
   })
 
   /**
+   * GET /analytics/app-versions - OS × version matrix + daily adoption
+   *
+   * Same normalisation the admin card renders (one OS per platform spelling,
+   * CLI keys kept out of the desktop segment), plus the per-day adoption series
+   * from `device_version_events` that `api_keys` cannot provide.
+   */
+  router.get('/analytics/app-versions', async (c) => {
+    try {
+      const rawDays = Number(new URL(c.req.url).searchParams.get('days') || '30')
+      const data = await analytics.getAppVersions({
+        days: Number.isFinite(rawDays) ? rawDays : 30,
+      })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Analytics app versions error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
    * GET /analytics/chat - Chat activity analytics
    */
   router.get('/analytics/chat', async (c) => {

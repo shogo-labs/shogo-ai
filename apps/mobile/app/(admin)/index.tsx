@@ -40,6 +40,7 @@ import {
   isNativePlatform,
 } from '../../lib/native-phone-layout'
 import { SegmentedFilter } from "../../components/phone/SegmentedFilter";
+import { AppVersionsPanel, type InstallSegment } from '../../components/analytics/AppVersionsPanel'
 import {
   PlatformGrowthChart,
   ActiveUsersTrendChart,
@@ -78,28 +79,10 @@ interface ActiveUsersData {
   mau: number
 }
 
-interface InstallSegment {
-  totalDevices: number
-  active: {
-    d1: number
-    d7: number
-    d30: number
-  }
-  newLast30d: number
-  byVersion: Array<{
-    version: string
-    count: number
-    activeD7: number
-  }>
-  byPlatform: Array<{
-    platform: string
-    count: number
-  }>
-  distinctUsers: number
-}
-
 interface AppInstallsData {
   desktop: InstallSegment
+  /** Worker/CLI device keys — never part of the desktop totals. */
+  cli?: InstallSegment
   ios: InstallSegment
   android: InstallSegment
   totals: {
@@ -327,10 +310,13 @@ function InstallSegmentCard({
   label,
   data,
   icon: Icon,
+  showBreakdowns = true,
 }: {
   label: string
   data: InstallSegment
   icon: typeof Monitor
+  /** Desktop/CLI hide these: the OS×version panel below is the real breakdown. */
+  showBreakdowns?: boolean
 }) {
   const versions = data.byVersion.slice(0, 4)
   const maxVersionCount = Math.max(...versions.map((version) => version.count), 1)
@@ -354,36 +340,40 @@ function InstallSegmentCard({
           <Text className="text-sm font-semibold text-foreground">{data.newLast30d.toLocaleString()}</Text>
         </View>
       </View>
-      <View className="gap-2">
-        <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Versions</Text>
-        {versions.length > 0 ? versions.map((version) => (
-          <View key={version.version} className="gap-1">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-xs text-foreground">{version.version}</Text>
-              <Text className="text-xs text-muted-foreground">{version.count.toLocaleString()}</Text>
-            </View>
-            <View className="h-1.5 bg-muted rounded-full overflow-hidden">
-              <View
-                className="h-full bg-primary rounded-full"
-                style={{ width: `${(version.count / maxVersionCount) * 100}%` }}
-              />
-            </View>
+      {showBreakdowns && (
+        <>
+          <View className="gap-2">
+            <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Versions</Text>
+            {versions.length > 0 ? versions.map((version) => (
+              <View key={version.version} className="gap-1">
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-xs text-foreground">{version.version}</Text>
+                  <Text className="text-xs text-muted-foreground">{version.count.toLocaleString()}</Text>
+                </View>
+                <View className="h-1.5 bg-muted rounded-full overflow-hidden">
+                  <View
+                    className="h-full bg-primary rounded-full"
+                    style={{ width: `${(version.count / maxVersionCount) * 100}%` }}
+                  />
+                </View>
+              </View>
+            )) : (
+              <Text className="text-xs text-muted-foreground">No device data</Text>
+            )}
           </View>
-        )) : (
-          <Text className="text-xs text-muted-foreground">No device data</Text>
-        )}
-      </View>
-      <View className="gap-1">
-        <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Platforms</Text>
-        {data.byPlatform.length > 0 ? data.byPlatform.slice(0, 4).map((platform) => (
-          <View key={platform.platform} className="flex-row items-center justify-between">
-            <Text className="text-xs text-foreground">{platform.platform}</Text>
-            <Text className="text-xs font-medium text-foreground">{platform.count.toLocaleString()}</Text>
+          <View className="gap-1">
+            <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Platforms</Text>
+            {data.byPlatform.length > 0 ? data.byPlatform.slice(0, 4).map((platform) => (
+              <View key={platform.platform} className="flex-row items-center justify-between">
+                <Text className="text-xs text-foreground">{platform.platform}</Text>
+                <Text className="text-xs font-medium text-foreground">{platform.count.toLocaleString()}</Text>
+              </View>
+            )) : (
+              <Text className="text-xs text-muted-foreground">No device data</Text>
+            )}
           </View>
-        )) : (
-          <Text className="text-xs text-muted-foreground">No device data</Text>
-        )}
-      </View>
+        </>
+      )}
     </View>
   )
 }
@@ -443,12 +433,16 @@ function AppInstallsCard({ data, loading }: { data: AppInstallsData | null; load
       )}>
         {data && (
           <>
-            <InstallSegmentCard label="Desktop" data={data.desktop} icon={Monitor} />
+            <InstallSegmentCard label="Desktop" data={data.desktop} icon={Monitor} showBreakdowns={false} />
+            {data.cli && (
+              <InstallSegmentCard label="CLI" data={data.cli} icon={Box} showBreakdowns={false} />
+            )}
             <InstallSegmentCard label="iOS" data={data.ios} icon={Smartphone} />
             <InstallSegmentCard label="Android" data={data.android} icon={Smartphone} />
           </>
         )}
       </View>
+      {data && <View className="mt-3"><AppVersionsPanel desktop={data.desktop} cli={data.cli} /></View>}
       {data && (
         <Text className="text-xs text-muted-foreground mt-3">
           {data.totals.newLast30d.toLocaleString()} new in 30d · {data.totals.distinctUsers.toLocaleString()} users
