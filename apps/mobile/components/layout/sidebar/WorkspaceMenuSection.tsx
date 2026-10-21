@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Linking, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
-import { Check, Cloud, CloudOff, ExternalLink, LogIn, LogOut, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
+import { Cloud, CloudOff, ExternalLink, LogIn, LogOut, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { usePostHogSafe } from "../../../contexts/posthog";
 import { getPlanDisplayName } from "../../../lib/billing-config";
@@ -15,9 +15,10 @@ import { EVENTS, trackEvent } from "../../../lib/analytics";
 import { CompactUsageWindows } from "../../billing/UsageWindows";
 import { densityFor } from "../../../lib/phone-density";
 import { AccountSettingsGroup } from "./AccountSettingsGroup";
-import { MachineWorkspacesGroup, type MachineGroupData, type MachineWorkspaceRow } from "./MachineWorkspacesGroup";
+import { WorkspaceRow } from "./WorkspaceRow";
+import type { WorkspaceEntry } from "../../../lib/workspace-entries";
 import { isCloudWorkspace, useCloudWorkspaces } from "../../../lib/workspace-route";
-import { workspaceColor, workspaceInitial } from "../../../lib/workspace-color";
+import { workspaceColor } from "../../../lib/workspace-color";
 import { useCloudSession } from "../../../hooks/useCloudSession";
 import { useActiveInstance } from "../../../contexts/active-instance";
 import { getDomainHttpClient, useDomainHttpOptional } from "../../../contexts/domain";
@@ -28,14 +29,33 @@ import { usePendingInvitations } from "../../../lib/use-pending-invitations";
 type PendingInvitations = ReturnType<typeof usePendingInvitations>;
 
 export interface WorkspaceMenuSectionProps {
-  workspaces: any[];
+  /**
+   * Every workspace the switcher lists, whatever hosts it: cloud workspaces and
+   * a paired computer's own workspaces, in one list (SHO-108). Built once by
+   * `buildWorkspaceEntries`, so this section never decides a host.
+   */
+  entries: WorkspaceEntry[];
+  /** `WorkspaceEntry.key` of the workspace in view — the row that is checked. */
+  currentKey: string | null;
+  /** One switch path: the caller decides what opening an entry means. */
+  onSelect: (entry: WorkspaceEntry) => void;
+  /**
+   * The cloud workspace behind the identity header, billing and settings. A
+   * machine workspace has no billing account, so those stay the cloud
+   * workspace's while its rows and the checkmark follow the machine.
+   */
   currentWorkspace: any;
   billingData: any;
   workspacePlan: { planId: string; status: string | null } | null;
   allPlans: Record<string, { planId: string; status: string | null }>;
   showBilling: boolean;
   onNavigate: (href: string) => void;
-  onSwitchWorkspace: (workspaceId: string) => void;
+  /**
+   * Joining a workspace from a pending invitation. Not a switch path for the
+   * list — that is `onSelect` — but accepting an invite is a cloud membership
+   * action, so it names the workspace by id.
+   */
+  onSwitchWorkspace?: (workspaceId: string) => void;
   onCreateWorkspace: () => void;
   /**
    * Whether the current user already has a `kind: 'personal'` workspace.
@@ -61,13 +81,6 @@ export interface WorkspaceMenuSectionProps {
    * (identity, settings, usage) without the workspace list.
    */
   presentation?: "full" | "switcher" | "workspace-menu";
-  /**
-   * Paired desktops and their own workspaces ("This Mac"). Listed next to the
-   * cloud workspaces so the machine's rows sit where the user already switches
-   * context; omitted while they are still loading.
-   */
-  machineWorkspaces?: MachineGroupData[];
-  onOpenMachineWorkspace?: (machine: MachineGroupData, workspace: MachineWorkspaceRow) => void;
 }
 
 /**
@@ -113,7 +126,7 @@ function PendingInvitationsSection({
 }: {
   invitations: PendingInvitations;
   isNative: boolean;
-  onSwitchWorkspace: (workspaceId: string) => void;
+  onSwitchWorkspace?: (workspaceId: string) => void;
   onClose: () => void;
 }) {
   const density = densityFor(isNative);
@@ -168,7 +181,7 @@ function PendingInvitationsSection({
                 disabled={expired || busy}
                 onPress={async () => {
                   if (!(await acceptInvite(invite))) return;
-                  onSwitchWorkspace(invite.workspaceId);
+                  onSwitchWorkspace?.(invite.workspaceId);
                   onClose();
                 }}
                 accessibilityLabel={`Accept invitation to ${name}`}
@@ -217,7 +230,9 @@ function PendingInvitationsSection({
 }
 
 export function WorkspaceMenuSection({
-  workspaces,
+  entries,
+  currentKey,
+  onSelect,
   currentWorkspace,
   billingData,
   workspacePlan,
@@ -235,8 +250,6 @@ export function WorkspaceMenuSection({
   accountItems,
   settingsItems,
   presentation = "full",
-  machineWorkspaces,
-  onOpenMachineWorkspace,
 }: WorkspaceMenuSectionProps) {
   const posthog = usePostHogSafe();
   const density = densityFor(isNative);
@@ -288,8 +301,9 @@ export function WorkspaceMenuSection({
   // names *that* workspace. Ids, billing and settings stay the cloud
   // workspace's — only the label follows what the user is looking at.
   const { instance: activeInstance } = useActiveInstance()
+  const machineHost = activeInstance?.source === "machine" ? activeInstance : null
   const workspaceLabel =
-    (activeInstance?.source === "machine" ? activeInstance.localWorkspaceName : undefined) ??
+    (machineHost ? machineHost.localWorkspaceName : undefined) ??
     currentWorkspace?.name
   const wsInitial = workspaceLabel?.[0]?.toUpperCase() ?? "W";
   const resolvedPlanId =
@@ -344,7 +358,15 @@ export function WorkspaceMenuSection({
           >
             {workspaceLabel}
           </Text>
-          {currentIsCloud ? (
+          {machineHost ? (
+            <View className="mt-0.5 flex-row items-center gap-1">
+              <Text className={cn("text-muted-foreground", density.text.label)} numberOfLines={1}>
+                {machineHost.localWorkspaceKind === "personal" ? "Personal" : "Team"}
+                {" \u00B7 "}
+                {machineHost.hostname ?? "your computer"}
+              </Text>
+            </View>
+          ) : currentIsCloud ? (
             <View className="mt-0.5 flex-row items-center gap-1">
               {cloud.reachable ? (
                 <Cloud size={12} className="text-muted-foreground" />
@@ -470,78 +492,33 @@ export function WorkspaceMenuSection({
     />
   );
 
+  /**
+   * One list, one row — cloud workspaces and a paired computer's own
+   * workspaces alike (SHO-108). The only per-entry difference a row draws is
+   * the `Local` chip and the host subtitle, both of which come from the entry.
+   */
+  const entryRows = entries.map((entry) => {
+    const hostedInCloud = !localMode || isCloudWorkspace(entry.id);
+    return (
+      <WorkspaceRow
+        key={entry.key}
+        entry={entry}
+        isCurrent={entry.key === currentKey}
+        onPress={(selected) => {
+          onSelect(selected);
+          onClose();
+        }}
+        localMode={!!localMode}
+        cloudHosted={hostedInCloud}
+        cloudUnreachable={hostedInCloud && !cloud.reachable}
+        isNative={isNative}
+      />
+    );
+  });
+
   const workspaceRows = (
     <>
-      {workspaces.map((ws: any) => {
-        const isCurrent = ws.id === currentWorkspace?.id;
-        const wsIsCloud = !!localMode && isCloudWorkspace(ws.id);
-        const badge = workspaceKindBadge(ws, { localMode: !!localMode, cloud: wsIsCloud });
-        return (
-          <Pressable
-            key={ws.id}
-            onPress={() => {
-              if (!isCurrent) {
-                onSwitchWorkspace(ws.id);
-              }
-              onClose();
-            }}
-            className={cn(
-              "flex-row items-center gap-2 px-4 active:bg-muted",
-              isNative ? "py-3.5" : "py-2",
-              isNative && "border-b border-border",
-            )}
-          >
-            <View
-              className={cn(
-                "rounded bg-primary/10 items-center justify-center",
-                isNative ? "h-7 w-7" : "h-6 w-6",
-              )}
-            >
-              <Text
-                className={cn("font-medium text-primary", density.text.caption)}
-              >
-                {ws.name?.[0]?.toUpperCase() ?? "W"}
-              </Text>
-            </View>
-            <Text
-              className={cn("text-foreground flex-1", density.text.body)}
-              numberOfLines={1}
-            >
-              {ws.name}
-            </Text>
-            <View
-              className={cn(
-                "rounded px-1.5 py-0.5",
-                badge.highlighted ? "bg-primary/10" : "bg-muted",
-              )}
-            >
-              <Text
-                className={cn(
-                  density.text.caption,
-                  badge.highlighted
-                    ? "text-primary font-medium"
-                    : "text-muted-foreground",
-                )}
-              >
-                {badge.label}
-              </Text>
-            </View>
-            {wsIsCloud && !cloud.reachable && (
-              <CloudOff size={14} className="text-destructive" accessibilityLabel="Offline" />
-            )}
-            {isCurrent && <Check size={16} className="text-primary" />}
-          </Pressable>
-        );
-      })}
-      {machineWorkspaces && onOpenMachineWorkspace && (
-        <MachineWorkspacesGroup
-          machines={machineWorkspaces}
-          onOpen={(machine, workspace) => {
-            onOpenMachineWorkspace(machine, workspace);
-            onClose();
-          }}
-        />
-      )}
+      {entryRows}
       {!localMode && hasPersonalWorkspace === false && onCreatePersonalWorkspace && (
         <Pressable
           onPress={() => {
@@ -601,63 +578,7 @@ export function WorkspaceMenuSection({
   const switcherRows = (
     <View className="gap-0.5 px-2 py-2">
       {pendingInvitations}
-      {workspaces.map((ws: any) => {
-        const isCurrent = ws.id === currentWorkspace?.id;
-        const wsIsCloud = !!localMode && isCloudWorkspace(ws.id);
-        const isPersonal = ws.kind === "personal";
-        return (
-          <Pressable
-            key={ws.id}
-            onPress={() => {
-              if (!isCurrent) onSwitchWorkspace(ws.id);
-              onClose();
-            }}
-            accessibilityLabel={ws.name}
-            className="flex-row items-center gap-3 rounded-lg px-2 py-1.5 active:bg-muted"
-          >
-            <View className={cn("rounded-[14px] border-2 p-0.5", isCurrent ? "border-foreground" : "border-transparent")}>
-              <View
-                className="h-9 w-9 items-center justify-center rounded-lg"
-                style={{ backgroundColor: workspaceColor(ws.id) }}
-              >
-                <Text className="text-sm font-bold text-white">{workspaceInitial(ws.name)}</Text>
-              </View>
-            </View>
-            <View className="min-w-0 flex-1">
-              <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
-                {ws.name}
-              </Text>
-              <View className="mt-0.5 flex-row items-center gap-1">
-                {localMode ? (
-                  <View className={cn("rounded px-1.5 py-0.5", wsIsCloud ? "bg-primary/10" : "bg-muted")}>
-                    <Text className={cn("text-[10px]", wsIsCloud ? "font-medium text-primary" : "text-muted-foreground")}>
-                      {wsIsCloud ? "Cloud" : "Local"}
-                    </Text>
-                  </View>
-                ) : null}
-                <View className={cn("rounded px-1.5 py-0.5", isPersonal ? "bg-primary/10" : "bg-muted")}>
-                  <Text className={cn("text-[10px]", isPersonal ? "font-medium text-primary" : "text-muted-foreground")}>
-                    {isPersonal ? "Personal" : "Team"}
-                  </Text>
-                </View>
-              </View>
-            </View>
-            {wsIsCloud && !cloud.reachable && (
-              <CloudOff size={14} className="text-destructive" accessibilityLabel="Offline" />
-            )}
-          </Pressable>
-        );
-      })}
-      {machineWorkspaces && onOpenMachineWorkspace && (
-        <MachineWorkspacesGroup
-          machines={machineWorkspaces}
-          onOpen={(machine, workspace) => {
-            onOpenMachineWorkspace(machine, workspace);
-            onClose();
-          }}
-          compact
-        />
-      )}
+      {entryRows}
       {!localMode && hasPersonalWorkspace === false && onCreatePersonalWorkspace && (
         <Pressable
           onPress={() => {

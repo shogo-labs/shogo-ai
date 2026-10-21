@@ -135,12 +135,16 @@ mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({
 }))
 
 const { AccountMenu, AccountMenuBody, ACCOUNT_SCREEN_HREF } = await import("../AccountMenu")
+const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")
 
 const props = {
   user: { name: "Ashutosh" },
   onSignOut: () => {},
   isSuperAdmin: false,
-  workspaces: [{ id: "w1", name: "Ashutosh Personal" }],
+  // One list of entries (SHO-108): a cloud workspace here, no paired machine.
+  entries: buildWorkspaceEntries({ workspaces: [{ id: "w1", name: "Ashutosh Personal", kind: "personal" }] }),
+  currentKey: cloudWorkspaceKey("w1"),
+  onSelectEntry: () => {},
   currentWorkspace: { id: "w1", name: "Ashutosh Personal" },
   billingData: {},
   workspacePlan: null,

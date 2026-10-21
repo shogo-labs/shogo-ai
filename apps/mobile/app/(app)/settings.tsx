@@ -84,6 +84,7 @@ import {
   type MemberInsight,
   type MemberInsightsData,
 } from "../../lib/api";
+import { useUsageLogCsvUrl } from "../../lib/usage-log-csv";
 import {
   workspaceDeleteErrorMessage,
   workspaceErrorMessage,
@@ -2375,9 +2376,12 @@ const PeopleTab = observer(function PeopleTab() {
     (m: any) => m.role !== "viewer"
   ).length;
 
+  // Same host as the usage numbers on screen, machine included (SHO-108/SHO-91).
+  const exportCsvUrl = useUsageLogCsvUrl(currentWorkspace?.id, { period: "30d" });
+
   const handleExportMembersCsv = () => {
     if (!currentWorkspace?.id) return;
-    const url = api.getUsageLogCsvUrl(currentWorkspace.id, { period: "30d" });
+    const url = exportCsvUrl;
     if (typeof window !== "undefined") {
       window.open(url, "_blank", "noopener");
     } else {
