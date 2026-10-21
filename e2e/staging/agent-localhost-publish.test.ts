@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import { readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { test, expect, type Page } from "./fixtures"
 import { makeTestUser, waitForAgentResponse } from "./helpers"
 import {
@@ -123,6 +125,60 @@ test.describe("Agent preview hygiene", () => {
     expect(response.status()).toBe(200)
     expect(response.headers()["content-disposition"]).toMatch(/^attachment;/i)
   })
+
+  test("the hygiene checks read the agent's messages, not the page body", async () => {
+    // Measured on the live transcript from the test above: `body.innerText`
+    // carries the echoed prompt (which itself says "Do not give me localhost,
+    // …") and the build-log / preview chrome, while `.chat-md` carries only the
+    // agent's reply. That scope difference is the entire bug from run
+    // 39574738520 — a correct reply failed on its own closing sentence — so
+    // both halves are pinned here against a real page (SHO-128, AC3).
+    const body = await page.locator("body").innerText()
+    const agent = await agentMessageText(page)
+
+    expect(body, "the page body carries the echoed prompt, which names localhost").toMatch(
+      /Do not give me localhost/i,
+    )
+    expect(agent, "the agent's own messages must not include the echoed prompt").not.toMatch(
+      /Do not give me localhost/i,
+    )
+    expect(agent, "the agent's own messages are the reply, not an empty scope").toMatch(
+      /artifact-delivery-test\.pdf/,
+    )
+  })
+})
+
+/**
+ * The scope every hygiene assertion has to read (SHO-128). `LOCALHOST_RE` and
+ * `PREVIEW_URL_RE` are only meaningful against the agent's own words: the same
+ * strings appear in the user's echoed prompt and in preview chrome, where they
+ * are not a leak and must not fail the gate. Source-level, so a future
+ * re-widening to `body.innerText` reds here instead of on a cold staging run
+ * three merges later.
+ */
+test.describe("Agent preview hygiene scope", () => {
+  const WHOLE_PAGE = /transcript\(\s*page\s*\)|locator\(\s*["']body["']\s*\)\s*\.innerText\(\)/
+  // `expect(<value>, …).(not.)toMatch(LOCALHOST_RE|PREVIEW_URL_RE)`, across lines.
+  const HYGIENE_ASSERTION =
+    /expect\(\s*([A-Za-z_$][\w$]*)[\s\S]{0,200}?\.(?:not\.)?(?:toMatch|toContain)\(\s*(?:LOCALHOST_RE|PREVIEW_URL_RE)/g
+
+  for (const file of ["agent-localhost-publish.test.ts", "agent-publish.test.ts"]) {
+    test(`${file} never feeds a whole-page read to a hygiene matcher`, () => {
+      const source = readFileSync(join(dirname(test.info().file), file), "utf8")
+      for (const [, subject] of source.matchAll(HYGIENE_ASSERTION)) {
+        // Where the asserted value came from: the `const` it was bound to.
+        const binding = source.match(
+          new RegExp(`(?:const|for \\(const)\\s+${subject}\\s*(?:=|of)\\s*([\\s\\S]{0,200}?)\\n`),
+        )
+        expect(binding, `${file}: "${subject}" is asserted but never bound`).toBeTruthy()
+        expect(
+          WHOLE_PAGE.test(binding![1]),
+          `${file}: "${subject}" is a whole-page read (${binding![1].trim()}) — the ` +
+            `hygiene matchers must read agentMessageText/agentMessageHrefs (SHO-128)`,
+        ).toBe(false)
+      }
+    })
+  }
 })
 
 /**
