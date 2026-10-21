@@ -50,6 +50,7 @@ import {
   postMessage,
   removeMember,
   requirePost,
+  normalizeLinkPreviewOptOuts,
   serializeConversation,
   setAttachmentUrlBuilder,
   setReaction,
@@ -611,6 +612,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const body = await readJson(c)
     try {
       const threadRootId = typeof body.threadRootId === 'string' ? body.threadRootId : null
+      const linkPreviewsOff = normalizeLinkPreviewOptOuts(body.linkPreviewsOff)
       const access = await requirePost(c.req.param('conversationId'), userId, { threadReply: !!threadRootId })
       if (!access.membership && (access.conversation.kind === 'public' || access.conversation.kind === 'activity')) {
         await joinConversation(access.conversation.id, userId)
@@ -624,6 +626,10 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         alsoSentToChannel: body.alsoSentToChannel === true && access.conversation.kind !== 'activity',
         clientMsgId: typeof body.clientMsgId === 'string' ? body.clientMsgId.slice(0, 100) : null,
         attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
+        // The sender declined a preview for some of this message's links (they
+        // point into a closed conversation). Storing the refusal — never the
+        // preview — is what keeps the decision, and only the decision, here.
+        blocks: linkPreviewsOff.length ? { linkPreviewsOff } : undefined,
       })
       void afterMessagePosted(result, { actorUserId: userId, origin: 'app' })
       return c.json({ message: result.message }, result.duplicate ? 200 : 201)

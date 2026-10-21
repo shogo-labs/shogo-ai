@@ -20,6 +20,7 @@ import {
 import { useTeamChatEvents } from '../lib/team-chat-connection'
 import { setActiveChannelNotificationContext } from '../lib/notifications/chat-notifier'
 import { cacheList, cacheTimeline, readCachedList, readCachedTimeline } from '../lib/team-chat-cache'
+import { linkPreviewOptOuts } from '../lib/link-preview-consent'
 import {
   addOptimistic,
   applyListEvent,
@@ -271,6 +272,8 @@ export interface SendInput {
   text: string
   alsoSentToChannel?: boolean
   attachmentIds?: string[]
+  /** Links in this message whose author declined a preview (closed conversations). */
+  linkPreviewsOff?: string[]
 }
 
 export function useConversationTimeline(
@@ -408,7 +411,9 @@ export function useConversationTimeline(
       authorUserId: me,
       authorAgent: null,
       text: input.text,
-      blocks: null,
+      // Carried on the optimistic row too, so the author sees their own refusal
+      // apply immediately rather than a card appearing and then vanishing.
+      blocks: input.linkPreviewsOff?.length ? { linkPreviewsOff: input.linkPreviewsOff } : null,
       clientMsgId,
       agentSessionId: null,
       agentStatus: null,
@@ -429,7 +434,13 @@ export function useConversationTimeline(
       ...s,
       messages: s.messages.map((m) => (m.clientMsgId === clientMsgId && m.pending ? { ...m, pending: 'sending' } : m)),
     }))
-    await sendWithClientId(clientMsgId, { text: message.text, alsoSentToChannel: message.alsoSentToChannel })
+    await sendWithClientId(clientMsgId, {
+      text: message.text,
+      alsoSentToChannel: message.alsoSentToChannel,
+      // A retry must keep the sender's decision, or the preview they declined
+      // would appear on the second attempt.
+      linkPreviewsOff: linkPreviewOptOuts(message.blocks),
+    })
   }, [sendWithClientId])
 
   const retryRef = useRef(retry)
