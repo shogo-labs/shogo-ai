@@ -23,49 +23,31 @@
  *   forwards a relayed path to the machine. A real cloud is not reachable from
  *   an offline local run, and this is the same seam `machine-workspaces-tunnel`
  *   uses.
- * - the model. There is no LLM credential in local CI, so the agent turn is
- *   asserted at the seam that matters for this card — the turn reaches the
- *   machine carrying the machine's own workspace id. The *reply* is not
- *   asserted here; a live agent reading a canary off the machine's disk is the
- *   staging run (`e2e/staging/remote-control.test.ts`).
+ * - the model. There is no LLM credential in local CI, so this spec asserts the
+ *   turn at the seam that matters here — it reaches the machine carrying the
+ *   machine's own workspace id. The *reply* is the other local spec,
+ *   `machine-workspace-agent-turn-live.test.ts`, which runs the real agent
+ *   against the scripted model and has it read a canary off the machine's disk.
  */
-import { expect, test, type Page, type Route } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 import { LOCAL_API_BASE } from "./helpers"
+import {
+  MACHINE_ID,
+  MACHINE_NAME,
+  MACHINE_WORKSPACE_ID,
+  MACHINE_WORKSPACE_NAME,
+  installCloudRelay,
+  openCloudWorkspace,
+  openSwitcher,
+  readWorkspaces,
+  type RelayCall,
+} from "./machine-relay"
 
-const MACHINE_ID = "machine-sho130"
-/** The machine's own id for the workspace — deliberately unlike the cloud's. */
-const MACHINE_WORKSPACE_ID = "mws-studio-team"
-const MACHINE_NAME = "Studio Mac"
-const MACHINE_WORKSPACE_NAME = "Studio Mac Team"
 const MACHINE_ONLY_PROJECT = "Machine only"
 const CLOUD_ONLY_PROJECT = "Cloud only"
 const CANARY = "SHO130-CANARY-8f2e1c"
-
-type RelayCall = { method: string; path: string; status: number; projectNames?: string[] }
-type Workspace = { id: string; name: string; kind: string }
-
-/** Sign in, finish onboarding, and wait for the switcher to be on screen. */
-async function openCloudWorkspace(page: Page): Promise<void> {
-  await page.goto("/", { waitUntil: "domcontentloaded" })
-  await page.waitForTimeout(3000)
-  await page.evaluate(async (api) => {
-    await fetch(`${api}/api/local/auto-sign-in`, { method: "POST", credentials: "include" })
-    await fetch(`${api}/api/onboarding/complete`, { method: "POST", credentials: "include" })
-  }, LOCAL_API_BASE)
-  await page.reload({ waitUntil: "domcontentloaded" })
-  await expect(page.getByRole("button", { name: /— open account/ }).first()).toBeVisible({ timeout: 60_000 })
-}
-
-async function readWorkspaces(page: Page): Promise<{ personal: Workspace; team: Workspace; userId: string }> {
-  return page.evaluate(async (api) => {
-    const list = await fetch(`${api}/api/workspaces`, { credentials: "include" }).then((r) => r.json())
-    const items: Workspace[] = list.items ?? []
-    const me = await fetch(`${api}/api/auth/get-session`, { credentials: "include" }).then((r) => r.json())
-    const personal = items.find((w) => w.kind === "personal")
-    const team = items.find((w) => w.kind !== "personal") ?? personal
-    return { personal: personal!, team: team!, userId: me?.user?.id ?? me?.session?.userId }
-  }, LOCAL_API_BASE)
-}
+/** A message written into a channel that lives on the machine. */
+const CHANNEL_MESSAGE = `Still on the studio machine ${Date.now().toString(36)}`
 
 /** Two projects of the same shape, one on either side of the machine boundary. */
 async function seedProjects(page: Page, cloudId: string, machineId: string): Promise<void> {
@@ -91,101 +73,6 @@ async function seedProjects(page: Page, cloudId: string, machineId: string): Pro
   )
 }
 
-/**
- * Serve the cloud's machine list and relay, forwarding to the real local API.
- *
- * `machines` is what the cloud would say the paired computer has; the relay
- * prefix is the cloud's `/api/machines/<id>/w/<localWorkspaceId>` transport.
- */
-async function installCloudRelay(
-  page: Page,
-  opts: { machineWorkspaceId: string; userId: string; log: RelayCall[] },
-): Promise<void> {
-  const { machineWorkspaceId, userId, log } = opts
-  const machineWorkspaces = [{ id: MACHINE_WORKSPACE_ID, name: MACHINE_WORKSPACE_NAME, kind: "team" }]
-
-  await page.route("**/api/machines**", async (route: Route) => {
-    const url = new URL(route.request().url())
-    const path = url.pathname
-    const method = route.request().method()
-
-    if (path === "/api/machines") {
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          machines: [
-            {
-              id: MACHINE_ID,
-              name: MACHINE_NAME,
-              hostname: "studio-mac",
-              kind: "desktop",
-              status: "online",
-              lastSeenAt: new Date().toISOString(),
-              snapshot: { workspaces: machineWorkspaces },
-            },
-          ],
-        }),
-      })
-    }
-
-    if (path === `/api/machines/${MACHINE_ID}/workspaces`) {
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "online", stale: false, workspaces: machineWorkspaces }),
-      })
-    }
-
-    const relayPrefix = `/api/machines/${MACHINE_ID}/w/`
-    if (!path.startsWith(relayPrefix)) {
-      return route.fulfill({
-        status: 404,
-        contentType: "application/json",
-        body: JSON.stringify({ error: { code: "not_found" } }),
-      })
-    }
-
-    const rest = path.slice(relayPrefix.length)
-    // The machine's own workspace id stands in for a workspace on this dev
-    // machine, so the relay maps it back the way the tunnel would.
-    const machinePath = rest.slice(rest.indexOf("/")).replaceAll(MACHINE_WORKSPACE_ID, machineWorkspaceId)
-    const machineQuery = url.search.replaceAll(MACHINE_WORKSPACE_ID, machineWorkspaceId)
-
-    const upstream = await fetch(`${LOCAL_API_BASE}${machinePath}${machineQuery}`, {
-      method,
-      headers: {
-        "x-tunnel-auth-user-id": userId,
-        "content-type": route.request().headerValue("content-type") ?? "application/json",
-      },
-      body: ["GET", "HEAD"].includes(method) ? undefined : route.request().postDataBuffer(),
-    })
-    const body = Buffer.from(await upstream.arrayBuffer())
-    const call: RelayCall = { method, path: machinePath, status: upstream.status }
-    if (machinePath.startsWith("/api/projects")) {
-      try {
-        call.projectNames = (JSON.parse(body.toString("utf8")).items ?? []).map((p: { name: string }) => p.name)
-      } catch {
-        call.projectNames = []
-      }
-    }
-    log.push(call)
-
-    return route.fulfill({
-      status: upstream.status,
-      headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
-      body,
-    })
-  })
-}
-
-async function openSwitcher(page: Page): Promise<void> {
-  await page.getByRole("button", { name: /— open account/ }).first().click()
-  await expect(page.getByTestId(`workspace-row:machine:${MACHINE_ID}:${MACHINE_WORKSPACE_ID}`)).toBeVisible({
-    timeout: 30_000,
-  })
-}
-
 test("SHO-130 · a paired machine's workspace opens from the cloud, stays on reload, and leaves cleanly", async ({
   page,
 }) => {
@@ -209,9 +96,15 @@ test("SHO-130 · a paired machine's workspace opens from the cloud, stays on rel
 
   // Its own identity, not the cloud workspace's: "says I'm controlling that
   // workspace but it doesn't work" was exactly this split.
-  await expect(page.getByRole("button", { name: new RegExp(`^${MACHINE_WORKSPACE_NAME}, `) })).toBeVisible({
+  // Both places that name the workspace, and they agree: the wide panel header
+  // (rendered, not requested — the interceptor cannot rewrite it) and the
+  // account tile.
+  await expect(page.getByRole("button", { name: `${MACHINE_WORKSPACE_NAME}, workspace menu` })).toBeVisible({
     timeout: 20_000,
   })
+  await expect(
+    page.getByRole("button", { name: new RegExp(`^${MACHINE_WORKSPACE_NAME}, .*— open account`) }),
+  ).toBeVisible()
   await expect(page.getByText(/Connected to Studio Mac/)).toBeVisible()
 
   // Its own kind: a team workspace gets the team shell (channels), not the
@@ -238,7 +131,7 @@ test("SHO-130 · a paired machine's workspace opens from the cloud, stays on rel
 
   // ── AC 3 — a reload does not bounce back to the cloud ────────────────────
   await page.reload({ waitUntil: "domcontentloaded" })
-  await expect(page.getByRole("button", { name: new RegExp(`^${MACHINE_WORKSPACE_NAME}, `) })).toBeVisible({
+  await expect(page.getByRole("button", { name: `${MACHINE_WORKSPACE_NAME}, workspace menu` })).toBeVisible({
     timeout: 30_000,
   })
   await openSwitcher(page)
@@ -252,7 +145,15 @@ test("SHO-130 · a paired machine's workspace opens from the cloud, stays on rel
   await composer.fill("What is in this workspace?")
   await page.keyboard.press("Enter")
   await expect.poll(() => log.some((r) => r.path.includes("/chat")), { timeout: 45_000 }).toBe(true)
-  expect(log.filter((r) => r.path.includes("/chat")).every((r) => r.path.includes(team.id))).toBe(true)
+  // Every chat call that names a workspace names the machine's, and at least
+  // one does. Calls with no workspace id in the path are the machine's by
+  // construction (the relay prefix already scoped them).
+  const chatCalls = log.filter((r) => r.path.includes("/chat"))
+  expect(
+    chatCalls.filter((r) => r.path.includes(personal.id)).map((r) => r.path),
+    "a chat call still named the cloud workspace that was on screen before the switch",
+  ).toEqual([])
+  expect(chatCalls.some((r) => r.path.includes(team.id)), JSON.stringify(chatCalls, null, 2)).toBe(true)
 
   // ── AC 5 (machine side, real disk) — the cloud reads the machine's disk ──
   // Written and read through the machine's own workspace file API over the
@@ -278,6 +179,64 @@ test("SHO-130 · a paired machine's workspace opens from the cloud, stays on rel
   }, fileUrl)
   expect(readBack.status).toBe(200)
   expect(readBack.body).toContain(CANARY)
+
+  // ── AC 6 — a channel that lives on the machine ────────────────────────────
+  // A channel created on the machine over the relay, then written to from the
+  // UI while the machine workspace is in view: the message has to be relayed to
+  // the machine and land in *its* rows, not the cloud workspace's.
+  const channelName = `machine-${Date.now().toString(36)}`
+  const created = await page.evaluate(
+    async ({ url, name }) => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, kind: "public" }),
+      })
+      return { status: res.status, body: await res.json().catch(() => null) }
+    },
+    { url: `${relayBase}/api/workspaces/${MACHINE_WORKSPACE_ID}/conversations`, name: channelName },
+  )
+  const channelId: string | undefined = created.body?.conversation?.id
+  expect(created.status, JSON.stringify(created.body).slice(0, 300)).toBe(201)
+  expect(channelId).toBeTruthy()
+
+  // The row belongs to the machine's workspace; the cloud workspace has never
+  // heard of it. (Both live in this dev database — the id is the boundary.)
+  const cloudChannels = await page.evaluate(async ({ api, cloudId, channelId }) => {
+    const list = await fetch(`${api}/api/workspaces/${cloudId}/conversations`, { credentials: "include" }).then((r) =>
+      r.json(),
+    )
+    return (list.conversations ?? []).map((conv: { id: string }) => conv.id).includes(channelId)
+  }, { api: LOCAL_API_BASE, cloudId: personal.id, channelId })
+  expect(cloudChannels).toBe(false)
+
+  log.length = 0
+  await page.goto(`/c/${channelId}`, { waitUntil: "domcontentloaded" })
+  const channelInput = page.getByTestId("team-composer-input").first()
+  await expect(channelInput).toBeVisible({ timeout: 60_000 })
+  await channelInput.click()
+  await channelInput.fill(CHANNEL_MESSAGE)
+  await page.keyboard.press("Enter")
+
+  // Read back through the relay, with the tunnel's own auth header: the
+  // machine's message rows carry it.
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(async ({ url, channelId, userId }) => {
+          const res = await fetch(`${url}/api/conversations/${channelId}/messages`, {
+            headers: { "x-tunnel-auth-user-id": userId },
+          })
+          if (!res.ok) return `HTTP ${res.status}`
+          const body = await res.json()
+          return (body.messages ?? []).map((m: { text?: string }) => m.text ?? "").join("\n")
+        }, { url: relayBase, channelId, userId }),
+      { timeout: 30_000 },
+    )
+    .toContain(CHANNEL_MESSAGE)
+
+  // …and it went over the relay, not straight to the cloud.
+  expect(log.filter((r) => r.path.includes(`/api/conversations/${channelId}`)).length).toBeGreaterThan(0)
 
   // ── AC 3 — leaving for the cloud drops the machine entirely ──────────────
   log.length = 0
