@@ -450,6 +450,18 @@ describe('AC5: every transport, in proxy mode and BYO mode', () => {
     })
   }
 
+  test('sound-generation forwards output_format as a query param, not a body field', async () => {
+    const res = await postJson(
+      apiApp,
+      `${hosted('/voice/op/sound-generation')}&output_format=mp3_44100_128`,
+      { text: 'coin drop' },
+    )
+
+    expect(res.status).toBe(200)
+    expect(elCalls[0].url).toContain('output_format=mp3_44100_128')
+    expect(elCalls[0].body.output_format).toBeUndefined()
+  })
+
   test('the keyed route map serves an op by name (the named-route surface)', async () => {
     elRespond = () => okAudio()
     const pod = new Hono()
