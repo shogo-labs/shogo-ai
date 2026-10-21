@@ -250,6 +250,17 @@ describe('AC1: speech-to-speech (voice changer)', () => {
     expect(elCalls[0].url).toContain('/v1/speech-to-speech/voice_from_form_part')
   })
 
+  test('a `voiceId` form part survives the pod proxy too', async () => {
+    const res = await postForm(createPodApp(), '/api/voice/op/speech-to-speech', {
+      audio: audioFile(),
+      voiceId: 'voice_via_pod',
+    })
+
+    expect(res.status).toBe(200)
+    expect(apiHits).toBe(1)
+    expect(elCalls[0].url).toContain('/v1/speech-to-speech/voice_via_pod')
+  })
+
   test('a runtime token for another project is a 403, not a charge', async () => {
     apiHits = 0
     const res = await apiApp.request(`/api/voice/op/speech-to-speech?projectId=someone_else`, {
@@ -499,7 +510,28 @@ describe('aliases: /voice/tts and /voice/music are unchanged', () => {
 
     expect(res.status).toBe(200)
     expect(elCalls).toHaveLength(1)
-    expect(String(elCalls[0].body.text)).toContain('Ada')
+    // Exactly what main sent upstream for this body (measured on 701ab2d74).
+    expect(String(elCalls[0].body.text)).toBe(
+      '[laughs] Hey — this is how Ada sounds when the mood takes over.',
+    )
+  })
+
+  test("the pod's own tts alias builds the same preview line before forwarding", async () => {
+    const handlers = createVoiceHandlers({})
+    const res = await handlers.tts(
+      new Request('http://pod/api/voice/tts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ audioTags: ['laughs'], characterName: 'Ada' }),
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(apiHits).toBe(1)
+    expect(elCalls[0].headers['xi-api-key']).toBe(POOLED_KEY)
+    expect(String(elCalls[0].body.text)).toBe(
+      '[laughs] Hey — this is how Ada sounds when the mood takes over.',
+    )
   })
 
   test('/voice/music keeps its prompt/compositionPlan rule', async () => {
