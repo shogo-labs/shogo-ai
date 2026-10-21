@@ -27,6 +27,7 @@ export default defineConfig({
     'src/voice/route/music.ts',
     'src/voice/route/agent.ts',
     'src/voice/route/audio-tags.ts',
+    'src/voice/route/op.ts',
     'src/cli/deploy.ts',
     'src/cli/pkg.ts',
     // Narrow entry consumed by `packages/shogo-worker` (MIT). Keeping it
@@ -134,6 +135,7 @@ export default defineConfig({
     '@shogo-ai/voice/route/music',
     '@shogo-ai/voice/route/agent',
     '@shogo-ai/voice/route/audio-tags',
+    '@shogo-ai/voice/route/op',
     '@shogo-ai/cli',
     '@shogo-ai/cli/deploy',
     '@shogo-ai/cli/pkg',
