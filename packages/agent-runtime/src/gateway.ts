@@ -6915,6 +6915,12 @@ export class AgentGateway {
     // The prefix was rewritten — drop stable-compaction decisions, exactly as
     // every other compaction path does.
     this.contentReplacementStates.delete(sessionId)
+    // Keep the durable copy: the API stores the summary on the ChatSession so
+    // losing sessions.db cannot lose it (SHO-137 round 3, R4). Best-effort.
+    if (result.summary) {
+      const { postContextSummary } = await import('./internal-api')
+      void postContextSummary(sessionId, result.summary).catch(() => {})
+    }
     const after = this.sessionManager.getDetail(sessionId)
     return {
       status: 'compacted',

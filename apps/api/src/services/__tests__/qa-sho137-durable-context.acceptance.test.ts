@@ -157,12 +157,13 @@ describe('AC5 — an over-budget conversation gets one durable, stable summary',
     expect(summarizeCalls).toHaveLength(1)
   })
 
-  it('the team-chat prompt builder and the wake seed share one summary for one chat', async () => {
+  it('R2 — the thread budget never writes the summary: one writer, keyed by this session\'s rows', async () => {
     const sessionId = await makeSession('channel agent chat')
     for (let i = 0; i < 60; i += 1) {
       await addMessage(sessionId, i % 2 === 0 ? 'user' : 'assistant', `m${i} ${'y'.repeat(1200)}`)
     }
-    // A rendered thread row set, the shape budgetThreadContext takes.
+    // A rendered thread row set, the shape fitThreadBudget takes. Its `seq` is
+    // channel-wide: it must never reach `contextSummaryThroughCount`.
     const thread = Array.from({ length: 60 }, (_, i) => ({
       id: `t${i}`,
       text: `thread ${i} ${'z'.repeat(1200)}`,
@@ -170,17 +171,21 @@ describe('AC5 — an over-budget conversation gets one durable, stable summary',
       authorType: i % 3 === 0 ? 'agent' : 'user',
     }))
 
-    for (let turn = 0; turn < 3; turn += 1) {
-      await svc.budgetThreadContext(thread, sessionId, { inferredName: 'channel agent chat' })
-      await addMessage(sessionId, 'user', `prompt row for turn ${turn}`)
-      await svc.historySeedFor(sessionId, { excludeNewestUserMessage: true })
-    }
+    const before = await prisma.chatSession.findUnique({ where: { id: sessionId } })
+    const budgeted = svc.fitThreadBudget(thread)
+    expect(budgeted.kept.length).toBeLessThan(thread.length)
 
-    // One summarizer, one block: the two writers must not fight over the
-    // watermark and re-summarise on every turn.
-    expect(summarizeCalls.length).toBeLessThanOrEqual(1)
-    const session = await prisma.chatSession.findUnique({ where: { id: sessionId } })
-    expect(session!.contextSummary).toBe(stubSummary)
+    const after = await prisma.chatSession.findUnique({ where: { id: sessionId } })
+    expect(after!.contextSummary).toBe(before!.contextSummary ?? null)
+    expect(after!.contextSummaryThroughCount).toBe(before!.contextSummaryThroughCount ?? 0)
+
+    // The one writer is the seed, over the session's own messages, and its
+    // watermark is a `ChatMessage` count — never larger than the rows that exist.
+    const count = await prisma.chatMessage.count({ where: { sessionId } })
+    await svc.historySeedFor(sessionId, { excludeNewestUserMessage: true })
+    const seeded = await prisma.chatSession.findUnique({ where: { id: sessionId } })
+    expect(seeded!.contextSummaryThroughCount!).toBeLessThanOrEqual(count)
+    expect(seeded!.contextSummary).toBe(stubSummary)
   })
 })
 

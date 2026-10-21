@@ -171,6 +171,120 @@ describe('history seed', () => {
     expect(store.sessions.get('chat-1').contextSummary).toContain('Conversation so far')
   })
 
+  test('R1 — no message is ever in neither half, at any reuse distance', async () => {
+    addSession('chat-1')
+    // The summarizer records exactly what it was asked to fold, so a message
+    // that skipped a fold shows up as missing from both the summary and the
+    // verbatim tail.
+    const folded: string[] = []
+    setChatContextSummarizer(async ({ messages, previous }) => {
+      folded.push(...messages.map((m) => m.text))
+      return `${previous ?? 'head'}+${messages.map((m) => m.text).join(',')}`
+    })
+
+    // One message elided per turn, up to 19 — the old reuse window. Under the
+    // old rule everything in that window was skipped by both halves.
+    for (let turn = 1; turn <= 19; turn++) {
+      const { ensureDurableSummary } = await import('../chat-history-seed.service')
+      addMessage('chat-1', 'user', `m${turn}`)
+      const covered = store.messages
+        .filter((m) => m.sessionId === 'chat-1')
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+        .map((m) => ({ role: m.role as 'user' | 'assistant', text: m.content }))
+      await ensureDurableSummary({
+        sessionId: 'chat-1',
+        label: 'deploy chat',
+        existing: store.sessions.get('chat-1').contextSummary,
+        existingThrough: store.sessions.get('chat-1').contextSummaryThroughCount,
+        through: covered.length,
+        covered,
+      })
+    }
+
+    // Every message reached a fold, exactly once, in order.
+    expect(folded).toEqual(Array.from({ length: 19 }, (_, i) => `m${i + 1}`))
+    const session = store.sessions.get('chat-1')
+    expect(session.contextSummaryThroughCount).toBe(19)
+    for (let turn = 1; turn <= 19; turn++) {
+      expect(session.contextSummary).toContain(`m${turn}`)
+    }
+  })
+
+  test('R1 — a summarizer outage still covers the newly elided messages', async () => {
+    const { ensureDurableSummary } = await import('../chat-history-seed.service')
+    addSession('chat-1', { contextSummary: 'Earlier briefing.', contextSummaryThroughCount: 2 })
+    setChatContextSummarizer(async () => {
+      throw new Error('model down')
+    })
+
+    await ensureDurableSummary({
+      sessionId: 'chat-1',
+      label: 'deploy chat',
+      existing: 'Earlier briefing.',
+      existingThrough: 2,
+      through: 4,
+      covered: [
+        { role: 'user', text: 'm1' },
+        { role: 'assistant', text: 'm2' },
+        { role: 'user', text: 'm3 the migration is blocked' },
+        { role: 'assistant', text: 'm4 rolling it back' },
+      ],
+    })
+
+    const session = store.sessions.get('chat-1')
+    expect(session.contextSummary).toContain('Earlier briefing.')
+    expect(session.contextSummary).toContain('m3 the migration is blocked')
+    expect(session.contextSummary).toContain('m4 rolling it back')
+    expect(session.contextSummaryThroughCount).toBe(4)
+  })
+
+  test('R4 — a typed turn drops a trailing row that duplicates the prompt it is sending', async () => {
+    addSession('chat-1')
+    addMessage('chat-1', 'user', 'first question')
+    addMessage('chat-1', 'assistant', 'first answer')
+    addMessage('chat-1', 'user', 'second question')
+
+    const { historySeedForTurn } = await import('../chat-history-seed.service')
+    const seed = await historySeedForTurn('chat-1', 'second   question')
+
+    expect(seed!.messages.map((m) => m.text)).toEqual(['first question', 'first answer'])
+  })
+
+  test('R5 — summarize-now rebuilds a summary from the stored rows when the runtime has nothing', async () => {
+    addSession('chat-1')
+    for (let i = 0; i < 30; i++) addMessage('chat-1', i % 2 === 0 ? 'user' : 'assistant', `turn ${i}`)
+    setChatContextSummarizer(async ({ messages }) => `briefing of ${messages.length} messages`)
+
+    const { summarizeSessionFromDb } = await import('../chat-history-seed.service')
+    const result = await summarizeSessionFromDb('chat-1', { keepTailChars: 10 })
+
+    expect(result).not.toBeNull()
+    expect(result!.through).toBeGreaterThan(0)
+    expect(result!.messagesBefore).toBe(30)
+    expect(result!.messagesAfter).toBe(30 - result!.through)
+    const session = store.sessions.get('chat-1')
+    expect(session.contextSummary).toContain('briefing of')
+    expect(session.contextSummaryThroughCount).toBe(result!.through)
+  })
+
+  test('R3 — a warm turn carries only what is new since the last agent reply', async () => {
+    const { newSinceLastAgentReply } = await import('../chat-history-seed.service')
+    const history = [
+      { id: 'a', authorType: 'user' },
+      { id: 'b', authorType: 'agent' },
+      { id: 'c', authorType: 'user' },
+      { id: 'd', authorType: 'agent' },
+      { id: 'e', authorType: 'user' },
+      { id: 'f', authorType: 'user' },
+    ]
+
+    expect(newSinceLastAgentReply(history, 'f').map((m) => m.id)).toEqual(['e', 'f'])
+    // Nothing answered yet: the whole thread is the new traffic.
+    expect(newSinceLastAgentReply(history.slice(0, 1), 'a').map((m) => m.id)).toEqual(['a'])
+    // A trigger older than the last reply keeps everything from the trigger on.
+    expect(newSinceLastAgentReply(history, 'c').map((m) => m.id)).toEqual(['c', 'd', 'e', 'f'])
+  })
+
   test('an unknown chat yields no seed at all', async () => {
     expect(await buildChatHistorySeed('missing')).toBeNull()
     expect(await historySeedFor('missing')).toBeNull()

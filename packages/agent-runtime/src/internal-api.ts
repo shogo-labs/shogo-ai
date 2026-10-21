@@ -259,6 +259,41 @@ export async function postWorktreeStatus(
   }
 }
 
+/**
+ * Mirror a compaction summary back to the product DB (SHO-137 round 3, R4).
+ *
+ * The runtime's own summary lives in `sessions.db`; losing that file must not
+ * lose the summary, and the runtime's compaction sees tool steps the API's
+ * stored rows do not. Best-effort; never throws.
+ */
+export async function postContextSummary(
+  chatSessionId: string,
+  summary: string,
+): Promise<boolean> {
+  if (!summary.trim()) return false
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return false
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/chat-sessions/${encodeURIComponent(chatSessionId)}/context-summary`,
+      {
+        method: 'POST',
+        headers: getInternalHeaders(),
+        body: JSON.stringify({ summary }),
+        signal: AbortSignal.timeout(5_000),
+      },
+    )
+    if (!res.ok) {
+      console.warn(`[Runtime] postContextSummary HTTP ${res.status} for ${chatSessionId}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn('[Runtime] postContextSummary failed:', err?.message ?? err)
+    return false
+  }
+}
+
 export interface PlanMirrorPayload {
   action?: 'upsert' | 'delete'
   filename: string

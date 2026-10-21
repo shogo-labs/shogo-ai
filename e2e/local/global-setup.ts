@@ -24,12 +24,16 @@ export default async function globalSetup(): Promise<void> {
     const page = await browser.newPage({
       baseURL: process.env.E2E_TARGET_URL || `http://localhost:${process.env.E2E_LOCAL_WEB_PORT || "8081"}`,
     })
-    await page.goto("/", { timeout: 180_000 })
+    // The config's own webServer window is 300s and every boot runs
+    // `dev:web --clear`, so a 180s first paint here can fail while the server
+    // is still warming — and globalSetup is never retried, which turned a slow
+    // Metro start into a red `E2E (chat context)` on a green head (SHO-137 R6).
+    await page.goto("/", { timeout: 300_000 })
     await page
       .getByRole("navigation", { name: "App sidebar" })
       .or(page.getByText("What are we building", { exact: false }))
       .first()
-      .waitFor({ state: "visible", timeout: 180_000 })
+      .waitFor({ state: "visible", timeout: 300_000 })
   } finally {
     await browser.close()
   }

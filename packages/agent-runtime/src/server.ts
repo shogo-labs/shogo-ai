@@ -1996,7 +1996,18 @@ app.post('/agent/chat', async (c) => {
         seed.messages.map((m) => ({ role: m.role, parts: [{ type: 'text', text: m.text }] })),
         { label: 'chat_history' },
       )
-      if (seed.summary) sessionManager.setCompactedSummary(chatSessionKey, seed.summary)
+      if (seed.summary) {
+        // The durable summary must win over a runtime copy that covers less.
+        // The runtime has no watermark of its own (its counts are not the
+        // API's `ChatMessage` counts), so the comparable signal is coverage:
+        // a longer durable block folds more of the conversation. Every runtime
+        // compaction is also written back to the API, so it is never the older
+        // copy for long (SHO-137 round 3, R4).
+        const runtimeSummary = sessionManager.get(chatSessionKey)?.compactedSummary ?? null
+        sessionManager.setCompactedSummary(chatSessionKey, seed.summary, {
+          replace: !runtimeSummary || seed.summary.trim().length > runtimeSummary.trim().length,
+        })
+      }
       if (seeded > 0 || seed.summary) {
         console.log(
           `[AgentRuntime][chat] restored ${seeded} message(s) and ${seed.summary ? 'a summary' : 'no summary'} ` +

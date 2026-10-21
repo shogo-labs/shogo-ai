@@ -59,7 +59,12 @@ import { docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
 import { publishReplyMedia } from './agent-reply-media'
 import { resolveAgentRunModel } from './agent-run-model.service'
-import { budgetThreadContext, historySeedFor, noteCarriedContext } from './chat-history-seed.service'
+import {
+  fitThreadBudget,
+  historySeedFor,
+  newSinceLastAgentReply,
+  noteCarriedContext,
+} from './chat-history-seed.service'
 import {
   DEFAULT_STALE_AFTER_MS,
   markTurnEnded,
@@ -1084,12 +1089,13 @@ async function buildPrompt(args: {
   if (args.contextMode === 'isolated') {
     return buildIsolatedPrompt({ conversation, trigger, threadRootId, name, workspaceName, chain })
   }
-  // The thread is the transcript, whoever the agent is and whatever this pod's
-  // runtime happens to remember. This used to be short-circuited — six
-  // messages, then everything after the last agent reply — on the assumption
-  // that the runtime still held the rest. After an eviction, a pod restart or
-  // an idle night it holds nothing, so the agent woke to a one-line note and
-  // asked what everyone was talking about (SHO-137).
+  // The prompt carries only what is new since this agent's last reply (R3).
+  // Everything older is covered by `historySeed` — the durable summary plus the
+  // verbatim tail — and in a cold runtime that seed is what rebuilds the
+  // session. Sending the whole thread instead made every turn re-send the
+  // channel, and since each `ChatMessage` row *is* a full prompt, tokens grew
+  // quadratically in a long thread and the seed then restored those duplicates
+  // (SHO-137 round 3).
   let history: any[]
   if (threadRootId) {
     history = await db.conversationMessage.findMany({
@@ -1109,15 +1115,28 @@ async function buildPrompt(args: {
   history = history.reverse().filter((m) =>
     (m.text?.trim() || m.attachments?.length) && !(m.authorType === 'agent' && m.agentStatus === 'running'))
 
-  const budgeted = await budgetThreadContext(history, args.chatSessionId ?? null, conversation)
+  // Only what is new since the last agent reply in this scope. When nothing has
+  // been answered yet (or the trigger predates that reply) the cut is the
+  // trigger itself, exactly as before SHO-137.
+  history = newSinceLastAgentReply(history, trigger?.id ?? null)
+
+  const budgeted = fitThreadBudget(history)
   history = budgeted.kept
-  const summary = budgeted.summary
+  // The durable summary is the one that ships: stored on the ChatSession, over
+  // this session's own messages, written by exactly one path (`ensureDurableSummary`).
+  const seed = args.chatSessionId
+    ? await historySeedFor(args.chatSessionId).catch((err: Error) => {
+        console.warn(`[ChannelAgent] history seed for ${args.chatSessionId} failed:`, err.message)
+        return null
+      })
+    : null
+  const summary = seed?.summary ?? null
   // A prompt that suddenly carries less of the conversation than the last one
   // is the failure this card exists for. Say so in the turn log — a confused
   // reply is not a diagnosis (SHO-137).
   noteCarriedContext(args.chatSessionId ?? null, history.length, {
     elided: budgeted.elided,
-    summarised: !!budgeted.summary,
+    summarised: !!summary,
   })
 
   const transcript = await renderTranscript(conversation.workspaceId, history, trigger.id)

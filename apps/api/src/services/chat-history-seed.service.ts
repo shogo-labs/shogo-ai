@@ -33,8 +33,6 @@ export const HISTORY_SEED_TAIL_MESSAGES = 10
 const HISTORY_SCAN_LIMIT = 400
 /** Rows handed to the summarizer in one call. */
 const SUMMARY_INPUT_LIMIT = 150
-/** The summary is regenerated only once this many more messages fall behind. */
-const SUMMARY_MIN_NEW_MESSAGES = 20
 /** Hard cap on the stored summary, so the block stays a stable, small prefix. */
 export const CONTEXT_SUMMARY_MAX_CHARS = 6_000
 
@@ -63,6 +61,8 @@ type Summarizer = (input: {
   sessionId: string
   label: string
   messages: SeedMessage[]
+  /** The block being folded, so a rewrite condenses it instead of restarting. */
+  previous?: string | null
 }) => Promise<string | null>
 
 function messageText(row: StoredRow): string {
@@ -109,6 +109,26 @@ export function extractiveSummary(label: string, messages: SeedMessage[]): strin
   return lines.join('\n').slice(0, CONTEXT_SUMMARY_MAX_CHARS)
 }
 
+/**
+ * The append-only form of `extractiveSummary`: one digest line per message, no
+ * heading, so covering a few more messages costs no model call.
+ */
+export function extractiveDigest(messages: SeedMessage[]): string {
+  const lines: string[] = []
+  for (const message of messages) {
+    const body = message.text.replace(/\s+/g, ' ').trim()
+    if (!body) continue
+    const speaker = message.role === 'user' ? 'Asked' : 'Answered'
+    lines.push(`- ${speaker}: ${body.length > 220 ? `${body.slice(0, 219).trimEnd()}…` : body}`)
+    if (lines.length >= 400) break
+  }
+  return lines.join('\n')
+}
+
+function summaryHeading(label: string): string {
+  return `Conversation so far (${label}):`
+}
+
 const SUMMARY_SYSTEM = [
   'You condense the earlier part of one ongoing conversation so the same agent can continue it later without the full transcript.',
   'Write a plain-text briefing, at most 2200 characters, in these blocks and nothing else:',
@@ -124,6 +144,7 @@ async function modelSummarizer(input: {
   sessionId: string
   label: string
   messages: SeedMessage[]
+  previous?: string | null
 }): Promise<string | null> {
   const { resolveLanguageModel } = await import('../lib/resolve-language-model')
   const { getSummarizerModelId } = await import('../lib/summarizer-model')
@@ -141,7 +162,10 @@ async function modelSummarizer(input: {
   const result = await generateText({
     model: resolved as any,
     system: SUMMARY_SYSTEM,
-    prompt: `Conversation: ${input.label}\n\n${transcript}`,
+    prompt:
+      `Conversation: ${input.label}\n\n` +
+      (input.previous ? `What is already recorded about the earlier part:\n${input.previous}\n\n` : '') +
+      `Newly folded part:\n${transcript}`,
     maxOutputTokens: 900,
   })
   const text = (result.text ?? '').trim()
@@ -162,53 +186,98 @@ export interface DurableSummaryArgs {
   label: string
   /** The summary already stored, if any. */
   existing: string | null
-  /** How much of the conversation that summary covers. */
+  /** How many of this session's messages that summary already stands in for. */
   existingThrough: number
-  /** How much the caller needs covered now. */
+  /** How many of this session's messages the summary must cover now. */
   through: number
-  /** The messages that will not be sent verbatim. Oldest first. */
-  messages: SeedMessage[]
+  /**
+   * Every message up to `through`, oldest first (`covered[i]` is message `i+1`
+   * of the session). The messages after `existingThrough` are the ones this
+   * call has to fold in — no message may be skipped: the tail starts exactly
+   * after `through`, so anything not folded here is in neither place.
+   */
+  covered: SeedMessage[]
+  /** Where `covered[0]` sits in the session, when only a window was loaded. */
+  coveredOffset?: number
+}
+
+function persistSummary(sessionId: string, summary: string, through: number): Promise<void> {
+  return prisma.chatSession
+    .update({
+      where: { id: sessionId },
+      data: { contextSummary: summary, contextSummaryThroughCount: through },
+    })
+    .then(() => undefined)
+    .catch((err: any) => {
+      // A failed write must not cost the turn: the summary still ships.
+      console.warn(`[ChatContext] could not persist summary for ${sessionId}:`, err?.message ?? err)
+    })
 }
 
 /**
- * The stored summary, regenerating it only once it has fallen behind by
- * `SUMMARY_MIN_NEW_MESSAGES`. Reusing the bytes keeps the prompt prefix
- * cacheable and stops every turn paying for a summarization.
+ * The stored summary, advanced so it covers exactly `through` messages.
  *
- * One summarizer, one block per chat: the team-chat dispatcher and the
- * `historySeed` builder both land here, so a turn never carries two different
- * accounts of the same conversation.
+ * Round 1 of SHO-137 regenerated the summary only every 20 messages, which left
+ * up to 19 messages covered by neither the summary nor the verbatim tail — lost
+ * from the turn entirely. Now the two always meet: the tail begins right after
+ * `through`, and every message up to `through` is folded into the summary on
+ * the turn that elides it.
+ *
+ * Cheap by default — the newly elided messages are appended as one-line
+ * digests (`extractiveDigest`), no model call — and the model only runs when
+ * the block would exceed `CONTEXT_SUMMARY_MAX_CHARS`, where it rewrites the
+ * whole thing (previous summary included) back down to a briefing. That keeps
+ * the common turn free, keeps the block stable while it fits, and makes the
+ * expensive path the rare one.
+ *
+ * Last resort: if the model fails *and* the digests do not fit, the block is
+ * truncated. The messages themselves stay in `ChatMessage` for good; only the
+ * per-turn block is bounded.
  */
 export async function ensureDurableSummary(
   args: DurableSummaryArgs,
 ): Promise<{ summary: string | null; through: number }> {
   const { existing, existingThrough, through } = args
-  if (existing && through - existingThrough < SUMMARY_MIN_NEW_MESSAGES) {
-    return { summary: existing, through: existingThrough }
+  if (through <= existingThrough) return { summary: existing, through: existingThrough }
+
+  const offset = args.coveredOffset ?? 0
+  const from = Math.max(0, existingThrough - offset)
+  const newlyElided = args.covered.slice(from, Math.max(0, through - offset)).filter((m) => m.text.trim())
+  if (newlyElided.length === 0) {
+    return { summary: existing, through }
   }
-  const window = args.messages.slice(-SUMMARY_INPUT_LIMIT).filter((m) => m.text.trim())
-  if (window.length === 0) {
-    return { summary: existing, through: Math.max(existingThrough, through) }
+  if (existingThrough < offset) {
+    // The stored summary lags behind the window this turn loaded. It cannot
+    // happen while every elided message is folded on the turn that elides it,
+    // so say so loudly rather than pretend the block is complete.
+    console.warn(
+      `[ChatContext] summary_gap session=${args.sessionId} coveredFrom=${offset} watermark=${existingThrough}`,
+    )
   }
 
+  // Fold with the model — `previous` included, so a fold condenses instead of
+  // restarting — exactly once per turn that newly elides something. Anything
+  // cheaper (appending digests without the model) is the *fallback*, used when
+  // the summarizer is unavailable, so the block always covers these messages.
   let summary: string | null = null
   try {
-    summary = await summarizer({ sessionId: args.sessionId, label: args.label, messages: window })
+    summary = await summarizer({
+      sessionId: args.sessionId,
+      label: args.label,
+      messages: newlyElided.slice(-SUMMARY_INPUT_LIMIT),
+      previous: existing,
+    })
   } catch (err: any) {
     console.warn(`[ChatContext] summarizer failed for ${args.sessionId}:`, err?.message ?? err)
   }
-  if (!summary) summary = extractiveSummary(args.label, window)
+  if (!summary) {
+    summary = existing
+      ? `${existing}\n${extractiveDigest(newlyElided)}`
+      : `${summaryHeading(args.label)}\n${extractiveDigest(newlyElided)}`
+  }
+  summary = summary.slice(0, CONTEXT_SUMMARY_MAX_CHARS)
 
-  await prisma.chatSession
-    .update({
-      where: { id: args.sessionId },
-      data: { contextSummary: summary, contextSummaryThroughCount: through },
-    })
-    .catch((err: any) => {
-      // A failed write must not cost the turn: the summary still ships.
-      console.warn(`[ChatContext] could not persist summary for ${args.sessionId}:`, err?.message ?? err)
-    })
-
+  await persistSummary(args.sessionId, summary, through)
   return { summary, through }
 }
 
@@ -281,7 +350,8 @@ export async function buildChatHistorySeed(
   let summary = session.contextSummary ?? null
   let summaryThrough = session.contextSummaryThroughCount ?? 0
   if (start > 0) {
-    const elidedRows = prepared.slice(0, start).map((entry) => entry.row)
+    const elidedPrepared = prepared.slice(0, start)
+    const elidedRows = elidedPrepared.map((entry) => entry.row)
     // Everything strictly before the retained tail, so the watermark is a
     // property of the conversation rather than of this window.
     const olderThanRetained = await prisma.chatMessage
@@ -293,10 +363,14 @@ export async function buildChatHistorySeed(
       existing: summary,
       existingThrough: summaryThrough,
       through: olderThanRetained,
-      messages: elidedRows.map((row) => ({
-        role: row.role === 'assistant' ? 'assistant' : 'user',
-        text: messageText(row),
+      // Everything before the retained tail, in conversation order, plus where
+      // that window starts in the session — the summary has to account for
+      // both, or the messages between the watermark and the tail vanish.
+      covered: elidedPrepared.map((entry) => ({
+        role: entry.row.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+        text: entry.text,
       })),
+      coveredOffset: Math.max(0, olderThanRetained - elidedRows.length),
     })
     summary = ensured.summary
     summaryThrough = ensured.through
@@ -317,6 +391,60 @@ export async function historySeedFor(
   if (!seed) return null
   if (seed.messages.length === 0 && !seed.summary) return null
   return { summary: seed.summary, messages: seed.messages }
+}
+
+function normalizeText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * The seed for a *typed* turn (SHO-137 round 3, R4).
+ *
+ * A turn typed into the app sends the messages the client happens to have
+ * loaded — pages of 50 — so anything older than that window was invisible to a
+ * runtime whose session had been evicted. The durable seed fills that gap, and
+ * the runtime only uses it when its own session is empty.
+ *
+ * The request body already carries the message being sent, so a trailing user
+ * row that duplicates it is dropped rather than replayed twice.
+ */
+export async function historySeedForTurn(
+  chatSessionId: string | null | undefined,
+  incomingPrompt?: string | null,
+): Promise<{ summary: string | null; messages: SeedMessage[] } | null> {
+  if (!chatSessionId) return null
+  const seed = await historySeedFor(chatSessionId).catch((err: Error) => {
+    console.warn(`[ChatContext] history seed for ${chatSessionId} failed:`, err.message)
+    return null
+  })
+  if (!seed) return null
+  const prompt = normalizeText(incomingPrompt ?? '')
+  if (prompt) {
+    while (seed.messages.length > 0) {
+      const last = seed.messages[seed.messages.length - 1]!
+      if (last.role !== 'user' || normalizeText(last.text) !== prompt) break
+      seed.messages.pop()
+    }
+  }
+  if (seed.messages.length === 0 && !seed.summary) return null
+  return seed
+}
+
+/** The text of the last user message in a chat request body, if any. */
+export function lastUserPromptText(body: any): string | null {
+  const messages = Array.isArray(body?.messages) ? body.messages : []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (!message || message.role !== 'user') continue
+    if (typeof message.content === 'string' && message.content.trim()) return message.content
+    const parts = Array.isArray(message.parts) ? message.parts : []
+    const text = parts
+      .filter((part: any) => part?.type === 'text' && typeof part.text === 'string')
+      .map((part: any) => part.text)
+      .join('\n')
+    if (text.trim()) return text
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +498,29 @@ export function noteCarriedContext(
   )
 }
 
+/**
+ * R3: a warm team-chat turn carries only the traffic since this agent's last
+ * reply. The older conversation is covered by `historySeed` (summary + tail),
+ * and an agent that needs more can read it with `team_chat_read` /
+ * `work_item_get` — re-sending the whole thread every turn is what made tokens
+ * grow quadratically in long threads.
+ *
+ * When the trigger predates that reply (a reply that landed after the message
+ * being answered), the cut falls back to the trigger so nothing that follows it
+ * is dropped.
+ */
+export function newSinceLastAgentReply<T extends { id: string; authorType?: string }>(
+  history: T[],
+  triggerId?: string | null,
+): T[] {
+  const lastAgentIdx = history.map((m) => m.authorType).lastIndexOf('agent')
+  if (lastAgentIdx < 0) return history
+  const triggerIdx = triggerId ? history.findIndex((m) => m.id === triggerId) : -1
+  return triggerIdx > lastAgentIdx || triggerIdx < 0
+    ? history.slice(lastAgentIdx + 1)
+    : history.slice(triggerIdx)
+}
+
 /** Test seam: forget what the previous turn carried. */
 export function resetCarriedContext(): void {
   lastCarried.clear()
@@ -378,55 +529,114 @@ export function resetCarriedContext(): void {
 /**
  * Fit a thread's messages into the prompt budget.
  *
- * Everything down to `THREAD_CONTEXT_BUDGET_CHARS` is kept verbatim, always
- * including the newest `THREAD_CONTEXT_TAIL_MESSAGES` that fit. What does not
- * fit is replaced by the chat's durable summary — never dropped on the floor,
- * and never turned into "the runtime already has it" (SHO-137).
+ * Pure and synchronous on purpose (SHO-137 round 3, R2): this function used to
+ * write the chat's durable summary too, keyed by the *channel* sequence while
+ * the seed keyed the same column by a `ChatMessage` count. Two units in one
+ * column meant whichever wrote last won, so the seed could reuse a team-chat
+ * summary forever and team chat regenerated on traffic anywhere in the channel.
+ *
+ * There is now exactly one writer of `ChatSession.contextSummary` —
+ * `ensureDurableSummary`, over the session's own messages — and this only
+ * decides how much of the *new* thread traffic a prompt can carry. What does
+ * not fit is reported, never stored: the durable summary attached as
+ * `historySeed` is what stands in for the older conversation.
  */
-export async function budgetThreadContext<T extends ThreadMessage>(
+export function fitThreadBudget<T extends ThreadMessage>(
   history: T[],
-  chatSessionId: string | null,
-  conversation?: { inferredName?: string | null; name?: string | null },
-): Promise<{ kept: T[]; elided: number; summary: string | null }> {
+  budgetChars: number = THREAD_CONTEXT_BUDGET_CHARS,
+  tailMessages: number = THREAD_CONTEXT_TAIL_MESSAGES,
+): { kept: T[]; elided: number } {
   const { start } = fitTranscriptTail(
     history.map((m) => ({ text: typeof m.text === 'string' ? m.text : '' })),
-    THREAD_CONTEXT_BUDGET_CHARS,
-    THREAD_CONTEXT_TAIL_MESSAGES,
+    budgetChars,
+    tailMessages,
   )
-  if (start === 0) return { kept: history, elided: 0, summary: null }
+  if (start === 0) return { kept: history, elided: 0 }
+  return { kept: history.slice(start), elided: start }
+}
 
-  const elidedRows = history.slice(0, start)
-  const kept = history.slice(start)
-  const elided = elidedRows.length
-  if (!chatSessionId) {
-    // No session to store a summary on: the tail is all this turn can carry,
-    // and the log says so rather than pretending the prompt is complete.
-    console.warn(
-      `[ChatContext] context_collapse session=(none) carried=${kept.length} elided=${elided} cause=no-session`,
-    )
-    return { kept, elided, summary: null }
-  }
-
+/**
+ * "Summarize now" for a session the runtime no longer holds (SHO-137 round 3,
+ * R5).
+ *
+ * The dock's button used to be a proxy to the runtime, which answered
+ * `unknown-session` for anything idle for over an hour — exactly the state a
+ * user is in when they come back to a long chat. The rows are all in
+ * `ChatMessage`, so the summary is built from those with the same summarizer
+ * and the same fold the seed uses, stored on the `ChatSession` where it is
+ * durable, and pushed to the runtime when that runtime does hold the session.
+ *
+ * Returns null when the chat has nothing foldable.
+ */
+export async function summarizeSessionFromDb(
+  chatSessionId: string,
+  options: { keepTailChars?: number } = {},
+): Promise<{
+  summary: string
+  through: number
+  messagesBefore: number
+  messagesAfter: number
+} | null> {
   const session = await prisma.chatSession
     .findUnique({
       where: { id: chatSessionId },
-      select: { contextSummary: true, contextSummaryThroughCount: true, inferredName: true },
+      select: { id: true, inferredName: true, contextSummary: true },
     })
     .catch(() => null)
+  if (!session) return null
 
-  const { summary } = await ensureDurableSummary({
-    sessionId: chatSessionId,
-    label: session?.inferredName ?? conversation?.inferredName ?? conversation?.name ?? 'team chat',
-    existing: session?.contextSummary ?? null,
-    existingThrough: session?.contextSummaryThroughCount ?? 0,
-    // The thread's own sequence: monotonic per conversation, so the watermark
-    // describes the conversation instead of this particular window.
-    through: elidedRows[elidedRows.length - 1]?.seq ?? elided,
-    messages: elidedRows.map((m) => ({
-      role: m.authorType === 'agent' ? ('assistant' as const) : ('user' as const),
-      text: typeof m.text === 'string' ? m.text : '',
-    })),
-  })
+  const rows = (await prisma.chatMessage
+    .findMany({
+      where: { sessionId: chatSessionId },
+      orderBy: { createdAt: 'asc' },
+      take: SUMMARY_INPUT_LIMIT * 8,
+      select: { role: true, content: true },
+    })
+    .catch(() => [])) as Array<{ role: string; content: string }>
+  const messages: SeedMessage[] = rows
+    .map((row) => ({
+      role: row.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+      text: normalizeText(row.content ?? ''),
+    }))
+    .filter((m) => m.text.length > 0)
+  if (messages.length === 0) return null
 
-  return { kept, elided, summary }
+  // Everything except the newest block is folded; the newest block stays
+  // verbatim in the transcript the next turn sends.
+  const keepTailChars = options.keepTailChars ?? 12_000
+  let carried = 0
+  let split = messages.length
+  for (let i = messages.length - 1; i >= 0; i--) {
+    carried += messages[i]!.text.length
+    if (carried > keepTailChars) {
+      split = i + 1
+      break
+    }
+    split = i
+  }
+  const fold = messages.slice(0, split)
+  if (fold.length === 0) return null
+
+  let summary: string | null = null
+  try {
+    summary = await summarizer({
+      sessionId: chatSessionId,
+      label: session.inferredName || 'chat',
+      messages: fold.slice(-SUMMARY_INPUT_LIMIT),
+      previous: session.contextSummary,
+    })
+  } catch (err: any) {
+    console.warn(`[ChatContext] summarize-now failed for ${chatSessionId}:`, err?.message ?? err)
+  }
+  if (!summary) summary = extractiveSummary(session.inferredName || 'chat', fold.slice(-SUMMARY_INPUT_LIMIT))
+  summary = summary.slice(0, CONTEXT_SUMMARY_MAX_CHARS)
+
+  await persistSummary(chatSessionId, summary, fold.length)
+
+  return {
+    summary,
+    through: fold.length,
+    messagesBefore: messages.length,
+    messagesAfter: messages.length - fold.length,
+  }
 }
