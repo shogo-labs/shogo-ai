@@ -16,7 +16,7 @@ import { useChatSettings } from '../../../hooks/useChatPrefs'
 import { useMentionables } from '../../../hooks/useTeamChat'
 import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
 import { CustomEmojiCard, UserGroupsCard } from '../../../components/team-chat/WorkspaceChatAdmin'
-import type { HuddleSound, MessageSound, MobilePushDelay, NotifyLevel } from '../../../lib/team-chat-api'
+import type { HuddleSound, MessageSound, MessageTone, MobilePushDelay, NotifyLevel } from '../../../lib/team-chat-api'
 import { previewMessageSound } from '../../../lib/notification-sound'
 import { previewHuddleSound } from '../../../lib/huddle-ringtone'
 import { readDeviceAlertPrefs, writeDeviceAlertPrefs, type DeviceAlertPrefs, type DockBounce } from '../../../lib/notifications/device-alert-prefs'
@@ -62,6 +62,17 @@ const MESSAGE_SOUNDS: Array<{ value: MessageSound; label: string }> = [
   { value: 'default', label: 'Default' },
   { value: 'subtle', label: 'Subtle' },
   { value: 'off', label: 'Off' },
+]
+
+const MESSAGE_TONES: Array<{ value: MessageTone; label: string }> = [
+  { value: 'knock', label: 'Soft Knock' },
+  { value: 'chirp', label: 'Chirp' },
+  { value: 'pristine', label: 'Pristine' },
+  { value: 'definite', label: 'Definite' },
+  { value: 'juntos', label: 'Juntos' },
+  { value: 'confirmation', label: 'Confirmation' },
+  { value: 'question', label: 'Question' },
+  { value: 'glass', label: 'Glass' },
 ]
 
 const HUDDLE_SOUNDS: Array<{ value: HuddleSound; label: string }> = [
@@ -392,7 +403,7 @@ export default function TeamChatSettings() {
               accessibilityRole="button"
               accessibilityLabel="Preview message sound"
               disabled={(settings?.messageSound ?? 'default') === 'off'}
-              onPress={() => previewMessageSound(settings?.messageSound ?? 'default')}
+              onPress={() => previewMessageSound(settings?.messageSound ?? 'default', settings?.messageTone ?? 'knock')}
               className="rounded-md px-3 py-1.5 active:bg-accent/50 disabled:opacity-40"
             >
               <Text className="text-xs font-semibold text-primary">Preview</Text>
@@ -402,6 +413,25 @@ export default function TeamChatSettings() {
             Plays in the browser and desktop app when a new message arrives in this workspace, even if banners are off.
             Phones use their system sound.
           </Text>
+
+          {Platform.OS === 'web' ? (
+            <>
+              <Text className="mb-2 mt-4 text-xs font-medium text-muted-foreground">Message tone</Text>
+              <View className="flex-row flex-wrap items-center gap-2">
+                {MESSAGE_TONES.map((t) => (
+                  <Chip
+                    key={t.value}
+                    label={t.label}
+                    selected={(settings?.messageTone ?? 'knock') === t.value}
+                    onPress={() => {
+                      void update({ messageTone: t.value })
+                      previewMessageSound(settings?.messageSound === 'subtle' ? 'subtle' : 'default', t.value)
+                    }}
+                  />
+                ))}
+              </View>
+            </>
+          ) : null}
 
           <Text className="mb-2 mt-4 text-xs font-medium text-muted-foreground">Huddle sound</Text>
           <View className="flex-row flex-wrap items-center gap-2">
