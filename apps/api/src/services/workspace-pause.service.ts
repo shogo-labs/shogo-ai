@@ -20,7 +20,6 @@
 
 import { prisma } from '../lib/prisma'
 import { parseWorkspaceSettings } from '../lib/workspace-settings'
-import { configureWorkspace } from './workspace.service'
 
 export interface WorkspacePause {
   /** ISO timestamp of the pause. */
@@ -122,6 +121,10 @@ export async function setWorkspacePause(
   workspaceId: string,
   pause: WorkspacePause | null,
 ): Promise<WorkspacePause | null> {
+  // Imported here, not at module scope: `workspace.service` pulls the region and
+  // project graph, and every reader of this file (queue dispatcher, wake sweep,
+  // schedule/trigger dispatch) must stay cheap to load. Only the write needs it.
+  const { configureWorkspace } = await import('./workspace.service')
   await configureWorkspace(workspaceId, { settings: { agentsPaused: pause } })
   cache.set(workspaceId, { at: Date.now(), pause })
   return pause
