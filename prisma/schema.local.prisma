@@ -129,6 +129,12 @@ model Workspace {
   slug              String   @unique
   description       String?
   ssoSettings       String?
+  // The workspace agent's own settings (capability toggles and anything else
+  // it owns). Distinct from any project's `settings`: a workspace runtime
+  // serves both surfaces, and a toggle made in a workspace chat must land
+  // here, not on whichever project the user last opened. JSON stored as TEXT
+  // on SQLite (see `apps/api/src/lib/workspace-settings.ts`).
+  settings          String?
   instanceSize      String   @default("micro")
   // See packages/agent-runtime/src/composio.ts and
   // apps/api/src/routes/integrations.ts. New workspaces default to

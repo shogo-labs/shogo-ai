@@ -134,6 +134,10 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
 
   const picker = useInstancePicker({
     workspaceId: workspace?.id,
+    // Every machine this user registered, not only the ones filed under the
+    // cloud workspace that happens to be open — the same list the workspace
+    // switcher shows under "This Mac".
+    scope: 'owner',
     apiUrl: API_URL ?? '',
     activeInstance,
     setInstance,
@@ -386,6 +390,11 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
                             <Text className="text-xs text-muted-foreground">· {relativeTime(inst.lastSeenAt)}</Text>
                           )}
                         </View>
+                        {inst.workspaceName ? (
+                          <Text className="text-xs text-muted-foreground mt-1" numberOfLines={1}>
+                            Registered in {inst.workspaceName}
+                          </Text>
+                        ) : null}
                       </View>
                       {isConnecting ? (
                         <ActivityIndicator size="small" color="rgb(var(--color-primary))" />

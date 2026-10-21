@@ -9,6 +9,7 @@ import {
   hasMatchingUserMessage,
   OPTIMISTIC_ECHO_ID,
   newestUserId,
+  stampSendTime,
   type OptimisticEchoInput,
 } from "../optimistic-echo"
 
@@ -39,6 +40,11 @@ describe("buildOptimisticUserMessage", () => {
     const message = buildOptimisticUserMessage(echo("hello", null)) as any
     expect(typeof message.createdAt).toBe("number")
     expect(message.createdAt).toBeGreaterThanOrEqual(before)
+  })
+
+  test("uses the send time it is handed, so a rebuild cannot drift the window", () => {
+    const message = buildOptimisticUserMessage({ ...echo("hello", null), sentAt: 1_700_000_000_000 }) as any
+    expect(message.createdAt).toBe(1_700_000_000_000)
   })
 
   test("carries attachments as file parts", () => {
@@ -131,5 +137,44 @@ describe("newestUserId", () => {
   test("is the last user message, ignoring assistant messages after it", () => {
     expect(newestUserId([user("u1", "a"), assistant("a1", "b"), user("u2", "c"), assistant("a2", "d")])).toBe("u2")
     expect(newestUserId([])).toBeNull()
+  })
+})
+
+describe("stampSendTime", () => {
+  const sent = { content: "second", sentAt: 1_700_000_000_000 }
+
+  test("gives the sent bubble the send time when the SDK's row has none", () => {
+    // SHO-85 round 3: keeping the live tail keeps this row, and a chat tag read
+    // its `since` off it. Undefined there means no delivery state, ever.
+    const messages = [user("u1", "first"), assistant("a1", "reply"), user("u2", "second")]
+    const stamped = stampSendTime(messages, sent) as any[]
+    expect(stamped[2].createdAt).toBe(sent.sentAt)
+    expect(stamped[0]).toBe(messages[0])
+    expect(messages[2]).not.toHaveProperty("createdAt")
+  })
+
+  test("leaves a bubble that already carries a timestamp alone", () => {
+    const persisted = { ...(user("u2", "second") as any), createdAt: "2026-10-20T21:16:46.407Z" }
+    const messages = [user("u1", "first"), assistant("a1", "reply"), persisted]
+    expect(stampSendTime(messages, sent)).toBe(messages)
+  })
+
+  test("is a no-op for a different message than the one that was sent", () => {
+    const messages = [user("u1", "first"), assistant("a1", "reply"), user("u2", "unrelated")]
+    expect(stampSendTime(messages, sent)).toBe(messages)
+  })
+
+  test("is a no-op without a recorded send or on an assistant-only transcript", () => {
+    const messages = [assistant("a1", "reply")]
+    expect(stampSendTime(messages, null)).toBe(messages)
+    expect(stampSendTime(messages, { content: "second" })).toBe(messages)
+    expect(stampSendTime(messages, sent)).toBe(messages)
+  })
+
+  test("stamps the bubble the echo became, not an older repeat of the same text", () => {
+    const messages = [user("u1", "second"), assistant("a1", "reply"), user("u2", "second")]
+    const stamped = stampSendTime(messages, sent) as any[]
+    expect(stamped[2].createdAt).toBe(sent.sentAt)
+    expect(stamped[0]).not.toHaveProperty("createdAt")
   })
 })

@@ -2014,6 +2014,15 @@ export interface ProjectConfigSnapshot {
   workingMode: string
   settings: unknown
   slackEnabled: boolean
+  /**
+   * The project's most-called tools over the last 30 days (SHO-97), used to
+   * learn which tool definitions to keep advertised. Additive — older APIs omit
+   * it and the runtime falls back to its static ranking.
+   */
+  toolUsage?: {
+    totalCalls: number
+    tools: Array<{ name: string; calls: number }>
+  }
   agent: {
     heartbeatEnabled: boolean
     heartbeatInterval: number
@@ -2043,6 +2052,23 @@ export async function getProjectConfig(
   })
 }
 
+/**
+ * The project's most-called tools over the last 30 days, for the advertised
+ * tool set (SHO-97). Null when the API does not report it.
+ */
+export async function getProjectToolUsage(
+  projectId: string,
+  timeoutMs = 3_000,
+): Promise<{ order: string[]; totalCalls: number } | null> {
+  const res = await getProjectConfig(projectId, timeoutMs)
+  const usage = res.ok ? res.data?.toolUsage : undefined
+  if (!usage || !Array.isArray(usage.tools)) return null
+  return {
+    totalCalls: usage.totalCalls ?? 0,
+    order: usage.tools.map((t) => t.name).filter((n): n is string => typeof n === 'string'),
+  }
+}
+
 export async function configureProject(
   projectId: string,
   patch: ProjectConfigPatch,
@@ -2051,6 +2077,44 @@ export async function configureProject(
     method: 'PATCH',
     body: JSON.stringify(patch),
     parse: (j) => j?.project as ProjectConfigSnapshot,
+  })
+}
+
+/**
+ * The workspace agent's own settings (`Workspace.settings`), not a project's.
+ * A workspace runtime serves both surfaces, so its capability toggles live
+ * here while a project chat keeps `Project.settings`.
+ */
+export interface WorkspaceConfigSnapshot {
+  id: string
+  name: string
+  kind: string
+  settings: unknown
+}
+
+export interface WorkspaceConfigPatch {
+  settings?: Record<string, unknown>
+}
+
+export async function getWorkspaceConfig(
+  workspaceId: string,
+  timeoutMs?: number,
+): Promise<CheckpointCallResult<WorkspaceConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/config`, {
+    method: 'GET',
+    timeoutMs,
+    parse: (j) => j?.workspace as WorkspaceConfigSnapshot,
+  })
+}
+
+export async function configureWorkspace(
+  workspaceId: string,
+  patch: WorkspaceConfigPatch,
+): Promise<CheckpointCallResult<WorkspaceConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/config`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+    parse: (j) => j?.workspace as WorkspaceConfigSnapshot,
   })
 }
 

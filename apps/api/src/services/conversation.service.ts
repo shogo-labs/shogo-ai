@@ -1516,9 +1516,16 @@ export async function listMessagesUnchecked(conversationId: string, opts: ListMe
 export async function getMessage(messageId: string, userId: string) {
   const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include: MESSAGE_INCLUDE })
   if (!row) throw new ConversationError(404, 'not_found', 'Message not found')
-  await loadAccess(row.conversationId, userId)
+  const access = await loadAccess(row.conversationId, userId)
   if (!canSeeMessage(row, userId)) throw new ConversationError(404, 'not_found', 'Message not found')
-  return serializeMessage(row)
+  // A quote names where the message came from, and this is the only place the
+  // reader's access to that channel has already been checked. Name and kind
+  // only: a topic is not needed to label a reference.
+  const { conversation } = access
+  return {
+    ...serializeMessage(row),
+    conversation: { id: conversation.id, name: conversation.name ?? null, kind: conversation.kind },
+  }
 }
 
 export interface ReactionAddedEvent {

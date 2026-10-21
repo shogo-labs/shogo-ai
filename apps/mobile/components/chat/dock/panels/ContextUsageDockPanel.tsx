@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-
 /**
  * Wraps the existing `ContextBreakdownPanel` unchanged as an on-demand dock
  * panel (`autoShow: false`) — the context ring in the composer toolbar is
  * its `DockChip`, since it always has data and doesn't need to auto-show.
+ *
+ * The panel also carries the manual "Summarize now" action: this is the
+ * context-usage dock Russell asked to trigger summarization from (SHO-96).
  */
 
 import { useMemo } from "react"
@@ -16,9 +18,18 @@ import type { DockPanelDescriptor } from "../../../../lib/chat-dock-store"
 export interface ContextUsageDockPanelProps {
   contextUsage: { inputTokens: number; contextWindowTokens: number } | null | undefined
   contextBreakdown: ContextBreakdownData | null | undefined
+  /** Project owning this chat, for the manual summarize call. */
+  projectId?: string | null
+  /** Chat session the compaction applies to. */
+  chatSessionId?: string | null
 }
 
-export function ContextUsageDockPanel({ contextUsage, contextBreakdown }: ContextUsageDockPanelProps) {
+export function ContextUsageDockPanel({
+  contextUsage,
+  contextBreakdown,
+  projectId,
+  chatSessionId,
+}: ContextUsageDockPanelProps) {
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!contextUsage) return null
     return {
@@ -33,11 +44,13 @@ export function ContextUsageDockPanel({ contextUsage, contextBreakdown }: Contex
           breakdown={contextBreakdown ?? null}
           inputTokens={contextUsage.inputTokens}
           contextWindowTokens={contextUsage.contextWindowTokens}
+          projectId={projectId}
+          chatSessionId={chatSessionId}
         />
       ),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contextUsage, contextBreakdown])
+  }, [contextUsage, contextBreakdown, projectId, chatSessionId])
 
   useDockPanel(descriptor)
   return null

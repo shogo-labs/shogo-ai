@@ -5,7 +5,7 @@
  * body with mentions, attachments, reactions, thread summary, and live agent
  * replies (streaming text, the tool in use, Stop).
  */
-import { createElement, memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
@@ -15,7 +15,9 @@ import { ChatMarkdown } from '../chat/ChatMarkdown'
 import type { MentionTarget } from '../chat/file-links'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
-import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
+import { messageLink, parseConversationLink, parseFileLink } from '../../lib/team-chat-links'
+import { extractMessageQuotes } from '../../lib/message-quotes'
+import { MessageQuoteCards } from './MessageQuoteCard'
 import { activityTarget } from '../../lib/activity-target'
 import { formatFullTime, formatShortTime, formatTime } from '../../lib/team-chat-time'
 import { EmojiPicker } from './EmojiPicker'
@@ -101,17 +103,34 @@ export interface MessageRowProps {
   highlighted?: boolean
 }
 
-/** Message links open in place; everything else goes to the browser. */
+/**
+ * Links this app can open in place: a channel (with whatever pane it asked for
+ * — a message, a thread, its doc, a card), or a shared file.
+ */
 export function openMessageLinkInApp(href: string): boolean {
-  const target = parseMessageLink(href)
-  if (!target) return false
-  void import('expo-router').then(({ router }) =>
-    router.push({
-      pathname: '/(app)/c/[conversationId]',
-      params: { conversationId: target.conversationId, msg: target.messageId, ...(target.threadRootId ? { thread: target.threadRootId } : {}) },
-    } as any),
-  )
-  return true
+  // Every `/c/<id>` link is ours to open, not just the ones carrying `msg`:
+  // `?doc=1` and `?card=<id>` are shapes our own links produce, and falling
+  // through to the browser there is a full page reload on web.
+  const target = parseConversationLink(href)
+  if (target) {
+    void import('expo-router').then(({ router }) =>
+      router.push({
+        pathname: '/(app)/c/[conversationId]',
+        params: { conversationId: target.conversationId, ...target.params },
+      } as any),
+    )
+    return true
+  }
+  // A shared file link is the attachment's own URL; opening it in the viewer
+  // is what keeps it out of a browser tab.
+  const file = parseFileLink(href)
+  if (file) {
+    void import('expo-router').then(({ router }) =>
+      router.push({ pathname: '/(app)/f/[attachmentId]', params: { attachmentId: file.attachmentId } } as any),
+    )
+    return true
+  }
+  return false
 }
 
 /**
@@ -343,7 +362,10 @@ function MessageRowImpl(props: MessageRowProps) {
     setProfileOpen(true)
   }, [message.authorType, message.authorUserId, props.onOpenProfile])
   const running = message.authorType === 'agent' && message.agentStatus === 'running'
-  const body = running ? streaming?.text ?? '' : message.text
+  const rawBody = running ? streaming?.text ?? '' : message.text
+  // A link to another message renders as a quote of it and is taken out of the
+  // text; the quote itself is fetched per viewer and never stored on the row.
+  const { body, quotes } = useMemo(() => extractMessageQuotes(rawBody ?? ''), [rawBody])
   const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
   // Board cards are posted by the system, so this is deliberately author-agnostic.
   const workItem = running || deleted ? null : workItemOf(message)
@@ -765,6 +787,7 @@ function MessageRowImpl(props: MessageRowProps) {
                 </View>
               )
             })()}
+            {!deleted && <MessageQuoteCards quotes={quotes} />}
             {!running && <UnfurlCards message={message} />}
             {running && (
               // Display only: navigation is the header's Open session button, so the status takes no hover or press.
@@ -830,7 +853,12 @@ function MessageRowImpl(props: MessageRowProps) {
                   size={a.size}
                   url={absoluteApiUrl(a.url)}
                   preview={a.preview}
-                  onOpen={() => void Linking.openURL(absoluteApiUrl(a.url))}
+                  onOpen={() =>
+                    router.push({
+                      pathname: '/(app)/f/[attachmentId]',
+                      params: { attachmentId: a.id, name: a.name },
+                    } as never)
+                  }
                 />
               ),
             )}

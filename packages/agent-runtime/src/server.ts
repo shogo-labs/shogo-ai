@@ -1400,6 +1400,40 @@ app.get('/agent/sessions/:sessionId/summary', (c) => {
   return c.json(detail)
 })
 
+// Manually summarize a session's context — the context-usage dock's button.
+// A live turn cannot be summarized synchronously (the request has already been
+// sent), so the flag is queued and consumed at the next step; the caller gets
+// 202 and a reason instead of a fake success. An idle session compacts here and
+// reports the real before/after. Nothing foldable is an honest 200.
+app.post('/agent/sessions/:sessionId/compact', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const result = await agentGateway.compactSession(c.req.param('sessionId'))
+  switch (result.status) {
+    case 'unknown-session':
+      return c.json({ compacted: false, queued: false, reason: result.reason ?? 'session not found' }, 404)
+    case 'queued':
+      return c.json({ compacted: false, queued: true, reason: result.reason }, 202)
+    case 'nothing-to-compact':
+      return c.json({
+        compacted: false,
+        queued: false,
+        reason: result.reason,
+        tokensBefore: result.tokensBefore,
+        tokensAfter: result.tokensAfter,
+      })
+    case 'compacted':
+      return c.json({
+        compacted: true,
+        queued: false,
+        tokensBefore: result.tokensBefore,
+        tokensAfter: result.tokensAfter,
+        messagesBefore: result.messagesBefore,
+        messagesAfter: result.messagesAfter,
+        summaryChars: result.summaryChars,
+      })
+  }
+})
+
 // List the background shell processes still running for a chat thread. Used by
 // the client to seed its process panel on thread load (live updates arrive via
 // `data-process-update` SSE frames during a turn).
@@ -1513,7 +1547,8 @@ app.patch('/agent/config', async (c) => {
     agentGateway?.reloadConfig()
 
     // The PATCH is the immediate update. Capability toggles are then
-    // confirmed against Project.settings, which wins when the pull succeeds.
+    // confirmed against the database (Project.settings, plus Workspace.settings
+    // in a workspace runtime), which wins when the pull succeeds.
     await agentGateway?.syncCapabilitiesFromApi()
 
     return c.json({ ok: true })
@@ -1934,6 +1969,15 @@ app.post('/agent/chat', async (c) => {
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
+  // Which surface this chat belongs to. The API proxy stamps it (workspace
+  // chat vs project chat); a direct caller without it gets the boot mode's
+  // default, which is what this runtime served before the split.
+  const chatContext =
+    body.chatContext === 'workspace' || body.chatContext === 'project'
+      ? (body.chatContext as 'workspace' | 'project')
+      : IS_WORKSPACE_RUNTIME && !process.env.WORKSPACE_ANCHOR_PROJECT_ID
+        ? 'workspace'
+        : 'project'
   console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, modelProvider: ${modelProvider ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
 
   if (body.timezone && typeof body.timezone === 'string') {
@@ -1968,6 +2012,7 @@ app.post('/agent/chat', async (c) => {
       confirmedPlan,
       dualPlan,
       chatSessionId: chatSessionKey,
+      chatContext,
     })
 
     const usage = agentGateway!.consumeLastTurnUsage()

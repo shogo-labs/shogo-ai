@@ -2047,6 +2047,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       <ContextUsageDockPanel
         contextUsage={contextUsage}
         contextBreakdown={contextBreakdown}
+        projectId={projectId}
+        chatSessionId={chatSessionId}
       />
 
       {/* Dropdown + input layer.

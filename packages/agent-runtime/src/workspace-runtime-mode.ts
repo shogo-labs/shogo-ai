@@ -29,7 +29,7 @@
  */
 
 import { existsSync } from 'fs'
-import { isAbsolute, join, relative, sep } from 'path'
+import { isAbsolute, join, relative, resolve, sep } from 'path'
 import { isMetalRuntime, remoteProjectsGuidance } from './remote-tools'
 
 export type WorkingMode = 'managed' | 'external'
@@ -563,6 +563,24 @@ export function shouldEnforceProjectIdSanity(opts: {
   isWorkspaceRuntime: boolean
 }): boolean {
   return opts.workingMode !== 'external' && !opts.isWorkspaceRuntime
+}
+
+/**
+ * Whether `dir` is positively NOT the workspace dir this process serves.
+ *
+ * `WORKSPACE_DIR` is the merged root the runtime was booted on; a gateway
+ * pointed anywhere else (a test's scratch dir, a leftover checkout) must not
+ * write this workspace's settings into its `config.json`. When `WORKSPACE_DIR`
+ * is unset there is nothing to compare against, so the answer is `false` and
+ * callers keep their previous behaviour.
+ */
+export function isForeignWorkspaceDir(
+  dir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const own = env.WORKSPACE_DIR
+  if (!own) return false
+  return resolve(own) !== resolve(dir)
 }
 
 /**

@@ -143,6 +143,14 @@ export interface AgentLoopOptions {
   /** Custom stream function (for testing — replaces Pi's streamSimple) */
   streamFn?: StreamFn
   /**
+   * Which registered tools are advertised to the provider on each API call.
+   * A tool that is not advertised stays callable — the loop dispatches it by
+   * name — but its schema is left out of the request. Read once per API call
+   * (not once per run), so a tool activated during a turn is advertised on the
+   * loop's next request.
+   */
+  isAdvertisedTool?: (tool: AgentTool) => boolean
+  /**
    * Time-to-first-token stall fallback. When the active model produces no
    * streamed content within the configured window, the in-flight request is
    * aborted and retried against a stronger fallback model for a cooldown window
@@ -577,8 +585,11 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       })
     }
   }
-  if (orchestrated.tools.some(isHiddenTool)) {
-    effectiveStreamFn = withoutHiddenTools(effectiveStreamFn ?? streamSimple)
+  // Legacy tools flagged `hidden`, plus the caller's advertised set (SHO-97),
+  // are stripped from every provider request. Hidden tools stay dispatchable.
+  const advertisedTool = options.isAdvertisedTool
+  if (orchestrated.tools.some(isHiddenTool) || advertisedTool) {
+    effectiveStreamFn = withoutUnadvertisedTools(effectiveStreamFn ?? streamSimple, advertisedTool)
   }
 
   const agent = new Agent({
@@ -1651,7 +1662,24 @@ export function isHiddenTool(tool: AgentTool): boolean {
   return (tool as AgentTool & { hidden?: boolean }).hidden === true
 }
 
-function withoutHiddenTools(streamFn: StreamFn): StreamFn {
+/**
+ * Strip hidden tools and anything the caller's advertised set defers from every
+ * provider request. Evaluated per request, so activating a tool mid-turn takes
+ * effect on the loop's next API call.
+ */
+function withoutUnadvertisedTools(
+  streamFn: StreamFn,
+  isAdvertisedTool?: (tool: AgentTool) => boolean,
+): StreamFn {
   return (model, context, opts) =>
-    streamFn(model, { ...context, tools: context.tools?.filter((t) => !isHiddenTool(t as AgentTool)) }, opts)
+    streamFn(
+      model,
+      {
+        ...context,
+        tools: context.tools?.filter(
+          (t) => !isHiddenTool(t as AgentTool) && (isAdvertisedTool ? isAdvertisedTool(t as AgentTool) : true),
+        ),
+      },
+      opts,
+    )
 }

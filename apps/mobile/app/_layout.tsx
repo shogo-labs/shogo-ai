@@ -76,6 +76,7 @@ import { AppearanceProvider } from "../contexts/appearance";
 import { BuddyLookProvider } from "../contexts/buddy-look";
 import { BuddySnapshotHost } from "../components/team-chat/BuddySnapshotHost";
 import { RootErrorBoundary } from "../components/RootErrorBoundary";
+import { ShareFileHost } from "../components/chat/share-file-context";
 import { UpdateBanner } from "../components/UpdateBanner";
 import { LocalApiStatusBanner } from "../components/LocalApiStatusBanner";
 import { GlobalDictationListener } from "../components/dictation/GlobalDictationListener";
@@ -219,20 +220,24 @@ function AuthenticatedAppShell({
       <BuddyLookProvider enabled={!island}>
         {/* Draws agent avatars on native; renders nothing on web or in the island. */}
         {!island && <BuddySnapshotHost />}
-        <Stack screenOptions={{ headerShown: false, lazy: true }}>
-          <Stack.Screen name="index" />
-          <Stack.Screen name="(auth)" />
-          <Stack.Screen name="invite/[token]" />
-          <Stack.Screen name="invitations/[id]/accept" />
-          <Stack.Screen name="m/[token]" />
-          <Stack.Screen name="(onboarding)" />
-          <Stack.Screen name="(app)" />
-          <Stack.Screen name="(admin)" />
-          <Stack.Screen
-            name="island"
-            options={{ contentStyle: { backgroundColor: "transparent" } }}
-          />
-        </Stack>
+        {/* Fallback for a file link clicked on a screen with no side pane: it
+            opens the app's own viewer instead of a browser tab. */}
+        <ShareFileHost>
+          <Stack screenOptions={{ headerShown: false, lazy: true }}>
+            <Stack.Screen name="index" />
+            <Stack.Screen name="(auth)" />
+            <Stack.Screen name="invite/[token]" />
+            <Stack.Screen name="invitations/[id]/accept" />
+            <Stack.Screen name="m/[token]" />
+            <Stack.Screen name="(onboarding)" />
+            <Stack.Screen name="(app)" />
+            <Stack.Screen name="(admin)" />
+            <Stack.Screen
+              name="island"
+              options={{ contentStyle: { backgroundColor: "transparent" } }}
+            />
+          </Stack>
+        </ShareFileHost>
         {!island && <EnvironmentBadge />}
       </BuddyLookProvider>
     </ActiveInstanceProvider>

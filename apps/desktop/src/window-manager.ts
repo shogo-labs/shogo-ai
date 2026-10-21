@@ -216,11 +216,20 @@ export class WindowManager {
 }
 
 /**
- * Chat file links served by the local API, direct or relayed from a cloud
- * workspace (`/api/cloud/<ws>/...`). They need the desktop's session, which the
- * system browser does not have.
+ * File links served by the local API: chat attachments, direct or relayed from
+ * a cloud workspace (`/api/cloud/<ws>/...`), and `share_file` download links
+ * (`/api/f/<token>`, plus the legacy `/f/<token>`). They need the desktop's
+ * session, which the system browser does not have.
  */
-const IN_APP_FILE_PATH = /^\/api\/(cloud\/[^/]+\/)?(conversation-files|chat-attachments)\//
+const IN_APP_FILE_PATH =
+  /^\/(?:api\/(?:cloud\/[^/]+\/)?(?:conversation-files|chat-attachments)|api\/f|f)\//
+
+/**
+ * Renderer event that asks the app to show a file in its own viewer. The
+ * preload re-dispatches it on `window`, so the renderer treats it as an
+ * ordinary in-app click instead of a navigation.
+ */
+export const OPEN_FILE_EVENT = 'shogo:open-file'
 
 /** True for a chat file link on the local API origin. Other URLs are not. */
 export function isInAppFileUrl(url: string, apiUrl: string): boolean {
@@ -235,27 +244,20 @@ export function isInAppFileUrl(url: string, apiUrl: string): boolean {
   return target.origin === api.origin && IN_APP_FILE_PATH.test(target.pathname)
 }
 
-/** Opens a file in a sandboxed window with no preload bridge. */
-function fileViewerWindowOptions() {
-  return {
-    width: 1000,
-    height: 800,
-    autoHideMenuBar: true,
-    title: 'Shogo',
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      preload: undefined,
-    },
-  }
+/** Hands a file link back to the renderer, which opens it in its own pane. */
+function openFileInApp(webContents: WebContents, url: string): void {
+  if (webContents.isDestroyed()) return
+  webContents.send(OPEN_FILE_EVENT, { href: url })
 }
 
 /** Keeps app windows on the app origin; external links open in the browser. */
 export function installAppNavigationGuards(webContents: WebContents): void {
   webContents.setWindowOpenHandler(({ url }) => {
     if (isInAppFileUrl(url, getApiUrl())) {
-      return { action: 'allow', overrideBrowserWindowOptions: fileViewerWindowOptions() }
+      // Never a new window and never the system browser: the renderer shows
+      // the file in its own pane, like it does on web (SHO-80).
+      openFileInApp(webContents, url)
+      return { action: 'deny' }
     }
     if (url.startsWith('http://') || url.startsWith('https://')) {
       shell.openExternal(url)
@@ -264,6 +266,13 @@ export function installAppNavigationGuards(webContents: WebContents): void {
   })
 
   webContents.on('will-navigate', (event, url) => {
+    // A plain `<a href>` to a served file would otherwise navigate the window
+    // to the API's raw response; keep the app where it is and show the file.
+    if (isInAppFileUrl(url, getApiUrl())) {
+      event.preventDefault()
+      openFileInApp(webContents, url)
+      return
+    }
     const appOrigins = ['shogo://app', 'http://localhost', 'http://127.0.0.1']
     const isInternal = appOrigins.some((origin) => url.startsWith(origin))
     if (!isInternal) {
@@ -274,7 +283,6 @@ export function installAppNavigationGuards(webContents: WebContents): void {
     }
   })
 
-  // File viewers get the same rules, so their own links can't open more
-  // unchecked windows.
+  // Any window the app does open gets the same rules.
   webContents.on('did-create-window', (child) => installAppNavigationGuards(child.webContents))
 }

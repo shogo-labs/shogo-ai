@@ -108,7 +108,7 @@ describe('buildSWEPrompt', () => {
     expect(prompt).toContain('## Workspace Files')
     expect(prompt).toContain('README.md')
     expect(prompt).toContain('### Shell Navigation')
-    expect(prompt).toContain('## Project Capabilities')
+    expect(prompt).toContain('## Project capabilities')
     expect(prompt).toContain('capabilities_configure')
   })
 
@@ -149,7 +149,7 @@ describe('buildGeneralPrompt', () => {
     const prompt: string = (gw as any).buildGeneralPrompt()
     expect(prompt).toContain('## Current Context')
     expect(prompt).toContain('### Shell Navigation')
-    expect(prompt).toContain('## Project Capabilities')
+    expect(prompt).toContain('## Project capabilities')
     expect(prompt).toContain('capabilities_configure')
   })
 

@@ -22,6 +22,7 @@ const ENV_KEYS = [
   'PROJECT_ID',
   'WORKSPACE_ANCHOR_PROJECT_ID',
   'WORKSPACE_RUNTIME',
+  'WORKSPACE_ID',
   'WORKSPACE_DIR',
   'WORKSPACE_KIND',
   'RUNTIME_AUTH_SECRET',
@@ -112,7 +113,7 @@ describe('syncCapabilitiesFromApi scope', () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       fetched.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
       throw new Error('the scoped sync must not call the API')
-    }) as typeof globalThis.fetch
+    }) as unknown as typeof globalThis.fetch
 
     const before = readFileSync(configPath, 'utf-8')
     try {
@@ -160,6 +161,63 @@ describe('syncCapabilitiesFromApi scope', () => {
     }
   })
 
+  test('a workspace runtime does not pull workspace settings into a foreign dir', async () => {
+    const { dir, configPath } = scratchWorkspace()
+    const runtimeWorkspace = mkdtempSync(join(tmpdir(), 'capability-sync-own-'))
+    dirs.push(runtimeWorkspace)
+
+    gatewayEnv()
+    process.env.PROJECT_ID = 'proj-scope-match'
+    process.env.WORKSPACE_RUNTIME = 'true'
+    process.env.WORKSPACE_ID = 'ws-scope'
+    process.env.WORKSPACE_DIR = runtimeWorkspace
+
+    const gateway = new AgentGateway(dir, 'proj-scope-match')
+    const { calls } = stubFetch({ project: { settings: { socialMediaEnabled: true } } })
+    try {
+      expect(await gateway.syncCapabilitiesFromApi()).toBe(true)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]).toContain('/api/internal/projects/proj-scope-match/config')
+      expect(calls.some((url) => url.includes('/api/internal/workspaces/'))).toBe(false)
+      const file = JSON.parse(readFileSync(configPath, 'utf-8'))
+      expect(file.workspaceCapabilities).toBeUndefined()
+    } finally {
+      await gateway.stop()
+    }
+  })
+
+  test('the runtime’s own workspace dir still pulls the workspace settings', async () => {
+    const { dir, configPath } = scratchWorkspace()
+    gatewayEnv()
+    process.env.PROJECT_ID = 'proj-scope-match'
+    process.env.WORKSPACE_RUNTIME = 'true'
+    process.env.WORKSPACE_ID = 'ws-scope'
+    process.env.WORKSPACE_DIR = dir
+
+    const gateway = new AgentGateway(dir, 'proj-scope-match')
+    const calls: string[] = []
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      calls.push(url)
+      const body = url.includes('/api/internal/workspaces/')
+        ? { workspace: { settings: { boardsEnabled: true } } }
+        : { project: { settings: { socialMediaEnabled: true } } }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as typeof globalThis.fetch
+
+    try {
+      expect(await gateway.syncCapabilitiesFromApi()).toBe(true)
+      expect(calls.some((url) => url.includes('/api/internal/workspaces/ws-scope/config'))).toBe(true)
+      const file = JSON.parse(readFileSync(configPath, 'utf-8'))
+      expect(file.workspaceCapabilities).toMatchObject({ boardsEnabled: true })
+    } finally {
+      await gateway.stop()
+    }
+  })
+
   test('an injected fetcher is honoured even when the env ids disagree', async () => {
     const { dir, configPath } = scratchWorkspace()
     gatewayEnv()
@@ -170,7 +228,7 @@ describe('syncCapabilitiesFromApi scope', () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       fetched.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
       throw new Error('an injected fetcher must replace the network call')
-    }) as typeof globalThis.fetch
+    }) as unknown as typeof globalThis.fetch
 
     const seen: string[] = []
     try {

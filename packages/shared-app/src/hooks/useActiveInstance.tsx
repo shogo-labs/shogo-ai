@@ -88,6 +88,18 @@ export interface ActiveInstance {
    * so the desktop knows which of its workspaces the user opened.
    */
   localWorkspaceId?: string
+  /**
+   * The machine workspace's own name, for `source: 'machine'`. The cloud
+   * workspace on screen has a different one, and while the machine's workspace
+   * is open it is the one the user is looking at.
+   */
+  localWorkspaceName?: string
+  /**
+   * The machine workspace's own kind. The shell (companion vs builder chrome)
+   * follows the open workspace's kind, and a personal cloud workspace must not
+   * dress a team workspace from the machine up as a companion — nor the reverse.
+   */
+  localWorkspaceKind?: 'personal' | 'team'
 }
 
 export type InstanceStatus = 'online' | 'heartbeat' | 'offline' | 'unknown'
@@ -179,10 +191,10 @@ export function ActiveInstanceProvider({
             // remote-API gating depends on it — re-storing here keeps
             // subsequent loads on the new shape so the gate kicks in
             // immediately on the next mount instead of after the first poll.
-            const hydrated: ActiveInstance = result.kind ? { ...restored, kind: result.kind } : restored
+            const hydrated = applyValidation(restored, result)
             setInstanceState(hydrated)
             setInstanceStatus(result.status ?? 'unknown')
-            if (result.kind && restored.kind !== result.kind) {
+            if (hydrated !== restored) {
               storage.setItem(STORAGE_KEY, JSON.stringify(hydrated)).catch(() => {})
             }
           } else {
@@ -225,8 +237,8 @@ export function ActiveInstanceProvider({
       // Late-arriving `kind` (older clients persisted without it). Update
       // the in-memory instance so SDKDomainProvider's remote gating
       // takes effect on the next render without waiting for re-mount.
-      if (result.kind && instance.kind !== result.kind) {
-        const refreshed = { ...instance, kind: result.kind }
+      const refreshed = applyValidation(instance, result)
+      if (refreshed !== instance) {
         setInstanceState(refreshed)
         storage.setItem(STORAGE_KEY, JSON.stringify(refreshed)).catch(() => {})
       }
@@ -281,12 +293,41 @@ export function useActiveInstance() {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+/** What a validation poll learned about a live instance. */
+type ValidationResult = {
+  valid: boolean
+  status?: InstanceStatus
+  kind?: InstanceKind
+  /** Machine workspaces only: the machine's own name and kind for the workspace. */
+  localWorkspaceName?: string
+  localWorkspaceKind?: 'personal' | 'team'
+}
+
+/**
+ * Fold a validation result into the stored instance, returning the *same*
+ * object when nothing changed so callers can skip a re-render and a write.
+ */
+function applyValidation(inst: ActiveInstance, result: ValidationResult): ActiveInstance {
+  const kindChanged = !!result.kind && result.kind !== inst.kind
+  const nameChanged =
+    !!result.localWorkspaceName && result.localWorkspaceName !== inst.localWorkspaceName
+  const workspaceKindChanged =
+    !!result.localWorkspaceKind && result.localWorkspaceKind !== inst.localWorkspaceKind
+  if (!kindChanged && !nameChanged && !workspaceKindChanged) return inst
+  return {
+    ...inst,
+    ...(kindChanged ? { kind: result.kind } : {}),
+    ...(nameChanged ? { localWorkspaceName: result.localWorkspaceName } : {}),
+    ...(workspaceKindChanged ? { localWorkspaceKind: result.localWorkspaceKind } : {}),
+  }
+}
+
 async function validateInstance(
   inst: ActiveInstance,
   apiUrl: string,
   fetchFn: typeof fetch,
   fetchOptions?: RequestInit,
-): Promise<{ valid: boolean; status?: InstanceStatus; kind?: InstanceKind }> {
+): Promise<ValidationResult> {
   if (!apiUrl) return { valid: false }
   if (inst.source === 'machine') return validateMachine(inst, apiUrl, fetchFn, fetchOptions)
   try {
@@ -319,7 +360,7 @@ async function validateMachine(
   apiUrl: string,
   fetchFn: typeof fetch,
   fetchOptions?: RequestInit,
-): Promise<{ valid: boolean; status?: InstanceStatus; kind?: InstanceKind }> {
+): Promise<ValidationResult> {
   try {
     const res = await fetchFn(`${apiUrl}/api/machines`, { ...fetchOptions })
     if (!res.ok) return { valid: false }
@@ -330,7 +371,20 @@ async function validateMachine(
       found.status === 'online' || found.status === 'heartbeat' || found.status === 'offline'
         ? found.status
         : 'unknown'
-    return { valid: true, status, kind: 'desktop' }
+    // The heartbeat snapshot is the machine's own workspace list: it keeps the
+    // stored name and kind current (a rename, a machine that was offline at
+    // restore) instead of replaying whatever was persisted months ago.
+    const row = (found.snapshot?.workspaces ?? []).find(
+      (w: any) => w?.id && w.id === inst.localWorkspaceId,
+    )
+    return {
+      valid: true,
+      status,
+      kind: 'desktop',
+      localWorkspaceName: typeof row?.name === 'string' ? row.name : undefined,
+      localWorkspaceKind:
+        row?.kind === 'personal' || row?.kind === 'team' ? row.kind : undefined,
+    }
   } catch {
     return { valid: false }
   }

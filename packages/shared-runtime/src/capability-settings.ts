@@ -162,6 +162,17 @@ export const WORKSPACE_AGENT_CAPABILITY_DEFAULTS: Partial<CapabilitySettings> = 
   problemsEnabled: true,
 }
 
+/**
+ * Which surface a capability toggle belongs to.
+ *
+ * - `project` — a project's own agent, stored on `Project.settings`.
+ * - `workspace` — the workspace agent (the meta-agent in a workspace chat),
+ *   stored on `Workspace.settings`. It is NOT the anchor project's config:
+ *   a workspace runtime serves both surfaces, and the user's toggles for one
+ *   must never gate the other.
+ */
+export type CapabilityScope = 'project' | 'workspace'
+
 /** Capabilities that only do anything when these others are on too. */
 export const CAPABILITY_REQUIRES: Partial<Record<CapabilityKey, CapabilityKey[]>> = {
   boardAdminEnabled: ['boardsEnabled'],
@@ -216,6 +227,75 @@ export function normalizeCapabilitySettings(settings: unknown): CapabilitySettin
     out[key] = OPT_IN_KEYS.has(key) ? raw[key] === true : raw[key] !== false
   }
   return out
+}
+
+/**
+ * Resolve every capability toggle for one surface. `scope` is explicit rather
+ * than inferred from boot env: one process serves both surfaces (a workspace
+ * runtime pinned to an anchor project serves workspace chats AND that
+ * project's chats), so "is this the workspace agent?" cannot be answered from
+ * env alone.
+ *
+ * Unset keys use the surface's default: `workspace` applies
+ * `WORKSPACE_AGENT_CAPABILITY_DEFAULTS` (board admin, company ops, problems)
+ * so the workspace agent can set up and run the company; `project` leaves
+ * them off unless stored.
+ */
+export function resolveCapabilities(
+  config: Record<string, unknown> & { activeMode?: string },
+  opts: { scope?: CapabilityScope } = {},
+): CapabilitySettings {
+  const caps = normalizeCapabilitySettings(config)
+  if ((opts.scope ?? 'project') === 'workspace') {
+    for (const [key, value] of Object.entries(WORKSPACE_AGENT_CAPABILITY_DEFAULTS) as Array<[CapabilityKey, boolean]>) {
+      if (config[key] === undefined) caps[key] = value
+    }
+  }
+  // Canvas mode and the canvas toggle are one state. A stale toggle (e.g. an
+  // anchor project's `canvasEnabled: false` synced into a workspace runtime
+  // that is in canvas mode) must not render as "Canvas — off" while the agent
+  // is in fact composing a canvas. The runtime's mode is authoritative.
+  const mode = typeof config.activeMode === 'string' ? config.activeMode : undefined
+  if (mode) caps.canvasEnabled = mode !== 'none'
+  return caps
+}
+
+/**
+ * Read `Workspace.settings` as an object regardless of how it was stored
+ * (a JSON string scalar on Postgres, an object on SQLite).
+ */
+export function parseWorkspaceSettings(settings: unknown): Record<string, unknown> {
+  return asSettingsObject(settings)
+}
+
+/**
+ * Merge a capability patch into a `Workspace.settings` object. Keys the patch
+ * does not mention are preserved untouched, so a workspace's other settings
+ * survive a toggle. `activeMode` rides along with `canvasEnabled`.
+ *
+ * Returns the whole settings object to persist plus `changed: false` when it
+ * already matches.
+ */
+export function mergeCapabilitySettingsIntoWorkspaceSettings(
+  settings: unknown,
+  patch: Partial<CapabilitySettings> & { activeMode?: 'canvas' | 'none' },
+): { settings: Record<string, unknown>; changed: boolean } {
+  const current = asSettingsObject(settings)
+  const next: Record<string, unknown> = { ...current }
+  let changed = false
+  for (const key of CAPABILITY_KEYS) {
+    const value = patch[key]
+    if (typeof value !== 'boolean') continue
+    if (next[key] !== value) {
+      next[key] = value
+      changed = true
+    }
+  }
+  if (patch.activeMode && next.activeMode !== patch.activeMode) {
+    next.activeMode = patch.activeMode
+    changed = true
+  }
+  return { settings: next, changed }
 }
 
 /**

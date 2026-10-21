@@ -8,6 +8,10 @@
 import { prisma, type Prisma } from '../lib/prisma';
 import { customAlphabet } from 'nanoid';
 import { homeRegionForNewWorkspace } from '../lib/region';
+import {
+  encodeWorkspaceSettingsForWrite,
+  parseWorkspaceSettings,
+} from '../lib/workspace-settings';
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6);
 
@@ -515,4 +519,78 @@ export async function loadWorkspaceContext(
     getWorkspaceKind(workspaceId),
   ]);
   return { hasAccess, kind };
+}
+
+// ---------------------------------------------------------------------------
+// Workspace config (the workspace agent's own settings)
+// ---------------------------------------------------------------------------
+
+export type WorkspaceConfigErrorCode = 'not_found' | 'bad_request'
+
+export class WorkspaceConfigError extends Error {
+  readonly code: WorkspaceConfigErrorCode;
+  constructor(code: WorkspaceConfigErrorCode, message: string) {
+    super(message);
+    this.name = 'WorkspaceConfigError';
+    this.code = code;
+  }
+}
+
+export interface WorkspaceConfigSnapshot {
+  id: string;
+  name: string;
+  kind: string;
+  /** The parsed `Workspace.settings` object (never a raw JSON string scalar). */
+  settings: Record<string, unknown>;
+}
+
+export interface ConfigureWorkspaceInput {
+  /** Shallow-merged over the existing `Workspace.settings`. */
+  settings?: Record<string, unknown>;
+}
+
+/**
+ * Read the workspace agent's own settings. This is NOT a project's config: a
+ * workspace runtime serves both surfaces, and the workspace agent's capability
+ * toggles belong to the workspace, not to the anchor project.
+ */
+export async function readWorkspaceConfig(workspaceId: string): Promise<WorkspaceConfigSnapshot> {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { id: true, name: true, kind: true, settings: true },
+  });
+  if (!workspace) throw new WorkspaceConfigError('not_found', `Workspace ${workspaceId} not found`);
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    kind: normalizeWorkspaceKind(workspace.kind),
+    settings: parseWorkspaceSettings(workspace.settings) ?? {},
+  };
+}
+
+/**
+ * Shallow-merge a settings patch into `Workspace.settings`. Keys the patch does
+ * not mention are preserved, so one capability toggle never drops the
+ * workspace's other settings.
+ */
+export async function configureWorkspace(
+  workspaceId: string,
+  patch: ConfigureWorkspaceInput,
+): Promise<WorkspaceConfigSnapshot> {
+  const existing = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { id: true, settings: true },
+  });
+  if (!existing) throw new WorkspaceConfigError('not_found', `Workspace ${workspaceId} not found`);
+
+  if (patch.settings) {
+    const current = parseWorkspaceSettings(existing.settings) ?? {};
+    // Same encoding rule as `Project.settings`: a bare object on Postgres, the
+    // pre-stringified form on SQLite (see `lib/project-settings.ts`).
+    const data: Record<string, unknown> = {
+      settings: encodeWorkspaceSettingsForWrite({ ...current, ...patch.settings }),
+    };
+    await prisma.workspace.update({ where: { id: workspaceId }, data: data as any });
+  }
+  return readWorkspaceConfig(workspaceId);
 }

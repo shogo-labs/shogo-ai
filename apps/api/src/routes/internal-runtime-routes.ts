@@ -1937,8 +1937,52 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     return { identity, workspaceId: project.workspaceId }
   }
 
+  /**
+   * Authorize a workspace-scoped lifecycle call: SA passes; a runtime token
+   * must name this same workspace (a project token must belong to one of its
+   * projects). Returns the identity so the handler can check a permission
+   * against the person behind the turn.
+   */
+  async function authorizeLifecycleWorkspace(
+    c: Context,
+    workspaceId: string,
+  ): Promise<{ identity: InternalIdentity; workspaceId: string } | null> {
+    const identity = await authenticate(c)
+    if (!identity) return null
+    if (identity.kind === 'sa') return { identity, workspaceId }
+    const scope = await identityWorkspaceId(identity)
+    if (scope !== workspaceId) {
+      logAuthReject(`lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'} requestedWorkspace=${workspaceId}`)
+      return null
+    }
+    return { identity, workspaceId }
+  }
+
+  /** Workspace-scoped twin of `enforceProjectPermission`. */
+  async function enforceWorkspacePermission(
+    c: Context,
+    identity: InternalIdentity,
+    workspaceId: string,
+    permission: Permission,
+  ): Promise<Response | null> {
+    if (identity.kind === 'sa') return null
+    const actor = await resolveAgentActor(c, identity, { workspaceId })
+    if (!actor?.principal.userId || actor.unscoped) {
+      if ((await getRbacMode()) !== 'on') return null
+      return requesterRequired(c)
+    }
+    const access = await loadAccess(actor.principal, { workspaceId })
+    const decision = await decide(access, permission, actor.principal, `${c.req.method} ${c.req.path}`)
+    if (!decision.ok) return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
+    return null
+  }
+
   function lifecycleErrorResponse(c: Context, err: unknown): Response {
     const anyErr = err as { name?: string; code?: string; message?: string }
+    if (anyErr?.name === 'WorkspaceConfigError') {
+      const status = anyErr.code === 'not_found' ? 404 : 400
+      return c.json({ error: { code: anyErr.code, message: anyErr.message } }, status)
+    }
     if (anyErr?.name === 'ProjectLifecycleError') {
       const status =
         anyErr.code === 'unauthorized' ? 401
@@ -2241,6 +2285,52 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!authz || authz.identity.kind === 'project') return c.json({ error: 'Unauthorized' }, 401)
     const { deriveRuntimeToken } = await import('../lib/runtime-token')
     return c.json({ projectId, token: deriveRuntimeToken(projectId) })
+  })
+
+  /**
+   * GET /api/internal/workspaces/:workspaceId/config — the workspace agent's
+   * own config. Deliberately workspace-scoped: a workspace chat's capability
+   * toggles belong to the workspace, not to whichever project its runtime is
+   * anchored on.
+   */
+  app.get('/workspaces/:workspaceId/config', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const authz = await authorizeLifecycleWorkspace(c, workspaceId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const denied = await enforceWorkspacePermission(c, authz.identity, workspaceId, 'workspace:read')
+    if (denied) return denied
+    try {
+      const { readWorkspaceConfig } = await import('../services/workspace.service')
+      return c.json({ ok: true, workspace: await readWorkspaceConfig(workspaceId) })
+    } catch (err) {
+      return lifecycleErrorResponse(c, err)
+    }
+  })
+
+  /**
+   * PATCH /api/internal/workspaces/:workspaceId/config
+   *   body: { settings? }  — shallow-merged over the existing settings.
+   */
+  app.patch('/workspaces/:workspaceId/config', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const authz = await authorizeLifecycleWorkspace(c, workspaceId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const denied = await enforceWorkspacePermission(c, authz.identity, workspaceId, 'workspace.settings:manage')
+    if (denied) return denied
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    if (!body) return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    if (body.settings !== undefined && (typeof body.settings !== 'object' || body.settings === null || Array.isArray(body.settings))) {
+      return c.json({ error: { code: 'bad_request', message: 'settings must be an object' } }, 400)
+    }
+    try {
+      const { configureWorkspace } = await import('../services/workspace.service')
+      const workspace = await configureWorkspace(workspaceId, {
+        settings: body.settings as Record<string, unknown> | undefined,
+      })
+      return c.json({ ok: true, workspace })
+    } catch (err) {
+      return lifecycleErrorResponse(c, err)
+    }
   })
 
   /**

@@ -147,7 +147,7 @@ describe('desktopResolver — error paths', () => {
 
     // Because projectId was provided AND the inner try threw, the resolver
     // breaks out of the candidate loop and falls back to the apps/api URL.
-    expect(fetchCalls[0].url).toBe('http://localhost:8002/agent/chat')
+    expect(fetchCalls[0].url).toBe('http://localhost:39100/agent/chat')
   })
 
   test('agent path with no projectId: iterates active projects, skips failing ones', async () => {
@@ -191,7 +191,7 @@ describe('desktopResolver — error paths', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(fetchCalls[0].url).toBe('http://localhost:8002/agent/anything')
+    expect(fetchCalls[0].url).toBe('http://localhost:39100/agent/anything')
   })
 
   test('agent path: start() returns runtime with no agentPort → falls through to apps/api', async () => {
@@ -211,7 +211,7 @@ describe('desktopResolver — error paths', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(fetchCalls[0].url).toBe('http://localhost:8002/agent/x')
+    expect(fetchCalls[0].url).toBe('http://localhost:39100/agent/x')
   })
 
   test('non-agent path always forwards to apps/api (PORT env override is honored)', async () => {

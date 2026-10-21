@@ -14,6 +14,8 @@ import { Check, Copy, Download } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import type { ToolCallData } from "../tools/types";
 import { FileTypeIcon } from "../FileTypeIcon";
+import { useShareFileOpener } from "../share-file-context";
+import { parseShareFileHref } from "../../../lib/share-file-links";
 
 function resultObject(result: unknown): Record<string, unknown> {
   if (result && typeof result === "object") return result as Record<string, unknown>;
@@ -63,6 +65,8 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const openShareFile = useShareFileOpener();
+  const servedFile = useMemo(() => (url ? parseShareFileHref(url) : null), [url]);
 
   const copyLink = useCallback(async () => {
     if (!url) return;
@@ -84,6 +88,13 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
     if (!url || busy) return;
     setError(null);
     if (Platform.OS === "web") {
+      // A cross-origin `download` attribute is ignored, so a bare anchor
+      // navigates the webview to the API's JSON. Open the file in the app's
+      // own viewer instead, which fetches and saves the bytes it has (SHO-80).
+      if (servedFile && openShareFile) {
+        openShareFile({ ...servedFile, name: servedFile.name === "Download" ? name : servedFile.name });
+        return;
+      }
       if (typeof document === "undefined") return;
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -120,7 +131,7 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
     } finally {
       setBusy(false);
     }
-  }, [busy, name, url]);
+  }, [busy, name, openShareFile, servedFile, url]);
 
   if (tool.state !== "success" || !url) return null;
 

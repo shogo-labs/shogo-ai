@@ -1739,13 +1739,17 @@ describe('MessageRow image attachments', () => {
     expect(screen.getByTestId('image-lightbox').getAttribute('data-count')).toBe('1')
   })
 
-  test('non-image attachments still open their URL in the browser', () => {
+  test('a shared file opens the app’s own viewer, never a browser tab', () => {
+    const before = routed.length
     renderRow([file('f1', 'notes.pdf')])
 
     fireEvent.click(screen.getByText('notes.pdf'))
 
-    expect(openURL).toHaveBeenCalledWith('/api/uploads/f1')
+    expect(openURL).not.toHaveBeenCalled()
     expect(screen.queryByTestId('image-lightbox')).toBeNull()
+    expect(routed.slice(before)).toEqual([
+      { pathname: '/(app)/f/[attachmentId]', params: { attachmentId: 'f1', name: 'notes.pdf' } },
+    ])
   })
 
   test('a voice note renders a player, not a file row that opens a URL', () => {

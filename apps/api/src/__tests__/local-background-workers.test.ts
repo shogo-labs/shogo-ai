@@ -159,4 +159,18 @@ describe('local-server.ts', () => {
       expect(source).not.toContain(direct)
     }
   })
+
+  // #1568: the slim local bundle lost `startInstanceTunnel()`, so a paired
+  // desktop never registered and Settings said "Disconnected" forever with no
+  // error. Deleting the call (or wiring it before the database exists) fails here.
+  test('boots the instance tunnel after the database, and stops it on shutdown', () => {
+    const source = readFileSync(join(import.meta.dir, '..', 'local-server.ts'), 'utf8')
+    expect(source).toContain('startInstanceTunnel()')
+    expect(source).toContain('stopInstanceTunnel()')
+    expect(source.indexOf('startInstanceTunnel()')).toBeGreaterThan(
+      source.indexOf('await bootstrapLocalDatabase()'),
+    )
+    const shutdownBody = source.slice(source.indexOf('async function shutdown'))
+    expect(shutdownBody).toContain('stopInstanceTunnel()')
+  })
 })
