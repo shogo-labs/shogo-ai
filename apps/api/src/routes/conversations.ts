@@ -942,6 +942,9 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       const text = await readFileText(principal, conversation.workspaceId, c.req.param('attachmentId'), {
         offset: numberParam(c.req.query('offset')),
         limit: numberParam(c.req.query('limit')),
+        // `?raw=1` is the file as written, for a client that renders it (a
+        // pasted markdown plan). The default is the tidied search text.
+        raw: c.req.query('raw') === '1',
       })
       return c.json(text)
     } catch (err) {

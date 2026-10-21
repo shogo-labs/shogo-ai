@@ -118,3 +118,38 @@ export function parseFileLink(href: string, hosts: Set<string> = ownHosts()): { 
   if (!match) return null
   return { attachmentId: decodeURIComponent(match[1]!) }
 }
+
+/**
+ * Links this app can open in place: a channel (with whatever pane it asked for
+ * — a message, a thread, its doc, a card), or a shared file.
+ *
+ * Returns true when it handled the link, which is what a markdown renderer's
+ * `onLinkPress` reads. Lives here rather than in `MessageRow` so a card inside
+ * a message (a rendered markdown attachment) can route links into the app
+ * without importing the row that renders it.
+ */
+export function openMessageLinkInApp(href: string): boolean {
+  // Every `/c/<id>` link is ours to open, not just the ones carrying `msg`:
+  // `?doc=1` and `?card=<id>` are shapes our own links produce, and falling
+  // through to the browser there is a full page reload on web.
+  const target = parseConversationLink(href)
+  if (target) {
+    void import('expo-router').then(({ router }) =>
+      router.push({
+        pathname: '/(app)/c/[conversationId]',
+        params: { conversationId: target.conversationId, ...target.params },
+      } as any),
+    )
+    return true
+  }
+  // A shared file link is the attachment's own URL; opening it in the viewer
+  // is what keeps it out of a browser tab.
+  const file = parseFileLink(href)
+  if (file) {
+    void import('expo-router').then(({ router }) =>
+      router.push({ pathname: '/(app)/f/[attachmentId]', params: { attachmentId: file.attachmentId } } as any),
+    )
+    return true
+  }
+  return false
+}
