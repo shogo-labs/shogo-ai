@@ -18,7 +18,7 @@
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
 import { loadConversationFileBytes } from '../lib/conversation-files'
-import { canExtract, extractAndStoreAttachmentText } from './conversation-file-text'
+import { canExtract, decodeTextBytes, extractAndStoreAttachmentText, isTextLike, MAX_DOCUMENT_BYTES } from './conversation-file-text'
 import { cosine, embeddingProvider } from './conversation-semantic'
 import { VISIBLE_FILE_WHERE, loadVisibleFile, readableConversationIds, type FilePrincipal } from './conversation-file-access'
 
@@ -328,18 +328,53 @@ export interface FileText {
   nextOffset: number | null
 }
 
-/** A slice of the file's extracted text, extracting it first when that hasn't happened yet. */
+/**
+ * The file's body as it was written, from the stored bytes rather than
+ * `extractedText`: the search text is tidied (runs of spaces collapsed, blank
+ * lines dropped), which is exactly what a markdown renderer needs to keep.
+ *
+ * Only text-like files are decoded. A PDF, an archive or an image returns null
+ * rather than a string of mojibake, so a caller cannot render binary bytes.
+ */
+async function readRawText(attachment: {
+  storageKey: string
+  mimeType: string
+  name: string
+  size: number
+}): Promise<string | null> {
+  if (!isTextLike(attachment.mimeType, attachment.name)) return null
+  if (!attachment.size || attachment.size > MAX_DOCUMENT_BYTES) return null
+  const bytes = await loadConversationFileBytes(attachment.storageKey).catch(() => null)
+  if (!bytes) return null
+  return decodeTextBytes(bytes, attachment.mimeType, attachment.name)?.raw ?? null
+}
+
+/**
+ * A slice of the file's text, extracting it first when that hasn't happened yet.
+ *
+ * `raw` reads the stored bytes instead, so a client that renders the file (a
+ * pasted markdown plan) gets its paragraphs and indentation rather than search
+ * text. Same shape and same caps either way; a file that cannot be read as text
+ * is `text: null` in both.
+ */
 export async function readFileText(
   principal: FilePrincipal,
   workspaceId: string,
   fileId: string,
-  opts: { offset?: number; limit?: number } = {},
+  opts: { offset?: number; limit?: number; raw?: boolean } = {},
 ): Promise<FileText> {
   const { attachment } = await loadVisibleFile(principal, workspaceId, fileId)
-  let text: string | null = attachment.extractedText ?? null
-  if (text === null && canExtract(attachment.mimeType, attachment.name, attachment.size)) {
-    const bytes = await loadConversationFileBytes(attachment.storageKey).catch(() => null)
-    if (bytes) text = await extractAndStoreAttachmentText(attachment.id, bytes, attachment.mimeType, attachment.name)
+  let text: string | null = null
+  if (opts.raw) {
+    // Raw never extracts: extraction stores the tidied search text, which is
+    // not what the caller asked for.
+    text = await readRawText(attachment)
+  } else {
+    text = attachment.extractedText ?? null
+    if (text === null && canExtract(attachment.mimeType, attachment.name, attachment.size)) {
+      const bytes = await loadConversationFileBytes(attachment.storageKey).catch(() => null)
+      if (bytes) text = await extractAndStoreAttachmentText(attachment.id, bytes, attachment.mimeType, attachment.name)
+    }
   }
   const base = { fileId: attachment.id, name: attachment.name, mimeType: attachment.mimeType }
   if (text === null) return { ...base, text: null, offset: 0, totalChars: 0, nextOffset: null }
