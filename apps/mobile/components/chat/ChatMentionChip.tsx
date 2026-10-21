@@ -12,15 +12,14 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react"
-import { Platform, Pressable, Text, type StyleProp, type TextStyle } from "react-native"
+import { Pressable, Text, type StyleProp, type TextStyle } from "react-native"
 import { useRouter } from "expo-router"
-import { API_URL } from "../../lib/api-url"
 import { useProjectCollection } from "../../contexts/domain"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { openInWorkspace } from "../../lib/switch-workspace"
+import { workspaceHttp } from "../../lib/workspace-http"
 import { chatIdsIn } from "../../lib/chat-mention-text"
 import {
-  chatMentionAuthHeaders,
   getChatMentionMeta,
   requestChatMentionMeta,
   subscribeChatMentionMeta,
@@ -102,13 +101,10 @@ function useChatMentionStatus(ids: string[], since?: string | number | Date | nu
 
     const poll = async () => {
       try {
-        const params = new URLSearchParams({ ids: key, since: sinceIso })
-        const response = await fetch(`${API_URL}/api/chat-mention-status?${params}`, {
-          headers: chatMentionAuthHeaders(),
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        } as any)
-        if (cancelled || !response.ok) return
-        const data = await response.json().catch(() => null)
+        const { data } = await workspaceHttp().get<{ statuses?: Record<string, ChatMentionStatus> }>(
+          "/api/chat-mention-status",
+          { ids: key, since: sinceIso },
+        )
         if (cancelled) return
         const next = (data?.statuses ?? {}) as Record<string, ChatMentionStatus>
         setStatuses(next)

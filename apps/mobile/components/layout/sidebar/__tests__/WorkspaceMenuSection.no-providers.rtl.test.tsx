@@ -127,6 +127,7 @@ mock.module(resolve(import.meta.dir, "../../../../lib/workspace-route"), () => (
 }))
 
 const { WorkspaceMenuSection } = await import("../WorkspaceMenuSection")
+const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")
 
 const WORKSPACES = [{ id: "ws-current", name: "Acme", kind: "team" }]
 const onSwitchWorkspace = mock((_id: string) => {})
@@ -135,7 +136,9 @@ const onClose = mock(() => {})
 function renderSection(props: Record<string, unknown> = {}) {
   return render(
     <WorkspaceMenuSection
-      workspaces={WORKSPACES}
+      entries={buildWorkspaceEntries({ workspaces: WORKSPACES })}
+      currentKey={cloudWorkspaceKey(WORKSPACES[0].id)}
+      onSelect={(entry: any) => onSwitchWorkspace(entry.id)}
       currentWorkspace={WORKSPACES[0]}
       billingData={{ hasActiveSubscription: false }}
       workspacePlan={null}

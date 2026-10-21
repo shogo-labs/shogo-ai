@@ -15,7 +15,8 @@ import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native'
 import { Bot as BotIcon, Check as CheckIcon, ChevronDown as ChevronDownIcon, Lock as LockIcon } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { AUTO_MODEL_ID } from '@shogo/model-catalog'
-import { api, createHttpClient } from '../../lib/api'
+import { api } from '../../lib/api'
+import { workspaceHttpProxy } from '../../lib/workspace-http'
 import { resolveDisplayName, useModelPickerList } from '../../lib/visible-models'
 import { Text, useAccountSheetIcons } from './account-sheet-chrome'
 
@@ -26,7 +27,11 @@ export function AgentDefaultModelCard({ workspaceId, className }: { workspaceId:
     ChevronDown: ChevronDownIcon,
     Lock: LockIcon,
   })
-  const http = useMemo(() => createHttpClient(), [])
+  // The card reads and *saves* the agent model of the workspace in view, so it
+  // must go to that workspace's backend: a machine workspace's agent model
+  // lives on the machine (SHO-108). The proxy resolves the client per call, so
+  // the card is right even when it mounts before the domain provider does.
+  const http = useMemo(() => workspaceHttpProxy(), [])
   const models = useModelPickerList()
   const [current, setCurrent] = useState<string | null>(null)
   const [canManage, setCanManage] = useState(false)

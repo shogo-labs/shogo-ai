@@ -7,6 +7,7 @@ import { API_URL } from './api-url'
 import { authClient } from './auth-client'
 import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
 import { routeUrl } from './workspace-route'
+import { usageLogCsvUrl } from './usage-log-csv'
 
 export { API_URL } from './api-url'
 
@@ -1012,18 +1013,17 @@ export const api = {
    * Build the absolute CSV download URL for a workspace's usage event log.
    * Filters mirror `analytics/usage-log` (period, userId, model). The route
    * sets `content-disposition: attachment` so the browser downloads it.
+   *
+   * The base is not `${API_URL}`: a download is a raw URL, so it has to learn
+   * the same host the JSON analytics call gets (`lib/usage-log-csv`). Prefer
+   * `useUsageLogCsvUrl()` in components — it knows which workspace is in view.
    */
   getUsageLogCsvUrl(
     workspaceId: string,
     params: { period?: string; userId?: string; model?: string; limit?: number } = {},
+    opts: { machine?: { relayBaseUrl: string; localWorkspaceId: string } | null } = {},
   ): string {
-    const qs = new URLSearchParams()
-    if (params.period) qs.set('period', params.period)
-    if (params.userId) qs.set('userId', params.userId)
-    if (params.model) qs.set('model', params.model)
-    if (params.limit) qs.set('limit', String(params.limit))
-    const suffix = qs.toString()
-    return `${API_URL}/api/workspaces/${workspaceId}/analytics/usage-log.csv${suffix ? `?${suffix}` : ''}`
+    return usageLogCsvUrl({ workspaceId, params, machine: opts.machine })
   },
 
   async getMyAnalytics<T>(

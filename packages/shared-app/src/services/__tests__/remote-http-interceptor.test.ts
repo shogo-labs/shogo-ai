@@ -277,8 +277,9 @@ describe('shouldRouteToRemote with a machine workspace', () => {
     for (const path of [
       '/api/workspaces',
       '/api/workspaces/ws-cloud',
-      '/api/workspaces/ws-cloud/analytics/overview',
-      '/api/workspaces/ws-cloud/cost-analytics',
+      // The workspace's own analytics and cost analytics are the *machine's*
+      // since SHO-108 — see the analytics case above; only the cloud account
+      // families stay here.
       '/api/workspaces/ws-cloud/chat-installations',
       '/api/workspaces/ws-cloud/permissions',
       '/api/workspaces/ws-cloud/leave',
@@ -299,6 +300,75 @@ describe('shouldRouteToRemote with a machine workspace', () => {
       '/api/invitations',
     ]) {
       expect(shouldRouteToRemote(path, MACHINE)).toBe(false)
+    }
+  })
+
+  /**
+   * SHO-108: a workspace feature the machine serves from a *top-level* path
+   * follows the workspace in view. Boards and cards name their board or card in
+   * the path, the agent task board and the mention pickers are the agent's, and
+   * the chat plumbing names the file or message — none of them reach
+   * `/api/workspaces/:id/...`, so they are declared in one list.
+   */
+  it('routes the workspace features that name their board, card or agent', () => {
+    for (const path of [
+      '/api/boards',
+      '/api/boards?conversationId=c1',
+      '/api/boards/b1',
+      '/api/boards/b1/items',
+      '/api/boards/b1/columns',
+      '/api/work-items/i1',
+      '/api/work-items/i1/move',
+      '/api/work-items/i1/comments',
+      '/api/work-items/i1/history?filter=all',
+      '/api/work-items/i1/follow',
+      '/api/conversation-messages/m1/card',
+      '/api/agent-tasks',
+      '/api/agent-tasks/t1',
+      '/api/chat-mentionables?workspaceId=ws-cloud',
+      '/api/chat-mention-status?workspaceId=ws-cloud',
+      '/api/conversation-files/f1',
+      '/api/chat-attachments/a1',
+      '/api/chat-queued-messages',
+    ]) {
+      expect(shouldRouteToRemote(path, MACHINE)).toBe(true)
+    }
+  })
+
+  it('routes the machine’s own analytics — the tab and the CSV are one workspace', () => {
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/analytics/overview', MACHINE)).toBe(true)
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/analytics/usage-log.csv', MACHINE)).toBe(true)
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/cost-analytics', MACHINE)).toBe(true)
+    expect(shouldRouteToRemote('/api/workspaces/ws-cloud/activity', MACHINE)).toBe(true)
+  })
+
+  it('keeps the cloud account families on cloud, whichever host is in view', () => {
+    for (const path of [
+      '/api/billing/subscription',
+      '/api/subscriptions',
+      '/api/members?workspaceId=ws-cloud',
+      '/api/invitations',
+      '/api/marketplace/listings',
+      '/api/admin/settings',
+      '/api/auth/session',
+      '/api/instances',
+      '/api/machines',
+      '/api/machines/inst-1/workspaces',
+      '/api/sync',
+    ]) {
+      expect(shouldRouteToRemote(path, MACHINE)).toBe(false)
+    }
+  })
+
+  it('leaves every machine-owned family on cloud without a machine in view', () => {
+    for (const path of [
+      '/api/boards/b1',
+      '/api/work-items/i1/move',
+      '/api/agent-tasks',
+      '/api/chat-mentionables?workspaceId=ws-cloud',
+      '/api/workspaces/ws-cloud/analytics/overview',
+    ]) {
+      expect(shouldRouteToRemote(path)).toBe(false)
     }
   })
 
