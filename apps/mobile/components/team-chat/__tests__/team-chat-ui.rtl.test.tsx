@@ -1456,6 +1456,19 @@ describe('Shogo on its own messages', () => {
   })
 })
 
+describe('what a screen reader hears', () => {
+  test('a mention is announced as the name, not the token in the stored source', () => {
+    const { container } = render(
+      <MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+
+    // The fixture's text is `hi <@a:p:proj-1>`. Spoken verbatim that is a UUID.
+    expect(screen.getByLabelText('Ana Lopez: hi @Billing Bot')).toBeTruthy()
+    const labels = Array.from(container.querySelectorAll('[aria-label]')).map((el) => el.getAttribute('aria-label')!)
+    expect(labels.some((label) => label.includes('<@a:'))).toBe(false)
+  })
+})
+
 describe('agent profile links', () => {
   const tap = async (projectId: string | null, onOpenProjectPane?: any) => {
     const h = handlers()

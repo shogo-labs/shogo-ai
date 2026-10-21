@@ -34,7 +34,7 @@ import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { ImagePreviewModal } from '../chat/ImagePreviewModal'
 import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
-import { renderMentions, renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
+import { markdownToPlainText, renderMentions, renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
 import { isVoiceNote } from '../../lib/voice-note'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
 import { DownloadBadge, FileAttachmentCard } from './FileAttachmentCard'
@@ -715,7 +715,7 @@ function MessageRowImpl(props: MessageRowProps) {
         props.highlighted && 'bg-amber-400/20',
       )}
       testID={props.highlighted ? 'message-highlighted' : undefined}
-      accessibilityLabel={`${authorName(message)}: ${message.text}`}
+      accessibilityLabel={`${authorName(message)}: ${markdownToPlainText(renderMentions(message.text, names))}`}
     >
       <View className="w-8">
         {grouped ? (
@@ -888,7 +888,7 @@ function MessageRowImpl(props: MessageRowProps) {
                 </View>
               )
             })()}
-            {!deleted && <MessageQuoteCards quotes={quotes} />}
+            {!deleted && <MessageQuoteCards quotes={quotes} names={names} />}
             {!running && <UnfurlCards message={message} />}
             {running && (
               // Display only: navigation is the header's Open session button, so the status takes no hover or press.
