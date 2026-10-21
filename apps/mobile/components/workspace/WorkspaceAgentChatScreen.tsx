@@ -26,7 +26,16 @@ import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { useWorkspaceAgentBase } from "../../hooks/useWorkspaceAgentBase"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
-import { chatSessionEvents } from "../../lib/chat-session-events"
+import {
+  chatActivityEvents,
+  chatSessionEvents,
+} from "../../lib/chat-session-events"
+import {
+  emptyWorkspaceChatActivity,
+  nextWorkspaceChatActivity,
+  workspaceChatActivityEvent,
+  type WorkspaceChatActivityState,
+} from "../../lib/workspace-chat-activity"
 import { chatMentionMetaFor } from "../../lib/chat-mention-meta"
 import { agentSessionSource } from "../../lib/root-destination"
 import { ensureLandingSession, LANDING_SESSION_NAME } from "../../lib/landing-session"
@@ -151,6 +160,11 @@ export const WorkspaceAgentChatScreen = observer(
     const reloadAttachments = useRef<(() => void) | null>(null)
     const avatarFinishedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
     const avatarStreaming = useRef(false)
+    // What the sidebar paints: the spinner on this chat's row while its turn
+    // runs, then the new-activity dot if the turn lands out of view.
+    const [chatActivity, setChatActivity] = useState<WorkspaceChatActivityState>(
+      emptyWorkspaceChatActivity,
+    )
     const crossTabPrefill = useChatPrefill()
     const { showWelcome, dismissWelcome } = useWelcomeMessage(workspace?.id)
     const isPersonalWorkspace = experience.kind === "personal"
@@ -359,37 +373,81 @@ export const WorkspaceAgentChatScreen = observer(
         current?.nonce === nonce ? null : current,
       )
     }, [])
-    const handleStreamingChange = useCallback((isStreaming: boolean) => {
-      if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
-      if (isStreaming) {
-        avatarStreaming.current = true
-        setAvatarState("working")
-        return
-      }
-      if (!avatarStreaming.current) {
-        setAvatarState("idle")
-        return
-      }
-      if (workspace?.id && sessionId) {
-        chatSessionEvents.emit({
-          workspaceId: workspace.id,
-          activeSessionId: sessionId,
-          refresh: true,
-        })
-      }
-      avatarStreaming.current = false
-      setAvatarState("finished")
-      avatarFinishedTimer.current = setTimeout(() => {
-        avatarFinishedTimer.current = null
-        setAvatarState("idle")
-      }, 1800)
-    }, [sessionId, workspace?.id])
+    const handleStreamingChange = useCallback(
+      (isStreaming: boolean) => {
+        if (avatarFinishedTimer.current)
+          clearTimeout(avatarFinishedTimer.current)
+        // Mirror the turn into the sidebar rows, the same way the project
+        // workspace publishes its per-tab streaming state.
+        if (sessionId) {
+          setChatActivity((current) =>
+            nextWorkspaceChatActivity(current, {
+              sessionId,
+              isStreaming,
+              activeSessionId: sessionId,
+            }),
+          )
+        }
+        if (isStreaming) {
+          avatarStreaming.current = true
+          setAvatarState("working")
+          return
+        }
+        if (!avatarStreaming.current) {
+          setAvatarState("idle")
+          return
+        }
+        if (workspace?.id && sessionId) {
+          chatSessionEvents.emit({
+            workspaceId: workspace.id,
+            activeSessionId: sessionId,
+            refresh: true,
+          })
+        }
+        avatarStreaming.current = false
+        setAvatarState("finished")
+        avatarFinishedTimer.current = setTimeout(() => {
+          avatarFinishedTimer.current = null
+          setAvatarState("idle")
+        }, 1800)
+      },
+      [sessionId, workspace?.id],
+    )
     useEffect(
       () => () => {
-        if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
+        if (avatarFinishedTimer.current)
+          clearTimeout(avatarFinishedTimer.current)
       },
       [],
     )
+
+    // Publish this chat's activity so the Home panel and the phone drawer can
+    // paint the spinner + new-activity dot. Kept off `chatSessionEvents` so a
+    // stream tick never triggers a chat-list re-fetch.
+    useEffect(() => {
+      if (!workspace?.id) return
+      chatActivityEvents.emit(
+        workspaceChatActivityEvent(workspace.id, chatActivity),
+      )
+    }, [chatActivity, workspace?.id])
+
+    // A turn belongs to the chat that is on screen: switching chats (or leaving
+    // the screen) drops the old state so a stale row cannot spin forever.
+    useEffect(() => {
+      setChatActivity(emptyWorkspaceChatActivity)
+    }, [sessionId])
+
+    useEffect(() => {
+      if (!workspace?.id) return
+      const workspaceId = workspace.id
+      return () => {
+        chatActivityEvents.emit({
+          workspaceId,
+          streamingSessionIds: [],
+          completedSessionIds: [],
+        })
+      }
+    }, [workspace?.id])
 
     if (!workspace?.id || !sessionId || !profile) {
       return (

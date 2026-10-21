@@ -200,9 +200,16 @@ export const chatSessionEvents = {
   },
 }
 
+/**
+ * Exactly one scope id is set: a project workspace emits `projectId`, the
+ * workspace agent emits `workspaceId`. Listeners ignore events for a scope
+ * they do not own.
+ */
 export type ChatActivityEvent = {
-  /** Project (context) the activity belongs to. */
-  projectId: string
+  /** Project (context) the activity belongs to, for project chats. */
+  projectId?: string
+  /** Workspace (context) the activity belongs to, for workspace-agent chats. */
+  workspaceId?: string
   /** Session ids whose stream is currently running. */
   streamingSessionIds: string[]
   /** Session ids that finished streaming but haven't been viewed yet. */
