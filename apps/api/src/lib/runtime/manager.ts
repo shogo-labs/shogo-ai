@@ -253,6 +253,23 @@ export function projectWorkspaceRuntimeKey(anchorProjectId: string): string {
   return `ws:proj:${anchorProjectId}`
 }
 
+/**
+ * How many workspace/project previews this host is allowed to keep warm.
+ *
+ * The single source of truth for the warm-preview cap: the manager evicts
+ * down to it, and the desktop startup prewarm must warm no more than it
+ * (SHO-107 — boot used to warm `WORKSPACE_PREVIEW_MAX || 3` while the manager
+ * kept 1 on a low-tier host, so an eviction right after boot was guaranteed).
+ * A `low` tier host is ≤8 GB RAM / ≤4 cores (see
+ * `apps/desktop/src/runtime-memory.ts`) — a normal laptop, where one warm
+ * preview is all the machine can carry.
+ */
+export function resolveWorkspacePreviewMax(): number {
+  const defaultMax = process.env.SHOGO_HOST_TIER === 'low' ? 1 : 3
+  const n = parseInt(process.env.WORKSPACE_PREVIEW_MAX || String(defaultMax), 10)
+  return Number.isFinite(n) && n > 0 ? n : defaultMax
+}
+
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
   basePort: PORT_RANGE_START,
@@ -262,6 +279,14 @@ const DEFAULT_CONFIG: IRuntimeConfig = {
   domainSuffix: 'localhost',
   templateDir: '_template',
 }
+
+/**
+ * How long a workspace-level resolve waits for an anchored start that has
+ * claimed its key but not yet published its runtime record before deciding the
+ * anchor is not coming and spawning its own merged root (SHO-107).
+ */
+const ANCHORED_REUSE_WAIT_MS = 5_000
+const ANCHORED_REUSE_POLL_MS = 25
 
 /** Internal runtime state with process handles */
 interface InternalRuntime extends IProjectRuntime {
@@ -386,11 +411,7 @@ export class RuntimeManager implements IRuntimeManager {
    * zero owns teardown there) — see warm-pool keep-warm.
    */
   private workspacePreviewMru: string[] = []
-  private readonly workspacePreviewMax: number = (() => {
-    const defaultMax = process.env.SHOGO_HOST_TIER === 'low' ? 1 : 3
-    const n = parseInt(process.env.WORKSPACE_PREVIEW_MAX || String(defaultMax), 10)
-    return Number.isFinite(n) && n > 0 ? n : defaultMax
-  })()
+  private readonly workspacePreviewMax: number = resolveWorkspacePreviewMax()
 
   /**
    * Completely separate pool for BACKGROUND (local heartbeat) runtimes. The
@@ -409,6 +430,23 @@ export class RuntimeManager implements IRuntimeManager {
     const n = parseInt(process.env.WORKSPACE_BACKGROUND_MAX || '2', 10)
     return Number.isFinite(n) && n > 0 ? n : 2
   })()
+
+  /**
+   * Which workspace (and, for an anchored runtime, which anchor project) each
+   * runtime key serves. Registered when a start BEGINS — before the merged root
+   * is built, i.e. before the record exists in {@link runtimes} — because
+   * cross-key dedup has to see an IN-FLIGHT start too. Pruned on `stop`.
+   * See {@link findAnchoredRuntimeFor}.
+   */
+  private runtimeOwners: Map<string, { workspaceId: string; anchorProjectId?: string }> = new Map()
+
+  /**
+   * Open PTY terminal WebSocket sessions per runtime key, counted by the
+   * gateway's terminal socket open/close (`noteTerminalSession`). A runtime
+   * with a shell attached is never LRU-evicted: evicting it kills the user's
+   * terminal mid-command with "Connection ended" (SHO-107).
+   */
+  private readonly liveTerminalSessions: Map<string, number> = new Map()
 
   constructor(config: Partial<IRuntimeConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -1670,7 +1708,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     }
     const key = workspaceRuntimeKey(workspaceId)
 
-    const existing = this.runtimes.get(key)
+    let existing = this.runtimes.get(key)
     if (existing && existing.status === 'running' && existing.agentPort) {
       if (this.isAgentAlive(key, existing)) {
         // Switching back to a workspace whose runtime is still warm counts as
@@ -1685,6 +1723,36 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     if (inflight) {
       console.log(`[RuntimeManager] Waiting on in-flight workspace start for ${key}`)
       return inflight
+    }
+
+    // One folder, one runtime (SHO-107). A workspace-level resolve that mounts
+    // no members of its own is served by the workspace's project-anchored
+    // runtime if one is running or starting — spawning `ws:<workspaceId>` as
+    // well puts two merged roots and two agent-runtime processes on the same
+    // folder, and the preview LRU then evicts whichever it warmed first (the
+    // one the user's terminal is attached to, as often as not).
+    //
+    // Only entered when the workspace actually has an anchored runtime, so the
+    // common path stays await-free between the checks above and the spawn.
+    if ((opts.attachedProjectIds ?? []).length === 0 && this.hasAnchoredRuntime(workspaceId)) {
+      const anchored = await this.findAnchoredRuntimeFor(workspaceId)
+      if (anchored) {
+        console.log(
+          `[RuntimeManager] startWorkspace(${key}): reusing project-anchored runtime ${anchored.key} (one folder, one runtime)`,
+        )
+        if (anchored.inflight) return anchored.inflight
+        this.recordWorkspaceMru(anchored.key)
+        return this.toPublicRuntime(anchored.runtime!)
+      }
+      // That wait can yield to a sibling caller of this same key, so re-check
+      // our own slot before respawning: concurrent starts must still dedupe.
+      const raced = this.startingPromises.get(key)
+      if (raced) return raced
+      existing = this.runtimes.get(key)
+      if (existing && existing.status === 'running' && existing.agentPort && this.isAgentAlive(key, existing)) {
+        this.recordWorkspaceMru(key)
+        return this.toPublicRuntime(existing)
+      }
     }
 
     if (existing && (existing.status === 'error' || existing.status === 'starting')) {
@@ -1776,19 +1844,20 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       (id, i, arr) => id && arr.indexOf(id) === i,
     )
 
-    const anchorProjectInfo = await this.getProjectInfo(anchorProjectId)
-    const isRemote = !!anchorProjectInfo.remoteHostId
-    if (!isRemote && memberProjectIds.length > 1) {
-      const attachedInfos = await Promise.all(
-        memberProjectIds.slice(1).map((projectId) => this.getProjectInfo(projectId)),
-      )
-      if (attachedInfos.some((info) => !!info.remoteHostId)) {
-        throw new Error(
-          'Remote-SSH projects cannot be attached to a local project runtime; ' +
-            'open the remote project directly.',
-        )
-      }
-    }
+    // Claim this workspace's anchor for the key *before* the lookups below: a
+    // workspace-level resolve in this window must join this start instead of
+    // spawning a second merged root for the same folder (SHO-107).
+    this.runtimeOwners.set(key, { workspaceId: opts.workspaceId, anchorProjectId })
+
+    // A throw before anything is spawned must release that claim, or every
+    // later workspace-level resolve waits out ANCHORED_REUSE_WAIT_MS for a
+    // start that is never coming.
+    const { isRemote, anchorProjectInfo } = await this
+      .assertSingleTransport(anchorProjectId, memberProjectIds)
+      .catch((err) => {
+        this.releaseRuntimeOwner(key)
+        throw err
+      })
     let existing = this.runtimes.get(key)
     // A project can be rebound between local and Remote-SSH storage while its
     // old runtime is still cached. Never reuse a runtime with the wrong
@@ -2251,6 +2320,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     logLabel: string
   }): Promise<IProjectRuntime> {
     const { key, rootName, workspaceId, memberProjectIds, localFolders } = spec
+    // Publish the owner before the first await so a concurrent resolve can see
+    // this start (see findAnchoredRuntimeFor) even while the merged root is
+    // still being built.
+    this.runtimeOwners.set(key, { workspaceId, anchorProjectId: spec.anchorProjectId })
     const startedAtMs = Date.now()
     const phase = (name: string, extra?: Record<string, unknown>) => {
       console.log(
@@ -2450,6 +2523,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     } catch (err) {
       runtime.status = 'error'
       this.releasePort(port)
+      this.runtimeOwners.delete(key)
       if (this.agentManagedProjects.has(key)) {
         this.agentManagedProjects.delete(key)
         await this.agentManager.stop(key).catch(() => {})
@@ -2886,6 +2960,99 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
+   * Validate that the anchor and every attached project share one transport.
+   * Extracted so {@link startProjectWorkspace} can release its runtime-key claim
+   * when this throws (a remote project attached to a local runtime) — the claim
+   * is made before the lookups this needs.
+   */
+  private async assertSingleTransport(
+    anchorProjectId: string,
+    memberProjectIds: string[],
+  ): Promise<{ isRemote: boolean; anchorProjectInfo: ProjectInfo }> {
+    const anchorProjectInfo = await this.getProjectInfo(anchorProjectId)
+    const isRemote = !!anchorProjectInfo.remoteHostId
+    if (!isRemote && memberProjectIds.length > 1) {
+      const attachedInfos = await Promise.all(
+        memberProjectIds.slice(1).map((projectId) => this.getProjectInfo(projectId)),
+      )
+      if (attachedInfos.some((info) => !!info.remoteHostId)) {
+        throw new Error(
+          'Remote-SSH projects cannot be attached to a local project runtime; ' +
+            'open the remote project directly.',
+        )
+      }
+    }
+    return { isRemote, anchorProjectInfo }
+  }
+
+  /**
+   * Drop a start claim that will never produce a runtime — a lookup or
+   * validation throw before the spawn. A claim that already published a
+   * runtime or an in-flight promise is left alone; those clean up themselves.
+   */
+  private releaseRuntimeOwner(key: string): void {
+    if (this.runtimes.has(key) || this.startingPromises.has(key)) return
+    this.runtimeOwners.delete(key)
+  }
+
+  /**
+   * Whether this workspace has a project-anchored runtime slot at all — live,
+   * starting, or claimed but not yet published. Synchronous so
+   * {@link startWorkspace} can skip its anchored-reuse wait entirely (and stay
+   * race-free against concurrent starts of its own key) when there is nothing
+   * to join.
+   */
+  private hasAnchoredRuntime(workspaceId: string): boolean {
+    for (const [key, owner] of this.runtimeOwners) {
+      if (key.startsWith('ws:proj:') && owner.workspaceId === workspaceId) return true
+    }
+    return false
+  }
+
+  /**
+   * The workspace's project-anchored runtime (`ws:proj:<anchor>`), live or
+   * starting, if there is one. Backs the cross-key dedup in
+   * {@link startWorkspace}: one folder must be served by one merged root, one
+   * agent-runtime process and one PTY tree (SHO-107).
+   *
+   * An anchored start publishes itself in `runtimeOwners` before its first
+   * await but only reaches `startingPromises` / `runtimes` a moment later, so a
+   * concurrent resolve can find an owner with nothing published yet. That is a
+   * start in progress, not a missing runtime: wait (briefly) for it to publish
+   * instead of spawning a duplicate. If nothing appears — the start failed —
+   * the caller falls through to a normal spawn.
+   */
+  private async findAnchoredRuntimeFor(
+    workspaceId: string,
+  ): Promise<{ key: string; inflight?: Promise<IProjectRuntime>; runtime?: InternalRuntime } | null> {
+    const deadline = Date.now() + ANCHORED_REUSE_WAIT_MS
+    for (;;) {
+      let pending = false
+      for (const [key, owner] of this.runtimeOwners) {
+        if (!key.startsWith('ws:proj:') || owner.workspaceId !== workspaceId) continue
+        const inflight = this.startingPromises.get(key)
+        if (inflight) return { key, inflight }
+        const runtime = this.runtimes.get(key)
+        // Owner registered, record not published yet: mid pre-spawn awaits.
+        if (!runtime) {
+          pending = true
+          continue
+        }
+        // Never adopt a remote runtime for a local workspace, and never adopt a
+        // runtime that is on its way out or already dead.
+        if (runtime.remoteRuntime || runtime.status === 'stopped' || runtime.status === 'error') continue
+        if (runtime.status === 'starting' || runtime.status === 'stopping') {
+          pending = pending || runtime.status === 'starting'
+          continue
+        }
+        if (runtime.agentPort && this.isAgentAlive(key, runtime)) return { key, runtime }
+      }
+      if (!pending || Date.now() >= deadline) return null
+      await new Promise((resolve) => setTimeout(resolve, ANCHORED_REUSE_POLL_MS))
+    }
+  }
+
+  /**
    * Move a warm-preview key to the front of the MRU. Covers both runtime
    * flavours the cap protects: a project-anchored preview (`ws:proj:<id>`) and
    * a workspace-session runtime (`ws:<id>` — one per open workspace, see
@@ -2983,12 +3150,34 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
   /** Whether the runtime reports in-flight turns, background tasks or streams. */
   private async hasActiveWork(key: string): Promise<boolean> {
+    // A user's shell is the strongest possible "someone is working" signal: the
+    // connected PTY lives in this runtime, so evicting it kills their terminal
+    // mid-command with "Connection ended" (SHO-107).
+    if (this.terminalSessionCount(key) > 0) return true
     if (!this.agentManagedProjects.has(key)) return false
     try {
       return await this.agentManager.hasActiveWork(key)
     } catch {
       return false
     }
+  }
+
+  /**
+   * Count a PTY terminal WebSocket opening (+1) or closing (-1) for a project.
+   * Called by the gateway's terminal bridge; a non-zero count pins the runtime
+   * against LRU eviction (see {@link hasActiveWork}).
+   */
+  noteTerminalSession(projectId: string, delta: 1 | -1): void {
+    if (!projectId) return
+    const key = this.resolveRuntimeKey(projectId)
+    const next = Math.max(0, (this.liveTerminalSessions.get(key) ?? 0) + delta)
+    if (next === 0) this.liveTerminalSessions.delete(key)
+    else this.liveTerminalSessions.set(key, next)
+  }
+
+  /** Open PTY terminal sessions attached to a runtime key. */
+  terminalSessionCount(projectId: string): number {
+    return this.liveTerminalSessions.get(this.resolveRuntimeKey(projectId)) ?? 0
   }
 
   /**
@@ -3105,6 +3294,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     runtime.status = 'stopped'
     this.releasePort(runtime.port)
     this.runtimes.delete(key)
+    this.runtimeOwners.delete(key)
+    // A leaked count must not pin the next runtime for this key forever. If a
+    // terminal socket is somehow still open, its close event clamps at zero.
+    this.liveTerminalSessions.delete(key)
     const mi = this.workspacePreviewMru.indexOf(key)
     if (mi >= 0) this.workspacePreviewMru.splice(mi, 1)
     this.dropBackgroundMru(key)
