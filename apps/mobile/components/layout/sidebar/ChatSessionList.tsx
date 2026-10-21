@@ -200,6 +200,7 @@ export function ChatSessionList({
   completedIds,
   variant,
   mobileProjectDetail,
+  renderAll = false,
   loaded = true,
   emptyLabel,
   loadingLabel = "Loading…",
@@ -231,6 +232,13 @@ export function ChatSessionList({
   completedIds?: Set<string>;
   variant?: "workspacePane";
   mobileProjectDetail?: boolean;
+  /**
+   * Render every chat instead of the 5 / +10 / 20 inline page. For a caller with
+   * its own scroll view (the phone drawer's Chats section), where the paging
+   * rows only hide chats behind a "Show more" tap — and past 20 behind a "See
+   * all" row that has nowhere to go when the caller passes no `onSeeAll`.
+   */
+  renderAll?: boolean;
   loaded?: boolean;
   /** Copy shown when there are no chats at all. */
   emptyLabel: string;
@@ -298,9 +306,10 @@ export function ChatSessionList({
     [hasMore, loadingMore, onLoadMore],
   );
 
-  const activeSessionsForList = mobileProjectDetail
-    ? sessions
-    : sessions.slice(0, visibleCount);
+  const activeSessionsForList =
+    mobileProjectDetail || renderAll
+      ? [...sessions]
+      : sessions.slice(0, visibleCount);
   if (revealActiveChat && !mobileProjectDetail && activeChatId) {
     const activeSession = sessions.find(
       (session) => session.id === activeChatId,
@@ -312,11 +321,12 @@ export function ChatSessionList({
       activeSessionsForList.push(activeSession);
     }
   }
-  const archivedSessionsForList = mobileProjectDetail
-    ? archived
-    : archivedExpanded
-      ? archived.slice(0, archivedVisibleCount)
-      : [];
+  const archivedSessionsForList =
+    mobileProjectDetail || renderAll
+      ? [...archived]
+      : archivedExpanded
+        ? archived.slice(0, archivedVisibleCount)
+        : [];
 
   const renderChat = (session: any, key = session.id) => (
     <ChatTreeItem
@@ -345,17 +355,21 @@ export function ChatSessionList({
     archivedSessionsForList,
     archivedExpanded,
     {
-      activeHasMore: !mobileProjectDetail && (sessions.length > visibleCount || hasMore),
+      activeHasMore:
+        !mobileProjectDetail &&
+        !renderAll &&
+        (sessions.length > visibleCount || hasMore),
       activeShownCount: mobileProjectDetail ? sessions.length : visibleCount,
       archivedHasMore:
         !mobileProjectDetail &&
+        !renderAll &&
         archivedExpanded &&
         (archived.length > archivedVisibleCount || hasMore),
       archivedTotal: archived.length,
       archivedShownCount: mobileProjectDetail
         ? archived.length
         : archivedVisibleCount,
-      includeFooter: !mobileProjectDetail,
+      includeFooter: !mobileProjectDetail && !renderAll,
       hasMoreChats: hasMore,
       totalChats: Math.max(totalCount ?? sessions.length, sessions.length),
     },

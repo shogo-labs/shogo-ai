@@ -247,6 +247,18 @@ describe("ChatSessionList", () => {
     expect(screen.getByLabelText("See all chats for Project one")).toBeTruthy();
   });
 
+  test("renderAll lists every chat and offers no paging row", () => {
+    const sessions = Array.from({ length: 30 }, (_, index) =>
+      session(`chat-${index}`, `Chat ${index}`, index + 1),
+    );
+    const onSeeAll = mock(() => {});
+    renderList({ sessions, onSeeAll, renderAll: true });
+
+    expect(screen.getAllByLabelText(/^Chat: /).length).toBe(30);
+    expect(screen.queryByLabelText("Show more chats for Project one")).toBeNull();
+    expect(screen.queryByLabelText("See all chats for Project one")).toBeNull();
+  });
+
   test("deleting a chat goes through the in-app dialog, never window.confirm", () => {
     const confirm = mock(() => true);
     (globalThis as any).window = globalThis.window ?? ({} as any);

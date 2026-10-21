@@ -9,7 +9,7 @@
  * for the team-chat messages you sent, newest first.
  */
 import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -81,6 +81,13 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
     ? sent.loading && sent.items.length === 0
     : (inbox.loading && inbox.items.length === 0) || (agents.loading && agents.tasks.length === 0)
   const empty = !loading && feed.running.length === 0 && feed.entries.length === 0
+  /**
+   * Both views page the same way: older items load as you reach the end, so the
+   * list is never silently capped at its first page.
+   */
+  const paging = filter === 'sent'
+    ? { hasMore: sent.hasMore, loadingMore: sent.loading, loadMore: sent.loadMore }
+    : { hasMore: inbox.hasMore, loadingMore: inbox.loadingMore, loadMore: inbox.loadMore }
 
   const open = (entry: ActivityEntry) => {
     if (entry.sent) {
@@ -140,8 +147,10 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
         ))}
       </ScrollView>
 
-      <ScrollView
+      <FlatList
         className="flex-1"
+        data={feed.entries}
+        keyExtractor={(entry) => entry.id}
         contentContainerClassName="pb-28"
         refreshControl={
           <RefreshControl
@@ -153,58 +162,65 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
             }}
           />
         }
-      >
-        {waitingOnYou > 0 && filter !== 'sent' ? (
-          <Pressable
-            onPress={() => router.push('/(app)/c/questions' as any)}
-            accessibilityRole="link"
-            accessibilityLabel={`${waitingOnYou} ${waitingOnYou === 1 ? 'question' : 'questions'} waiting on you`}
-            className={cn('flex-row items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 active:bg-amber-500/20', compact ? 'px-3 py-2' : 'px-4 py-2.5')}
-            testID="questions-waiting"
-          >
-            <MessageCircleQuestion size={14} className="text-amber-600" />
-            <Text className="flex-1 text-sm font-medium text-amber-800 dark:text-amber-300">
-              {`Waiting on you: ${waitingOnYou} ${waitingOnYou === 1 ? 'question' : 'questions'}`}
+        ListHeaderComponent={
+          <>
+            {waitingOnYou > 0 && filter !== 'sent' ? (
+              <Pressable
+                onPress={() => router.push('/(app)/c/questions' as any)}
+                accessibilityRole="link"
+                accessibilityLabel={`${waitingOnYou} ${waitingOnYou === 1 ? 'question' : 'questions'} waiting on you`}
+                className={cn('flex-row items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 active:bg-amber-500/20', compact ? 'px-3 py-2' : 'px-4 py-2.5')}
+                testID="questions-waiting"
+              >
+                <MessageCircleQuestion size={14} className="text-amber-600" />
+                <Text className="flex-1 text-sm font-medium text-amber-800 dark:text-amber-300">
+                  {`Waiting on you: ${waitingOnYou} ${waitingOnYou === 1 ? 'question' : 'questions'}`}
+                </Text>
+                <ChevronRight size={14} className="text-amber-700 dark:text-amber-400" />
+              </Pressable>
+            ) : null}
+            {feed.running.length > 0 && <RunningNow entries={feed.running} compact={compact} onOpen={open} />}
+            {loading ? <ActivityIndicator className="mt-8" /> : null}
+            {filter !== 'sent' && inbox.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{inbox.error}</Text> : null}
+            {filter !== 'sent' && agents.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{readableAgentTaskError(agents.error, 'We could not refresh agent activity.')}</Text> : null}
+            {filter === 'sent' && sent.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{sent.error}</Text> : null}
+          </>
+        }
+        renderItem={({ item }) => <ActivityRow entry={item} compact={compact} onPress={() => open(item)} />}
+        ListEmptyComponent={
+          empty ? (
+            <Text className="px-6 pt-10 text-center text-sm text-muted-foreground">
+              {unreadOnly
+                ? "You're all caught up."
+                : filter === 'agents'
+                  ? 'Agent work shows up here.'
+                  : filter === 'sent'
+                    ? 'Messages you send show up here.'
+                    : 'Messages, mentions, and agent work show up here.'}
             </Text>
-            <ChevronRight size={14} className="text-amber-700 dark:text-amber-400" />
-          </Pressable>
-        ) : null}
-        {feed.running.length > 0 && <RunningNow entries={feed.running} compact={compact} onOpen={open} />}
-        {loading ? <ActivityIndicator className="mt-8" /> : null}
-        {filter !== 'sent' && inbox.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{inbox.error}</Text> : null}
-        {filter !== 'sent' && agents.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{readableAgentTaskError(agents.error, 'We could not refresh agent activity.')}</Text> : null}
-        {filter === 'sent' && sent.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{sent.error}</Text> : null}
-        {feed.entries.map((entry) => (
-          <ActivityRow key={entry.id} entry={entry} compact={compact} onPress={() => open(entry)} />
-        ))}
-        {filter === 'sent' && sent.hasMore ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Show older messages"
-            disabled={sent.loading}
-            onPress={() => sent.loadMore()}
-            className="items-center py-3 active:bg-accent/50"
-            testID="sent-show-older"
-          >
-            {sent.loading ? (
-              <ActivityIndicator size="small" />
-            ) : (
-              <Text className="text-xs font-medium text-muted-foreground">Show older</Text>
-            )}
-          </Pressable>
-        ) : null}
-        {empty ? (
-          <Text className="px-6 pt-10 text-center text-sm text-muted-foreground">
-            {unreadOnly
-              ? "You're all caught up."
-              : filter === 'agents'
-                ? 'Agent work shows up here.'
-                : filter === 'sent'
-                  ? 'Messages you send show up here.'
-                  : 'Messages, mentions, and agent work show up here.'}
-          </Text>
-        ) : null}
-      </ScrollView>
+          ) : null
+        }
+        ListFooterComponent={
+          paging.hasMore ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Show older activity"
+              disabled={paging.loadingMore}
+              onPress={() => paging.loadMore()}
+              className="items-center py-3 active:bg-accent/50"
+              testID="show-older"
+            >
+              {paging.loadingMore ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <Text className="text-xs font-medium text-muted-foreground">Show older</Text>
+              )}
+            </Pressable>
+          ) : null
+        }
+        onEndReached={() => { if (paging.hasMore && !paging.loadingMore) paging.loadMore() }}
+        onEndReachedThreshold={0.4}
+      />
 
       {filter === 'sent' ? null : (
         <Pressable
