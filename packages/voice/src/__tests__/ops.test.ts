@@ -238,6 +238,24 @@ describe('parseVoiceOpForm', () => {
     expect(((audio as File).name)).toBe('take.mp3')
   })
 
+  test('a path param part is returned in `fields`, since the form drops it', () => {
+    const op = getVoiceOp('speech-to-speech')!
+    const parsed = parseVoiceOpForm(
+      op,
+      form({
+        audio: new File([new Uint8Array([1])], 'a.mp3', { type: 'audio/mpeg' }),
+        voiceId: 'voice_from_part',
+      }),
+    )
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    // Repeating it in the upload makes ElevenLabs reject the body…
+    expect(parsed.form.get('voice_id')).toBeNull()
+    // …so the value has to survive somewhere, or the request converts to the
+    // project default voice and still answers 200.
+    expect(parsed.fields.voiceId).toBe('voice_from_part')
+  })
+
   test('a text field where a file belongs is a 400, not a downstream 500', () => {
     const op = getVoiceOp('speech-to-speech')!
     const parsed = parseVoiceOpForm(op, form({ audio: 'hello' }))

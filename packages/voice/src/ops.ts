@@ -245,8 +245,11 @@ export const VOICE_OPS = [
       promptInfluence: 'prompt_influence',
       loop: 'loop',
       modelId: 'model_id',
-      outputFormat: 'output_format',
     },
+    // `output_format` is a query param on this endpoint, not a body field — the
+    // typed `soundEffects()` client sends it there, and a body field is
+    // silently ignored upstream.
+    queryForward: ['output_format'],
     required: ['text'],
     accept: 'audio/mpeg',
   },
@@ -409,11 +412,17 @@ export function parseVoiceOpJsonBody(
  * Validate + normalize a multipart body: the same whitelist/required rules,
  * plus a `File` check on every required part (an `audio` part that is really
  * a text field is the caller's bug, not ElevenLabs').
+ *
+ * `fields` carries the caller-shaped values the parser read — the path params
+ * among them. They are dropped from the rebuilt form (repeating them makes
+ * ElevenLabs reject the upload), so this is the only way a `voiceId` form part
+ * reaches {@link voiceOpPathParams}; ignoring it would send the request to
+ * the project default voice and come back 200 with the wrong voice.
  */
 export function parseVoiceOpForm(
   op: VoiceOp,
   form: FormData,
-): { ok: true; form: FormData } | { ok: false; status: number; error: string; detail?: string; allowed?: readonly string[] } {
+): { ok: true; form: FormData; fields: Record<string, unknown> } | { ok: false; status: number; error: string; detail?: string; allowed?: readonly string[] } {
   const fields: Record<string, unknown> = {}
   for (const callerField of Object.keys(op.forward ?? {})) {
     const value = form.get(callerField)
@@ -463,7 +472,7 @@ export function parseVoiceOpForm(
   if (op.defaultModel && modelField && out.get(modelField) === null) {
     out.set(modelField, op.defaultModel)
   }
-  return { ok: true, form: out }
+  return { ok: true, form: out, fields }
 }
 
 /**

@@ -58,6 +58,14 @@ That is the whole change. No route file, no handler, no proxy branch, no
 per-op test file: `handlers.op`, the `route/op` modules and the hosted
 `/api/voice/op/:opId` executor all pick it up.
 
+Two things a row has to state, because the code cannot infer them: a body
+field goes in `forward` (caller name → upstream name), while an upstream
+**query** param goes in `queryForward` under its upstream name — ElevenLabs
+ignores a body field that belongs in the query (`sound-generation`'s
+`output_format`), so putting it in the wrong one is a silent no-op. A path
+param in `pathParams` may be sent by the caller as a body field or a query
+param; the multipart rebuild drops it from the upload either way.
+
 
 ## TTS models
 

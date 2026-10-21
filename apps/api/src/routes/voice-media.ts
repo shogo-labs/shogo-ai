@@ -592,7 +592,10 @@ export async function handleVoiceOp(
     }
     const size = formByteSize(parsed.form)
     if (size > op.maxBodyBytes) return tooLarge(c, op, size)
-    return executeVoiceOp(c, op, { fields: {}, form: parsed.form }, deps)
+    // `fields` carries the path params (`voiceId` on speech-to-speech), which
+    // the rebuilt form deliberately drops — without them the request silently
+    // converts to the project default voice.
+    return executeVoiceOp(c, op, { fields: parsed.fields, form: parsed.form }, deps)
   }
 
   let raw: unknown
@@ -649,21 +652,10 @@ export async function handleVoiceTts(
     return c.json({ error: 'Invalid JSON body' }, 400)
   }
 
-  const requestedModel =
-    typeof body.modelId === 'string' && body.modelId.length > 0 ? body.modelId : undefined
-  const parsed = parseVoiceOpJsonBody(op, {
-    ...(typeof body.text === 'string' ? { text: body.text } : {}),
-    ...(typeof body.voiceId === 'string' ? { voiceId: body.voiceId } : {}),
-    ...(requestedModel ? { modelId: requestedModel } : {}),
-    ...(body.voiceSettings ? { voiceSettings: body.voiceSettings } : {}),
-  })
-  if (!parsed.ok) {
-    return rejectVoiceOp(c, parsed)
-  }
-
-  // The alias's own niceties, unchanged: a preview line when there is no text,
-  // and the caller's voiceId only when they actually sent one (so the cloud
-  // forward sees their body, not our defaults).
+  // The alias's own nicety runs *before* the row's required-field check: a
+  // body of only `audioTags` is a preview request, and the line it builds is
+  // the `text` the row requires. `/voice/op/text-to-speech` itself has no
+  // audioTags handling, so it keeps requiring `text`.
   const tags = normalizeAudioTags(body.audioTags) ?? []
   const text =
     typeof body.text === 'string' && body.text.trim().length > 0
@@ -674,6 +666,18 @@ export async function handleVoiceTts(
       { error: 'bad_request', detail: 'text is required (or pass audioTags to build a preview line)' },
       400,
     )
+  }
+
+  const requestedModel =
+    typeof body.modelId === 'string' && body.modelId.length > 0 ? body.modelId : undefined
+  const parsed = parseVoiceOpJsonBody(op, {
+    text,
+    ...(typeof body.voiceId === 'string' ? { voiceId: body.voiceId } : {}),
+    ...(requestedModel ? { modelId: requestedModel } : {}),
+    ...(body.voiceSettings ? { voiceSettings: body.voiceSettings } : {}),
+  })
+  if (!parsed.ok) {
+    return rejectVoiceOp(c, parsed)
   }
 
   return executeVoiceOp(

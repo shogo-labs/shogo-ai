@@ -371,7 +371,7 @@ function resolveOpId(req: Request, opId?: string): string | undefined {
 type ParsedOpBody =
   | { kind: 'none' }
   | { kind: 'json'; fields: Record<string, unknown> }
-  | { kind: 'form'; form: FormData }
+  | { kind: 'form'; form: FormData; fields: Record<string, unknown> }
 
 /**
  * Read + validate an op request against its registry row. The caller's body is
@@ -404,7 +404,7 @@ async function readVoiceOpBody(
         parsed.status,
       )
     }
-    return { kind: 'form', form: parsed.form }
+    return { kind: 'form', form: parsed.form, fields: parsed.fields }
   }
   const raw = await readJson(req)
   const parsed = parseVoiceOpJsonBody(op, raw)
@@ -584,6 +584,14 @@ function createProxyHandlers(
         if (value != null) forward[key] = value
       }
     }
+    // A multipart request's path params cannot travel in the rebuilt form, so
+    // they go upstream as query params; a JSON body already carries them.
+    if (parsed.kind === 'form') {
+      for (const name of op.pathParams ?? []) {
+        const value = parsed.fields[name]
+        if (typeof value === 'string' && value.length > 0) forward[name] = value
+      }
+    }
 
     const hostedPath = `/api${voiceOpForwardPath(op)}`
     const headers: Record<string, string> = { 'x-runtime-token': proxy.runtimeToken }
@@ -645,8 +653,44 @@ function createProxyHandlers(
       )
   }
 
-  /** `POST /voice/tts` — alias onto the `text-to-speech` registry row. */
-  const doTts = (req: Request): Promise<Response> => doOp(req, 'text-to-speech')
+  /**
+   * `POST /voice/tts` — alias onto the `text-to-speech` registry row, keeping
+   * the alias's own nicety: a body of only `audioTags` is a preview request,
+   * so the line it builds is spliced in as the `text` the row requires. The op
+   * itself has no audioTags handling and still requires `text`.
+   */
+  async function doTts(req: Request): Promise<Response> {
+    if (req.method === 'POST') {
+      let raw: Record<string, unknown> | null = null
+      try {
+        const parsed = (await req.clone().json()) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          raw = parsed as Record<string, unknown>
+        }
+      } catch {
+        // Malformed JSON is doOp's 400 to report; there is nothing to splice.
+      }
+      if (raw && (typeof raw.text !== 'string' || raw.text.trim().length === 0)) {
+        // Only an audioTags body is a preview request. A body with no text and
+        // no tags stays a 400, exactly as before the registry existed.
+        const sentTags = Array.isArray(raw.audioTags) && raw.audioTags.length > 0
+        if (sentTags) {
+          const tags = normalizeAudioTags(raw.audioTags) ?? []
+          const characterName = typeof raw.characterName === 'string' ? raw.characterName : undefined
+          const text = buildPreviewLine(tags, characterName ?? 'your companion')
+          return doOp(
+            new Request(req.url, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ ...raw, text }),
+            }),
+            'text-to-speech',
+          )
+        }
+      }
+    }
+    return doOp(req, 'text-to-speech')
+  }
 
   /**
    * The proxy-mode `elevenLabs` client. Media methods that the Shogo API
@@ -788,22 +832,28 @@ function createProxyHandlers(
     const soundEffects = (params: SoundEffectsParams) =>
       opAudio(
         'sound-generation',
-        new Request('http://voice.invalid/voice/op/sound-generation', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            text: params.text,
-            ...(params.durationSeconds !== undefined
-              ? { durationSeconds: params.durationSeconds }
-              : {}),
-            ...(params.promptInfluence !== undefined
-              ? { promptInfluence: params.promptInfluence }
-              : {}),
-            ...(params.loop !== undefined ? { loop: params.loop } : {}),
-            ...(params.modelId ? { modelId: params.modelId } : {}),
-            ...(params.outputFormat ? { outputFormat: params.outputFormat } : {}),
-          }),
-        }),
+        new Request(
+          // `output_format` is a query param on this endpoint (see the row's
+          // `queryForward`); sending it in the body would be dropped at EL.
+          `http://voice.invalid/voice/op/sound-generation${
+            params.outputFormat ? `?output_format=${encodeURIComponent(params.outputFormat)}` : ''
+          }`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              text: params.text,
+              ...(params.durationSeconds !== undefined
+                ? { durationSeconds: params.durationSeconds }
+                : {}),
+              ...(params.promptInfluence !== undefined
+                ? { promptInfluence: params.promptInfluence }
+                : {}),
+              ...(params.loop !== undefined ? { loop: params.loop } : {}),
+              ...(params.modelId ? { modelId: params.modelId } : {}),
+            }),
+          },
+        ),
       )
 
     const transcribe = async (params: TranscribeParams): Promise<TranscriptionResult> => {
@@ -1087,7 +1137,10 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     const parsed = await readVoiceOpBody(op, req)
     if (parsed instanceof Response) return parsed
 
-    const fields = parsed.kind === 'json' ? parsed.fields : {}
+    // A multipart request's path params live only in `fields` (the rebuilt
+    // form drops them), so using `{}` for a form here would send the request
+    // to the project default voice without a word.
+    const fields = parsed.kind === 'none' ? {} : parsed.fields
     let query: URLSearchParams
     try {
       query = new URL(req.url).searchParams

@@ -102,6 +102,21 @@ describe('BYO mode — handlers.op()', () => {
     expect(headers.get('xi-api-key')).toBe('xi_byo')
   })
 
+  test('a `voiceId` form part selects the voice, not just ?voiceId=', async () => {
+    const calls = stubElevenLabs(() => audio([7]))
+    const form = new FormData()
+    form.set('audio', file())
+    form.set('voiceId', 'voice_from_part')
+
+    const res = await byo().op(
+      new Request('http://pod/api/voice/op/speech-to-speech', { method: 'POST', body: form }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(calls[0]!.url).toBe('https://el.test/v1/speech-to-speech/voice_from_part')
+    expect(calls[0]!.form!.get('voice_id')).toBeNull()
+  })
+
   test('multipart-json: speech-to-text returns the transcription JSON', async () => {
     const calls = stubElevenLabs(() => json({ text: 'hello world', language_code: 'en' }))
     const form = new FormData()
@@ -139,6 +154,25 @@ describe('BYO mode — handlers.op()', () => {
       duration_seconds: 3,
       model_id: 'eleven_text_to_sound_v2',
     })
+  })
+
+  test('json-binary: sound-generation sends output_format as a query param', async () => {
+    const calls = stubElevenLabs(() => audio([8]))
+    const res = await byo().op(
+      new Request('http://pod/api/voice/op/sound-generation?output_format=mp3_44100_128', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'door creak' }),
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    // The endpoint takes output_format in the query; a body field is ignored
+    // upstream, so it must not be sent that way.
+    expect(calls[0]!.url).toBe(
+      'https://el.test/v1/sound-generation?output_format=mp3_44100_128',
+    )
+    expect(calls[0]!.json).toEqual({ text: 'door creak', model_id: 'eleven_text_to_sound_v2' })
   })
 
   test('json-json: models lists through GET with no body', async () => {
@@ -297,6 +331,24 @@ describe('proxy mode — handlers.op()', () => {
     expect(calls[0]!.init.body).toBeInstanceOf(FormData)
   })
 
+  test('a `voiceId` form part rides upstream as a query param', async () => {
+    const { handlers, calls } = proxy()
+    const form = new FormData()
+    form.set('audio', file())
+    form.set('voiceId', 'voice_from_part')
+
+    const res = await handlers.op(
+      new Request('http://pod/api/voice/op/speech-to-speech', { method: 'POST', body: form }),
+    )
+
+    expect(res.status).toBe(200)
+    // The rebuilt multipart body has no room for a path param, so dropping it
+    // here would make the hosted side pick the project default voice.
+    expect(calls[0]!.url).toBe(
+      'http://api/api/voice/op/speech-to-speech?projectId=proj_op&voiceId=voice_from_part',
+    )
+  })
+
   test('tts and music still forward to their legacy paths (no client break)', async () => {
     const { handlers, calls } = proxy()
     await handlers.op(
@@ -326,6 +378,20 @@ describe('proxy mode — handlers.op()', () => {
       }),
     )
     expect(calls[0]!.url).toBe('http://api/api/voice/op/sound-generation?projectId=proj_op')
+  })
+
+  test('sound-generation forwards output_format upstream as a query param', async () => {
+    const { handlers, calls } = proxy()
+    await handlers.op(
+      new Request('http://pod/api/voice/op/sound-generation?output_format=mp3_44100_128', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'boom' }),
+      }),
+    )
+    expect(calls[0]!.url).toBe(
+      'http://api/api/voice/op/sound-generation?projectId=proj_op&output_format=mp3_44100_128',
+    )
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ text: 'boom' })
   })
 
   test('a listing op forwards its query params and no body', async () => {
