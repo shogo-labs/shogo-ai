@@ -123,6 +123,11 @@ const MACHINE_WORKSPACE_CLOUD_ONLY: RouteEntry[] = [
   { pattern: /^\/api\/auth(\/|$)/,          target: 'cloud' }, // the session that authorises this app
   { pattern: /^\/api\/instances(\/|$)/,     target: 'cloud' }, // the cloud's instance registry
   { pattern: /^\/api\/machines(\/|$)/,      target: 'cloud' }, // the machine list itself
+  // Compose port preview is served by the cloud API only (`server.ts`); the
+  // desktop app does not mount it. The caller is still a bare client today, so
+  // nothing breaks — but the day it converts to the workspace client,
+  // `/api/projects` would take it to the machine and 404.
+  { pattern: /^\/api\/projects\/[^/]+\/ports(\/|$)/, target: 'cloud' },
   { pattern: /^\/api\/sync(\/|$)/,          target: 'cloud' }, // cloud sync transport
 ]
 
@@ -143,8 +148,12 @@ const MACHINE_WORKSPACE_OWNED: RouteEntry[] = [
   // detail, its move, comments, history, links, follow and archive.
   { pattern: /^\/api\/boards(\/|\?|$)/,          target: 'remote' },
   { pattern: /^\/api\/work-items(\/|\?|$)/,      target: 'remote' },
-  // "Make a card from a message" posts to the message, not the workspace.
-  { pattern: /^\/api\/work-templates(\/|\?|$)/,  target: 'remote' },
+  // A folder of projects and a session's project membership are rows the
+  // workspace's own database holds (`/api/project-folders`,
+  // `/api/chat-session-projects` are mounted locally), so a board/card screen
+  // and a session pane read them from the machine that owns them.
+  { pattern: /^\/api\/project-folders(\/|\?|$)/,        target: 'remote' },
+  { pattern: /^\/api\/chat-session-projects(\/|\?|$)/,  target: 'remote' },
   // The agent task board and the agent pickers the composer asks for.
   { pattern: /^\/api\/agent-tasks(\/|\?|$)/,     target: 'remote' },
   { pattern: /^\/api\/chat-mentionables(\/|\?|$)/,    target: 'remote' },
@@ -162,7 +171,6 @@ const MACHINE_WORKSPACE_OWNED: RouteEntry[] = [
 const MACHINE_WORKSPACE_FAMILIES: RouteEntry[] = [
   { pattern: /^\/api\/conversations(\/|$)/,                 target: 'remote' },
   { pattern: /^\/api\/conversation-messages(\/|$)/,         target: 'remote' },
-  { pattern: /^\/api\/conversation-message-edits(\/|$)/,    target: 'remote' },
   { pattern: /^\/api\/scheduled-messages(\/|$)/,            target: 'remote' },
   { pattern: /^\/api\/reminders(\/|$)/,                     target: 'remote' },
   { pattern: /^\/api\/custom-emoji(\/|$)/,                  target: 'remote' },

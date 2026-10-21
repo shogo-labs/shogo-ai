@@ -1203,27 +1203,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const chatMentionables = useCallback(
     async (query: string): Promise<ChatMentionable[]> => {
       try {
-        const fetchFn = expoFetch ?? globalThis.fetch
-        const headers: Record<string, string> = nativeHeaders
-          ? nativeHeaders()
-          : {}
-        const params = new URLSearchParams({ q: query, limit: "8" })
-        if (chatSessionId) params.set("exclude", chatSessionId)
-        const response = await fetchFn(
-          `${API_URL}/api/chat-mentionables?${params}`,
-          {
-            headers,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          } as any,
+        const params: Record<string, string> = { q: query, limit: "8" }
+        if (chatSessionId) params.exclude = chatSessionId
+        const { data } = await workspaceHttp().get<{ chats?: ChatMentionable[] }>(
+          "/api/chat-mentionables",
+          params,
         )
-        if (!response.ok) return []
-        const data = await response.json()
         return Array.isArray(data?.chats) ? data.chats : []
       } catch {
         return []
       }
     },
-    [chatSessionId, nativeHeaders, expoFetch],
+    [chatSessionId],
   )
 
   // Quick actions state

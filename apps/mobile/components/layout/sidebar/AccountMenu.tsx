@@ -244,7 +244,7 @@ export function AccountMenu({
               isSuperAdmin={isSuperAdmin}
               entries={entries}
               currentKey={currentKey}
-              onSelect={onSelectEntry}
+              onSelectEntry={onSelectEntry}
               currentWorkspace={currentWorkspace}
               billingData={billingData}
               workspacePlan={workspacePlan}
