@@ -71,6 +71,7 @@ jobs:
     outputs:
       verified: ${{ steps.check.outputs.verified }}
       windows: ${{ steps.filter.outputs.relevant }}
+      app: ${{ steps.app.outputs.app }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -151,6 +152,37 @@ jobs:
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # The local-mode E2E matrix only runs on PRs, and only when the PR can
+      # change what a running app does — a docs-only or workflow-only PR gets
+      # no E2E job at all. The deny-list lives in scripts/ci/app-code-changed.sh
+      # (unit-tested in scripts/__tests__/app-code-changed.test.ts) and fails
+      # open: no diff, an unresolvable base, or any path it does not recognise
+      # means app=true.
+      - name: Detect app-code changes
+        id: app
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Only PRs consult this (E2E runs nowhere else), so do not pay for a
+          # diff on main pushes and tags.
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+            echo "Unable to resolve the comparison SHAs; assuming app code."
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" | bash scripts/ci/app-code-changed.sh
 
   typecheck:
     name: Typecheck & static checks
@@ -513,12 +545,12 @@ jobs:
     # DB. These specs previously only ran on developer machines.
     name: ${{ matrix.name }}
     needs: prelude
-    # PR-only. This matrix is not in the required `ci` aggregator's `needs`, so
-    # on `merge_group` and `push` it gates nothing — it only burns runner slots
-    # (15,905 min ≈ $95 gross over two days). The local-mode specs are where a
-    # regression is caught before it reaches the queue; the queue and main push
-    # re-running them bought nothing. Do not add it to the aggregator.
-    if: github.event_name == 'pull_request'
+    # PR-only, and app-code PRs only. This matrix is not in the required `ci`
+    # aggregator's `needs`, so on `merge_group` and `push` it gates nothing —
+    # it only burns runner slots (15,905 min ≈ $95 gross over two days). A
+    # docs-only PR cannot change local-mode behaviour either. Do not add it to
+    # the aggregator.
+    if: github.event_name == 'pull_request' && needs.prelude.outputs.app == 'true'
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
