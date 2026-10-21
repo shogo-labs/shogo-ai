@@ -299,7 +299,7 @@ export function WorkspaceHeaderButton({
   const identity = identityWorkspace ?? currentWorkspace
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
-  const name = currentWorkspace?.name || "Workspace";
+  const name = identity?.name || "Workspace";
 
   return (
     <Popover

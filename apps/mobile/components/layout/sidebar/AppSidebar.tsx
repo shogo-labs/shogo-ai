@@ -1373,6 +1373,7 @@ export const AppSidebar = observer(function AppSidebar({
             currentKey={activeWorkspaceKey}
             onSelectEntry={handleSelectWorkspaceEntry}
             currentWorkspace={currentWorkspace}
+            identityWorkspace={workspaceInView ?? currentWorkspace}
             billingData={billingData}
             workspacePlan={workspacePlan}
             allPlans={allPlans}
