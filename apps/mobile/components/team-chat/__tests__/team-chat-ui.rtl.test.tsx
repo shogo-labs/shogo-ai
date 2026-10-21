@@ -825,6 +825,27 @@ describe('MessageRow', () => {
     const label = 'Ana Lopez, Bob Chen and 3 others reacted with 🎉'
     expect(screen.getByLabelText(label).querySelector('[title]')?.getAttribute('title')).toBe(label)
   })
+
+  test('a pasted markdown attachment renders as a markdown card, not a file tile', () => {
+    const attachment = {
+      id: 'att-md', name: 'Pasted markdown.md', mimeType: 'text/markdown', size: 2100,
+      url: '/api/conversation-files/att-md?t=x', width: null, height: null,
+    }
+    render(<MessageRow message={message({ attachments: [attachment] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+    // Views carry their testID as the shared RN shim, not as `data-testid`.
+    expect(shim('pasted-markdown-card')).toBeTruthy()
+    expect(shim('attachment-card-Pasted markdown.md')).toBeNull()
+  })
+
+  test('any other pasted file stays the plain file card', () => {
+    const attachment = {
+      id: 'att-code', name: 'Pasted code.txt', mimeType: 'text/plain', size: 2100,
+      url: '/api/conversation-files/att-code?t=x', width: null, height: null,
+    }
+    render(<MessageRow message={message({ attachments: [attachment] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+    expect(shim('attachment-card-Pasted code.txt')).toBeTruthy()
+    expect(shim('pasted-markdown-card')).toBeNull()
+  })
 })
 
 describe('Composer emoji and files', () => {

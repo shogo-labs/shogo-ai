@@ -1026,11 +1026,20 @@ export function teamChatApi() {
         )
       ).data
     },
-    /** A page of a file's text, extracted server-side when needed. */
-    async fileText(attachmentId: string, opts: { offset?: number; limit?: number } = {}): Promise<ConversationFileText> {
+    /**
+     * A page of a file's text, extracted server-side when needed.
+     *
+     * `raw` returns the body as written (blank lines and indentation intact)
+     * instead of the tidied search text — what a markdown renderer needs.
+     */
+    async fileText(
+      attachmentId: string,
+      opts: { offset?: number; limit?: number; raw?: boolean } = {},
+    ): Promise<ConversationFileText> {
       const q = new URLSearchParams()
       if (opts.offset !== undefined) q.set('offset', String(opts.offset))
       if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+      if (opts.raw) q.set('raw', '1')
       const suffix = q.toString() ? `?${q}` : ''
       return (await http.get<ConversationFileText>(`${file(attachmentId)}/text${suffix}`)).data
     },
