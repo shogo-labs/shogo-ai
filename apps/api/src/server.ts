@@ -163,6 +163,7 @@ import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from '.
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
+import { deployedAppVersionOrUnknown } from './lib/app-version'
 // Auth middleware for generated routes
 import {
   authMiddleware,
@@ -851,6 +852,9 @@ const healthHandler = async (c: any) => {
   const ok = !degraded && redis.healthy
   const body = {
     ok,
+    // The release this pod runs. Deploys fail their rollout gate on 0.0.0, so
+    // admin analytics can always compare installs against the deployed tag.
+    version: deployedAppVersionOrUnknown(),
     redis: { healthy: redis.healthy, latencyMs: redis.latencyMs, degraded },
   }
   return c.json(body, ok ? 200 : 503)
@@ -860,7 +864,7 @@ app.get('/health', healthHandler)
 
 // Version endpoint for frontend update detection
 app.get('/api/version', (c) => c.json({
-  version: process.env.APP_VERSION || '0.0.0',
+  version: deployedAppVersionOrUnknown(),
   buildHash: process.env.BUILD_HASH || 'dev',
 }))
 

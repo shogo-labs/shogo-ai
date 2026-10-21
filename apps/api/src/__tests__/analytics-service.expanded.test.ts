@@ -37,6 +37,7 @@ type Store = {
   sessions: any[]
   apiKeys: any[]
   appInstalls: any[]
+  deviceVersionEvents: any[]
 }
 
 const store: Store = {
@@ -52,6 +53,7 @@ const store: Store = {
   sessions: [],
   apiKeys: [],
   appInstalls: [],
+  deviceVersionEvents: [],
 }
 
 // Stateful $queryRawUnsafe handler so getUserActivityTable / getUserFunnel tests
@@ -159,6 +161,7 @@ const mockPrisma: any = {
   session: makeModel(store.sessions),
   apiKey: makeModel(store.apiKeys),
   appInstall: makeModel(store.appInstalls),
+  deviceVersionEvent: makeModel(store.deviceVersionEvents),
   $queryRawUnsafe: async () => (queryRawQueue.length ? queryRawQueue.shift()! : []),
   $queryRaw: async () => (queryRawQueue.length ? queryRawQueue.shift()! : []),
 }
@@ -192,6 +195,7 @@ function rebuildModels() {
   mockPrisma.session = makeModel(store.sessions)
   mockPrisma.apiKey = makeModel(store.apiKeys)
   mockPrisma.appInstall = makeModel(store.appInstalls)
+  mockPrisma.deviceVersionEvent = makeModel(store.deviceVersionEvents)
 }
 
 beforeEach(() => {
@@ -207,6 +211,7 @@ beforeEach(() => {
   store.sessions.length = 0
   store.apiKeys.length = 0
   store.appInstalls.length = 0
+  store.deviceVersionEvents.length = 0
   queryRawQueue = []
   rebuildModels()
 })
@@ -971,6 +976,179 @@ describe('getAppInstalls', () => {
       { platform: '17.5', count: 1 },
       { platform: '18.6', count: 1 },
     ])
+  })
+})
+
+// =========================================================================
+// Install identity: one OS per platform spelling, CLI kept out of Desktop
+// =========================================================================
+
+describe('aggregateInstalls — platform + version normalisation', () => {
+  const day = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000)
+
+  test('collapses the darwin/win32 spellings into one OS and keeps the newest version reported', async () => {
+    const hour = (n: number) => new Date(Date.now() - n * 60 * 60 * 1000)
+    store.apiKeys.push(
+      // The production mislabel: an older-version row whose lastSeenAt was
+      // bumped by a caller that sends no version.
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin-arm64', deviceAppVersion: '2.3.5', lastSeenAt: day(2), createdAt: day(10), userId: 'u1' },
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin', deviceAppVersion: '2.2.27', lastSeenAt: hour(1), createdAt: day(40), userId: 'u1' },
+      { kind: 'device', revokedAt: null, deviceId: 'd2', devicePlatform: 'darwin-x64', deviceAppVersion: '2.3.6', lastSeenAt: day(1), createdAt: day(5), userId: 'u2' },
+      { kind: 'device', revokedAt: null, deviceId: 'd3', devicePlatform: 'win32', deviceAppVersion: '2.3.6', lastSeenAt: day(3), createdAt: day(20), userId: 'u3' },
+      { kind: 'device', revokedAt: null, deviceId: 'd4', devicePlatform: 'win32-x64', deviceAppVersion: '2.3.5', lastSeenAt: day(9), createdAt: day(20), userId: 'u4' },
+    )
+    rebuildModels()
+
+    const out = await analytics.getDesktopInstalls()
+
+    // 4 distinct devices, 3 macOS spellings collapse into 2 devices.
+    expect(out.totalDevices).toBe(4)
+    const osDevices = (os: string) =>
+      out.byOs.filter((row) => row.os === os).reduce((sum, row) => sum + row.devices, 0)
+    expect(osDevices('macos')).toBe(2)
+    expect(osDevices('windows')).toBe(2)
+    expect(osDevices('linux')).toBe(0)
+    expect(out.byOs.some((row) => (row.os as string) === 'darwin')).toBe(false)
+
+    // d1 shows 2.3.5, never the older 2.2.27 row that was seen most recently.
+    expect(out.byVersion).toEqual([
+      { version: '2.3.5', count: 2, activeD7: 1 },
+      { version: '2.3.6', count: 2, activeD7: 2 },
+    ])
+    const v236 = out.versions.find((row) => row.version === '2.3.6')
+    expect(v236).toMatchObject({ channel: 'stable', devices: 2, os: { macos: 1, windows: 1, linux: 0 } })
+  })
+
+  test('CLI device keys get their own segment and never count as desktops', async () => {
+    store.apiKeys.push(
+      { kind: 'device', revokedAt: null, deviceId: 'desk-1', devicePlatform: 'win32', deviceAppVersion: '2.3.6', lastSeenAt: day(1), createdAt: day(5), userId: 'u1' },
+      { kind: 'device', revokedAt: null, deviceId: 'cli-1', devicePlatform: 'linux-x64', deviceAppVersion: 'shogo-cli/unknown', lastSeenAt: day(1), createdAt: day(5), userId: 'u2' },
+      { kind: 'device', revokedAt: null, deviceId: 'cli-2', devicePlatform: 'darwin', deviceAppVersion: 'shogo-cli/unknown', lastSeenAt: day(1), createdAt: day(5), userId: 'u3' },
+    )
+    rebuildModels()
+
+    const out = await analytics.getAppInstalls()
+
+    expect(out.desktop.totalDevices).toBe(1)
+    expect(out.desktop.versions.map((row) => row.version)).toEqual(['2.3.6'])
+    expect(out.desktop.versions[0].os.macos).toBe(0)
+    expect(out.desktop.byOs.find((row) => row.os === 'macos')).toBeUndefined()
+
+    expect(out.cli.totalDevices).toBe(2)
+    expect(out.cli.versions.map((row) => row.version)).toEqual(['shogo-cli/unknown'])
+    expect(out.cli.onLatest).toBeNull()
+
+    // CLI is a separate segment, never part of the desktop/mobile totals.
+    expect(out.totals.totalDevices).toBe(1)
+  })
+
+  test('splits beta from stable and computes the on-latest percentage', async () => {
+    const previous = process.env.APP_VERSION
+    process.env.APP_VERSION = '2.3.6'
+    try {
+      store.apiKeys.push(
+        { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin', deviceAppVersion: '2.3.6', lastSeenAt: day(1), createdAt: day(9), userId: 'u1' },
+        { kind: 'device', revokedAt: null, deviceId: 'd2', devicePlatform: 'win32', deviceAppVersion: '2.3.6', lastSeenAt: day(2), createdAt: day(9), userId: 'u2' },
+        { kind: 'device', revokedAt: null, deviceId: 'd3', devicePlatform: 'darwin-arm64', deviceAppVersion: '2.3.6-beta.20261020t083308', lastSeenAt: day(1), createdAt: day(4), userId: 'u3' },
+        { kind: 'device', revokedAt: null, deviceId: 'd4', devicePlatform: 'linux-x64', deviceAppVersion: '2.2.27', lastSeenAt: day(20), createdAt: day(60), userId: 'u4' },
+      )
+      rebuildModels()
+
+      const out = await analytics.getDesktopInstalls()
+
+      expect(out.onLatest).toEqual({ version: '2.3.6', devices: 2, pct: 50, source: 'deployed' })
+      expect(out.versions.map((row) => `${row.version}|${row.channel}|${row.devices}`)).toEqual([
+        '2.3.6|stable|2',
+        '2.3.6-beta.20261020t083308|beta|1',
+        '2.2.27|stable|1',
+      ])
+      // beta is its own row, not folded into the stable 2.3.6 bucket
+      expect(out.versions.find((row) => row.channel === 'beta')?.devices).toBe(1)
+    } finally {
+      if (previous === undefined) delete process.env.APP_VERSION
+      else process.env.APP_VERSION = previous
+    }
+  })
+
+  test('falls back to the newest stable version seen when the deployment pins no tag', async () => {
+    const previous = process.env.APP_VERSION
+    const previousShogo = process.env.SHOGO_APP_VERSION
+    delete process.env.APP_VERSION
+    delete process.env.SHOGO_APP_VERSION
+    try {
+      store.apiKeys.push(
+        { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin', deviceAppVersion: '2.3.5', lastSeenAt: day(1), createdAt: day(9), userId: 'u1' },
+        { kind: 'device', revokedAt: null, deviceId: 'd2', devicePlatform: 'win32', deviceAppVersion: '2.3.6', lastSeenAt: day(1), createdAt: day(9), userId: 'u2' },
+        { kind: 'device', revokedAt: null, deviceId: 'd3', devicePlatform: 'linux', deviceAppVersion: '2.4.0-beta.1', lastSeenAt: day(1), createdAt: day(9), userId: 'u3' },
+      )
+      rebuildModels()
+
+      const out = await analytics.getDesktopInstalls()
+      expect(out.onLatest).toEqual({ version: '2.3.6', devices: 1, pct: 33, source: 'inferred' })
+    } finally {
+      if (previous !== undefined) process.env.APP_VERSION = previous
+      if (previousShogo !== undefined) process.env.SHOGO_APP_VERSION = previousShogo
+    }
+  })
+
+  test('keeps the legacy byVersion/byPlatform fields for existing consumers', async () => {
+    store.apiKeys.push(
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin', deviceAppVersion: '2.0.0', lastSeenAt: day(1), createdAt: day(5), userId: 'u1' },
+    )
+    rebuildModels()
+
+    const out = await analytics.getDesktopInstalls()
+    expect(out.byVersion).toEqual([{ version: '2.0.0', count: 1, activeD7: 1 }])
+    expect(out.byPlatform).toEqual([{ platform: 'darwin', count: 1 }])
+    expect(out.distinctUsers).toBe(1)
+  })
+})
+
+// =========================================================================
+// getAppVersions — OS×version matrix + adoption series
+// =========================================================================
+
+describe('getAppVersions', () => {
+  test('returns the matrix, the deployed tag and a per-day adoption series', async () => {
+    const previous = process.env.APP_VERSION
+    process.env.APP_VERSION = '2.3.6'
+    try {
+      const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000)
+      store.apiKeys.push(
+        { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin-arm64', deviceAppVersion: '2.3.6', lastSeenAt: daysAgo(0), createdAt: daysAgo(1), userId: 'u1' },
+        { kind: 'device', revokedAt: null, deviceId: 'd2', devicePlatform: 'win32', deviceAppVersion: '2.2.27', lastSeenAt: daysAgo(1), createdAt: daysAgo(30), userId: 'u2' },
+        { kind: 'device', revokedAt: null, deviceId: 'cli-1', devicePlatform: 'linux-x64', deviceAppVersion: 'shogo-cli/unknown', lastSeenAt: daysAgo(0), createdAt: daysAgo(0), userId: 'u3' },
+      )
+      store.deviceVersionEvents.push(
+        { deviceId: 'd1', version: '2.3.6', channel: 'stable', os: 'macos', client: 'desktop', firstSeenAt: daysAgo(1), lastSeenAt: daysAgo(0) },
+        { deviceId: 'd2', version: '2.2.27', channel: 'stable', os: 'windows', client: 'desktop', firstSeenAt: daysAgo(30), lastSeenAt: daysAgo(1) },
+      )
+      rebuildModels()
+
+      const out = await analytics.getAppVersions({ days: 7 })
+
+      expect(out.deployedVersion).toBe('2.3.6')
+      expect(out.windowDays).toBe(7)
+      expect(out.desktop.totalDevices).toBe(2)
+      expect(out.cli.totalDevices).toBe(1)
+      expect(out.desktop.onLatest).toMatchObject({ version: '2.3.6', devices: 1, pct: 50, source: 'deployed' })
+
+      // Adoption is per (day, version), oldest devices still on 2.2.27 counted.
+      const today = new Date().toISOString().split('T')[0]
+      const todayStable = out.adoption.find((point) => point.date === today && point.version === '2.3.6')
+      expect(todayStable).toMatchObject({ channel: 'stable', devices: 1 })
+      expect(out.adoption.length).toBeGreaterThan(0)
+    } finally {
+      if (previous === undefined) delete process.env.APP_VERSION
+      else process.env.APP_VERSION = previous
+    }
+  })
+
+  test('clamps the window and never returns a negative day count', async () => {
+    const out = await analytics.getAppVersions({ days: -5 })
+    expect(out.windowDays).toBe(1)
+    expect(out.desktop.totalDevices).toBe(0)
+    expect(out.adoption).toEqual([])
   })
 })
 

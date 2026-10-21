@@ -41,6 +41,7 @@ mock.module('../services/analytics.service', () => {
     getActiveUsers: record('activeUsers', { dau: 3 }),
     getDesktopInstalls: record('desktopInstalls', { totalDevices: 2 }),
     getAppInstalls: record('appInstalls', { totals: { totalDevices: 3 } }),
+    getAppVersions: record('appVersions', { desktop: { totalDevices: 3 }, adoption: [] }),
     getChatAnalytics: record('chat', { messages: 4 }),
     getProjectAnalytics: record('projects', { total: 5 }),
     getBillingAnalytics: record('billing', { mrr: 6 }),
@@ -187,6 +188,7 @@ describe('adminRoutes analytics endpoints', () => {
       '/analytics/active-users?period=30d',
       '/analytics/desktop-installs',
       '/analytics/app-installs',
+      '/analytics/app-versions?days=14',
       '/analytics/chat?period=7d',
       '/analytics/projects',
       '/analytics/billing',
@@ -213,6 +215,8 @@ describe('adminRoutes analytics endpoints', () => {
       model: 'claude',
     })
     expect(analyticsCalls.find(([name]) => name === 'funnel')?.[1]).toEqual(['7d', false])
+    // Admin app-versions passes the window through as a number.
+    expect(analyticsCalls.find(([name]) => name === 'appVersions')?.[1]).toEqual([{ days: 14 }])
   })
 
   test('returns errors from analytics handlers as 500 responses', async () => {

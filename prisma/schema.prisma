@@ -2978,6 +2978,34 @@ model AppInstall {
   @@map("app_installs")
 }
 
+/// One row the first time a device reports a version, bumped on every later
+/// sighting of that same version.
+///
+/// `api_keys` only keeps the *current* row per device, so "how many devices
+/// were on 2.3.5 the day 2.3.6 shipped" was unanswerable and the admin card
+/// could not show adoption. This keeps the (device, version) history, with the
+/// OS/arch/client/channel normalised once at the insert point
+/// (`lib/device-platform.ts`) so legacy platform spellings stay collapsed.
+model DeviceVersionEvent {
+  id          String   @id @default(cuid())
+  deviceId    String
+  /// macos | windows | linux | unknown
+  os          String   @default("unknown")
+  arch        String?
+  /// desktop | cli | unknown
+  client      String   @default("desktop")
+  /// stable | beta
+  channel     String   @default("stable")
+  version     String
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime
+
+  @@unique([deviceId, version])
+  @@index([lastSeenAt])
+  @@index([version])
+  @@map("device_version_events")
+}
+
 // =============================================================================
 // EVAL RUNS (Agent eval tracking — local + K8s Job support)
 // =============================================================================

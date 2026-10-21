@@ -170,6 +170,15 @@ spec:
             # downstream as defense-in-depth.
             - name: RUNTIME_IMAGE
               value: "RUNTIME_IMAGE_PLACEHOLDER"
+            # Release tag this API runs, rendered per release by the deploy's
+            # "Apply Kubernetes manifests" step (see render-overlay.sh) and
+            # re-pinned + verified by apply-release-images.sh. /health and
+            # /api/version report it, so admin analytics can answer "how many
+            # desktop devices are on the deployed version". Shipping the token
+            # rather than a literal keeps an unrendered manifest from claiming
+            # a tag that was never released.
+            - name: APP_VERSION
+              value: "APP_VERSION_PLACEHOLDER"
             - name: PREVIEW_BASE_DOMAIN
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT
