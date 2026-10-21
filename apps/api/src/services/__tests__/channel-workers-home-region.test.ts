@@ -138,7 +138,7 @@ describe('email digest', () => {
     expect(await runDigestPass(new Date('2026-10-05T09:00:00Z'))).toBe(1)
   })
 
-  it('links to Settings → Chat, not the retired /c/settings screen', async () => {
+  it('links through the /c/settings redirect, not a bare /settings URL', async () => {
     const sent: Array<{ settingsUrl?: string }> = []
     _setDigestSenderForTests((async (params: { settingsUrl: string }) => {
       sent.push(params)
@@ -146,7 +146,9 @@ describe('email digest', () => {
     }) as any)
     await runDigestPass(new Date('2026-10-05T09:00:00Z'))
     expect(sent).toHaveLength(1)
-    expect(sent[0].settingsUrl).toEndWith('/settings?tab=chat')
+    // `/settings?tab=chat` is the admin console on web (it bounces to
+    // /projects); `/c/settings` redirects to the same tab from anywhere.
+    expect(sent[0].settingsUrl).toEndWith('/c/settings')
   })
 
   it('applies no region filter in single-region mode', async () => {

@@ -123,7 +123,11 @@ export async function runDigestPass(now = new Date()): Promise<number> {
         countLabel: countLabel(digest.total),
         summary,
         channelsUrl: `${base}/c/inbox`,
-        settingsUrl: `${base}/settings?tab=chat`,
+        // `/c/settings` is a redirect to Settings → Chat. Keep using it: a bare
+        // `/settings?tab=chat` resolves to the admin console on web and bounces
+        // to `/projects`, so it cannot be an email link (see
+        // e2e/local/phone-settings-account-sheet.test.ts's note).
+        settingsUrl: `${base}/c/settings`,
       })
       if (result.success) sent++
     } catch (err: any) {
