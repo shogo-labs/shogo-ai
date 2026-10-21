@@ -41,10 +41,15 @@ export function parseHistorySeed(raw: unknown): HistorySeed | null {
   const value = raw as { summary?: unknown; messages?: unknown }
   const summary = typeof value.summary === 'string' && value.summary.trim() ? value.summary.trim() : null
 
-  const messages: HistorySeedMessage[] = []
+  const rows = Array.isArray(value.messages) ? value.messages.slice(-HISTORY_SEED_MAX_MESSAGES) : []
+  // Newest first, then reversed. When a seed is over the char cap the messages
+  // nearest the turn are the ones that matter: reading from the head kept
+  // MSG0..MSG4 of a 10 × 20k seed and dropped the tail, so the agent restored
+  // the start of a conversation and nothing about the turn it was answering.
+  const kept: HistorySeedMessage[] = []
   let chars = 0
-  const rows = Array.isArray(value.messages) ? value.messages : []
-  for (const row of rows.slice(-HISTORY_SEED_MAX_MESSAGES)) {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i]
     if (!row || typeof row !== 'object') continue
     const { role, text } = row as { role?: unknown; text?: unknown }
     if (role !== 'user' && role !== 'assistant') continue
@@ -52,9 +57,9 @@ export function parseHistorySeed(raw: unknown): HistorySeed | null {
     const trimmed = text.trim()
     if (chars + trimmed.length > HISTORY_SEED_MAX_CHARS) break
     chars += trimmed.length
-    messages.push({ role, text: trimmed })
+    kept.push({ role, text: trimmed })
   }
 
-  if (messages.length === 0 && !summary) return null
-  return { summary, messages }
+  if (kept.length === 0 && !summary) return null
+  return { summary, messages: kept.reverse() }
 }

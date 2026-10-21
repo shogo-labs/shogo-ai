@@ -574,6 +574,11 @@ jobs:
           # chat-task-wake-refocus covers the window that was in the background
           # while the wake ran: one catch-up on refocus, then quiet again.
           - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks chat-task-thread-pane chat-task-wake-live-attach chat-task-wake-refocus' }
+          # chat-context-survives-idle (SHO-137) drives a wake turn into a
+          # runtime that has never seen the chat. It gets its own entry rather
+          # than joining the job above: that one runs 1 worker at a time and
+          # already finishes at 34m37s of a 35m cap.
+          - { name: 'E2E (chat context)', spec: 'chat-context-survives-idle' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length

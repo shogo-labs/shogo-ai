@@ -202,6 +202,21 @@ describe('historySeed parsing', () => {
     ])
   })
 
+  test('keeps the NEWEST messages when a seed is over the char cap', () => {
+    // Ten 20k rows against a 120k cap: the tail must survive, because the
+    // messages closest to the turn are the ones that explain it.
+    const messages = Array.from({ length: 10 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      text: `MSG${i} ${'x'.repeat(20_000)}`,
+    }))
+    const seed = parseHistorySeed({ messages })
+    expect(seed).not.toBeNull()
+    const kept = seed!.messages.map((m) => m.text.slice(0, 4))
+    expect(kept).toEqual(['MSG5', 'MSG6', 'MSG7', 'MSG8', 'MSG9'])
+    // Still oldest-first, so the runtime seeds them in order.
+    expect(seed!.messages[seed!.messages.length - 1].text.startsWith('MSG9')).toBe(true)
+  })
+
   test('is null for absent or empty input, so the turn is unaffected', () => {
     expect(parseHistorySeed(undefined)).toBeNull()
     expect(parseHistorySeed({})).toBeNull()

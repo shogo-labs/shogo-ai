@@ -10,6 +10,7 @@
 import { deleteChatAttachmentPrefix } from "../lib/chat-attachments"
 import { accessibleProjectsWhere, type Principal } from "../lib/authz"
 import { hookAuthorize, hookPrincipal, hookRequire, type HookDenial } from "../lib/authz/hooks"
+import { purgeChatSessionHistory, type DeletedChatScope } from "../services/chat-session-history-purge.service"
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -57,12 +58,14 @@ export interface ChatSessionHooks {
 
 /** The fields that decide which scope a chat session belongs to. */
 export const CHAT_SESSION_SCOPE_SELECT = {
+  contextType: true,
   contextId: true,
   workspaceId: true,
   createdByUserId: true,
 } as const
 
 export type ChatSessionScope = {
+  contextType?: string | null
   contextId?: string | null
   workspaceId?: string | null
   createdByUserId?: string | null
@@ -152,7 +155,26 @@ async function authorizeExistingSession(
     }
   }
 
-  return authorizeChatSession(ctx, session, "Access denied", writeOp)
+  const access = await authorizeChatSession(ctx, session, "Access denied", writeOp)
+  // The row is gone by `afterDelete`, which is where the runtime's copy is
+  // wiped; hand the scope back so the delete can remember where to look.
+  return access.ok ? { ...access, data: session } : access
+}
+
+/**
+ * Scope captured in `beforeDelete`, read in `afterDelete`: by then the row is
+ * gone, so the runtime that holds the transcript could no longer be found.
+ * Keyed by the delete request's hook context, so nothing outlives the request.
+ */
+const pendingHistoryPurge = new WeakMap<object, Omit<DeletedChatScope, "id">>()
+
+function rememberScopeForPurge(ctx: HookContext, scope: ChatSessionScope | null | undefined): void {
+  if (!scope) return
+  pendingHistoryPurge.set(ctx, {
+    contextType: scope.contextType ?? null,
+    contextId: scope.contextId ?? null,
+    workspaceId: scope.workspaceId ?? null,
+  })
 }
 
 /**
@@ -304,12 +326,21 @@ export const chatSessionHooks: ChatSessionHooks = {
       }
     }
 
-    if (ctx.tunnelAuthenticated) return { ok: true }
+    if (ctx.tunnelAuthenticated) {
+      const session = (await ctx.prisma.chatSession.findUnique({
+        where: { id },
+        select: CHAT_SESSION_SCOPE_SELECT,
+      })) as ChatSessionScope | null
+      rememberScopeForPurge(ctx, session)
+      return { ok: true }
+    }
 
-    return authorizeExistingSession(id, ctx, `DELETE /api/chat-sessions/${id}`)
+    const access = await authorizeExistingSession(id, ctx, `DELETE /api/chat-sessions/${id}`)
+    if (access.ok) rememberScopeForPurge(ctx, access.data as ChatSessionScope | undefined)
+    return access
   },
 
-  afterDelete: async (id) => {
+  afterDelete: async (id, ctx) => {
     try {
       await deleteChatAttachmentPrefix(id)
     } catch (error: any) {
@@ -317,5 +348,12 @@ export const chatSessionHooks: ChatSessionHooks = {
       // can be retried by the storage maintenance job.
       console.warn(`[chatSession.afterDelete] attachment cleanup failed for ${id}:`, error?.message || error)
     }
+
+    // The runtime's sessions.db is the durable copy (S3-synced), so deleting
+    // the row is not enough — idle eviction no longer wipes it, by design
+    // (SHO-137). Best-effort: never fails the delete.
+    const scope = pendingHistoryPurge.get(ctx)
+    pendingHistoryPurge.delete(ctx)
+    await purgeChatSessionHistory({ id, ...(scope ?? {}) })
   },
 }

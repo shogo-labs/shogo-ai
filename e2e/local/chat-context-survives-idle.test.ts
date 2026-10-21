@@ -83,24 +83,27 @@ test.afterAll(async () => {
 test('a wake turn carries the conversation the runtime no longer has', async () => {
   // The chat and its conversation, written straight to the API database: this
   // is the history a pod that lost the session cannot see.
-  const session = await post<{ id: string }>('/api/chat-sessions', {
+  // The generated CRUD route answers `{ ok: true, data: { id } }`, not the row.
+  const created = await post<{ ok: boolean; data: { id: string } }>('/api/chat-sessions', {
     inferredName: 'deploy triage',
     contextType: 'workspace',
     workspaceId,
   })
+  const sessionId = created.data.id
+  if (!sessionId) throw new Error('POST /api/chat-sessions returned no id')
   for (const [role, content] of [
     ['user', `Remember the ${CANARY} before you start.`],
     ['assistant', 'Noted — the deploy stays blocked until the migration runs.'],
     ['user', 'And the rollback plan is the previous image tag.'],
   ] as const) {
-    await post('/api/chat-messages', { sessionId: session.id, role, content })
+    await post('/api/chat-messages', { sessionId, role, content })
   }
 
   // A background task finishing wakes the chat with exactly one message —
   // this is the queue path a wake takes.
   const wakeText = 'Background task finished: migration applied.'
   await post('/api/chat-queued-messages', {
-    sessionId: session.id,
+    sessionId,
     userId,
     position: 0,
     status: 'pending',
