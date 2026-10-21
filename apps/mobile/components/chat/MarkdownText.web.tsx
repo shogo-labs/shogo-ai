@@ -23,6 +23,7 @@ import { FileTypeIcon } from "./FileTypeIcon.web"
 import { useShareFileOpener } from "./share-file-context"
 import { parseInAppFileHref } from "../../lib/share-file-links"
 import { withHardBreaks } from "../../lib/markdown-breaks"
+import type { MarkdownVariant } from "./MarkdownText"
 
 export interface MarkdownTextProps {
   children: string
@@ -32,6 +33,11 @@ export interface MarkdownTextProps {
    * incomplete-markdown repair). Leave unset for text that may still grow.
    */
   isStreaming?: boolean
+  /**
+   * Type scale. `card` pins the compact 12/18 body copy a tool card needs
+   * regardless of the outer window width; the palette is unchanged.
+   */
+  variant?: MarkdownVariant
   /** Opens a workspace file when the text mentions its path. */
   onFilePress?: (path: string) => void
   /** Mentioned paths that pass this check render as file chips. */
@@ -53,6 +59,7 @@ const linkSafetyOff = { enabled: false as const }
 // previous equality fn ignored it).
 function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.isStreaming !== next.isStreaming) return false
+  if (prev.variant !== next.variant) return false
   if (prev.className !== next.className) return false
   if (prev.onFilePress !== next.onFilePress) return false
   if (prev.fileExists !== next.fileExists) return false
@@ -197,6 +204,7 @@ export const MarkdownText = memo(
     children,
     className,
     isStreaming,
+    variant = "default",
     onFilePress,
     fileExists,
     onLinkPress,
@@ -208,11 +216,14 @@ export const MarkdownText = memo(
     const usesCompactChatTypography = phoneLayoutOverride === false
     const usesMobileChatTypography =
       usesMobileWorkspaceChrome || (phoneLayoutOverride === null && width < 640)
-    const baseClassName = usesCompactChatTypography
-      ? "chat-md chat-md-compact"
-      : usesMobileChatTypography
-      ? "chat-md chat-md-mobile"
-      : "chat-md"
+    // A tool card's body is card-sized wherever it renders; the 16px mobile
+    // chat scale would blow a three-line card open on a phone-width window.
+    const baseClassName =
+      variant === "card" || usesCompactChatTypography
+        ? "chat-md chat-md-compact"
+        : usesMobileChatTypography
+        ? "chat-md chat-md-mobile"
+        : "chat-md"
     const cls = className ? `${baseClassName} ${className}` : baseClassName
     const source = children || ""
     const body = useMemo(() => {

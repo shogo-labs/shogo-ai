@@ -52,7 +52,7 @@ interface ThemeColors {
   mentionText: ColorValue;
 }
 
-export type MarkdownVariant = "default" | "thinking";
+export type MarkdownVariant = "default" | "thinking" | "card";
 
 export interface MarkdownTextProps {
   children: string;
@@ -134,6 +134,25 @@ const thinkingStyles: MarkedStyles = {
   strikethrough: { fontSize: 14, lineHeight: 21 },
   hr: { height: 1, marginVertical: 6 },
   image: { borderRadius: 6 },
+};
+
+/**
+ * Compact body copy for markdown inside a tool card (a `project_call` request
+ * or reply). The chat sizes — 16/24 on a phone — are wrong for a three-line
+ * card, so headings, code padding and rules shrink to card scale while the
+ * 12/18 body copy stays as it is.
+ */
+const cardStyles: MarkedStyles = {
+  ...baseStyles,
+  code: {
+    borderRadius: 6,
+    padding: 8,
+  },
+  h1: { fontSize: 16, lineHeight: 22, fontWeight: "bold", marginBottom: 4 },
+  h2: { fontSize: 15, lineHeight: 21, fontWeight: "bold", marginBottom: 4 },
+  h3: { fontSize: 14, lineHeight: 20, fontWeight: "600", marginBottom: 3 },
+  h4: { fontSize: 13, lineHeight: 19, fontWeight: "500" },
+  hr: { height: 1, marginVertical: 6 },
 };
 
 const lightColors: ThemeColors = {
@@ -490,6 +509,7 @@ export const MarkdownText = memo(function MarkdownText({
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
 
   const isThinking = variant === "thinking";
+  const isCard = variant === "card";
   const colors =
     colorScheme === "dark"
       ? isThinking
@@ -498,7 +518,9 @@ export const MarkdownText = memo(function MarkdownText({
       : isThinking
       ? lightThinkingColors
       : lightColors;
-  const sizeStyles = isThinking
+  const sizeStyles = isCard
+    ? cardStyles
+    : isThinking
     ? thinkingStyles
     : isPhoneLayout || usesMobileWorkspaceChrome
     ? phoneChatStyles
