@@ -35,6 +35,12 @@ interface RouterSpec {
   file: string
   /** Path prefixes answered by a `router.use` cloud forwarder. */
   forwardedPrefixes?: () => string[]
+  /**
+   * Every registered route delegates to this handler, which does the cloud
+   * forward once for all of them. The guard then checks the delegate's body
+   * instead of each one-line registration.
+   */
+  delegatesTo?: string
   /** Routes that must stay on the local instance, with the reason why. */
   localOnly: Record<string, LocalOnlyEntry>
 }
@@ -57,9 +63,13 @@ const CLOUD_FORWARD_CALLS = [
   // Forwards `/api/ai/v1/live/sessions` to cloud itself when the gate is on,
   // so the routes that call it already work on a cloud-authed desktop.
   'createLiveWebRtcSession(',
-  // Delegates to `voice-media.ts`, which forwards under the same gate.
+  // Delegates to `voice-media.ts`, which forwards under the same gate. Every
+  // hosted media route — the two legacy aliases and the registry-dispatched
+  // `/voice/op/:opId` — goes through that file's one executor.
   'handleVoiceTts(',
   'handleVoiceMusic(',
+  'handleVoiceOp(',
+  'forwardVoiceToCloud(',
 ]
 
 const ROUTE_RE = /router\.(get|post|put|patch|delete|all)\(\s*'([^']+)'/g
@@ -150,9 +160,12 @@ const ROUTERS: RouterSpec[] = [
     localOnly: VOICE_LOCAL_ONLY,
   },
   {
-    // Hosted TTS and music: both forward to cloud under the gate (SHO-74 §2).
+    // Hosted TTS, music and every registry op: all three registrations delegate
+    // to `executeVoiceOp`, which forwards to cloud under the gate (SHO-74 §2,
+    // SHO-112).
     name: 'voice-media',
     file: '../voice-media.ts',
+    delegatesTo: 'executeVoiceOp',
     localOnly: {},
   },
 ]
@@ -179,6 +192,36 @@ function forwardsToCloud(route: Pick<RegisteredRoute, 'path' | 'body'>, spec: Ro
   return CLOUD_FORWARD_CALLS.some((call) => route.body.includes(call))
 }
 
+/**
+ * The body of `function <name>(…) { … }`, brace-matched. Used to check the one
+ * shared forwarder a set of thin registrations delegates to.
+ */
+function functionBody(text: string, name: string): string | null {
+  const start = text.indexOf(`function ${name}(`)
+  if (start < 0) return null
+  // Skip the parameter list first: default values like `deps: Deps = {}` would
+  // otherwise look like the body's opening brace.
+  const parenOpen = text.indexOf('(', start)
+  let parenDepth = 0
+  let afterParams = -1
+  for (let i = parenOpen; i < text.length; i++) {
+    if (text[i] === '(') parenDepth++
+    else if (text[i] === ')' && --parenDepth === 0) {
+      afterParams = i + 1
+      break
+    }
+  }
+  if (afterParams < 0) return null
+  const open = text.indexOf('{', afterParams)
+  if (open < 0) return null
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '{') depth++
+    else if (text[i] === '}' && --depth === 0) return text.slice(start, i + 1)
+  }
+  return null
+}
+
 /** Problems with one router, as human-readable lines (empty = parity holds). */
 function parityProblems(spec: RouterSpec, text: string): string[] {
   const routes = parseRoutes(text)
@@ -198,6 +241,14 @@ function parityProblems(spec: RouterSpec, text: string): string[] {
       problems.push(
         `${label} neither forwards to cloud nor is allowlisted — forward it, or add it to the ${spec.name} allowlist with the reason`,
       )
+    }
+  }
+
+  if (spec.delegatesTo) {
+    const body = functionBody(text, spec.delegatesTo)
+    if (!body) problems.push(`${spec.name} routes delegate to ${spec.delegatesTo}() but it is gone from the file`)
+    else if (!CLOUD_FORWARD_CALLS.some((call) => body.includes(call))) {
+      problems.push(`${spec.name} routes delegate to ${spec.delegatesTo}(), which never forwards to cloud`)
     }
   }
 
@@ -279,25 +330,32 @@ describe('proxy route parity', () => {
   })
 
   test('hosted voice media checks the cloud gate before the local key', async () => {
-    // The router check above only proves the registration delegates. Pin the
-    // handlers themselves: the cloud branch has to run before the local
-    // ELEVENLABS_API_KEY lookup, or a cloud-authed desktop keeps answering 503.
+    // The router checks above only prove the registrations delegate. Pin the
+    // shared executor: the cloud branch has to run before the local
+    // ELEVENLABS_API_KEY lookup, or a cloud-authed desktop keeps answering 503
+    // for every op, not just the two the aliases cover.
     const text = await readRouter('../voice-media.ts')
-    const ungated = ['handleVoiceTts', 'handleVoiceMusic']
-      .map((name) => {
-        const start = text.indexOf(`export async function ${name}(`)
-        if (start < 0) return `${name} is gone from voice-media.ts — update this guard`
-        const next = text.indexOf('export async function ', start + 1)
-        const body = text.slice(start, next < 0 ? text.length : next)
-        const gate = body.indexOf('isShogoCloudForwarding()')
-        const localKey = body.indexOf('resolveShogoElevenLabsClient(')
-        if (gate < 0) return `${name} never checks isShogoCloudForwarding(), so cloud-authed desktops get a local 503`
-        if (localKey >= 0 && localKey < gate) return `${name} resolves the local key before the cloud gate`
-        return null
-      })
-      .filter((entry): entry is string => entry !== null)
+    const body = functionBody(text, 'executeVoiceOp')
+    expect(body).not.toBeNull()
+    const gate = body!.indexOf('isShogoCloudForwarding()')
+    const localKey = body!.indexOf('resolveShogoElevenLabsClient(')
+    expect(gate).toBeGreaterThanOrEqual(0)
+    expect(localKey).toBeGreaterThan(gate)
+  })
 
-    expect(ungated).toEqual([])
+  test('the voice-media aliases delegate instead of re-implementing', async () => {
+    // SHO-112: `/voice/tts` and `/voice/music` are thin aliases over the
+    // registry executor. A second copy of auth/limits/credential handling is
+    // exactly what this guard exists to prevent.
+    const text = await readRouter('../voice-media.ts')
+    for (const name of ['handleVoiceTts', 'handleVoiceMusic', 'handleVoiceOp']) {
+      const body = functionBody(text, name)
+      expect(body, `${name} is gone from voice-media.ts`).not.toBeNull()
+      expect(body!, name).toContain('executeVoiceOp(')
+      expect(body!, `${name} must not resolve the key itself`).not.toContain(
+        'resolveShogoElevenLabsClient(',
+      )
+    }
   })
 
   test('no router keeps a private copy of the cloud gate', async () => {

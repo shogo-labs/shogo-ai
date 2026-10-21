@@ -8,7 +8,7 @@
  * `route.ts`, Cloudflare Workers, Bun.serve, Deno, Hono, etc.).
  *
  * The per-resource sub-modules (`./signed-url`, `./tts-preview`,
- * `./agent`, `./audio-tags`) re-export pre-instantiated `GET`/`POST`/
+ * `./agent`, `./audio-tags`, `./op`) re-export pre-instantiated `GET`/`POST`/
  * `PATCH`/`DELETE` handlers that delegate to {@link createVoiceHandlers}
  * with zero configuration — pod apps just point a route file at them:
  *
@@ -25,6 +25,9 @@
  *
  * // app/api/voice/agent+api.ts
  * export { POST, PATCH, DELETE } from '@shogo-ai/sdk/voice/route/agent'
+ *
+ * // app/api/voice/op/[opId]+api.ts — every op in the registry, one file
+ * export { GET, POST } from '@shogo-ai/sdk/voice/route/op'
  * ```
  *
  * In a Shogo-managed pod, `RUNTIME_AUTH_SECRET` and `PROJECT_ID` are
@@ -100,6 +103,11 @@ export interface VoiceRoute {
   }
   /** `GET /voice/audio-tags` */
   audioTags: { GET: (req: Request) => Promise<Response> }
+  /** `GET|POST /voice/op/:opId` — every registry op through one handler. */
+  op: {
+    GET: (req: Request, opId?: string) => Promise<Response>
+    POST: (req: Request, opId?: string) => Promise<Response>
+  }
 }
 
 /**
@@ -128,6 +136,10 @@ export function createVoiceRoute(config: VoiceHandlersConfig): VoiceRoute {
     signedUrl: { GET: (req: Request) => v.signedUrl(req) },
     ttsPreview: { POST: (req: Request) => v.tts(req) },
     music: { POST: (req: Request) => v.music(req) },
+    op: {
+      GET: (req: Request, opId?: string) => v.op(req, opId),
+      POST: (req: Request, opId?: string) => v.op(req, opId),
+    },
     agent: {
       POST: (req: Request) => v.agent.create(req),
       PATCH: (req: Request) => v.agent.patch(req),

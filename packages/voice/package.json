@@ -86,6 +86,12 @@
       "development": "./src/route/audio-tags.ts",
       "import": "./dist/route/audio-tags.js",
       "require": "./dist/route/audio-tags.cjs"
+    },
+    "./route/op": {
+      "types": "./dist/route/op.d.ts",
+      "development": "./src/route/op.ts",
+      "import": "./dist/route/op.js",
+      "require": "./dist/route/op.cjs"
     }
   },
   "files": [

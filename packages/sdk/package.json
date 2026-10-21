@@ -151,6 +151,12 @@
       "import": "./dist/voice/route/audio-tags.js",
       "require": "./dist/voice/route/audio-tags.cjs"
     },
+    "./voice/route/op": {
+      "types": "./dist/voice/route/op.d.ts",
+      "development": "./src/voice/route/op.ts",
+      "import": "./dist/voice/route/op.js",
+      "require": "./dist/voice/route/op.cjs"
+    },
     "./cli/deploy": {
       "types": "./dist/cli/deploy.d.ts",
       "development": "./src/cli/deploy.ts",

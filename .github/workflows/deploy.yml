@@ -742,25 +742,41 @@ jobs:
   # Stage 2.2: Promote staging images to production (production only)
   # ===========================================================================
   # Production does not rebuild: it ships the exact digests staging built and
-  # ran its critical-path e2e against for this commit. deploy-staging.yml's
-  # "Complete staging release tag set" guarantees every staging-deployed SHA
-  # has `staging-<sha>` for all four services; this re-tags them as
+  # ran its critical-path e2e against for this commit; this re-tags them as
   # `production-<sha>` (+ `production-latest`) in the shared US registry.
-  # Manifest-only, so it takes seconds, and it is safe to run before
-  # staging-e2e-gate passes: nothing deploys until deploy-us, which waits on
-  # the gate. `force_rebuild_production` skips this and builds instead.
+  #
+  # `staging-<sha>` is written by the staging *rollout*
+  # (deploy-staging.yml's "Complete staging release tag set"), minutes after
+  # the commit's builds — the repos a rollout carries forward get their tag
+  # only then. A release tag pushed while that rollout is in flight used to
+  # fail here 1.5 s before the tags appeared (v2.3.7, run 39567961829), so the
+  # job now waits on the tag set itself (scripts/ci/wait-for-staging-images.ts)
+  # instead of assuming it. It stays safe to run alongside staging-e2e-gate:
+  # nothing deploys until deploy-us, which waits on the gate.
+  # `force_rebuild_production` skips this and builds instead.
   promote-images:
     name: Promote staging images
     runs-on: ubuntu-latest
     needs: [resolve-config, detect-changes]
     if: needs.detect-changes.outputs.promote == 'true' && needs.resolve-config.outputs.dry_run != 'true'
     environment: production-us
-    timeout-minutes: 10
+    # 75 > IMAGE_GATE_TIMEOUT_MS (60) so the gate's own timeout message wins.
+    timeout-minutes: 75
+    permissions:
+      actions: read
+      contents: read
     env:
       OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
       SRC_TAG: staging-${{ github.sha }}
       DST_TAG: production-${{ github.sha }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.3'
+
       - name: Login to OCIR
         run: |
           echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
@@ -768,10 +784,19 @@ jobs:
             -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
             --password-stdin
 
+      - name: Wait for the staging tag set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: bun scripts/ci/wait-for-staging-images.ts
+
       - name: Re-tag staging-${{ github.sha }} as production-${{ github.sha }}
         run: |
           set -euo pipefail
           REPOS="shogo-api shogo-web shogo-docs shogo-runtime"
+          # Belt-and-braces: 'Wait for the staging tag set' already blocked on
+          # these tags, so this must never fire. If it does, the gate has a bug.
           MISSING=""
           for repo in $REPOS; do
             if ! docker buildx imagetools inspect "${OCIR_REGISTRY}/shogo/${repo}:${SRC_TAG}" >/dev/null 2>&1; then
@@ -779,7 +804,7 @@ jobs:
             fi
           done
           if [ -n "$MISSING" ]; then
-            echo "::error::No ${SRC_TAG} image for:${MISSING}. Only commits deployed to staging after the promote rollout have a complete staging tag set. Deploy this commit to staging first, or re-run with force_rebuild_production=true."
+            echo "::error::No ${SRC_TAG} image for:${MISSING} even after waiting for this commit's staging rollout (see the 'Wait for the staging tag set' step). That step is the gate; reaching this line means it has a bug. Re-run with force_rebuild_production=true to rebuild these images."
             exit 1
           fi
           {

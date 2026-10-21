@@ -140,6 +140,7 @@ export const TEAM_CHAT_GUIDE = [
   '- Agents do not need to tag you when they finish: cards you hand off and runs you start already tell you (a `[Task update]`), and a finishing agent\'s tag on a card you watch is folded into that update. Do not write "tag me when done" into the AGENTS.md of agents you create. If a person asks for it anyway, pass it on (it costs nothing) and say the update comes either way. What makes hand-offs slow is a timer: turn off any schedule of yours that checks on that work, yourself and in the same turn, then tell the person. Do not keep it "as a backstop" or offer to turn it off later; it only delays cards and reviews them twice.',
   '- Tagged by an agent on work you handed it? Its card or task update already reached you or is about to; act on that once and do not reply to the tag separately.',
   '- If you have `agent_run_stop`: when a person asks you to stop an agent, or agents are looping in a thread, find the run with `agent_runs_list` and stop it with `agent_run_stop` instead of posting "please stop".',
+  '- "Pause every agent" / "stop everything" is `agent_run_stop({ scope: "workspace" })`: it stops the running agents **and** holds every automatic start (task updates, schedules, triggers, card hand-offs, team-chat tags) until someone resumes with `agent_run_stop({ scope: "workspace", resume: true })`. A person\'s own message still runs. Do not try to deliver a "stop" as a message — that wakes the agent you are trying to stop.',
   '',
   '### Keep the channel readable',
   'Every post you make has a kind. People only get notified for `decision` and `alert`, so choose honestly:',
@@ -755,6 +756,7 @@ export function createAgentRunsListTool(ctx: ToolContext): AgentTool {
           preview: r.preview,
           can_stop: r.canStop,
         })),
+        paused: result.data?.paused ?? null,
       })
     },
   }
@@ -767,19 +769,54 @@ export function createAgentRunStopTool(ctx: ToolContext): AgentTool {
     description:
       'Stop an agent that is working right now, the same as a person pressing Stop on its reply. Pass message_id ' +
       '(from agent_runs_list) to stop one run, or channel and thread to stop every agent running in that thread. ' +
-      'A stopped reply does not wake the agents it tagged, so this also ends an agent loop. Stop only when the person ' +
-      'asks you to, or when agents are looping, then tell that person which agents you stopped.',
+      'A stopped reply does not wake the agents it tagged, so this also ends an agent loop. ' +
+      'Pass scope "workspace" to stop every agent run in this workspace and pause all automatic starts ' +
+      '(task updates, schedules, triggers, card hand-offs, team-chat tags) until you call it again with ' +
+      'resume: true — a person\'s own message still runs while paused. Stop only when the person asks you to, ' +
+      'or when agents are looping, then tell that person which agents you stopped.',
     parameters: Type.Object({
       message_id: Type.Optional(Type.String({ description: 'The running reply to stop.' })),
       channel: Type.Optional(Type.String({ description: 'With thread: the channel (name without # or conversation id).' })),
       thread: Type.Optional(Type.String({ description: 'With channel: root message id of the thread whose agents to stop.' })),
+      scope: Type.Optional(
+        Type.Union([Type.Literal('run'), Type.Literal('thread'), Type.Literal('workspace')], {
+          description: '"workspace" stops every run in the workspace and pauses automatic starts; "run"/"thread" are implied by the other arguments.',
+        }),
+      ),
+      resume: Type.Optional(Type.Boolean({ description: 'With scope "workspace": lift the pause instead of setting it.' })),
+      reason: Type.Optional(Type.String({ description: 'With scope "workspace": one line on why, kept with the pause.' })),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { message_id?: string; channel?: string; thread?: string }
-      if (!input.message_id && !(input.channel && input.thread)) {
-        return textResult({ error: 'Pass message_id, or channel and thread.', code: 'invalid_input' })
+      const input = params as { message_id?: string; channel?: string; thread?: string; scope?: string; resume?: boolean; reason?: string }
+      const scope = input.scope === 'workspace' ? 'workspace' : input.message_id ? 'run' : input.channel && input.thread ? 'thread' : null
+      if (!scope) {
+        return textResult({
+          error: 'Pass message_id, channel and thread, or scope "workspace".',
+          code: 'invalid_input',
+        })
+      }
+      if (scope === 'workspace') {
+        const result = await stopRunningAgents(workspaceId, {
+          scope: 'workspace',
+          resume: input.resume === true,
+          ...(input.reason ? { reason: input.reason } : {}),
+          sessionId: ctx.sessionId,
+        })
+        if (!result.ok || !result.data) return apiError(result, 'Could not pause the workspace agents')
+        return textResult({
+          ok: true,
+          paused: result.data.paused ?? null,
+          resumed: result.data.resumed === true,
+          stopped: (result.data.stopped ?? []).map((r) => ({
+            message_id: r.messageId,
+            agent: r.agent,
+            channel: r.channel.name ?? r.channel.id,
+            thread_id: r.threadRootId,
+          })),
+          skipped: (result.data.skipped ?? []).map((s) => ({ message_id: s.messageId, reason: s.reason })),
+        })
       }
       const result = await stopRunningAgents(workspaceId, {
         ...(input.message_id
