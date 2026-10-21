@@ -25,6 +25,8 @@ export type PhoneSettingsOptions = {
   platform?: string
   /** Desktop-only tabs (`updates`, `computer-files`) never reach a phone. */
   isDesktop?: boolean
+  /** Chat preferences are a team-workspace tab only. */
+  teamChat?: boolean
 }
 
 export type PhoneSettingsTarget = {
@@ -72,6 +74,7 @@ function availableSheetTabs(options: PhoneSettingsOptions): SettingsTabId[] {
     showBilling: options.showBilling ?? true,
     platform: options.platform,
     isDesktop: options.isDesktop,
+    teamChat: options.teamChat,
   })
     .map((tab) => tab.id)
     .filter((id) => !NOT_SHEET_HOSTED.includes(id))

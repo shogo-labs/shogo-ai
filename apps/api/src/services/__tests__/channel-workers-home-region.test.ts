@@ -138,6 +138,17 @@ describe('email digest', () => {
     expect(await runDigestPass(new Date('2026-10-05T09:00:00Z'))).toBe(1)
   })
 
+  it('links to Settings → Chat, not the retired /c/settings screen', async () => {
+    const sent: Array<{ settingsUrl?: string }> = []
+    _setDigestSenderForTests((async (params: { settingsUrl: string }) => {
+      sent.push(params)
+      return { success: true }
+    }) as any)
+    await runDigestPass(new Date('2026-10-05T09:00:00Z'))
+    expect(sent).toHaveLength(1)
+    expect(sent[0].settingsUrl).toEndWith('/settings?tab=chat')
+  })
+
   it('applies no region filter in single-region mode', async () => {
     state.home = null
     await runDigestPass(new Date('2026-10-05T09:00:00Z'))

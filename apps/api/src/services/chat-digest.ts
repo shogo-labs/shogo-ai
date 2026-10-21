@@ -123,7 +123,7 @@ export async function runDigestPass(now = new Date()): Promise<number> {
         countLabel: countLabel(digest.total),
         summary,
         channelsUrl: `${base}/c/inbox`,
-        settingsUrl: `${base}/c/settings`,
+        settingsUrl: `${base}/settings?tab=chat`,
       })
       if (result.success) sent++
     } catch (err: any) {

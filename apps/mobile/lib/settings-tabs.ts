@@ -6,6 +6,7 @@ import {
   Building2,
   CreditCard,
   Laptop,
+  MessageSquare,
   Monitor,
   Paintbrush,
   Plug,
@@ -21,6 +22,7 @@ import {
 export type SettingsTabId =
   | "workspace"
   | "people"
+  | "chat"
   | "models"
   | "integrations"
   | "automations"
@@ -59,6 +61,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     group: "settings",
     cloudOnly: true,
   },
+  { id: "chat", label: "Chat", Icon: MessageSquare, group: "settings" },
   { id: "models", label: "Models", Icon: Boxes, group: "settings" },
   { id: "integrations", label: "Integrations", Icon: Plug, group: "settings" },
   { id: "automations", label: "Automations", Icon: Zap, group: "settings" },
@@ -130,13 +133,18 @@ export function visibleSettingsTabs({
   showBilling = true,
   platform,
   isDesktop = false,
+  teamChat = false,
 }: {
   localMode?: boolean;
   showBilling?: boolean;
   platform?: string;
   isDesktop?: boolean;
+  /** Chat preferences only exist in a team workspace; default off so callers
+   * that have not opted in never list a tab they cannot render. */
+  teamChat?: boolean;
 } = {}): SettingsTabDefinition[] {
   return SETTINGS_TABS.filter((tab) => {
+    if (tab.id === "chat") return teamChat;
     if (tab.id === "compute") return showBilling && platform !== "ios";
     // Desktop-only tabs that also need the local API (computer use, local apps).
     if (tab.desktopOnly && tab.localOnly) return isDesktop && localMode;
