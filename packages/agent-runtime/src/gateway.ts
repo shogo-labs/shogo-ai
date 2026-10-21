@@ -444,7 +444,7 @@ export function describeTurnFailure(
   // A Shogo agent-loop concept, not a provider failure — decide before
   // classification so it isn't mistaken for an "unknown" provider error.
   if (/maximum iteration limit/i.test(raw)) {
-    return 'This task is taking more steps than a single run allows — I kept going as far as I could. Reply "continue" if you\'d like me to pick up where I left off.'
+    return 'This task is taking more steps than a single run allows — I kept going as far as I could, and the work so far is saved. Send a message if you want me to pick up where I left off.'
   }
 
   // classifyRetryability reads the proxy's `[shogo:retryable=...]` marker (if

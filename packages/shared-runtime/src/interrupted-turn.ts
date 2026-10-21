@@ -30,6 +30,27 @@ export function interruptedTurnNote(toolName?: string | null, opts: { resuming?:
     : `I was interrupted ${what} — resuming.`
 }
 
+/** Matches the note above with any tool name, capturing what follows it. */
+const NOTE_PATTERN = /^I was interrupted (?:while running `[^`\n]+`|while working)(.*)$/s
+
+/**
+ * Whether `text` is an interrupted-turn note, and whether it promises a resume.
+ *
+ * The runtime's boot sweep and the API's reattach job can both notice one dead
+ * turn — and each names the step from a different source, one with the tool and
+ * one without. Comparing the finished strings misses that pair, so the note is
+ * recognised by its shape instead. `resuming` asks for the wording that matters:
+ * a `resume: false` note must still be written over a `resume: true` one, since
+ * that is how a resume that died stops promising another (SHO-121).
+ */
+export function isInterruptedTurnNote(text: string | null | undefined, opts: { resuming?: boolean } = {}): boolean {
+  if (typeof text !== 'string') return false
+  const match = NOTE_PATTERN.exec(text.trim())
+  if (!match) return false
+  if (opts.resuming === undefined) return true
+  return match[1].trim().startsWith('— resuming') === opts.resuming
+}
+
 /**
  * What the resumed turn is told to do. It does not repeat the note above: on
  * the cloud path the note is already the assistant line directly before it, and
