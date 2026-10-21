@@ -21,6 +21,7 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { Hono } from 'hono'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
+import { createRemoteAwareHttpClient } from '../../../../packages/shared-app/src/services/remote-http-interceptor'
 
 process.env.SHOGO_LOCAL_MODE = 'true'
 
@@ -51,6 +52,7 @@ const mockPrisma = {
       const where = args?.where ?? {}
       return [...instancesById.values()]
         .filter((i) => (where.userId === undefined ? true : i.userId === where.userId))
+        .filter((i) => (where.kind?.not === undefined ? true : i.kind !== where.kind.not))
         .map((i) => ({ ...i }))
     },
     update: async (args: any) => {
@@ -218,6 +220,60 @@ describe('GET /api/machines', () => {
     expect(body.machines[0].status).toBe('offline')
     expect(body.machines[0].snapshot.workspaces[0].id).toBe('lw-1')
   })
+
+  // SHO-120: a `shogo worker` VM serves `/agent/*` and no data API, so it has no
+  // workspaces to offer. It stays in Settings → Remote control
+  // (`GET /instances?scope=owner`), never in the workspace switcher.
+  test('does not offer a cli-worker as a machine', async () => {
+    seedInstance({ id: 'i-mac', name: 'Russell’s Mac' })
+    seedInstance({ id: 'i-vm', kind: 'cli_worker', hostname: 'vm', name: 'Dev VM' })
+    const res = await buildApp().request('/api/machines')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    expect(body.machines.map((m: any) => m.id)).toEqual(['i-mac'])
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────
+// A cli-worker is an execution target, not a machine (SHO-120)
+// ────────────────────────────────────────────────────────────────────
+
+describe('a cli-worker is refused by the machine routes', () => {
+  test('the workspace snapshot answers 409 not_a_machine, not the VM’s 502', async () => {
+    seedInstance({ kind: 'cli_worker' })
+    let tunnelTouched = false
+    attachTunnel('i-1', () => {
+      tunnelTouched = true
+    })
+
+    const res = await buildApp().request('/api/machines/i-1/workspaces')
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('not_a_machine')
+    expect(tunnelTouched).toBe(false)
+  })
+
+  test('a workspace data call answers 409 not_a_machine instead of forwarding it', async () => {
+    seedInstance({ kind: 'cli_worker' })
+    let tunnelTouched = false
+    attachTunnel('i-1', () => {
+      tunnelTouched = true
+    })
+
+    const res = await buildApp().request(
+      '/api/machines/i-1/w/lw-1/api/projects/p-1/agent-proxy/agent/chat',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: 'hi' }),
+      },
+    )
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('not_a_machine')
+    expect(body.error.message).toContain('/api/instances/:id/p')
+    expect(tunnelTouched).toBe(false)
+  })
 })
 
 // ────────────────────────────────────────────────────────────────────
@@ -300,7 +356,7 @@ describe('machine workspace relay', () => {
       })
     })
 
-    const res = await buildApp().request('/api/machines/i-1/w/lw-1/projects?includeHidden=true')
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects?includeHidden=true')
     expect(res.status).toBe(200)
     const body = (await res.json()) as any
     expect(body.projects[0].id).toBe('p-1')
@@ -318,7 +374,7 @@ describe('machine workspace relay', () => {
       respondJson({ id: 'msg-1' })(req, conn)
     })
 
-    const res = await buildApp().request('/api/machines/i-1/w/lw-1/chat-messages', {
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/chat-messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ content: 'hello' }),
@@ -331,7 +387,7 @@ describe('machine workspace relay', () => {
   test('a second member of the cloud workspace is refused with 403', async () => {
     seedInstance()
     attachTunnel('i-1', respondJson({}))
-    const res = await buildApp(OTHER_MEMBER).request('/api/machines/i-1/w/lw-1/projects')
+    const res = await buildApp(OTHER_MEMBER).request('/api/machines/i-1/w/lw-1/api/projects')
     expect(res.status).toBe(403)
     const body = (await res.json()) as any
     expect(body.error.code).toBe('forbidden')
@@ -339,7 +395,7 @@ describe('machine workspace relay', () => {
 
   test('an offline machine answers 503 offline, never 200 with empty data', async () => {
     seedInstance({ lastSeenAt: null, metadata: { machine: SNAPSHOT } })
-    const res = await buildApp().request('/api/machines/i-1/w/lw-1/projects')
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects')
     expect(res.status).toBe(503)
     const body = (await res.json()) as any
     expect(body.error.code).toBe('offline')
@@ -357,7 +413,7 @@ describe('machine workspace relay', () => {
     })
 
     const res = await buildApp().request(
-      '/api/machines/i-1/w/lw-1/projects/p-1/agent-proxy/agent/chat',
+      '/api/machines/i-1/w/lw-1/api/projects/p-1/agent-proxy/agent/chat',
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -386,7 +442,7 @@ describe('machine workspace relay', () => {
     })
 
     const res = await buildApp().request(
-      '/api/machines/i-1/w/lw-1/workspaces/lw-1/agent-proxy/agent/chat',
+      '/api/machines/i-1/w/lw-1/api/workspaces/lw-1/agent-proxy/agent/chat',
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -397,5 +453,50 @@ describe('machine workspace relay', () => {
     expect(res.headers.get('content-type')).toContain('text/event-stream')
     expect(await res.text()).toBe('{"delta":"hello"}')
     expect(frame.path).toBe('/api/workspaces/lw-1/agent-proxy/agent/chat')
+  })
+
+  // SHO-120 seam: the interceptor appends the *client* path (`/api/projects`) to
+  // the relay base, so the relay must forward that exact suffix. Two unit tests
+  // used to cover the halves separately and never met: one posted `/w/lw-1/projects`,
+  // the other asserted the app's doubled `/api/api/projects`. Composing them here
+  // is the only thing that catches a re-introduced double prefix.
+  test('a data call built by the app reaches the desktop as a single /api path', async () => {
+    seedInstance()
+    let seen: any
+    attachTunnel('i-1', (req, conn) => {
+      seen = req
+      respondJson({ projects: [{ id: 'p-1' }] })(req, conn)
+    })
+
+    const calls: string[] = []
+    const http = {
+      get: async (path: string) => {
+        calls.push(path)
+        return { data: {} }
+      },
+      post: async (path: string) => {
+        calls.push(path)
+        return { data: {} }
+      },
+      patch: async () => ({ data: {} }),
+      delete: async () => ({ data: {} }),
+      request: async () => ({ data: {} }),
+    } as any
+
+    // `remoteProxyBaseUrl` is exactly what `computeRemoteProxyBaseUrl` hands
+    // `SDKDomainProvider` for a machine workspace.
+    const proxy = createRemoteAwareHttpClient(http, () => ({
+      remoteProxyBaseUrl: 'https://studio.shogo.ai/api/machines/i-1/w/lw-1',
+      machineWorkspaceId: 'lw-1',
+    }))
+    await proxy.get('/api/projects?workspaceId=ws-cloud')
+
+    // The URL the app would fetch, replayed through the real relay route.
+    const sent = new URL(calls[0])
+    const res = await buildApp().request(`${sent.pathname}${sent.search}`)
+
+    expect(res.status).toBe(200)
+    expect(seen.path).toBe('/api/projects?workspaceId=lw-1')
+    expect(seen.path.startsWith('/api/api')).toBe(false)
   })
 })
