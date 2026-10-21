@@ -784,6 +784,9 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                             void workspaceChats.updateChat(id, { isArchived: next })
                           }
                           onDeleteChat={(id) => void workspaceChats.deleteChat(id)}
+                          rowClassName="min-h-0 rounded-xl px-3 py-1.5"
+                          textClassName="text-base font-medium"
+                          inactiveTextClassName="text-foreground"
                         />
                       </ScrollView>
                       {archivedSideChats.length > 0 ? (
@@ -846,6 +849,9 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                   void workspaceChats.updateChat(id, { isArchived: next })
                                 }
                                 onDeleteChat={(id) => void workspaceChats.deleteChat(id)}
+                                rowClassName="min-h-0 rounded-xl px-3 py-1.5"
+                                textClassName="text-base font-medium"
+                                inactiveTextClassName="text-foreground"
                               />
                             </ScrollView>
                           ) : null}

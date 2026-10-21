@@ -501,7 +501,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     <ChatSessionList
       sessions={visibleProjectChatItems(sessions)}
       archivedSessions={sessions.filter((s: any) => s.isArchived)}
-      activeChatId={activeChatId}
+      activeChatId={isActive ? activeChatId : null}
       revealActiveChat={isActive}
       streamingIds={streamingIds}
       completedIds={completedIds}

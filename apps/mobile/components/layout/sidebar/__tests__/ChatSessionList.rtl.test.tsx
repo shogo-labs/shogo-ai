@@ -268,6 +268,23 @@ describe("ChatSessionList", () => {
     expect(confirm).not.toHaveBeenCalled();
   });
 
+  test("row and label class overrides reach the row (phone drawer keeps its own type scale)", () => {
+    renderList({
+      sessions: [session("a", "Alpha")],
+      rowClassName: "min-h-0 rounded-xl px-3 py-1.5",
+      textClassName: "text-base font-medium",
+      inactiveTextClassName: "text-foreground",
+    });
+
+    const row = screen.getByLabelText("Chat: Alpha");
+    expect(row.className).toContain("rounded-xl");
+    const label = Array.from(row.querySelectorAll("*")).find(
+      (node) => node.textContent === "Alpha",
+    );
+    expect(label?.getAttribute("class")).toContain("text-base");
+    expect(label?.getAttribute("class")).toContain("text-foreground");
+  });
+
   test("cancelling the dialog deletes nothing", () => {
     const spies = renderList({ sessions: [session("a", "Alpha")] });
 

@@ -218,6 +218,9 @@ export function ChatSessionList({
   scopeLabel,
   listAccessibilityLabel,
   testID,
+  rowClassName,
+  textClassName,
+  inactiveTextClassName,
 }: {
   /** Active rows, already ordered (and already filtered of archived ones). */
   sessions: any[];
@@ -253,6 +256,10 @@ export function ChatSessionList({
   scopeLabel?: string;
   listAccessibilityLabel?: string;
   testID?: string;
+  /** Row/label overrides for callers that do not want the phone density. */
+  rowClassName?: string;
+  textClassName?: string;
+  inactiveTextClassName?: string;
 }) {
   const archived = archivedSessions ?? [];
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_CHATS);
@@ -327,6 +334,9 @@ export function ChatSessionList({
       }
       mobileProjectDetail={mobileProjectDetail}
       variant={variant}
+      rowClassName={rowClassName}
+      textClassName={textClassName}
+      inactiveTextClassName={inactiveTextClassName}
     />
   );
 
