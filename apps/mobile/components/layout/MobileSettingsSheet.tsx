@@ -25,6 +25,7 @@ import {
 import { Text } from "../settings/account-sheet-chrome";
 import { ProjectSettingsContent } from "../settings/ProjectSettingsContent";
 import { usePlatformConfig } from "../../lib/platform-config";
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import {
   settingsTab,
   type SettingsTabId,
@@ -50,14 +51,16 @@ export function MobileSettingsSheet({
   const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
   const [workspaceActionsOpen, setWorkspaceActionsOpen] = useState(false);
   const isLocal = localMode || !features.billing;
+  const teamChat = useWorkspaceExperience().kind === "team";
   const tabs = useMemo(
     () =>
       visibleSettingsTabs({
         localMode: isLocal,
         showBilling: features.billing,
         platform: Platform.OS,
+        teamChat,
       }),
-    [features.billing, isLocal]
+    [features.billing, isLocal, teamChat]
   );
 
   useEffect(() => {

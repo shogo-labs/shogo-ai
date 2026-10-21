@@ -26,6 +26,7 @@ import {
 } from "../../components/settings/account-settings-sheets"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { useActiveInstance } from "../../contexts/active-instance"
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { useMachineWorkspaces } from "../../hooks/useMachineWorkspaces"
 import {
   buildWorkspaceEntries,
@@ -76,6 +77,7 @@ export default observer(function AccountPage() {
   const hasAdminAccess = useHasAdminAccess(user?.id)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
   const params = useLocalSearchParams<{ tab?: string; workspace?: string }>()
+  const teamChat = useWorkspaceExperience().kind === "team"
   // Same tab-availability rules the legacy Settings page uses, so a deep link
   // that is not available in this mode/platform opens Workspace instead.
   const settingsOptions = useMemo(
@@ -84,8 +86,9 @@ export default observer(function AccountPage() {
       showBilling: features.billing,
       platform: Platform.OS,
       isDesktop: isDesktopShell(),
+      teamChat,
     }),
-    [features.billing, localMode],
+    [features.billing, localMode, teamChat],
   )
   const requestedTab = typeof params.tab === "string" ? params.tab : undefined
   const [settingsTab, setSettingsTab] = useState<AccountSettingsSheetTab | null>(

@@ -176,7 +176,7 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
 
       {chat.enabled && (
         <>
-          <Pressable role="menuitem" accessibilityLabel="What's your status?" onPress={() => go('/(app)/c/settings')} className={ROW}>
+          <Pressable role="menuitem" accessibilityLabel="What's your status?" onPress={() => go('/(app)/settings?tab=chat')} className={ROW}>
             <SmilePlus size={16} className="text-muted-foreground" />
             <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
               {settings?.statusEmoji || settings?.statusText ? `${settings.statusEmoji ?? ''} ${settings.statusText ?? ''}`.trim() : "What's your status?"}

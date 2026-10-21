@@ -60,6 +60,7 @@ import {
   useAccountSheetIcons,
 } from "../../components/settings/account-sheet-chrome";
 import { AppearanceTab } from "../../components/settings/AppearanceTab";
+import { ChatPreferencesTab } from "../../components/settings/ChatPreferencesTab";
 import { CreateWorkspaceModal } from "../../components/layout/sidebar/CreateWorkspaceModal";
 import { useAuth } from "../../contexts/auth";
 import {
@@ -73,6 +74,7 @@ import {
 } from "../../contexts/domain";
 import { useDomainActions } from "@shogo/shared-app/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation";
 import { usePermissions } from "../../hooks/usePermissions";
 import { setActiveWorkspaceId } from "../../lib/workspace-store";
@@ -200,6 +202,7 @@ function useSettingsIcons() {
 const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   workspace: "Building2",
   people: "Users",
+  chat: "MessageSquare",
   models: "Boxes",
   integrations: "Plug",
   automations: "Zap",
@@ -238,6 +241,7 @@ interface NavItem {
 const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "people",
+  "chat",
   "models",
   "integrations",
   "automations",
@@ -251,6 +255,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
 
 const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
+  "chat",
   "models",
   "integrations",
   "automations",
@@ -268,14 +273,19 @@ function TabBar({
   onTabChange,
   showBilling = true,
   localMode = false,
+  teamChat = false,
 }: {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
   showBilling?: boolean;
   localMode?: boolean;
+  /** Chat preferences only exist in a team workspace. */
+  teamChat?: boolean;
 }) {
   const icons = useSettingsIcons();
-  const items = showBilling && !localMode ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS;
+  const items = (showBilling && !localMode ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS).filter(
+    (item) => item.id !== "chat" || teamChat,
+  );
   return (
     <ScrollView
       horizontal
@@ -335,6 +345,7 @@ function SettingsSidebar({
   onExit,
   showBilling = true,
   localMode = false,
+  teamChat = false,
 }: {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
@@ -343,6 +354,8 @@ function SettingsSidebar({
   onExit?: () => void;
   showBilling?: boolean;
   localMode?: boolean;
+  /** Chat preferences only exist in a team workspace. */
+  teamChat?: boolean;
 }) {
   const { ArrowLeft } = useSettingsIcons();
   const tabItem = (id: TabId): SidebarItem => ({
@@ -352,6 +365,7 @@ function SettingsSidebar({
 
   const workspaceItems: SidebarItem[] = [
     ...(!(localMode || !showBilling) ? [tabItem("people")] : []),
+    ...(teamChat ? [tabItem("chat")] : []),
     tabItem("models"),
     tabItem("integrations"),
     tabItem("automations"),
@@ -4182,6 +4196,7 @@ export const SettingsContent = observer(function SettingsContent({
     <>
       {activeTab === "workspace" && <WorkspaceSettingsTab />}
       {activeTab === "people" && !isLocal && <PeopleTab />}
+      {activeTab === "chat" && <ChatPreferencesTab />}
       {activeTab === "models" && <WorkspaceModelsTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
       {activeTab === "automations" && (
@@ -4231,6 +4246,7 @@ export default observer(function SettingsPage({
   const { user } = useAuth();
   const workspaces = useWorkspaceCollection();
   const { features, localMode } = usePlatformConfig();
+  const teamChat = useWorkspaceExperience().kind === "team";
   const phoneTarget = phoneSettingsTarget(
     params as Record<string, string | string[] | undefined>,
     {
@@ -4238,6 +4254,7 @@ export default observer(function SettingsPage({
       showBilling: features.billing,
       platform: Platform.OS,
       isDesktop: IS_DESKTOP_CLIENT,
+      teamChat,
     },
   );
 
@@ -4273,13 +4290,14 @@ export default observer(function SettingsPage({
     if (isPhoneSurface) return;
     const isLocal = localMode || !features.billing;
     if (activeTab === "people" && isLocal) setActiveTab("workspace");
+    if (activeTab === "chat" && !teamChat) setActiveTab("workspace");
     if (activeTab === "compute" && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS))
       setActiveTab("workspace");
     if (activeTab === "updates" && !IS_DESKTOP_CLIENT)
       setActiveTab("workspace");
     if (activeTab === "computer-files" && (!IS_DESKTOP_CLIENT || !isLocal))
       setActiveTab("workspace");
-  }, [activeTab, features.billing, localMode]);
+  }, [activeTab, features.billing, localMode, teamChat]);
 
   const userName = user?.name || "";
   const activeTabLabel = settingsTab(activeTab).label;
@@ -4311,6 +4329,7 @@ export default observer(function SettingsPage({
             onExit={inAppShell ? undefined : exitSettings}
             showBilling={features.billing}
             localMode={localMode}
+            teamChat={teamChat}
           />
         </View>
         <ScrollView
@@ -4381,6 +4400,7 @@ export default observer(function SettingsPage({
           onTabChange={setActiveTab}
           showBilling={features.billing}
           localMode={localMode || !features.billing}
+          teamChat={teamChat}
         />
       </View>
 
