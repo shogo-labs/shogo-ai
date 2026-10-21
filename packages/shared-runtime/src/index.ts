@@ -134,8 +134,43 @@ export {
   lfsRemoteConfigFromEnv,
   migrateOffloadedAssetsToLfs,
   DEFAULT_LFS_EXTENSIONS,
+  DEFAULT_LFS_BUDGET_GB,
+  lfsBudgetBytes,
+  lfsOverBudget,
+  pruneLfsBudget,
   type LfsRemoteConfig,
 } from './lfs'
+
+export {
+  isShogoRuntimeState,
+  toPosixPath,
+  directorySizeBytes,
+  resolveGitDir,
+  evictStaleGitLock,
+  isRepoIdle,
+  isRepairInProgress,
+  acquireRepairLock,
+  buildShogoExcludeBlock,
+  ensureShogoExcludes,
+  untrackShogoStatePaths,
+  prepareCheckpointRepo,
+  stripShogoLfsRules,
+  SHOGO_MEMORY_HISTORY_PREFIX,
+  SHOGO_EXCLUDE_HEADER,
+  SHOGO_EXCLUDE_FOOTER,
+  SHOGO_EXCLUDE_LINES,
+  type UntrackResult,
+} from './shogo-state-paths'
+
+export {
+  repairCheckpointRepo,
+  readRepairMarker,
+  repairedBytes,
+  filterExportStream,
+  parseMarks,
+  type RepairOptions,
+  type RepairResult,
+} from './checkpoint-repo-repair'
 
 export {
   initializePostgresBackup,

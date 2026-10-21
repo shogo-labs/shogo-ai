@@ -24,6 +24,11 @@
 
 import { spawn } from './child-process'
 import { excludePathspecs } from './git-pathspec'
+import {
+  ensureShogoExcludes,
+  evictStaleGitLock,
+  untrackShogoStatePaths,
+} from './shogo-state-paths'
 import { existsSync, mkdirSync, mkdtempSync, createReadStream, createWriteStream, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { unlink } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -139,6 +144,12 @@ export const DEFAULT_WORKSPACE_GITIGNORE = [
   'dist.staging',
   '.shogo/local',
   '.shogo-pool-assignment',
+  '# Shogo runtime state (sessions DBs, logs, task output, scratch dirs) is',
+  '# never source — see packages/shared-runtime/src/shogo-state-paths.ts',
+  '.shogo/*',
+  '!.shogo/memory-history/',
+  '.shogo-cwd-*',
+  '.tmp/',
   '*.log',
   '.env',
   '.env.local',
@@ -162,7 +173,8 @@ export function ensureWorkspaceGitignore(workspaceDir: string): boolean {
 const UNTRACK_DIRS = ['node_modules', 'dist', 'dist.staging']
 
 /**
- * Repair a repo that already tracks dependency / build directories: drop them
+ * Repair a repo that already tracks dependency / build directories, or Shogo's
+ * own runtime state (`.shogo/*`, `.tmp/*`, `.shogo-cwd-*` — SHO-105): drop them
  * from the index (files stay on disk), make sure they are ignored, and commit.
  * Cheap when nothing is tracked (one `git ls-files`), so callers can run it on
  * every bootstrap. Returns the list of directories that were untracked.
@@ -198,7 +210,21 @@ export async function untrackDependencyDirs(
       const res = await git(['ls-files', '-z', '--', dir])
       if (res.code === 0 && res.stdout.length > 0) tracked.push(dir)
     }
-    if (tracked.length === 0) return []
+
+    // Shogo runtime state is tracked in almost every repo seeded before
+    // SHO-105, and ignore rules never apply to an already-tracked path.
+    evictStaleGitLock(workspaceDir, 5_000, logger)
+    ensureShogoExcludes(workspaceDir, logger)
+    const { removed: untrackedState } = await untrackShogoStatePaths(workspaceDir, { logger })
+
+    if (tracked.length === 0) {
+      if (untrackedState > 0) {
+        logger.log(`[repo-store] untracked ${untrackedState} Shogo runtime-state path(s)`)
+        await git(['commit', '-q', '-m', 'chore: stop tracking Shogo runtime state', '--no-verify'])
+        return ['.shogo']
+      }
+      return []
+    }
 
     const started = Date.now()
     ensureWorkspaceGitignore(workspaceDir)
@@ -211,7 +237,7 @@ export async function untrackDependencyDirs(
       await git(['commit', '-q', '-m', `chore: stop tracking ${tracked.join(', ')}`, '--no-verify'])
     }
     logger.log(`[repo-store] untracked ${tracked.join(', ')} in ${Date.now() - started}ms`)
-    return tracked
+    return untrackedState > 0 ? [...tracked, '.shogo'] : tracked
   } catch (err: any) {
     logger.warn(`[repo-store] untrack dependency dirs failed: ${err?.message ?? err}`)
     return []
@@ -280,6 +306,10 @@ export async function seedRepoIfAbsent(
     await must(['config', 'core.longpaths', 'true'])
     await must(['config', 'user.name', authorName])
     await must(['config', 'user.email', authorEmail])
+    // Before the first `git add -A`: a repo the user (or an older build) created
+    // without a `.gitignore` would otherwise commit `.shogo/sessions.db` and its
+    // live WAL on the seed commit, and ignore rules never untrack it afterwards.
+    ensureShogoExcludes(workspaceDir, logger)
     await must(['add', '-A'])
     // `diff --quiet` exits 1 when there are staged changes; anything else is an error.
     const staged = await runEnv(['diff', '--cached', '--quiet'])

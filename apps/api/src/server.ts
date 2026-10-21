@@ -1645,6 +1645,15 @@ app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', slackAgentRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
 startTunnelHeartbeat()
 
+// SHO-105 / #1597: checkpoint repos seeded before this build still carry
+// `.shogo/sessions.db` (+ its live WAL) in their history and in `.git/lfs`.
+// `repairCheckpointRepo` rewrites the refs without touching a file on disk and
+// prunes the orphaned LFS objects; the marker it writes makes every later boot a
+// no-op. Off the readiness path, and killable with SHOGO_SKIP_CHECKPOINT_REPAIR=1.
+void import('./services/checkpoint-repo-repair.service')
+  .then((m) => m.startCheckpointRepoRepair(WORKSPACES_DIR))
+  .catch((err) => console.warn('[checkpoint-repair] could not start:', err?.message ?? err))
+
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
 app.get('/api/warm-pool/status', async (c) => {
   try {

@@ -71,6 +71,7 @@ import {
 import { signResumeToken } from '../services/integration-credentials/resume'
 import { resolveChatByRef } from '../lib/chat-mentionables'
 import { handOffToChat } from '../services/chat-mention-delivery.service'
+import { remapCheckpointCommitShas } from '../services/checkpoint-repo-repair.service'
 import { waitForAgentCall } from '../lib/agent-call-store'
 import { keepAliveJson, KEEPALIVE_HEADER, wantsKeepAlive } from '../lib/keepalive-json'
 
@@ -1246,6 +1247,51 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     } catch (err: any) {
       console.error(`[Internal] Failed to record checkpoint for ${projectId}:`, err.message)
       return c.json({ error: 'Failed to record checkpoint' }, 500)
+    }
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/checkpoints/remap
+   *   body: { remap: { <oldSha>: <newSha>, ... } }
+   *
+   * Called by the agent-runtime pod after `repairCheckpointRepo` rewrote its
+   * history to drop Shogo's own runtime state (SHO-105 / #1597). A rewrite
+   * changes every descendant's sha, so the rows the pod recorded earlier would
+   * stop resolving; the pod sends the `old -> new` map it got from
+   * `fast-import --export-marks` and we point the rows at the rewritten commits.
+   *
+   * Auth: K8s SA token (cluster) OR `x-runtime-token` (local desktop).
+   */
+  app.post('/projects/:projectId/checkpoints/remap', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    const body = await c.req.json().catch(() => null) as { remap?: unknown } | null
+    const remap = body && typeof body.remap === 'object' && body.remap !== null
+      ? body.remap as Record<string, unknown>
+      : null
+    if (!remap) return c.json({ error: 'remap object is required' }, 400)
+
+    const sha = /^[0-9a-f]{7,64}$/i
+    const changes = new Map<string, string>()
+    for (const [from, to] of Object.entries(remap)) {
+      if (!sha.test(from) || typeof to !== 'string' || !sha.test(to)) {
+        return c.json({ error: `Invalid sha pair: ${from}` }, 400)
+      }
+      changes.set(from, to)
+    }
+    if (changes.size === 0) return c.json({ ok: true, updated: 0 })
+    if (changes.size > 50_000) return c.json({ error: 'remap is too large' }, 413)
+
+    try {
+      const updated = await remapCheckpointCommitShas(projectId, changes)
+      return c.json({ ok: true, updated })
+    } catch (err: any) {
+      console.error(`[Internal] Failed to remap checkpoints for ${projectId}:`, err?.message ?? err)
+      return c.json({ error: 'Failed to remap checkpoints' }, 500)
     }
   })
 
