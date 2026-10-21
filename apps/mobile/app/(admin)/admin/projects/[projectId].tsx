@@ -30,7 +30,7 @@ import {
   GitBranch,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { API_URL } from '../../../lib/api'
+import { API_URL } from '../../../../lib/api'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -119,7 +119,7 @@ export default function AdminProjectDetailPage() {
       <View className="flex-1 bg-background items-center justify-center p-6">
         <Text className="text-muted-foreground">Project not found.</Text>
         <Pressable
-          onPress={() => router.replace('/(admin)/projects' as any)}
+          onPress={() => router.replace('/(admin)/admin/projects' as any)}
           className="mt-4 flex-row items-center gap-2"
         >
           <ArrowLeft size={16} className="text-primary" />
@@ -149,7 +149,7 @@ export default function AdminProjectDetailPage() {
     >
       <View style={isWide ? { maxWidth: 1000, width: '100%' } : undefined}>
         <Pressable
-          onPress={() => router.replace('/(admin)/projects' as any)}
+          onPress={() => router.replace('/(admin)/admin/projects' as any)}
           className={cn(
             'flex-row items-center gap-2 mb-4 self-start',
             isWide ? 'py-1.5 px-3 rounded-lg border border-border active:bg-muted/50' : 'active:opacity-60',

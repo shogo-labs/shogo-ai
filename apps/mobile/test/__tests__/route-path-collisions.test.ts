@@ -12,10 +12,12 @@
  *
  * This test asks expo-router itself what every file under `app/` resolves to
  * (`getExactRoutes` over a context module built from the real file tree), then
- * fails when one path is claimed twice. It also pins the two paths join mail
- * depends on: `/settings` (Settings → People) and `/admin/settings` (the admin
- * AI/provider console). The matching half of that pin is
- * `apps/api/src/__tests__/join-notification-settings-url.test.ts`.
+ * fails when one path is claimed twice. It also pins the ownership pairs a
+ * direct request must get right: `/settings` (Settings → People, matching
+ * `apps/api/src/__tests__/join-notification-settings-url.test.ts`) against
+ * `/admin/settings` (the admin AI/provider console), plus the four user pages
+ * the admin console used to answer (SHO-115) — each is the `(app)` file alone,
+ * with the admin screen under `/admin/<name>`.
  */
 import { describe, expect, test } from 'bun:test'
 import { readdirSync, statSync } from 'node:fs'
@@ -78,23 +80,32 @@ function resolveRouteTree(): Map<string, string[]> {
 }
 
 /**
- * Duplicate paths that predate SHO-110 and are tracked separately: each is an
- * admin page that a group-hoisted route answers at a user path. The user-facing
- * winner is right for the app today (in-app links always carry the group
- * segment), so only the emailed `/settings` collision was a live bug — these
- * four plus the root index trio are the follow-up. Frozen like a lint ratchet:
- * a *new* duplicate fails, and fixing one of these forces its removal here.
+ * Duplicate paths that survive by design: only the root, where
+ * `app/index.tsx` (auth/onboarding/embed gate), `(app)/index.tsx` (home),
+ * `(onboarding)/index.tsx` and `(admin)/index.tsx` (admin dashboard) all claim
+ * `/` and the gate picks the destination. Everything else was moved under
+ * `/admin/*` (SHO-110 for `/settings`, SHO-115 for the four below). Frozen like
+ * a lint ratchet: a *new* duplicate fails, and fixing one of these forces its
+ * removal here.
  */
 const KNOWN_DUPLICATES = new Set([
   // `app/index.tsx` (auth/onboarding/embed gate), `(app)/index.tsx` (home),
   // `(onboarding)/index.tsx` and `(admin)/index.tsx` (admin dashboard) — the
   // root path is claimed by groups by design; only the first one is the entry.
   '/',
-  '/analytics', // (app)/analytics.tsx | (admin)/analytics.tsx
-  '/marketplace', // (app)/marketplace/index.tsx | (admin)/marketplace/index.tsx
-  '/meetings', // (app)/meetings/index.tsx | (admin)/meetings.tsx
-  '/projects', // (app)/projects/index.tsx | (admin)/projects/index.tsx
 ])
+
+/**
+ * The admin console's user-path pages, moved under `/admin/*` so a direct
+ * request for the end-user page can never land on an admin screen: `<user>`
+ * belongs to the `(app)` file alone, `<admin>` to the `(admin)` one.
+ */
+const ADMIN_PAGES = [
+  { user: '/analytics', admin: '/admin/analytics', adminFile: '(admin)/admin/analytics.tsx' },
+  { user: '/marketplace', admin: '/admin/marketplace', adminFile: '(admin)/admin/marketplace/index.tsx' },
+  { user: '/meetings', admin: '/admin/meetings', adminFile: '(admin)/admin/meetings.tsx' },
+  { user: '/projects', admin: '/admin/projects', adminFile: '(admin)/admin/projects/index.tsx' },
+] as const
 
 const routes = resolveRouteTree()
 const duplicates = [...routes].filter(([, files]) => files.length > 1).map(([path]) => path).sort()
@@ -107,6 +118,14 @@ describe('route paths under app/', () => {
   test('/admin/settings is the admin AI console and nothing else', () => {
     expect(routes.get('/admin/settings')).toEqual(['(admin)/admin/settings.tsx'])
   })
+
+  for (const { user, admin, adminFile } of ADMIN_PAGES) {
+    test(`${user} is the end-user page and ${admin} is the admin one`, () => {
+      expect(routes.get(user)).toHaveLength(1)
+      expect(routes.get(user)?.[0]?.startsWith('(app)/')).toBe(true)
+      expect(routes.get(admin)).toEqual([adminFile])
+    })
+  }
 
   test('no new duplicate paths', () => {
     expect(duplicates.filter((path) => !KNOWN_DUPLICATES.has(path))).toEqual([])

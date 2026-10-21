@@ -107,7 +107,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
   {
     title: 'Growth & Marketing',
     items: [
-      { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics', scopes: ['analytics:read', 'marketing:read'] },
+      { href: '/(admin)/admin/analytics', icon: BarChart3, label: 'Marketing Analytics', scopes: ['analytics:read', 'marketing:read'] },
       { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scopes: ['creators:read', 'creators:write'] },
       { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM', scope: 'creators:write' },
       { href: '/(admin)/affiliate-payouts', icon: Wallet, label: 'Affiliate payouts', scope: 'creators:write' },
@@ -116,7 +116,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
   {
     title: 'Marketplace',
     items: [
-      { href: '/(admin)/marketplace', icon: Store, label: 'Marketplace' },
+      { href: '/(admin)/admin/marketplace', icon: Store, label: 'Marketplace' },
     ],
   },
   {
@@ -124,7 +124,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
     items: [
       { href: '/(admin)/users', icon: Users, label: 'Users' },
       { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
-      { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
+      { href: '/(admin)/admin/projects', icon: FolderKanban, label: 'Projects' },
     ],
   },
   {
@@ -165,8 +165,8 @@ function canSeeNavItem(item: AdminNavItem, isSuperAdmin: boolean, scopes: string
 }
 
 const LOCAL_MAIN_ITEMS = [
-  { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
-  { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics' },
+  { href: '/(admin)/admin/projects', icon: FolderKanban, label: 'Projects' },
+  { href: '/(admin)/admin/analytics', icon: BarChart3, label: 'Marketing Analytics' },
   { href: '/(admin)/ai-analytics', icon: Activity, label: 'AI Analytics' },
   { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
@@ -174,7 +174,7 @@ const LOCAL_MAIN_ITEMS = [
 
 const LOCAL_SETTINGS_ITEMS = [
   { href: '/(admin)/general' as const, icon: Settings, label: 'General' },
-  { href: '/(admin)/meetings' as const, icon: Mic, label: 'Meetings' },
+  { href: '/(admin)/admin/meetings' as const, icon: Mic, label: 'Meetings' },
   { href: '/(admin)/logs' as const, icon: ScrollText, label: 'Logs' },
   { href: '/(admin)/admin/settings' as const, icon: BrainCircuit, label: 'AI' },
 ] as const
@@ -546,11 +546,11 @@ function getPageTitle(pathname: string): string {
   if (pathname.includes('workspaces')) return 'Workspaces'
   if (pathname.startsWith('/grants/')) return 'Grant Detail'
   if (pathname.includes('grants')) return 'Credit grants'
-  if (pathname.startsWith('/marketplace/listing/')) return 'Listing Detail'
-  if (pathname.startsWith('/marketplace/payouts')) return 'Marketplace Payouts'
-  if (pathname.startsWith('/marketplace/listings')) return 'Marketplace Listings'
-  if (pathname.startsWith('/marketplace')) return 'Marketplace Review'
-  if (pathname.startsWith('/projects/')) return 'Project Detail'
+  if (pathname.startsWith('/admin/marketplace/listing/')) return 'Listing Detail'
+  if (pathname.startsWith('/admin/marketplace/payouts')) return 'Marketplace Payouts'
+  if (pathname.startsWith('/admin/marketplace/listings')) return 'Marketplace Listings'
+  if (pathname.startsWith('/admin/marketplace')) return 'Marketplace Review'
+  if (pathname.startsWith('/admin/projects/')) return 'Project Detail'
   if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('ai-analytics')) return 'AI Analytics'
   if (pathname.includes('analytics')) return 'Marketing Analytics'
@@ -632,7 +632,7 @@ function AdminLayoutInner() {
     if (localMode && !isPending && hasAdminAccess) {
       const p = pathname
       if (p === '/' || p === '' || p === '/(admin)' || p === '/index') {
-        router.replace('/(admin)/projects' as any)
+        router.replace('/(admin)/admin/projects' as any)
       }
     }
   }, [localMode, isPending, hasAdminAccess, pathname, router])
