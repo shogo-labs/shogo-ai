@@ -45,6 +45,7 @@ import {
   isModelProviderConfigured,
 } from '../services/visible-models.service'
 import { wipeCloudKeyIfRejected } from '../lib/cloud-key-wipe'
+import { cloudPassthroughHeaders, forwardToShogoCloud } from '../lib/cloud-request-forward'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
 import { beginCapture } from '../lib/proxy-capture'
@@ -3625,6 +3626,46 @@ export async function recordTranscriptionUsage(
 
 const isLocalDev = process.env.SHOGO_LOCAL_MODE === 'true'
 
+/**
+ * `/ai/v1` prefixes whose handlers only ever talk to a *local* provider key:
+ * images (OpenAI / Google / Higgsfield), the media catalogue + uploads, video,
+ * 3D and audio transcription. On a cloud-authed desktop those keys do not exist
+ * locally — they live in Shogo Cloud — so before this forwarder every one of
+ * these answered `provider_not_configured` (or an empty catalogue) even though
+ * the cloud held the key. That is SHO-74: *"3D provider 'tripo' is not
+ * configured"* on a machine whose Tripo key is saved in cloud admin.
+ *
+ * One forwarder covers all five instead of a branch per handler, because they
+ * are a family of routes that were added one at a time and the next one must
+ * not be local-only by accident (see the route-parity guard test). It is
+ * prefix-wide rather than per-route on purpose: a job created in cloud
+ * (`videos/generations`, `3d/files` → `3d/generations`) is polled in cloud
+ * (`videos/:id`, `3d/:id`), so handling the poll locally would orphan the job.
+ */
+export const CLOUD_FORWARDED_AI_PREFIXES = [
+  '/ai/v1/images/',
+  '/ai/v1/media/',
+  '/ai/v1/videos/',
+  '/ai/v1/3d/',
+  '/ai/v1/audio/',
+] as const
+
+/**
+ * Strip the mount base (`/api`) off a request pathname so it can be matched
+ * against the prefixes above and appended to `${cloud}/api`. The router is
+ * mounted at `/api` in `server.ts`, so `c.req.path` is `/api/ai/v1/…`.
+ */
+export function aiRelativePath(pathname: string): string {
+  const idx = pathname.indexOf('/ai/')
+  return idx >= 0 ? pathname.slice(idx) : pathname
+}
+
+/** True when a request belongs to a family the local proxy never serves. */
+export function isCloudForwardedAiPath(pathname: string): boolean {
+  const relative = aiRelativePath(pathname)
+  return CLOUD_FORWARDED_AI_PREFIXES.some((prefix) => relative.startsWith(prefix))
+}
+
 export function aiProxyRoutes() {
   const router = new Hono()
 
@@ -3754,15 +3795,6 @@ export function aiProxyRoutes() {
 
     const jwt = await verifyProxyToken(token)
     return jwt ? { ...jwt, authKind: 'proxy-jwt' } : null
-  }
-
-  /**
-   * Request headers the local proxy relays to Shogo Cloud so cloud capture can
-   * group desktop calls by chat.
-   */
-  function cloudPassthroughHeaders(c: any): Record<string, string> {
-    const chatSessionId = c.req.header('x-chat-session-id')
-    return chatSessionId ? { 'x-chat-session-id': chatSessionId } : {}
   }
 
   /**
@@ -3936,6 +3968,54 @@ export function aiProxyRoutes() {
     const data = await response.json()
     return c.json(data, response.status as any)
   }
+
+  /**
+   * Forward a media / 3D / audio request to the Shogo Cloud AI proxy.
+   *
+   * `lib/cloud-request-forward.ts` owns the credential, the header set, the
+   * body streaming and the 401 self-heal — the same ones chat uses. The only
+   * thing this wrapper adds is where the request lands: everything after the
+   * `/api` mount, plus the query string.
+   */
+  async function forwardMediaToCloud(c: any): Promise<Response> {
+    const originalUrl = new URL(c.req.url)
+    return forwardToShogoCloud(c, {
+      pathname: aiRelativePath(originalUrl.pathname),
+      search: originalUrl.search,
+    })
+  }
+
+  /**
+   * Route-level cloud forwarding for the media / 3D / audio families, ahead of
+   * every handler that would otherwise resolve a local provider key.
+   *
+   * Precedence matches chat exactly: once the gate is on, the request goes to
+   * cloud and a local BYOK key is never consulted (BYOK-only setups run
+   * `AI_MODE=api-keys`, which turns the gate off for everything). Returning
+   * here is also what keeps a forwarded call from opening a local
+   * `BillingSession` — cloud bills it, and a local capture would charge the
+   * same generation twice.
+   */
+  router.use('*', async (c, next) => {
+    if (!isCloudForwardedAiPath(new URL(c.req.url).pathname)) return next()
+    if (!isShogoCloudForwarding()) return next()
+
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        {
+          error: {
+            message: 'Invalid or missing proxy token. Use Authorization: Bearer <token>',
+            type: 'authentication_error',
+            code: 'invalid_api_key',
+          },
+        },
+        401,
+      )
+    }
+
+    return forwardMediaToCloud(c)
+  })
 
   // =========================================================================
   // POST /ai/v1/chat/completions - OpenAI-compatible chat completions proxy

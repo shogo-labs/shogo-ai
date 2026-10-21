@@ -13,6 +13,11 @@ delete process.env.AI_MODE
 // Rows of the workspace model allowlist (empty = inherit everything).
 let visibilityRows: string[] = []
 
+// Local billing seams. A forwarded request must touch none of them: cloud
+// bills it, and a local capture would charge the same generation twice.
+let billingCalls: string[] = []
+let captureCalls: any[] = []
+
 mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
     project: {
@@ -32,9 +37,16 @@ mock.module('../lib/prisma', () => withPrismaExports({
 }))
 
 mock.module('../services/billing.service', () => ({
-  hasBalance: async () => true,
-  hasAdvancedModelAccess: async () => true,
-  consumeUsage: async () => ({ success: true, remainingIncludedUsd: 100 }),
+  hasBalance: async () => { billingCalls.push('hasBalance'); return true },
+  hasAdvancedModelAccess: async () => { billingCalls.push('hasAdvancedModelAccess'); return true },
+  checkUsageBalance: async () => { billingCalls.push('checkUsageBalance'); return { ok: true, remainingIncludedUsd: 100 } },
+  consumeUsage: async () => { billingCalls.push('consumeUsage'); return { success: true, remainingIncludedUsd: 100 } },
+}))
+
+mock.module('../lib/proxy-capture', () => ({
+  beginCapture: async (args: any) => { captureCalls.push(args); return null },
+  updateTurnFeedback: async () => {},
+  markProjectTurnsReverted: async () => {},
 }))
 
 mock.module('../lib/proxy-billing-session', () => ({
@@ -74,6 +86,8 @@ beforeEach(() => {
   lastFetchUrl = null
   lastFetchInit = undefined
   nextFetchResponses = []
+  billingCalls = []
+  captureCalls = []
   process.env.SHOGO_API_KEY = 'shogo_sk_cloud'
   process.env.SHOGO_CLOUD_URL = 'https://cloud.example/'
   process.env.SHOGO_LOCAL_MODE = 'true'
@@ -335,6 +349,160 @@ describe('AI proxy Shogo Cloud forwarding', () => {
       expect(res.status).toBe(200)
       expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/chat/completions')
     })
+  })
+})
+
+/**
+ * SHO-74: the media / 3D / audio families were local-only, so a cloud-authed
+ * desktop with no BYOK keys answered `provider_not_configured` (or an empty
+ * catalogue) no matter what the cloud had saved. One router-level forwarder
+ * covers all five prefixes so a new media route can't be local-only by
+ * accident — and so a job created in cloud is polled in cloud.
+ */
+describe('AI proxy media / 3D / audio cloud forwarding', () => {
+  test('serves the cloud 3D catalogue on a keyless cloud-authed desktop', async () => {
+    nextFetchResponses.push(() => new Response(JSON.stringify({
+      models: [{ id: 'tripo-v2', provider: 'tripo' }],
+      operations: [],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/v1/3d/models', {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    }))
+
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/3d/models')
+    const sent = new Headers(lastFetchInit?.headers)
+    expect(sent.get('Authorization')).toBe('Bearer shogo_sk_cloud')
+    expect(sent.get('x-shogo-client')).toBe('desktop')
+    expect((await res.json() as any).models[0].id).toBe('tripo-v2')
+    expect(billingCalls).toEqual([])
+    expect(captureCalls).toEqual([])
+  })
+
+  test('keeps the query string when forwarding the media catalogue', async () => {
+    nextFetchResponses.push(() => new Response(JSON.stringify({ images: [], videos: [], utilities: [] }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/v1/media/models?provider=higgsfield', {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    }))
+
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/media/models?provider=higgsfield')
+  })
+
+  test('forwards an image generation with its JSON body intact and opens no local capture', async () => {
+    nextFetchResponses.push(() => new Response(JSON.stringify({
+      data: [{ b64_json: 'aGk=' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    const body = { model: 'gpt-image-1', prompt: 'a red cube', size: '1024x1024', n: 1 }
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/v1/images/generations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify(body),
+    }))
+
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/images/generations')
+    expect(JSON.parse(await new Response(lastFetchInit?.body as any).text())).toEqual(body)
+    expect(new Headers(lastFetchInit?.headers).get('Content-Type')).toBe('application/json')
+    expect((await res.json() as any).data[0].b64_json).toBe('aGk=')
+    // Cloud bills the generation; a local capture or balance gate would double-bill.
+    expect(billingCalls).toEqual([])
+    expect(captureCalls).toEqual([])
+  })
+
+  test('forwards a 3D generation and its job poll without a local billing capture', async () => {
+    nextFetchResponses.push(() => new Response(JSON.stringify({ id: 'job-1', status: 'queued' }), {
+      status: 202, headers: { 'Content-Type': 'application/json' },
+    }))
+    const app = buildApp()
+    const created = await app.fetch(new Request('http://x/api/ai/v1/3d/generations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ model: 'tripo-v2', prompt: 'a wooden chair' }),
+    }))
+    expect(created.status).toBe(202)
+    expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/3d/generations')
+
+    // The poll has to be answered by the instance that owns the job.
+    nextFetchResponses.push(() => new Response(JSON.stringify({ id: 'job-1', status: 'succeeded' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    const polled = await app.fetch(new Request('http://x/api/ai/v1/3d/job-1', {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    }))
+    expect(polled.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/3d/job-1')
+
+    expect(billingCalls).toEqual([])
+    expect(captureCalls).toEqual([])
+  })
+
+  test('forwards a multipart transcription with the multipart body and boundary intact', async () => {
+    nextFetchResponses.push(() => new Response(JSON.stringify({ text: 'hello there' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const form = new FormData()
+    form.set('model', 'gpt-4o-transcribe')
+    form.set('file', new File([new Uint8Array([1, 2, 3, 4])], 'note.webm', { type: 'audio/webm' }))
+
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: form,
+    }))
+
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/audio/transcriptions')
+    expect(new Headers(lastFetchInit?.headers).get('content-type')).toContain('multipart/form-data; boundary=')
+    const forwarded = await new Response(lastFetchInit?.body as any).formData()
+    expect(forwarded.get('model')).toBe('gpt-4o-transcribe')
+    const file = forwarded.get('file') as File
+    expect(file.name).toBe('note.webm')
+    expect(new Uint8Array(await file.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4]))
+    expect((await res.json() as any).text).toBe('hello there')
+    expect(captureCalls).toEqual([])
+  })
+
+  test('rejects an unauthenticated media request before it reaches the cloud', async () => {
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/v1/3d/models'))
+
+    expect(res.status).toBe(401)
+    expect((await res.json() as any).error.code).toBe('invalid_api_key')
+    expect(lastFetchUrl).toBeNull()
+  })
+
+  test('AI_MODE=api-keys never forwards: local behaviour is unchanged', async () => {
+    process.env.AI_MODE = 'api-keys'
+    const app = buildApp()
+
+    // No local Tripo key → the same empty catalogue as before this change.
+    const models = await app.fetch(new Request('http://x/api/ai/v1/3d/models', {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    }))
+    expect(models.status).toBe(200)
+    expect((await models.json() as any).models).toEqual([])
+    expect(lastFetchUrl).toBeNull()
+
+    // No local OpenAI key → the same `provider_not_configured` 503.
+    const image = await app.fetch(new Request('http://x/api/ai/v1/images/generations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ model: 'gpt-image-1', prompt: 'a red cube' }),
+    }))
+    expect(image.status).toBe(503)
+    expect((await image.json() as any).error.code).toBe('provider_not_configured')
+    expect(lastFetchUrl).toBeNull()
   })
 })
 
