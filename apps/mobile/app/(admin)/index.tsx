@@ -42,6 +42,10 @@ import {
 import { SegmentedFilter } from "../../components/phone/SegmentedFilter";
 import { AppVersionsPanel, type InstallSegment } from '../../components/analytics/AppVersionsPanel'
 import {
+  ActiveDevicesPanel,
+  type ActiveDevicesData,
+} from '../../components/analytics/ActiveDevicesPanel'
+import {
   PlatformGrowthChart,
   ActiveUsersTrendChart,
   UsageTimeseriesChart,
@@ -796,6 +800,10 @@ export default function AdminDashboard() {
     data: null,
     loading: true,
   })
+  const [appDevices, setAppDevices] = useState<{ data: ActiveDevicesData | null; loading: boolean }>({
+    data: null,
+    loading: true,
+  })
   const [growth, setGrowth] = useState<{ data: GrowthDataPoint[] | null; loading: boolean }>({
     data: null,
     loading: true,
@@ -841,6 +849,7 @@ export default function AdminDashboard() {
     setOverview((s) => ({ ...s, loading: true }))
     setActiveUsers((s) => ({ ...s, loading: true }))
     setAppInstalls((s) => ({ ...s, loading: true }))
+    setAppDevices((s) => ({ ...s, loading: true }))
     setGrowth((s) => ({ ...s, loading: true }))
     setUsage((s) => ({ ...s, loading: true }))
     setActiveUsersTs((s) => ({ ...s, loading: true }))
@@ -859,6 +868,7 @@ export default function AdminDashboard() {
       overviewData,
       activeData,
       appInstallsData,
+      appDevicesData,
       growthData,
       usageData,
       activeUsersTsData,
@@ -869,6 +879,7 @@ export default function AdminDashboard() {
       fetchAdminJson<OverviewData>('/analytics/overview'),
       fetchAdminJson<ActiveUsersData>('/analytics/active-users', { period }),
       fetchAdminJson<AppInstallsData>('/analytics/app-installs'),
+      fetchAdminJson<ActiveDevicesData>('/analytics/devices', { dormant: '1', limit: '1000' }),
       fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', { period }),
       fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { period }),
       fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', { period }),
@@ -886,6 +897,7 @@ export default function AdminDashboard() {
     setOverview({ data: overviewData, loading: false })
     setActiveUsers({ data: activeData, loading: false })
     setAppInstalls({ data: appInstallsData, loading: false })
+    setAppDevices({ data: appDevicesData, loading: false })
     setGrowth({ data: growthData, loading: false })
     setUsage({ data: usageData, loading: false })
     setActiveUsersTs({ data: activeUsersTsData, loading: false })
@@ -1046,6 +1058,11 @@ export default function AdminDashboard() {
       {/* Row 3: Signed-in app install and activity metrics */}
       <View className="mb-6">
         <AppInstallsCard data={appInstalls.data} loading={appInstalls.loading} />
+      </View>
+
+      {/* Row 3b: Which devices are actually alive */}
+      <View className="mb-6">
+        <ActiveDevicesPanel data={appDevices.data} loading={appDevices.loading} />
       </View>
 
       {/* Row 4: Growth over time (Daily / Cumulative) */}

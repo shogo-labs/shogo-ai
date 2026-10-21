@@ -255,6 +255,37 @@ export function adminRoutes(): Hono {
   })
 
   /**
+   * GET /analytics/devices - Per-device activity list (online badge, version, idle)
+   *
+   * `app-installs` answers "how many devices"; this answers "which ones". Each
+   * row is one machine with its last heartbeat, so `online` means a heartbeat
+   * inside the last `ONLINE_WINDOW_MINUTES` — the desktop pings every 5 minutes
+   * while it runs, mobile only on foreground.
+   */
+  router.get('/analytics/devices', async (c) => {
+    try {
+      const params = new URL(c.req.url).searchParams
+      const rawDays = Number(params.get('days') || '30')
+      const rawLimit = Number(params.get('limit') || '500')
+      const dormant = (params.get('dormant') || '').toLowerCase()
+      const rawClient = params.get('client')
+      const data = await analytics.getActiveDevices({
+        days: Number.isFinite(rawDays) ? rawDays : 30,
+        limit: Number.isFinite(rawLimit) ? rawLimit : 500,
+        includeDormant: ['1', 'true', 'yes'].includes(dormant),
+        client:
+          rawClient === 'desktop' || rawClient === 'cli' || rawClient === 'unknown'
+            ? rawClient
+            : undefined,
+      })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Analytics devices error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
    * GET /analytics/chat - Chat activity analytics
    */
   router.get('/analytics/chat', async (c) => {

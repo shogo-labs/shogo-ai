@@ -9,11 +9,13 @@
  * - Project-level analytics (scope = { workspaceId, projectId })
  */
 
+import { createHash } from 'crypto'
 import { prisma, Prisma } from '../lib/prisma'
 import { resolveModelLabels } from './model-registry.service'
 import { countLineChanges } from '../lib/tool-line-stats'
 import {
   compareSemver,
+  deviceOsLabel,
   isSameRelease,
   parseChannel,
   parseClient,
@@ -1938,6 +1940,134 @@ export async function getAppVersions(options: { days?: number } = {}): Promise<A
     desktop: aggregateInstalls(partitioned.desktop, { latestMode: 'deploy', deployedVersion }),
     cli: aggregateInstalls(partitioned.cli, { latestMode: 'none' }),
     adoption,
+  }
+}
+
+// ============================================================================
+// Active devices (per-machine list)
+// ============================================================================
+
+/**
+ * How stale a heartbeat can be and still count as "online".
+ *
+ * The desktop pings `/api/api-keys/heartbeat` every 5 minutes while it runs, so
+ * three missed beats is a closed laptop; mobile reports on foreground only.
+ */
+export const ONLINE_WINDOW_MINUTES = 15
+
+export interface ActiveDeviceRow {
+  /** `sha256(deviceId)` prefix — the raw id never leaves the server. */
+  id: string
+  client: DeviceClient
+  os: DeviceOs
+  osLabel: string
+  arch: DeviceArch
+  version: string
+  channel: ReleaseChannel
+  userId: string | null
+  firstSeenAt: string
+  lastSeenAt: string | null
+  online: boolean
+  /** Hours since the last heartbeat, or null when the device never reported. */
+  idleHours: number | null
+}
+
+export interface ActiveDevicesData {
+  generatedAt: string
+  onlineWindowMinutes: number
+  windowDays: number
+  includeDormant: boolean
+  totals: { devices: number; online: number; active: number; dormant: number }
+  devices: ActiveDeviceRow[]
+}
+
+function deviceHandle(deviceId: string): string {
+  return createHash('sha256').update(deviceId).digest('hex').slice(0, 10)
+}
+
+/**
+ * Which machine is alive, not just how many.
+ *
+ * `getAppInstalls` answers "how many"; this answers "which" — one row per
+ * device with its last heartbeat and an `online` flag, so an operator can tell
+ * a live install from a key nobody has touched since July. Version and OS come
+ * from the same snapshots the aggregates use, so a device's row here always
+ * agrees with the count it contributes to.
+ */
+export async function getActiveDevices(
+  options: {
+    days?: number
+    includeDormant?: boolean
+    limit?: number
+    client?: DeviceClient
+  } = {},
+): Promise<ActiveDevicesData> {
+  const days = Math.min(Math.max(Math.trunc(options.days ?? 30) || 30, 1), 365)
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 500) || 500, 1), 1000)
+  const includeDormant = options.includeDormant ?? false
+  const now = new Date()
+  const activeCutoff = now.getTime() - days * 24 * 60 * 60 * 1000
+  const onlineCutoff = now.getTime() - ONLINE_WINDOW_MINUTES * 60 * 1000
+
+  const keys = await prisma.apiKey.findMany({
+    where: { kind: 'device', revokedAt: null, deviceId: { not: null } },
+    select: DEVICE_KEY_SELECT,
+  })
+  const rows = toInstallRows(keys)
+
+  const firstSeen = new Map<string, number>()
+  for (const row of rows) {
+    if (!row.deviceId) continue
+    const at = row.createdAt.getTime()
+    const previous = firstSeen.get(row.deviceId)
+    if (previous === undefined || at < previous) firstSeen.set(row.deviceId, at)
+  }
+
+  const scoped = buildDeviceSnapshots(rows)
+    .map<ActiveDeviceRow>((snapshot) => {
+      const last = snapshot.row.lastSeenAt ? snapshot.row.lastSeenAt.getTime() : null
+      return {
+        id: deviceHandle(snapshot.deviceId),
+        client: snapshot.client,
+        os: snapshot.os,
+        osLabel: deviceOsLabel(snapshot.os),
+        arch: snapshot.arch,
+        version: snapshot.version,
+        channel: snapshot.channel,
+        userId: snapshot.row.userId ?? null,
+        firstSeenAt: new Date(
+          firstSeen.get(snapshot.deviceId) ?? snapshot.row.createdAt.getTime(),
+        ).toISOString(),
+        lastSeenAt: last === null ? null : new Date(last).toISOString(),
+        online: last !== null && last >= onlineCutoff,
+        idleHours: last === null ? null : Math.round(((now.getTime() - last) / 3_600_000) * 10) / 10,
+      }
+    })
+    .filter((device) => (options.client ? device.client === options.client : true))
+
+  const isActive = (device: ActiveDeviceRow): boolean =>
+    device.lastSeenAt !== null && new Date(device.lastSeenAt).getTime() >= activeCutoff
+
+  const online = scoped.filter((device) => device.online).length
+  const active = scoped.filter(isActive).length
+
+  const devices = scoped
+    .filter((device) => includeDormant || isActive(device))
+    .sort(
+      (a, b) =>
+        Number(b.online) - Number(a.online) ||
+        (b.lastSeenAt ?? '').localeCompare(a.lastSeenAt ?? '') ||
+        a.id.localeCompare(b.id),
+    )
+    .slice(0, limit)
+
+  return {
+    generatedAt: now.toISOString(),
+    onlineWindowMinutes: ONLINE_WINDOW_MINUTES,
+    windowDays: days,
+    includeDormant,
+    totals: { devices: scoped.length, online, active, dormant: scoped.length - active },
+    devices,
   }
 }
 

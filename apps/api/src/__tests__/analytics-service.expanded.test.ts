@@ -1153,6 +1153,103 @@ describe('getAppVersions', () => {
 })
 
 // =========================================================================
+// getActiveDevices — which machines are alive, not just how many
+// =========================================================================
+
+describe('getActiveDevices', () => {
+  const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000)
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60 * 1000)
+
+  function seed() {
+    store.apiKeys.push(
+      // Heartbeat 2 minutes ago — online.
+      { kind: 'device', revokedAt: null, deviceId: 'mac-live', devicePlatform: 'darwin-arm64', deviceAppVersion: '2.3.6', lastSeenAt: minutesAgo(2), createdAt: daysAgo(40), userId: 'u1' },
+      // Seen this morning but not in the last 15 minutes.
+      { kind: 'device', revokedAt: null, deviceId: 'win-live', devicePlatform: 'win32-x64', deviceAppVersion: '2.2.27', lastSeenAt: daysAgo(3), createdAt: daysAgo(60), userId: 'u2' },
+      // 90 days idle — a stale key, not a running machine.
+      { kind: 'device', revokedAt: null, deviceId: 'stale', devicePlatform: 'darwin-x64', deviceAppVersion: '1.12.7', lastSeenAt: daysAgo(90), createdAt: daysAgo(120), userId: 'u3' },
+      // CLI key must not be counted as a desktop device.
+      { kind: 'device', revokedAt: null, deviceId: 'cli-1', devicePlatform: 'linux-x64', deviceAppVersion: 'shogo-cli/1.4.0', lastSeenAt: minutesAgo(1), createdAt: daysAgo(2), userId: 'u4' },
+      // Revoked keys are not devices any more.
+      { kind: 'device', revokedAt: daysAgo(1), deviceId: 'revoked', devicePlatform: 'win32', deviceAppVersion: '2.3.6', lastSeenAt: daysAgo(1), createdAt: daysAgo(5), userId: 'u5' },
+    )
+    rebuildModels()
+  }
+
+  test('lists active devices with an online flag and hides dormant keys', async () => {
+    seed()
+    const out = await analytics.getActiveDevices()
+
+    expect(out.onlineWindowMinutes).toBe(15)
+    expect(out.windowDays).toBe(30)
+    // 4 unrevoked devices (3 desktop + 1 cli); the revoked key is excluded entirely.
+    expect(out.totals.devices).toBe(4)
+    expect(out.totals.online).toBe(2)
+    expect(out.totals.dormant).toBe(1)
+    // Only the 3 seen inside the window are listed by default.
+    expect(out.devices).toHaveLength(3)
+    expect(out.devices.map((d) => d.osLabel).sort()).toEqual(['Linux', 'Windows', 'macOS'])
+    // Online devices first.
+    expect(out.devices[0].online).toBe(true)
+  })
+
+  test('includeDormant surfaces stale keys with their idle age', async () => {
+    seed()
+    const out = await analytics.getActiveDevices({ includeDormant: true, days: 30 })
+
+    expect(out.totals.dormant).toBe(1)
+    const stale = out.devices.find((d) => d.version === '1.12.7')
+    expect(stale).toBeDefined()
+    expect(stale!.online).toBe(false)
+    expect(stale!.idleHours).toBeGreaterThan(24 * 80)
+    expect(out.devices.length).toBe(4)
+  })
+
+  test('the raw device id never leaves the server', async () => {
+    seed()
+    const out = await analytics.getActiveDevices({ includeDormant: true })
+    for (const row of out.devices) {
+      expect(row.id).toMatch(/^[0-9a-f]{10}$/)
+      expect(['mac-live', 'win-live', 'stale', 'cli-1']).not.toContain(row.id)
+    }
+  })
+
+  test('client filter separates CLI from desktop', async () => {
+    seed()
+    const desktops = await analytics.getActiveDevices({ client: 'desktop' })
+    const clis = await analytics.getActiveDevices({ client: 'cli' })
+
+    expect(desktops.devices.every((d) => d.client === 'desktop')).toBe(true)
+    expect(clis.devices).toHaveLength(1)
+    expect(clis.devices[0].version).toBe('shogo-cli/1.4.0')
+  })
+
+  test('a device that reported no version still resolves one from its keys', async () => {
+    store.apiKeys.push({
+      kind: 'device',
+      revokedAt: null,
+      deviceId: 'mixed',
+      devicePlatform: null,
+      deviceAppVersion: null,
+      lastSeenAt: minutesAgo(1),
+      createdAt: daysAgo(4),
+      userId: 'u6',
+    })
+    rebuildModels()
+    const out = await analytics.getActiveDevices()
+    expect(out.devices).toHaveLength(1)
+    expect(out.devices[0].version).toBe('unknown')
+    expect(out.devices[0].os).toBe('unknown')
+  })
+
+  test('clamps the window and the limit', async () => {
+    const out = await analytics.getActiveDevices({ days: -5, limit: 0 })
+    expect(out.windowDays).toBe(1)
+    expect(out.devices).toEqual([])
+  })
+})
+
+// =========================================================================
 // getUsageLog filter branches (options.userId / options.model / scope.userId)
 // =========================================================================
 
