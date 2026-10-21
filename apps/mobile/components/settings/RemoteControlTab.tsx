@@ -136,7 +136,7 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
     workspaceId: workspace?.id,
     // Every machine this user registered, not only the ones filed under the
     // cloud workspace that happens to be open — the same list the workspace
-    // switcher shows under "This Mac".
+    // switcher lists with the cloud workspaces.
     scope: 'owner',
     apiUrl: API_URL ?? '',
     activeInstance,

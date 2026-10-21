@@ -41,10 +41,10 @@ import {
   type ModelProviderInput,
   type PublicModel,
 } from '@shogo-ai/sdk'
-import { createHttpClient } from '../../lib/api'
-import { usePlatformConfig } from '../../lib/platform-config'
-import { invalidateVisibleModelsCache, useModelPickerList } from '../../lib/visible-models'
-import { ModelsCard } from '../../components/admin/ModelsCard'
+import { createHttpClient } from '../../../lib/api'
+import { usePlatformConfig } from '../../../lib/platform-config'
+import { invalidateVisibleModelsCache, useModelPickerList } from '../../../lib/visible-models'
+import { ModelsCard } from '../../../components/admin/ModelsCard'
 
 // =============================================================================
 // Types

@@ -5,7 +5,7 @@
  * card has a thread in its channel; `history` merges that thread with card
  * events and the other conversations that mention the card.
  */
-import { createHttpClient } from './api'
+import { workspaceHttpProxy } from './workspace-http'
 
 export type ColumnCategory = 'backlog' | 'active' | 'waiting' | 'review' | 'done' | 'dismissed'
 export type Priority = 'urgent' | 'high' | 'medium' | 'low' | 'none'
@@ -261,7 +261,10 @@ export function agentRefFor(projectId: string | null): string {
 }
 
 export function workBoardsApi() {
-  const http = createHttpClient()
+  // The domain client: while one of a paired computer's own workspaces is open
+  // the interceptor sends boards, cards and their threads to that machine
+  // (`/api/boards`, `/api/work-items`, …) and to this app's API otherwise.
+  const http = workspaceHttpProxy()
   const ws = (workspaceId: string) => `/api/workspaces/${encodeURIComponent(workspaceId)}`
   const board = (id: string) => `/api/boards/${encodeURIComponent(id)}`
   const item = (id: string) => `/api/work-items/${encodeURIComponent(id)}`

@@ -13,9 +13,10 @@ import { test, expect, type Page } from "@playwright/test"
  *   bun run api:dev    (API server on port 8002)
  *   bun run web:dev    (Expo web on port 8081)
  *
- * NOTE: The /settings URL resolves to the admin route group due to an
- * Expo Router conflict between (admin)/settings.tsx and (app)/settings.tsx.
- * We navigate to workspace settings via the Command Palette instead.
+ * NOTE: this spec drives workspace settings through the Command Palette so it
+ * exercises the in-app path a user takes. (Until SHO-110 a plain `/settings` URL
+ * was ambiguous — (admin)/settings.tsx and (app)/settings.tsx both answered it
+ * and the admin console won; the admin AI screen now lives at /admin/settings.)
  *
  * Run:
  *   npx playwright test --config e2e/dev/playwright.config.ts user-analytics

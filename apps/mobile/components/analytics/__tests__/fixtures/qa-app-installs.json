@@ -1,0 +1,985 @@
+{
+  "installs": {
+    "desktop": {
+      "totalDevices": 14,
+      "active": {
+        "d1": 7,
+        "d7": 11,
+        "d30": 12
+      },
+      "newLast30d": 6,
+      "byVersion": [
+        {
+          "version": "2.3.6",
+          "count": 6,
+          "activeD7": 6
+        },
+        {
+          "version": "2.2.27",
+          "count": 3,
+          "activeD7": 3
+        },
+        {
+          "version": "1.12.7",
+          "count": 2,
+          "activeD7": 0
+        },
+        {
+          "version": "2.2.24",
+          "count": 1,
+          "activeD7": 0
+        },
+        {
+          "version": "2.3.5",
+          "count": 1,
+          "activeD7": 1
+        },
+        {
+          "version": "2.3.6-beta.20261020t083308",
+          "count": 1,
+          "activeD7": 1
+        }
+      ],
+      "byPlatform": [
+        {
+          "platform": "win32",
+          "count": 6
+        },
+        {
+          "platform": "darwin",
+          "count": 3
+        },
+        {
+          "platform": "darwin-arm64",
+          "count": 1
+        },
+        {
+          "platform": "darwin-x64",
+          "count": 1
+        },
+        {
+          "platform": "linux-arm64",
+          "count": 1
+        },
+        {
+          "platform": "linux-x64",
+          "count": 1
+        },
+        {
+          "platform": "win32-x64",
+          "count": 1
+        }
+      ],
+      "distinctUsers": 1,
+      "byOs": [
+        {
+          "os": "windows",
+          "arch": null,
+          "devices": 6,
+          "active1d": 3,
+          "active7d": 5,
+          "active30d": 5
+        },
+        {
+          "os": "macos",
+          "arch": null,
+          "devices": 3,
+          "active1d": 2,
+          "active7d": 3,
+          "active30d": 3
+        },
+        {
+          "os": "linux",
+          "arch": "arm64",
+          "devices": 1,
+          "active1d": 0,
+          "active7d": 0,
+          "active30d": 1
+        },
+        {
+          "os": "linux",
+          "arch": "x64",
+          "devices": 1,
+          "active1d": 0,
+          "active7d": 1,
+          "active30d": 1
+        },
+        {
+          "os": "macos",
+          "arch": "arm64",
+          "devices": 1,
+          "active1d": 1,
+          "active7d": 1,
+          "active30d": 1
+        },
+        {
+          "os": "macos",
+          "arch": "x64",
+          "devices": 1,
+          "active1d": 0,
+          "active7d": 0,
+          "active30d": 0
+        },
+        {
+          "os": "windows",
+          "arch": "x64",
+          "devices": 1,
+          "active1d": 1,
+          "active7d": 1,
+          "active30d": 1
+        }
+      ],
+      "versions": [
+        {
+          "version": "2.3.6",
+          "channel": "stable",
+          "devices": 6,
+          "activeD7": 6,
+          "firstSeenAt": "2026-10-01T08:15:37.602Z",
+          "lastSeenAt": "2026-10-21T07:45:37.602Z",
+          "os": {
+            "macos": 2,
+            "windows": 3,
+            "linux": 1,
+            "unknown": 0
+          }
+        },
+        {
+          "version": "2.2.27",
+          "channel": "stable",
+          "devices": 3,
+          "activeD7": 3,
+          "firstSeenAt": "2026-09-06T08:15:37.602Z",
+          "lastSeenAt": "2026-10-19T08:15:37.602Z",
+          "os": {
+            "macos": 1,
+            "windows": 2,
+            "linux": 0,
+            "unknown": 0
+          }
+        },
+        {
+          "version": "1.12.7",
+          "channel": "stable",
+          "devices": 2,
+          "activeD7": 0,
+          "firstSeenAt": "2025-12-25T08:15:37.602Z",
+          "lastSeenAt": "2026-09-11T08:15:37.602Z",
+          "os": {
+            "macos": 1,
+            "windows": 1,
+            "linux": 0,
+            "unknown": 0
+          }
+        },
+        {
+          "version": "2.3.6-beta.20261020t083308",
+          "channel": "beta",
+          "devices": 1,
+          "activeD7": 1,
+          "firstSeenAt": "2026-10-19T08:15:37.602Z",
+          "lastSeenAt": "2026-10-21T07:15:37.602Z",
+          "os": {
+            "macos": 1,
+            "windows": 0,
+            "linux": 0,
+            "unknown": 0
+          }
+        },
+        {
+          "version": "2.3.5",
+          "channel": "stable",
+          "devices": 1,
+          "activeD7": 1,
+          "firstSeenAt": "2026-08-22T08:15:37.602Z",
+          "lastSeenAt": "2026-10-16T08:15:37.602Z",
+          "os": {
+            "macos": 0,
+            "windows": 1,
+            "linux": 0,
+            "unknown": 0
+          }
+        },
+        {
+          "version": "2.2.24",
+          "channel": "stable",
+          "devices": 1,
+          "activeD7": 0,
+          "firstSeenAt": "2026-08-12T08:15:37.602Z",
+          "lastSeenAt": "2026-10-01T08:15:37.602Z",
+          "os": {
+            "macos": 0,
+            "windows": 0,
+            "linux": 1,
+            "unknown": 0
+          }
+        }
+      ],
+      "onLatest": {
+        "version": "2.3.6",
+        "devices": 6,
+        "pct": 43,
+        "source": "deployed"
+      }
+    },
+    "cli": {
+      "totalDevices": 2,
+      "active": {
+        "d1": 2,
+        "d7": 2,
+        "d30": 2
+      },
+      "newLast30d": 2,
+      "byVersion": [
+        {
+          "version": "shogo-cli/unknown",
+          "count": 2,
+          "activeD7": 2
+        }
+      ],
+      "byPlatform": [
+        {
+          "platform": "darwin",
+          "count": 1
+        },
+        {
+          "platform": "linux-x64",
+          "count": 1
+        }
+      ],
+      "distinctUsers": 1,
+      "byOs": [
+        {
+          "os": "linux",
+          "arch": "x64",
+          "devices": 1,
+          "active1d": 1,
+          "active7d": 1,
+          "active30d": 1
+        },
+        {
+          "os": "macos",
+          "arch": null,
+          "devices": 1,
+          "active1d": 1,
+          "active7d": 1,
+          "active30d": 1
+        }
+      ],
+      "versions": [
+        {
+          "version": "shogo-cli/unknown",
+          "channel": "stable",
+          "devices": 2,
+          "activeD7": 2,
+          "firstSeenAt": "2026-10-06T08:15:37.602Z",
+          "lastSeenAt": "2026-10-21T07:15:37.602Z",
+          "os": {
+            "macos": 1,
+            "windows": 0,
+            "linux": 1,
+            "unknown": 0
+          }
+        }
+      ],
+      "onLatest": null
+    },
+    "ios": {
+      "totalDevices": 1,
+      "active": {
+        "d1": 0,
+        "d7": 1,
+        "d30": 1
+      },
+      "newLast30d": 1,
+      "byVersion": [
+        {
+          "version": "1.4.0",
+          "count": 1,
+          "activeD7": 1
+        }
+      ],
+      "byPlatform": [
+        {
+          "platform": "iOS 18.2",
+          "count": 1
+        }
+      ],
+      "distinctUsers": 1,
+      "byOs": [
+        {
+          "os": "unknown",
+          "arch": null,
+          "devices": 1,
+          "active1d": 0,
+          "active7d": 1,
+          "active30d": 1
+        }
+      ],
+      "versions": [
+        {
+          "version": "1.4.0",
+          "channel": "stable",
+          "devices": 1,
+          "activeD7": 1,
+          "firstSeenAt": "2026-10-01T08:15:37.602Z",
+          "lastSeenAt": "2026-10-20T08:15:37.602Z",
+          "os": {
+            "macos": 0,
+            "windows": 0,
+            "linux": 0,
+            "unknown": 1
+          }
+        }
+      ],
+      "onLatest": {
+        "version": "1.4.0",
+        "devices": 1,
+        "pct": 100,
+        "source": "inferred"
+      }
+    },
+    "android": {
+      "totalDevices": 1,
+      "active": {
+        "d1": 0,
+        "d7": 1,
+        "d30": 1
+      },
+      "newLast30d": 1,
+      "byVersion": [
+        {
+          "version": "1.4.0",
+          "count": 1,
+          "activeD7": 1
+        }
+      ],
+      "byPlatform": [
+        {
+          "platform": "Android 15",
+          "count": 1
+        }
+      ],
+      "distinctUsers": 1,
+      "byOs": [
+        {
+          "os": "unknown",
+          "arch": null,
+          "devices": 1,
+          "active1d": 0,
+          "active7d": 1,
+          "active30d": 1
+        }
+      ],
+      "versions": [
+        {
+          "version": "1.4.0",
+          "channel": "stable",
+          "devices": 1,
+          "activeD7": 1,
+          "firstSeenAt": "2026-10-01T08:15:37.602Z",
+          "lastSeenAt": "2026-10-19T08:15:37.602Z",
+          "os": {
+            "macos": 0,
+            "windows": 0,
+            "linux": 0,
+            "unknown": 1
+          }
+        }
+      ],
+      "onLatest": {
+        "version": "1.4.0",
+        "devices": 1,
+        "pct": 100,
+        "source": "inferred"
+      }
+    },
+    "totals": {
+      "totalDevices": 16,
+      "active": {
+        "d1": 7,
+        "d7": 13,
+        "d30": 14
+      },
+      "newLast30d": 8,
+      "distinctUsers": 1
+    }
+  },
+  "devices": {
+    "generatedAt": "2026-10-21T08:15:38.277Z",
+    "onlineWindowMinutes": 15,
+    "windowDays": 365,
+    "includeDormant": true,
+    "totals": {
+      "devices": 16,
+      "online": 1,
+      "active": 16,
+      "dormant": 0
+    },
+    "devices": [
+      {
+        "id": "d5bc18f597",
+        "client": "desktop",
+        "os": "windows",
+        "osLabel": "Windows",
+        "arch": null,
+        "version": "2.3.5",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-08-22T08:15:37.602Z",
+        "lastSeenAt": "2026-10-21T08:10:37.602Z",
+        "online": true,
+        "idleHours": 0.1
+      },
+      {
+        "id": "c43a2fc9c6",
+        "client": "desktop",
+        "os": "windows",
+        "osLabel": "Windows",
+        "arch": "x64",
+        "version": "2.3.6",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-10-18T08:15:37.602Z",
+        "lastSeenAt": "2026-10-21T07:45:37.602Z",
+        "online": false,
+        "idleHours": 0.5
+      },
+      {
+        "id": "153812ae5f",
+        "client": "desktop",
+        "os": "macos",
+        "osLabel": "macOS",
+        "arch": null,
+        "version": "2.3.6-beta.20261020t083308",
+        "channel": "beta",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-10-19T08:15:37.602Z",
+        "lastSeenAt": "2026-10-21T07:15:37.602Z",
+        "online": false,
+        "idleHours": 1
+      },
+      {
+        "id": "60c5590f72",
+        "client": "desktop",
+        "os": "windows",
+        "osLabel": "Windows",
+        "arch": null,
+        "version": "2.3.6",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-10-11T08:15:37.602Z",
+        "lastSeenAt": "2026-10-21T07:15:37.602Z",
+        "online": false,
+        "idleHours": 1
+      },
+      {
+        "id": "bb349f2699",
+        "client": "desktop",
+        "os": "windows",
+        "osLabel": "Windows",
+        "arch": null,
+        "version": "2.3.6",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-07-23T08:15:37.602Z",
+        "lastSeenAt": "2026-10-21T07:15:37.602Z",
+        "online": false,
+        "idleHours": 1
+      },
+      {
+        "id": "d0f631ca1d",
+        "client": "cli",
+        "os": "linux",
+        "osLabel": "Linux",
+        "arch": "x64",
+        "version": "shogo-cli/unknown",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-10-06T08:15:37.602Z",
+        "lastSeenAt": "2026-10-21T07:15:37.602Z",
+        "online": false,
+        "idleHours": 1
+      },
+      {
+        "id": "29c1b289e7",
+        "client": "desktop",
+        "os": "macos",
+        "osLabel": "macOS",
+        "arch": null,
+        "version": "2.3.6",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-10-13T08:15:37.602Z",
+        "lastSeenAt": "2026-10-21T06:15:37.602Z",
+        "online": false,
+        "idleHours": 2
+      },
+      {
+        "id": "9c0abe51c6",
+        "client": "cli",
+        "os": "macos",
+        "osLabel": "macOS",
+        "arch": null,
+        "version": "shogo-cli/unknown",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-10-16T08:15:37.602Z",
+        "lastSeenAt": "2026-10-21T06:15:37.602Z",
+        "online": false,
+        "idleHours": 2
+      },
+      {
+        "id": "2396a1256a",
+        "client": "desktop",
+        "os": "macos",
+        "osLabel": "macOS",
+        "arch": "arm64",
+        "version": "2.3.6",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-10-15T08:15:37.602Z",
+        "lastSeenAt": "2026-10-21T05:15:37.602Z",
+        "online": false,
+        "idleHours": 3
+      },
+      {
+        "id": "55eae50b75",
+        "client": "desktop",
+        "os": "windows",
+        "osLabel": "Windows",
+        "arch": null,
+        "version": "2.2.27",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-09-11T08:15:37.602Z",
+        "lastSeenAt": "2026-10-19T08:15:37.602Z",
+        "online": false,
+        "idleHours": 48
+      },
+      {
+        "id": "879cc67a84",
+        "client": "desktop",
+        "os": "windows",
+        "osLabel": "Windows",
+        "arch": null,
+        "version": "2.2.27",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-09-11T08:15:37.602Z",
+        "lastSeenAt": "2026-10-19T08:15:37.602Z",
+        "online": false,
+        "idleHours": 48
+      },
+      {
+        "id": "ca0df2c95a",
+        "client": "desktop",
+        "os": "macos",
+        "osLabel": "macOS",
+        "arch": null,
+        "version": "2.2.27",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-09-06T08:15:37.602Z",
+        "lastSeenAt": "2026-10-17T08:15:37.602Z",
+        "online": false,
+        "idleHours": 96
+      },
+      {
+        "id": "2804bad6fe",
+        "client": "desktop",
+        "os": "linux",
+        "osLabel": "Linux",
+        "arch": "x64",
+        "version": "2.3.6",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-10-01T08:15:37.602Z",
+        "lastSeenAt": "2026-10-15T08:15:37.602Z",
+        "online": false,
+        "idleHours": 144
+      },
+      {
+        "id": "8a1cee436c",
+        "client": "desktop",
+        "os": "linux",
+        "osLabel": "Linux",
+        "arch": "arm64",
+        "version": "2.2.24",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-08-12T08:15:37.602Z",
+        "lastSeenAt": "2026-10-01T08:15:37.602Z",
+        "online": false,
+        "idleHours": 480
+      },
+      {
+        "id": "06f8faea3b",
+        "client": "desktop",
+        "os": "windows",
+        "osLabel": "Windows",
+        "arch": null,
+        "version": "1.12.7",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2026-04-04T08:15:37.602Z",
+        "lastSeenAt": "2026-09-11T08:15:37.602Z",
+        "online": false,
+        "idleHours": 960
+      },
+      {
+        "id": "b5f2031eb6",
+        "client": "desktop",
+        "os": "macos",
+        "osLabel": "macOS",
+        "arch": "x64",
+        "version": "1.12.7",
+        "channel": "stable",
+        "userId": "cmvhu7rgh0000ml1omea9cp82",
+        "firstSeenAt": "2025-12-25T08:15:37.602Z",
+        "lastSeenAt": "2026-08-22T08:15:37.602Z",
+        "online": false,
+        "idleHours": 1440
+      }
+    ]
+  },
+  "versions": {
+    "generatedAt": "2026-10-21T08:15:38.277Z",
+    "deployedVersion": "2.3.6",
+    "windowDays": 30,
+    "desktop": {
+      "totalDevices": 14,
+      "active": {
+        "d1": 7,
+        "d7": 11,
+        "d30": 12
+      },
+      "newLast30d": 6,
+      "byVersion": [
+        {
+          "version": "2.3.6",
+          "count": 6,
+          "activeD7": 6
+        },
+        {
+          "version": "2.2.27",
+          "count": 3,
+          "activeD7": 3
+        },
+        {
+          "version": "1.12.7",
+          "count": 2,
+          "activeD7": 0
+        },
+        {
+          "version": "2.2.24",
+          "count": 1,
+          "activeD7": 0
+        },
+        {
+          "version": "2.3.5",
+          "count": 1,
+          "activeD7": 1
+        },
+        {
+          "version": "2.3.6-beta.20261020t083308",
+          "count": 1,
+          "activeD7": 1
+        }
+      ],
+      "byPlatform": [
+        {
+          "platform": "win32",
+          "count": 6
+        },
+        {
+          "platform": "darwin",
+          "count": 3
+        },
+        {
+          "platform": "darwin-arm64",
+          "count": 1
+        },
+        {
+          "platform": "darwin-x64",
+          "count": 1
+        },
+        {
+          "platform": "linux-arm64",
+          "count": 1
+        },
+        {
+          "platform": "linux-x64",
+          "count": 1
+        },
+        {
+          "platform": "win32-x64",
+          "count": 1
+        }
+      ],
+      "distinctUsers": 1,
+      "byOs": [
+        {
+          "os": "windows",
+          "arch": null,
+          "devices": 6,
+          "active1d": 3,
+          "active7d": 5,
+          "active30d": 5
+        },
+        {
+          "os": "macos",
+          "arch": null,
+          "devices": 3,
+          "active1d": 2,
+          "active7d": 3,
+          "active30d": 3
+        },
+        {
+          "os": "linux",
+          "arch": "arm64",
+          "devices": 1,
+          "active1d": 0,
+          "active7d": 0,
+          "active30d": 1
+        },
+        {
+          "os": "linux",
+          "arch": "x64",
+          "devices": 1,
+          "active1d": 0,
+          "active7d": 1,
+          "active30d": 1
+        },
+        {
+          "os": "macos",
+          "arch": "arm64",
+          "devices": 1,
+          "active1d": 1,
+          "active7d": 1,
+          "active30d": 1
+        },
+        {
+          "os": "macos",
+          "arch": "x64",
+          "devices": 1,
+          "active1d": 0,
+          "active7d": 0,
+          "active30d": 0
+        },
+        {
+          "os": "windows",
+          "arch": "x64",
+          "devices": 1,
+          "active1d": 1,
+          "active7d": 1,
+          "active30d": 1
+        }
+      ],
+      "versions": [
+        {
+          "version": "2.3.6",
+          "channel": "stable",
+          "devices": 6,
+          "activeD7": 6,
+          "firstSeenAt": "2026-10-01T08:15:37.602Z",
+          "lastSeenAt": "2026-10-21T07:45:37.602Z",
+          "os": {
+            "macos": 2,
+            "windows": 3,
+            "linux": 1,
+            "unknown": 0
+          }
+        },
+        {
+          "version": "2.2.27",
+          "channel": "stable",
+          "devices": 3,
+          "activeD7": 3,
+          "firstSeenAt": "2026-09-06T08:15:37.602Z",
+          "lastSeenAt": "2026-10-19T08:15:37.602Z",
+          "os": {
+            "macos": 1,
+            "windows": 2,
+            "linux": 0,
+            "unknown": 0
+          }
+        },
+        {
+          "version": "1.12.7",
+          "channel": "stable",
+          "devices": 2,
+          "activeD7": 0,
+          "firstSeenAt": "2025-12-25T08:15:37.602Z",
+          "lastSeenAt": "2026-09-11T08:15:37.602Z",
+          "os": {
+            "macos": 1,
+            "windows": 1,
+            "linux": 0,
+            "unknown": 0
+          }
+        },
+        {
+          "version": "2.3.6-beta.20261020t083308",
+          "channel": "beta",
+          "devices": 1,
+          "activeD7": 1,
+          "firstSeenAt": "2026-10-19T08:15:37.602Z",
+          "lastSeenAt": "2026-10-21T07:15:37.602Z",
+          "os": {
+            "macos": 1,
+            "windows": 0,
+            "linux": 0,
+            "unknown": 0
+          }
+        },
+        {
+          "version": "2.3.5",
+          "channel": "stable",
+          "devices": 1,
+          "activeD7": 1,
+          "firstSeenAt": "2026-08-22T08:15:37.602Z",
+          "lastSeenAt": "2026-10-16T08:15:37.602Z",
+          "os": {
+            "macos": 0,
+            "windows": 1,
+            "linux": 0,
+            "unknown": 0
+          }
+        },
+        {
+          "version": "2.2.24",
+          "channel": "stable",
+          "devices": 1,
+          "activeD7": 0,
+          "firstSeenAt": "2026-08-12T08:15:37.602Z",
+          "lastSeenAt": "2026-10-01T08:15:37.602Z",
+          "os": {
+            "macos": 0,
+            "windows": 0,
+            "linux": 1,
+            "unknown": 0
+          }
+        }
+      ],
+      "onLatest": {
+        "version": "2.3.6",
+        "devices": 6,
+        "pct": 43,
+        "source": "deployed"
+      }
+    },
+    "cli": {
+      "totalDevices": 2,
+      "active": {
+        "d1": 2,
+        "d7": 2,
+        "d30": 2
+      },
+      "newLast30d": 2,
+      "byVersion": [
+        {
+          "version": "shogo-cli/unknown",
+          "count": 2,
+          "activeD7": 2
+        }
+      ],
+      "byPlatform": [
+        {
+          "platform": "darwin",
+          "count": 1
+        },
+        {
+          "platform": "linux-x64",
+          "count": 1
+        }
+      ],
+      "distinctUsers": 1,
+      "byOs": [
+        {
+          "os": "linux",
+          "arch": "x64",
+          "devices": 1,
+          "active1d": 1,
+          "active7d": 1,
+          "active30d": 1
+        },
+        {
+          "os": "macos",
+          "arch": null,
+          "devices": 1,
+          "active1d": 1,
+          "active7d": 1,
+          "active30d": 1
+        }
+      ],
+      "versions": [
+        {
+          "version": "shogo-cli/unknown",
+          "channel": "stable",
+          "devices": 2,
+          "activeD7": 2,
+          "firstSeenAt": "2026-10-06T08:15:37.602Z",
+          "lastSeenAt": "2026-10-21T07:15:37.602Z",
+          "os": {
+            "macos": 1,
+            "windows": 0,
+            "linux": 1,
+            "unknown": 0
+          }
+        }
+      ],
+      "onLatest": null
+    },
+    "adoption": [
+      {
+        "date": "2026-10-10",
+        "version": "2.3.6",
+        "channel": "stable",
+        "devices": 1
+      },
+      {
+        "date": "2026-10-05",
+        "version": "2.2.27",
+        "channel": "stable",
+        "devices": 1
+      },
+      {
+        "date": "2026-10-04",
+        "version": "2.2.27",
+        "channel": "stable",
+        "devices": 1
+      },
+      {
+        "date": "2026-10-03",
+        "version": "2.3.6-beta.20261020t083308",
+        "channel": "beta",
+        "devices": 1
+      },
+      {
+        "date": "2026-10-03",
+        "version": "2.2.27",
+        "channel": "stable",
+        "devices": 1
+      },
+      {
+        "date": "2026-10-02",
+        "version": "shogo-cli/unknown",
+        "channel": "stable",
+        "devices": 1
+      },
+      {
+        "date": "2026-10-02",
+        "version": "2.2.27",
+        "channel": "stable",
+        "devices": 1
+      },
+      {
+        "date": "2026-10-01",
+        "version": "2.2.27",
+        "channel": "stable",
+        "devices": 1
+      }
+    ]
+  }
+}

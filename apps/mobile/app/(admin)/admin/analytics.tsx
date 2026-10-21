@@ -44,8 +44,8 @@ import {
   AIInsightsPanel,
   ActivityTrendsChart,
   ActiveUsersTrendChart,
-} from '../../components/analytics/SharedAnalytics'
-import { API_BASE, fetchAdminJson, AnalyticsHeader } from './_analytics-shared'
+} from '../../../components/analytics/SharedAnalytics'
+import { API_BASE, fetchAdminJson, AnalyticsHeader } from '../_analytics-shared'
 
 // =============================================================================
 // Marketing-specific types

@@ -7,7 +7,7 @@
  * find drafts, suspended listings, etc., not just the review queue.
  *
  * Data source: GET /api/admin/marketplace/listings?status&page&limit.
- * Row -> /(admin)/marketplace/listing/:id.
+ * Row -> /(admin)/admin/marketplace/listing/:id.
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -142,7 +142,7 @@ export default function MarketplaceListingsPage() {
 
   const renderRow = ({ item }: { item: AdminListing }) => (
     <Pressable
-      onPress={() => router.push(`/(admin)/marketplace/listing/${item.id}` as any)}
+      onPress={() => router.push(`/(admin)/admin/marketplace/listing/${item.id}` as any)}
       className={cn(
         'flex-row items-center border-b border-border active:bg-muted/30',
         isWide ? 'px-4 py-3' : 'p-3',

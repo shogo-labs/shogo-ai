@@ -410,7 +410,7 @@ export default function MarketplaceReviewQueuePage() {
 
     return (
       <Pressable
-        onPress={() => router.push(`/(admin)/marketplace/listing/${item.id}` as any)}
+        onPress={() => router.push(`/(admin)/admin/marketplace/listing/${item.id}` as any)}
         className={cn(
           'border-b border-border active:bg-muted/30',
           isWide ? 'px-4 py-3' : 'p-3',

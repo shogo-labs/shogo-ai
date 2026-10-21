@@ -25,7 +25,7 @@ import {
   SlidersHorizontal,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { createHttpClient } from '../../lib/api'
+import { createHttpClient } from '../../../lib/api'
 
 interface MeetingConfig {
   enabled: boolean

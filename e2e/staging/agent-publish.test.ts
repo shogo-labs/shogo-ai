@@ -6,6 +6,7 @@ import {
   INITIAL_BUILD_TIMEOUT_MS,
   LOCALHOST_RE,
   PUBLISHED_URL_RE,
+  agentMessageText,
   createProject,
   ensureAuthenticated,
   sendProjectChatMessage,
@@ -73,7 +74,10 @@ test.describe("Agent publish (Pro)", () => {
     // it room well beyond a normal chat turn.
     await waitForAgentResponse(page, 300_000)
 
-    const text = await transcript(page)
+    // The agent's own messages: the published URL has to come from the reply,
+    // and the localhost check must not read preview chrome or the echoed
+    // prompt (SHO-128).
+    const text = await agentMessageText(page)
 
     const match = text.match(PUBLISHED_URL_RE)
     expect(match, "agent should surface a *.shogo.one published URL").toBeTruthy()

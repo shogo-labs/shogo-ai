@@ -74,7 +74,7 @@ export interface ActiveInstance {
   /**
    * What is being looked at:
    *  - `'machine'` this is one of a paired desktop's *own* workspaces
-   *    (the "This Mac" group in the workspace switcher), reached through
+   *    (listed with the cloud workspaces in the workspace switcher), reached through
    *    `/api/machines/<id>/w/<localWorkspaceId>`. It is deliberately not
    *    tied to the cloud workspace the UI happens to have selected, so it
    *    survives a cloud workspace switch.
@@ -433,6 +433,10 @@ export function computeRemoteProxyBaseUrl(
   remoteAgentBaseUrl: string | null,
 ): string | null {
   if (!instance || !remoteAgentBaseUrl) return null
+  // A cli-worker is never a machine: a `shogo worker` VM serves `/agent/*` and
+  // no data API, so its relay would 502 every stateful call (SHO-120). Checked
+  // before the machine branch, which used to return here first.
+  if (instance.kind === 'cli-worker') return null
   // A machine workspace always tunnels: the desktop owns the projects, chats
   // and tool-call logs of its own workspace, and `remoteAgentBaseUrl` already
   // points at that machine's relay (`/api/machines/<id>/w/<localWorkspaceId>`).

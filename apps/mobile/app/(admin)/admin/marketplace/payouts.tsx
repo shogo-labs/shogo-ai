@@ -43,7 +43,7 @@ import {
   ArrowUpRight,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { SegmentedFilter } from '../../../components/phone/SegmentedFilter'
+import { SegmentedFilter } from '../../../../components/phone/SegmentedFilter'
 
 import { fetchAdminJson, postAdmin, formatCents, formatRelative } from './_helpers'
 

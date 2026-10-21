@@ -25,7 +25,15 @@ import {
   type AccountSettingsSheetTab,
 } from "../../components/settings/account-settings-sheets"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
+import { useActiveInstance } from "../../contexts/active-instance"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
+import { useMachineWorkspaces } from "../../hooks/useMachineWorkspaces"
+import {
+  buildWorkspaceEntries,
+  currentWorkspaceKey,
+  machineInstanceForEntry,
+  type WorkspaceEntry,
+} from "../../lib/workspace-entries"
 import { useHasAdminAccess } from "../../hooks/useHasAdminAccess"
 import { useWorkspacePlans } from "../../hooks/useWorkspacePlans"
 import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation"
@@ -64,6 +72,8 @@ export default observer(function AccountPage() {
   const http = useDomainHttp()
   const posthog = usePostHogSafe()
   const currentWorkspace = useActiveWorkspace()
+  const { instance: activeInstance, setInstance: setActiveInstance, clearInstance } = useActiveInstance()
+  const { machines } = useMachineWorkspaces()
   const hasAdminAccess = useHasAdminAccess(user?.id)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
   const params = useLocalSearchParams<{ tab?: string; workspace?: string }>()
@@ -87,6 +97,15 @@ export default observer(function AccountPage() {
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(null)
 
   const allWorkspaces = workspaces?.all ?? []
+  // The account page lists the same workspaces the switcher does, machine ones
+  // included (SHO-108): a phone must be able to reach every agent, chat and
+  // board running on the user's own computer.
+  const entries = buildWorkspaceEntries({ workspaces: allWorkspaces, machines })
+  const activeKey = currentWorkspaceKey({
+    entries,
+    currentWorkspaceId: currentWorkspace?.id,
+    activeInstance,
+  })
   // Whether the user already has a `kind: 'personal'` workspace. `false`
   // surfaces the free "Create personal space" CTA — see
   // `WorkspaceMenuSectionProps.hasPersonalWorkspace` for why this can't
@@ -167,6 +186,25 @@ export default observer(function AccountPage() {
       scheduleWorkspaceSwitch(workspaceId, projects, reloadAfterWorkspaceSwitch)
     },
     [currentWorkspace?.id, pendingWorkspaceId, posthog, projects],
+  )
+
+  /**
+   * One switch path for both hosts: a cloud row switches the workspace, a
+   * machine row mounts that computer's own workspace and lands the same way.
+   */
+  const handleSelectWorkspaceEntry = useCallback(
+    (entry: WorkspaceEntry) => {
+      const machine = machineInstanceForEntry(entry, currentWorkspace?.id)
+      if (machine) {
+        setActiveInstance(machine)
+        trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED)
+        reloadAfterWorkspaceSwitch()
+        return
+      }
+      if (activeInstance?.source === "machine") clearInstance()
+      handleSwitchWorkspace(entry.id)
+    },
+    [activeInstance, clearInstance, currentWorkspace?.id, handleSwitchWorkspace, posthog, setActiveInstance],
   )
 
   const handleCreateWorkspace = useCallback(() => {
@@ -275,7 +313,9 @@ export default observer(function AccountPage() {
             onSignOut={handleSignOut}
             onNavigate={go}
             isSuperAdmin={hasAdminAccess}
-            workspaces={allWorkspaces}
+            entries={entries}
+            currentKey={activeKey}
+            onSelectEntry={handleSelectWorkspaceEntry}
             currentWorkspace={displayWorkspace}
             billingData={billingData}
             workspacePlan={workspacePlan}
