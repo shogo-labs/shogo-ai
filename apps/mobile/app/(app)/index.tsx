@@ -46,6 +46,7 @@ import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-p
 import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
 import { workspaceProjectFilter } from '../../lib/project-load'
@@ -336,7 +337,12 @@ export const HomeScreen = observer(function HomeScreen({
     })
   }, [])
 
+  // The cloud workspace: identity, billing and membership are the cloud
+  // account's even while a paired computer's workspace is open.
   const currentWorkspace = useActiveWorkspace()
+  // The workspace on screen — the machine's own while one is open, which is
+  // what the agent screen, its projects and its composer belong to (SHO-130).
+  const workspaceInView = useWorkspaceInView()
   const currentExperience = useWorkspaceExperience()
   // `/` lands on the workspace agent on an empty chat for every workspace
   // kind and width; `/(app)/home` keeps the pre-landing layout (phone feed /
@@ -374,7 +380,7 @@ export const HomeScreen = observer(function HomeScreen({
       // Workspaces load from the app layout. This effect re-runs when
       // `currentWorkspace?.id` appears, so the first project load happens
       // after that id is known.
-      const projectFilter = workspaceProjectFilter(currentWorkspace?.id)
+      const projectFilter = workspaceProjectFilter(workspaceInView?.id)
       const results = await Promise.allSettled([
         projectFilter ? projects.loadAll(projectFilter) : Promise.resolve(),
         user?.id ? membersColl.loadAll({ userId: user.id }) : Promise.resolve(),
@@ -399,7 +405,7 @@ export const HomeScreen = observer(function HomeScreen({
     loadData()
 
     return () => { cancelled = true }
-  }, [isAuthenticated, user?.id, currentWorkspace?.id])
+  }, [isAuthenticated, user?.id, workspaceInView?.id])
   const billingData = useBillingData(currentWorkspace?.id)
   const hasAdvancedModelAccess = billingData.hasAdvancedModelAccess
 
@@ -921,7 +927,7 @@ export const HomeScreen = observer(function HomeScreen({
   if (rendersAgentChat) {
     return (
       <WorkspaceAgentChatScreen
-        key={currentWorkspace?.id ?? 'workspace-loading'}
+        key={workspaceInView?.id ?? 'workspace-loading'}
         startNewSession
       />
     )
