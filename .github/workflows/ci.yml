@@ -576,7 +576,11 @@ jobs:
           - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks chat-task-thread-pane chat-task-wake-live-attach chat-task-wake-refocus' }
     permissions:
       contents: read
-    timeout-minutes: 60
+    # 35, not 60: a wedged E2E job holds the whole merge queue for the length
+    # of this cap (23:55–01:25Z on 2026-10-20, three entries, ~75 min). Measured
+    # on a green PR run: local shards 11–13 min, chat resume 24 min, so 35 keeps
+    # ~10 min of headroom and still halves the worst case.
+    timeout-minutes: 35
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -920,7 +924,7 @@ jobs:
         # attribution it owns — the author and the co-author line of every
         # auto-commit — is hermetic and fast, so it runs here on its own instead
         # of only running when someone remembers to run the package locally.
-        if: (matrix.include_e2e) && needs.queue-verified.outputs.verified != 'true'
+        if: (matrix.include_e2e) && needs.prelude.outputs.verified != 'true'
         run: bun --no-env-file --conditions=development test packages/shogo-worker/src/lib/__tests__/git-cloner.test.ts
 
       - name: Test unsharded packages
