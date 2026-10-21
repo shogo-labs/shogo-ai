@@ -195,7 +195,7 @@ test.describe("turn boundary", () => {
       // the gateway applies to the previous turn before the new prompt exists.
       soft(
         result.preview.includes("File content read"),
-        `no \`[File content read]\` placeholder — ${result.preview.slice(0, 80)}`,
+        `no [File content read] placeholder — ${result.preview.slice(0, 80)}`,
       ).toBe(false)
       soft(result.chars, "the result still carries its content").toBeGreaterThan(0)
     }
