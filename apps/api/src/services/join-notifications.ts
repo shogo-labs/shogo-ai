@@ -55,7 +55,9 @@ function frontendUrl(): string {
  * `/admin/settings` (two files used to claim `/settings`, and the admin console
  * won — every emailed link bounced to `/projects`). The path is pinned twice:
  * here by `apps/api/src/__tests__/join-notification-settings-url.test.ts`, and
- * against the route tree by `apps/mobile/test/route-path-collisions.test.ts`.
+ * against the route tree by
+ * `apps/mobile/test/__tests__/route-path-collisions.test.ts` (and independent of it
+ * by `apps/mobile/test/__tests__/settings-route-ownership.acceptance.test.ts`).
  * Keep it a bare `/settings`; do not route it through `/c/settings`.
  */
 export function settingsPeoplePath(): string {
