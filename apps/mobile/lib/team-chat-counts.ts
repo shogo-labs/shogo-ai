@@ -23,6 +23,25 @@ export interface InboxUnread {
   unreadThreads: number
 }
 
+/**
+ * Whether a conversation has something new to read — the one test behind a
+ * row's bold title and behind the "Unreads" list alike, so those two views
+ * of the same conversation can't disagree. Unlike the rail's mention-only
+ * channel badge, this is true for *any* unread message, matching what makes
+ * a Slack channel bold even with no mention in it.
+ */
+export function isConversationUnread(
+  c: Pick<ConversationSummary, 'unreadCount' | 'muted' | 'joined' | 'archivedAt' | 'kind'>,
+): boolean {
+  const eligible = c.joined || c.kind === 'activity'
+  return c.unreadCount > 0 && !c.muted && !c.archivedAt && eligible
+}
+
+/** Every joined, unmuted, unarchived conversation with something unread, in list order. */
+export function unreadConversations(list: ConversationSummary[]): ConversationSummary[] {
+  return list.filter(isConversationUnread)
+}
+
 export function countUnread(
   list: ConversationSummary[],
   inbox: InboxUnread,
