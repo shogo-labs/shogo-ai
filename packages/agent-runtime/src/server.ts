@@ -80,6 +80,7 @@ import {
   packRepoArchive,
   seedRepoIfAbsent,
   untrackDependencyDirs,
+  repairCheckpointRepo,
   createTagLocal,
   deleteTagLocal,
   getHeadSha,
@@ -163,7 +164,7 @@ import {
   type PortBridgeWsData,
   type PortHttpWsData,
 } from './port-bridge'
-import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorktreeStatus, postPlanMirror } from './internal-api'
 import { acceptsAppToolToken } from './app-runtime-token'
 import {
   detachMemberFromRootRepo,
@@ -6696,6 +6697,26 @@ async function initializeEssentials(): Promise<void> {
           logTiming(`Git repo repaired: untracked ${untracked.join(', ')}`)
           const sha = await getHeadSha(WORKSPACE_DIR).catch(() => null)
           if (sha) cachedRepoHeadSha = sha
+        })
+        .catch(() => { /* logged by the helper */ })
+      // SHO-105 / #1597: this pod's repo may already hold `.shogo/sessions.db`
+      // (+ its live WAL) in its history and its LFS store. Rewrite the refs
+      // without touching the working tree, then tell the API which commits
+      // changed so the `ProjectCheckpoint` rows still resolve. Marker-gated, so
+      // every later boot is a no-op, and off the readiness path.
+      void repairCheckpointRepo(WORKSPACE_DIR, {
+        onRemap: projectId
+          ? async (remap) => {
+              await postCheckpointShaRemap(projectId, remap)
+            }
+          : undefined,
+      })
+        .then((repaired) => {
+          if (repaired.skipped) return
+          logTiming(
+            `Git repo repaired: .git/lfs ${(repaired.bytesBefore / 1e6).toFixed(0)}MB -> ` +
+              `${(repaired.bytesAfter / 1e6).toFixed(0)}MB, ${repaired.rewritten} commit(s) rewritten`,
+          )
         })
         .catch(() => { /* logged by the helper */ })
       // A host-mediated guest holds no S3 credentials, so the SDK's provider

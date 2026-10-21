@@ -143,6 +143,40 @@ export interface AgentCostMetricPayload {
 }
 
 /**
+ * Point this project's `ProjectCheckpoint` rows at the commits a
+ * `repairCheckpointRepo` history rewrite produced (SHO-105 / #1597). A rewrite
+ * changes every descendant's sha, so without this the rows the pod recorded
+ * before the repair would stop resolving. Best-effort — a failure leaves the
+ * repo repaired and the rows stale, which the next successful call fixes.
+ */
+export async function postCheckpointShaRemap(
+  projectId: string,
+  remap: Map<string, string>,
+): Promise<boolean> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl || !projectScopedId(projectId) || remap.size === 0) return false
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/projects/${encodeURIComponent(projectId)}/checkpoints/remap`,
+      {
+        method: 'POST',
+        headers: getInternalHeaders(),
+        body: JSON.stringify({ remap: Object.fromEntries(remap) }),
+        signal: AbortSignal.timeout(30_000),
+      },
+    )
+    if (!res.ok) {
+      console.warn(`[Runtime] postCheckpointShaRemap HTTP ${res.status} for ${projectId}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn('[Runtime] postCheckpointShaRemap failed:', err?.message ?? err)
+    return false
+  }
+}
+
+/**
  * Record a `ProjectCheckpoint` row for an already-made local commit
  * (pod-owned `git_only` model). Best-effort — failures are logged, never
  * thrown: the commit is already durable in the persisted `.git`, and the

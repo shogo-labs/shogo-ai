@@ -12,6 +12,8 @@
     "./project-call-chat": "./src/project-call-chat.ts",
     "./publish-timeouts": "./src/publish-timeouts.ts",
     "./repo-bundles": "./src/repo-bundles.ts",
+    "./shogo-state-paths": "./src/shogo-state-paths.ts",
+    "./checkpoint-repo-repair": "./src/checkpoint-repo-repair.ts",
     "./sse-keepalive": "./src/sse-keepalive.ts",
     "./stream-trace": "./src/stream-trace.ts",
     "./child-process": "./src/child-process.ts"

@@ -39,6 +39,7 @@ import {
   hasManagedExclude,
   clearManagedExclude,
 } from './large-file-sync'
+import { directorySizeBytes, isShogoRuntimeState, resolveGitDir } from './shogo-state-paths'
 
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>
 
@@ -230,6 +231,12 @@ export async function ensureLfsRepoSetup(
  * Preserves the legacy "offload anything over the threshold" behavior for
  * extensions outside {@link DEFAULT_LFS_EXTENSIONS}. Best-effort.
  *
+ * Skips Shogo runtime state outright (SHO-105): LFS-tracking
+ * `.shogo/sessions.db-wal` wrote a fresh, uncompressed object on every single
+ * turn — 165 GB of `.git/lfs` in the reported bug — and skips anything git
+ * already ignores, since tracking a path git will never stage only bloats
+ * `.gitattributes`.
+ *
  * Returns the number of newly-tracked paths.
  */
 export async function autoTrackLargeFiles(
@@ -239,11 +246,18 @@ export async function autoTrackLargeFiles(
 ): Promise<number> {
   const logger = opts.logger ?? console
   if (!existsSync(join(workspaceDir, '.git'))) return 0
+  if (lfsOverBudget(workspaceDir, { logger })) {
+    await pruneLfsBudget(workspaceDir, logger)
+    return 0
+  }
   let tracked = 0
   const candidates = classifyLargeFiles(workspaceDir, thresholdBytes)
   for (const rel of candidates) {
     const relPosix = rel.split(/[\\/]/).join('/')
+    if (isShogoRuntimeState(relPosix)) continue
     try {
+      const ignored = await runGit(['check-ignore', '-q', '--', relPosix], workspaceDir)
+      if (ignored.exitCode === 0) continue
       const attr = await runGit(['check-attr', 'filter', '--', relPosix], workspaceDir)
       if (attr.stdout.includes(': filter: lfs')) continue // already LFS-tracked
       const res = await runGit(['lfs', 'track', '--', relPosix], workspaceDir)
@@ -254,6 +268,53 @@ export async function autoTrackLargeFiles(
   }
   if (tracked) logger.log(`[lfs] auto-tracked ${tracked} large file(s) over ${thresholdBytes}B`)
   return tracked
+}
+
+// ---------------------------------------------------------------------------
+// Local LFS budget
+// ---------------------------------------------------------------------------
+
+/** Default cap on a repo's local `.git/lfs` in gigabytes. */
+export const DEFAULT_LFS_BUDGET_GB = 4
+
+/** The local LFS budget in bytes (`SHOGO_LFS_BUDGET_GB`, default 4 GB). */
+export function lfsBudgetBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = parseFloat(env.SHOGO_LFS_BUDGET_GB || '')
+  const gb = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_LFS_BUDGET_GB
+  return gb * 1024 * 1024 * 1024
+}
+
+/** True when `<workspaceDir>/.git/lfs` already exceeds {@link lfsBudgetBytes}. */
+export function lfsOverBudget(
+  workspaceDir: string,
+  opts: { env?: NodeJS.ProcessEnv; logger?: Logger } = {},
+): boolean {
+  const logger = opts.logger ?? console
+  const gitDir = resolveGitDir(workspaceDir)
+  if (!gitDir) return false
+  const lfsDir = join(gitDir, 'lfs')
+  const bytes = directorySizeBytes(lfsDir)
+  if (bytes <= lfsBudgetBytes(opts.env)) return false
+  logger.warn(
+    `[lfs] ${workspaceDir}: local LFS store is ${(bytes / 1e9).toFixed(1)}GB over the ` +
+      `${(lfsBudgetBytes(opts.env) / 1e9).toFixed(1)}GB budget — tracking nothing new`,
+  )
+  return true
+}
+
+/**
+ * Free what nothing references, for a repo already over budget. `--force` is
+ * required: without it git-lfs keeps objects younger than its own grace period,
+ * which is every object a runaway `.shogo/*` rule just wrote.
+ */
+export async function pruneLfsBudget(workspaceDir: string, logger: Logger = console): Promise<boolean> {
+  if (!existsSync(join(workspaceDir, '.git'))) return false
+  const res = await runGit(['lfs', 'prune', '--force'], workspaceDir)
+  if (res.exitCode !== 0) {
+    logger.warn(`[lfs] prune failed (${res.exitCode}): ${(res.stderr || '').slice(0, 400)}`)
+    return false
+  }
+  return true
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +421,10 @@ export async function lfsPushAll(cfg: LfsRemoteConfig): Promise<boolean> {
   const logger = cfg.logger ?? console
   if (!existsSync(join(cfg.workspaceDir, '.git'))) return false
   try {
+    // Never upload a runaway local store: if the repo is over budget, free the
+    // unreferenced objects first and let the budget gate in
+    // `autoTrackLargeFiles` keep it there.
+    if (lfsOverBudget(cfg.workspaceDir, { logger })) await pruneLfsBudget(cfg.workspaceDir, logger)
     const remote = await ensureCloudRemote(cfg)
     const res = await runGit(
       [...lfsConfigArgs(cfg), 'lfs', 'push', '--all', remote],
