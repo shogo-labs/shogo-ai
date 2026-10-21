@@ -41,6 +41,12 @@ CREATE INDEX "device_version_events_version_idx" ON "device_version_events"("ver
 -- (deviceId, version) keeps the real history while still honouring the
 -- unique index. Grouping also collapses the per-workspace duplicate rows one
 -- physical device holds (34 such devices in production).
+--
+-- firstSeenAt is the last sighting, not the key's creation: a long-lived key
+-- has its deviceAppVersion rewritten in place by a heartbeat (see
+-- POST /api-keys/heartbeat), so `createdAt` says nothing about when the device
+-- adopted the version it is on now. Using it would make the adoption series
+-- claim the current version for the whole window before it even shipped.
 INSERT INTO "device_version_events" (
     "id", "deviceId", "os", "arch", "client", "channel", "version", "firstSeenAt", "lastSeenAt"
 )
@@ -68,7 +74,7 @@ SELECT
         ELSE 'stable'
     END,
     k."deviceAppVersion",
-    COALESCE(min(k."createdAt"), CURRENT_TIMESTAMP),
+    COALESCE(max(k."lastSeenAt"), max(k."createdAt"), CURRENT_TIMESTAMP),
     COALESCE(max(k."lastSeenAt"), max(k."createdAt"), CURRENT_TIMESTAMP)
 FROM "api_keys" k
 WHERE k."kind" = 'device'

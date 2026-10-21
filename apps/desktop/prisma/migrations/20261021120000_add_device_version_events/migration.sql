@@ -28,6 +28,8 @@ CREATE INDEX "device_version_events_lastSeenAt_idx" ON "device_version_events"("
 CREATE INDEX "device_version_events_version_idx" ON "device_version_events"("version");
 
 -- Backfill: one row per (live device, version) already visible in api_keys.
+-- firstSeenAt is the last sighting (see the Postgres twin): a key's createdAt
+-- does not say when the device adopted the version a heartbeat wrote onto it.
 -- SQLite has no REGEXP by default, so the beta channel is detected with
 -- instr() — the runtime normaliser in lib/device-platform.ts stays
 -- authoritative for anything written after this migration.
@@ -55,7 +57,7 @@ SELECT
     CASE WHEN lower(k."deviceAppVersion") LIKE 'shogo-cli/%' THEN 'cli' ELSE 'desktop' END,
     CASE WHEN instr(lower(k."deviceAppVersion"), 'beta') > 0 THEN 'beta' ELSE 'stable' END,
     k."deviceAppVersion",
-    COALESCE(min(k."createdAt"), CURRENT_TIMESTAMP),
+    COALESCE(max(k."lastSeenAt"), max(k."createdAt"), CURRENT_TIMESTAMP),
     COALESCE(max(k."lastSeenAt"), max(k."createdAt"), CURRENT_TIMESTAMP)
 FROM "api_keys" k
 WHERE k."kind" = 'device'

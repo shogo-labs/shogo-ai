@@ -375,6 +375,58 @@ describe('AC5 — adoption history is captured at one insert point', () => {
   })
 })
 
+describe('AC5 — the backfill does not invent history it never observed', () => {
+  const BACKFILL_SQL = `apps/desktop/prisma/migrations/20261021120000_add_device_version_events/migration.sql`
+
+  test('an in-place upgraded key is not reported as being on the new version all window', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { resolve } = await import('node:path')
+    const migration = readFileSync(resolve(import.meta.dir, '../../../..', BACKFILL_SQL), 'utf-8')
+    // Replay only the backfill statement: the table is already created above by
+    // the migration runner, and the seeded keys are the "before" state.
+    const backfill = migration.slice(migration.indexOf('INSERT INTO'))
+
+    // A heartbeat rewrites deviceAppVersion on the SAME row, so a device that
+    // signed in 200 days ago and upgraded yesterday has createdAt 200d back.
+    // Backfilling firstSeenAt from createdAt would then claim 30 days of a
+    // release that shipped yesterday.
+    await db.apiKey.create({
+      data: {
+        name: 'in-place-upgrade',
+        keyHash: `qa-inplace-${Date.now()}`,
+        keyPrefix: 'shogo_dev',
+        workspaceId,
+        userId,
+        kind: 'device',
+        deviceId: 'backfill-inplace',
+        devicePlatform: 'win32',
+        deviceAppVersion: '2.3.6',
+        createdAt: ago(200 * DAY),
+        lastSeenAt: ago(2 * HOUR),
+      },
+    })
+
+    try {
+      await db.$executeRawUnsafe(backfill)
+
+      const rows = await db.deviceVersionEvent.findMany({ where: { deviceId: 'backfill-inplace' } })
+      expect(rows).toHaveLength(1)
+      const first = new Date(rows[0].firstSeenAt).getTime()
+      const last = new Date(rows[0].lastSeenAt).getTime()
+      expect(last - first).toBeLessThan(2 * DAY)
+
+      const data = await analytics.getAppVersions({ days: 30 })
+      const days = data.adoption.filter((point) => point.version === '2.3.6').length
+      expect(days).toBeLessThan(5)
+    } finally {
+      // The backfill reads every live device, so undo both the extra key and
+      // the rows it wrote before the later tests measure the fixture.
+      await db.apiKey.deleteMany({ where: { deviceId: 'backfill-inplace' } })
+      await db.deviceVersionEvent.deleteMany({})
+    }
+  })
+})
+
 describe('AC6 — beta installs are split from stable', () => {
   test('the beta device is its own (version, channel) row', async () => {
     const data = await analytics.getAppInstalls()
