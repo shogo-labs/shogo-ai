@@ -148,6 +148,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   CreatorBadge: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
   CreatorFollow: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
   CreatorProfile: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
+  DeviceVersionEvent: { decision: 'exclude', reason: 'Per-device install telemetry (device id, OS, arch, version, channel) behind admin version adoption. Keyed by the machine, not the workspace, so it belongs to the instance: a restore must not fabricate adoption history it never observed.' },
   EvalRun: { decision: 'exclude', reason: 'Instance catalog or global configuration, identical on every restore.' },
   EvalRunResult: { decision: 'exclude', reason: 'Instance catalog or global configuration, identical on every restore.' },
   EventDelivery: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
