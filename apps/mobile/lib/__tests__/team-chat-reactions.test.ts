@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { hasReacted, reactionTooltip, reactorName } from '../team-chat-reactions'
+import { DETAIL_NAMED_MAX, hasReacted, reactionDetail, reactionTooltip, reactorName } from '../team-chat-reactions'
 
 const names = {
   users: new Map([
@@ -61,5 +61,35 @@ describe('reactionTooltip', () => {
   test('keeps a custom emoji code readable', () => {
     expect(reactionTooltip(':party_blob:', ['u-ana'], 'u-me', names))
       .toBe('Ana Lopez reacted with :party_blob:')
+  })
+})
+
+describe('reactionDetail', () => {
+  test('names the viewer alone', () => {
+    expect(reactionDetail('👍', ['u-me'], 'u-me', names)).toEqual({ who: 'You', verb: 'reacted with :+1:' })
+  })
+
+  test('puts "You" last, as Slack does', () => {
+    expect(reactionDetail('❤️', ['u-me', 'u-ana', 'u-bob'], 'u-me', names))
+      .toEqual({ who: 'Ana Lopez, Bob Chen and You', verb: 'reacted with :heart:' })
+  })
+
+  test('falls back for someone who left', () => {
+    expect(reactionDetail('👍', ['u-gone', 'u-ana'], 'u-me', names).who).toBe('Someone and Ana Lopez')
+  })
+
+  test('keeps custom and unmapped emoji as they are', () => {
+    expect(reactionDetail(':party_blob:', ['u-ana'], 'u-me', names).verb).toBe('reacted with :party_blob:')
+    expect(reactionDetail('🦄', ['u-ana'], 'u-me', names).verb).toBe('reacted with 🦄')
+  })
+
+  test('lists everyone up to the cap, then collapses while still naming the viewer', () => {
+    const ids = Array.from({ length: DETAIL_NAMED_MAX }, (_, i) => `u-${i}`)
+    const exact = reactionDetail('👍', ids, null, { users: new Map(ids.map((id) => [id, id])) })
+    expect(exact.who).not.toContain('others')
+
+    const many = [...ids, 'u-extra', 'u-me']
+    const detail = reactionDetail('👍', many, 'u-me', { users: new Map(many.map((id) => [id, id])) })
+    expect(detail.who.endsWith(`, You and ${many.length - (DETAIL_NAMED_MAX - 1)} others`)).toBe(true)
   })
 })
