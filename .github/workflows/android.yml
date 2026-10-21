@@ -658,6 +658,8 @@ jobs:
         with:
           name: app-release.aab
           path: apps/mobile/android/app/build/outputs/bundle/release/app-release.aab
+          # Intermediate: the bundle is uploaded to Play in this same run.
+          retention-days: 7
 
       - name: Save fingerprint to cache
         run: |

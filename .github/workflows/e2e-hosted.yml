@@ -156,7 +156,7 @@ jobs:
         with:
           name: playwright-report-${{ inputs.target || 'staging' }}-${{ inputs.suite || 'full' }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: test-results/
-          retention-days: 14
+          retention-days: 7
 
       - name: Publish e2e/staging-critical result
         if: always() && env.REPORT_STATUS == 'true'

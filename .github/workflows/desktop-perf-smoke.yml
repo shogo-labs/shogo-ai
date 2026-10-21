@@ -14,6 +14,13 @@ on:
       - "packages/shogo-worker/src/lib/runtime-manager.ts"
       - "scripts/bench/**"
 
+# Superseded runs cancel: this is a two-leg (Windows + macOS) smoke that only
+# needs to run against the newest commit of a branch, and the macOS leg is one
+# of the three most expensive jobs in the org ($26 / 422 min over two days).
+concurrency:
+  group: perf-smoke-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   harness-and-memory-smoke:
     name: ${{ matrix.os }} desktop perf smoke
