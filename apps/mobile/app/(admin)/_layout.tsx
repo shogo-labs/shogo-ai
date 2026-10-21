@@ -68,6 +68,7 @@ import { useResolvedTheme } from '../../contexts/theme'
 import { api, API_URL } from '../../lib/api'
 import { usePlatformConfig } from '../../lib/platform-config';
 import { densityFor } from "../../lib/phone-density"
+import { adminPageTitle, isAdminNavActive } from '../../lib/admin-nav'
 
 type UserRole = 'user' | 'super_admin'
 
@@ -256,15 +257,6 @@ function useInfraHealth(enabled: boolean): HealthStatus {
   return status
 }
 
-function isNavActive(pathname: string, href: string): boolean {
-  if (href === '/(admin)') {
-    return ( pathname === '/' || pathname === '' || pathname === '/(admin)' || pathname === '/index'
-    )
-  }
-  const clean = href.replace('/(admin)', '')
-  return pathname.startsWith(clean)
-}
-
 const HEALTH_DOT_COLOR: Record<HealthStatus, string> = {
   healthy: 'bg-emerald-500',
   degraded: 'bg-yellow-500',
@@ -311,7 +303,7 @@ function AdminSidebar({
 
   const renderNavRow = (item: AdminNavItem | { href: string; icon: any; label: string }) => {
     const Icon = item.icon
-    const active = isNavActive(pathname, item.href)
+    const active = isAdminNavActive(pathname, item.href)
     return (
       <Pressable
         key={item.href}
@@ -539,36 +531,6 @@ function DesktopContextHeader({ title }: { title: string }) {
   )
 }
 
-function getPageTitle(pathname: string): string {
-  if (pathname.startsWith('/users/')) return 'User Detail'
-  if (pathname.startsWith('/users') || pathname === '/users') return 'Users'
-  if (pathname.startsWith('/workspaces/')) return 'Workspace Detail'
-  if (pathname.includes('workspaces')) return 'Workspaces'
-  if (pathname.startsWith('/grants/')) return 'Grant Detail'
-  if (pathname.includes('grants')) return 'Credit grants'
-  if (pathname.startsWith('/admin/marketplace/listing/')) return 'Listing Detail'
-  if (pathname.startsWith('/admin/marketplace/payouts')) return 'Marketplace Payouts'
-  if (pathname.startsWith('/admin/marketplace/listings')) return 'Marketplace Listings'
-  if (pathname.startsWith('/admin/marketplace')) return 'Marketplace Review'
-  if (pathname.startsWith('/admin/projects/')) return 'Project Detail'
-  if (pathname.includes('projects')) return 'Projects'
-  if (pathname.includes('ai-analytics')) return 'AI Analytics'
-  if (pathname.includes('analytics')) return 'Marketing Analytics'
-  if (pathname.startsWith('/creators/')) return 'Creator Profile'
-  if (pathname.includes('creators')) return 'Creators'
-  if (pathname.includes('affiliate-payouts')) return 'Affiliate Payouts'
-  if (pathname.includes('affiliate-content')) return 'Affiliate CPM'
-  if (pathname.includes('infrastructure')) return 'Infrastructure'
-  if (pathname.includes('heartbeats')) return 'Heartbeats'
-  if (pathname.startsWith('/evals/')) return 'Eval Detail'
-  if (pathname.includes('evals')) return 'Evals'
-  if (pathname.includes('/logs')) return 'Logs'
-  if (pathname.includes('meetings')) return 'Meetings'
-  if (pathname.includes('general')) return 'General'
-  if (pathname.includes('settings')) return 'AI Settings'
-  return 'Dashboard'
-}
-
 export default function AdminLayout() {
   return (
     <DomainProvider>
@@ -622,7 +584,7 @@ function AdminLayoutInner() {
     const permitted = ALL_NAV_ITEMS.filter((item) =>
       canSeeNavItem(item, isSuperAdmin, scopes),
     )
-    const onPermitted = permitted.some((item) => isNavActive(pathname, item.href))
+    const onPermitted = permitted.some((item) => isAdminNavActive(pathname, item.href))
     if (!onPermitted && permitted.length > 0) {
       router.replace(permitted[0].href as any)
     }
@@ -677,11 +639,11 @@ function AdminLayoutInner() {
       }
       header={
         isWide ? (
-          <DesktopContextHeader title={getPageTitle(pathname)} />
+          <DesktopContextHeader title={adminPageTitle(pathname)} />
         ) : (
           <MobileHeader
             onMenuPress={toggleDrawer}
-            title={getPageTitle(pathname)}
+            title={adminPageTitle(pathname)}
             menuOpen={drawerOpen}
             isNative={nativeSheetDrawer}
           />

@@ -23,6 +23,7 @@ import { describe, expect, test } from 'bun:test'
 import { readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { getExactRoutes } from 'expo-router/build/getRoutes'
+import { adminPageTitle, isAdminNavActive } from '../../lib/admin-nav'
 
 const APP_DIR = join(import.meta.dir, '../../app')
 
@@ -133,5 +134,55 @@ describe('route paths under app/', () => {
 
   test('the known-duplicate list has no stale entries', () => {
     expect([...KNOWN_DUPLICATES].filter((path) => !duplicates.includes(path))).toEqual([])
+  })
+})
+
+/**
+ * Moving a page is not only a file move: the admin sidebar's hrefs carry the
+ * `(admin)` group segment while `usePathname()` returns the resolved URL, and
+ * the header title is matched against that same string. A stale entry here
+ * loses the active highlight or prints "Dashboard" without breaking
+ * navigation, so the strings are pinned next to the paths they follow.
+ */
+const ADMIN_NAV = [
+  { href: '/(admin)/admin/analytics', pathname: '/admin/analytics' },
+  { href: '/(admin)/admin/marketplace', pathname: '/admin/marketplace' },
+  { href: '/(admin)/admin/meetings', pathname: '/admin/meetings' },
+  { href: '/(admin)/admin/projects', pathname: '/admin/projects' },
+  { href: '/(admin)/admin/settings', pathname: '/admin/settings' },
+] as const
+
+describe('admin nav highlight + page title', () => {
+  test('the dashboard item owns the root, and only the root', () => {
+    for (const pathname of ['/', '', '/(admin)', '/index']) {
+      expect(isAdminNavActive(pathname, '/(admin)')).toBe(true)
+    }
+    expect(isAdminNavActive('/admin/projects', '/(admin)')).toBe(false)
+  })
+
+  test('each moved admin page highlights its own nav item', () => {
+    for (const { href, pathname } of ADMIN_NAV) {
+      expect(isAdminNavActive(pathname, href)).toBe(true)
+      expect(isAdminNavActive(pathname.replace('/admin', ''), href)).toBe(false)
+    }
+  })
+
+  test('a child page keeps its section highlighted, without bleeding into others', () => {
+    expect(isAdminNavActive('/admin/projects/p1', '/(admin)/admin/projects')).toBe(true)
+    expect(isAdminNavActive('/admin/marketplace/listings', '/(admin)/admin/marketplace')).toBe(true)
+    expect(isAdminNavActive('/admin/projects', '/(admin)/admin/meetings')).toBe(false)
+  })
+
+  test('each moved admin page titles its header', () => {
+    expect(adminPageTitle('/admin/analytics')).toBe('Marketing Analytics')
+    expect(adminPageTitle('/admin/ai-analytics')).toBe('AI Analytics')
+    expect(adminPageTitle('/admin/meetings')).toBe('Meetings')
+    expect(adminPageTitle('/admin/settings')).toBe('AI Settings')
+    expect(adminPageTitle('/admin/projects')).toBe('Projects')
+    expect(adminPageTitle('/admin/projects/p1')).toBe('Project Detail')
+    expect(adminPageTitle('/admin/marketplace')).toBe('Marketplace Review')
+    expect(adminPageTitle('/admin/marketplace/listings')).toBe('Marketplace Listings')
+    expect(adminPageTitle('/admin/marketplace/listing/l1')).toBe('Listing Detail')
+    expect(adminPageTitle('/admin/marketplace/payouts')).toBe('Marketplace Payouts')
   })
 })
