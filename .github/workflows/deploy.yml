@@ -97,90 +97,28 @@ jobs:
     name: CI Gate
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    permissions:
+      actions: read
+      contents: read
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.3'
+      # The decision lives in scripts/ci/wait-for-ci.ts so it can be unit
+      # tested (scripts/__tests__/wait-for-ci.test.ts). Both the merge-queue
+      # run (which tested this exact commit on the queue's ref) and the push
+      # run are re-read on every poll: a commit can arrive here while its
+      # merge-queue run is still finishing.
       - name: Wait for CI to pass for this commit
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SHA: ${{ github.sha }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
-        run: |
-          if [[ "$DRY_RUN" == "true" ]]; then
-            echo "Dry run changes nothing; not waiting for CI."
-            exit 0
-          fi
-          # A merge-queue commit lands on main as the exact SHA the queue
-          # already tested, so its merge_group run counts; the push run that
-          # follows only warms caches (ci.yml queue-verified).
-          queued="$(
-            gh api \
-              "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&event=merge_group&status=completed&per_page=20" |
-            jq -r --arg sha "$SHA" '
-              [.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.run_number) | last | .id // ""
-            '
-          )"
-          if [[ -n "$queued" ]]; then
-            required="$(
-              gh api "repos/${REPOSITORY}/actions/runs/${queued}/jobs?per_page=100" --paginate |
-              jq -r '.jobs[] | select(.name == "Lint, Typecheck, Test") | .conclusion' | tail -1
-            )"
-            if [[ "$required" == "success" ]]; then
-              echo "Merge-queue CI run ${queued} passed for ${SHA}."
-              exit 0
-            fi
-            echo "Merge-queue CI run ${queued} for ${SHA}: required job ${required:-missing}; waiting for the push run."
-          fi
-
-          deadline=$((SECONDS + 1800))
-          while (( SECONDS < deadline )); do
-            run="$(
-              gh api \
-                "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=20" |
-              jq -r --arg sha "$SHA" '
-                [.workflow_runs[]
-                  | select(.head_sha == $sha and (.event == "push" or .event == "workflow_dispatch"))]
-                | sort_by(.run_number)
-                | last
-                | if . == null
-                  then ""
-                  else [.id, .status, (.conclusion // "")] | @tsv
-                  end
-              '
-            )"
-
-            if [[ -z "$run" ]]; then
-              echo "CI run for ${SHA} has not started yet; retrying..."
-              sleep 15
-              continue
-            fi
-
-            read -r run_id status conclusion <<< "$run"
-            echo "CI run ${run_id}: status=${status}, conclusion=${conclusion}"
-
-            if [[ "$status" == "completed" ]]; then
-              if [[ "$conclusion" == "success" ]]; then
-                echo "CI passed for ${SHA}."
-                exit 0
-              fi
-              # Non-blocking jobs (local E2E) can fail the run while the
-              # required aggregate job passes; gate on that job like merges do.
-              required="$(
-                gh api "repos/${REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" --paginate |
-                jq -r '.jobs[] | select(.name == "Lint, Typecheck, Test") | .conclusion' | tail -1
-              )"
-              if [[ "$required" == "success" ]]; then
-                echo "CI ${run_id} concluded ${conclusion}, but required job 'Lint, Typecheck, Test' passed."
-                exit 0
-              fi
-              echo "::error::CI ${run_id} finished with conclusion=${conclusion} (required job: ${required:-missing})."
-              exit 1
-            fi
-
-            sleep 15
-          done
-
-          echo "::error::Timed out waiting for CI to pass for ${SHA}."
-          exit 1
+        run: bun scripts/ci/wait-for-ci.ts
 
   # ===========================================================================
   # Stage 0: Setup - Determine Environment

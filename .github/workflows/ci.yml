@@ -53,19 +53,32 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
+  # One prelude instead of two. Both answers below are needed before anything
+  # else can decide whether to run, and as separate jobs they each paid a
+  # runner, a checkout and a scheduling hop on every run. They now share one.
+  #
   # A merge-queue PR lands on main as the exact commit its merge_group run
   # already tested. The push run for that commit then only refreshes the
   # main-scoped caches PR runs restore from; it skips tests, typechecks and
   # lint. Direct pushes (no merge_group run) and tags still run everything.
-  queue-verified:
-    name: Already tested in the merge queue?
+  prelude:
+    name: Prelude
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       actions: read
+      contents: read
     outputs:
       verified: ${{ steps.check.outputs.verified }}
+      windows: ${{ steps.filter.outputs.relevant }}
+      app: ${{ steps.app.outputs.app }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The Windows filter diffs two commits; without full history that
+          # diff is unavailable on a shallow merge_group checkout.
+          fetch-depth: 0
+
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,9 +106,87 @@ jobs:
           fi
           echo "verified=${verified}" >> "$GITHUB_OUTPUT"
 
+      # Windows path-handling regression guard (SHOG-749).
+      #
+      # Until this job existed, EVERY job in this repo ran on ubuntu (44 of 50
+      # `runs-on:` declarations) and the only `windows-2022` runner was the
+      # desktop *packaging* workflow. That made `path.sep`-dependent logic
+      # structurally untestable: `assertWithinWorkspace` had tests, they passed
+      # on Linux because `sep === '/'`, and a one-character bug
+      # (`root + '/'`) shipped anyway and broke read/write/edit_file for every
+      # folder-linked Windows project.
+      #
+      # Deliberately scoped to the path-boundary suites rather than the whole
+      # test suite: several unrelated suites still assert POSIX-shaped paths and
+      # would keep this job permanently red, which guards nothing. Widen the
+      # list as those are fixed.
+      - name: Check changed paths
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Main pushes and manually dispatched runs should retain the full
+          # platform guard. PR/merge-group runs can skip it when their diff
+          # cannot affect Windows path behavior or the guard itself.
+          if [[ "$EVENT_NAME" != "pull_request" && "$EVENT_NAME" != "merge_group" ]]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+            echo "Unable to resolve the comparison SHAs; failing open."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          printf '%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -Eq \
+            '^(packages/agent-runtime/src/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|trust-resolver|workspace-runtime-mode|runtime-lsp-routes|pty-[a-z-]+|runtime-terminal-routes|quick-commands|detected-urls)\.ts$|packages/agent-runtime/src/__tests__/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|canvas-file-watcher-mounts|trust-resolver-workspace-mounts|runtime-lsp-routes-scope|workspace-runtime-mode|pty-session|pty-ws-e2e|runtime-terminal-routes)\.test\.ts$|packages/agent-runtime/src/__tests__/helpers/pty-shell\.ts$|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/(run-tests-isolated|postinstall|db-generate-all|__tests__/desktop-next-beta-version\.test)\.ts$|package\.json$|\.github/workflows/ci\.yml$)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The local-mode E2E matrix only runs on PRs, and only when the PR can
+      # change what a running app does — a docs-only or workflow-only PR gets
+      # no E2E job at all. The deny-list lives in scripts/ci/app-code-changed.sh
+      # (unit-tested in scripts/__tests__/app-code-changed.test.ts) and fails
+      # open: no diff, an unresolvable base, or any path it does not recognise
+      # means app=true.
+      - name: Detect app-code changes
+        id: app
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Only PRs consult this (E2E runs nowhere else), so do not pay for a
+          # diff on main pushes and tags.
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+            echo "Unable to resolve the comparison SHAs; assuming app code."
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" | bash scripts/ci/app-code-changed.sh
+
   typecheck:
     name: Typecheck & static checks
-    needs: queue-verified
+    needs: prelude
     # Set CI_LINUX_RUNNER=ubuntu-24.04-8core when an 8-vCPU larger runner is
     # provisioned. The fallback keeps this workflow valid for public repos
     # without larger-runner entitlement.
@@ -236,21 +327,21 @@ jobs:
           key: ci-prepared-v2-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'apps/api/src/generated/*.ts', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Typecheck
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         env:
           TYPECHECK_SCOPE: required
           TYPECHECK_EXCLUDE: apps/mobile
         run: bun run typecheck
 
       - name: Higgsfield docs drift
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         # The committed vendor snapshot is the contract for every media endpoint
         # we call; fail when a model id, duration, resolution or aspect ratio we
         # send is not in the docs (or the snapshot was edited, not re-derived).
         run: bun run check:higgsfield-docs
 
       - name: Save TypeScript build info
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-cache.outputs.cache-hit != 'true') && needs.queue-verified.outputs.verified != 'true'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-cache.outputs.cache-hit != 'true') && needs.prelude.outputs.verified != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           # Never cache node_modules: some packages ship a .tsbuildinfo, and
@@ -262,11 +353,11 @@ jobs:
           key: tsbuild-typecheck-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
 
       - name: Lint
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         run: bun run lint
 
       - name: Check CI `bun install` steps authenticate ripgrep-prebuilt
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         # Guards against the `@vscode/ripgrep` 403 flake — see
         # scripts/check-ci-bun-install-token.ts for the full writeup.
         # Runs before any `bun install` in THIS job could 403, but its
@@ -275,26 +366,26 @@ jobs:
         run: bun run check:ci-bun-install-token
 
       - name: Check hosted e2e quarantine entries are owned and unexpired
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         run: bun run check:e2e-quarantine
 
       - name: Verify SDK license isolation (no AGPL leak)
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         # Fails if @shogo-ai/sdk (MIT) declares or imports any @shogo/*
         # AGPL workspace package from a published code path. See
         # packages/sdk/scripts/verify-license-isolation.mjs for details.
         run: bun run --filter @shogo-ai/sdk verify:license-isolation
 
       - name: Check replication publication is self-maintaining
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         run: bun run check:publication
 
       - name: Check generated What's New catalog
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         run: bun run check:whats-new
 
       - name: Check multi-region cron locks + unique-key classification
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         # Guards against the 2026-05-21 analytics_digests poison-pill class
         # of failure: an in-process cron upserting on a non-PK unique index
         # in every API replica in every region, where logical replication's
@@ -324,7 +415,7 @@ jobs:
         run: bun run check:multiregion
 
       - name: Replay desktop SQLite migrations against an empty DB
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         # Guards against the "shipped a migration without its prerequisite"
         # failure mode — e.g. an ALTER TABLE whose CREATE TABLE was never
         # mirrored from prisma/migrations/ into apps/desktop/prisma/migrations/.
@@ -335,7 +426,7 @@ jobs:
         run: bun run check:migrations
 
       - name: Check heartbeat schedule has a single writer
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         # `agent_configs.heartbeatEnabled/heartbeatInterval/nextHeartbeatAt`
         # must only be written via heartbeat-config.service.ts. Direct writes
         # left rows "enabled" with a null nextHeartbeatAt, so staging agents
@@ -343,7 +434,7 @@ jobs:
         run: bun run check:heartbeat-writes
 
       - name: Check desktop SQLite migrations match schema.local.prisma
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         # Catches the OTHER half of the v1.7.8 bug class: schema.local.prisma
         # has a model (CreatorProfile, MarketplaceListing, ...) but the
         # migration tree never CREATE TABLEs it, so a follow-up ALTER lands
@@ -361,7 +452,7 @@ jobs:
 
   typecheck-mobile:
     name: Typecheck (mobile)
-    needs: queue-verified
+    needs: prelude
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -433,11 +524,11 @@ jobs:
         run: bun run build:packages
 
       - name: Typecheck mobile
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         run: bun run --cwd apps/mobile typecheck
 
       - name: Save mobile TypeScript build info
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-mobile-cache.outputs.cache-hit != 'true') && needs.queue-verified.outputs.verified != 'true'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-mobile-cache.outputs.cache-hit != 'true') && needs.prelude.outputs.verified != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           # Never cache node_modules: some packages ship a .tsbuildinfo, and
@@ -453,8 +544,13 @@ jobs:
     # personal/team workspaces, folder projects) against a throwaway SQLite
     # DB. These specs previously only ran on developer machines.
     name: ${{ matrix.name }}
-    needs: queue-verified
-    if: needs.queue-verified.outputs.verified != 'true'
+    needs: prelude
+    # PR-only, and app-code PRs only. This matrix is not in the required `ci`
+    # aggregator's `needs`, so on `merge_group` and `push` it gates nothing —
+    # it only burns runner slots (15,905 min ≈ $95 gross over two days). A
+    # docs-only PR cannot change local-mode behaviour either. Do not add it to
+    # the aggregator.
+    if: github.event_name == 'pull_request' && needs.prelude.outputs.app == 'true'
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
@@ -480,7 +576,11 @@ jobs:
           - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks chat-task-thread-pane chat-task-wake-live-attach chat-task-wake-refocus' }
     permissions:
       contents: read
-    timeout-minutes: 60
+    # 35, not 60: a wedged E2E job holds the whole merge queue for the length
+    # of this cap (23:55–01:25Z on 2026-10-20, three entries, ~75 min). Measured
+    # on a green PR run: local shards 11–13 min, chat resume 24 min, so 35 keeps
+    # ~10 min of headroom and still halves the worst case.
+    timeout-minutes: 35
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -562,7 +662,7 @@ jobs:
 
   typecheck-known-failures:
     name: Typecheck (known failures, non-blocking)
-    needs: queue-verified
+    needs: prelude
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -622,14 +722,14 @@ jobs:
         run: bun run build:packages
 
       - name: Typecheck known failures
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         env:
           TYPECHECK_SCOPE: expected-failures
         run: bun run typecheck
 
   test:
     name: Test (${{ matrix.name }})
-    needs: queue-verified
+    needs: prelude
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -792,7 +892,7 @@ jobs:
         run: bun run packages/agent-runtime/scripts/build-template-dists.ts sales-bdr-pipeline
 
       - name: Desktop bundle + launcher assertions
-        if: (matrix.desktop_bundle) && needs.queue-verified.outputs.verified != 'true'
+        if: (matrix.desktop_bundle) && needs.prelude.outputs.verified != 'true'
         # test-web-bundle.ts / test-sync-web.ts / test-forge-config.ts are
         # hand-rolled assertion scripts rather than `bun test` files, so
         # `bun run test` never picked them up and nothing ran them in CI —
@@ -810,11 +910,11 @@ jobs:
         run: bun run --cwd apps/desktop test:desktop-bundle:ci
 
       - name: Test
-        if: (matrix.shard != '') && needs.queue-verified.outputs.verified != 'true'
+        if: (matrix.shard != '') && needs.prelude.outputs.verified != 'true'
         run: bun run test -- --packages "${{ matrix.packages }}" --shard "${{ matrix.shard }}"
 
       - name: Test remaining packages and e2e
-        if: (matrix.include_e2e) && needs.queue-verified.outputs.verified != 'true'
+        if: (matrix.include_e2e) && needs.prelude.outputs.verified != 'true'
         run: bun run test -- --packages "${{ matrix.packages }}" --include-e2e
 
       - name: Worker commit-attribution tests
@@ -824,11 +924,11 @@ jobs:
         # attribution it owns — the author and the co-author line of every
         # auto-commit — is hermetic and fast, so it runs here on its own instead
         # of only running when someone remembers to run the package locally.
-        if: (matrix.include_e2e) && needs.queue-verified.outputs.verified != 'true'
+        if: (matrix.include_e2e) && needs.prelude.outputs.verified != 'true'
         run: bun --no-env-file --conditions=development test packages/shogo-worker/src/lib/__tests__/git-cloner.test.ts
 
       - name: Test unsharded packages
-        if: (matrix.shard == '' && matrix.include_e2e == false) && needs.queue-verified.outputs.verified != 'true'
+        if: (matrix.shard == '' && matrix.include_e2e == false) && needs.prelude.outputs.verified != 'true'
         run: bun run test -- --packages "${{ matrix.packages }}"
 
   # The RBAC suites run on SQLite in the `test` job; this job reruns them on
@@ -836,8 +936,8 @@ jobs:
   # project visibility column) and PG query semantics are exercised too.
   rbac-postgres:
     name: RBAC (Postgres)
-    needs: queue-verified
-    if: needs.queue-verified.outputs.verified != 'true'
+    needs: prelude
+    if: needs.prelude.outputs.verified != 'true'
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -931,76 +1031,11 @@ jobs:
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/agent-call-restart.integration.test.ts
 
-  # Thin aggregator so branch protection's required status check keeps its
-  # original name/context ("Lint, Typecheck, Test") no matter how the real
-  # work above gets split or resharded. `if: always()` makes this run even
-  # when a dependency fails (default behavior would skip it, and a skipped
-  # required check blocks merges anyway — but an explicit failure is a much
-  # clearer signal in the PR checks UI than "skipped").
-  # Windows path-handling regression guard (SHOG-749).
-  #
-  # Until this job existed, EVERY job in this repo ran on ubuntu (44 of 50
-  # `runs-on:` declarations) and the only `windows-2022` runner was the
-  # desktop *packaging* workflow. That made `path.sep`-dependent logic
-  # structurally untestable: `assertWithinWorkspace` had tests, they passed
-  # on Linux because `sep === '/'`, and a one-character bug
-  # (`root + '/'`) shipped anyway and broke read/write/edit_file for every
-  # folder-linked Windows project.
-  #
-  # Deliberately scoped to the path-boundary suites rather than the whole
-  # test suite: several unrelated suites still assert POSIX-shaped paths and
-  # would keep this job permanently red, which guards nothing. Widen the
-  # list as those are fixed.
-  windows-changes:
-    name: Detect Windows-sensitive changes
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      relevant: ${{ steps.filter.outputs.relevant }}
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-
-      - name: Check changed paths
-        id: filter
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          # Main pushes and manually dispatched runs should retain the full
-          # platform guard. PR/merge-group runs can skip it when their diff
-          # cannot affect Windows path behavior or the guard itself.
-          if [[ "$EVENT_NAME" != "pull_request" && "$EVENT_NAME" != "merge_group" ]]; then
-            echo "relevant=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
-            echo "Unable to resolve the comparison SHAs; failing open."
-            echo "relevant=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-          printf '%s\n' "$changed"
-          if printf '%s\n' "$changed" | grep -Eq \
-            '^(packages/agent-runtime/src/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|trust-resolver|workspace-runtime-mode|runtime-lsp-routes|pty-[a-z-]+|runtime-terminal-routes|quick-commands|detected-urls)\.ts$|packages/agent-runtime/src/__tests__/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|canvas-file-watcher-mounts|trust-resolver-workspace-mounts|runtime-lsp-routes-scope|workspace-runtime-mode|pty-session|pty-ws-e2e|runtime-terminal-routes)\.test\.ts$|packages/agent-runtime/src/__tests__/helpers/pty-shell\.ts$|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/(run-tests-isolated|postinstall|db-generate-all|__tests__/desktop-next-beta-version\.test)\.ts$|package\.json$|\.github/workflows/ci\.yml$)'; then
-            echo "relevant=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "relevant=false" >> "$GITHUB_OUTPUT"
-          fi
 
   test-windows:
     name: Test (Windows path handling)
-    needs: [queue-verified, windows-changes]
-    if: needs.windows-changes.outputs.relevant == 'true'
+    needs: prelude
+    if: needs.prelude.outputs.windows == 'true'
     runs-on: windows-latest
     permissions:
       contents: read
@@ -1076,7 +1111,7 @@ jobs:
           key: ci-prepared-v2-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'apps/api/src/generated/*.ts', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Path-boundary, merged-root and release-version tests
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         shell: bash
         # LINKED_FOLDERS / SHOGO_LOCAL_MODE are unset explicitly: when these
         # tests run under a Shogo agent the inherited values silently change
@@ -1098,7 +1133,7 @@ jobs:
           bun --no-env-file test apps/api/src/__tests__/runtime-manager-startWorkspace.test.ts apps/api/src/lib/runtime/__tests__/local-bundle-integrity.test.ts
 
       - name: Terminal PTY tests (ConPTY + PowerShell)
-        if: needs.queue-verified.outputs.verified != 'true'
+        if: needs.prelude.outputs.verified != 'true'
         shell: bash
         # Real PowerShell sessions through Bun's ConPTY-backed
         # Bun.spawn({ terminal }), which needs Bun >= 1.4 on Windows.
@@ -1113,8 +1148,8 @@ jobs:
   # shellcheck findings (SC2086 etc.) are deliberately out of scope.
   workflow-lint:
     name: Lint workflows
-    needs: queue-verified
-    if: needs.queue-verified.outputs.verified != 'true'
+    needs: prelude
+    if: needs.prelude.outputs.verified != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1134,8 +1169,8 @@ jobs:
   # crash-looping every host after deploy.
   metal-agent-bundle:
     name: Metal agent bundle
-    needs: queue-verified
-    if: needs.queue-verified.outputs.verified != 'true'
+    needs: prelude
+    if: needs.prelude.outputs.verified != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1147,17 +1182,23 @@ jobs:
           bun-version: '1.4.3'
       - run: bash scripts/ci/check-metal-agent-bundle.sh
 
+  # Thin aggregator so branch protection's required status check keeps its
+  # original name/context ("Lint, Typecheck, Test") no matter how the real
+  # work above gets split or resharded. `if: always()` makes this run even
+  # when a dependency fails (default behavior would skip it, and a skipped
+  # required check blocks merges anyway — but an explicit failure is a much
+  # clearer signal in the PR checks UI than "skipped").
   ci:
     name: Lint, Typecheck, Test
-    needs: [queue-verified, windows-changes, typecheck, typecheck-mobile, test, rbac-postgres, test-windows, workflow-lint, metal-agent-bundle]
+    needs: [prelude, typecheck, typecheck-mobile, test, rbac-postgres, test-windows, workflow-lint, metal-agent-bundle]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check upstream job results
         env:
-          VERIFIED: ${{ needs.queue-verified.outputs.verified }}
-          QUEUE_VERIFIED: ${{ needs.queue-verified.result }}
-          WINDOWS_CHANGES: ${{ needs.windows-changes.result }}
+          VERIFIED: ${{ needs.prelude.outputs.verified }}
+          WINDOWS_RELEVANT: ${{ needs.prelude.outputs.windows }}
+          PRELUDE: ${{ needs.prelude.result }}
           TYPECHECK: ${{ needs.typecheck.result }}
           TYPECHECK_MOBILE: ${{ needs.typecheck-mobile.result }}
           TEST: ${{ needs.test.result }}
@@ -1166,8 +1207,7 @@ jobs:
           WORKFLOW_LINT: ${{ needs.workflow-lint.result }}
           METAL_AGENT_BUNDLE: ${{ needs.metal-agent-bundle.result }}
         run: |
-          echo "queue-verified: ${QUEUE_VERIFIED} (verified=${VERIFIED})"
-          echo "windows-changes: ${WINDOWS_CHANGES}"
+          echo "prelude: ${PRELUDE} (verified=${VERIFIED}, windows-needed=${WINDOWS_RELEVANT})"
           echo "typecheck: ${TYPECHECK}"
           echo "typecheck-mobile: ${TYPECHECK_MOBILE}"
           echo "test: ${TEST}"
@@ -1177,6 +1217,6 @@ jobs:
           echo "metal-agent-bundle: ${METAL_AGENT_BUNDLE}"
           # Jobs a queue-verified push skips outright; anywhere else they must pass.
           skippable() { [ "$1" == "success" ] || { [ "$VERIFIED" == "true" ] && [ "$1" == "skipped" ]; }; }
-          if [ "$QUEUE_VERIFIED" != "success" ] || [ "$WINDOWS_CHANGES" != "success" ] || [ "$TYPECHECK" != "success" ] || [ "$TYPECHECK_MOBILE" != "success" ] || [ "$TEST" != "success" ] || ! skippable "$RBAC_POSTGRES" || ! skippable "$WORKFLOW_LINT" || ! skippable "$METAL_AGENT_BUNDLE" || { [ "$TEST_WINDOWS" != "success" ] && [ "$TEST_WINDOWS" != "skipped" ]; }; then
+          if [ "$PRELUDE" != "success" ] || [ "$TYPECHECK" != "success" ] || [ "$TYPECHECK_MOBILE" != "success" ] || [ "$TEST" != "success" ] || ! skippable "$RBAC_POSTGRES" || ! skippable "$WORKFLOW_LINT" || ! skippable "$METAL_AGENT_BUNDLE" || { [ "$TEST_WINDOWS" != "success" ] && [ "$TEST_WINDOWS" != "skipped" ]; }; then
             exit 1
           fi

@@ -202,7 +202,9 @@ jobs:
         with:
           name: shogo-agent-runtime-${{ steps.version.outputs.version }}
           path: packages/agent-runtime/dist/release/*
-          retention-days: 30
+          # Intermediate: the tarballs are appended to the v* GitHub Release in
+          # this same run, so the artifact only hands off between jobs.
+          retention-days: 7
 
       - name: Append runtime tarballs to the v* GitHub Release
         if: github.event.inputs.dry_run != 'true'

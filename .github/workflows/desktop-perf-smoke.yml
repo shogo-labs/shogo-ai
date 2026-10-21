@@ -13,6 +13,27 @@ on:
       - "packages/agent-runtime/src/server.ts"
       - "packages/shogo-worker/src/lib/runtime-manager.ts"
       - "scripts/bench/**"
+  # After a merge, on the same paths. The macOS leg is one of the three most
+  # expensive jobs in the org ($26 / 422 min over two days), so it runs there
+  # (where a regression is attributable to a commit) instead of on every PR.
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/src/lib/runtime/**"
+      - "apps/api/src/lib/host-warm-pool-controller.ts"
+      - "apps/api/src/routes/runtime.ts"
+      - "apps/api/src/server.ts"
+      - "apps/desktop/**"
+      - "apps/mobile/lib/cold-start-timing.ts"
+      - "packages/agent-runtime/src/server.ts"
+      - "packages/shogo-worker/src/lib/runtime-manager.ts"
+      - "scripts/bench/**"
+
+# Superseded PR runs cancel; a run on main never does, or a merge could land
+# with its own smoke cancelled by the next one.
+concurrency:
+  group: perf-smoke-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   harness-and-memory-smoke:
@@ -21,7 +42,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        # Windows on PRs (fast feedback on the platform we break most, and the
+        # cheaper runner); macOS on a main push and on manual dispatch.
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["windows-latest"]' || (github.event_name == 'workflow_dispatch' && '["windows-latest","macos-latest"]' || '["macos-latest"]')) }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
