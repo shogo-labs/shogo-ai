@@ -94,10 +94,15 @@ test.describe("SHO-130 · a paired machine's workspace, from staging", () => {
     await machineRow.click()
 
     // ── AC 1 — it is the workspace in view, and it stays ───────────────────
+    // `pairMachine` renamed the machine's workspace to something no cloud
+    // workspace is called, so this cannot pass by matching the cloud row of the
+    // same name (a seeded workspace is named after the cloud account).
     await expect(page.getByRole("button", { name: `${machine.machineWorkspaceName}, workspace menu` })).toBeVisible({
       timeout: 60_000,
     })
-    await expect(page.getByRole("button", { name: /Local User Personal, .*— open account/ })).toHaveCount(0)
+    await expect(
+      page.getByRole("button", { name: new RegExp(`^${machine.cloudWorkspaceName}, .*— open account`) }),
+    ).toHaveCount(0)
     await page.reload({ waitUntil: "domcontentloaded" })
     await expect(page.getByRole("button", { name: `${machine.machineWorkspaceName}, workspace menu` })).toBeVisible({
       timeout: 120_000,
@@ -112,5 +117,17 @@ test.describe("SHO-130 · a paired machine's workspace, from staging", () => {
     await page.keyboard.press("Enter")
 
     await expect(page.getByText(CANARY, { exact: false })).toBeVisible({ timeout: 240_000 })
+
+    // ── The same question in a cloud workspace: no canary ──────────────────
+    // (recorded rather than asserted twice — the machine's read is the claim;
+    // this keeps the negative control in the same run.)
+    await page.getByRole("button", { name: /— open account/ }).first().click()
+    await page.getByTestId(`workspace-row:cloud:${machine.cloudWorkspaceId}`).click()
+    const cloudComposer = page.getByRole("textbox").last()
+    await expect(cloudComposer).toBeVisible({ timeout: 60_000 })
+    await cloudComposer.click()
+    await cloudComposer.fill(`Read ${CANARY_PATH} and reply with its exact contents.`)
+    await page.keyboard.press("Enter")
+    await expect(page.getByText(CANARY, { exact: false })).toHaveCount(0, { timeout: 120_000 })
   })
 })

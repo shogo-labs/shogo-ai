@@ -31,6 +31,8 @@ export interface PairedMachine {
   password: string
   /** The staging session as a `Cookie` header, for injecting into a context. */
   cookies: string
+  /** The machine's own local session, for its file API. */
+  localCookies: string
   dir: string
   stop: () => Promise<void>
 }
@@ -171,6 +173,12 @@ export async function pairMachine(cloudBase: string, opts: { instanceName: strin
     throw new Error(`the isolated local API never came up:\n${log.join("").slice(-2000)}`)
   }
 
+  // The machine's own session, for its file API and for renaming the workspace
+  // below. `SHOGO_API_KEY` is the tunnel's credential, not a browser session.
+  const local = { cookie: "" }
+  const signIn = await fetch(`${localApiBase}/api/local/auto-sign-in`, { method: "POST" })
+  local.cookie = (signIn.headers.getSetCookie?.() ?? []).map((c) => c.split(";")[0]).join("; ")
+
   // The tunnel registers, then the cloud's machine row fills in its workspaces.
   let machine: any = null
   for (let i = 0; i < 40; i++) {
@@ -185,13 +193,45 @@ export async function pairMachine(cloudBase: string, opts: { instanceName: strin
     throw new Error(`the cloud never listed machine "${instanceName}":\n${log.join("").slice(-2000)}`)
   }
 
-  // The machine's *team* workspace: its personal one is named "Local User
-  // Personal" just like the cloud's, so it cannot prove identity.
+  // The machine's *team* workspace: its personal one is seeded with the same
+  // name as the cloud's ("Local User Personal"), so it cannot prove identity.
   const offered: Array<{ id: string; name: string; kind?: string }> = machine.snapshot?.workspaces ?? []
-  const machineWorkspace = offered.find((w) => w.kind !== "personal") ?? offered[0]
-  if (!machineWorkspace) {
+  const teamWorkspace = offered.find((w) => w.kind !== "personal")
+  if (!teamWorkspace) {
     await stop()
-    throw new Error(`machine "${instanceName}" reported no workspaces: ${JSON.stringify(machine).slice(0, 500)}`)
+    throw new Error(`machine "${instanceName}" offered no team workspace: ${JSON.stringify(offered)}`)
+  }
+
+  // Rename it to something no cloud workspace could be called. Without this the
+  // fixture lies: a seeded workspace is named after the cloud account, so a
+  // header assertion would pass against the *cloud* workspace of the same name
+  // (QA hit exactly this). The rename also proves a change made on the machine
+  // reaches the cloud's snapshot.
+  const machineWorkspaceName = `${instanceName} Workspace`
+  const renamed = await call(localApiBase, local, "PATCH", `/api/workspaces/${teamWorkspace.id}`, {
+    name: machineWorkspaceName,
+  })
+  if (renamed.status >= 400) {
+    await stop()
+    throw new Error(`could not rename the machine's workspace (${renamed.status}): ${renamed.text.slice(0, 300)}`)
+  }
+
+  let machineWorkspace = { id: teamWorkspace.id, name: teamWorkspace.name }
+  for (let i = 0; i < 20; i++) {
+    const res = await call(cloudBase, state, "GET", "/api/machines")
+    const row: any = (res.json?.machines ?? []).find((m: any) => m.id === machine.id)
+    const ws = (row?.snapshot?.workspaces ?? []).find((w: any) => w.id === teamWorkspace.id)
+    if (ws?.name === machineWorkspaceName) {
+      machineWorkspace = { id: ws.id, name: ws.name }
+      break
+    }
+    await sleep(3000)
+  }
+  if (machineWorkspace.name !== machineWorkspaceName) {
+    await stop()
+    throw new Error(
+      `the cloud never showed the machine workspace rename "${machineWorkspaceName}" (still "${machineWorkspace.name}")`,
+    )
   }
 
   return {
@@ -205,6 +245,7 @@ export async function pairMachine(cloudBase: string, opts: { instanceName: strin
     email,
     password,
     cookies: state.cookie,
+    localCookies: local.cookie,
     dir,
     stop,
   }
@@ -216,13 +257,11 @@ export async function writeMachineCanary(
   path: string,
   content: string,
 ): Promise<number> {
-  const signIn = await fetch(`${machine.localApiBase}/api/local/auto-sign-in`, { method: "POST" })
-  const cookie = (signIn.headers.getSetCookie?.() ?? []).map((c) => c.split(";")[0]).join("; ")
   const res = await fetch(
     `${machine.localApiBase}/api/workspaces/${machine.machineWorkspaceId}/agent-proxy/agent/workspace/files/${path}`,
     {
       method: "PUT",
-      headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
+      headers: { "content-type": "application/json", ...(machine.localCookies ? { cookie: machine.localCookies } : {}) },
       body: JSON.stringify({ content }),
     },
   )
