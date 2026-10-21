@@ -65,6 +65,13 @@ export interface RequestMessageDigest {
   chars: number
   /** First 200 characters of that text, for shape assertions. */
   preview: string
+  /**
+   * Last 200 characters of that text. The runtime wraps a user message in a
+   * preamble ("[Chat — User Message] …"), so the user's own words can sit past
+   * `preview` — a spec that wants to identify a message by what the person
+   * typed has to look at both ends.
+   */
+  tail: string
 }
 
 interface Marker {
@@ -160,6 +167,7 @@ export function digestMessages(messages: any[]): RequestMessageDigest[] {
       toolNames: toolNames.filter(Boolean),
       chars: text.length,
       preview: text.slice(0, 200),
+      tail: text.slice(-200),
     }
   })
 }

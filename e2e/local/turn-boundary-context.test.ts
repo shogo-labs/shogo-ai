@@ -127,11 +127,29 @@ async function waitForIdle(page: Page, timeoutMs = 90_000): Promise<void> {
   while (Date.now() - started < timeoutMs && (await stopShown(page))) await page.waitForTimeout(200)
 }
 
-/** The first request of the SECOND turn — i.e. after the app finished turn 1. */
-function secondTurnFirstRequest(tag: string): FakeTurn | undefined {
-  const turns = llm.turns.filter((t) => t.tag === tag || t.userText.includes(`[[e2e:tool:tag=${tag}`))
-  const secondTurn = turns.filter((t) => t.userText.includes("second turn"))
-  return secondTurn[0]
+/**
+ * The first request of the SECOND turn.
+ *
+ * Selected from the request body itself rather than from `userText`: `userText`
+ * is only the *last* user message, and the runtime may append a note after the
+ * prompt, which would hide it. Every request of turn 2 carries the new prompt
+ * somewhere in `messages`, and no request of turn 1 does.
+ */
+function secondTurnFirstRequest(): FakeTurn | undefined {
+  return llm.turns.find((t) =>
+    t.messages.some(
+      (m) => m.role === "user" && (m.preview.includes("second turn") || m.tail.includes("second turn")),
+    ),
+  )
+}
+
+/** What the fake model was asked, for a failure that explains itself. */
+function turnList(): string {
+  return JSON.stringify(
+    llm.turns.map((t) => ({ id: t.id, tag: t.tag, round: t.round, userText: t.userText.slice(0, 60) })),
+    null,
+    1,
+  )
 }
 
 test.describe("turn boundary", () => {
@@ -153,10 +171,10 @@ test.describe("turn boundary", () => {
     const started = Date.now()
     let request: FakeTurn | undefined
     while (!request && Date.now() - started < 120_000) {
-      request = secondTurnFirstRequest(tag)
+      request = secondTurnFirstRequest()
       if (!request) await page.waitForTimeout(200)
     }
-    soft(request, "turn 2's first model request was captured").toBeDefined()
+    soft(request, `turn 2's first model request was captured — turns seen: ${turnList()}`).toBeDefined()
 
     const messages = request?.messages ?? []
     const toolResults = messages.filter((m) => m.role === "tool")
@@ -172,13 +190,26 @@ test.describe("turn boundary", () => {
       soft(result.preview.includes("Tool output processed"), "no `[Tool output processed]` placeholder").toBe(false)
       soft(result.preview.includes("Tool result cleared"), "no `[Tool result cleared]` placeholder").toBe(false)
       soft(result.preview.includes("result cleared"), "no `[Earlier … result cleared]` placeholder").toBe(false)
+      // AC1 names this one too, and it is the placeholder a turn-anchored
+      // boundary still let through: microcompact's read_file collapse, which
+      // the gateway applies to the previous turn before the new prompt exists.
+      soft(
+        result.preview.includes("File content read"),
+        `no \`[File content read]\` placeholder — ${result.preview.slice(0, 80)}`,
+      ).toBe(false)
       soft(result.chars, "the result still carries its content").toBeGreaterThan(0)
     }
 
     // And the turn's own user message is in the request.
     soft(
-      messages.some((m) => m.role === "user" && m.preview.includes("run the six rounds")),
-      "turn 1's user message is still in the request",
+      messages.some(
+        (m) => m.role === "user" && (m.preview.includes("run the six rounds") || m.tail.includes("run the six rounds")),
+      ),
+      `turn 1's user message is still in the request — request was: ${JSON.stringify(
+        messages.map((m) => `${m.role}:${m.preview.slice(0, 70)}`),
+        null,
+        1,
+      ).slice(0, 3000)}`,
     ).toBe(true)
 
     await page.close()
