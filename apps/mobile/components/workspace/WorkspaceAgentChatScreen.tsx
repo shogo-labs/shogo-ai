@@ -21,7 +21,7 @@ import {
 } from "../../contexts/domain"
 import { openInWorkspace, adoptChatWorkspace } from "../../lib/switch-workspace"
 import { pickTeamWorkspace } from "../../lib/team-workspace"
-import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
+import { useWorkspaceInView } from "../../hooks/useWorkspaceInView"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { useWorkspaceAgentBase } from "../../hooks/useWorkspaceAgentBase"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
@@ -109,7 +109,11 @@ export const WorkspaceAgentChatScreen = observer(
     const router = useRouter()
     const { user } = useAuth()
     const http = useDomainHttp()
-    const workspace = useActiveWorkspace()
+    // The workspace in view: a paired computer's own workspace while it is
+    // open, so its id and kind — not the cloud workspace that happens to be
+    // selected — decide this chat's sessions, its scope and its chrome
+    // (SHO-130).
+    const workspace = useWorkspaceInView()
     const projects = useProjectCollection()
     const experience = useWorkspaceExperience()
     // Set only while a paired desktop's own workspace is open: its agent,

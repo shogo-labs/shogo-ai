@@ -58,6 +58,7 @@ import { cn } from "@shogo/shared-ui/primitives";
 import type { PrimaryNavId, SidebarTabId } from "@shogo/shared-app";
 import { CommandPalette, useCommandPalette } from "../CommandPalette";
 import { useActiveInstance } from "../../../contexts/active-instance";
+import { useWorkspaceInView } from "../../../hooks/useWorkspaceInView";
 import { useMachineWorkspaces } from "../../../hooks/useMachineWorkspaces";
 import {
   buildWorkspaceEntries,
@@ -635,6 +636,7 @@ export const AppSidebar = observer(function AppSidebar({
     activeRemoteInstance?.source === "machine"
       ? machineWorkspaces.find((m) => m.id === activeRemoteInstance.instanceId)
       : undefined;
+  const workspaceInView = useWorkspaceInView()
   const activeMachineWorkspace = activeMachine?.workspaces.find(
     (w) => w.id === activeRemoteInstance?.localWorkspaceId,
   );
@@ -1316,6 +1318,7 @@ export const AppSidebar = observer(function AppSidebar({
     currentKey={activeWorkspaceKey}
     onSelectEntry={handleSelectWorkspaceEntry}
     currentWorkspace={currentWorkspace}
+    identityWorkspace={workspaceInView ?? currentWorkspace}
     billingData={billingData}
     workspacePlan={workspacePlan}
     allPlans={allPlans}
@@ -1370,6 +1373,7 @@ export const AppSidebar = observer(function AppSidebar({
             currentKey={activeWorkspaceKey}
             onSelectEntry={handleSelectWorkspaceEntry}
             currentWorkspace={currentWorkspace}
+            identityWorkspace={workspaceInView ?? currentWorkspace}
             billingData={billingData}
             workspacePlan={workspacePlan}
             allPlans={allPlans}

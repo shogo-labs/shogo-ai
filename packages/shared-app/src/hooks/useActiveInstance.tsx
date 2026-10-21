@@ -131,6 +131,18 @@ export interface InstanceStorageAdapter {
   getItem(key: string): Promise<string | null>
   setItem(key: string, value: string): Promise<void>
   removeItem(key: string): Promise<void>
+  /**
+   * The stored value, read synchronously — optional, and only implemented where
+   * the storage can do it (web / desktop `localStorage`).
+   *
+   * Selecting one of a paired computer's own workspaces ends in a full document
+   * reload (`reloadAfterWorkspaceSwitch`). Without this, the reloaded page
+   * paints before the async read and the network validation have answered, so
+   * the first paint is the *cloud* workspace and the machine's workspace
+   * replaces it a beat later — the "flash" in SHO-130. With it, the machine is
+   * in view from the first render.
+   */
+  peekItem?(key: string): string | null
 }
 
 export interface ActiveInstanceProviderProps {
@@ -164,7 +176,9 @@ export function ActiveInstanceProvider({
   fetchFn = fetch,
   fetchOptions,
 }: ActiveInstanceProviderProps) {
-  const [instance, setInstanceState] = useState<ActiveInstance | null>(null)
+  const [instance, setInstanceState] = useState<ActiveInstance | null>(() =>
+    readStoredInstance(storage),
+  )
   const [instanceStatus, setInstanceStatus] = useState<InstanceStatus>('unknown')
   const validatedRef = useRef(false)
   const validationRef = useRef({ apiUrl, fetchFn, fetchOptions })
@@ -176,31 +190,48 @@ export function ActiveInstanceProvider({
       .getItem(STORAGE_KEY)
       .then(async (raw) => {
         if (!raw) return
+        let restored: ActiveInstance
         try {
-          const restored: ActiveInstance = JSON.parse(raw)
-          const validation = validationRef.current
-          const result = await validateInstance(
-            restored,
-            validation.apiUrl,
-            validation.fetchFn,
-            validation.fetchOptions,
-          )
-          if (result.valid) {
-            // Hydrate `kind` from the validation response. Older clients
-            // persisted instances without this field and the SDKDomainProvider's
-            // remote-API gating depends on it — re-storing here keeps
-            // subsequent loads on the new shape so the gate kicks in
-            // immediately on the next mount instead of after the first poll.
-            const hydrated = applyValidation(restored, result)
-            setInstanceState(hydrated)
-            setInstanceStatus(result.status ?? 'unknown')
-            if (hydrated !== restored) {
-              storage.setItem(STORAGE_KEY, JSON.stringify(hydrated)).catch(() => {})
-            }
-          } else {
-            storage.removeItem(STORAGE_KEY).catch(() => {})
-          }
+          restored = JSON.parse(raw)
         } catch {
+          storage.removeItem(STORAGE_KEY).catch(() => {})
+          validatedRef.current = true
+          return
+        }
+        // Paint the stored selection before asking the server about it: the
+        // reload that a machine-workspace switch ends in must land on that
+        // machine, not on the cloud workspace for a frame or two. On web the
+        // synchronous `peekItem` above has already done this; this covers the
+        // async-storage platforms and the case where the peek was unavailable.
+        setInstanceState((current) => current ?? restored)
+        const validation = validationRef.current
+        const result = await validateInstance(
+          restored,
+          validation.apiUrl,
+          validation.fetchFn,
+          validation.fetchOptions,
+        )
+        if (result.valid) {
+          // Hydrate `kind` from the validation response. Older clients
+          // persisted instances without this field and the SDKDomainProvider's
+          // remote-API gating depends on it — re-storing here keeps
+          // subsequent loads on the new shape so the gate kicks in
+          // immediately on the next mount instead of after the first poll.
+          const hydrated = applyValidation(restored, result)
+          setInstanceState(hydrated)
+          setInstanceStatus(result.status ?? 'unknown')
+          if (hydrated !== restored) {
+            storage.setItem(STORAGE_KEY, JSON.stringify(hydrated)).catch(() => {})
+          }
+        } else if (result.unreachable) {
+          // The server could not be asked (offline, a cold relay, a 5xx). That
+          // is not evidence the machine was unpaired, so keep looking at it and
+          // let the status poll settle it — dropping back to the cloud here is
+          // the "flashes and stays in whatever workspace" half of SHO-130.
+          setInstanceState(restored)
+          setInstanceStatus('unknown')
+        } else {
+          setInstanceState(null)
           storage.removeItem(STORAGE_KEY).catch(() => {})
         }
         validatedRef.current = true
@@ -293,9 +324,33 @@ export function useActiveInstance() {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+/**
+ * The instance the last session left selected, read without awaiting anything.
+ *
+ * Only possible where the storage exposes a synchronous read (`localStorageAdapter`).
+ * A corrupt value is treated as "nothing selected"; it is not the place to
+ * clean up storage.
+ */
+function readStoredInstance(storage: InstanceStorageAdapter): ActiveInstance | null {
+  try {
+    const raw = storage.peekItem?.(STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as ActiveInstance
+    return parsed && typeof parsed === 'object' && parsed.instanceId ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 /** What a validation poll learned about a live instance. */
 type ValidationResult = {
   valid: boolean
+  /**
+   * The server could not be asked at all (network error, timeout, 5xx-ish).
+   * Distinct from "asked and the answer was no": only the latter may clear the
+   * stored selection.
+   */
+  unreachable?: boolean
   status?: InstanceStatus
   kind?: InstanceKind
   /** Machine workspaces only: the machine's own name and kind for the workspace. */
@@ -361,9 +416,16 @@ async function validateMachine(
   fetchFn: typeof fetch,
   fetchOptions?: RequestInit,
 ): Promise<ValidationResult> {
+  let res: Response
   try {
-    const res = await fetchFn(`${apiUrl}/api/machines`, { ...fetchOptions })
-    if (!res.ok) return { valid: false }
+    res = await fetchFn(`${apiUrl}/api/machines`, { ...fetchOptions })
+  } catch {
+    // Could not ask. Not the same as "the machine is gone".
+    return { valid: false, unreachable: true }
+  }
+  if (res.status >= 500) return { valid: false, unreachable: true }
+  if (!res.ok) return { valid: false }
+  try {
     const data = await res.json()
     const found = (data?.machines ?? []).find((m: any) => m.id === inst.instanceId)
     if (!found) return { valid: false }
@@ -386,7 +448,8 @@ async function validateMachine(
         row?.kind === 'personal' || row?.kind === 'team' ? row.kind : undefined,
     }
   } catch {
-    return { valid: false }
+    // A body we could not read is not proof the machine was unpaired.
+    return { valid: false, unreachable: true }
   }
 }
 
@@ -459,5 +522,18 @@ export const localStorageAdapter: InstanceStorageAdapter = {
   async removeItem(key) {
     if (typeof window === 'undefined') return
     window.localStorage.removeItem(key)
+  },
+  /**
+   * Same read as `getItem`, without the promise — so a provider mounting after
+   * the reload that a machine-workspace switch triggers can paint that machine
+   * on its first render (see `readStoredInstance`).
+   */
+  peekItem(key) {
+    if (typeof window === 'undefined') return null
+    try {
+      return window.localStorage.getItem(key)
+    } catch {
+      return null
+    }
   },
 }

@@ -47,6 +47,8 @@ export interface FakeTurn {
   finishedAt?: number
   /** Name of the tool called at the end of this request, if any. */
   toolCalled?: string
+  /** The tool-result text this request carried (round > 0), as the agent sent it. */
+  toolResults?: string
   userText: string
 }
 
@@ -60,9 +62,11 @@ interface Marker {
   gap: number
   /** `bg`: the shell command, `_` standing in for a space. */
   cmd?: string
+  /** `tool`: the file the fake model reads (a path the agent can resolve). */
+  path?: string
 }
 
-const MARKER = /\[\[e2e:(long|hold|tool|bg)((?::[a-zA-Z]+=[\w-]+)*)\]\]/
+const MARKER = /\[\[e2e:(long|hold|tool|bg)((?::[a-zA-Z]+=[\w./-]+)*)\]\]/
 
 /** Tool the fake model calls. `read_file` works on a missing path too: an error result still continues the turn. */
 const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
@@ -71,19 +75,24 @@ const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
  * detection), or after several failing calls in a row. So every round reads a longer
  * slice of a file that exists: distinct input, always a success.
  */
-const toolArgs = (_tag: string, round: number): Record<string, unknown> => ({ path: 'AGENTS.md', offset: 1, limit: round + 1 })
+const toolArgs = (_tag: string, round: number, path = 'AGENTS.md'): Record<string, unknown> => ({
+  path,
+  offset: 1,
+  limit: round + 1,
+})
 
 export function marker(
   script: 'long' | 'hold' | 'tool' | 'bg',
   tag: string,
   n: number,
-  options: { ms?: number; rounds?: number; holdAt?: number; gap?: number; cmd?: string } = {},
+  options: { ms?: number; rounds?: number; holdAt?: number; gap?: number; cmd?: string; path?: string } = {},
 ): string {
   const parts = [`tag=${tag}`, `n=${n}`, `ms=${options.ms ?? 10}`]
   if (options.rounds !== undefined) parts.push(`rounds=${options.rounds}`)
   if (options.holdAt !== undefined) parts.push(`holdAt=${options.holdAt}`)
   if (options.gap !== undefined) parts.push(`gap=${options.gap}`)
   if (options.cmd !== undefined) parts.push(`cmd=${options.cmd.replace(/ /g, '_')}`)
+  if (options.path !== undefined) parts.push(`path=${options.path}`)
   return `[[e2e:${script}:${parts.join(':')}]]`
 }
 
@@ -114,6 +123,7 @@ function parseMarker(text: string): Marker | null {
     holdAt: script === 'hold' ? 0 : params.holdAt !== undefined ? Number(params.holdAt) : null,
     gap: Number(params.gap ?? 0),
     ...(script === 'bg' ? { cmd: (params.cmd ?? 'sleep_2').replace(/_/g, ' ') } : {}),
+    ...(params.path ? { path: params.path } : {}),
   }
 }
 
@@ -251,7 +261,14 @@ export class FakeLlmServer {
       /* fall through with an empty body */
     }
 
-    const { userText, round } = conversationState(Array.isArray(body.messages) ? body.messages : [])
+    const messages: any[] = Array.isArray(body.messages) ? body.messages : []
+    const { userText, round } = conversationState(messages)
+    // What the runtime sent back after running the tool — the evidence that the
+    // agent read something, and what it read.
+    const toolResults = messages
+      .filter((m) => m?.role === 'tool')
+      .map((m) => contentText(m.content))
+      .join('\n')
     const toolNames: string[] = (Array.isArray(body.tools) ? body.tools : []).map((t: any) => t?.function?.name).filter(Boolean)
     // Only agent turns carry tools. Title generation and other side calls may
     // quote the user's text, marker included, and must stay plain.
@@ -275,6 +292,7 @@ export class FakeLlmServer {
       startedAt: Date.now(),
       sentAt: [],
       userText,
+      ...(toolResults ? { toolResults } : {}),
     }
     this.turns.push(turn)
 
@@ -366,7 +384,7 @@ export class FakeLlmServer {
         : TOOL_PREFERENCE.find((n) => toolNames.includes(n))
       if (name) {
         const args = JSON.stringify(
-          background ? { command: parsed.cmd, background: true } : toolArgs(parsed.tag, round),
+          background ? { command: parsed.cmd, background: true } : toolArgs(parsed.tag, round, parsed.path),
         )
         const id = `call_${parsed.tag}_${round}`
         res.write(chunk({ tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: '' } }] }))
