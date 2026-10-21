@@ -16,6 +16,11 @@
  * every row: the relative label must come from `lastActiveAt` too, otherwise
  * every row would read "just now".
  *
+ * The drawer lists every chat — it scrolls itself, so it takes
+ * `ChatSessionList` in its `renderAll` mode, not the 5/+10/20 inline page the
+ * compact project sidebar uses. A drawer-created chat therefore pushes no older
+ * row out of the list, which is what the last assertion here needs.
+ *
  *   E2E_LOCAL_START_STACK=1 npx playwright test \
  *     --config e2e/local/playwright.config.ts workspace-chat-order --project chromium
  */
@@ -192,25 +197,56 @@ test("the drawer lists workspace chats newest activity first", async ({ page }) 
     ).toContainText(expectedLabels[index]);
   }
 
-  // A chat created from the drawer belongs at the top of the same list.
+  // A chat created from the drawer belongs at the top of the same list. The
+  // drawer posts no name, so the product names it: read that name back from the
+  // server and assert it stays the default, rather than hard-coding the label
+  // (a rename must fail here, not look like an ordering bug).
   await page.getByRole("button", { name: "New chat" }).click();
   await page.waitForURL(/chatSessionId=/);
   const createdHere = new URL(page.url()).searchParams.get("chatSessionId");
   if (createdHere) cleanupSessions.push(createdHere);
+  const createdLabel = await page.evaluate(async ({ apiBase, id }) => {
+    const response = await fetch(
+      `${apiBase}/api/workspaces/${localStorage.getItem("shogo:active-workspace-id")}/sessions`,
+      { credentials: "include" },
+    );
+    const body = await response.json();
+    const row = (body?.sessions ?? []).find((session: any) => session.id === id);
+    return (row?.name?.trim() || row?.inferredName?.trim() || "") as string;
+  }, { apiBase: API, id: createdHere });
+  expect(
+    createdLabel,
+    "a drawer-created chat is still named by the API's default",
+  ).toBe("Workspace chat");
 
   await page.getByRole("button", { name: "Open chat sessions" }).click();
-  // The created chat sits above the chats that were last active hours ago.
+  // The drawer lists every chat, so the created one sits above the chats that
+  // were last active hours ago and none of those drops out of the list.
   await expect
-    .poll(async () => {
-      const labels = await renderedChatLabels(page);
-      const createdIndex = labels.indexOf("Workspace chat");
-      const olderIndexes = expectedOrder.map((name) => labels.indexOf(name));
-      return (
-        createdIndex >= 0 &&
-        olderIndexes.every((index) => index >= 0) &&
-        createdIndex < Math.min(...olderIndexes)
-      );
-    })
+    .poll(
+      async () => {
+        const labels = await renderedChatLabels(page);
+        const createdIndex = labels.indexOf(createdLabel);
+        const olderIndexes = expectedOrder.map((name) => labels.indexOf(name));
+        const ok =
+          createdIndex >= 0 &&
+          olderIndexes.every((index) => index >= 0) &&
+          createdIndex < Math.min(...olderIndexes);
+        if (!ok) {
+          throw new Error(
+            `ordering: "${createdLabel}" at ${createdIndex}, ` +
+              `${expectedOrder.join(" / ")} at ${olderIndexes.join(" / ")}; ` +
+              `the drawer drew [${labels.join(" | ")}]`,
+          );
+        }
+        return true;
+      },
+      {
+        message:
+          `the chat just created in the drawer must lead it, above ` +
+          `${expectedOrder.join(", ")}`,
+      },
+    )
     .toBe(true);
 });
 

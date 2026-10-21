@@ -7,6 +7,8 @@ import React, { createElement } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createReactNativeMock } from "../../../../test/react-native-mock";
 
+let pathname = "/projects/project-1";
+
 const updateChatSession = mock(async () => {});
 const fetchProjectChatSessions = mock(async () => ({
   sessions: [
@@ -25,7 +27,7 @@ const fetchProjectChatSessions = mock(async () => ({
 mock.module("react-native", () => createReactNativeMock());
 mock.module("expo-router", () => ({
   useLocalSearchParams: () => ({}),
-  usePathname: () => "/projects/project-1",
+  usePathname: () => pathname,
   useRouter: () => ({
     push: mock(() => {}),
     setParams: mock(() => {}),
@@ -87,15 +89,18 @@ mock.module("lucide-react-native", () => {
 mock.module(resolve(import.meta.dir, "../ChatTreeItem"), () => ({
   ChatTreeItem: ({
     session,
+    active,
     onRename,
   }: {
     session: { id: string; name?: string };
+    active?: boolean;
     onRename: (id: string, name: string) => void;
   }) =>
     createElement(
       "button",
       {
         type: "button",
+        "data-active": String(!!active),
         onClick: () => onRename(session.id, "Renamed name"),
       },
       session.name,
@@ -140,6 +145,41 @@ describe("ProjectTreeItem chat synchronization", () => {
     );
     await waitFor(() =>
       expect(fetchProjectChatSessions).toHaveBeenCalledTimes(3),
+    );
+  });
+
+  test("drops the active chat highlight when the project is no longer open", async () => {
+    pathname = "/projects/project-1";
+    const view = render(
+      <ProjectTreeItem
+        project={{ id: "project-1", name: "Project one" }}
+        mobileProjectDetail
+      />,
+    );
+
+    await screen.findByRole("button", { name: "Original name" });
+    chatSessionEvents.emit({ projectId: "project-1", activeSessionId: "chat-1" });
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "Original name" })
+          .getAttribute("data-active"),
+      ).toBe("true"),
+    );
+
+    pathname = "/projects/project-2";
+    view.rerender(
+      <ProjectTreeItem
+        project={{ id: "project-1", name: "Project one" }}
+        mobileProjectDetail
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "Original name" })
+          .getAttribute("data-active"),
+      ).toBe("false"),
     );
   });
 });

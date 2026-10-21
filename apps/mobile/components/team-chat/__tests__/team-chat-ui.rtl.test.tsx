@@ -812,18 +812,27 @@ describe('MessageRow', () => {
     expect(h.onReact).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), '👍', true)
   })
 
-  test('the reaction chip names who reacted on hover, in the viewer\u2019s terms', () => {
-    const reactions = [{ emoji: '👍', count: 3, userIds: ['u-me', 'u-ana', 'u-gone'] }]
+  test('hovering a reaction chip shows a card naming who reacted, and leaving hides it', async () => {
+    const reactions = [{ emoji: '❤️', count: 3, userIds: ['u-me', 'u-ana', 'u-gone'] }]
     render(<MessageRow message={message({ reactions })} grouped={false} me="u-me" names={reactors} canManage={false} />)
-    const label = 'You, Ana Lopez and Someone reacted with 👍'
-    expect(screen.getByLabelText(label).querySelector('[title]')?.getAttribute('title')).toBe(label)
+    const chip = screen.getByLabelText('You, Ana Lopez and Someone reacted with ❤️')
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')).toBeNull()
+    fireEvent.mouseEnter(chip.parentElement!)
+    await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
+    const card = document.querySelector('[data-testid="reaction-tooltip"]')!
+    expect(card.textContent).toContain('Ana Lopez, Someone and You')
+    expect(card.textContent).toContain('reacted with :heart:')
+    fireEvent.mouseLeave(chip.parentElement!)
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')).toBeNull()
   })
 
-  test('a crowded reaction collapses the tail instead of listing everyone', () => {
+  test('a crowded reaction collapses the tail in the hover card', async () => {
     const reactions = [{ emoji: '🎉', count: 5, userIds: ['u-ana', 'u-bob', 'u-cid', 'u-dee', 'u-me'] }]
     render(<MessageRow message={message({ reactions })} grouped={false} me="u-me" names={reactors} canManage={false} />)
-    const label = 'Ana Lopez, Bob Chen and 3 others reacted with 🎉'
-    expect(screen.getByLabelText(label).querySelector('[title]')?.getAttribute('title')).toBe(label)
+    const chip = screen.getByLabelText('Ana Lopez, Bob Chen and 3 others reacted with 🎉')
+    fireEvent.mouseEnter(chip.parentElement!)
+    await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent).toContain('Ana Lopez, Bob Chen, Cid Rao, Dee Park and You reacted with :tada:')
   })
 
   test('a pasted markdown attachment renders as a markdown card, not a file tile', () => {

@@ -99,6 +99,12 @@ spec:
               value: "8002"
             - name: NODE_ENV
               value: "production"
+            # Release tag this pod runs. Exposed on /health and /api/version so
+            # admin analytics can say "N of M desktop devices on <tag>". The
+            # k3d/dev manifests leave it at "dev"; the OKE overlays ship an
+            # APP_VERSION_PLACEHOLDER that deploy renders per release.
+            - name: APP_VERSION
+              value: "dev"
             - name: NODE_EXTRA_CA_CERTS
               value: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
             - name: VITE_PORT
