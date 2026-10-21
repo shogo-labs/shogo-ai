@@ -11,18 +11,37 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { createElement, useEffect } from 'react'
+import { createElement, Fragment, useEffect } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 
 const push = mock((..._args: any[]) => {})
 
-// The base mock has no `RefreshControl`; the feed renders one inside its
-// ScrollView, so a no-op component is enough to mount. `Pressable` becomes a
-// real button so a press can be driven from the test.
+// The base mock has no `RefreshControl`; the feed renders one on its list, so a
+// no-op component is enough to mount. `Pressable` becomes a real button so a
+// press can be driven from the test. `FlatList` is a passthrough host in the
+// base mock — it drops `data`/`renderItem` — so the feed's rows are rendered
+// here the way react-native-virtualized-list would: header, rows, footer.
 mock.module('react-native', () =>
   createReactNativeMock({
     Platform: { OS: 'web', select: (s: any) => s.web ?? s.default },
     RefreshControl: () => null,
+    FlatList: ({ data, renderItem, keyExtractor, ListHeaderComponent, ListEmptyComponent, ListFooterComponent, onEndReached }: any) =>
+      createElement(
+        'div',
+        { 'data-testid': 'activity-list' },
+        ListHeaderComponent,
+        data.length
+          ? data.map((item: any, index: number) =>
+              createElement(
+                Fragment,
+                { key: keyExtractor ? keyExtractor(item, index) : index },
+                renderItem({ item, index }),
+              ),
+            )
+          : ListEmptyComponent,
+        ListFooterComponent,
+        createElement('button', { 'data-testid': 'list-end', onClick: () => onEndReached?.() }),
+      ),
     Pressable: ({ accessibilityLabel, children, disabled, onPress, testID }: any) =>
       createElement(
         'button',
@@ -99,6 +118,33 @@ const sent = {
 }
 let sentEnabledCalls: boolean[] = []
 
+const inboxRow = (id: string, createdAt: string) => ({
+  id,
+  kind: 'mention',
+  conversationId: 'c1',
+  messageId: `m-${id}`,
+  threadRootId: null,
+  actorUserId: 'u2',
+  title: `mention ${id}`,
+  preview: `preview ${id}`,
+  readAt: null,
+  createdAt,
+  conversation: { id: 'c1', kind: 'public', name: 'eng', slug: 'eng' },
+})
+
+const inboxLoadMore = mock(() => {})
+const baseInbox = {
+  items: [] as ReturnType<typeof inboxRow>[],
+  hasMore: false,
+  loading: false,
+  loadingMore: false,
+  error: null as string | null,
+  markRead: mock(() => {}),
+  loadMore: inboxLoadMore,
+  refresh: mock(() => {}),
+}
+let inboxState = { ...baseInbox }
+
 mock.module('../../../hooks/useActiveWorkspace', () => ({ useActiveWorkspace: () => ({ id: 'ws-1' }) }))
 mock.module('../../../hooks/useAgentActivity', () => ({
   useAgentActivity: () => ({
@@ -121,15 +167,7 @@ mock.module('../../../hooks/useChatPrefs', () => ({
   useInboxCounts: () => ({ unread: 0, unreadThreads: 0 }),
   useInboxUnread: () => 0,
   useInboxFeed: () => {},
-  useInbox: () => ({
-    items: [],
-    hasMore: false,
-    loading: false,
-    error: null,
-    markRead: mock(() => {}),
-    loadMore: mock(() => {}),
-    refresh: mock(() => {}),
-  }),
+  useInbox: () => inboxState,
   useSentMessages: (_workspaceId: string, enabled: boolean) => {
     sentEnabledCalls.push(enabled)
     return sent
@@ -145,6 +183,8 @@ beforeEach(() => {
   push.mockClear()
   sent.loadMore.mockClear()
   sent.refresh.mockClear()
+  inboxLoadMore.mockClear()
+  inboxState = { ...baseInbox }
   sentEnabledCalls = []
 })
 
@@ -210,5 +250,63 @@ describe('Activity · Sent', () => {
     // Sent rows are never unread, and the pill is gone — the view must still list them.
     expect(screen.getByText('shipped the fix')).toBeTruthy()
     expect(screen.queryByText("You're all caught up.")).toBeNull()
+  })
+})
+
+/**
+ * The inbound feed is the surface the unread badge points at, so it has to be
+ * able to walk past its first page. The hook owns the fetching (see
+ * `useInbox.pagination.test.tsx`); this is the wiring that asks it to.
+ */
+describe('Activity · inbound paging', () => {
+  test('every row the hook holds is rendered — the list is not capped at page one', () => {
+    inboxState = {
+      ...baseInbox,
+      items: [
+        inboxRow('i1', '2026-10-20T12:00:00.000Z'),
+        inboxRow('i2', '2026-10-20T11:00:00.000Z'),
+        inboxRow('i3', '2026-10-20T10:00:00.000Z'),
+      ],
+    }
+    render(createElement(ActivityFeed))
+
+    expect(screen.getByText('mention i1')).toBeTruthy()
+    expect(screen.getByText('mention i2')).toBeTruthy()
+    expect(screen.getByText('mention i3')).toBeTruthy()
+  })
+
+  test('reaching the end of the list asks for the next page', () => {
+    inboxState = { ...baseInbox, items: [inboxRow('i1', '2026-10-20T12:00:00.000Z')], hasMore: true }
+    render(createElement(ActivityFeed))
+
+    fireEvent.click(screen.getByTestId('list-end'))
+    expect(inboxLoadMore).toHaveBeenCalledTimes(1)
+  })
+
+  test('the footer offers older items, and pressing it pages', () => {
+    inboxState = { ...baseInbox, items: [inboxRow('i1', '2026-10-20T12:00:00.000Z')], hasMore: true }
+    render(createElement(ActivityFeed))
+
+    fireEvent.click(screen.getByText('Show older'))
+    expect(inboxLoadMore).toHaveBeenCalledTimes(1)
+  })
+
+  test('nothing asks for more once the server says the inbox is exhausted', () => {
+    inboxState = { ...baseInbox, items: [inboxRow('i1', '2026-10-20T12:00:00.000Z')], hasMore: false }
+    render(createElement(ActivityFeed))
+
+    expect(screen.queryByText('Show older')).toBeNull()
+    fireEvent.click(screen.getByTestId('list-end'))
+    expect(inboxLoadMore).not.toHaveBeenCalled()
+  })
+
+  test('a page already in flight does not offer to fetch itself again', () => {
+    inboxState = { ...baseInbox, items: [inboxRow('i1', '2026-10-20T12:00:00.000Z')], hasMore: true, loadingMore: true }
+    render(createElement(ActivityFeed))
+
+    // The footer shows a spinner instead of the button while it loads.
+    expect(screen.queryByText('Show older')).toBeNull()
+    fireEvent.click(screen.getByTestId('list-end'))
+    expect(inboxLoadMore).not.toHaveBeenCalled()
   })
 })

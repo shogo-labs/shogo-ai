@@ -198,13 +198,16 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
   const [items, setItems] = useState<InboxItem[]>([])
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const req = useRef(0)
+  const appending = useRef(false)
 
   const load = useCallback(async (before?: string) => {
     if (!workspaceId) return
     const id = ++req.current
-    setLoading(true)
+    if (before) setLoadingMore(true)
+    else setLoading(true)
     try {
       const page = await api.inbox(workspaceId, { unreadOnly, before })
       if (id !== req.current) return
@@ -215,7 +218,39 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
     } catch (err) {
       if (id === req.current) setError(err instanceof Error ? err.message : 'Could not load inbox')
     } finally {
-      if (id === req.current) setLoading(false)
+      if (id === req.current) {
+        setLoading(false)
+        setLoadingMore(false)
+      }
+    }
+  }, [workspaceId, unreadOnly])
+
+  /**
+   * Refresh the newest page in place, keeping the pages already loaded.
+   *
+   * `inbox.read` and `ready` are frequent — every mark-read, every SSE
+   * reconnect — so a plain reload here (`load()` with no cursor) would replace
+   * the whole list with page one. Paging down and then clicking a row, or
+   * simply losing the socket for a second, would throw away everything loaded
+   * below the first page and drop the reader back to the top.
+   */
+  const syncHead = useCallback(async () => {
+    if (!workspaceId) return
+    const id = ++req.current
+    try {
+      const page = await api.inbox(workspaceId, { unreadOnly })
+      if (id !== req.current) return
+      setItems((prev) => {
+        if (!prev.length) return page.items
+        const headIds = new Set(page.items.map((i) => i.id))
+        const older = prev.filter((i) => !headIds.has(i.id))
+        return older.length ? [...page.items, ...older] : page.items
+      })
+      setHasMore(page.hasMore)
+      setUnread(workspaceId, { unread: page.unread, unreadThreads: page.unreadThreads ?? 0 })
+      setError(null)
+    } catch {
+      // Keep the list we have; the next ready or pull-to-refresh retries.
     }
   }, [workspaceId, unreadOnly])
 
@@ -223,7 +258,7 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
 
   useTeamChatEvents(workspaceId, (event) => {
     if (event.type === 'inbox.created') setItems((prev) => (prev.some((i) => i.id === event.item.id) ? prev : [event.item, ...prev]))
-    else if (event.type === 'inbox.read' || event.type === 'ready') void load()
+    else if (event.type === 'inbox.read' || event.type === 'ready') void syncHead()
   })
 
   const markRead = useCallback(async (ids: string[] | 'all', unread = false) => {
@@ -235,10 +270,14 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
 
   const loadMore = useCallback(() => {
     const last = items[items.length - 1]
-    if (hasMore && !loading && last) void load(last.createdAt)
-  }, [items, hasMore, loading, load])
+    // A virtualized list fires onEndReached again while the previous page is
+    // still in flight; the ref keeps those from stacking up identical requests.
+    if (!hasMore || !last || appending.current) return
+    appending.current = true
+    void load(last.createdAt).finally(() => { appending.current = false })
+  }, [items, hasMore, load])
 
-  return { items, hasMore, loading, error, markRead, loadMore, refresh: load }
+  return { items, hasMore, loading, loadingMore, error, markRead, loadMore, refresh: load }
 }
 
 /**
