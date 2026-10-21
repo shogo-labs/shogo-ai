@@ -45,9 +45,8 @@ export type Decision =
   | { kind: 'fail'; message: string }
   | { kind: 'wait'; message: string }
 
-/** Both ways out of a missing tag set, named in every failure message. */
-const REMEDIES =
-  'Wait for this commit\'s staging rollout to finish (it writes the tags), or re-run this release with force_rebuild_production=true to rebuild them.'
+/** The escape hatch every failure names; the first remedy differs per branch. */
+const FORCE_REBUILD = 're-run this release with force_rebuild_production=true to rebuild the images'
 
 export function stagingTag(sha: string): string {
   return `staging-${sha}`
@@ -81,7 +80,8 @@ export function decide(input: { missing: string[]; stagingRuns: WorkflowRun[]; s
       kind: 'fail',
       message:
         `no ${tag} for: ${missingList}, and no main-branch staging rollout of ${input.sha} ever started within ${Math.round(REGISTRATION_GRACE_MS / 60000)} min. ` +
-        `The tag set is written by this commit's staging rollout, so a commit that never rolled out to staging cannot be promoted. ${REMEDIES}`,
+        `The tag set is written by this commit's staging rollout, so a commit that never rolled out to staging cannot be promoted. ` +
+        `Re-run this commit's main-branch staging deploy, or ${FORCE_REBUILD}.`,
     }
   }
 
@@ -90,7 +90,8 @@ export function decide(input: { missing: string[]; stagingRuns: WorkflowRun[]; s
     kind: 'fail',
     message:
       `no ${tag} for: ${missingList}, and this commit's staging rollout run ${last.id} already finished (${last.conclusion}) without writing them: ${last.html_url ?? 'no run URL'}. ` +
-      `The staging rollout is what writes ${tag}, so a finished rollout means it will never appear for these repos. ${REMEDIES}`,
+      `The staging rollout is what writes ${tag}, so a finished rollout means it will never appear for these repos. ` +
+      `Its "Complete staging release tag set" step warns for each repo it had nothing to carry forward; ${FORCE_REBUILD}.`,
   }
 }
 
@@ -153,7 +154,7 @@ async function main() {
   const run = lastRuns[0]
   console.log(
     `::error::Timed out after ${Math.round(timeoutMs / 60000)} min waiting for ${stagingTag(sha)}: still missing ${lastMissing.join(' ') || '(none)'}. ` +
-      `Staging rollout: ${run ? `run ${run.id} (${run.status}${run.conclusion ? `/${run.conclusion}` : ''}) ${run.html_url ?? ''}` : 'none found for this commit'}. ${REMEDIES}`,
+      `Staging rollout: ${run ? `run ${run.id} (${run.status}${run.conclusion ? `/${run.conclusion}` : ''}) ${run.html_url ?? ''}` : 'none found for this commit'} — check that run (a normal one finishes ~20 min after the tag push), or ${FORCE_REBUILD}.`,
   )
   process.exit(1)
 }
