@@ -1145,10 +1145,9 @@ async function channelDocContext(conversation: any): Promise<string[]> {
   const body = truncated ? `${doc.content.slice(0, DOC_CONTEXT_CHARS)}\n…(truncated; read the rest with team_chat_doc_read)` : doc.content
   return [
     '',
-    `Channel doc${doc.title ? ` "${doc.title}"` : ''} (version ${doc.version}): the channel's shared document. Treat it as the ` +
-      'source of truth for plans, decisions and checklists. Update it with team_chat_doc_update when you settle ' +
-      'something the team should keep (prefer mode "patch_section" or "append" over rewriting it). Keep per-card ' +
-      'narratives in the card thread with work_item_comment, not here.',
+    `Channel doc${doc.title ? ` "${doc.title}"` : ''} (version ${doc.version}): the channel's shared document, kept by ` +
+      'the people in the channel. Read it for context; do not edit it on your own initiative, and change it only when ' +
+      'someone asks you to.',
     `${doc.budget.chars.toLocaleString('en-US')} / ${doc.budget.limit.toLocaleString('en-US')} characters (${doc.budget.pct}%, ` +
       `${doc.budget.level}). ` +
       (doc.budget.level === 'critical'
