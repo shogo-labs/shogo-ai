@@ -47,6 +47,26 @@ function frontendUrl(): string {
   return process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
 }
 
+/**
+ * The `People` tab of the end-user Settings page.
+ *
+ * `/settings` is the user's own Settings screen; only after SHO-110 does a
+ * direct GET of it resolve there, because the admin AI/provider screen moved to
+ * `/admin/settings` (two files used to claim `/settings`, and the admin console
+ * won — every emailed link bounced to `/projects`). The path is pinned twice:
+ * here by `apps/api/src/__tests__/join-notification-settings-url.test.ts`, and
+ * against the route tree by `apps/mobile/test/route-path-collisions.test.ts`.
+ * Keep it a bare `/settings`; do not route it through `/c/settings`.
+ */
+export function settingsPeoplePath(): string {
+  return '/settings?tab=people'
+}
+
+/** Absolute link to Settings → People, the only place join mail points. */
+export function settingsPeopleUrl(): string {
+  return `${frontendUrl()}${settingsPeoplePath()}`
+}
+
 /** The accepted workspace invitation behind this membership, if there is one. */
 async function resolveInviterId(db: Db, workspaceId: string, email: string | null | undefined): Promise<string | null> {
   if (!email) return null
@@ -104,7 +124,7 @@ export async function notifyWorkspaceJoined(input: {
 
     const memberName = user?.name || user?.email || 'A new member'
     const memberEmail = user?.email || ''
-    const dashboardUrl = `${frontendUrl()}/settings?tab=people`
+    const dashboardUrl = settingsPeopleUrl()
     const senders = mailSenders()
 
     await Promise.allSettled(
@@ -162,7 +182,7 @@ async function sendProjectAccepted(
     inviteeEmail: acceptingUser?.email || opts.invitee.email || '',
     resourceName: project.name,
     resourceType: 'project',
-    dashboardUrl: `${frontendUrl()}/settings?tab=people`,
+    dashboardUrl: settingsPeopleUrl(),
   })
 }
 
