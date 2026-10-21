@@ -6706,7 +6706,9 @@ async function initializeEssentials(): Promise<void> {
       // every later boot is a no-op, and off the readiness path.
       void repairCheckpointRepo(WORKSPACE_DIR, {
         onRemap: projectId
-          ? (remap) => postCheckpointShaRemap(projectId, remap)
+          ? async (remap) => {
+              await postCheckpointShaRemap(projectId, remap)
+            }
           : undefined,
       })
         .then((repaired) => {

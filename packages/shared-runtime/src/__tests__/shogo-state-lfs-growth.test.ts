@@ -181,7 +181,9 @@ describe('GitWorkspaceSync against a real repo', () => {
             projectId: 'p',
             localOnly: true,
             afterCommit: () => {},
-            beforeStage: () => autoTrackLargeFiles(dir, 5 * MB, { logger: quiet }),
+            beforeStage: async () => {
+              await autoTrackLargeFiles(dir, 5 * MB, { logger: quiet })
+            },
             logger: quiet,
             spawnGit: realSpawnGit,
           })
