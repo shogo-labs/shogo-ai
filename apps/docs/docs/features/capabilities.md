@@ -199,3 +199,19 @@ back on the next turn. Shell stays off on a personal workspace.
 For most capabilities the tool and its prompt guidance are linked — that's the
 point. The exceptions are the prompt-only toggles like the **Shogo SDK Guide**,
 which trim context without removing any tool.
+
+## Which tool schemas reach the model
+
+A fully-enabled agent registers well over 100 tools, and sending every JSON
+schema on every API call costs ~28k tokens before the conversation starts. So
+the runtime advertises a **core set** (read/write/edit, `exec`, `todo_write`,
+`web`, `read_guide`, `ask_user`, `share_file`, `agent_spawn`, …) plus **the
+tools this agent actually uses**, learned from its last 30 days of tool calls.
+Everything else is *deferred*: it stays callable, and it is listed by name in
+the agent's **Deferred Tools** prompt section, but its schema is only loaded
+when the agent asks for it (`read_guide({ tool })`) or calls it directly.
+
+Both tracks behave identically, and the deferred set is capped by an 8,000-token
+budget. To turn it off for a project, set `deferredToolsEnabled: false` in
+`config.json` (or `SHOGO_DEFERRED_TOOLS=0` in the runtime's environment).
+

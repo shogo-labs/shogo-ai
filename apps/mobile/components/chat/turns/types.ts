@@ -25,6 +25,16 @@ export type MessagePart =
       id: string;
     }
   | { type: "tool"; tool: ToolCallData; id: string }
+  | {
+      type: "compaction";
+      /** Why it ran: the 200k cap, or the dock's manual button. */
+      trigger: "auto" | "manual";
+      tokensBefore: number;
+      tokensAfter: number;
+      messagesBefore: number;
+      messagesAfter: number;
+      id: string;
+    }
   | { type: "image"; url: string; mediaType: string; id: string }
   | { type: "file"; url: string; mediaType: string; id: string };
 

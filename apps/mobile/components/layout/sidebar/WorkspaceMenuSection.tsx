@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Linking, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Linking, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { Check, Cloud, CloudOff, ExternalLink, LogIn, LogOut, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { usePostHogSafe } from "../../../contexts/posthog";
@@ -22,6 +22,10 @@ import { useCloudSession } from "../../../hooks/useCloudSession";
 import { useActiveInstance } from "../../../contexts/active-instance";
 import { getDomainHttpClient, useDomainHttpOptional } from "../../../contexts/domain";
 import { isPhoneLayout } from "../../../lib/native-phone-layout";
+import { isInvitationExpired } from "../../../lib/api";
+import { usePendingInvitations } from "../../../lib/use-pending-invitations";
+
+type PendingInvitations = ReturnType<typeof usePendingInvitations>;
 
 export interface WorkspaceMenuSectionProps {
   workspaces: any[];
@@ -89,6 +93,129 @@ export function workspaceKindBadge(
   return { highlighted: isPersonal, label: isPersonal ? "Personal" : "Team" };
 }
 
+/**
+ * Workspace invitations this user could take up, shown above the workspace
+ * list in the phone sheet and the wide sidebar. One component for both
+ * surfaces: the switcher is the one place you go to change workspaces, so a
+ * workspace you can join belongs there, not four taps deep in the settings of
+ * a workspace you are already in. Project invitations stay in
+ * `ProjectAccessPanel` — they do not add a row here.
+ *
+ * Presentational on purpose: the fetch lives in `WorkspaceMenuSection` so one
+ * open of the switcher is one `GET /api/invitations`, no matter how many
+ * branches of the section render the block.
+ */
+function PendingInvitationsSection({
+  invitations,
+  isNative,
+  onSwitchWorkspace,
+  onClose,
+}: {
+  invitations: PendingInvitations;
+  isNative: boolean;
+  onSwitchWorkspace: (workspaceId: string) => void;
+  onClose: () => void;
+}) {
+  const density = densityFor(isNative);
+  const { pendingInvites, processingInvite, acceptInvite, declineInvite } = invitations;
+
+  // No domain store above means Accept/Decline have nothing to join with, so
+  // show no block at all rather than a dead one.
+  if (pendingInvites.length === 0 || !invitations.canRespond) return null;
+
+  return (
+    <View className="border-b border-border pb-1">
+      <Text
+        className={cn(
+          "px-4 py-1.5 font-semibold uppercase tracking-wider text-muted-foreground",
+          density.text.label,
+        )}
+      >
+        Pending invitations
+      </Text>
+      {pendingInvites.map((invite: any) => {
+        const name = invite.workspace?.name || invite.workspaceName || "Workspace";
+        const expired = isInvitationExpired(invite);
+        const busy = processingInvite?.id === invite.id;
+        const isAccepting = busy && processingInvite?.action === "accept";
+        const isDeclining = busy && processingInvite?.action === "decline";
+        return (
+          <View key={invite.id} className="px-4 pb-2 pt-1">
+            <View className="flex-row items-center gap-2">
+              <Text className={cn("flex-1 font-medium text-foreground", density.text.body)} numberOfLines={1}>
+                {name}
+              </Text>
+              {expired && (
+                <View className="rounded bg-amber-100 px-1.5 py-0.5 dark:bg-amber-950/40">
+                  <Text className={cn("text-amber-700 dark:text-amber-300", density.text.caption)}>
+                    Expired
+                  </Text>
+                </View>
+              )}
+              {invite.role ? (
+                <View className="rounded bg-muted px-1.5 py-0.5">
+                  <Text className={cn("capitalize text-muted-foreground", density.text.caption)}>
+                    {invite.role}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+            <Text className={cn("mt-0.5 text-muted-foreground", density.text.caption)}>
+              {expired ? "Expired invitation. Ask for a new invite to join." : "Invited to join this workspace"}
+            </Text>
+            <View className="mt-2 flex-row gap-2">
+              <Pressable
+                disabled={expired || busy}
+                onPress={async () => {
+                  if (!(await acceptInvite(invite))) return;
+                  onSwitchWorkspace(invite.workspaceId);
+                  onClose();
+                }}
+                accessibilityLabel={`Accept invitation to ${name}`}
+                className={cn(
+                  "h-8 flex-1 items-center justify-center rounded-md",
+                  expired ? "bg-muted" : "bg-primary",
+                  (expired || busy) && "opacity-50",
+                )}
+              >
+                {isAccepting ? (
+                  <ActivityIndicator size="small" color="white" />
+                ) : (
+                  <Text
+                    className={cn(
+                      "text-xs font-medium",
+                      expired ? "text-muted-foreground" : "text-primary-foreground",
+                    )}
+                  >
+                    {expired ? "Expired" : "Accept"}
+                  </Text>
+                )}
+              </Pressable>
+              <Pressable
+                disabled={busy}
+                onPress={() => void declineInvite(invite)}
+                accessibilityLabel={`Decline invitation to ${name}`}
+                className={cn(
+                  "h-8 flex-1 items-center justify-center rounded-md border border-border",
+                  busy && "opacity-50",
+                )}
+              >
+                {isDeclining ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <Text className="text-xs font-medium text-foreground">
+                    {expired ? "Dismiss" : "Decline"}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 export function WorkspaceMenuSection({
   workspaces,
   currentWorkspace,
@@ -114,6 +241,9 @@ export function WorkspaceMenuSection({
   const posthog = usePostHogSafe();
   const density = densityFor(isNative);
   const cloud = useCloudWorkspaces();
+  // One fetch per open: the block itself is presentational, so the three
+  // branches below that render it share this single load.
+  const invitations = usePendingInvitations({ enabled: presentation !== "workspace-menu" });
   const { width, height } = useWindowDimensions();
   // "Manage workspaces" is a signpost to wherever rename/delete live on this
   // surface. `/account` is the phone/native account page — on wide web it
@@ -331,6 +461,15 @@ export function WorkspaceMenuSection({
     </>
   ) : null;
 
+  const pendingInvitations = (
+    <PendingInvitationsSection
+      invitations={invitations}
+      isNative={isNative}
+      onSwitchWorkspace={onSwitchWorkspace}
+      onClose={onClose}
+    />
+  );
+
   const workspaceRows = (
     <>
       {workspaces.map((ws: any) => {
@@ -461,6 +600,7 @@ export function WorkspaceMenuSection({
 
   const switcherRows = (
     <View className="gap-0.5 px-2 py-2">
+      {pendingInvitations}
       {workspaces.map((ws: any) => {
         const isCurrent = ws.id === currentWorkspace?.id;
         const wsIsCloud = !!localMode && isCloudWorkspace(ws.id);
@@ -614,6 +754,7 @@ export function WorkspaceMenuSection({
           </AccountSettingsGroup>
         ) : null}
         <AccountSettingsGroup title="Workspaces">
+          {pendingInvitations}
           {workspaceRows}
         </AccountSettingsGroup>
       </>
@@ -626,6 +767,7 @@ export function WorkspaceMenuSection({
       {identityPills}
       {plan}
       <View className="h-px bg-border" />
+      {pendingInvitations}
       <View className="py-1">
         <Text
           className={cn(

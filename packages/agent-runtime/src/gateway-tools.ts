@@ -301,6 +301,13 @@ export interface ToolContext {
   commandRegistry?: import('./task-registry').TaskRegistry
   /** On-demand guide registry populated by buildGuideRegistry() */
   guideRegistry?: Map<string, string>
+  /**
+   * This turn's tool-advertising profile (SHO-97). Filled by the gateway once
+   * the tool set is assembled, so `read_guide({ tool })` can describe a
+   * deferred tool and advertise it. Shared by reference with the tools created
+   * earlier in the turn, so it may legitimately be empty when they run.
+   */
+  toolProfileRef?: { current?: import('./tool-profile').ToolProfile }
   /** Eval mock functions — propagated to subagents so mocked tools work in delegated calls */
   toolMockFns?: Map<string, (params: Record<string, any>) => any>
   /** When this tool runs inside a spawned subagent, the AgentManager instance id.
@@ -8395,18 +8402,49 @@ function createQuickActionTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createReadGuideTool(ctx: ToolContext): AgentTool {
+export function createReadGuideTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_guide',
-    description: 'Read a capability guide by name. See the Capabilities Index in your system prompt for available guides.',
+    description:
+      'Read a capability guide by name (see the Capabilities Index in your system prompt), or load one deferred ' +
+      "tool's full description and JSON schema with `tool` (see the Deferred Tools catalog).",
     label: 'Read Guide',
     parameters: Type.Object({
-      name: Type.String({
-        description: 'Guide name from the Capabilities Index',
-      }),
+      name: Type.Optional(
+        Type.String({
+          description: 'Guide name from the Capabilities Index',
+        }),
+      ),
+      tool: Type.Optional(
+        Type.String({
+          description:
+            'Name of a deferred tool: returns its description and complete JSON schema, and advertises it for the rest of the session',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { name: guideName } = params as { name: string }
+      const { name: guideName, tool: toolName } = params as { name?: string; tool?: string }
+      const profile = ctx.toolProfileRef?.current
+
+      if (toolName) {
+        const described = profile?.describe(toolName)
+        if (described) {
+          profile!.advertise(toolName)
+          return textResult(described)
+        }
+        const deferred = profile?.deferredNames() ?? []
+        return textResult({
+          error: profile
+            ? `Unknown tool "${toolName}". Readable tools: ${deferred.length > 0 ? deferred.join(', ') : '(none deferred)'}`
+            : `No deferred tools in this session — "${toolName}" is either already advertised or not registered.`,
+        })
+      }
+
+      if (!guideName) {
+        return textResult({
+          error: 'Pass `name` for a capability guide, or `tool` for a deferred tool definition.',
+        })
+      }
       const registry = ctx.guideRegistry
       if (!registry) return textResult('Guide registry not available.')
       const content = registry.get(guideName)

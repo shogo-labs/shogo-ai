@@ -17,6 +17,7 @@ import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarCont
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { messageLink, parseConversationLink, parseFileLink } from '../../lib/team-chat-links'
 import { extractMessageQuotes } from '../../lib/message-quotes'
+import { previewOptOutMatcher } from '../../lib/link-preview-consent'
 import { MessageQuoteCards } from './MessageQuoteCard'
 import { activityTarget } from '../../lib/activity-target'
 import { formatFullTime, formatShortTime, formatTime } from '../../lib/team-chat-time'
@@ -365,7 +366,13 @@ function MessageRowImpl(props: MessageRowProps) {
   const rawBody = running ? streaming?.text ?? '' : message.text
   // A link to another message renders as a quote of it and is taken out of the
   // text; the quote itself is fetched per viewer and never stored on the row.
-  const { body, quotes } = useMemo(() => extractMessageQuotes(rawBody ?? ''), [rawBody])
+  // A link whose author declined a preview is the one exception: it stays in the
+  // text, so the link is still there for anyone who can open it.
+  const optOut = useMemo(() => previewOptOutMatcher(message.blocks), [message.blocks])
+  const { body, quotes } = useMemo(
+    () => extractMessageQuotes(rawBody ?? '', undefined, { skip: optOut }),
+    [rawBody, optOut],
+  )
   const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
   // Board cards are posted by the system, so this is deliberately author-agnostic.
   const workItem = running || deleted ? null : workItemOf(message)

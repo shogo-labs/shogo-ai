@@ -29,6 +29,14 @@ export interface MessageBodyWithQuotes {
   quotes: MessageQuote[]
 }
 
+export interface ExtractMessageQuoteOptions {
+  /**
+   * Return true to leave a link in the body instead of turning it into a
+   * quote — used for links whose author declined a preview.
+   */
+  skip?: (href: string) => boolean
+}
+
 const FENCE = /^\s{0,3}(```|~~~)/
 const INLINE_CODE = /`[^`\n]*`/g
 /** A markdown link whose target is a message: the label goes with the URL. */
@@ -71,13 +79,22 @@ function withoutRanges(line: string, ranges: Array<[number, number]>): string {
  *
  * `hosts` is injectable so the behaviour can be checked without a browser.
  */
-export function extractMessageQuotes(text: string, hosts?: Set<string>): MessageBodyWithQuotes {
+export function extractMessageQuotes(
+  text: string,
+  hosts?: Set<string>,
+  opts?: ExtractMessageQuoteOptions,
+): MessageBodyWithQuotes {
   const quotes: MessageQuote[] = []
   const seen = new Set<string>()
   const kept: string[] = []
   let inFence = false
 
   const record = (href: string) => {
+    // A link the author declined to preview is left in the body exactly as
+    // written: no card, but the URL itself stays visible and still opens for
+    // whoever has access. Cutting it out and showing nothing would delete the
+    // link from the message entirely.
+    if (opts?.skip?.(href)) return false
     const target = parseMessageLink(href, hosts)
     if (!target) return false
     if (!seen.has(target.messageId)) {

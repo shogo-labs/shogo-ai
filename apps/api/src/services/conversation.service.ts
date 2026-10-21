@@ -1662,3 +1662,32 @@ export async function listMentionables(workspaceId: string, userId: string) {
     ],
   }
 }
+
+// ─── Declined link previews ─────────────────────────────────────────────────
+//
+// When somebody shares a link out of a closed conversation, they are asked
+// whether a preview of it should be attached. A refusal is stored here — the
+// URLs only, never a copy of what they point at — so the card is withheld for
+// every reader without the linked content ever touching this message.
+
+/** A message can carry a handful of links; a hostile one cannot carry a page. */
+const PREVIEW_MAX_OPT_OUTS = 20
+
+/**
+ * URLs whose author declined a preview. Anything that is not a plain http(s)
+ * URL is dropped rather than stored, so a malformed payload cannot grow the
+ * block without bound.
+ */
+export function normalizeLinkPreviewOptOuts(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const url = item.trim()
+    if (!url || url.length > 2048 || !/^https?:\/\//i.test(url)) continue
+    if (!out.includes(url)) out.push(url)
+    if (out.length >= PREVIEW_MAX_OPT_OUTS) break
+  }
+  return out
+}
+

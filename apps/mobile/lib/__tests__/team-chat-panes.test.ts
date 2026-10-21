@@ -16,6 +16,7 @@ const base: PaneInputs = {
   docOpen: false,
   cardId: null,
   profilePaneId: null,
+  fileOpen: false,
 }
 
 const panes = (over: Partial<PaneInputs>) => resolvePanes({ ...base, ...over })
@@ -91,5 +92,34 @@ describe('resolvePanes', () => {
     ] satisfies Partial<PaneInputs>[]) {
       expect(panes(over).showMain).toBe(true)
     }
+  })
+
+  test('a file opened from chat takes the pane from the thread, which comes back when it closes', () => {
+    const withFile = panes({ threadRootId: 'm-1', fileOpen: true })
+    expect(withFile.showFilePane).toBe(true)
+    expect(withFile.showThreadPane).toBe(false)
+    expect(withFile.showMain).toBe(true)
+
+    const closed = panes({ threadRootId: 'm-1' })
+    expect(closed.showFilePane).toBe(false)
+    expect(closed.showThreadPane).toBe(true)
+  })
+
+  test('on a narrow layout a file replaces the timeline instead of sitting beside it', () => {
+    const narrow = panes({ sidePane: false, fileOpen: true })
+    expect(narrow.showFileFull).toBe(true)
+    expect(narrow.showFilePane).toBe(false)
+    expect(narrow.showMain).toBe(false)
+  })
+
+  test('a file beats the project pane and a card, and an open doc still wins the whole screen', () => {
+    const overProject = panes({ fileOpen: true, projectPaneId: 'proj-1', cardId: 'card-1' })
+    expect(overProject.showFilePane).toBe(true)
+    expect(overProject.showProjectPane).toBe(false)
+    expect(overProject.showCardPane).toBe(false)
+
+    const doc = panes({ fileOpen: true, docOpen: true })
+    expect(doc.showDocPane).toBe(true)
+    expect(doc.showFilePane).toBe(false)
   })
 })

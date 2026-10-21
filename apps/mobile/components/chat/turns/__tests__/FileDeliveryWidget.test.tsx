@@ -15,6 +15,9 @@ mock.module("lucide-react-native", () => ({
   Check: Icon,
   Copy: Icon,
   Download: Icon,
+  // Reached through the in-app file viewer the widget opens on web (SHO-80).
+  RotateCcw: Icon,
+  X: Icon,
 }));
 mock.module("../../FileTypeIcon", () => ({ FileTypeIcon: Icon }));
 

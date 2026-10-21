@@ -32,9 +32,27 @@ mock.module("lucide-react-native", () => {
 })
 
 mock.module(resolve(import.meta.dir, "../../../../contexts/posthog"), () => ({ usePostHogSafe: () => null }))
+mock.module(resolve(import.meta.dir, "../../../../contexts/auth"), () => ({
+  useAuth: () => ({ user: { id: "user-1", email: "user@example.com" } }),
+  useAuthOptional: () => ({ user: { id: "user-1", email: "user@example.com" } }),
+  getAuthUserSnapshot: () => ({ id: "user-1", email: "user@example.com" }),
+}))
 mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
   useDomainHttpOptional: () => null,
   getDomainHttpClient: () => null,
+  useDomainOptional: () => null,
+  getDomainStore: () => null,
+  useDomainActions: () => ({
+    acceptInvitation: async () => ({}),
+    declineInvitation: async () => ({}),
+  }),
+  useDomainActionsOptional: () => ({
+    acceptInvitation: async () => ({}),
+    declineInvitation: async () => ({}),
+  }),
+  getDomainActionsInstance: () => null,
+  useWorkspaceCollection: () => ({ all: [], loadAll: async () => {} }),
+  useWorkspaceCollectionOptional: () => null,
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/billing-config"), () => ({ getPlanDisplayName: () => "Free" }))
 mock.module(resolve(import.meta.dir, "../../../../lib/analytics"), () => ({ EVENTS: {}, trackEvent: () => {} }))

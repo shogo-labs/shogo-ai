@@ -40,6 +40,7 @@ import {
   type MentionCandidate,
 } from '../../lib/team-chat-state'
 import type { SendInput } from '../../hooks/useTeamChat'
+import { resolveLinkPreviewOptOuts } from '../../lib/link-preview-consent'
 import { useDraft } from '../../hooks/useChatItems'
 import { useCustomEmoji } from '../../hooks/useCustomEmoji'
 import { activeEmojiQuery, replaceFinishedShortcode, searchEmoji } from '../../lib/emoji-data'
@@ -245,7 +246,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             setUploading(false)
           }
         }
-        await onSend({ text: wire, attachmentIds, alsoSentToChannel: toChannel })
+        // Sharing a link out of a closed conversation asks first. Best-effort:
+        // a failure here must never stop the message going out.
+        let linkPreviewsOff: string[] = []
+        try {
+          linkPreviewsOff = await resolveLinkPreviewOptOuts(wire, conversationId)
+        } catch {}
+        // Only carry the field when the sender actually declined something, so
+        // an ordinary message keeps the shape it always had.
+        await onSend({
+          text: wire,
+          attachmentIds,
+          alsoSentToChannel: toChannel,
+          ...(linkPreviewsOff.length ? { linkPreviewsOff } : {}),
+        })
       })()
     },
     [picksFrom, threadRootId, alsoToChannel, saveDraft, draftKey, workspaceId, conversationId, onSend],

@@ -19,7 +19,7 @@ import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './a
 import { isSearchEnabled } from './search-flag'
 import { MEDIA_TOOL_NAMES } from './media-tool-names'
 import type { ToolContext } from './gateway-tools'
-import { createBrowserTool, disposeBrowserTool, textResult } from './gateway-tools'
+import { createBrowserTool, createReadGuideTool, disposeBrowserTool, textResult } from './gateway-tools'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed
@@ -610,6 +610,8 @@ import {
 } from './model-router'
 import { AUTO_MODEL_ID, inferProviderFromModel, isAutoModel } from '@shogo/model-catalog'
 import { createStableLoopTransform } from './stable-compaction'
+import { createToolProfile, deferredToolsEnabled, resolveLearnedToolOrder, withActivationOnCall } from './tool-profile'
+import { getProjectToolUsage, projectScopedId } from './internal-api'
 import { SUBAGENT_REPORT_INSTRUCTION } from './subagent-prompts'
 import { resolveAutoTierModelId } from './available-models'
 
@@ -883,6 +885,9 @@ export async function runSubagent(
     renderedSystemPrompt: undefined,
     sessionMessages: undefined,
     subagentInstanceId: options?.instanceId,
+    // A subagent gets its OWN advertised tool set (SHO-97), filled in below —
+    // never the parent's, so a tool the parent activated is not inherited.
+    toolProfileRef: undefined,
   }
 
   // Ensure working directory exists
@@ -958,6 +963,37 @@ export async function runSubagent(
     if (config.readonly) {
       tools = tools.filter(t => READONLY_TOOLS.has(t.name))
     }
+  }
+
+  // Deferred tool definitions (SHO-97): a subagent advertises its own core +
+  // learned set. Only when it can actually discover the rest — a subagent whose
+  // tool list has no read_guide keeps every schema, so nothing becomes
+  // unreachable. Fork mode inherits the parent's prompt and tools, so it keeps
+  // the parent's set and does not re-defer.
+  let isAdvertisedTool: ((tool: AgentTool) => boolean) | undefined
+  if (!isFork && deferredToolsEnabled(parentCtx.config) && tools.some(t => t.name === 'read_guide')) {
+    const learned = await resolveLearnedToolOrder({
+      projectId: projectScopedId(parentCtx.projectId),
+      load: async (id) => {
+        const usage = await getProjectToolUsage(id)
+        return usage ? { order: usage.order, totalCalls: usage.totalCalls } : null
+      },
+    })
+    const profile = createToolProfile(tools, { learned })
+    subCtx.toolProfileRef = { current: profile }
+    tools = tools.map(tool => (profile.isDeferred(tool.name) ? withActivationOnCall(tool, profile) : tool))
+    isAdvertisedTool = tool => profile.isAdvertised(tool.name)
+    if (profile.catalog) systemPrompt = `${systemPrompt}\n\n---\n\n${profile.catalog}`
+  }
+
+  // Rebind `read_guide` to subCtx (SHO-97): the parent's instance closed over
+  // parentCtx, so a subagent's read_guide({ tool }) would load the parent's
+  // profile — activating in the parent's advertised set (changing the parent's
+  // cache prefix mid-turn) while never advertising in the child's. Fork keeps
+  // the parent's tools and prompt on purpose, so it keeps the parent's instance.
+  if (!isFork && tools.some(t => t.name === 'read_guide')) {
+    tools = tools.filter(t => t.name !== 'read_guide')
+    tools.push(createReadGuideTool(subCtx))
   }
 
   // Apply eval mock interceptors so subagent tool calls hit the same mocks
@@ -1094,6 +1130,7 @@ export async function runSubagent(
       history,
       prompt,
       tools,
+      isAdvertisedTool,
       maxIterations,
       maxTokens: config.maxTokens,
       thinkingLevel,

@@ -18,6 +18,8 @@ export interface PaneInputs {
   docOpen: boolean
   cardId: string | null
   profilePaneId: string | null
+  /** A file from chat is open in the viewer. */
+  fileOpen?: boolean
 }
 
 export interface PaneVisibility {
@@ -29,6 +31,10 @@ export interface PaneVisibility {
   showProfilePane: boolean
   showProjectPane: boolean
   showThreadPane: boolean
+  /** A chat file in the pane beside the timeline. */
+  showFilePane: boolean
+  /** A chat file taking the screen on a narrow layout. */
+  showFileFull: boolean
   /** The timeline and whatever sits beside it. */
   showMain: boolean
 }
@@ -42,25 +48,47 @@ export interface PaneVisibility {
  * simply hidden, and closing the profile reveals it again.
  */
 export function resolvePanes(input: PaneInputs): PaneVisibility {
-  const { sidePane, threadRootId, projectPaneId, filesOpen, docOpen, cardId, profilePaneId } = input
+  const {
+    sidePane,
+    threadRootId,
+    projectPaneId,
+    filesOpen,
+    docOpen,
+    cardId,
+    profilePaneId,
+    fileOpen = false,
+  } = input
   const showDocPane = sidePane && docOpen
   const showDocFull = !sidePane && docOpen
   const showFilesPane = sidePane && filesOpen
   const showFilesFull = !sidePane && filesOpen
-  const showCardPane = !!cardId && !showDocFull && !showFilesFull
+  // A chat file behaves like a card: it takes the pane (and the thread under
+  // it stays in the URL, so closing the file shows the thread again).
+  const showFilePane = !!fileOpen && sidePane && !showDocPane && !showFilesPane
+  const showFileFull = !!fileOpen && !sidePane
+  const showCardPane = !!cardId && !showDocFull && !showFilesFull && !showFileFull && !showFilePane
   const showProfilePane = sidePane && !!profilePaneId
   const showProjectPane =
-    sidePane && !!projectPaneId && !showDocPane && !showFilesPane && !showCardPane && !showProfilePane
+    sidePane &&
+    !!projectPaneId &&
+    !showDocPane &&
+    !showFilesPane &&
+    !showCardPane &&
+    !showFilePane &&
+    !showProfilePane
   const showThreadPane =
     !!threadRootId &&
     !showCardPane &&
+    !showFilePane &&
+    !showFileFull &&
     !showProjectPane &&
     !showDocPane &&
     !showDocFull &&
     !showFilesPane &&
     !showFilesFull &&
     !showProfilePane
-  const showMain = !showDocFull && !showFilesFull && (sidePane || (!threadRootId && !cardId))
+  const showMain =
+    !showDocFull && !showFilesFull && !showFileFull && (sidePane || (!threadRootId && !cardId))
   return {
     showDocPane,
     showDocFull,
@@ -70,6 +98,8 @@ export function resolvePanes(input: PaneInputs): PaneVisibility {
     showProfilePane,
     showProjectPane,
     showThreadPane,
+    showFilePane,
+    showFileFull,
     showMain,
   }
 }

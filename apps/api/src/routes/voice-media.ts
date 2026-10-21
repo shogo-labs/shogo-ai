@@ -18,7 +18,10 @@
  *   - unknown `modelId` → 400 with the allowed list (never a silent clamp)
  *   - text over the model's character cap → 413 with the limit
  *   - upstream ElevenLabs failure → 502 `{ error, detail, elBody }`
- *   - no `ELEVENLABS_API_KEY` → 503 with a specific message
+ *   - no `ELEVENLABS_API_KEY` → 503 with a specific message, unless this is a
+ *     cloud-authed desktop (`isShogoCloudForwarding()`), where the request is
+ *     forwarded to the cloud's own `/api/voice/*` handler and its audio (or
+ *     error) is passed straight back
  *   - responses carry `x-tts-model-used` + `x-tts-model-requested`, and a
  *     `Warning: 199 …` header when ElevenLabs made us fall back
  */
@@ -35,6 +38,8 @@ import {
   type VoiceSettings,
 } from '@shogo-ai/sdk/voice'
 import { prisma } from '../lib/prisma'
+import { forwardToShogoCloud } from '../lib/cloud-request-forward'
+import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { apiKeyOrSession, authorizeProject } from '../middleware/auth'
 
 /** ElevenLabs voice used when a project has no `default` agent voice. */
@@ -63,6 +68,25 @@ export function resolveShogoElevenLabsClient():
     }
   }
   return { client: new ElevenLabsClient({ apiKey }) }
+}
+
+/**
+ * A cloud-authed desktop has no local `ELEVENLABS_API_KEY`: the pooled key, the
+ * project's voice library and the billing all live in Shogo Cloud, so the
+ * request goes to the cloud's own `/api/voice/*` handler. Precedence matches
+ * the AI proxy — once the gate is on, a local key is never consulted (BYOK
+ * setups run `AI_MODE=api-keys`, which turns the gate off for everything).
+ *
+ * `body` is passed explicitly because the handler has already read and
+ * validated the JSON; the request stream is single-use.
+ */
+function forwardVoiceToCloud(c: Context, pathname: string, body: unknown): Promise<Response> {
+  return forwardToShogoCloud(c, {
+    pathname,
+    search: new URL(c.req.url).search,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
 }
 
 interface ProjectAuthz {
@@ -224,6 +248,10 @@ export async function handleVoiceTts(
 
   // Request validation happens before the server-key check: a bad model id
   // is the caller's bug and must read as 400 even on a host without a key.
+  if (isShogoCloudForwarding()) {
+    return forwardVoiceToCloud(c, '/voice/tts', body)
+  }
+
   const resolved = resolveShogoElevenLabsClient()
   if ('error' in resolved) {
     return c.json({ error: 'voice_unavailable', detail: resolved.error }, 503)
@@ -301,11 +329,6 @@ export async function handleVoiceMusic(
     }
   }
 
-  const resolved = resolveShogoElevenLabsClient()
-  if ('error' in resolved) {
-    return c.json({ error: 'voice_unavailable', detail: resolved.error }, 503)
-  }
-
   let body: VoiceMusicBody
   try {
     body = (await c.req.json()) as VoiceMusicBody
@@ -317,6 +340,17 @@ export async function handleVoiceMusic(
   const hasPlan = body.compositionPlan != null && typeof body.compositionPlan === 'object'
   if (hasPrompt === hasPlan) {
     return c.json({ error: 'Provide exactly one of `prompt` or `compositionPlan`' }, 400)
+  }
+
+  // Same precedence as `/voice/tts`: a cloud-authed desktop has no local key,
+  // and the cloud holds the pooled one.
+  if (isShogoCloudForwarding()) {
+    return forwardVoiceToCloud(c, '/voice/music', body)
+  }
+
+  const resolved = resolveShogoElevenLabsClient()
+  if ('error' in resolved) {
+    return c.json({ error: 'voice_unavailable', detail: resolved.error }, 503)
   }
 
   try {
