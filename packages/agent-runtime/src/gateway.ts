@@ -100,6 +100,7 @@ import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } fr
 import { WorkspaceLSPManager, resolveBin, WorktreeManager } from '@shogo/shared-runtime'
 import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/shared-runtime'
 import {
+  isForeignWorkspaceDir,
   isWorkspaceRuntimeMode,
   workspaceAttachedProjectIds,
   workspaceAvailableProjectsManifest,
@@ -108,7 +109,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, type SessionWakeState } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, runtimeServesProjectId, type SessionWakeState } from './internal-api'
 import {
   createToolProfile,
   deferredToolsEnabled,
@@ -6536,6 +6537,14 @@ export class AgentGateway {
    * Tests pass `fetchConfig` / `fetchWorkspaceConfig` to skip the credential
    * check and the network.
    *
+   * Outside an explicit fetcher, each pull is also scoped to what this process
+   * actually serves: the project config only for the project this gateway was
+   * built for (`PROJECT_ID` / `WORKSPACE_ANCHOR_PROJECT_ID` must not name
+   * someone else), the workspace config only when `workspaceDir` is this
+   * runtime's own `WORKSPACE_DIR`. Otherwise a test fixture — or a gateway left
+   * over from another project — writes a stranger's settings into its
+   * `config.json` (SHO-102).
+   *
    * Returns true when at least one database read was applied.
    */
   async syncCapabilitiesFromApi(
@@ -6548,13 +6557,39 @@ export class AgentGateway {
     const workspaceId = isWorkspaceRuntimeMode() ? (process.env.WORKSPACE_ID || null) : null
     if (!projectId && !workspaceId) return false
 
+    // `config.json` belongs to this gateway's workspaceDir, so the pull has to
+    // match the identity the gateway was built with, not just the live env id.
+    // The `projectId` getter prefers `process.env.PROJECT_ID` (pool
+    // re-assignment), which would otherwise fetch the env project's settings
+    // into any directory — including a test's scratch dir. A pool placeholder
+    // names no project, so it keeps following the live env id.
+    const ownedProjectId = projectScopedId(this._constructedProjectId) ?? projectId
+    const servesThisRuntime = runtimeServesProjectId(ownedProjectId)
+    const projectSyncAllowed = !!fetchConfig || servesThisRuntime
+    // The workspace overlay IS this runtime's own settings (it is read by
+    // `WORKSPACE_ID`), so only the directory it lands in can be foreign. A
+    // gateway serving one of this runtime's own projects belongs to the
+    // runtime, and keeps caching the overlay next to its project config.
+    const workspaceSyncAllowed = !!fetchWorkspaceConfig
+      || !isForeignWorkspaceDir(this.workspaceDir)
+      || servesThisRuntime
+
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
       ?? join(this.workspaceDir, 'config.json')
     const fileConfig = this.readConfigFile()
     let next: Record<string, unknown> = { ...fileConfig }
     let applied = false
 
-    if (projectId) {
+    if (projectId && !projectSyncAllowed) {
+      const declared = [...new Set([process.env.PROJECT_ID, process.env.WORKSPACE_ANCHOR_PROJECT_ID])]
+        .filter(Boolean)
+        .join(', ')
+      console.warn(
+        `[AgentGateway] capability sync skipped: this runtime serves "${declared}", gateway project is "${ownedProjectId}"`,
+      )
+    }
+
+    if (projectId && projectSyncAllowed) {
       let result: { ok: boolean; data?: { settings?: unknown } | null } | undefined
       try {
         result = fetchConfig ? await fetchConfig(projectId) : await getProjectConfig(projectId, 3_000)
@@ -6569,7 +6604,13 @@ export class AgentGateway {
       }
     }
 
-    if (workspaceId) {
+    if (workspaceId && !workspaceSyncAllowed) {
+      console.warn(
+        `[AgentGateway] workspace capability sync skipped: workspaceDir "${this.workspaceDir}" is not this runtime's WORKSPACE_DIR "${process.env.WORKSPACE_DIR}"`,
+      )
+    }
+
+    if (workspaceId && workspaceSyncAllowed) {
       let result: { ok: boolean; data?: { settings?: unknown } | null } | undefined
       try {
         result = fetchWorkspaceConfig
