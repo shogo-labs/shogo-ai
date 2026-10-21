@@ -20,7 +20,7 @@
  * with the admin screen under `/admin/<name>`.
  */
 import { describe, expect, test } from 'bun:test'
-import { readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { getExactRoutes } from 'expo-router/build/getRoutes'
 import { adminPageTitle, isAdminNavActive } from '../../lib/admin-nav'
@@ -184,5 +184,40 @@ describe('admin nav highlight + page title', () => {
     expect(adminPageTitle('/admin/marketplace/listings')).toBe('Marketplace Listings')
     expect(adminPageTitle('/admin/marketplace/listing/l1')).toBe('Listing Detail')
     expect(adminPageTitle('/admin/marketplace/payouts')).toBe('Marketplace Payouts')
+  })
+})
+
+
+/**
+ * A moved page also carries path literals that never reach the file system:
+ * the marketplace tab strip navigates with `href`s, decides its highlight from
+ * `match` strings and hides itself on a detail URL by prefix. A resolver test
+ * cannot see any of those — they would just quietly navigate to the end-user
+ * page — so the literals are pinned here.
+ */
+describe('the marketplace tab strip follows the moved path', () => {
+  const layout = readFileSync(
+    join(import.meta.dir, '../../app/(admin)/admin/marketplace/_layout.tsx'),
+    'utf8',
+  )
+  const strings = (key: string) =>
+    [...layout.matchAll(new RegExp(`${key}:\\s*'([^']+)'`, 'g'))].map((match) => match[1])
+
+  test('its tabs target the admin pages', () => {
+    expect(strings('href')).toEqual([
+      '/(admin)/admin/marketplace',
+      '/(admin)/admin/marketplace/listings',
+      '/(admin)/admin/marketplace/payouts',
+    ])
+    expect(strings('match')).toEqual([
+      '/admin/marketplace',
+      '/admin/marketplace/listings',
+      '/admin/marketplace/payouts',
+    ])
+  })
+
+  test('it hides itself on an admin listing detail page', () => {
+    expect(layout).toContain("pathname.startsWith('/admin/marketplace/listing/')")
+    expect(layout).not.toMatch(/['"`]\/marketplace/)
   })
 })
