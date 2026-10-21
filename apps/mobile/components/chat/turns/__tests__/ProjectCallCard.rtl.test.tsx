@@ -53,11 +53,6 @@ mock.module(
 mock.module("@shogo/shared-ui/primitives", () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
 }))
-mock.module("lucide-react-native", () => {
-  const Icon = () => React.createElement("i")
-  return { CheckCircle2: Icon, Clock: Icon, ExternalLink: Icon, MessageSquare: Icon, PanelRight: Icon, XCircle: Icon }
-})
-
 const push = mock((_to: unknown) => {})
 mock.module("expo-router", () => ({ useRouter: () => ({ push }) }))
 mock.module("../../../team-chat/AgentAvatar", () => ({
