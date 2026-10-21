@@ -61,6 +61,7 @@ mock.module("lucide-react-native", () => {
       "Key",
       "Laptop",
       "Mail",
+      "MessageSquare",
       "Monitor",
       "Moon",
       "Paintbrush",
