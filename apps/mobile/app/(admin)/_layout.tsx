@@ -68,6 +68,7 @@ import { useResolvedTheme } from '../../contexts/theme'
 import { api, API_URL } from '../../lib/api'
 import { usePlatformConfig } from '../../lib/platform-config';
 import { densityFor } from "../../lib/phone-density"
+import { adminPageTitle, isAdminNavActive } from '../../lib/admin-nav'
 
 type UserRole = 'user' | 'super_admin'
 
@@ -107,7 +108,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
   {
     title: 'Growth & Marketing',
     items: [
-      { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics', scopes: ['analytics:read', 'marketing:read'] },
+      { href: '/(admin)/admin/analytics', icon: BarChart3, label: 'Marketing Analytics', scopes: ['analytics:read', 'marketing:read'] },
       { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scopes: ['creators:read', 'creators:write'] },
       { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM', scope: 'creators:write' },
       { href: '/(admin)/affiliate-payouts', icon: Wallet, label: 'Affiliate payouts', scope: 'creators:write' },
@@ -116,7 +117,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
   {
     title: 'Marketplace',
     items: [
-      { href: '/(admin)/marketplace', icon: Store, label: 'Marketplace' },
+      { href: '/(admin)/admin/marketplace', icon: Store, label: 'Marketplace' },
     ],
   },
   {
@@ -124,7 +125,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
     items: [
       { href: '/(admin)/users', icon: Users, label: 'Users' },
       { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
-      { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
+      { href: '/(admin)/admin/projects', icon: FolderKanban, label: 'Projects' },
     ],
   },
   {
@@ -165,8 +166,8 @@ function canSeeNavItem(item: AdminNavItem, isSuperAdmin: boolean, scopes: string
 }
 
 const LOCAL_MAIN_ITEMS = [
-  { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
-  { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics' },
+  { href: '/(admin)/admin/projects', icon: FolderKanban, label: 'Projects' },
+  { href: '/(admin)/admin/analytics', icon: BarChart3, label: 'Marketing Analytics' },
   { href: '/(admin)/ai-analytics', icon: Activity, label: 'AI Analytics' },
   { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
@@ -174,7 +175,7 @@ const LOCAL_MAIN_ITEMS = [
 
 const LOCAL_SETTINGS_ITEMS = [
   { href: '/(admin)/general' as const, icon: Settings, label: 'General' },
-  { href: '/(admin)/meetings' as const, icon: Mic, label: 'Meetings' },
+  { href: '/(admin)/admin/meetings' as const, icon: Mic, label: 'Meetings' },
   { href: '/(admin)/logs' as const, icon: ScrollText, label: 'Logs' },
   { href: '/(admin)/admin/settings' as const, icon: BrainCircuit, label: 'AI' },
 ] as const
@@ -256,15 +257,6 @@ function useInfraHealth(enabled: boolean): HealthStatus {
   return status
 }
 
-function isNavActive(pathname: string, href: string): boolean {
-  if (href === '/(admin)') {
-    return ( pathname === '/' || pathname === '' || pathname === '/(admin)' || pathname === '/index'
-    )
-  }
-  const clean = href.replace('/(admin)', '')
-  return pathname.startsWith(clean)
-}
-
 const HEALTH_DOT_COLOR: Record<HealthStatus, string> = {
   healthy: 'bg-emerald-500',
   degraded: 'bg-yellow-500',
@@ -311,7 +303,7 @@ function AdminSidebar({
 
   const renderNavRow = (item: AdminNavItem | { href: string; icon: any; label: string }) => {
     const Icon = item.icon
-    const active = isNavActive(pathname, item.href)
+    const active = isAdminNavActive(pathname, item.href)
     return (
       <Pressable
         key={item.href}
@@ -539,36 +531,6 @@ function DesktopContextHeader({ title }: { title: string }) {
   )
 }
 
-function getPageTitle(pathname: string): string {
-  if (pathname.startsWith('/users/')) return 'User Detail'
-  if (pathname.startsWith('/users') || pathname === '/users') return 'Users'
-  if (pathname.startsWith('/workspaces/')) return 'Workspace Detail'
-  if (pathname.includes('workspaces')) return 'Workspaces'
-  if (pathname.startsWith('/grants/')) return 'Grant Detail'
-  if (pathname.includes('grants')) return 'Credit grants'
-  if (pathname.startsWith('/marketplace/listing/')) return 'Listing Detail'
-  if (pathname.startsWith('/marketplace/payouts')) return 'Marketplace Payouts'
-  if (pathname.startsWith('/marketplace/listings')) return 'Marketplace Listings'
-  if (pathname.startsWith('/marketplace')) return 'Marketplace Review'
-  if (pathname.startsWith('/projects/')) return 'Project Detail'
-  if (pathname.includes('projects')) return 'Projects'
-  if (pathname.includes('ai-analytics')) return 'AI Analytics'
-  if (pathname.includes('analytics')) return 'Marketing Analytics'
-  if (pathname.startsWith('/creators/')) return 'Creator Profile'
-  if (pathname.includes('creators')) return 'Creators'
-  if (pathname.includes('affiliate-payouts')) return 'Affiliate Payouts'
-  if (pathname.includes('affiliate-content')) return 'Affiliate CPM'
-  if (pathname.includes('infrastructure')) return 'Infrastructure'
-  if (pathname.includes('heartbeats')) return 'Heartbeats'
-  if (pathname.startsWith('/evals/')) return 'Eval Detail'
-  if (pathname.includes('evals')) return 'Evals'
-  if (pathname.includes('/logs')) return 'Logs'
-  if (pathname.includes('meetings')) return 'Meetings'
-  if (pathname.includes('general')) return 'General'
-  if (pathname.includes('settings')) return 'AI Settings'
-  return 'Dashboard'
-}
-
 export default function AdminLayout() {
   return (
     <DomainProvider>
@@ -622,7 +584,7 @@ function AdminLayoutInner() {
     const permitted = ALL_NAV_ITEMS.filter((item) =>
       canSeeNavItem(item, isSuperAdmin, scopes),
     )
-    const onPermitted = permitted.some((item) => isNavActive(pathname, item.href))
+    const onPermitted = permitted.some((item) => isAdminNavActive(pathname, item.href))
     if (!onPermitted && permitted.length > 0) {
       router.replace(permitted[0].href as any)
     }
@@ -632,7 +594,7 @@ function AdminLayoutInner() {
     if (localMode && !isPending && hasAdminAccess) {
       const p = pathname
       if (p === '/' || p === '' || p === '/(admin)' || p === '/index') {
-        router.replace('/(admin)/projects' as any)
+        router.replace('/(admin)/admin/projects' as any)
       }
     }
   }, [localMode, isPending, hasAdminAccess, pathname, router])
@@ -677,11 +639,11 @@ function AdminLayoutInner() {
       }
       header={
         isWide ? (
-          <DesktopContextHeader title={getPageTitle(pathname)} />
+          <DesktopContextHeader title={adminPageTitle(pathname)} />
         ) : (
           <MobileHeader
             onMenuPress={toggleDrawer}
-            title={getPageTitle(pathname)}
+            title={adminPageTitle(pathname)}
             menuOpen={drawerOpen}
             isNative={nativeSheetDrawer}
           />

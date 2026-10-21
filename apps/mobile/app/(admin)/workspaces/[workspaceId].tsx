@@ -459,7 +459,7 @@ export default function AdminWorkspaceDetailPage() {
                   return (
                     <Pressable
                       key={p.id}
-                      onPress={() => router.push(`/(admin)/projects/${p.id}` as any)}
+                      onPress={() => router.push(`/(admin)/admin/projects/${p.id}` as any)}
                       className="flex-row items-center justify-between p-3 rounded-lg bg-muted/50 active:bg-muted"
                     >
                       <View className="flex-1 min-w-0 mr-2">

@@ -748,7 +748,7 @@ function QuickActionsRow() {
           <Text className="text-sm font-medium text-foreground">View Infrastructure</Text>
         </Pressable>
         <Pressable
-          onPress={() => router.push('/(admin)/analytics' as any)}
+          onPress={() => router.push('/(admin)/admin/analytics' as any)}
           className="flex-row items-center gap-2 px-4 py-2.5 rounded-lg border border-border active:bg-muted/50"
         >
           <TrendingUp size={14} className="text-emerald-500" />

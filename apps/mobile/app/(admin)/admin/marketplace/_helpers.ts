@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Shared helpers for the (admin)/marketplace/* pages: fetch wrappers,
+ * Shared helpers for the (admin)/admin/marketplace/* pages: fetch wrappers,
  * money + relative-time formatting, and the canonical listing-status
  * pill colors so all four pages stay visually consistent.
  *
@@ -13,7 +13,7 @@
 
 import { Alert, Platform } from 'react-native'
 
-import { API_URL } from '../../../lib/api'
+import { API_URL } from '../../../../lib/api'
 
 // React Native's Alert.alert is a no-op on react-native-web, so error
 // toasts in the admin pages silently vanished on the web dashboard. Route

@@ -4,7 +4,7 @@
  * Marketplace admin sub-layout. Renders a horizontal tab strip across
  * the three top-level pages (Review queue, Listings, Payouts) and a
  * Slot for the active page. The strip is suppressed on detail pages
- * (e.g. /marketplace/listing/:id) since those have their own back
+ * (e.g. /admin/marketplace/listing/:id) since those have their own back
  * button + header.
  *
  * Auth + DomainProvider are already provided by the parent
@@ -17,9 +17,9 @@ import { Inbox, ListChecks, DollarSign } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 
 const TABS = [
-  { href: '/(admin)/marketplace', match: '/marketplace', exact: true, icon: Inbox, label: 'Review queue' },
-  { href: '/(admin)/marketplace/listings', match: '/marketplace/listings', exact: false, icon: ListChecks, label: 'Listings' },
-  { href: '/(admin)/marketplace/payouts', match: '/marketplace/payouts', exact: false, icon: DollarSign, label: 'Payouts' },
+  { href: '/(admin)/admin/marketplace', match: '/admin/marketplace', exact: true, icon: Inbox, label: 'Review queue' },
+  { href: '/(admin)/admin/marketplace/listings', match: '/admin/marketplace/listings', exact: false, icon: ListChecks, label: 'Listings' },
+  { href: '/(admin)/admin/marketplace/payouts', match: '/admin/marketplace/payouts', exact: false, icon: DollarSign, label: 'Payouts' },
 ] as const
 
 function isTabActive(pathname: string, tab: (typeof TABS)[number]): boolean {
@@ -32,7 +32,7 @@ function isTabActive(pathname: string, tab: (typeof TABS)[number]): boolean {
 function shouldShowTabs(pathname: string): boolean {
   // Hide the tab strip on the listing detail page so the detail screen
   // owns the full header (back button + actions).
-  return !pathname.startsWith('/marketplace/listing/')
+  return !pathname.startsWith('/admin/marketplace/listing/')
 }
 
 export default function MarketplaceAdminLayout() {

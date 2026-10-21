@@ -29,8 +29,8 @@ import {
 } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
-import { API_URL } from '../../../lib/api'
-import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
+import { API_URL } from '../../../../lib/api'
+import { SegmentedFilter } from "../../../../components/phone/SegmentedFilter"
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -358,7 +358,7 @@ export default function AdminProjectsPage() {
             <ProjectRow
               project={item}
               isWide={isWide}
-              onPress={() => router.push(`/(admin)/projects/${item.id}` as any)}
+              onPress={() => router.push(`/(admin)/admin/projects/${item.id}` as any)}
             />
           )}
           contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 24) }}
