@@ -169,8 +169,14 @@ describe('SHO-101: the prompt reads the channel doc, it does not ask for a write
       // Still able to edit: removing the invitation must not remove the tools.
       // The guide no longer names `team_chat_doc_update` — it is offered as a
       // tool instead, so that an agent a person asks can still make the change.
-      expect(toolNames).toContain('team_chat_doc_read')
-      expect(toolNames).toContain('team_chat_doc_update')
+      // Since SHO-97 a registered tool is either advertised (schema sent) or
+      // deferred (one line in the `## Deferred Tools` catalog, callable directly).
+      const catalogStart = systemPrompt.indexOf('## Deferred Tools')
+      const catalog = catalogStart === -1 ? '' : systemPrompt.slice(catalogStart)
+      for (const name of ['team_chat_doc_read', 'team_chat_doc_update']) {
+        const reachable = toolNames.includes(name) || catalog.includes(`- \`${name}\``)
+        expect({ name, reachable }).toEqual({ name, reachable: true })
+      }
     }, 30_000)
   })
 })
