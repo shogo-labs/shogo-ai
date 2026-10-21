@@ -288,9 +288,18 @@ function endpointFamilies(): {
   return { families, unresolved }
 }
 
-/** `/api/workspaces/cloud-ws/analytics/x` → `analytics`, the family the path is about. */
-function familyOfClientPath(path: string): string | null {
-  return path.replace('/cloud-ws', '').match(/^\/api\/workspaces\/([a-z][a-z-]*)(?:\/|$)/)?.[1] ?? null
+/** Collapse the separator a placeholder leaves behind, so `/…/analytics//x` and `/…/analytics/x` compare. */
+function stablePath(path: string): string {
+  return path.replace(/\/{2,}/g, '/')
+}
+
+/** The path a resolved template leaves in the scan: `/…/analytics/${endpoint}` → `/…/analytics/x`. */
+function dynamicPathOf(template: string): string {
+  return stablePath(
+    template
+      .replace(/^\/api\/workspaces\/\$\{[^}]+\}/, '/api/workspaces/cloud-ws')
+      .replace(/\$\{[^}]*\}/g, '/x'),
+  )
 }
 
 /** Pull an endpoint into the template: the workspace segment stays a wildcard. */
@@ -342,22 +351,24 @@ describe('SHO-87 QA: machine-bound workspace calls are served by the machine', (
       .filter((p) => p.startsWith('/api/workspaces/'))
       .map(routeRegex)
 
-    const resolvedFamilies = new Set(
-      [...endpointFamilies().families.keys()]
-        .map((template) => template.match(/\/workspaces\/\$\{[^}]+\}\/([a-z][a-z-]*)\//)?.[1])
-        .filter((family): family is string => Boolean(family)),
+    // Exactly the paths left behind by a helper whose endpoint is an argument —
+    // nothing else. Skipping a whole family also skipped its literal-tail paths
+    // (`/analytics/member-usage`, `/cost-analytics/agent-eval-sets`,
+    // `/cost-analytics/subagent-overrides`), which the by-name test never sees
+    // and which a real route can match.
+    const resolvedDynamicPaths = new Set(
+      [...endpointFamilies().families.keys()].map(dynamicPathOf),
     )
     const missing: string[] = []
     for (const [path, file] of clientWorkspacePaths()) {
       if (!shouldRouteToRemote(path, { machineWorkspaceId: 'local-ws' })) continue
-      // The analytics families build their path from an argument, so the only
-      // literal a helper leaves behind is `/analytics/x` — a shape no route can
-      // match. Those go to the by-name test below, which reads the endpoints
-      // the call sites pass. The skip follows what the resolver *actually*
-      // resolved, not the shape of the path: skipping every `/x` also dropped
-      // `/triggers/x`, `/goals/x` and `/sessions/x/projects`, and those would
-      // then never be checked at all.
-      if (resolvedFamilies.has(familyOfClientPath(path) ?? '')) continue
+      // A helper whose endpoint is an argument leaves only `/analytics/x`
+      // behind — a shape no route can match — so those two paths are checked by
+      // name in the test below. The skip is the resolver's own paths, not a
+      // shape: skipping by shape dropped `/triggers/x`, `/goals/x` and
+      // `/sessions/x/projects`, and skipping by family still dropped the
+      // literal tails inside analytics/cost-analytics.
+      if (resolvedDynamicPaths.has(stablePath(path))) continue
       const localPath = path.replace('/cloud-ws', '/local-ws')
       if (!localWorkspaceRoutes.some((re) => re.test(localPath))) {
         missing.push(`${path.replace('/api/workspaces/cloud-ws', '/api/workspaces/:id')}  (${file})`)
