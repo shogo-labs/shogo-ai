@@ -46,7 +46,30 @@ const offlineHost: MachineGroupData = {
   workspaces: [{ id: 'lw-archive', name: 'Archive', kind: 'team' }],
 }
 
+/**
+ * A `shogo worker` VM. The cloud reports it as a device, but it serves
+ * `/agent/*` only — no workspaces to open (SHO-120).
+ */
+const workerVm: MachineGroupData = {
+  id: 'inst-vm',
+  name: 'Dev VM',
+  kind: 'cli_worker',
+  status: 'online',
+  stale: false,
+  lastSeenAt: '2026-10-21T05:00:00.000Z',
+  workspaces: [{ id: 'lw-vm', name: 'VM Workspace', kind: 'team' }],
+}
+
 describe('buildWorkspaceEntries', () => {
+  test('a cli-worker never becomes a workspace host', () => {
+    const entries = buildWorkspaceEntries({ workspaces: cloudWorkspaces, machines: [workerVm] })
+    expect(entries.map((entry) => entry.key)).toEqual([
+      cloudWorkspaceKey('ws-personal'),
+      cloudWorkspaceKey('ws-acme'),
+    ])
+    expect(entries.some((entry) => entry.host.kind === 'machine')).toBe(false)
+  })
+
   test('one list: cloud rows in the server order, then each machine’s rows', () => {
     const entries = buildWorkspaceEntries({ workspaces: cloudWorkspaces, machines: [odin] })
 

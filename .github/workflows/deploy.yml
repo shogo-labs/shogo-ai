@@ -1465,6 +1465,10 @@ jobs:
           API_IMAGE: ${{ steps.release.outputs.api_image }}
           WEB_IMAGE: ${{ steps.release.outputs.web_image }}
           DOCS_IMAGE: ${{ steps.release.outputs.docs_image }}
+          # Re-pin + verify the release tag on the api ksvc (APP_VERSION) and the
+          # studio (SHOGO_APP_VERSION), so /health reports the release even when
+          # this step is the only thing that touched the ksvcs (rollback path).
+          APP_VERSION: ${{ needs.resolve-config.outputs.app_version }}
           RETIRE_STALE_STUDIO: ${{ steps.release.outputs.web_changed }}
         run: .github/scripts/apply-release-images.sh
 
@@ -1521,6 +1525,24 @@ jobs:
           if [ "$HEALTHY" != "true" ]; then
             echo "::error::US API health check did not return 200 after 20 attempts"
             exit 1
+          fi
+
+          # The api must report the release it was deployed as. An unpinned pod
+          # reads 0.0.0, and admin analytics then cannot answer "N of M desktop
+          # devices on <tag>" — the gap that made version adoption unreadable
+          # (SHO-114). Rollout fails rather than deploying an unlabelled build.
+          if [ -n "${KOURIER_IP:-}" ]; then
+            REPORTED_VERSION=$(curl -sf --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/version" 2>/dev/null | jq -r '.version // empty' || true)
+          else
+            REPORTED_VERSION=$(curl -sf --connect-timeout 5 --max-time 15 "https://${{ env.DOMAIN }}/api/version" 2>/dev/null | jq -r '.version // empty' || true)
+          fi
+          if [ -z "$REPORTED_VERSION" ] || [ "$REPORTED_VERSION" = "0.0.0" ]; then
+            echo "::error::US api /api/version reports '${REPORTED_VERSION:-<none>}' — APP_VERSION never reached the api ksvc; nothing can say which release is latest"
+            exit 1
+          fi
+          echo "US api reports version $REPORTED_VERSION (expected ${{ needs.resolve-config.outputs.app_version }})"
+          if [ -n "${{ needs.resolve-config.outputs.app_version }}" ] && [ "$REPORTED_VERSION" != "${{ needs.resolve-config.outputs.app_version }}" ]; then
+            echo "::warning::US api reports $REPORTED_VERSION but the release resolved to ${{ needs.resolve-config.outputs.app_version }}"
           fi
 
       # (removed) Knative warm-pool health gate — vestigial under metal-only
@@ -2290,6 +2312,10 @@ jobs:
           API_IMAGE: ${{ steps.release.outputs.api_image }}
           WEB_IMAGE: ${{ steps.release.outputs.web_image }}
           DOCS_IMAGE: ${{ steps.release.outputs.docs_image }}
+          # Re-pin + verify the release tag on the api ksvc (APP_VERSION) and the
+          # studio (SHOGO_APP_VERSION), so /health reports the release even when
+          # this step is the only thing that touched the ksvcs (rollback path).
+          APP_VERSION: ${{ needs.resolve-config.outputs.app_version }}
           RETIRE_STALE_STUDIO: ${{ steps.release.outputs.web_changed }}
         run: .github/scripts/apply-release-images.sh
 
@@ -2337,6 +2363,24 @@ jobs:
           if [ "$STATUS" != "200" ]; then
             echo "::error::EU /api/health returned HTTP $STATUS (expected 200) via Kourier ${KOURIER_IP}"
             exit 1
+          fi
+
+          # The api must report the release it was deployed as. An unpinned pod
+          # reads 0.0.0, and admin analytics then cannot answer "N of M desktop
+          # devices on <tag>" — the gap that made version adoption unreadable
+          # (SHO-114). Rollout fails rather than deploying an unlabelled build.
+          if [ -n "${KOURIER_IP:-}" ]; then
+            REPORTED_VERSION=$(curl -sf --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/version" 2>/dev/null | jq -r '.version // empty' || true)
+          else
+            REPORTED_VERSION=$(curl -sf --connect-timeout 5 --max-time 15 "https://${{ env.DOMAIN }}/api/version" 2>/dev/null | jq -r '.version // empty' || true)
+          fi
+          if [ -z "$REPORTED_VERSION" ] || [ "$REPORTED_VERSION" = "0.0.0" ]; then
+            echo "::error::EU api /api/version reports '${REPORTED_VERSION:-<none>}' — APP_VERSION never reached the api ksvc; nothing can say which release is latest"
+            exit 1
+          fi
+          echo "EU api reports version $REPORTED_VERSION (expected ${{ needs.resolve-config.outputs.app_version }})"
+          if [ -n "${{ needs.resolve-config.outputs.app_version }}" ] && [ "$REPORTED_VERSION" != "${{ needs.resolve-config.outputs.app_version }}" ]; then
+            echo "::warning::EU api reports $REPORTED_VERSION but the release resolved to ${{ needs.resolve-config.outputs.app_version }}"
           fi
 
       # (removed) Knative warm-pool health gate — vestigial under metal-only

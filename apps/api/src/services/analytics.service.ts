@@ -9,9 +9,23 @@
  * - Project-level analytics (scope = { workspaceId, projectId })
  */
 
+import { createHash } from 'crypto'
 import { prisma, Prisma } from '../lib/prisma'
 import { resolveModelLabels } from './model-registry.service'
 import { countLineChanges } from '../lib/tool-line-stats'
+import {
+  compareSemver,
+  deviceOsLabel,
+  isSameRelease,
+  parseChannel,
+  parseClient,
+  parseDevicePlatform,
+  type DeviceArch,
+  type DeviceClient,
+  type DeviceOs,
+  type ReleaseChannel,
+} from '../lib/device-platform'
+import { deployedAppVersion } from '../lib/app-version'
 
 /** Parse actionMetadata that may have been double-JSON-stringified. */
 function parseMeta(raw: unknown): Record<string, any> {
@@ -1328,6 +1342,44 @@ export async function getActiveUsers(
 // App Installs
 // ============================================================================
 
+/** How many devices of a segment sit on one OS, split out so the admin card
+ * can show "macOS / Windows / Linux" columns instead of 8 raw spellings. */
+export interface InstallOsCounts {
+  macos: number
+  windows: number
+  linux: number
+  unknown: number
+}
+
+export interface InstallVersionRow {
+  version: string
+  channel: ReleaseChannel
+  devices: number
+  activeD7: number
+  /** Earliest key creation seen for a device on this version. */
+  firstSeenAt: string | null
+  lastSeenAt: string | null
+  os: InstallOsCounts
+}
+
+export interface InstallOsRow {
+  os: DeviceOs
+  arch: DeviceArch
+  devices: number
+  active1d: number
+  active7d: number
+  active30d: number
+}
+
+export interface InstallOnLatest {
+  version: string
+  devices: number
+  /** Rounded percentage of the segment's devices on `version`. */
+  pct: number
+  /** `deployed` = the tag this API is running; `inferred` = newest stable seen. */
+  source: 'deployed' | 'inferred'
+}
+
 export interface InstallSegment {
   totalDevices: number
   active: {
@@ -1336,16 +1388,23 @@ export interface InstallSegment {
     d30: number
   }
   newLast30d: number
+  /** Legacy shape: one entry per version string, unsplit by channel. */
   byVersion: Array<{
     version: string
     count: number
     activeD7: number
   }>
+  /** Legacy shape: raw `devicePlatform` spellings, kept for existing callers. */
   byPlatform: Array<{
     platform: string
     count: number
   }>
   distinctUsers: number
+  /** Normalised OS buckets (`darwin-arm64` and `darwin` land together). */
+  byOs: InstallOsRow[]
+  /** Full (version, channel) matrix — never truncated. */
+  versions: InstallVersionRow[]
+  onLatest: InstallOnLatest | null
 }
 
 /** Backwards-compatible name for callers of the desktop-only endpoint. */
@@ -1353,6 +1412,8 @@ export type DesktopInstallsData = InstallSegment
 
 export interface AppInstallsData {
   desktop: InstallSegment
+  /** Worker/CLI device keys, kept out of every desktop total and OS count. */
+  cli: InstallSegment
   ios: InstallSegment
   android: InstallSegment
   totals: {
@@ -1376,58 +1437,247 @@ type InstallAggregateRow = {
   userId: string | null
 }
 
+interface DeviceSnapshot {
+  deviceId: string
+  /** Newest row: drives activity, platform and creation date. */
+  row: InstallAggregateRow
+  /** Newest row that actually carries a version: drives the version bucket. */
+  versionRow: InstallAggregateRow | null
+  version: string
+  channel: ReleaseChannel
+  client: DeviceClient
+  os: DeviceOs
+  arch: DeviceArch
+}
+
+function hasVersion(row: InstallAggregateRow): boolean {
+  return typeof row.version === 'string' && row.version.trim() !== ''
+}
+
+function isNewer(a: Date | null, b: Date | null): boolean {
+  if (!a) return false
+  if (!b) return true
+  return a > b
+}
+
+/**
+ * Pick the row that decides a device's version.
+ *
+ * Highest version wins, not the newest timestamp: `lastSeenAt` is bumped by
+ * callers that send no version at all (the ai-proxy `lastUsedAt` touch, a bare
+ * heartbeat), so the newest-timestamp row can be an older version the device
+ * already moved off — that mislabelled 6 devices in production. A device only
+ * moves forward, so the newest version it has ever reported is the one it
+ * runs. Timestamps only break ties (e.g. two betas of the same base version
+ * compare equal in the numeric parts).
+ */
+function preferredVersionRow(
+  candidate: InstallAggregateRow,
+  current: InstallAggregateRow,
+): boolean {
+  const byVersion = compareSemver(candidate.version, current.version)
+  if (byVersion !== 0) return byVersion > 0
+  const a = candidate.lastSeenAt?.getTime() ?? 0
+  const b = current.lastSeenAt?.getTime() ?? 0
+  return a > b
+}
+
+/**
+ * One entry per physical device. Device API keys are minted per workspace, so
+ * a stable deviceId is what keeps one machine from being counted 34 times.
+ */
+function buildDeviceSnapshots(rows: InstallAggregateRow[]): DeviceSnapshot[] {
+  const byDevice = new Map<string, { row: InstallAggregateRow; versionRow: InstallAggregateRow | null }>()
+  for (const row of rows) {
+    if (!row.deviceId) continue
+    let entry = byDevice.get(row.deviceId)
+    if (!entry) {
+      entry = { row, versionRow: null }
+      byDevice.set(row.deviceId, entry)
+    } else if (isNewer(row.lastSeenAt, entry.row.lastSeenAt)) {
+      entry.row = row
+    }
+    if (hasVersion(row)) {
+      if (!entry.versionRow || preferredVersionRow(row, entry.versionRow)) {
+        entry.versionRow = row
+      }
+    }
+  }
+
+  return [...byDevice.entries()].map(([deviceId, entry]) => {
+    const version = entry.versionRow?.version?.trim() || 'unknown'
+    const { os, arch } = parseDevicePlatform(entry.row.platform)
+    return {
+      deviceId,
+      row: entry.row,
+      versionRow: entry.versionRow,
+      version,
+      channel: parseChannel(entry.versionRow?.version),
+      client: parseClient(entry.versionRow?.version, entry.row.platform),
+      os,
+      arch,
+    }
+  })
+}
+
+function emptyOsCounts(): InstallOsCounts {
+  return { macos: 0, windows: 0, linux: 0, unknown: 0 }
+}
+
+function newestStableVersion(snapshots: DeviceSnapshot[]): string | null {
+  let newest: string | null = null
+  for (const snapshot of snapshots) {
+    if (snapshot.version === 'unknown') continue
+    if (snapshot.channel !== 'stable') continue
+    if (newest === null || compareSemver(snapshot.version, newest) > 0) newest = snapshot.version
+  }
+  return newest
+}
+
+type LatestMode = 'deploy' | 'infer' | 'none'
+
+interface AggregateOptions {
+  /**
+   * `deploy` (default) uses the release this API runs, `infer` the newest
+   * stable version any device reports, `none` leaves `onLatest` null.
+   */
+  latestMode?: LatestMode
+  /** Override for tests / callers that already resolved the tag. */
+  deployedVersion?: string | null
+}
+
 /**
  * Aggregate install and activity metrics for a set of physical devices.
  *
- * Device API keys are minted per workspace, so a stable deviceId is used to
- * count each physical desktop once across workspaces. The latest-seen row is
- * retained for its current version, platform, and activity state.
+ * Every dimension is picked from the row that actually carries it, so the
+ * version shown for a device is always the newest version it reported and the
+ * OS counts never split one operating system across several spellings.
  */
-function aggregateInstalls(rows: InstallAggregateRow[]): InstallSegment {
+function aggregateInstalls(
+  rows: InstallAggregateRow[],
+  options: AggregateOptions = {},
+): InstallSegment {
   const now = new Date()
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
   const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const latestByDevice = new Map<string, InstallAggregateRow>()
-  for (const row of rows) {
-    if (!row.deviceId) continue
-    const existing = latestByDevice.get(row.deviceId)
-    if (!existing || (
-      row.lastSeenAt &&
-      (!existing.lastSeenAt || row.lastSeenAt > existing.lastSeenAt)
-    )) {
-      latestByDevice.set(row.deviceId, row)
-    }
-  }
-
-  const devices = [...latestByDevice.values()]
-  const activeSince = (row: InstallAggregateRow, since: Date) =>
-    row.lastSeenAt !== null && row.lastSeenAt >= since
-  const versionFor = (row: InstallAggregateRow) => row.version || 'unknown'
-  const platformFor = (row: InstallAggregateRow) => row.platform || 'unknown'
+  const snapshots = buildDeviceSnapshots(rows)
+  const activeSince = (snapshot: DeviceSnapshot, since: Date) =>
+    snapshot.row.lastSeenAt !== null && snapshot.row.lastSeenAt >= since
 
   const versionCounts = new Map<string, { count: number; activeD7: number }>()
   const platformCounts = new Map<string, number>()
-  for (const device of devices) {
-    const version = versionFor(device)
-    const versionCount = versionCounts.get(version) ?? { count: 0, activeD7: 0 }
-    versionCount.count += 1
-    if (activeSince(device, weekAgo)) versionCount.activeD7 += 1
-    versionCounts.set(version, versionCount)
+  const versionRows = new Map<string, {
+    version: string
+    channel: ReleaseChannel
+    devices: number
+    activeD7: number
+    firstSeenAt: Date | null
+    lastSeenAt: Date | null
+    os: InstallOsCounts
+  }>()
+  const osRows = new Map<string, InstallOsRow>()
 
-    const platform = platformFor(device)
+  for (const snapshot of snapshots) {
+    const versionCount = versionCounts.get(snapshot.version) ?? { count: 0, activeD7: 0 }
+    versionCount.count += 1
+    if (activeSince(snapshot, weekAgo)) versionCount.activeD7 += 1
+    versionCounts.set(snapshot.version, versionCount)
+
+    const platform = snapshot.row.platform || 'unknown'
     platformCounts.set(platform, (platformCounts.get(platform) ?? 0) + 1)
+
+    const versionKey = `${snapshot.version}\u0000${snapshot.channel}`
+    let versionRow = versionRows.get(versionKey)
+    if (!versionRow) {
+      versionRow = {
+        version: snapshot.version,
+        channel: snapshot.channel,
+        devices: 0,
+        activeD7: 0,
+        firstSeenAt: null,
+        lastSeenAt: null,
+        os: emptyOsCounts(),
+      }
+      versionRows.set(versionKey, versionRow)
+    }
+    versionRow.devices += 1
+    if (activeSince(snapshot, weekAgo)) versionRow.activeD7 += 1
+    versionRow.os[snapshot.os] += 1
+    const firstSeen = snapshot.versionRow?.createdAt ?? null
+    if (firstSeen && (!versionRow.firstSeenAt || firstSeen < versionRow.firstSeenAt)) {
+      versionRow.firstSeenAt = firstSeen
+    }
+    const lastSeen = snapshot.versionRow?.lastSeenAt ?? null
+    if (lastSeen && (!versionRow.lastSeenAt || lastSeen > versionRow.lastSeenAt)) {
+      versionRow.lastSeenAt = lastSeen
+    }
+
+    const osKey = `${snapshot.os}\u0000${snapshot.arch ?? ''}`
+    let osRow = osRows.get(osKey)
+    if (!osRow) {
+      osRow = {
+        os: snapshot.os,
+        arch: snapshot.arch,
+        devices: 0,
+        active1d: 0,
+        active7d: 0,
+        active30d: 0,
+      }
+      osRows.set(osKey, osRow)
+    }
+    osRow.devices += 1
+    if (activeSince(snapshot, dayAgo)) osRow.active1d += 1
+    if (activeSince(snapshot, weekAgo)) osRow.active7d += 1
+    if (activeSince(snapshot, monthAgo)) osRow.active30d += 1
+  }
+
+  const versions: InstallVersionRow[] = [...versionRows.values()]
+    .map((entry) => ({
+      version: entry.version,
+      channel: entry.channel,
+      devices: entry.devices,
+      activeD7: entry.activeD7,
+      firstSeenAt: entry.firstSeenAt ? entry.firstSeenAt.toISOString() : null,
+      lastSeenAt: entry.lastSeenAt ? entry.lastSeenAt.toISOString() : null,
+      os: entry.os,
+    }))
+    .sort((a, b) => b.devices - a.devices || compareSemver(b.version, a.version))
+
+  const byOs = [...osRows.values()].sort(
+    (a, b) =>
+      b.devices - a.devices ||
+      a.os.localeCompare(b.os) ||
+      (a.arch ?? '').localeCompare(b.arch ?? ''),
+  )
+
+  const latestMode: LatestMode = options.latestMode ?? 'deploy'
+  let onLatest: InstallOnLatest | null = null
+  if (latestMode !== 'none' && snapshots.length > 0) {
+    const deployed = latestMode === 'deploy'
+      ? options.deployedVersion ?? deployedAppVersion()
+      : null
+    const target = deployed ?? newestStableVersion(snapshots)
+    if (target) {
+      const devices = snapshots.filter((snapshot) => isSameRelease(snapshot.version, target)).length
+      onLatest = {
+        version: target,
+        devices,
+        pct: Math.round((devices / snapshots.length) * 100),
+        source: deployed ? 'deployed' : 'inferred',
+      }
+    }
   }
 
   return {
-    totalDevices: devices.length,
+    totalDevices: snapshots.length,
     active: {
-      d1: devices.filter((device) => activeSince(device, dayAgo)).length,
-      d7: devices.filter((device) => activeSince(device, weekAgo)).length,
-      d30: devices.filter((device) => activeSince(device, monthAgo)).length,
+      d1: snapshots.filter((snapshot) => activeSince(snapshot, dayAgo)).length,
+      d7: snapshots.filter((snapshot) => activeSince(snapshot, weekAgo)).length,
+      d30: snapshots.filter((snapshot) => activeSince(snapshot, monthAgo)).length,
     },
-    newLast30d: devices.filter((device) => device.createdAt >= monthAgo).length,
+    newLast30d: snapshots.filter((snapshot) => snapshot.row.createdAt >= monthAgo).length,
     byVersion: [...versionCounts.entries()]
       .map(([version, counts]) => ({ version, ...counts }))
       .sort((a, b) => b.count - a.count || a.version.localeCompare(b.version)),
@@ -1435,11 +1685,68 @@ function aggregateInstalls(rows: InstallAggregateRow[]): InstallSegment {
       .map(([platform, count]) => ({ platform, count }))
       .sort((a, b) => b.count - a.count || a.platform.localeCompare(b.platform)),
     distinctUsers: new Set(rows.map((row) => row.userId).filter(Boolean)).size,
+    byOs,
+    versions,
+    onLatest,
   }
 }
 
 /**
+ * Split raw key rows by the client that reported them, using the same
+ * device-level decision the aggregation makes (one row can be the CLI's while
+ * another row of the same device is stale).
+ */
+function partitionRowsByClient(rows: InstallAggregateRow[]): {
+  desktop: InstallAggregateRow[]
+  cli: InstallAggregateRow[]
+} {
+  const clientByDevice = new Map<string, DeviceClient>()
+  for (const snapshot of buildDeviceSnapshots(rows)) {
+    clientByDevice.set(snapshot.deviceId, snapshot.client)
+  }
+
+  const desktop: InstallAggregateRow[] = []
+  const cli: InstallAggregateRow[] = []
+  for (const row of rows) {
+    const client = row.deviceId ? clientByDevice.get(row.deviceId) : undefined
+    if (client === 'cli') cli.push(row)
+    else desktop.push(row)
+  }
+  return { desktop, cli }
+}
+
+function toInstallRows(
+  keys: Array<{
+    deviceId: string | null
+    devicePlatform: string | null
+    deviceAppVersion: string | null
+    lastSeenAt: Date | null
+    createdAt: Date
+    userId: string | null
+  }>,
+): InstallAggregateRow[] {
+  return keys.map((key) => ({
+    deviceId: key.deviceId,
+    platform: key.devicePlatform,
+    version: key.deviceAppVersion,
+    lastSeenAt: key.lastSeenAt,
+    createdAt: key.createdAt,
+    userId: key.userId,
+  }))
+}
+
+const DEVICE_KEY_SELECT = {
+  deviceId: true,
+  devicePlatform: true,
+  deviceAppVersion: true,
+  lastSeenAt: true,
+  createdAt: true,
+  userId: true,
+} as const
+
+/**
  * Get install and activity metrics for desktops that have signed in to Cloud.
+ * Worker/CLI device keys are excluded — they are not desktop installs.
  */
 export async function getDesktopInstalls(): Promise<DesktopInstallsData> {
   const keys = await prisma.apiKey.findMany({
@@ -1448,28 +1755,18 @@ export async function getDesktopInstalls(): Promise<DesktopInstallsData> {
       revokedAt: null,
       deviceId: { not: null },
     },
-    select: {
-      deviceId: true,
-      devicePlatform: true,
-      deviceAppVersion: true,
-      lastSeenAt: true,
-      createdAt: true,
-      userId: true,
-    },
+    select: DEVICE_KEY_SELECT,
   })
 
-  return aggregateInstalls(keys.map((key) => ({
-    deviceId: key.deviceId,
-    platform: key.devicePlatform,
-    version: key.deviceAppVersion,
-    lastSeenAt: key.lastSeenAt,
-    createdAt: key.createdAt,
-    userId: key.userId,
-  })))
+  const { desktop } = partitionRowsByClient(toInstallRows(keys))
+  return aggregateInstalls(desktop)
 }
 
 /**
- * Get combined signed-in install metrics for desktop, iOS, and Android.
+ * Get combined signed-in install metrics for desktop, CLI, iOS, and Android.
+ *
+ * Additive: every field that existed before is still here, plus the OS×version
+ * matrix (`byOs`, `versions`, `onLatest`) and a `cli` segment.
  */
 export async function getAppInstalls(): Promise<AppInstallsData> {
   const [keys, appInstalls] = await Promise.all([
@@ -1479,14 +1776,7 @@ export async function getAppInstalls(): Promise<AppInstallsData> {
         revokedAt: null,
         deviceId: { not: null },
       },
-      select: {
-        deviceId: true,
-        devicePlatform: true,
-        deviceAppVersion: true,
-        lastSeenAt: true,
-        createdAt: true,
-        userId: true,
-      },
+      select: DEVICE_KEY_SELECT,
     }),
     prisma.appInstall.findMany({
       where: { platform: { in: ['ios', 'android'] } },
@@ -1502,14 +1792,7 @@ export async function getAppInstalls(): Promise<AppInstallsData> {
     }),
   ])
 
-  const desktopRows: InstallAggregateRow[] = keys.map((key) => ({
-    deviceId: key.deviceId,
-    platform: key.devicePlatform,
-    version: key.deviceAppVersion,
-    lastSeenAt: key.lastSeenAt,
-    createdAt: key.createdAt,
-    userId: key.userId,
-  }))
+  const desktopRows = toInstallRows(keys)
   const mobileRows: InstallAggregateRow[] = appInstalls.map((install) => ({
     deviceId: install.deviceId,
     platform: install.osVersion,
@@ -1519,13 +1802,22 @@ export async function getAppInstalls(): Promise<AppInstallsData> {
     userId: install.userId,
   }))
 
-  const desktop = aggregateInstalls(desktopRows)
-  const ios = aggregateInstalls(mobileRows.filter((row, index) => appInstalls[index]?.platform === 'ios'))
-  const android = aggregateInstalls(mobileRows.filter((row, index) => appInstalls[index]?.platform === 'android'))
+  const partitioned = partitionRowsByClient(desktopRows)
+  const desktop = aggregateInstalls(partitioned.desktop, { latestMode: 'deploy' })
+  const cli = aggregateInstalls(partitioned.cli, { latestMode: 'none' })
+  const ios = aggregateInstalls(
+    mobileRows.filter((row, index) => appInstalls[index]?.platform === 'ios'),
+    { latestMode: 'infer' },
+  )
+  const android = aggregateInstalls(
+    mobileRows.filter((row, index) => appInstalls[index]?.platform === 'android'),
+    { latestMode: 'infer' },
+  )
   const allDevices = [...desktopRows, ...mobileRows]
 
   return {
     desktop,
+    cli,
     ios,
     android,
     totals: {
@@ -1538,6 +1830,244 @@ export async function getAppInstalls(): Promise<AppInstallsData> {
       newLast30d: desktop.newLast30d + ios.newLast30d + android.newLast30d,
       distinctUsers: new Set(allDevices.map((row) => row.userId).filter(Boolean)).size,
     },
+  }
+}
+
+// ============================================================================
+// App version adoption
+// ============================================================================
+
+export interface AppVersionAdoptionPoint {
+  /** UTC day, `YYYY-MM-DD`. */
+  date: string
+  version: string
+  channel: ReleaseChannel
+  devices: number
+}
+
+export interface AppVersionsData {
+  generatedAt: string
+  /** The release this API runs, or null when the deployment does not pin one. */
+  deployedVersion: string | null
+  windowDays: number
+  desktop: InstallSegment
+  cli: InstallSegment
+  /**
+   * Devices on each version per UTC day, from `device_version_events` — the
+   * history `api_keys` cannot provide because it only keeps the current row.
+   */
+  adoption: AppVersionAdoptionPoint[]
+}
+
+/**
+ * The OS×version matrix plus the daily adoption series.
+ *
+ * This is the reference data behind "N of M on <tag>": it is computed from the
+ * same normalisation the admin card renders, so a direct SQL check on
+ * `api_keys` (grouped by OS, not by platform spelling) matches it.
+ */
+export async function getAppVersions(options: { days?: number } = {}): Promise<AppVersionsData> {
+  const days = Math.min(Math.max(Math.trunc(options.days ?? 30) || 30, 1), 365)
+  const now = new Date()
+  const windowStart = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000)
+  windowStart.setUTCHours(0, 0, 0, 0)
+
+  const [keys, events] = await Promise.all([
+    prisma.apiKey.findMany({
+      where: {
+        kind: 'device',
+        revokedAt: null,
+        deviceId: { not: null },
+      },
+      select: DEVICE_KEY_SELECT,
+    }),
+    prisma.deviceVersionEvent.findMany({
+      where: { lastSeenAt: { gte: windowStart } },
+      select: {
+        deviceId: true,
+        version: true,
+        channel: true,
+        firstSeenAt: true,
+        lastSeenAt: true,
+      },
+    }),
+  ])
+
+  const partitioned = partitionRowsByClient(toInstallRows(keys))
+  const deployedVersion = deployedAppVersion()
+
+  const byDay = new Map<string, { version: string; channel: ReleaseChannel; devices: Set<string> }>()
+  for (const event of events) {
+    let cursor = new Date(event.firstSeenAt)
+    cursor.setUTCHours(0, 0, 0, 0)
+    if (cursor < windowStart) cursor = new Date(windowStart)
+
+    // The device reported this version between firstSeenAt and lastSeenAt, so
+    // it counts as "on it" for those days only — a device that moved to 2.3.6
+    // last week should not keep inflating 2.3.5 today.
+    const lastDay = new Date(event.lastSeenAt)
+    lastDay.setUTCHours(0, 0, 0, 0)
+    while (cursor <= lastDay) {
+      const day = isoDay(cursor)
+      const key = `${day}\u0000${event.version}`
+      let bucket = byDay.get(key)
+      if (!bucket) {
+        bucket = {
+          version: event.version,
+          channel: (event.channel as ReleaseChannel) || parseChannel(event.version),
+          devices: new Set<string>(),
+        }
+        byDay.set(key, bucket)
+      }
+      bucket.devices.add(event.deviceId)
+      cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000)
+    }
+  }
+
+  const adoption: AppVersionAdoptionPoint[] = [...byDay.entries()]
+    .map(([key, bucket]) => ({
+      date: key.slice(0, key.indexOf('\u0000')),
+      version: bucket.version,
+      channel: bucket.channel,
+      devices: bucket.devices.size,
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.devices - a.devices)
+
+  return {
+    generatedAt: now.toISOString(),
+    deployedVersion,
+    windowDays: days,
+    desktop: aggregateInstalls(partitioned.desktop, { latestMode: 'deploy', deployedVersion }),
+    cli: aggregateInstalls(partitioned.cli, { latestMode: 'none' }),
+    adoption,
+  }
+}
+
+// ============================================================================
+// Active devices (per-machine list)
+// ============================================================================
+
+/**
+ * How stale a heartbeat can be and still count as "online".
+ *
+ * The desktop pings `/api/api-keys/heartbeat` every 5 minutes while it runs, so
+ * three missed beats is a closed laptop; mobile reports on foreground only.
+ */
+export const ONLINE_WINDOW_MINUTES = 15
+
+export interface ActiveDeviceRow {
+  /** `sha256(deviceId)` prefix — the raw id never leaves the server. */
+  id: string
+  client: DeviceClient
+  os: DeviceOs
+  osLabel: string
+  arch: DeviceArch
+  version: string
+  channel: ReleaseChannel
+  userId: string | null
+  firstSeenAt: string
+  lastSeenAt: string | null
+  online: boolean
+  /** Hours since the last heartbeat, or null when the device never reported. */
+  idleHours: number | null
+}
+
+export interface ActiveDevicesData {
+  generatedAt: string
+  onlineWindowMinutes: number
+  windowDays: number
+  includeDormant: boolean
+  totals: { devices: number; online: number; active: number; dormant: number }
+  devices: ActiveDeviceRow[]
+}
+
+function deviceHandle(deviceId: string): string {
+  return createHash('sha256').update(deviceId).digest('hex').slice(0, 10)
+}
+
+/**
+ * Which machine is alive, not just how many.
+ *
+ * `getAppInstalls` answers "how many"; this answers "which" — one row per
+ * device with its last heartbeat and an `online` flag, so an operator can tell
+ * a live install from a key nobody has touched since July. Version and OS come
+ * from the same snapshots the aggregates use, so a device's row here always
+ * agrees with the count it contributes to.
+ */
+export async function getActiveDevices(
+  options: {
+    days?: number
+    includeDormant?: boolean
+    limit?: number
+    client?: DeviceClient
+  } = {},
+): Promise<ActiveDevicesData> {
+  const days = Math.min(Math.max(Math.trunc(options.days ?? 30) || 30, 1), 365)
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 500) || 500, 1), 1000)
+  const includeDormant = options.includeDormant ?? false
+  const now = new Date()
+  const activeCutoff = now.getTime() - days * 24 * 60 * 60 * 1000
+  const onlineCutoff = now.getTime() - ONLINE_WINDOW_MINUTES * 60 * 1000
+
+  const keys = await prisma.apiKey.findMany({
+    where: { kind: 'device', revokedAt: null, deviceId: { not: null } },
+    select: DEVICE_KEY_SELECT,
+  })
+  const rows = toInstallRows(keys)
+
+  const firstSeen = new Map<string, number>()
+  for (const row of rows) {
+    if (!row.deviceId) continue
+    const at = row.createdAt.getTime()
+    const previous = firstSeen.get(row.deviceId)
+    if (previous === undefined || at < previous) firstSeen.set(row.deviceId, at)
+  }
+
+  const scoped = buildDeviceSnapshots(rows)
+    .map<ActiveDeviceRow>((snapshot) => {
+      const last = snapshot.row.lastSeenAt ? snapshot.row.lastSeenAt.getTime() : null
+      return {
+        id: deviceHandle(snapshot.deviceId),
+        client: snapshot.client,
+        os: snapshot.os,
+        osLabel: deviceOsLabel(snapshot.os),
+        arch: snapshot.arch,
+        version: snapshot.version,
+        channel: snapshot.channel,
+        userId: snapshot.row.userId ?? null,
+        firstSeenAt: new Date(
+          firstSeen.get(snapshot.deviceId) ?? snapshot.row.createdAt.getTime(),
+        ).toISOString(),
+        lastSeenAt: last === null ? null : new Date(last).toISOString(),
+        online: last !== null && last >= onlineCutoff,
+        idleHours: last === null ? null : Math.round(((now.getTime() - last) / 3_600_000) * 10) / 10,
+      }
+    })
+    .filter((device) => (options.client ? device.client === options.client : true))
+
+  const isActive = (device: ActiveDeviceRow): boolean =>
+    device.lastSeenAt !== null && new Date(device.lastSeenAt).getTime() >= activeCutoff
+
+  const online = scoped.filter((device) => device.online).length
+  const active = scoped.filter(isActive).length
+
+  const devices = scoped
+    .filter((device) => includeDormant || isActive(device))
+    .sort(
+      (a, b) =>
+        Number(b.online) - Number(a.online) ||
+        (b.lastSeenAt ?? '').localeCompare(a.lastSeenAt ?? '') ||
+        a.id.localeCompare(b.id),
+    )
+    .slice(0, limit)
+
+  return {
+    generatedAt: now.toISOString(),
+    onlineWindowMinutes: ONLINE_WINDOW_MINUTES,
+    windowDays: days,
+    includeDormant,
+    totals: { devices: scoped.length, online, active, dormant: scoped.length - active },
+    devices,
   }
 }
 

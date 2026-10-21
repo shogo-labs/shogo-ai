@@ -38,6 +38,7 @@ import {
   hashApiKey,
   mintDeviceApiKey,
 } from '../lib/api-keys-mint'
+import { recordDeviceVersionEvent } from '../lib/device-version-events'
 import { getAccess } from '../lib/authz'
 
 export function apiKeyRoutes() {
@@ -301,7 +302,15 @@ export function apiKeyRoutes() {
     const keyHash = await hashApiKey(body.key)
     const apiKey = await prisma.apiKey.findUnique({
       where: { keyHash },
-      select: { id: true, revokedAt: true, expiresAt: true, kind: true },
+      select: {
+        id: true,
+        revokedAt: true,
+        expiresAt: true,
+        kind: true,
+        deviceId: true,
+        devicePlatform: true,
+        deviceAppVersion: true,
+      },
     })
     if (!apiKey || apiKey.revokedAt) {
       return c.json({ ok: false, error: 'Key not found or revoked' }, 401)
@@ -310,12 +319,26 @@ export function apiKeyRoutes() {
       return c.json({ ok: false, error: 'Key expired' }, 401)
     }
 
-    const data: Record<string, unknown> = { lastSeenAt: new Date() }
-    if (apiKey.kind === 'device' && typeof body.deviceAppVersion === 'string') {
-      data.deviceAppVersion = body.deviceAppVersion.slice(0, 32)
+    const now = new Date()
+    const data: Record<string, unknown> = { lastSeenAt: now }
+    const reportedVersion = typeof body.deviceAppVersion === 'string'
+      ? body.deviceAppVersion.slice(0, 32)
+      : null
+    if (apiKey.kind === 'device' && reportedVersion) {
+      data.deviceAppVersion = reportedVersion
     }
 
     await prisma.apiKey.update({ where: { id: apiKey.id }, data }).catch(() => {})
+
+    if (apiKey.kind === 'device') {
+      await recordDeviceVersionEvent({
+        deviceId: apiKey.deviceId,
+        version: reportedVersion ?? apiKey.deviceAppVersion,
+        platform: apiKey.devicePlatform,
+        seenAt: now,
+      })
+    }
+
     return c.json({ ok: true })
   })
 
@@ -361,6 +384,8 @@ export async function resolveApiKey(
       expiresAt: true,
       kind: true,
       deviceId: true,
+      devicePlatform: true,
+      deviceAppVersion: true,
       installId: true,
     },
   })
@@ -382,6 +407,15 @@ export async function resolveApiKey(
     where: { id: apiKey.id },
     data,
   }).catch(() => {})
+
+  if (apiKey.kind === 'device') {
+    recordDeviceVersionEvent({
+      deviceId: apiKey.deviceId,
+      version: data.deviceAppVersion ?? apiKey.deviceAppVersion,
+      platform: apiKey.devicePlatform,
+      seenAt: now,
+    }).catch(() => {})
+  }
 
   return {
     workspaceId: apiKey.workspaceId,

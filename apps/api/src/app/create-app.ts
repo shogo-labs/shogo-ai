@@ -8,6 +8,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { auth } from '../auth'
 import { authMiddleware, requireAuth, requireProjectAccess, isProjectReservedTopLevelPath } from '../middleware/auth'
 import { rateLimiter } from '../middleware/rate-limit'
+import { deployedAppVersionOrUnknown } from '../lib/app-version'
 import type { ApiProfile } from './profile'
 
 export interface CreateAppOptions {
@@ -93,7 +94,7 @@ export function createApp(options: CreateAppOptions): Hono {
   app.get('/health', health)
   app.get('/api/health', health)
   app.get('/api/version', (c) => c.json({
-    version: process.env.APP_VERSION || '0.0.0',
+    version: deployedAppVersionOrUnknown(),
     buildHash: process.env.BUILD_HASH || 'dev',
   }))
   return app

@@ -433,6 +433,10 @@ export function computeRemoteProxyBaseUrl(
   remoteAgentBaseUrl: string | null,
 ): string | null {
   if (!instance || !remoteAgentBaseUrl) return null
+  // A cli-worker is never a machine: a `shogo worker` VM serves `/agent/*` and
+  // no data API, so its relay would 502 every stateful call (SHO-120). Checked
+  // before the machine branch, which used to return here first.
+  if (instance.kind === 'cli-worker') return null
   // A machine workspace always tunnels: the desktop owns the projects, chats
   // and tool-call logs of its own workspace, and `remoteAgentBaseUrl` already
   // points at that machine's relay (`/api/machines/<id>/w/<localWorkspaceId>`).

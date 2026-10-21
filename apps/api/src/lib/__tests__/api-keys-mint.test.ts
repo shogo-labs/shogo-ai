@@ -66,8 +66,15 @@ describe('mintDeviceApiKey', () => {
     const updateManyCalls: any[] = []
     const createCalls: any[] = []
     const txCalls: any[] = []
+    const versionEventCalls: any[] = []
     let existing = opts.existingRows ?? []
     const stub = {
+      deviceVersionEvent: {
+        upsert: async (args: any) => {
+          versionEventCalls.push(args)
+          return { id: 'dve_1', ...args.create }
+        },
+      },
       $transaction: async (fn: any) => {
         txCalls.push(true)
         const tx = {
@@ -96,8 +103,33 @@ describe('mintDeviceApiKey', () => {
         return fn(tx)
       },
     } as any
-    return { stub, updateManyCalls, createCalls, txCalls, get rows() { return existing } }
+    return { stub, updateManyCalls, createCalls, txCalls, versionEventCalls, get rows() { return existing } }
   }
+
+  it('seeds the (device, version) install history at mint time', async () => {
+    const { stub, versionEventCalls } = makePrismaStub()
+    await mintDeviceApiKey({
+      prisma: stub,
+      workspaceId: 'w1',
+      userId: 'u1',
+      deviceId: 'd1',
+      devicePlatform: 'darwin-arm64',
+      deviceAppVersion: '2.3.6',
+    })
+
+    expect(versionEventCalls).toHaveLength(1)
+    expect(versionEventCalls[0].where).toEqual({
+      deviceId_version: { deviceId: 'd1', version: '2.3.6' },
+    })
+    expect(versionEventCalls[0].create).toMatchObject({
+      deviceId: 'd1',
+      version: '2.3.6',
+      os: 'macos',
+      arch: 'arm64',
+      client: 'desktop',
+      channel: 'stable',
+    })
+  })
 
   it('mints a device key inside one transaction', async () => {
     const { stub, txCalls, createCalls } = makePrismaStub()

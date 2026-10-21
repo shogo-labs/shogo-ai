@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AppState } from "react-native"
 import { API_URL } from "../lib/api"
+import { isExecutionOnlyMachine } from "../lib/workspace-entries"
 import type { MachineGroupData, MachinePresence } from "../lib/workspace-entries"
 
 /** Cloud presence is heartbeat-driven; one read per window keeps it inside 60 s. */
@@ -96,10 +97,12 @@ export function useMachineWorkspaces(): UseMachineWorkspacesResult {
         if (!live) return
 
         // Render the cached snapshot immediately — an offline machine keeps its
-        // rows (greyed) instead of disappearing from the switcher.
+        // rows (greyed) instead of disappearing from the switcher. `kind` rides
+        // along so a `shogo worker` VM is never rendered as a workspace host.
         const seeded: MachineGroupData[] = list.map((machine) => ({
           id: machine.id,
           name: machine.name,
+          kind: machine.kind,
           status: toPresence(machine.status),
           lastSeenAt: machine.lastSeenAt ?? null,
           stale: toPresence(machine.status) !== "online",
@@ -110,10 +113,12 @@ export function useMachineWorkspaces(): UseMachineWorkspacesResult {
         // Only a machine with a live tunnel gets the extra read: the relay wakes
         // a sleeping one with a high-priority push, and then waits for it. Doing
         // that every poll would spam a laptop that is shut. Its rows stay on the
-        // heartbeat snapshot until it is online again.
+        // heartbeat snapshot until it is online again. A cli-worker has no
+        // machine snapshot at all (the relay answers 409), so it is not asked.
         const resolved = await Promise.all(
           seeded.map(async (machine) => {
             if (machine.status !== "online") return machine
+            if (isExecutionOnlyMachine(machine)) return machine
             try {
               const wsRes = await fetch(`${API_URL}/api/machines/${machine.id}/workspaces`, {
                 credentials: "include",

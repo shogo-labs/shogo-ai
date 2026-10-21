@@ -74,4 +74,19 @@ describe('computeRemoteProxyBaseUrl', () => {
     }
     expect(computeRemoteProxyBaseUrl(machine, machineBase)).toBe(machineBase)
   })
+
+  it('refuses a cli-worker even when it arrived as a machine (SHO-120)', () => {
+    // The machine branch used to return before the cli-worker guard, so a
+    // `shogo worker` VM offered as a machine shipped every stateful call to a
+    // tunnel that can only answer 502 CLI_WORKER_HAS_NO_DATA_API.
+    const machineBase = 'https://studio.shogo.ai/api/machines/inst-1/w/lw-1'
+    const worker: ActiveInstance = {
+      ...inst('cli-worker'),
+      source: 'machine',
+      localWorkspaceId: 'lw-1',
+    }
+    expect(computeRemoteProxyBaseUrl(worker, machineBase)).toBeNull()
+    // Its agent turn keeps its own base (`/api/instances/:id/p`), untouched.
+    expect(computeRemoteProxyBaseUrl(worker, baseUrl)).toBeNull()
+  })
 })

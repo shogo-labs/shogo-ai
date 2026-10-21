@@ -271,6 +271,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'One queued wake per (trigger message, agent): written by the message-post, card-move and chained-hand-off paths in the region serving that conversation. A cross-region duplicate would only queue the same wake twice, which the drain runs serially anyway — dedupe, not leader election.',
   },
   {
+    key: 'DeviceVersionEvent.(deviceId,version)',
+    category: 'request_scoped',
+    reason:
+      'One history row per (device, version), upserted by the device mint / heartbeat / resolveApiKey touch in the region serving that device\'s requests. A cross-region duplicate would need the same device to report the same version to two regions mid-failover; the row is analytics-only (no side effects), so a conflict is deduped by the unique index rather than leader-elected.',
+  },
+  {
     key: 'Huddle.roomName',
     category: 'random_secret',
     reason: 'LiveKit room name embeds the huddle row\'s random UUID (hd_<workspaceId>_<huddleId>); collision astronomically improbable.',
