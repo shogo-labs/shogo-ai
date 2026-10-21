@@ -155,3 +155,8 @@ These behaviors probably don't match what a user expects from the settings:
 3. **Android pushes may play sound even when Off.** The `messages` and `chat-complete` Android channels are created with a sound. On Android 8 and later, the channel's sound usually wins over the push payload. This should be confirmed on a device.
 4. **Some pushes have no sound on iOS.** Agent question pushes (`agent-question`) and agent chat completion pushes (`chat-complete`) don't set `sound`, so they arrive silently on an iPhone.
 5. **Subtle has no effect on phones.** The server only distinguishes Off from everything else.
+
+## Credits
+
+- Pristine, Definite, and Juntos are from [Notification Sounds](https://notificationsounds.com), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). They were re-encoded and peak-normalized, and Pristine was trimmed to 2 seconds with a fade-out.
+- Confirmation (`confirmation_002`), Question (`question_001`), and Glass (`glass_001`) are from Kenney's [Interface Sounds](https://kenney.nl/assets/interface-sounds), released under [CC0](https://creativecommons.org/publicdomain/zero/1.0/). They were re-encoded to MP3 and peak-normalized.
