@@ -288,6 +288,11 @@ function endpointFamilies(): {
   return { families, unresolved }
 }
 
+/** `/api/workspaces/cloud-ws/analytics/x` → `analytics`, the family the path is about. */
+function familyOfClientPath(path: string): string | null {
+  return path.replace('/cloud-ws', '').match(/^\/api\/workspaces\/([a-z][a-z-]*)(?:\/|$)/)?.[1] ?? null
+}
+
 /** Pull an endpoint into the template: the workspace segment stays a wildcard. */
 function concretePath(template: string, endpoint: string): string {
   let seenWorkspace = false
@@ -337,14 +342,22 @@ describe('SHO-87 QA: machine-bound workspace calls are served by the machine', (
       .filter((p) => p.startsWith('/api/workspaces/'))
       .map(routeRegex)
 
+    const resolvedFamilies = new Set(
+      [...endpointFamilies().families.keys()]
+        .map((template) => template.match(/\/workspaces\/\$\{[^}]+\}\/([a-z][a-z-]*)\//)?.[1])
+        .filter((family): family is string => Boolean(family)),
+    )
     const missing: string[] = []
     for (const [path, file] of clientWorkspacePaths()) {
       if (!shouldRouteToRemote(path, { machineWorkspaceId: 'local-ws' })) continue
-      // A dynamic tail (`/analytics/x`, `/cost-analytics/x`) came from a helper
-      // whose endpoint is an argument — the call-site test below resolves those
-      // to the names the app actually passes. Only a genuine literal is checked
-      // here, so the concrete-path assertion stays exactly as strict.
-      if (/\/x(\/|$)/.test(path.replace('/cloud-ws', ''))) continue
+      // The analytics families build their path from an argument, so the only
+      // literal a helper leaves behind is `/analytics/x` — a shape no route can
+      // match. Those go to the by-name test below, which reads the endpoints
+      // the call sites pass. The skip follows what the resolver *actually*
+      // resolved, not the shape of the path: skipping every `/x` also dropped
+      // `/triggers/x`, `/goals/x` and `/sessions/x/projects`, and those would
+      // then never be checked at all.
+      if (resolvedFamilies.has(familyOfClientPath(path) ?? '')) continue
       const localPath = path.replace('/cloud-ws', '/local-ws')
       if (!localWorkspaceRoutes.some((re) => re.test(localPath))) {
         missing.push(`${path.replace('/api/workspaces/cloud-ws', '/api/workspaces/:id')}  (${file})`)
@@ -355,7 +368,7 @@ describe('SHO-87 QA: machine-bound workspace calls are served by the machine', (
 
   test('the endpoint families are the ones the app really calls', () => {
     // Teeth for the resolver: an empty map would make the next test vacuous.
-    const { families } = endpointFamilies()
+    const { families, unresolved } = endpointFamilies()
     const templates = [...families.keys()]
     expect(templates).toContain('/api/workspaces/${workspaceId}/analytics/${endpoint}')
     expect(templates).toContain('/api/workspaces/${workspaceId}/cost-analytics/${endpoint}')
@@ -368,6 +381,20 @@ describe('SHO-87 QA: machine-bound workspace calls are served by the machine', (
     }
     expect(families.get('/api/workspaces/${workspaceId}/analytics/${endpoint}')!.callers.size).toBeGreaterThan(5)
     expect(families.get('/api/workspaces/${workspaceId}/cost-analytics/${endpoint}')!.callers.size).toBeGreaterThanOrEqual(5)
+
+    // A call site whose tail is a runtime value is a place this spec cannot
+    // look, so the set is pinned: a new one has to be added here, with its
+    // reason, instead of quietly widening the blind spot. Each entry is a
+    // pass-through that hands `endpoint` on from its own caller, whose literals
+    // are checked in its place.
+    expect([...unresolved].sort()).toEqual([
+      'apps/mobile/components/analytics/CostAnalyticsTab.tsx:fetchCostAnalytics', // tab defs pick the section
+      'apps/mobile/components/analytics/WorkspaceCostPanel.tsx:getWorkspaceCostAnalytics', // section param
+      'apps/mobile/components/analytics/WorkspaceCostPanel.tsx:postWorkspaceCostAnalytics', // section param
+      'apps/mobile/lib/api.ts:getWorkspaceAnalytics', // endpoint is the caller's argument
+      'apps/mobile/lib/api.ts:getWorkspaceCostAnalytics', // endpoint is the caller's argument
+      'apps/mobile/lib/api.ts:postWorkspaceCostAnalytics', // endpoint is the caller's argument
+    ])
   })
 
   test('every endpoint name passed to a dynamic family is mounted by the local composer', async () => {
