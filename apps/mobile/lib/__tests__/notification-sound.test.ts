@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 mock.module('../notification-sound-asset', () => ({
-  messageSoundUrl: () => '/assets/sounds/soft-knock.mp3',
+  messageSoundUrl: (tone: string = 'knock') => (tone === 'knock' ? '/assets/sounds/soft-knock.mp3' : `/assets/sounds/${tone}.mp3`),
   huddleRingtoneUrl: () => '/assets/sounds/llamada-clara.mp3',
 }))
 
@@ -14,6 +14,7 @@ import {
   messageSoundKindFor,
   playMessageSound,
   previewMessageSound,
+  setPreferredMessageTone,
   sharedAudioContext,
   unlockNotificationAudio,
 } from '../notification-sound'
@@ -132,7 +133,7 @@ describe('notification-sound: unlock on a user gesture', () => {
 describe('notification-sound: playMessageSound', () => {
   test('stays silent while the context is suspended (no gesture yet)', () => {
     unlockNotificationAudio()
-    expect(playMessageSound('dm', 'default', 10_000)).toBe(false)
+    expect(playMessageSound('dm', 'default', 'knock', 10_000)).toBe(false)
     expect(FakeAudioContext.instances).toHaveLength(1)
     expect(lastContext().oscillators).toHaveLength(0)
   })
@@ -140,38 +141,38 @@ describe('notification-sound: playMessageSound', () => {
   test('plays a two-note knock for a direct message once unlocked', () => {
     unlockNotificationAudio()
     fire('pointerdown')
-    expect(playMessageSound('dm', 'default', 10_000)).toBe(true)
+    expect(playMessageSound('dm', 'default', 'knock', 10_000)).toBe(true)
     expect(lastContext().oscillators.map((o) => o.frequency.value)).toEqual([880, 1318.5])
   })
 
   test('mentions and broadcasts get their own knock, thread replies and others one note', () => {
     unlockNotificationAudio()
     fire('pointerdown')
-    playMessageSound('mention', 'default', 10_000)
+    playMessageSound('mention', 'default', 'knock', 10_000)
     expect(lastContext().oscillators).toHaveLength(2)
-    playMessageSound('thread', 'default', 20_000)
+    playMessageSound('thread', 'default', 'knock', 20_000)
     expect(lastContext().oscillators).toHaveLength(3)
-    playMessageSound('other', 'default', 30_000)
+    playMessageSound('other', 'default', 'knock', 30_000)
     expect(lastContext().oscillators).toHaveLength(4)
   })
 
   test('off plays nothing, even when unlocked', () => {
     unlockNotificationAudio()
     fire('pointerdown')
-    expect(playMessageSound('dm', 'off', 10_000)).toBe(false)
+    expect(playMessageSound('dm', 'off', 'knock', 10_000)).toBe(false)
     expect(lastContext().oscillators).toHaveLength(0)
   })
 
   test('subtle plays at a lower peak than default', () => {
     unlockNotificationAudio()
     fire('pointerdown')
-    playMessageSound('dm', 'default', 10_000)
+    playMessageSound('dm', 'default', 'knock', 10_000)
     const defaultPeak = Math.max(...lastContext().gains.flatMap((g) => g.peaks))
     _resetNotificationAudioForTests()
     installWindow()
     unlockNotificationAudio()
     fire('pointerdown')
-    playMessageSound('dm', 'subtle', 10_000)
+    playMessageSound('dm', 'subtle', 'knock', 10_000)
     const subtlePeak = Math.max(...lastContext().gains.flatMap((g) => g.peaks))
     expect(subtlePeak).toBeGreaterThan(0)
     expect(subtlePeak).toBeLessThan(defaultPeak)
@@ -180,23 +181,23 @@ describe('notification-sound: playMessageSound', () => {
   test('plays at most once per throttle window', () => {
     unlockNotificationAudio()
     fire('pointerdown')
-    expect(playMessageSound('dm', 'default', 10_000)).toBe(true)
-    expect(playMessageSound('mention', 'default', 10_000 + 200)).toBe(false)
-    expect(playMessageSound('thread', 'default', 10_000 + MESSAGE_SOUND_THROTTLE_MS - 1)).toBe(false)
-    expect(playMessageSound('thread', 'default', 10_000 + MESSAGE_SOUND_THROTTLE_MS)).toBe(true)
+    expect(playMessageSound('dm', 'default', 'knock', 10_000)).toBe(true)
+    expect(playMessageSound('mention', 'default', 'knock', 10_000 + 200)).toBe(false)
+    expect(playMessageSound('thread', 'default', 'knock', 10_000 + MESSAGE_SOUND_THROTTLE_MS - 1)).toBe(false)
+    expect(playMessageSound('thread', 'default', 'knock', 10_000 + MESSAGE_SOUND_THROTTLE_MS)).toBe(true)
   })
 
   test('a refused cue does not start the throttle window', () => {
     unlockNotificationAudio()
-    expect(playMessageSound('dm', 'default', 10_000)).toBe(false)
+    expect(playMessageSound('dm', 'default', 'knock', 10_000)).toBe(false)
     fire('pointerdown')
-    expect(playMessageSound('dm', 'default', 10_100)).toBe(true)
+    expect(playMessageSound('dm', 'default', 'knock', 10_100)).toBe(true)
   })
 
   test('preview ignores the throttle but still respects off', () => {
     unlockNotificationAudio()
     fire('pointerdown')
-    playMessageSound('dm', 'default', Date.now())
+    playMessageSound('dm', 'default', 'knock', Date.now())
     expect(previewMessageSound('default')).toBe(true)
     expect(previewMessageSound('off')).toBe(false)
   })
@@ -264,8 +265,8 @@ describe('notification-sound: Soft Knock recording', () => {
     unlockNotificationAudio()
     fire('pointerdown')
     await flush()
-    expect(playMessageSound('dm', 'default', 10_000)).toBe(true)
-    expect(playMessageSound('thread', 'default', 20_000)).toBe(true)
+    expect(playMessageSound('dm', 'default', 'knock', 10_000)).toBe(true)
+    expect(playMessageSound('thread', 'default', 'knock', 20_000)).toBe(true)
     expect(ctx().sources).toHaveLength(2)
     expect(ctx().sources.every((s) => s.started.length === 1 && s.buffer)).toBe(true)
     expect(ctx().oscillators).toHaveLength(0)
@@ -275,8 +276,8 @@ describe('notification-sound: Soft Knock recording', () => {
     unlockNotificationAudio()
     fire('pointerdown')
     await flush()
-    playMessageSound('dm', 'default', 10_000)
-    playMessageSound('dm', 'subtle', 20_000)
+    playMessageSound('dm', 'default', 'knock', 10_000)
+    playMessageSound('dm', 'subtle', 'knock', 20_000)
     const [loud, quiet] = ctx().gains.map((g) => (g.gain as unknown as { value: number }).value)
     expect(quiet).toBeGreaterThan(0)
     expect(quiet).toBeLessThan(loud)
@@ -285,7 +286,7 @@ describe('notification-sound: Soft Knock recording', () => {
   test('a message before the recording has loaded still plays the synthesized cue', () => {
     unlockNotificationAudio()
     fire('pointerdown')
-    expect(playMessageSound('dm', 'default', 10_000)).toBe(true)
+    expect(playMessageSound('dm', 'default', 'knock', 10_000)).toBe(true)
     expect(ctx().oscillators.map((o) => o.frequency.value)).toEqual([880, 1318.5])
     expect(ctx().sources).toHaveLength(0)
   })
@@ -295,7 +296,7 @@ describe('notification-sound: Soft Knock recording', () => {
     unlockNotificationAudio()
     fire('pointerdown')
     await flush()
-    expect(playMessageSound('dm', 'default', 10_000)).toBe(true)
+    expect(playMessageSound('dm', 'default', 'knock', 10_000)).toBe(true)
     expect(ctx().sources).toHaveLength(0)
     expect(ctx().oscillators).toHaveLength(2)
   })
@@ -306,6 +307,48 @@ describe('notification-sound: Soft Knock recording', () => {
     await flush()
     expect(previewMessageSound('default')).toBe(true)
     await flush()
+    expect(ctx().sources).toHaveLength(1)
+  })
+
+  test('the chirp tone plays the synthesized cue even once the recording has loaded', async () => {
+    unlockNotificationAudio()
+    fire('pointerdown')
+    await flush()
+    expect(playMessageSound('dm', 'default', 'chirp', 10_000)).toBe(true)
+    expect(ctx().sources).toHaveLength(0)
+    expect(ctx().oscillators.map((o) => o.frequency.value)).toEqual([880, 1318.5])
+  })
+
+  test('the first gesture loads the preferred tone instead of Soft Knock', async () => {
+    setPreferredMessageTone('glass')
+    unlockNotificationAudio()
+    fire('pointerdown')
+    await flush()
+    expect(fetched).toEqual(['/assets/sounds/glass.mp3'])
+    expect(playMessageSound('dm', 'default', 'glass', 10_000)).toBe(true)
+    expect(ctx().sources).toHaveLength(1)
+    expect(ctx().oscillators).toHaveLength(0)
+  })
+
+  test('a tone that has not loaded yet plays the synthesized cue and starts loading', async () => {
+    unlockNotificationAudio()
+    fire('pointerdown')
+    await flush()
+    expect(playMessageSound('dm', 'default', 'pristine', 10_000)).toBe(true)
+    expect(ctx().oscillators).toHaveLength(2)
+    await flush()
+    expect(fetched).toEqual(['/assets/sounds/soft-knock.mp3', '/assets/sounds/pristine.mp3'])
+    expect(playMessageSound('dm', 'default', 'pristine', 20_000)).toBe(true)
+    expect(ctx().sources).toHaveLength(1)
+  })
+
+  test('the settings preview plays the chosen tone', async () => {
+    unlockNotificationAudio()
+    fire('pointerdown')
+    await flush()
+    expect(previewMessageSound('default', 'definite')).toBe(true)
+    await flush()
+    expect(fetched).toContain('/assets/sounds/definite.mp3')
     expect(ctx().sources).toHaveLength(1)
   })
 })
