@@ -68,6 +68,14 @@ mock.module(resolve(import.meta.dir, '../../../lib/team-chat-api'), () => ({
       if (id === 'm-deleted') return { ...quoted, id, deletedAt: '2026-10-19T18:00:00.000Z', text: '' }
       if (id === 'm-dm')
         return { ...quoted, id, conversation: { id: 'dm-1', name: null, kind: 'dm' as const } }
+      // A message written the way people actually write one: a mention is a
+      // wire token in the stored source, and the rest is markdown.
+      if (id === 'm-mentions')
+        return {
+          ...quoted,
+          id,
+          text: '<@u:u-1> can you check the **staging** deploy? <@u:u-unknown> too.\n\nhttps://docs.example.com/d/1BI3/view',
+        }
       return { ...quoted, id }
     },
     // This replacement is process-wide, so keep the rest of the surface a sibling
@@ -131,10 +139,12 @@ beforeEach(() => {
 
 const target = (messageId: string) => ({ conversationId: 'conv-1', messageId, threadRootId: null })
 const href = 'https://studio.shogo.ai/c/conv-1?msg=m-1'
+/** The workspace-wide map every team-chat surface resolves `@` mentions from. */
+const names = { users: new Map([['u-1', 'Ana Lopez']]), agents: new Map<string, string>() }
 
 describe('a quoted message', () => {
   test('shows where it came from, who wrote it, when, and the opening of the message', async () => {
-    const { container } = render(<MessageQuoteCard quote={{ href, target: target('m-1') }} />)
+    const { container } = render(<MessageQuoteCard names={names} quote={{ href, target: target('m-1') }} />)
 
     await screen.findByText('Ana Lopez')
     // A quote is only a reference if you can see which channel it came from.
@@ -145,7 +155,7 @@ describe('a quoted message', () => {
   })
 
   test('a quote from a DM says DM, not a channel name', async () => {
-    const { container } = render(<MessageQuoteCard quote={{ href, target: target('m-dm') }} />)
+    const { container } = render(<MessageQuoteCard names={names} quote={{ href, target: target('m-dm') }} />)
 
     await screen.findByText('Ana Lopez')
     expect(container.textContent).toContain('DM')
@@ -153,18 +163,18 @@ describe('a quoted message', () => {
   })
 
   test('two quotes of the same message ask the server once', async () => {
-    render(<MessageQuoteCard quote={{ href, target: target('m-1') }} />)
+    render(<MessageQuoteCard names={names} quote={{ href, target: target('m-1') }} />)
     await screen.findByText('Ana Lopez')
 
     cleanup()
-    render(<MessageQuoteCard quote={{ href, target: target('m-1') }} />)
+    render(<MessageQuoteCard names={names} quote={{ href, target: target('m-1') }} />)
     await screen.findByText('Ana Lopez')
 
     expect(asked).toEqual(['m-1'])
   })
 
   test('opens the message in place when tapped', async () => {
-    render(<MessageQuoteCard quote={{ href, target: target('m-1') }} />)
+    render(<MessageQuoteCard names={names} quote={{ href, target: target('m-1') }} />)
     await screen.findByText('Ana Lopez')
 
     fireEvent.click(screen.getByTestId('message-quote'))
@@ -174,7 +184,7 @@ describe('a quoted message', () => {
   })
 
   test('a message that was deleted says so and goes nowhere', async () => {
-    const { container } = render(<MessageQuoteCard quote={{ href, target: target('m-deleted') }} />)
+    const { container } = render(<MessageQuoteCard names={names} quote={{ href, target: target('m-deleted') }} />)
     await screen.findByText((content) => content.includes('deleted'))
     expect(container.textContent).toContain('This message was deleted.')
 
@@ -183,7 +193,7 @@ describe('a quoted message', () => {
   })
 
   test('a message this viewer cannot read is one neutral card, not a hint', async () => {
-    const { container } = render(<MessageQuoteCard quote={{ href, target: target('m-gone') }} />)
+    const { container } = render(<MessageQuoteCard names={names} quote={{ href, target: target('m-gone') }} />)
     await screen.findByText('Message unavailable')
 
     expect(container.textContent).toContain('Message unavailable')
@@ -193,5 +203,36 @@ describe('a quoted message', () => {
     // And nothing here is a link: there is nowhere useful for it to go.
     expect(container.querySelector('button')).toBeNull()
     expect(pushes).toHaveLength(0)
+  })
+})
+
+describe('a quoted message reads the way the channel does', () => {
+  test('a mention shows the name it stands for, not the id in the stored source', async () => {
+    const { container } = render(<MessageQuoteCard names={names} quote={{ href, target: target('m-mentions') }} />)
+    await screen.findByText('Ana Lopez')
+
+    expect(container.textContent).toContain('@Ana Lopez')
+    // The token is a wire format. A reader should never meet it.
+    expect(container.textContent).not.toContain('<@u:')
+    expect(container.textContent).not.toContain('u-1 ')
+    expect(container.textContent).not.toContain('u-unknown')
+  })
+
+  test('an id the workspace cannot name degrades to a word, never to an id', async () => {
+    const { container } = render(<MessageQuoteCard names={names} quote={{ href, target: target('m-mentions') }} />)
+    await screen.findByText('Ana Lopez')
+
+    expect(container.textContent).toContain('@someone')
+    expect(container.textContent).not.toContain('u-unknown')
+  })
+
+  test('markdown reads as the text it marks up, and a link in it survives', async () => {
+    const { container } = render(<MessageQuoteCard names={names} quote={{ href, target: target('m-mentions') }} />)
+    await screen.findByText('Ana Lopez')
+
+    expect(container.textContent).toContain('check the staging deploy?')
+    expect(container.textContent).not.toContain('**')
+    // Flattening for display must not eat the URL someone shared.
+    expect(container.textContent).toContain('https://docs.example.com/d/1BI3/view')
   })
 })
