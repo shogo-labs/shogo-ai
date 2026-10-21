@@ -119,6 +119,25 @@ describe('SHO-117 — the mic, not the process, decides a native call', () => {
     }
   })
 
+  test('Zoom quitting mid-call still ends the call, even with a stale mic list', async () => {
+    const processes: Entry[] = [ZOOM_APP, ZOOM_CAPHOST]
+    const state = { mic: [{ pid: 51400, bundleId: 'us.zoom.xos' }] as MicUser[] | null }
+    const detector = new MeetingDetector({ platform: 'darwin', listProcesses: async () => processes, listMicUsers: async () => state.mic })
+    const detected: string[] = []
+    const ended: string[] = []
+    detector.on('meeting-detected', (e: { app: string }) => detected.push(e.app))
+    detector.on('meeting-ended', (e: { app: string }) => ended.push(e.app))
+    const tick = () => (detector as unknown as { tickProcesses(): Promise<void> }).tickProcesses()
+
+    await tick()
+    expect(detected).toEqual(['Zoom'])
+    // The app goes away (quit / update) while the mic query still reports the
+    // capture helper from the previous poll.
+    processes.length = 0
+    await tick()
+    expect(ended).toEqual(['Zoom'])
+  })
+
   test('a mic poll that fails while idle still announces the call (process fallback)', async () => {
     const { detected, tick } = harness([ZOOM_APP], null)
     await tick()
