@@ -817,6 +817,16 @@ jobs:
         if: (matrix.include_e2e) && needs.queue-verified.outputs.verified != 'true'
         run: bun run test -- --packages "${{ matrix.packages }}" --include-e2e
 
+      - name: Worker commit-attribution tests
+        # `packages/shogo-worker` is in no matrix leg above: its suite carries
+        # pre-existing failures (runtime-resolver's binary lookup, a 30s process
+        # test) that would turn CI red for reasons unrelated to any change. The
+        # attribution it owns — the author and the co-author line of every
+        # auto-commit — is hermetic and fast, so it runs here on its own instead
+        # of only running when someone remembers to run the package locally.
+        if: (matrix.include_e2e) && needs.queue-verified.outputs.verified != 'true'
+        run: bun --no-env-file --conditions=development test packages/shogo-worker/src/lib/__tests__/git-cloner.test.ts
+
       - name: Test unsharded packages
         if: (matrix.shard == '' && matrix.include_e2e == false) && needs.queue-verified.outputs.verified != 'true'
         run: bun run test -- --packages "${{ matrix.packages }}"

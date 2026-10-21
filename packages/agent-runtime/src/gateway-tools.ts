@@ -119,7 +119,7 @@ import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, scratchPathForWrite, type PermissionEngine } from './permission-engine'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
 import { isBinaryFilePath } from '@shogo/shared-runtime'
-import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
+import { isShogoAgentEmail, withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 
 /**
  * Tool-layer wrapper for `assertAllowedPath` that returns a uniform
@@ -155,6 +155,10 @@ function loadWorkspaceEnvForAttribution(workspaceDir: string): Record<string, st
       if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
         value = value.slice(1, -1)
       }
+      // A project's `.env` is agent-writable, so it must never pick the
+      // co-author: the identity is the canonical agent one, or nothing.
+      if (key === 'SHOGO_AGENT_GIT_NAME') continue
+      if (key === 'SHOGO_AGENT_GIT_EMAIL' && !isShogoAgentEmail(value)) continue
       if (key) vars[key] = value
     }
     return vars
