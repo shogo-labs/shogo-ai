@@ -161,26 +161,30 @@ describe('syncCapabilitiesFromApi scope', () => {
     }
   })
 
-  test('a workspace runtime does not pull workspace settings into a foreign dir', async () => {
+  test('a workspace runtime writes nothing for a project it does not serve', async () => {
     const { dir, configPath } = scratchWorkspace()
     const runtimeWorkspace = mkdtempSync(join(tmpdir(), 'capability-sync-own-'))
     dirs.push(runtimeWorkspace)
 
     gatewayEnv()
-    process.env.PROJECT_ID = 'proj-scope-match'
+    process.env.PROJECT_ID = 'someone-elses-project'
     process.env.WORKSPACE_RUNTIME = 'true'
     process.env.WORKSPACE_ID = 'ws-scope'
     process.env.WORKSPACE_DIR = runtimeWorkspace
+    process.env.AI_PROXY_URL = 'http://127.0.0.1:9/api/ai/v1'
 
-    const gateway = new AgentGateway(dir, 'proj-scope-match')
-    const { calls } = stubFetch({ project: { settings: { socialMediaEnabled: true } } })
+    const gateway = new AgentGateway(dir, 'test-project')
+    const fetched: string[] = []
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      fetched.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+      throw new Error('neither pull may reach the API from a foreign dir')
+    }) as unknown as typeof globalThis.fetch
+
+    const before = readFileSync(configPath, 'utf-8')
     try {
-      expect(await gateway.syncCapabilitiesFromApi()).toBe(true)
-      expect(calls).toHaveLength(1)
-      expect(calls[0]).toContain('/api/internal/projects/proj-scope-match/config')
-      expect(calls.some((url) => url.includes('/api/internal/workspaces/'))).toBe(false)
-      const file = JSON.parse(readFileSync(configPath, 'utf-8'))
-      expect(file.workspaceCapabilities).toBeUndefined()
+      expect(await gateway.syncCapabilitiesFromApi()).toBe(false)
+      expect(fetched).toEqual([])
+      expect(readFileSync(configPath, 'utf-8')).toBe(before)
     } finally {
       await gateway.stop()
     }

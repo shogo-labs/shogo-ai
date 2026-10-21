@@ -6564,9 +6564,15 @@ export class AgentGateway {
     // into any directory — including a test's scratch dir. A pool placeholder
     // names no project, so it keeps following the live env id.
     const ownedProjectId = projectScopedId(this._constructedProjectId) ?? projectId
-    const projectSyncAllowed = !!fetchConfig || runtimeServesProjectId(ownedProjectId)
+    const servesThisRuntime = runtimeServesProjectId(ownedProjectId)
+    const projectSyncAllowed = !!fetchConfig || servesThisRuntime
+    // The workspace overlay IS this runtime's own settings (it is read by
+    // `WORKSPACE_ID`), so only the directory it lands in can be foreign. A
+    // gateway serving one of this runtime's own projects belongs to the
+    // runtime, and keeps caching the overlay next to its project config.
     const workspaceSyncAllowed = !!fetchWorkspaceConfig
       || !isForeignWorkspaceDir(this.workspaceDir)
+      || servesThisRuntime
 
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
       ?? join(this.workspaceDir, 'config.json')
