@@ -235,6 +235,12 @@
       "import": "./dist/microcompact.js",
       "require": "./dist/microcompact.cjs"
     },
+    "./turn-boundary": {
+      "types": "./dist/turn-boundary.d.ts",
+      "development": "./src/turn-boundary.ts",
+      "import": "./dist/turn-boundary.js",
+      "require": "./dist/turn-boundary.cjs"
+    },
     "./prefix-fingerprint": {
       "types": "./dist/prefix-fingerprint.d.ts",
       "development": "./src/prefix-fingerprint.ts",

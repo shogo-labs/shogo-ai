@@ -573,7 +573,11 @@ jobs:
           # window that did NOT post the turn renders it with no reload.
           # chat-task-wake-refocus covers the window that was in the background
           # while the wake ran: one catch-up on refocus, then quiet again.
-          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks chat-task-thread-pane chat-task-wake-live-attach chat-task-wake-refocus' }
+          # turn-boundary-context needs the fake model to drive six tool rounds
+          # and then read the SECOND turn's request body off the fake server, so
+          # it belongs to this stack; without E2E_FAKE_LLM_STACK it skips, which
+          # is how a spec that never runs hides in the shard jobs (SHO-122).
+          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks chat-task-thread-pane chat-task-wake-live-attach chat-task-wake-refocus turn-boundary-context' }
           # machine-workspace-agent-turn-live is not a chat spec, but it needs
           # the same fake-model stack and nothing else: its SHO-130 AC 5
           # assertion reads the continuation request's tool-result text, and its

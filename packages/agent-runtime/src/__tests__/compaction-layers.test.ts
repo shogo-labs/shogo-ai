@@ -550,3 +550,89 @@ describe('Integrated pipeline: Layers 1-3 in sequence', () => {
     expect(history).toEqual(msgs)
   })
 })
+
+// ===================================================================
+// Turn boundary (SHO-122): the previous turn survives every layer whole
+// ===================================================================
+
+describe('turn boundary: a multi-round previous turn is never compacted', () => {
+  /**
+   * 12 tool rounds = 25 messages in the previous turn, plus older history.
+   * The layers used to count *assistant messages*, so "the last 3 turns" was
+   * the last three rounds and everything before them — including the user's
+   * request that opened the turn — was trimmed, snipped or cleared.
+   */
+  function previousTurn(rounds: number): Message[] {
+    const msgs: Message[] = [user('do the twelve-step thing')]
+    for (let i = 0; i < rounds; i++) {
+      msgs.push(assistantWithToolUse('exec', `prev-${i}`, { command: `step ${i}` }))
+      msgs.push(toolResult(`output ${i} ` + 'q'.repeat(500), `prev-${i}`))
+    }
+    msgs.push(assistant('all twelve steps done'))
+    return msgs
+  }
+
+  function historyWithPriorTurns(): { history: Message[]; turnStart: number } {
+    const older = manyTurns(6, 2_000)
+    const turn = previousTurn(12)
+    return { history: [...older, ...turn], turnStart: older.length }
+  }
+
+  test('applyToolResultBudget leaves every result of the turn untouched', () => {
+    const { history, turnStart } = historyWithPriorTurns()
+    // Small budget: the older results must still be trimmed, the turn must not.
+    const out = applyToolResultBudget(history, 5_000)
+    for (let i = turnStart; i < history.length; i++) {
+      expect(out[i]).toEqual(history[i])
+    }
+    expect(textOf(out[2])).toContain('trimmed for budget')
+  })
+
+  test('microcompact leaves every result of the turn untouched', () => {
+    const { history, turnStart } = historyWithPriorTurns()
+    const { messages } = microcompact(history)
+    for (let i = turnStart; i < history.length; i++) {
+      expect(messages[i]).toEqual(history[i])
+    }
+  })
+
+  test('snipConsumedResults leaves every result of the turn untouched', () => {
+    const { history, turnStart } = historyWithPriorTurns()
+    const out = snipConsumedResults(history)
+    for (let i = turnStart; i < history.length; i++) {
+      expect(out[i]).toEqual(history[i])
+    }
+    expect(textOf(out[2])).toContain('Tool output processed')
+  })
+
+  test('buildHistory: the first request of the next turn carries the turn structured', () => {
+    const sm = new SessionManager({ keepRecentMessages: 10 })
+    const session = sm.getOrCreate('t')
+    const { history, turnStart } = historyWithPriorTurns()
+    session.messages.push(...history)
+
+    const built = sm.buildHistory('t')
+    const kept = built.slice(built.length - (history.length - turnStart))
+    const expected = history.slice(turnStart)
+    expect(kept.length).toBe(expected.length)
+
+    // The turn's user message, its tool calls (with real names + args) and its
+    // results (with original content) all survive.
+    expect(kept[0]).toEqual(expected[0])
+    for (let i = 0; i < expected.length; i++) {
+      if (expected[i].role === 'toolResult') {
+        expect(textOf(kept[i])).toBe(textOf(expected[i]))
+      }
+      if (expected[i].role === 'assistant') {
+        const calls = (kept[i] as AssistantMessage).content.filter((b: any) => b.type === 'toolCall')
+        const expectedCalls = (expected[i] as AssistantMessage).content.filter((b: any) => b.type === 'toolCall')
+        expect(calls.map((c: any) => c.name)).toEqual(expectedCalls.map((c: any) => c.name))
+      }
+    }
+    for (const msg of kept) {
+      if (msg.role !== 'toolResult') continue
+      expect(textOf(msg)).not.toContain('cleared')
+      expect(textOf(msg)).not.toContain('processed')
+    }
+  })
+})

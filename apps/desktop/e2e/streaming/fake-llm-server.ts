@@ -50,6 +50,30 @@ export interface FakeTurn {
   /** The tool-result text this request carried (round > 0), as the agent sent it. */
   toolResults?: string
   userText: string
+  /**
+   * The request body's `messages`, digested: role, tool names and content
+   * length per message. A spec uses it to assert what the model was actually
+   * shown — e.g. that turn 2 carried turn 1's tool calls and results verbatim
+   * instead of `[Tool output processed — N chars]` (SHO-122).
+   */
+  messages: RequestMessageDigest[]
+}
+
+export interface RequestMessageDigest {
+  role: string
+  /** Tool names on an assistant message's tool calls, in order. */
+  toolNames: string[]
+  /** Characters of text content in this message. */
+  chars: number
+  /** First 200 characters of that text, for shape assertions. */
+  preview: string
+  /**
+   * Last 200 characters of that text. The runtime wraps a user message in a
+   * preamble ("[Chat — User Message] …"), so the user's own words can sit past
+   * `preview` — a spec that wants to identify a message by what the person
+   * typed has to look at both ends.
+   */
+  tail: string
 }
 
 interface Marker {
@@ -135,6 +159,27 @@ function contentText(content: unknown): string {
       .join('\n')
   }
   return ''
+}
+
+/** `messages` as role + tool names + content size — what the model was shown. */
+export function digestMessages(messages: any[]): RequestMessageDigest[] {
+  return messages.map((message) => {
+    const parts: any[] = Array.isArray(message?.content) ? message.content : []
+    const text = [contentText(message?.content), ...parts.map((p) => (typeof p?.text === 'string' ? p.text : ''))].join('\n')
+    const toolNames = parts
+      .filter((p) => p?.type === 'tool_use' || p?.type === 'tool_call' || p?.type === 'toolCall')
+      .map((p) => String(p?.name ?? ''))
+    for (const call of Array.isArray(message?.tool_calls) ? message.tool_calls : []) {
+      toolNames.push(String(call?.function?.name ?? call?.name ?? ''))
+    }
+    return {
+      role: String(message?.role ?? ''),
+      toolNames: toolNames.filter(Boolean),
+      chars: text.length,
+      preview: text.slice(0, 200),
+      tail: text.slice(-200),
+    }
+  })
 }
 
 /** The last user message, and how many tool results follow it (the tool round). */
@@ -292,6 +337,7 @@ export class FakeLlmServer {
       startedAt: Date.now(),
       sentAt: [],
       userText,
+      messages: digestMessages(messages),
       ...(toolResults ? { toolResults } : {}),
     }
     this.turns.push(turn)

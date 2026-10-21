@@ -33,6 +33,9 @@ import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
 import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig, type PerCallUsage, type AgentLoopResult } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
+import { recordCompaction, recordTurnBoundary, isPrefixOf } from './context-telemetry'
+import { summariseTurn, lastTurnStart } from './turn-boundary'
+import { renderTranscriptForSummary } from './compaction-transcript'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, subagentOrchestrationDisabled, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
@@ -889,6 +892,13 @@ export class AgentGateway {
    * Not consulted for correctness; safe to clear or leave stale.
    */
   private turnCounters = new Map<string, number>()
+  /**
+   * Per-position prefix tags of the last turn's starting history. The next
+   * turn's start should begin with them; when it does not, the compaction that
+   * ran between the turns rewrote bytes the provider had already cached
+   * (`context_turn_boundary.prefixStable`, SHO-122).
+   */
+  private turnPrefixes = new Map<string, string[]>()
   /** Shared index engine for workspace-wide search (code + files) */
   private indexEngine: import('./index-engine').IndexEngine | null = null
   /** Workspace knowledge graph for structural analysis */
@@ -1658,30 +1668,27 @@ export class AgentGateway {
       // so each excerpt is already bounded. The old 500-char-per-message /
       // 12k-char-prompt caps threw away ~99% of a long turn — including the
       // decisions the summary exists to preserve (SHO-96).
-      const messageTexts = messages.map((m) => {
-        if (m.role === 'user') {
-          const content = typeof m.content === 'string' ? m.content : (m.content as any[]).filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ')
-          return `User: ${content}`
-        }
-        if (m.role === 'assistant') {
-          const text = m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
-          const toolCalls = m.content
-            .filter((c: any) => c.type === 'toolCall')
-            .map((c: any) => `${c.name}(${JSON.stringify(c.arguments ?? {}).slice(0, 400)})`)
-          return [`Assistant: ${text}`, ...toolCalls.map((t) => `Tool call: ${t}`)].filter((s) => s.trim() && s !== 'Assistant: ').join('\n')
-        }
-        if (m.role === 'toolResult') {
-          const text = m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
-          return `Tool result: ${text}`
-        }
-        return ''
-      }).filter(Boolean).join('\n')
+      //
+      // Every toolCall is rendered, with its arguments, as `→ tool: name(args)`
+      // (compaction-transcript.ts). Without that line the summarizer can only
+      // write narration, and a model acting on narration invents a tool name
+      // — `str_replace` was called eight times that way (SHO-122).
+      const messageTexts = renderTranscriptForSummary(messages)
 
       // Fold: when this excerpt follows an earlier chunk, the model must carry
       // the running summary forward instead of replacing it.
+      const contract =
+        'Output these sections, in this order, and nothing else:\n' +
+        '## Decisions\n' +
+        '## Files touched\n' +
+        '## Current state\n' +
+        '  (what is done, what is in progress, the next step)\n' +
+        '## Tools used\n' +
+        '  (exact names as `name` ×count)\n' +
+        'Use only tool names that appear in the transcript — never invent one.'
       const system = previousSummary
-        ? 'You maintain a running summary of a long agent turn. You receive the running summary so far and a new excerpt of the conversation. Merge the excerpt into the running summary. Preserve: key decisions, files edited, errors encountered, and current task state. Drop only redundant detail. Output only the merged summary.'
-        : 'Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific. Output only the summary.'
+        ? `You maintain a running summary of a long agent turn. You receive the running summary so far and a new excerpt of the conversation. Merge the excerpt into the running summary. Preserve: key decisions, files edited, errors encountered, and current task state. Drop only redundant detail.\n\n${contract}`
+        : `Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific.\n\n${contract}`
 
       const prompt = previousSummary
         ? `Running summary so far:\n${previousSummary}\n\nNew excerpt:\n${messageTexts}`
@@ -2837,6 +2844,7 @@ export class AgentGateway {
     // so fresh decisions are taken against the new (empty) history.
     this.contentReplacementStates.delete(sessionId)
     this.turnCounters.delete(sessionId)
+    this.turnPrefixes.delete(sessionId)
     this.shellCwd.delete(sessionId)
     this.disposeSessionState(sessionId)
   }
@@ -3473,6 +3481,10 @@ export class AgentGateway {
     const inLoopBudgetTokens = resolveInLoopContextBudgetTokens(autoCompactTokens)
     let history = this.sessionManager.buildHistory(sessionId)
     history = applyToolResultBudget(history, contextBudgetChars)
+    // Turn-scoped telemetry state: the first call's usage, and whether a
+    // compaction ran at this boundary (SHO-122).
+    let turnFirstCallUsage: PerCallUsage | undefined
+    let turnCompaction: { before: number; after: number } | null = null
     const mc = microcompact(history)
     history = mc.messages
     history = snipConsumedResults(history)
@@ -3488,6 +3500,17 @@ export class AgentGateway {
         : undefined
       const preCompactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
       if (preCompactResult) {
+        turnCompaction = { before: preCompactResult.messagesBefore, after: preCompactResult.messagesAfter }
+        recordCompaction({
+          sessionId,
+          trigger: 'pre-turn',
+          messagesBefore: preCompactResult.messagesBefore,
+          messagesAfter: preCompactResult.messagesAfter,
+          summaryChars: preCompactResult.summary.length,
+          filesTouched: preCompactResult.filesTouched ?? [],
+          toolsUsed: preCompactResult.toolsUsed ?? [],
+          foldedRounds: preCompactResult.foldedRounds ?? 0,
+        })
         console.log(
           `${this.logPrefix} Pre-turn autocompact: ${preCompactResult.messagesBefore} -> ${preCompactResult.messagesAfter} messages`
         )
@@ -4107,6 +4130,16 @@ export class AgentGateway {
         )
       }
 
+      // --- Turn-boundary telemetry (SHO-122) ---------------------------------
+      // The previous turn, as the model will actually see it on this turn's
+      // first request: every message, every tool call by name, and how much of
+      // it is already a placeholder. `prefixStable` is the cache-relevant
+      // invariant — this turn's prefix still begins with the previous turn's.
+      const knownPrefix = this.turnPrefixes.get(sessionId)
+      const prefixStable = knownPrefix ? isPrefixOf(knownPrefix, historyPrint.positions) : null
+      this.turnPrefixes.set(sessionId, historyPrint.positions)
+      const previousTurn = summariseTurn(history, lastTurnStart(history))
+
       // Reset per-turn edit tracking so read_lints auto-scope starts clean.
       this.fileStateCache.resetTurn()
 
@@ -4206,6 +4239,17 @@ export class AgentGateway {
             : undefined
           const r = await this.sessionManager.compact(sessionId, fileStateSummary, 4)
           if (!r) return null
+          turnCompaction = { before: r.messagesBefore, after: r.messagesAfter }
+          recordCompaction({
+            sessionId,
+            trigger: 'reactive',
+            messagesBefore: r.messagesBefore,
+            messagesAfter: r.messagesAfter,
+            summaryChars: r.summary.length,
+            filesTouched: r.filesTouched ?? [],
+            toolsUsed: r.toolsUsed ?? [],
+            foldedRounds: r.foldedRounds ?? 0,
+          })
           console.log(`${this.logPrefix} Reactive compaction: ${r.messagesBefore} -> ${r.messagesAfter} messages`)
           // LLM autocompact rewrites the prefix — drop per-session replacement
           // decisions so fresh ones are taken against the new history. Keeping
@@ -4258,6 +4302,15 @@ export class AgentGateway {
             // turn-boundary and reactive paths).
             this.contentReplacementStates.delete(sessionId)
             runningContextEstimate = event.tokensAfter
+            recordCompaction({
+              sessionId,
+              trigger: 'mid-turn',
+              messagesBefore: event.messagesBefore,
+              messagesAfter: event.messagesAfter,
+              summaryChars: event.summaryChars,
+              filesTouched: [],
+              toolsUsed: [],
+            })
             console.log(
               `${this.logPrefix} Mid-turn summarization (${event.trigger}): ` +
               `${event.tokensBefore} -> ${event.tokensAfter} tokens, ` +
@@ -4315,6 +4368,20 @@ export class AgentGateway {
         },
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
+        },
+        // First call of the turn carries the cache numbers `context_turn_boundary`
+        // reports: input/cacheRead/cacheWrite as the provider billed them.
+        onIteration: (iteration, info) => {
+          if (iteration === 1 && info?.usage) {
+            const usage = info.usage
+            turnFirstCallUsage = {
+              iteration: 1,
+              input: usage.input ?? 0,
+              output: usage.output ?? 0,
+              cacheRead: usage.cacheRead ?? 0,
+              cacheWrite: usage.cacheWrite ?? 0,
+            }
+          }
         },
         takeInjectedMessages: () => {
           // One message per finished task: the agent acts on each result as its
@@ -4784,6 +4851,25 @@ export class AgentGateway {
       // stop always has the interrupted turn's context.
       this.sessionManager.addMessages(sessionId, ...result.newMessages)
 
+      // Turn-boundary telemetry (SHO-122): what this turn started with, what the
+      // previous turn actually contained at that moment, and the cache numbers
+      // of its first model call. Emitted before any post-turn compaction, so
+      // `compactedHere` describes the boundary itself.
+      recordTurnBoundary({
+        sessionId,
+        model: modelId,
+        boundaryIndex: turnNum,
+        messagesAtStart: historyPrint.count,
+        previousTurn,
+        compactedHere: turnCompaction !== null,
+        compactedBefore: turnCompaction?.before ?? null,
+        compactedAfter: turnCompaction?.after ?? null,
+        prefixStable,
+        inputTokens: turnFirstCallUsage?.input ?? null,
+        cacheReadTokens: turnFirstCallUsage?.cacheRead ?? null,
+        cacheWriteTokens: turnFirstCallUsage?.cacheWrite ?? null,
+      })
+
       if (this.sessionManager.needsCompaction(session)) {
         const fileStateSummary = this.fileStateCache.size > 0
           ? this.fileStateCache.getSummary(this.workspaceDir)
@@ -4791,6 +4877,16 @@ export class AgentGateway {
         const tokensBeforePostTurn = this.sessionManager.estimateTokens(session)
         const compactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
         if (compactResult) {
+          recordCompaction({
+            sessionId,
+            trigger: 'post-turn',
+            messagesBefore: compactResult.messagesBefore,
+            messagesAfter: compactResult.messagesAfter,
+            summaryChars: compactResult.summary.length,
+            filesTouched: compactResult.filesTouched ?? [],
+            toolsUsed: compactResult.toolsUsed ?? [],
+            foldedRounds: compactResult.foldedRounds ?? 0,
+          })
           console.log(
             `${this.logPrefix} Post-turn compaction: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
           )
