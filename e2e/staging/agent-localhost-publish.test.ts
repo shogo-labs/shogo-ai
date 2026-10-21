@@ -6,10 +6,11 @@ import {
   INITIAL_BUILD_TIMEOUT_MS,
   LOCALHOST_RE,
   PREVIEW_URL_RE,
+  agentMessageHrefs,
+  agentMessageText,
   createProject,
   ensureAuthenticated,
   sendProjectChatMessage,
-  transcript,
 } from "./agent-chat"
 
 /**
@@ -66,12 +67,16 @@ test.describe("Agent preview hygiene", () => {
     )
     await waitForAgentResponse(page, 120_000)
 
-    const text = await transcript(page)
+    const text = await agentMessageText(page)
 
-    // The core guarantee: no localhost address anywhere the user can see it.
-    expect(text, "agent transcript must not contain a localhost address").not.toMatch(
-      LOCALHOST_RE,
+    // The core guarantee: no localhost address anywhere the agent showed the
+    // user. Judged on the agent's own messages — the echoed prompt, the
+    // agent-logs pane and preview chrome are not the agent's words (SHO-128).
+    expect(text, "agent must not hand out a localhost address").not.toMatch(LOCALHOST_RE)
+    const localhostHrefs = (await agentMessageHrefs(page)).filter((href) =>
+      LOCALHOST_RE.test(href),
     )
+    expect(localhostHrefs, "the reply must not link to a localhost address").toEqual([])
     // And it should surface the real, reachable preview URL.
     expect(text, "agent should surface the public *.preview.*.shogo.ai URL").toMatch(
       PREVIEW_URL_RE,
@@ -92,14 +97,15 @@ test.describe("Agent preview hygiene", () => {
     await createProject(page, prompt)
     await waitForAgentResponse(page, 240_000)
 
-    // Only judge the reply to this prompt, and read the raw text because
-    // `transcript()` lowercases.
-    const rawText = await page.locator("body").innerText()
-    const promptAt = rawText.lastIndexOf(prompt.slice(0, 40))
-    expect(promptAt, "follow-up prompt should be in the transcript").toBeGreaterThanOrEqual(0)
-    const reply = rawText.slice(promptAt)
-    expect(reply.toLowerCase(), "file delivery must not expose localhost").not.toMatch(LOCALHOST_RE)
+    // Only the agent's own reply — not the echoed prompt (which names the
+    // guardrails) and not the agent-logs / preview chrome around it (SHO-128).
+    const reply = await agentMessageText(page)
+    expect(reply, "file delivery must not expose localhost").not.toMatch(LOCALHOST_RE)
     expect(reply, "file delivery must not use an app preview URL").not.toMatch(PREVIEW_URL_RE)
+    const localhostHrefs = (await agentMessageHrefs(page)).filter((href) =>
+      LOCALHOST_RE.test(href),
+    )
+    expect(localhostHrefs, "file delivery must not link to localhost").toEqual([])
 
     // A served file is a chip, never the raw URL as text (SHO-80): the transcript
     // shows the file name and the signed `/api/f/<token>` URL lives in the
@@ -116,5 +122,52 @@ test.describe("Agent preview hygiene", () => {
     const response = await request.get(link!, { timeout: 60_000 })
     expect(response.status()).toBe(200)
     expect(response.headers()["content-disposition"]).toMatch(/^attachment;/i)
+  })
+})
+
+/**
+ * The matcher itself, on strings — no browser, no staging account. These are
+ * the replies that made the staging gate red (SHO-128) and the leaks it has to
+ * keep catching, pinned so a future loosening cannot quietly disarm the gate.
+ */
+test.describe("Agent preview hygiene matcher", () => {
+  test("a reply that describes the guarantee is not a leak", () => {
+    // The literal reply from run 39574738520 that failed on all three attempts.
+    const reply =
+      "Here is the download chip for artifact-delivery-test.pdf. No app was " +
+      "built or scaffolded, and no localhost/preview/publish url is involved — " +
+      "just the direct file download."
+    expect(reply).not.toMatch(LOCALHOST_RE)
+    expect(reply).not.toMatch(PREVIEW_URL_RE)
+  })
+
+  test("the prompt's own guardrails are not a leak", () => {
+    const prompt =
+      "Create a small PDF named artifact-delivery-test.pdf in the workspace. " +
+      "Then use the file-sharing tool to give me a direct download link. " +
+      "Do not give me localhost, a preview URL, or a published app URL. " +
+      "Do not build or scaffold an app."
+    expect(prompt).not.toMatch(LOCALHOST_RE)
+    expect(prompt).not.toMatch(PREVIEW_URL_RE)
+  })
+
+  for (const leak of [
+    "Your app is running at http://localhost:37675 — open it there.",
+    "Open http://localhost to see the preview.",
+    "https://localhost serves the app.",
+    "The dev server is on 127.0.0.1:3000.",
+    "It is listening on localhost:8080.",
+    "Bound to 0.0.0.0:8080 as well.",
+    "See [the running app](localhost:8080/preview).",
+  ]) {
+    test(`a reply that hands out a localhost address is a leak: ${leak}`, () => {
+      expect(leak).toMatch(LOCALHOST_RE)
+    })
+  }
+
+  test("a preview URL is a preview URL and nothing else", () => {
+    const ok = "Open https://abc123.preview.staging.shogo.ai to see it."
+    expect(ok).toMatch(PREVIEW_URL_RE)
+    expect(ok).not.toMatch(LOCALHOST_RE)
   })
 })
