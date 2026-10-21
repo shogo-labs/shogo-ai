@@ -147,7 +147,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
       { href: '/(admin)/ai-analytics', icon: Activity, label: 'AI Analytics', scopes: ['analytics:read', 'ai:read'] },
       { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
       { href: '/(admin)/general', icon: Settings, label: 'General' },
-      { href: '/(admin)/settings', icon: BrainCircuit, label: 'AI' },
+      { href: '/(admin)/admin/settings', icon: BrainCircuit, label: 'AI' },
     ],
   },
 ]
@@ -176,7 +176,7 @@ const LOCAL_SETTINGS_ITEMS = [
   { href: '/(admin)/general' as const, icon: Settings, label: 'General' },
   { href: '/(admin)/meetings' as const, icon: Mic, label: 'Meetings' },
   { href: '/(admin)/logs' as const, icon: ScrollText, label: 'Logs' },
-  { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' },
+  { href: '/(admin)/admin/settings' as const, icon: BrainCircuit, label: 'AI' },
 ] as const
 
 function useAdminCheck() {

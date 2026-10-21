@@ -264,7 +264,7 @@ export function ModelPickerMenu({
             router.push(
               usesMobileWorkspaceChrome
                 ? ("/(app)/ai-models" as any)
-                : ("/(admin)/settings" as any)
+                : ("/(admin)/admin/settings" as any)
             )
           }}
           onHoverIn={isWeb ? () => setHoveredId(null) : undefined}
