@@ -110,7 +110,6 @@ export async function installCloudRelay(
     const upstream = await fetch(`${LOCAL_API_BASE}${machinePath}${machineQuery}`, {
       method,
       headers: {
-        "x-tunnel-auth-user-id": userId,
         "content-type": route.request().headerValue("content-type") ?? "application/json",
       },
       body: ["GET", "HEAD"].includes(method) ? undefined : route.request().postDataBuffer(),
