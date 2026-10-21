@@ -15,6 +15,15 @@
  */
 
 import type { Message, UserMessage, AssistantMessage, ToolResultMessage, TextContent } from '@mariozechner/pi-ai'
+import {
+  assistantWindowStart,
+  foldTurnMiddle,
+  lastTurnStart,
+  protectedStart as protectedStartOf,
+  summariseTurn,
+  turnAwareCompactionEnabled,
+} from './turn-boundary'
+import { collectCompactionFacts, renderCompactionFacts } from './compaction-facts'
 
 /** Rough per-image token cost (a ~1MP image on Anthropic is ~1,600 tokens). */
 const IMAGE_TOKEN_ESTIMATE = 1_600
@@ -339,7 +348,22 @@ export interface CompactionResult {
   messagesAfter: number
   compactedCount: number
   summary: string
+  /** Deterministic files/tools/state block appended to the summary. */
+  facts?: string
+  /** Files the facts block recorded (for telemetry). */
+  filesTouched?: string[]
+  /** Tool names the facts block recorded (for telemetry). */
+  toolsUsed?: string[]
+  /** Rounds folded by the oversized-turn valve (0 when it did not fire). */
+  foldedRounds?: number
 }
+
+/**
+ * A single turn is folded in the middle once it exceeds this share of the
+ * context budget. Keeping it verbatim is impossible; summarizing it away is
+ * the bug this file exists to fix, so the middle rounds become one line each.
+ */
+export const TURN_KEEP_MAX_RATIO = 0.4
 
 /**
  * Function signature for the summarization backend.
@@ -687,6 +711,11 @@ export class SessionManager {
    * Includes a circuit breaker: after maxSummarizeFailures consecutive failures
    * the summarizer is bypassed and fallback is used until resetCircuitBreaker().
    *
+   * The split lands on a **turn start** (`lastTurnStart`), so the previous turn
+   * is never cut in half — that cut was the 516 → 12 collapse: the head ended
+   * mid-turn, leaving a `toolResult` whose `toolCall` had been summarized away
+   * (SHO-122). A turn too large to keep is folded, never summarized away.
+   *
    * @param extraContext Optional extra context (e.g. file state summary) appended to the compacted summary.
    * @param aggressiveKeep Override keepRecentMessages (for reactive compaction after errors).
    */
@@ -695,20 +724,107 @@ export class SessionManager {
     if (!session) return null
 
     const keepRecentMessages = aggressiveKeep ?? this.config.keepRecentMessages
-    const splitIndex = this.splitIndexForCompactionTokens(session.messages, keepRecentMessages)
-    if (splitIndex === null) return null
+    const splitIndex = turnAwareCompactionEnabled()
+      ? this.turnBoundarySplit(session.messages, keepRecentMessages)
+      : this.splitIndexForCompactionTokens(session.messages, keepRecentMessages)
+
+    if (splitIndex === null) {
+      // Nothing older than the current turn to summarize. If that one turn is
+      // over the budget it is still folded in the middle — the request has to
+      // fit, and cutting the turn is what this card exists to stop.
+      const folded = this.foldOversizedTurn(id)
+      if (folded.foldedRounds === 0) return null
+      return {
+        sessionId: id,
+        messagesBefore: folded.messagesBefore,
+        messagesAfter: folded.messagesAfter,
+        compactedCount: folded.messagesBefore - folded.messagesAfter,
+        summary: '',
+        foldedRounds: folded.foldedRounds,
+      }
+    }
 
     const toCompact = session.messages.slice(0, splitIndex)
     if (toCompact.length === 0) return null
 
     const summary = await this.summarizeHead(toCompact)
-    return this.applyCompaction(id, { summary, splitIndex, extraContext })
+    const result = this.applyCompaction(id, { summary, splitIndex, extraContext })
+    if (!result) return null
+
+    // Budget safety valve: the kept turn alone may still exceed its share of
+    // the budget. Fold its middle rounds rather than summarizing it away.
+    const folded = this.foldOversizedTurn(id)
+    if (folded.foldedRounds > 0) {
+      const after = this.sessions.get(id)
+      const messagesAfter = after?.messages.length ?? result.messagesAfter
+      result.messagesAfter = messagesAfter
+      result.compactedCount = result.messagesBefore - messagesAfter
+      result.foldedRounds = folded.foldedRounds
+    }
+    return result
+  }
+
+  /**
+   * Split index at the start of the most recent turn, with
+   * `minKeepMessages` as a floor: whole turns are kept until at least that
+   * many messages survive. Never returns a mid-turn index.
+   */
+  turnBoundarySplit(messages: Message[], minKeepMessages: number): number | null {
+    if (messages.length < 2) return null
+    let split = lastTurnStart(messages)
+    const floor = Math.min(Math.max(1, minKeepMessages), messages.length - 1)
+    while (split > 0 && messages.length - split < floor) {
+      const previous = lastTurnStart(messages.slice(0, split))
+      if (previous === 0 || previous === split) break
+      split = previous
+    }
+    return split > 0 && split < messages.length ? split : null
+  }
+
+  /** Char budget the layers measure against (40% of it is a turn's share). */
+  get contextBudgetChars(): number {
+    return this.autocompactThreshold * 4
+  }
+
+  /**
+   * Fold the middle rounds of an oversized turn in place.
+   *
+   * Runs against the session's current turn (the last turn start). A turn
+   * larger than `TURN_KEEP_MAX_RATIO` of the context budget cannot be kept
+   * verbatim and cannot be summarized away without losing the work, so the
+   * rounds between its first and last are replaced by one line each that keeps
+   * the tool name and arguments and drops only the output.
+   */
+  foldOversizedTurn(id: string, from?: number): {
+    foldedRounds: number
+    messagesBefore: number
+    messagesAfter: number
+  } {
+    const session = this.sessions.get(id)
+    if (!session) return { foldedRounds: 0, messagesBefore: 0, messagesAfter: 0 }
+    const start = from ?? lastTurnStart(session.messages)
+    const messagesBefore = session.messages.length
+    const maxChars = Math.floor(this.contextBudgetChars * TURN_KEEP_MAX_RATIO)
+    const summary = summariseTurn(session.messages, start)
+    if (summary.chars <= maxChars) return { foldedRounds: 0, messagesBefore, messagesAfter: messagesBefore }
+
+    const folded = foldTurnMiddle(session.messages, start, { maxChars })
+    if (folded.foldedRounds === 0) return { foldedRounds: 0, messagesBefore, messagesAfter: messagesBefore }
+
+    session.messages = folded.messages
+    session.lastActivityAt = Date.now()
+    this.persistSession(session)
+    return { foldedRounds: folded.foldedRounds, messagesBefore, messagesAfter: session.messages.length }
   }
 
   /**
    * Apply an already-computed summary: drop `splitIndex` messages of head,
    * prepend the summary, persist. Shared by turn-boundary compaction and the
    * mid-turn compactor so both produce the same session shape.
+   *
+   * The deterministic facts block (`compaction-facts.ts`) is appended here, not
+   * requested from the model, so the files and tool names survive a lazy or
+   * wrong summary.
    */
   applyCompaction(
     id: string,
@@ -727,8 +843,10 @@ export class SessionManager {
       ? `${session.compactedSummary}\n\n`
       : ''
 
+    const factData = collectCompactionFacts(toCompact)
+    const facts = renderCompactionFacts(factData)
     const extraSuffix = extraContext ? `\n\n${extraContext}` : ''
-    session.compactedSummary = `${existingSummary}${summary}${extraSuffix}`
+    session.compactedSummary = `${existingSummary}${summary}\n\n${facts}${extraSuffix}`
     session.messages = toKeep
     session.compactionCount++
     session.lastActivityAt = Date.now()
@@ -740,6 +858,9 @@ export class SessionManager {
       messagesAfter: toKeep.length,
       compactedCount: toCompact.length,
       summary,
+      facts,
+      filesTouched: factData.files.map((f) => f.path),
+      toolsUsed: factData.tools.map((t) => t.name),
     }
   }
 
@@ -929,20 +1050,13 @@ export function pruneToolResults(
 ): Message[] {
   const cfg = { ...DEFAULT_PRUNING, ...config }
 
-  let turnCount = 0
-  const turnBoundaries: number[] = []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') {
-      turnCount++
-      turnBoundaries.push(i)
-    }
-  }
-
-  const protectedTurnStart = turnBoundaries.length >= cfg.keepLastTurns
-    ? turnBoundaries[cfg.keepLastTurns - 1]
-    : 0
-  const hardClearStart = turnBoundaries.length >= cfg.hardClearAfterTurns
-    ? turnBoundaries[cfg.hardClearAfterTurns - 1]
+  // `keepLastTurns` counts assistant messages, which are tool *rounds*: on a
+  // 12-round turn the window closed while the turn was still running. The
+  // turn start is applied on top so the previous turn survives whole.
+  const protectedTurnStart = protectedStartOf(messages, cfg.keepLastTurns)
+  const assistantBoundary = assistantWindowStart(messages, cfg.hardClearAfterTurns)
+  const hardClearStart = assistantBoundary > 0 && assistantBoundary < protectedTurnStart
+    ? assistantBoundary
     : -1
 
   return messages.map((msg, idx) => {
@@ -1007,13 +1121,9 @@ export function applyToolResultBudget(
 ): Message[] {
   const maxBudget = Math.floor(contextBudgetChars * TOOL_RESULT_BUDGET_RATIO)
 
-  const turnBoundaries: number[] = []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') turnBoundaries.push(i)
-  }
-  const protectedStart = turnBoundaries.length >= BUDGET_PROTECTED_TURNS
-    ? turnBoundaries[BUDGET_PROTECTED_TURNS - 1]
-    : 0
+  // Turn-anchored: the previous turn is one unit, never trimmed from the
+  // middle. See turn-boundary.ts.
+  const protectedStart = protectedStartOf(messages, BUDGET_PROTECTED_TURNS)
 
   const eligibleIndices: number[] = []
   let totalCharsForBudget = 0
@@ -1075,13 +1185,7 @@ export function snipConsumedResults(
   protectedTurns = 3,
   frozenIds?: ReadonlySet<string>,
 ): Message[] {
-  const turnBoundaries: number[] = []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') turnBoundaries.push(i)
-  }
-  const protectedStart = turnBoundaries.length >= protectedTurns
-    ? turnBoundaries[protectedTurns - 1]
-    : 0
+  const protectedStart = protectedStartOf(messages, protectedTurns)
 
   return messages.map((msg, idx) => {
     if (msg.role !== 'toolResult') return msg

@@ -113,7 +113,17 @@ export interface AgentLoopOptions {
   /** Called when a tool is invoked */
   onToolCall?: (name: string, input: any) => void
   /** Called at each iteration */
-  onIteration?: (iteration: number) => void
+  onIteration?: (
+    iteration: number,
+    info?: {
+      /** Usage reported by the assistant message that ended this iteration. */
+      usage?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }
+      /** Messages in the loop's transcript at this point. */
+      messageCount?: number
+      /** Tool calls this iteration emitted. */
+      toolCallCount?: number
+    },
+  ) => void
   /** Messages to add before the next model step (e.g. finished background tasks). They extend the turn. */
   takeInjectedMessages?: () => Message[]
   /** Called after tool results with only messages not reported by an earlier callback. */
@@ -691,7 +701,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         }
         const turnToolResults = (event as any).toolResults
         lastTurnHadToolCalls = Array.isArray(turnToolResults) && turnToolResults.length > 0
-        onIteration?.(iterations)
+        const turnToolCalls = Array.isArray(turnMsg?.content)
+          ? turnMsg.content.filter((block: any) => block?.type === 'toolCall').length
+          : 0
+        onIteration?.(iterations, {
+          usage: turnMsg?.usage,
+          messageCount: agent.state.messages.length,
+          toolCallCount: turnToolCalls,
+        })
         for (const message of takeInjectedMessages?.() ?? []) agent.steer(message)
         const iterationMessages = agent.state.messages.slice(historyLength)
         if (iterationMessages.length > lastProgressMessageCount - historyLength) {
