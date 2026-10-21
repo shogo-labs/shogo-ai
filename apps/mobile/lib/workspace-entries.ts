@@ -32,6 +32,13 @@ export interface MachineWorkspaceRow {
 export interface MachineGroupData {
   id: string
   name: string
+  /**
+   * The device kind as the cloud reports it — `desktop` or `cli-worker`. A
+   * `shogo worker` VM is an execution target with no data API, so it never
+   * contributes workspace rows (SHO-120); the field travels so callers can
+   * tell one from a Mac without guessing.
+   */
+  kind?: string
   status: MachinePresence
   /** True when these rows are the machine's last-known snapshot, not live. */
   stale?: boolean
@@ -93,7 +100,19 @@ function cloudEntry(workspace: CloudWorkspaceLike): WorkspaceEntry {
   }
 }
 
+/**
+ * A `shogo worker` VM is an execution target, not a computer: it serves
+ * `/agent/*` and no data API, so it has no workspaces to open and must never
+ * appear as a workspace host (SHO-120). It stays reachable as a project
+ * runtime through the instance picker.
+ */
+export function isExecutionOnlyMachine(machine: { kind?: string } | null | undefined): boolean {
+  const kind = (machine?.kind ?? '').toLowerCase().replace(/[-\s]/g, '_')
+  return kind === 'cli_worker'
+}
+
 function machineEntries(machine: MachineGroupData): WorkspaceEntry[] {
+  if (isExecutionOnlyMachine(machine)) return []
   return machine.workspaces.map((workspace) => ({
     key: machineWorkspaceKey(machine.id, workspace.id),
     id: workspace.id,

@@ -17,7 +17,7 @@
  */
 
 import { Hono } from 'hono'
-import { prisma } from '../lib/prisma'
+import { prisma, InstanceKind } from '../lib/prisma'
 import {
   ensureTunnelConnected,
   generateRequestId,
@@ -51,6 +51,26 @@ function offline() {
 
 function forbidden() {
   return { error: { code: 'forbidden', message: 'Not your machine' } }
+}
+
+/**
+ * A `shogo worker` VM is an execution target, not a computer (SHO-120): its
+ * tunnel serves `/agent/*` and answers every other path with a structured 502.
+ * Machine workspaces only exist on a paired desktop, so the relay refuses a
+ * cli-worker up front instead of forwarding a request it can only fail.
+ */
+function notAMachine() {
+  return {
+    error: {
+      code: 'not_a_machine',
+      message: 'A shogo worker is an execution target; reach it through /api/instances/:id/p',
+    },
+  }
+}
+
+/** `kind` arrives as the enum value; tolerate the wire spelling too. */
+function isCliWorker(kind: string | null | undefined): boolean {
+  return (kind ?? '').toLowerCase().replace(/[-\s]/g, '_') === InstanceKind.cli_worker
 }
 
 type MachineRow = {
@@ -102,6 +122,10 @@ export function machineRoutes() {
   // GET /machines — every machine this user owns, across cloud workspaces.
   // The workspace switcher groups them under "This Mac"; a second member of
   // any of those workspaces sees an empty list.
+  //
+  // A `shogo worker` VM is not a machine: it serves `/agent/*` and no data API,
+  // so it has no workspaces to open (SHO-120). It stays visible in
+  // `GET /instances?scope=owner` (Settings → Remote control), where it belongs.
   router.get('/machines', async (c) => {
     const auth = c.get('auth') as any
     if (!auth?.userId) {
@@ -109,7 +133,7 @@ export function machineRoutes() {
     }
 
     const rows = (await prisma.instance.findMany({
-      where: { userId: auth.userId },
+      where: { userId: auth.userId, kind: { not: InstanceKind.cli_worker } },
       orderBy: { lastSeenAt: 'desc' },
     })) as MachineRow[]
 
@@ -146,6 +170,7 @@ export function machineRoutes() {
     const resolved = await loadOwnedMachine(c)
     if ('response' in resolved) return resolved.response
     const { instance } = resolved
+    if (isCliWorker(instance.kind)) return c.json(notAMachine(), 409)
 
     const forwardHeaders: Record<string, string> = {
       accept: 'application/json',
@@ -225,12 +250,18 @@ export function machineRoutes() {
     const resolved = await loadOwnedMachine(c)
     if ('response' in resolved) return resolved.response
     const { instance } = resolved
+    if (isCliWorker(instance.kind)) return c.json(notAMachine(), 409)
     const auth = c.get('auth') as any
 
     const localWorkspaceId = c.req.param('localWorkspaceId')
     const rest = c.req.param('rest') || ''
     const search = new URL(c.req.url).search
-    const path = `/api/${rest}${search}`
+    // `rest` is the client's full path behind the relay prefix
+    // (`/api/projects`, `/api/workspaces/<ws>/agent-proxy/agent/chat`), so the
+    // tunnel path is `/<rest>` — never `/api/<rest>`, which double-prefixed
+    // every machine call as `/api/api/...` (SHO-120). Same join as
+    // `/instances/:id/p/*`.
+    const path = rest ? `/${rest}${search}` : `/api${search}`
     const method = c.req.method
 
     if (!(await ensureTunnelConnected(instance.id, wakeDeadlineMs))) {
@@ -253,7 +284,7 @@ export function machineRoutes() {
     const body = hasBody ? await c.req.text() : undefined
     const auditPath = `${localWorkspaceId}:${path}`
 
-    const streaming = isStreamingRequest(method, normalizeTransparentProxyPath(`/api/${rest}`))
+    const streaming = isStreamingRequest(method, normalizeTransparentProxyPath(path.split('?')[0] || path))
     if (streaming) {
       void logRemoteAction({
         instanceId: instance.id,
