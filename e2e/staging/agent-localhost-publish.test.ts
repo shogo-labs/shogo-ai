@@ -92,18 +92,28 @@ test.describe("Agent preview hygiene", () => {
     await createProject(page, prompt)
     await waitForAgentResponse(page, 240_000)
 
-    // Only judge the reply to this prompt. Read the raw text because
-    // `transcript()` lowercases, which breaks the signed /f/ token.
+    // Only judge the reply to this prompt, and read the raw text because
+    // `transcript()` lowercases.
     const rawText = await page.locator("body").innerText()
     const promptAt = rawText.lastIndexOf(prompt.slice(0, 40))
     expect(promptAt, "follow-up prompt should be in the transcript").toBeGreaterThanOrEqual(0)
     const reply = rawText.slice(promptAt)
     expect(reply.toLowerCase(), "file delivery must not expose localhost").not.toMatch(LOCALHOST_RE)
     expect(reply, "file delivery must not use an app preview URL").not.toMatch(PREVIEW_URL_RE)
-    const link = reply.match(/https?:\/\/[^\s<>()]+\/f\/[A-Za-z0-9._-]+/i)
+
+    // A served file is a chip, never the raw URL as text (SHO-80): the transcript
+    // shows the file name and the signed `/api/f/<token>` URL lives in the
+    // anchor's href. Read the href — the body text has no URL to match.
+    expect(reply, "file delivery must not print the raw signed URL").not.toMatch(/\/api\/f\//i)
+    const chip = page.locator('a.chat-file-chip[href*="/api/f/"]').last()
+    await expect(chip, "the reply should carry a served-file chip").toBeVisible({ timeout: 30_000 })
+    expect(await chip.innerText(), "the chip should name the artifact").toContain(
+      "artifact-delivery-test.pdf",
+    )
+    const link = await chip.getAttribute("href")
     expect(link, "agent should surface an expiring /f/ download URL").toBeTruthy()
 
-    const response = await request.get(link![0], { timeout: 60_000 })
+    const response = await request.get(link!, { timeout: 60_000 })
     expect(response.status()).toBe(200)
     expect(response.headers()["content-disposition"]).toMatch(/^attachment;/i)
   })
