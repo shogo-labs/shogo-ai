@@ -1,46 +1,66 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Hosted voice media routes — `POST /api/voice/tts` and `POST /api/voice/music`.
+ * Hosted voice media routes — `/api/voice/op/:opId` plus the `/api/voice/tts`
+ * and `/api/voice/music` aliases.
  *
- * These are the endpoints the SDK's runtime-token proxy mode
- * (`@shogo-ai/sdk/voice/server` → `SHOGO_API_URL`) calls from inside a pod,
- * and the ones a pod app hits directly when it wants hosted narration with
- * Shogo's pooled ElevenLabs key. They are project-scoped, not per-end-user.
+ * Every media op ElevenLabs exposes is a row in `VOICE_OPS`
+ * (`@shogo-ai/sdk/voice`). This module is the single executor for those rows:
+ * project resolution, runtime-token scope, authorization, body limits,
+ * pooled-key resolution, cloud forwarding, the upstream call and the usage
+ * meter all live in {@link executeVoiceOp}. A new op is a registry row — no
+ * handler, no route and no test file of its own.
+ *
+ * The two legacy paths keep their original bodies and error contracts, so
+ * `/voice/tts` and `/voice/music` are thin aliases: they parse their own
+ * (unchanged) request body, then hand it to the same executor.
  *
  * This module is deliberately free of billing, Twilio and `server-cloud-deps`
  * imports: it is mounted unconditionally in `apps/api/src/server.ts`, so it
- * has to be safe to load in `LOCAL_MODE` (desktop) as well as in cloud. The
- * cloud-only `voice.ts` router keeps its other endpoints and delegates its
- * `/voice/music` handler here so there is exactly one implementation.
+ * has to be safe to load in `LOCAL_MODE` (desktop) as well as in cloud.
  *
  * Behaviour contract:
+ *   - unknown `opId` → 404 listing the valid ids
  *   - unknown `modelId` → 400 with the allowed list (never a silent clamp)
- *   - text over the model's character cap → 413 with the limit
- *   - upstream ElevenLabs failure → 502 `{ error, detail, elBody }`
+ *   - body over the row's `maxBodyBytes` → 413 with the limit
+ *   - a required field/part that is missing or not a file → 400
+ *   - `byoOnly` row on the pooled key → 403 (never a silent charge to Shogo)
  *   - no `ELEVENLABS_API_KEY` → 503 with a specific message, unless this is a
  *     cloud-authed desktop (`isShogoCloudForwarding()`), where the request is
  *     forwarded to the cloud's own `/api/voice/*` handler and its audio (or
  *     error) is passed straight back
- *   - responses carry `x-tts-model-used` + `x-tts-model-requested`, and a
- *     `Warning: 199 …` header when ElevenLabs made us fall back
+ *   - upstream ElevenLabs failure → 502 `{ error, detail, elBody }`
+ *   - responses carry the row's `responseHeaders` (both TTS model headers and
+ *     the `Warning: 199 …` fallback notice)
  */
 
 import { Hono, type Context } from 'hono'
 import {
   CONVAI_TTS_MODEL_FALLBACK,
   ElevenLabsClient,
-  VOICE_TTS_MODEL_IDS,
+  VOICE_OP_IDS,
   buildPreviewLine,
+  getVoiceOp,
   getVoiceTtsModel,
   normalizeAudioTags,
   normalizeVoiceSettings,
+  parseVoiceOpForm,
+  parseVoiceOpJsonBody,
+  voiceOpCredentialError,
+  voiceOpForwardPath,
+  voiceOpPathParams,
+  voiceOpReturnsAudio,
+  voiceOpUpstreamBody,
+  voiceOpUpstreamPath,
+  type VoiceOp,
+  type VoiceOpPermission,
   type VoiceSettings,
 } from '@shogo-ai/sdk/voice'
 import { prisma } from '../lib/prisma'
 import { forwardToShogoCloud } from '../lib/cloud-request-forward'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { apiKeyOrSession, authorizeProject } from '../middleware/auth'
+import { consumeUsage } from '../services/billing.service'
 
 /** ElevenLabs voice used when a project has no `default` agent voice. */
 export const DEFAULT_PROJECT_AGENT_VOICE_ID =
@@ -50,6 +70,9 @@ export const DEFAULT_PROJECT_AGENT_VOICE_ID =
  * Default model for hosted TTS. `eleven_v4_turbo` is the realtime v4 variant
  * (~100 ms) and is accepted by convai, so one default serves narration and
  * agent-adjacent use. Override per request with `modelId`.
+ *
+ * The registry row also declares this as its `defaultModel`, so both paths —
+ * `/voice/tts` and `/voice/op/text-to-speech` — resolve it here.
  */
 export const DEFAULT_HOSTED_TTS_MODEL = CONVAI_TTS_MODEL_FALLBACK
 
@@ -64,7 +87,7 @@ export function resolveShogoElevenLabsClient():
   if (!apiKey) {
     return {
       error:
-        'ELEVENLABS_API_KEY is not configured. Voice mode is unavailable until the server sets this env var (hosted /api/voice/tts and /api/voice/music included).',
+        'ELEVENLABS_API_KEY is not configured. Voice mode is unavailable until the server sets this env var (hosted /api/voice/op/* and /api/voice/tts include it).',
     }
   }
   return { client: new ElevenLabsClient({ apiKey }) }
@@ -77,15 +100,20 @@ export function resolveShogoElevenLabsClient():
  * the AI proxy — once the gate is on, a local key is never consulted (BYOK
  * setups run `AI_MODE=api-keys`, which turns the gate off for everything).
  *
- * `body` is passed explicitly because the handler has already read and
- * validated the JSON; the request stream is single-use.
+ * `body` is passed explicitly when the handler has already read and validated
+ * the JSON (the request stream is single-use); omitted, the caller's body —
+ * multipart boundary included — is streamed through untouched.
  */
-function forwardVoiceToCloud(c: Context, pathname: string, body: unknown): Promise<Response> {
+function forwardVoiceToCloud(
+  c: Context,
+  pathname: string,
+  body?: unknown,
+): Promise<Response> {
   return forwardToShogoCloud(c, {
     pathname,
     search: new URL(c.req.url).search,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
 }
 
@@ -93,6 +121,8 @@ interface ProjectAuthz {
   ok: boolean
   status: number
   message?: string
+  /** Needed to meter the call; absent in tests and older call sites. */
+  workspaceId?: string
 }
 
 /**
@@ -101,9 +131,31 @@ interface ProjectAuthz {
  */
 export interface VoiceMediaDeps {
   /** Authorize the caller against `projectId`. Defaults to `authorizeProject`. */
-  authorize?: (c: Context, projectId: string) => Promise<ProjectAuthz>
+  authorize?: (
+    c: Context,
+    projectId: string,
+    permission: VoiceOpPermission,
+  ) => Promise<ProjectAuthz>
   /** Resolve the project's default voice id. Defaults to ProjectAgent → env. */
   resolveVoiceId?: (projectId: string) => Promise<string>
+  /**
+   * Plan gate seam. Called with a row's `planGate`; returning `false` is a
+   * 402. Unset means every row is available on every plan, which matches
+   * today's behaviour — no row declares a gate yet.
+   */
+  planGate?: (c: Context, gate: string) => Promise<boolean>
+  /**
+   * Usage meter seam. Defaults to `consumeUsage` with a zero price — the row
+   * records `{ opId, unit, units }`, so pricing an op later is a price lookup,
+   * not a new route.
+   */
+  recordUsage?: (params: {
+    c: Context
+    projectId: string
+    workspaceId?: string
+    op: VoiceOp
+    units: number
+  }) => Promise<void>
 }
 
 async function defaultResolveVoiceId(projectId: string): Promise<string> {
@@ -119,10 +171,45 @@ async function defaultResolveVoiceId(projectId: string): Promise<string> {
   return DEFAULT_PROJECT_AGENT_VOICE_ID
 }
 
-async function defaultAuthorize(c: Context, projectId: string): Promise<ProjectAuthz> {
-  const result = await authorizeProject(c, projectId, 'project:read')
-  if (result.ok) return { ok: true, status: 200 }
+async function defaultAuthorize(
+  c: Context,
+  projectId: string,
+  permission: VoiceOpPermission,
+): Promise<ProjectAuthz> {
+  const result = await authorizeProject(c, projectId, permission)
+  if (result.ok) return { ok: true, status: 200, workspaceId: result.workspaceId }
   return { ok: false, status: result.status, message: result.message }
+}
+
+/** Best-effort usage row. Never fails the request. */
+async function defaultRecordUsage(params: {
+  c: Context
+  projectId: string
+  workspaceId?: string
+  op: VoiceOp
+  units: number
+}): Promise<void> {
+  const { op, units, workspaceId, projectId } = params
+  if (!workspaceId) return
+  try {
+    await consumeUsage({
+      workspaceId,
+      projectId,
+      memberId: 'voice-media',
+      actionType: 'voice_media_usage',
+      // Priced at zero until an op has a per-unit price: the row exists so
+      // pooled-key consumption is visible, not so it is charged twice.
+      billedUsd: 0,
+      rawUsd: 0,
+      actionMetadata: {
+        opId: op.id,
+        unit: op.cost?.unit ?? 'request',
+        units,
+      },
+    })
+  } catch (e) {
+    console.warn('[Voice] failed to record usage:', e instanceof Error ? e.message : e)
+  }
 }
 
 function errorJson(error: unknown): string {
@@ -153,6 +240,379 @@ function resolveProjectId(c: Context): string | undefined {
   return c.req.query('projectId')?.trim() || undefined
 }
 
+/** A request body handed to the executor. */
+interface VoiceOpInvocation {
+  /** The caller's validated fields — exactly what a cloud forward should see. */
+  fields: Record<string, unknown>
+  /** A rebuilt multipart body, when the row's transport is multipart. */
+  form?: FormData
+  /**
+   * Fields used for the upstream call when they differ from the caller's
+   * (TTS preview text, resolved default voice). Never forwarded to cloud.
+   */
+  resolved?: Record<string, unknown>
+  /**
+   * `POST /voice/music` has always worked without `projectId` for
+   * session-authenticated callers (Shogo's key pays either way); every other
+   * hosted call must name its project.
+   */
+  allowUnscoped?: boolean
+}
+
+/**
+ * The one executor. Every row goes through here; the only per-op decisions
+ * left are the three rungs of {@link VoiceOp.call} (`textToSpeech`,
+ * `composeMusic`, or the generic `request()` passthrough).
+ */
+async function executeVoiceOp(
+  c: Context,
+  op: VoiceOp,
+  invocation: VoiceOpInvocation,
+  deps: VoiceMediaDeps,
+): Promise<Response> {
+  const projectId = resolveProjectId(c)
+  const scopeViolation = runtimeScopeViolation(c, projectId)
+  if (scopeViolation) return scopeViolation
+  if (!projectId && !invocation.allowUnscoped) {
+    return c.json(
+      {
+        error: 'bad_request',
+        detail: 'projectId is required (query param) for hosted voice media',
+      },
+      400,
+    )
+  }
+
+  let authz: ProjectAuthz = { ok: true, status: 200 }
+  if (projectId) {
+    const authorize = deps.authorize ?? defaultAuthorize
+    authz = await authorize(c, projectId, op.permission)
+    if (!authz.ok) {
+      return c.json({ error: 'forbidden', detail: authz.message }, authz.status as 400 | 401 | 403 | 404)
+    }
+  }
+
+  if (op.planGate && deps.planGate) {
+    const allowed = await deps.planGate(c, op.planGate)
+    if (!allowed) {
+      return c.json(
+        { error: 'plan_required', detail: `${op.id} needs the ${op.planGate} plan feature` },
+        402,
+      )
+    }
+  }
+
+  // A row that may never run on the pooled key stops here — before any spend.
+  const credentialError = voiceOpCredentialError(op, 'pooled')
+  if (credentialError) {
+    return c.json({ error: credentialError.error, detail: credentialError.detail }, 403)
+  }
+
+  const callFields = { ...invocation.fields, ...(invocation.resolved ?? {}) }
+
+  if (isShogoCloudForwarding()) {
+    // JSON bodies were already validated above, so re-serialize them; a
+    // multipart body is streamed through untouched (it is single-use).
+    return forwardVoiceToCloud(
+      c,
+      voiceOpForwardPath(op),
+      invocation.form ? undefined : invocation.fields,
+    )
+  }
+
+  const resolved = resolveShogoElevenLabsClient()
+  if ('error' in resolved) {
+    return c.json({ error: 'voice_unavailable', detail: resolved.error }, 503)
+  }
+
+  const pathParams = voiceOpPathParams(
+    op,
+    callFields,
+    new URL(c.req.url).searchParams,
+  )
+  if (op.defaultVoiceId && !pathParams.voiceId) {
+    pathParams.voiceId = projectId
+      ? await (deps.resolveVoiceId ?? defaultResolveVoiceId)(projectId)
+      : DEFAULT_PROJECT_AGENT_VOICE_ID
+  }
+  const upstreamPath = voiceOpUpstreamPath(op, pathParams)
+  if (typeof upstreamPath !== 'string') {
+    return c.json({ error: 'bad_request', detail: upstreamPath.error }, 400)
+  }
+
+  const errorLabel = op.errorLabel ?? `${op.id} failed`
+  const recordUsage = deps.recordUsage ?? defaultRecordUsage
+  const units = op.cost ? measureUnits(op, callFields, invocation.form) : 0
+
+  try {
+    let response: Response
+
+    if (op.call === 'textToSpeech') {
+      const modelId =
+        typeof callFields.modelId === 'string'
+          ? callFields.modelId
+          : (op.defaultModel ?? DEFAULT_HOSTED_TTS_MODEL)
+      const model = getVoiceTtsModel(modelId)
+      const text = typeof callFields.text === 'string' ? callFields.text : ''
+      if (model && text.length > model.maxChars) {
+        return c.json(
+          {
+            error: 'text_too_long',
+            detail: `${model.id} accepts at most ${model.maxChars} characters per request; got ${text.length}`,
+            modelId: model.id,
+            maxChars: model.maxChars,
+            length: text.length,
+          },
+          413,
+        )
+      }
+      const voiceSettings =
+        normalizeVoiceSettings(callFields.voiceSettings) ?? {
+          stability: 0.5,
+          similarity_boost: 0.8,
+          style: 0,
+        }
+      const result = await resolved.client.textToSpeech({
+        voiceId: pathParams.voiceId ?? '',
+        text,
+        modelId,
+        voiceSettings,
+      })
+      const headers: Record<string, string> = {
+        'content-type': result.contentType,
+        'cache-control': 'private, max-age=3600',
+        'x-tts-model-used': result.modelId,
+        'x-tts-model-requested': result.requestedModel,
+      }
+      if (result.fellBack) {
+        headers.warning = `199 - "model ${result.requestedModel} not available, used ${result.modelId}"`
+        console.warn(
+          `[Voice] tts fell back: requested ${result.requestedModel}, used ${result.modelId} (${result.fallbackReason ?? 'no reason reported'})`,
+        )
+      }
+      response = new Response(result.audio, { status: 200, headers })
+    } else if (op.call === 'composeMusic') {
+      const { audio, contentType } = await resolved.client.composeMusic({
+        ...(typeof callFields.prompt === 'string' ? { prompt: callFields.prompt } : {}),
+        ...(callFields.compositionPlan
+          ? { compositionPlan: callFields.compositionPlan as Record<string, unknown> }
+          : {}),
+        ...(typeof callFields.musicLengthMs === 'number'
+          ? { musicLengthMs: callFields.musicLengthMs }
+          : {}),
+        ...(typeof callFields.modelId === 'string' ? { modelId: callFields.modelId } : {}),
+        ...(typeof callFields.forceInstrumental === 'boolean'
+          ? { forceInstrumental: callFields.forceInstrumental }
+          : {}),
+        ...(typeof callFields.outputFormat === 'string'
+          ? { outputFormat: callFields.outputFormat }
+          : {}),
+      })
+      response = new Response(audio, {
+        status: 200,
+        headers: { 'content-type': contentType, 'cache-control': 'private, max-age=3600' },
+      })
+    } else {
+      const query: Record<string, string> = {}
+      for (const key of op.queryForward ?? []) {
+        const value = c.req.query(key)
+        if (value) query[key] = value
+      }
+      const upstreamBody = voiceOpUpstreamBody(op, callFields)
+      if (op.defaultModel && upstreamBody.model_id === undefined) {
+        upstreamBody.model_id = op.defaultModel
+      }
+      const forwarded = await resolved.client.request({
+        method: op.method,
+        path: upstreamPath,
+        ...(invocation.form
+          ? { body: invocation.form }
+          : op.method === 'GET'
+            ? {}
+            : { body: upstreamBody }),
+        ...(Object.keys(query).length ? { query } : {}),
+        ...(op.accept ? { accept: op.accept } : {}),
+      })
+      const headers: Record<string, string> = { 'content-type': forwarded.contentType }
+      if (voiceOpReturnsAudio(op)) headers['cache-control'] = 'private, max-age=3600'
+      response = new Response(forwarded.audio ?? JSON.stringify(forwarded.json ?? {}), {
+        status: forwarded.status,
+        headers,
+      })
+    }
+
+    if (units > 0 && projectId) {
+      await recordUsage({
+        c,
+        projectId,
+        ...(authz.workspaceId ? { workspaceId: authz.workspaceId } : {}),
+        op,
+        units,
+      })
+    }
+    return response
+  } catch (err: any) {
+    console.error(`[Voice] ${errorLabel}:`, err?.message || err)
+    return c.json(
+      {
+        error: errorLabel,
+        detail: err?.message ?? errorJson(err),
+        elBody: err?.body ?? undefined,
+      },
+      502,
+    )
+  }
+}
+
+/**
+ * The units one request consumes, in the row's own unit. Characters for TTS,
+ * seconds for generated audio, one per call for listings.
+ */
+function measureUnits(
+  op: VoiceOp,
+  fields: Record<string, unknown>,
+  form: FormData | undefined,
+): number {
+  const unit = op.cost?.unit ?? 'request'
+  if (unit === 'character') {
+    return typeof fields.text === 'string' ? fields.text.length : 0
+  }
+  if (unit === 'second') {
+    const seconds =
+      typeof fields.durationSeconds === 'number'
+        ? fields.durationSeconds
+        : typeof fields.musicLengthMs === 'number'
+          ? fields.musicLengthMs / 1000
+          : undefined
+    if (seconds !== undefined) return Math.max(1, Math.round(seconds))
+    // Uploaded audio: estimate from the byte count at 128 kbps, which is
+    // what the STS/Scribe models stream in.
+    const bytes = form
+      ? formByteSize(form)
+      : 0
+    return bytes > 0 ? Math.max(1, Math.round((bytes * 8) / 128_000)) : 0
+  }
+  return 1
+}
+
+/** Reject a body whose declared or actual size exceeds the row's limit. */
+function tooLarge(c: Context, op: VoiceOp, size: number): Response {
+  return c.json(
+    {
+      error: 'payload_too_large',
+      detail: `${op.id} accepts at most ${op.maxBodyBytes} bytes; got ${size}`,
+      maxBytes: op.maxBodyBytes,
+      length: size,
+    },
+    413,
+  )
+}
+
+/** The shape every registry parser returns when it is unhappy. */
+interface VoiceOpRejection {
+  status: number
+  error: string
+  detail?: string
+  allowed?: readonly string[]
+}
+
+/** One error body for every media route: `{ error, detail?, allowed? }`. */
+function rejectVoiceOp(c: Context, rejection: VoiceOpRejection): Response {
+  return c.json(
+    {
+      error: rejection.error,
+      ...(rejection.detail ? { detail: rejection.detail } : {}),
+      ...(rejection.allowed ? { allowed: rejection.allowed } : {}),
+    },
+    rejection.status as 400 | 401 | 402 | 403 | 404 | 405 | 409 | 413 | 422,
+  )
+}
+
+/** Bytes in a multipart body, without assuming which `FormData` impl we got. */
+function formByteSize(form: FormData): number {
+  let total = 0
+  for (const value of form.values() as unknown as Iterable<unknown>) {
+    if (typeof value === 'string') total += value.length
+    else if (value && typeof (value as { size?: unknown }).size === 'number') {
+      total += (value as { size: number }).size
+    }
+  }
+  return total
+}
+
+/** Content-length gate, so an oversize upload is refused before it is read. */
+function declaredTooLarge(c: Context, op: VoiceOp): Response | null {
+  const raw = c.req.header('content-length')
+  if (!raw) return null
+  const size = Number(raw)
+  if (Number.isFinite(size) && size > op.maxBodyBytes) return tooLarge(c, op, size)
+  return null
+}
+
+/**
+ * `GET|POST /api/voice/op/:opId` — any registry op. The registry supplies the
+ * transport, the permission, the limits and the upstream path.
+ */
+export async function handleVoiceOp(
+  c: Context,
+  deps: VoiceMediaDeps = {},
+): Promise<Response> {
+  const opId = c.req.param('opId')
+  const op = getVoiceOp(opId)
+  if (!op) {
+    return c.json(
+      { error: 'unknown_op', detail: `Unknown voice op '${opId ?? ''}'`, allowed: VOICE_OP_IDS },
+      404,
+    )
+  }
+  if (c.req.method !== op.method) {
+    return c.json({ error: 'Method Not Allowed', detail: `${op.id} is ${op.method}` }, 405)
+  }
+
+  const oversized = declaredTooLarge(c, op)
+  if (oversized) return oversized
+
+  if (op.method === 'GET') {
+    return executeVoiceOp(c, op, { fields: {} }, deps)
+  }
+
+  if (op.transport === 'multipart-binary' || op.transport === 'multipart-json') {
+    let form: FormData
+    try {
+      form = await c.req.formData()
+    } catch {
+      return c.json(
+        { error: 'bad_request', detail: 'send a multipart/form-data body' },
+        400,
+      )
+    }
+    const parsed = parseVoiceOpForm(op, form)
+    if (!parsed.ok) {
+      return rejectVoiceOp(c, parsed)
+    }
+    const size = formByteSize(parsed.form)
+    if (size > op.maxBodyBytes) return tooLarge(c, op, size)
+    // `fields` carries the path params (`voiceId` on speech-to-speech), which
+    // the rebuilt form deliberately drops — without them the request silently
+    // converts to the project default voice.
+    return executeVoiceOp(c, op, { fields: parsed.fields, form: parsed.form }, deps)
+  }
+
+  let raw: unknown
+  try {
+    raw = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+  const parsed = parseVoiceOpJsonBody(op, raw)
+  if (!parsed.ok) {
+    return rejectVoiceOp(c, parsed)
+  }
+  const size = JSON.stringify(parsed.fields).length
+  if (size > op.maxBodyBytes) return tooLarge(c, op, size)
+  return executeVoiceOp(c, op, { fields: parsed.fields }, deps)
+}
+
 /** Body shape for `POST /voice/tts`. */
 export interface VoiceTtsBody {
   text?: string
@@ -168,32 +628,19 @@ export interface VoiceTtsBody {
  *
  * Body: `{ text, voiceId?, modelId?, voiceSettings?, audioTags? }`.
  * `voiceId` defaults to the project's default agent voice, `modelId` to
- * {@link DEFAULT_HOSTED_TTS_MODEL}. When `text` is empty a short preview
- * line is built from `audioTags` (same helper the SDK's tts-preview uses).
+ * {@link DEFAULT_HOSTED_TTS_MODEL}. When `text` is empty a short preview line
+ * is built from `audioTags` (same helper the SDK's tts-preview uses).
+ *
+ * A thin alias: the body keeps its original shape and errors, then the shared
+ * {@link executeVoiceOp} does auth, limits, credentials, metering and the call.
  */
 export async function handleVoiceTts(
   c: Context,
   deps: VoiceMediaDeps = {},
 ): Promise<Response> {
-  const projectId = resolveProjectId(c)
-  if (!projectId) {
-    return c.json(
-      {
-        error: 'bad_request',
-        detail: 'projectId is required (query param) for hosted TTS',
-      },
-      400,
-    )
-  }
-
-  const scopeViolation = runtimeScopeViolation(c, projectId)
-  if (scopeViolation) return scopeViolation
-
-  const authorize = deps.authorize ?? defaultAuthorize
-  const authz = await authorize(c, projectId)
-  if (!authz.ok) {
-    return c.json({ error: 'forbidden', detail: authz.message }, authz.status as 400 | 401 | 403 | 404)
-  }
+  const op = getVoiceOp('text-to-speech')!
+  const oversized = declaredTooLarge(c, op)
+  if (oversized) return oversized
 
   let body: VoiceTtsBody
   try {
@@ -205,97 +652,40 @@ export async function handleVoiceTts(
     return c.json({ error: 'Invalid JSON body' }, 400)
   }
 
-  const modelId =
-    typeof body.modelId === 'string' && body.modelId.length > 0
-      ? body.modelId
-      : DEFAULT_HOSTED_TTS_MODEL
-  const model = getVoiceTtsModel(modelId)
-  if (!model) {
-    return c.json(
-      {
-        error: 'unknown_model',
-        detail: `Unknown TTS model '${modelId}'`,
-        allowed: VOICE_TTS_MODEL_IDS,
-      },
-      400,
-    )
-  }
-
+  // The alias's own nicety runs *before* the row's required-field check: a
+  // body of only `audioTags` is a preview request, and the line it builds is
+  // the `text` the row requires. `/voice/op/text-to-speech` itself has no
+  // audioTags handling, so it keeps requiring `text`.
   const tags = normalizeAudioTags(body.audioTags) ?? []
   const text =
     typeof body.text === 'string' && body.text.trim().length > 0
       ? body.text
       : buildPreviewLine(tags, body.characterName ?? 'your companion')
-
   if (!text.trim()) {
     return c.json(
       { error: 'bad_request', detail: 'text is required (or pass audioTags to build a preview line)' },
       400,
     )
   }
-  if (text.length > model.maxChars) {
-    return c.json(
-      {
-        error: 'text_too_long',
-        detail: `${model.id} accepts at most ${model.maxChars} characters per request; got ${text.length}`,
-        modelId: model.id,
-        maxChars: model.maxChars,
-        length: text.length,
-      },
-      413,
-    )
+
+  const requestedModel =
+    typeof body.modelId === 'string' && body.modelId.length > 0 ? body.modelId : undefined
+  const parsed = parseVoiceOpJsonBody(op, {
+    text,
+    ...(typeof body.voiceId === 'string' ? { voiceId: body.voiceId } : {}),
+    ...(requestedModel ? { modelId: requestedModel } : {}),
+    ...(body.voiceSettings ? { voiceSettings: body.voiceSettings } : {}),
+  })
+  if (!parsed.ok) {
+    return rejectVoiceOp(c, parsed)
   }
 
-  // Request validation happens before the server-key check: a bad model id
-  // is the caller's bug and must read as 400 even on a host without a key.
-  if (isShogoCloudForwarding()) {
-    return forwardVoiceToCloud(c, '/voice/tts', body)
-  }
-
-  const resolved = resolveShogoElevenLabsClient()
-  if ('error' in resolved) {
-    return c.json({ error: 'voice_unavailable', detail: resolved.error }, 503)
-  }
-
-  const resolveVoiceId = deps.resolveVoiceId ?? defaultResolveVoiceId
-  const voiceId =
-    typeof body.voiceId === 'string' && body.voiceId.trim().length > 0
-      ? body.voiceId.trim()
-      : await resolveVoiceId(projectId)
-
-  const voiceSettings =
-    normalizeVoiceSettings(body.voiceSettings) ?? {
-      stability: 0.5,
-      similarity_boost: 0.8,
-      style: 0,
-    }
-
-  try {
-    const result = await resolved.client.textToSpeech({ voiceId, text, modelId, voiceSettings })
-    const headers: Record<string, string> = {
-      'content-type': result.contentType,
-      'cache-control': 'private, max-age=3600',
-      'x-tts-model-used': result.modelId,
-      'x-tts-model-requested': result.requestedModel,
-    }
-    if (result.fellBack) {
-      headers.warning = `199 - "model ${result.requestedModel} not available, used ${result.modelId}"`
-      console.warn(
-        `[Voice] tts fell back: requested ${result.requestedModel}, used ${result.modelId} (${result.fallbackReason ?? 'no reason reported'})`,
-      )
-    }
-    return new Response(result.audio, { status: 200, headers })
-  } catch (err: any) {
-    console.error('[Voice] tts failed:', err?.message || err)
-    return c.json(
-      {
-        error: 'TTS failed',
-        detail: err?.message ?? errorJson(err),
-        elBody: err?.body ?? undefined,
-      },
-      502,
-    )
-  }
+  return executeVoiceOp(
+    c,
+    op,
+    { fields: parsed.fields, resolved: { text } },
+    deps,
+  )
 }
 
 /** Body shape for `POST /voice/music`. */
@@ -313,21 +703,15 @@ export interface VoiceMusicBody {
  *
  * `projectId` is optional for back-compat with session callers, but when it
  * is present the caller is authorized against it (runtime tokens must match).
+ * A thin alias onto the `music` registry row, like {@link handleVoiceTts}.
  */
 export async function handleVoiceMusic(
   c: Context,
   deps: VoiceMediaDeps = {},
 ): Promise<Response> {
-  const projectId = c.req.query('projectId')?.trim() || undefined
-  const scopeViolation = runtimeScopeViolation(c, projectId)
-  if (scopeViolation) return scopeViolation
-  if (projectId) {
-    const authorize = deps.authorize ?? defaultAuthorize
-    const authz = await authorize(c, projectId)
-    if (!authz.ok) {
-      return c.json({ error: 'forbidden', detail: authz.message }, authz.status as 400 | 401 | 403 | 404)
-    }
-  }
+  const op = getVoiceOp('music')!
+  const oversized = declaredTooLarge(c, op)
+  if (oversized) return oversized
 
   let body: VoiceMusicBody
   try {
@@ -336,64 +720,33 @@ export async function handleVoiceMusic(
     return c.json({ error: 'Invalid JSON body' }, 400)
   }
 
-  const hasPrompt = typeof body.prompt === 'string' && body.prompt.trim().length > 0
-  const hasPlan = body.compositionPlan != null && typeof body.compositionPlan === 'object'
-  if (hasPrompt === hasPlan) {
-    return c.json({ error: 'Provide exactly one of `prompt` or `compositionPlan`' }, 400)
+  const parsed = parseVoiceOpJsonBody(op, {
+    ...(typeof body.prompt === 'string' ? { prompt: body.prompt } : {}),
+    ...(body.compositionPlan != null ? { compositionPlan: body.compositionPlan } : {}),
+    ...(typeof body.musicLengthMs === 'number' ? { musicLengthMs: body.musicLengthMs } : {}),
+    ...(typeof body.modelId === 'string' ? { modelId: body.modelId } : {}),
+    ...(typeof body.forceInstrumental === 'boolean'
+      ? { forceInstrumental: body.forceInstrumental }
+      : {}),
+    ...(typeof body.outputFormat === 'string' ? { outputFormat: body.outputFormat } : {}),
+  })
+  if (!parsed.ok) {
+    return rejectVoiceOp(c, parsed)
   }
 
-  // Same precedence as `/voice/tts`: a cloud-authed desktop has no local key,
-  // and the cloud holds the pooled one.
-  if (isShogoCloudForwarding()) {
-    return forwardVoiceToCloud(c, '/voice/music', body)
-  }
-
-  const resolved = resolveShogoElevenLabsClient()
-  if ('error' in resolved) {
-    return c.json({ error: 'voice_unavailable', detail: resolved.error }, 503)
-  }
-
-  try {
-    const { audio, contentType } = await resolved.client.composeMusic({
-      ...(hasPrompt ? { prompt: body.prompt!.trim() } : {}),
-      ...(hasPlan ? { compositionPlan: body.compositionPlan } : {}),
-      ...(typeof body.musicLengthMs === 'number' ? { musicLengthMs: body.musicLengthMs } : {}),
-      ...(typeof body.modelId === 'string' && body.modelId ? { modelId: body.modelId } : {}),
-      ...(typeof body.forceInstrumental === 'boolean'
-        ? { forceInstrumental: body.forceInstrumental }
-        : {}),
-      ...(typeof body.outputFormat === 'string' && body.outputFormat
-        ? { outputFormat: body.outputFormat }
-        : {}),
-    })
-    return new Response(audio, {
-      status: 200,
-      headers: {
-        'content-type': contentType,
-        'cache-control': 'private, max-age=3600',
-      },
-    })
-  } catch (err: any) {
-    console.error('[Voice] music generation failed:', err?.message || err)
-    return c.json(
-      {
-        error: 'Music generation failed',
-        detail: err?.message ?? errorJson(err),
-        elBody: err?.body ?? undefined,
-      },
-      502,
-    )
-  }
+  return executeVoiceOp(c, op, { fields: parsed.fields, allowUnscoped: true }, deps)
 }
 
 /**
  * Hono router for the hosted media endpoints. Mount it unconditionally in
- * `apps/api/src/server.ts` so `/api/voice/tts` exists in cloud *and* desktop.
+ * `apps/api/src/server.ts` so `/api/voice/op/*` exists in cloud *and* desktop.
  */
 export function voiceMediaRoutes(deps: VoiceMediaDeps = {}) {
   const router = new Hono()
   router.use('/voice/*', apiKeyOrSession)
   router.post('/voice/tts', (c) => handleVoiceTts(c, deps))
   router.post('/voice/music', (c) => handleVoiceMusic(c, deps))
+  router.get('/voice/op/:opId', (c) => handleVoiceOp(c, deps))
+  router.post('/voice/op/:opId', (c) => handleVoiceOp(c, deps))
   return router
 }

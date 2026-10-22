@@ -19,6 +19,7 @@ import { CornerDownRight, MessageSquare } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { teamChatApi, type ChatMessage } from '../../lib/team-chat-api'
 import { formatShortTime } from '../../lib/team-chat-time'
+import { markdownToPlainText, renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import type { MessageQuote } from '../../lib/message-quotes'
 
 const api = teamChatApi()
@@ -106,8 +107,23 @@ function channelLabel(conversation: NonNullable<ChatMessage['conversation']>): s
   return conversation.name ? `#${conversation.name}` : 'Channel'
 }
 
-function excerpt(message: ChatMessage): string {
-  const text = (message.text ?? '').replace(/\s+/g, ' ').trim()
+/**
+ * The opening of the quoted message as a reader should see it: mention tokens
+ * turned into the names they stand for, and markdown reduced to the text it
+ * marks up.
+ *
+ * The body this reads is the message's stored source, so a mention arrives as
+ * `<@u:200cca11-…>` — a wire token, not a name. Showing that verbatim is what
+ * made a quote read as a wall of ids. `names` is the same workspace-wide map
+ * the message body resolves its own mentions from, so the quote names people
+ * exactly as the channel does, and an unknown id degrades to `@someone` rather
+ * than to an id.
+ *
+ * Cut to one line and left untruncated: the card clamps it with `numberOfLines`,
+ * which adds its own ellipsis on both platforms.
+ */
+function excerpt(message: ChatMessage, names: MentionNames): string {
+  const text = markdownToPlainText(renderMentions(message.text ?? '', names))
   if (text) return text
   const count = message.attachments.length
   if (count) return count === 1 ? 'Shared a file' : `Shared ${count} files`
@@ -116,10 +132,11 @@ function excerpt(message: ChatMessage): string {
 
 export interface MessageQuoteCardProps {
   quote: MessageQuote
+  names: MentionNames
   className?: string
 }
 
-export function MessageQuoteCard({ quote, className }: MessageQuoteCardProps) {
+export function MessageQuoteCard({ quote, names, className }: MessageQuoteCardProps) {
   const router = useRouter()
   const state = useQuotedMessage(quote.target.messageId)
   const { conversationId, messageId, threadRootId } = quote.target
@@ -200,7 +217,7 @@ export function MessageQuoteCard({ quote, className }: MessageQuoteCardProps) {
           <Text className="text-[11px] text-muted-foreground">{formatShortTime(message.createdAt)}</Text>
         </View>
         <Text className="mt-0.5 text-sm text-muted-foreground" numberOfLines={3}>
-          {deleted ? 'This message was deleted.' : excerpt(message)}
+          {deleted ? 'This message was deleted.' : excerpt(message, names)}
         </Text>
         {deleted ? null : (
           <Text className="mt-1 text-[11px] font-medium text-primary">Jump to message</Text>
@@ -211,12 +228,12 @@ export function MessageQuoteCard({ quote, className }: MessageQuoteCardProps) {
 }
 
 /** Every quoted message in one body, in the order they appeared. */
-export function MessageQuoteCards({ quotes, className }: { quotes: MessageQuote[]; className?: string }) {
+export function MessageQuoteCards({ quotes, names, className }: { quotes: MessageQuote[]; names: MentionNames; className?: string }) {
   if (!quotes.length) return null
   return (
     <View className={cn('gap-1.5', className)} testID="message-quotes">
       {quotes.map((quote) => (
-        <MessageQuoteCard key={`${quote.target.messageId}:${quote.href}`} quote={quote} />
+        <MessageQuoteCard key={`${quote.target.messageId}:${quote.href}`} quote={quote} names={names} />
       ))}
     </View>
   )

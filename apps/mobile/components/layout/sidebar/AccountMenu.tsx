@@ -55,6 +55,12 @@ export interface AccountMenuProps extends UserMenuProps {
   currentKey: string | null;
   onSelectEntry: (entry: WorkspaceEntry) => void;
   currentWorkspace: any;
+  /**
+   * What the identity tile names — a paired computer's own workspace while one
+   * is open (SHO-130). `currentWorkspace` stays the cloud workspace because
+   * billing and membership are the cloud account's.
+   */
+  identityWorkspace?: { id?: string | null; name?: string | null } | null;
   billingData: any;
   workspacePlan: { planId: string; status: string | null } | null;
   allPlans: Record<string, { planId: string; status: string | null }>;
@@ -83,6 +89,7 @@ export function AccountMenu({
   currentKey,
   onSelectEntry,
   currentWorkspace,
+  identityWorkspace,
   billingData,
   workspacePlan,
   allPlans,
@@ -94,6 +101,9 @@ export function AccountMenu({
   localMode,
   tile,
 }: AccountMenuProps) {
+  // The workspace the user is actually looking at; the cloud workspace only
+  // when no machine workspace is open.
+  const identity = identityWorkspace ?? currentWorkspace
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
   const isNative = isNativePlatform();
@@ -107,10 +117,10 @@ export function AccountMenu({
       {tile ? (
         <View
           className="h-10 w-10 items-center justify-center rounded-xl"
-          style={{ backgroundColor: workspaceColor(currentWorkspace?.id) }}
+          style={{ backgroundColor: workspaceColor(identity?.id) }}
         >
           <Text className="text-base font-bold text-white">
-            {workspaceInitial(currentWorkspace?.name)}
+            {workspaceInitial(identity?.name)}
           </Text>
         </View>
       ) : (
@@ -127,7 +137,7 @@ export function AccountMenu({
             isNative ? density.text.body : "text-[11px]",
           )}
         >
-          {workspaceInitial(currentWorkspace?.name)}
+          {workspaceInitial(identity?.name)}
         </Text>
       </View>
       )}
@@ -141,7 +151,7 @@ export function AccountMenu({
             numberOfLines={isNative ? 2 : 1}
             ellipsizeMode="tail"
           >
-            {currentWorkspace?.name || "Workspace"}
+            {identity?.name || "Workspace"}
           </Text>
           <Text
             className={cn(
@@ -170,7 +180,7 @@ export function AccountMenu({
       <Pressable
         onPress={() => onNavigate(ACCOUNT_SCREEN_HREF)}
         role="button"
-        accessibilityLabel={`${currentWorkspace?.name || "Workspace"}, ${user?.name || "User"} — open account`}
+        accessibilityLabel={`${identity?.name || "Workspace"}, ${user?.name || "User"} — open account`}
         accessibilityHint="Opens account, workspace, and billing"
         className={cn(
           "flex-row items-center active:opacity-80 flex-1 min-w-0",
@@ -195,7 +205,7 @@ export function AccountMenu({
         <Pressable
           {...triggerProps}
           role="button"
-          accessibilityLabel={`${currentWorkspace?.name || "Workspace"}, ${user?.name || "User"} — open account menu`}
+          accessibilityLabel={`${identity?.name || "Workspace"}, ${user?.name || "User"} — open account menu`}
           accessibilityHint="Opens menu to switch workspace, navigate, and manage your account"
           accessibilityState={{ expanded: isOpen }}
           className={cn(
@@ -273,6 +283,7 @@ export function WorkspaceHeaderButton({
   currentKey,
   onSelectEntry,
   currentWorkspace,
+  identityWorkspace,
   billingData,
   workspacePlan,
   allPlans,
@@ -283,9 +294,12 @@ export function WorkspaceHeaderButton({
   onCreatePersonalWorkspace,
   localMode,
 }: AccountMenuProps) {
+  // The workspace the user is actually looking at; the cloud workspace only
+  // when no machine workspace is open.
+  const identity = identityWorkspace ?? currentWorkspace
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
-  const name = currentWorkspace?.name || "Workspace";
+  const name = identity?.name || "Workspace";
 
   return (
     <Popover
@@ -355,6 +369,7 @@ export function AccountMenuBody({
   currentKey,
   onSelectEntry,
   currentWorkspace,
+  identityWorkspace,
   billingData,
   workspacePlan,
   allPlans,

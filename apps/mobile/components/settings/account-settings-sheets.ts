@@ -28,6 +28,7 @@ type SheetTabDef = Pick<SettingsTabDefinition, "id" | "Icon"> & {
 const SHEET_TAB_IDS = new Set<SheetTabId>([
   "workspace",
   "people",
+  "chat",
   "models",
   "integrations",
   "automations",
@@ -51,12 +52,14 @@ export function accountSettingsSheetGroups({
   localMode,
   showBilling,
   platform,
+  teamChat,
 }: {
   localMode?: boolean;
   showBilling?: boolean;
   platform?: string;
+  teamChat?: boolean;
 }): Array<{ title: string; tabs: Array<SheetTabDef & { label: string }> }> {
-  const tabs = visibleSettingsTabs({ localMode, showBilling, platform })
+  const tabs = visibleSettingsTabs({ localMode, showBilling, platform, teamChat })
     .filter((tab) => isSheetTab(tab.id))
     .map((tab) => ({
       id: tab.id as SheetTabId,

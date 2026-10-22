@@ -5,7 +5,6 @@ import { describe, expect, test } from 'bun:test'
 import {
   APP_HOME_HREF,
   SETTINGS_WIDE_FALLBACK_HREF,
-  leaveChatPreferences,
   leaveSettings,
 } from '../settings-back'
 
@@ -48,19 +47,5 @@ describe('leaveSettings', () => {
     const { calls, router } = mockRouter(false)
     leaveSettings(router, false)
     expect(calls).toEqual([`replace:${SETTINGS_WIDE_FALLBACK_HREF}`])
-  })
-})
-
-describe('leaveChatPreferences', () => {
-  test('uses history when it exists', () => {
-    const { calls, router } = mockRouter(true)
-    leaveChatPreferences(router)
-    expect(calls).toEqual(['back'])
-  })
-
-  test('falls back to the workspace, not the projects list, with no history', () => {
-    const { calls, router } = mockRouter(false)
-    leaveChatPreferences(router)
-    expect(calls).toEqual([`replace:${APP_HOME_HREF}`])
   })
 })

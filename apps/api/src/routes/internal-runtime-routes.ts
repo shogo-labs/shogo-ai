@@ -69,7 +69,7 @@ import {
   type RequesterTicket,
 } from '../lib/requester-ticket'
 import { signResumeToken } from '../services/integration-credentials/resume'
-import { resolveChatByRef } from '../lib/chat-mentionables'
+import { resolveChatByRef, resolveChatForUser, listChatMentionables } from '../lib/chat-mentionables'
 import { handOffToChat } from '../services/chat-mention-delivery.service'
 import { remapCheckpointCommitShas } from '../services/checkpoint-repo-repair.service'
 import { waitForAgentCall } from '../lib/agent-call-store'
@@ -758,7 +758,19 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
     const target = await resolveChatByRef(ticket.userId, chat)
     if (!target) {
-      return c.json({ error: { code: 'chat_not_found', message: `No chat "${chat}" the requester can open` } }, 404)
+      // A wrong id is one correction, not a loop: hand back the chats this
+      // person can actually open so the agent stops guessing (SHO-118).
+      const reachable = await listChatMentionables({ userId: ticket.userId, limit: 8 })
+      return c.json(
+        {
+          error: {
+            code: 'chat_not_found',
+            message: `No chat "${chat}" the requester can open`,
+            reachable: reachable.map((entry) => entry.title),
+          },
+        },
+        404,
+      )
     }
     const delivered = await handOffToChat({
       targetChatId: target.id,
@@ -770,6 +782,46 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'not_delivered', message: 'The chat could not take the message' } }, 409)
     }
     return c.json({ delivered })
+  })
+
+  /**
+   * `chat-reachable`: which of these chat ids the requester can actually open.
+   * The runtime's "other chats" list comes from its own session store and is
+   * independent of this API's access rule, which is how the prompt came to
+   * advertise chats `chat_handoff` then refused. The runtime asks here so the
+   * list it renders cannot over-promise (SHO-118).
+   */
+  app.get('/workspaces/:workspaceId/chat-reachable', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    const ids = (c.req.query('ids') ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+      .slice(0, 20)
+    if (!ids.length) return c.json({ reachable: [] })
+    const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), workspaceId)
+    if (!ticket) {
+      return c.json({ error: { code: 'requester_required', message: 'A signed requester is required for this action' } }, 403)
+    }
+    const resolved = await Promise.all(ids.map((id) => resolveChatForUser(ticket.userId, id).catch(() => null)))
+    return c.json({ reachable: resolved.flatMap((chat, index) => (chat ? [ids[index]] : [])) })
+  })
+
+  /**
+   * The workspace-wide agent pause, so a woken runtime can say so in its prompt
+   * and stop instead of starting work (SHO-118). The pause is set and lifted
+   * through `agent_run_stop`; this only reads it.
+   */
+  app.get('/workspaces/:workspaceId/agents-paused', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    const { readWorkspacePause } = await import('../services/workspace-pause.service')
+    return c.json({ paused: await readWorkspacePause(workspaceId) })
   })
 
   // ---------------------------------------------------------------------------

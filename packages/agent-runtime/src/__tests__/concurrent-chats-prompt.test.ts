@@ -56,6 +56,37 @@ describe('buildConcurrentChatsPrompt', () => {
     expect(text).not.toContain('(and 0 more)')
   })
 
+  test('names the arguments the tool actually takes', () => {
+    const text = buildConcurrentChatsPrompt([chat()])!
+    expect(text).toContain('chat_handoff({ chat: "<id>", message: "…" })')
+    // The schema only knows `chat`; the prompt must not teach `chat_id`.
+    expect(text).not.toContain('chat_handoff` with that chat id')
+  })
+
+  // SHO-118: the runtime's session list and the API's access rule are
+  // independent, so the list used to advertise chats `chat_handoff` 404'd on.
+  test('labels a chat the API would refuse instead of describing it', () => {
+    const text = buildConcurrentChatsPrompt(
+      [chat({ id: 'open', label: 'Open chat' }), chat({ id: 'closed', label: 'Closed chat' })],
+      { reachable: ['open'] },
+    )!
+    expect(text).toContain('- "Open chat" — <@c:open> — idle 2m')
+    expect(text).toContain('- "Closed chat" — <@c:closed> — not openable from here')
+    expect(text).not.toContain('- "Closed chat" — <@c:closed> — idle 2m')
+    expect(text).toContain('say so once and move on')
+  })
+
+  test('with no answer, or every chat reachable, the list renders as before', () => {
+    const unlabelled = buildConcurrentChatsPrompt([chat({ id: 'a', label: 'A' })])!
+    expect(unlabelled).not.toContain('not openable')
+    expect(unlabelled).not.toContain('say so once and move on')
+
+    const allOpen = buildConcurrentChatsPrompt([chat({ id: 'a', label: 'A' })], { reachable: ['a'] })!
+    expect(allOpen).toContain('- "A" — <@c:a> — idle 2m')
+    expect(allOpen).not.toContain('not openable')
+    expect(allOpen).not.toContain('say so once and move on')
+  })
+
   test('isolatedEdits keeps shared DB/preview warnings but drops the shared-tree ones', () => {
     const text = buildConcurrentChatsPrompt([chat()], { isolatedEdits: true })!
 

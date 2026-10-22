@@ -50,13 +50,23 @@ function idleLabel(idleSeconds: number): string {
   return `idle ${Math.round(seconds / 3600)}h`
 }
 
+/** How a chat the API would refuse is marked, so the list never over-promises. */
+export const NOT_OPENABLE_LABEL = 'not openable from here'
+
 /**
  * Build the "other chats" section, or `null` when this chat has the workspace
  * to itself (the common case must add zero prompt bytes).
+ *
+ * `reachable` is the API's own answer for these ids (`chat-reachable`). The
+ * runtime's session list and the API's access rule are independent, so the
+ * prompt used to advertise chats `chat_handoff` then 404'd on. When the answer
+ * is known, an unreachable chat is labelled instead of described; when it is
+ * not (no answer, or a slow one), the list renders exactly as before — a turn
+ * must never wait on reachability.
  */
 export function buildConcurrentChatsPrompt(
   chats: ConcurrentChat[],
-  opts: { isolatedEdits?: boolean } = {},
+  opts: { isolatedEdits?: boolean; reachable?: string[] } = {},
 ): string | null {
   if (chats.length === 0) return null
 
@@ -66,19 +76,28 @@ export function buildConcurrentChatsPrompt(
   })
   const shown = ordered.slice(0, MAX_ROWS)
   const hidden = ordered.length - shown.length
+  const reachable = opts.reachable ? new Set(opts.reachable) : null
+  const isOpenable = (id: string) => !reachable || reachable.has(id)
 
   const lines: string[] = ['## Other chats in this workspace', 'These chats are open in this same workspace right now:']
   for (const chat of shown) {
     lines.push(
-      `- "${chat.label}" — <@c:${chat.id}> — ${chat.running ? 'turn running now' : idleLabel(chat.idleSeconds)}`,
+      `- "${chat.label}" — <@c:${chat.id}> — ${
+        isOpenable(chat.id) ? (chat.running ? 'turn running now' : idleLabel(chat.idleSeconds)) : NOT_OPENABLE_LABEL
+      }`,
     )
   }
   if (hidden > 0) lines.push(`(and ${hidden} more)`)
 
   lines.push('')
   lines.push(
-    '- To hand work to one of them, call `chat_handoff` with that chat id (or write `<@c:CHAT_ID>` in a message the person sends). The message arrives there with a one-line origin and that chat\'s agent starts its turn; nothing is posted back here automatically.',
+    '- To hand work to one of them, call `chat_handoff({ chat: "<id>", message: "…" })` (or write `<@c:CHAT_ID>` in a message the person sends). The message arrives there with a one-line origin and that chat\'s agent starts its turn; nothing is posted back here automatically.',
   )
+  if (reachable && shown.some((chat) => !isOpenable(chat.id))) {
+    lines.push(
+      `- A chat marked "${NOT_OPENABLE_LABEL}" answers \`chat_not_found\`; say so once and move on instead of retrying other ids.`,
+    )
+  }
   lines.push(
     '- A `<@c:CHAT_ID>` the person already sent has been delivered to that chat — do not re-send it with `chat_handoff`.',
   )

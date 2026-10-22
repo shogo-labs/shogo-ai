@@ -33,6 +33,9 @@ import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
 import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig, type PerCallUsage, type AgentLoopResult } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
+import { recordCompaction, recordTurnBoundary, isPrefixOf } from './context-telemetry'
+import { summariseTurn, lastTurnStart } from './turn-boundary'
+import { renderTranscriptForSummary } from './compaction-transcript'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, subagentOrchestrationDisabled, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
@@ -109,7 +112,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, runtimeServesProjectId, type SessionWakeState } from './internal-api'
+import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
 import {
   createToolProfile,
   deferredToolsEnabled,
@@ -127,7 +130,7 @@ import {
   BROWSER_TOOL_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
-import { defaultShellCwd, workspaceKind } from './workspace-runtime-mode'
+import { defaultShellCwd, resolveRuntimeIdentity, workspaceKind } from './workspace-runtime-mode'
 import { applyCapabilityProfile, CAPABILITY_PROFILES, type CapabilityProfileName } from './capability-profiles'
 import { FileStateCache } from './file-state-cache'
 import { buildMemorySection } from './memory-section'
@@ -751,6 +754,13 @@ export class AgentGateway {
   private _onLog?: (line: string) => void
   /** Per-section prompt overrides set by DSPy optimization via POST /agent/prompt-override */
   private promptOverrides = new Map<string, string>()
+  /**
+   * This turn's API-side facts, read once before the prompt is built and dropped
+   * at the next turn: the chats the acting person can actually open, and the
+   * workspace agent pause in force (SHO-118). Absent means "render as before".
+   */
+  private turnReachable = new Map<string, string[]>()
+  private turnPause = new Map<string, WorkspaceAgentsPause | null>()
   /** Current guide registry built during loadBootstrapContext, consumed by tool context */
   private currentGuideRegistry?: Map<string, string>
   /** Per-section prompt breakdown from the last loadBootstrapContext() call */
@@ -882,6 +892,13 @@ export class AgentGateway {
    * Not consulted for correctness; safe to clear or leave stale.
    */
   private turnCounters = new Map<string, number>()
+  /**
+   * Per-position prefix tags of the last turn's starting history. The next
+   * turn's start should begin with them; when it does not, the compaction that
+   * ran between the turns rewrote bytes the provider had already cached
+   * (`context_turn_boundary.prefixStable`, SHO-122).
+   */
+  private turnPrefixes = new Map<string, string[]>()
   /** Shared index engine for workspace-wide search (code + files) */
   private indexEngine: import('./index-engine').IndexEngine | null = null
   /** Workspace knowledge graph for structural analysis */
@@ -1651,30 +1668,27 @@ export class AgentGateway {
       // so each excerpt is already bounded. The old 500-char-per-message /
       // 12k-char-prompt caps threw away ~99% of a long turn — including the
       // decisions the summary exists to preserve (SHO-96).
-      const messageTexts = messages.map((m) => {
-        if (m.role === 'user') {
-          const content = typeof m.content === 'string' ? m.content : (m.content as any[]).filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ')
-          return `User: ${content}`
-        }
-        if (m.role === 'assistant') {
-          const text = m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
-          const toolCalls = m.content
-            .filter((c: any) => c.type === 'toolCall')
-            .map((c: any) => `${c.name}(${JSON.stringify(c.arguments ?? {}).slice(0, 400)})`)
-          return [`Assistant: ${text}`, ...toolCalls.map((t) => `Tool call: ${t}`)].filter((s) => s.trim() && s !== 'Assistant: ').join('\n')
-        }
-        if (m.role === 'toolResult') {
-          const text = m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
-          return `Tool result: ${text}`
-        }
-        return ''
-      }).filter(Boolean).join('\n')
+      //
+      // Every toolCall is rendered, with its arguments, as `→ tool: name(args)`
+      // (compaction-transcript.ts). Without that line the summarizer can only
+      // write narration, and a model acting on narration invents a tool name
+      // — `str_replace` was called eight times that way (SHO-122).
+      const messageTexts = renderTranscriptForSummary(messages)
 
       // Fold: when this excerpt follows an earlier chunk, the model must carry
       // the running summary forward instead of replacing it.
+      const contract =
+        'Output these sections, in this order, and nothing else:\n' +
+        '## Decisions\n' +
+        '## Files touched\n' +
+        '## Current state\n' +
+        '  (what is done, what is in progress, the next step)\n' +
+        '## Tools used\n' +
+        '  (exact names as `name` ×count)\n' +
+        'Use only tool names that appear in the transcript — never invent one.'
       const system = previousSummary
-        ? 'You maintain a running summary of a long agent turn. You receive the running summary so far and a new excerpt of the conversation. Merge the excerpt into the running summary. Preserve: key decisions, files edited, errors encountered, and current task state. Drop only redundant detail. Output only the merged summary.'
-        : 'Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific. Output only the summary.'
+        ? `You maintain a running summary of a long agent turn. You receive the running summary so far and a new excerpt of the conversation. Merge the excerpt into the running summary. Preserve: key decisions, files edited, errors encountered, and current task state. Drop only redundant detail.\n\n${contract}`
+        : `Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific.\n\n${contract}`
 
       const prompt = previousSummary
         ? `Running summary so far:\n${previousSummary}\n\nNew excerpt:\n${messageTexts}`
@@ -2838,6 +2852,7 @@ export class AgentGateway {
     // so fresh decisions are taken against the new (empty) history.
     this.contentReplacementStates.delete(sessionId)
     this.turnCounters.delete(sessionId)
+    this.turnPrefixes.delete(sessionId)
     this.shellCwd.delete(sessionId)
     this.disposeSessionState(sessionId)
   }
@@ -2950,6 +2965,7 @@ export class AgentGateway {
       if (wt) sessionWorkspaceDir = wt
     }
 
+    await this.primeTurnFacts(sessionId)
     let systemPrompt = this.loadBootstrapContext(sessionId, turnConfig, resolvedChatContext)
 
     console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
@@ -3473,6 +3489,10 @@ export class AgentGateway {
     const inLoopBudgetTokens = resolveInLoopContextBudgetTokens(autoCompactTokens)
     let history = this.sessionManager.buildHistory(sessionId)
     history = applyToolResultBudget(history, contextBudgetChars)
+    // Turn-scoped telemetry state: the first call's usage, and whether a
+    // compaction ran at this boundary (SHO-122).
+    let turnFirstCallUsage: PerCallUsage | undefined
+    let turnCompaction: { before: number; after: number } | null = null
     const mc = microcompact(history)
     history = mc.messages
     history = snipConsumedResults(history)
@@ -3488,6 +3508,17 @@ export class AgentGateway {
         : undefined
       const preCompactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
       if (preCompactResult) {
+        turnCompaction = { before: preCompactResult.messagesBefore, after: preCompactResult.messagesAfter }
+        recordCompaction({
+          sessionId,
+          trigger: 'pre-turn',
+          messagesBefore: preCompactResult.messagesBefore,
+          messagesAfter: preCompactResult.messagesAfter,
+          summaryChars: preCompactResult.summary.length,
+          filesTouched: preCompactResult.filesTouched ?? [],
+          toolsUsed: preCompactResult.toolsUsed ?? [],
+          foldedRounds: preCompactResult.foldedRounds ?? 0,
+        })
         console.log(
           `${this.logPrefix} Pre-turn autocompact: ${preCompactResult.messagesBefore} -> ${preCompactResult.messagesAfter} messages`
         )
@@ -4107,6 +4138,16 @@ export class AgentGateway {
         )
       }
 
+      // --- Turn-boundary telemetry (SHO-122) ---------------------------------
+      // The previous turn, as the model will actually see it on this turn's
+      // first request: every message, every tool call by name, and how much of
+      // it is already a placeholder. `prefixStable` is the cache-relevant
+      // invariant — this turn's prefix still begins with the previous turn's.
+      const knownPrefix = this.turnPrefixes.get(sessionId)
+      const prefixStable = knownPrefix ? isPrefixOf(knownPrefix, historyPrint.positions) : null
+      this.turnPrefixes.set(sessionId, historyPrint.positions)
+      const previousTurn = summariseTurn(history, lastTurnStart(history))
+
       // Reset per-turn edit tracking so read_lints auto-scope starts clean.
       this.fileStateCache.resetTurn()
 
@@ -4206,6 +4247,17 @@ export class AgentGateway {
             : undefined
           const r = await this.sessionManager.compact(sessionId, fileStateSummary, 4)
           if (!r) return null
+          turnCompaction = { before: r.messagesBefore, after: r.messagesAfter }
+          recordCompaction({
+            sessionId,
+            trigger: 'reactive',
+            messagesBefore: r.messagesBefore,
+            messagesAfter: r.messagesAfter,
+            summaryChars: r.summary.length,
+            filesTouched: r.filesTouched ?? [],
+            toolsUsed: r.toolsUsed ?? [],
+            foldedRounds: r.foldedRounds ?? 0,
+          })
           console.log(`${this.logPrefix} Reactive compaction: ${r.messagesBefore} -> ${r.messagesAfter} messages`)
           // LLM autocompact rewrites the prefix — drop per-session replacement
           // decisions so fresh ones are taken against the new history. Keeping
@@ -4258,6 +4310,15 @@ export class AgentGateway {
             // turn-boundary and reactive paths).
             this.contentReplacementStates.delete(sessionId)
             runningContextEstimate = event.tokensAfter
+            recordCompaction({
+              sessionId,
+              trigger: 'mid-turn',
+              messagesBefore: event.messagesBefore,
+              messagesAfter: event.messagesAfter,
+              summaryChars: event.summaryChars,
+              filesTouched: [],
+              toolsUsed: [],
+            })
             console.log(
               `${this.logPrefix} Mid-turn summarization (${event.trigger}): ` +
               `${event.tokensBefore} -> ${event.tokensAfter} tokens, ` +
@@ -4315,6 +4376,20 @@ export class AgentGateway {
         },
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
+        },
+        // First call of the turn carries the cache numbers `context_turn_boundary`
+        // reports: input/cacheRead/cacheWrite as the provider billed them.
+        onIteration: (iteration, info) => {
+          if (iteration === 1 && info?.usage) {
+            const usage = info.usage
+            turnFirstCallUsage = {
+              iteration: 1,
+              input: usage.input ?? 0,
+              output: usage.output ?? 0,
+              cacheRead: usage.cacheRead ?? 0,
+              cacheWrite: usage.cacheWrite ?? 0,
+            }
+          }
         },
         takeInjectedMessages: () => {
           // One message per finished task: the agent acts on each result as its
@@ -4784,6 +4859,25 @@ export class AgentGateway {
       // stop always has the interrupted turn's context.
       this.sessionManager.addMessages(sessionId, ...result.newMessages)
 
+      // Turn-boundary telemetry (SHO-122): what this turn started with, what the
+      // previous turn actually contained at that moment, and the cache numbers
+      // of its first model call. Emitted before any post-turn compaction, so
+      // `compactedHere` describes the boundary itself.
+      recordTurnBoundary({
+        sessionId,
+        model: modelId,
+        boundaryIndex: turnNum,
+        messagesAtStart: historyPrint.count,
+        previousTurn,
+        compactedHere: turnCompaction !== null,
+        compactedBefore: turnCompaction?.before ?? null,
+        compactedAfter: turnCompaction?.after ?? null,
+        prefixStable,
+        inputTokens: turnFirstCallUsage?.input ?? null,
+        cacheReadTokens: turnFirstCallUsage?.cacheRead ?? null,
+        cacheWriteTokens: turnFirstCallUsage?.cacheWrite ?? null,
+      })
+
       if (this.sessionManager.needsCompaction(session)) {
         const fileStateSummary = this.fileStateCache.size > 0
           ? this.fileStateCache.getSummary(this.workspaceDir)
@@ -4791,6 +4885,16 @@ export class AgentGateway {
         const tokensBeforePostTurn = this.sessionManager.estimateTokens(session)
         const compactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
         if (compactResult) {
+          recordCompaction({
+            sessionId,
+            trigger: 'post-turn',
+            messagesBefore: compactResult.messagesBefore,
+            messagesAfter: compactResult.messagesAfter,
+            summaryChars: compactResult.summary.length,
+            filesTouched: compactResult.filesTouched ?? [],
+            toolsUsed: compactResult.toolsUsed ?? [],
+            foldedRounds: compactResult.foldedRounds ?? 0,
+          })
           console.log(
             `${this.logPrefix} Post-turn compaction: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
           )
@@ -5097,6 +5201,9 @@ export class AgentGateway {
       if (teamCtx) parts.push(teamCtx)
     }
 
+    const workspacePaused = this.buildWorkspacePausedContext(sessionId)
+    if (workspacePaused) parts.push(workspacePaused)
+
     const concurrentChats = this.buildConcurrentChatsContext(sessionId)
     if (concurrentChats) parts.push(concurrentChats)
 
@@ -5167,6 +5274,9 @@ export class AgentGateway {
       const teamCtx = this.buildTeamContext(sessionId)
       if (teamCtx) parts.push(teamCtx)
     }
+
+    const workspacePaused = this.buildWorkspacePausedContext(sessionId)
+    if (workspacePaused) parts.push(workspacePaused)
 
     const concurrentChats = this.buildConcurrentChatsContext(sessionId)
     if (concurrentChats) parts.push(concurrentChats)
@@ -5535,6 +5645,9 @@ export class AgentGateway {
       ...this.buildShellNavLines(),
     ].join('\n'))
 
+    const workspacePaused = this.buildWorkspacePausedContext(sessionId)
+    if (workspacePaused) pushDynamic('workspace-paused', workspacePaused)
+
     const concurrentChats = this.buildConcurrentChatsContext(sessionId)
     if (concurrentChats) pushDynamic('concurrent-chats', concurrentChats)
 
@@ -5804,26 +5917,89 @@ export class AgentGateway {
   }
 
   /**
-   * Build a system prompt section listing the other chats live in this
-   * workspace: several chats share one pod, so their turns overlap and their
-   * edits, builds and DB pushes land mid-turn. Excludes the calling session,
-   * and returns null when this chat has the workspace to itself.
+   * The other chats live in this workspace, as rows the prompt renders. Excludes
+   * the calling session; `[]` when this chat has the workspace to itself.
    */
-  private buildConcurrentChatsContext(sessionId?: string): string | null {
+  private concurrentChatsFor(sessionId?: string): ConcurrentChat[] {
     const others = this.sessionManager
       .listChatSessions(20 * 60_000)
       .filter((chat) => chat.id !== sessionId)
-    if (others.length === 0) return null
-
+    if (others.length === 0) return []
     const now = Date.now()
-    const chats: ConcurrentChat[] = others.map((chat) => ({
+    return others.map((chat) => ({
       id: chat.id,
       label: concurrentChatLabel({ id: chat.id, title: chat.title, firstUserText: chat.firstUserText }),
       running: this.turnLocks.has(chat.id),
       idleSeconds: Math.max(0, Math.floor((now - chat.lastActivityAt) / 1000)),
     }))
+  }
 
-    return buildConcurrentChatsPrompt(chats, { isolatedEdits: this.isWorktreesEnabled() })
+  /**
+   * Build a system prompt section listing the other chats live in this
+   * workspace: several chats share one pod, so their turns overlap and their
+   * edits, builds and DB pushes land mid-turn. Excludes the calling session,
+   * and returns null when this chat has the workspace to itself.
+   *
+   * `turnReachable` is this turn's `chat-reachable` answer (primed before the
+   * prompt is built). Without it the list renders unlabelled — the prompt never
+   * waits on the API.
+   */
+  private buildConcurrentChatsContext(sessionId?: string): string | null {
+    const chats = this.concurrentChatsFor(sessionId)
+    if (chats.length === 0) return null
+    const reachable = sessionId ? this.turnReachable.get(sessionId) : undefined
+    return buildConcurrentChatsPrompt(chats, {
+      isolatedEdits: this.isWorktreesEnabled(),
+      ...(reachable ? { reachable } : {}),
+    })
+  }
+
+  /**
+   * Tell a woken agent the workspace is paused, so it reports and stops instead
+   * of starting work. `agent_run_stop({ scope: "workspace" })` is what a person
+   * uses to set and lift it (SHO-118).
+   */
+  private buildWorkspacePausedContext(sessionId?: string): string | null {
+    const pause = sessionId ? this.turnPause.get(sessionId) : null
+    if (!pause) return null
+    const since = (() => {
+      const at = new Date(pause.at)
+      return Number.isNaN(at.getTime()) ? pause.at : at.toISOString()
+    })()
+    const lines = [
+      '## Workspace paused (agent lanes)',
+      `Every automatic agent start in this workspace is paused since ${since}${pause.by ? ` by ${pause.by}` : ''}.`,
+    ]
+    if (pause.reason) lines.push(`Reason: ${pause.reason}`)
+    lines.push(
+      '- Do not start new work, hand off cards, create cards or message other agents. Finish nothing that is not already in flight: report what you stopped and stop.',
+      '- A person\'s own message still runs; this pause holds automatic starts (task updates, schedules, triggers, card hand-offs, team-chat tags).',
+      '- The person lifts it with `agent_run_stop({ scope: "workspace", resume: true })` — do not lift it yourself unless that person asks you to.',
+    )
+    return lines.join('\n')
+  }
+
+  /**
+   * Read this turn's two API-side facts once, before the prompt is built: which
+   * of the listed chats the person can actually open, and whether the workspace
+   * is paused. Both fail open (an error, a missing API or a slow answer renders
+   * exactly what the prompt showed before), and both are skipped unless there is
+   * something worth asking: reachability only when another chat is listed, and
+   * the pause only in a workspace runtime.
+   */
+  private async primeTurnFacts(sessionId?: string): Promise<void> {
+    if (!sessionId) return
+    const workspaceId = resolveRuntimeIdentity().workspaceId || undefined
+    this.turnPause.delete(sessionId)
+    this.turnReachable.delete(sessionId)
+    if (!workspaceId || !hasInternalApiCredentials()) return
+    const chatIds = this.concurrentChatsFor(sessionId).map((chat) => chat.id)
+    const [reachable, pause] = await Promise.all([
+      chatIds.length ? fetchReachableChats(workspaceId, chatIds).catch(() => null) : null,
+      fetchWorkspacePause(workspaceId).catch(() => null),
+    ])
+    if (reachable?.ok && reachable.data) this.turnReachable.set(sessionId, reachable.data.reachable)
+    if (pause?.ok && pause.data) this.turnPause.set(sessionId, pause.data.paused)
   }
 
   /**
