@@ -29,8 +29,7 @@
  * `setsid` leaves its group. Both are reported as survivors when we saw them
  * before the kill; we never report `cancelled` for a tree we could not empty.
  */
-import { spawnSync } from '@shogo/shared-runtime/child-process'
-import type { ChildProcess } from 'node:child_process'
+import { spawnSync, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import {
   addChildLedgerEntry,
   commandFingerprint,
