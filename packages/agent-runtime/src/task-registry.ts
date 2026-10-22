@@ -1337,9 +1337,11 @@ export class TaskRegistry {
    *
    * The settled rows are then emitted (which is what persists the snapshot) and
    * deliberately left in place: clearing them wiped `runningProcesses` to `[]`,
-   * so the restart had no verdict left to restore.
+   * so the restart had no verdict left to restore. `clear` is the other path —
+   * "forget this session" — where the settles are written and the rows are then
+   * dropped, so a fresh registry does not re-hydrate a session the user wiped.
    */
-  killAll(): void {
+  killAll(opts: { clear?: boolean } = {}): void {
     for (const entry of this.entries.values()) {
       if (entry.visibilityTimer) {
         clearTimeout(entry.visibilityTimer)
@@ -1373,6 +1375,10 @@ export class TaskRegistry {
     this.emitChange()
     this.aliases.clear()
     this.completionNotes.clear()
+    if (opts.clear) {
+      this.entries.clear()
+      this.emitChange()
+    }
   }
 }
 
