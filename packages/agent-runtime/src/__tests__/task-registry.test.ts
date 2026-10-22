@@ -58,6 +58,27 @@ function fakeHandle() {
 
 const tick = () => new Promise((r) => setTimeout(r, 0))
 
+/**
+ * A handle whose tree kill is verified separately from the signal (SHO-144):
+ * `kill()` is fire-and-forget, `killTree()` says what is still running.
+ */
+function handleWithTree(survivors: Array<{ pid: number; name: string }> = []) {
+  const f = fakeHandle()
+  const kills: Array<{ graceMs?: number }> = []
+  return {
+    ...f,
+    handle: {
+      ...f.handle,
+      killTree: async (opts?: { graceMs?: number }) => {
+        kills.push(opts ?? {})
+        f.finish(137)
+        return { survivors }
+      },
+    } as CommandHandle,
+    kills,
+  }
+}
+
 /** A scripted remote client: `state` is what the next get returns. */
 function fakeClient(initial: RemoteTaskState['status'] = 'running') {
   const calls = { get: [] as Array<{ id: string; waitMs?: number; until?: string }>, cancel: [] as string[], consume: [] as string[][] }
@@ -139,6 +160,58 @@ describe('notifications', () => {
     })).toBe('[Task update] explore: find auth (t_1) completed.\nOutput: .shogo/tasks/s/t_1.log\nLast output:\ndone')
     expect(formatTaskNotification({ taskId: 't_2', source: 'shell', title: 'x', status: 'cancelled', tail: '' }))
       .toBe('[Task update] x (t_2) was cancelled.')
+  })
+})
+
+describe('cancel', () => {
+  test('cancel waits for the tree and reports an empty one', async () => {
+    const reg = new TaskRegistry()
+    const f = handleWithTree([])
+    const entry = reg.register('merge', f.handle)
+
+    const result = await reg.cancel(entry.id)
+
+    expect(result).toEqual({ found: true, survivors: [] })
+    expect(f.kills).toHaveLength(1)
+    expect(reg.get(entry.id)?.status).toBe('cancelled')
+  })
+
+  test('cancel names what outlived it instead of pretending the tree is gone', async () => {
+    const reg = new TaskRegistry()
+    const f = handleWithTree([{ pid: 991, name: 'sleep' }])
+    const entry = reg.register('merge', f.handle)
+
+    const result = await reg.cancel(entry.id)
+
+    expect(result.survivors).toEqual([{ pid: 991, name: 'sleep' }])
+  })
+
+  test('cancel of an unknown id is not found, and a finished task is not re-killed', async () => {
+    const reg = new TaskRegistry()
+    const f = handleWithTree([])
+    const entry = reg.register('true', f.handle)
+    f.finish(0)
+    await f.handle.done
+    await tick()
+
+    expect(await reg.cancel('t_missing')).toEqual({ found: false, survivors: [] })
+    expect(await reg.cancel(entry.id)).toEqual({ found: true, survivors: [] })
+    expect(f.kills).toHaveLength(0)
+  })
+
+  test('killAll waits on every tree, and still settles interrupted first', async () => {
+    const reg = new TaskRegistry()
+    const first = handleWithTree([])
+    const second = handleWithTree([])
+    const a = reg.register('merge one', first.handle)
+    const b = reg.register('merge two', second.handle)
+
+    await reg.killAll()
+
+    expect(first.kills).toHaveLength(1)
+    expect(second.kills).toHaveLength(1)
+    expect(reg.get(a.id)?.status).toBe('interrupted')
+    expect(reg.get(b.id)?.status).toBe('interrupted')
   })
 })
 

@@ -1979,9 +1979,9 @@ export class AgentGateway {
     // longer has a hard-timeout SIGKILL ceiling, so this shutdown sweep is the
     // backstop that prevents long-running children from being orphaned when
     // the gateway goes away.
-    for (const reg of this.commandRegistries.values()) {
-      try { reg.killAll() } catch { /* already gone */ }
-    }
+    await Promise.all([...this.commandRegistries.values()].map(async (reg) => {
+      try { await reg.killAll() } catch { /* already gone */ }
+    }))
     this.commandRegistries.clear()
     for (const timer of this.taskWakeTimers.values()) clearTimeout(timer)
     this.taskWakeTimers.clear()
@@ -2861,7 +2861,9 @@ export class AgentGateway {
   private disposeSessionState(sessionId: string): void {
     const reg = this.commandRegistries.get(sessionId)
     if (reg) {
-      reg.killAll()
+      // Not awaited: clearing a session must not wait on a tree, and killAll
+      // settles the rows and writes its verdicts before it starts waiting.
+      void reg.killAll()
       this.commandRegistries.delete(sessionId)
     }
     const wake = this.taskWakeTimers.get(sessionId)
