@@ -447,10 +447,12 @@ export const CALLEE_TURN_LOST = 'callee_turn_lost'
 export const CALLEE_TURN_NEVER_STARTED = 'callee_turn_never_started'
 
 /**
- * How long the callee's chat may be busy with its own turn before this call is
- * declared never-started. The runtime applies the same 10 s budget to its own
- * buffer, so a stuck chat is reported while the caller is still listening;
- * 15 minutes only ever meant a caller that hung.
+ * How long the callee may show no sign of this call before the follower
+ * declares it lost. A call that is queued behind the chat's own turn keeps
+ * pushing this window out (the runtime reports it as `queued`), so the budget
+ * only runs out when nothing is waiting for the call any more — the runtime
+ * restarted, or the queued item vanished. It does not cap how long a chat may
+ * be busy: a message for a busy chat is queued, never dropped.
  */
 export const CALLEE_TURN_START_TIMEOUT_MS = 90_000
 
@@ -568,13 +570,21 @@ async function startBackgroundCall(
   return ack
 }
 
+/**
+ * Wait until the callee reports a turn for this call. A call queued behind the
+ * chat's own live turn is not a failure — the runtime says so (`status:
+ * 'queued'`) and each such answer restarts the budget, so a chat that is busy
+ * for ten minutes still runs the call. Only silence for the whole budget means
+ * the call was lost.
+ */
 async function waitForCalleeTurn(projectId: string, chatSessionId: string, startedAt: number, deps: CallTurnDeps): Promise<boolean> {
-  const deadline = Date.now() + deps.turnStartTimeoutMs
+  let deadline = Date.now() + deps.turnStartTimeoutMs
   for (;;) {
     const res = await fetchCalleeRuntime(projectId, `/agent/chat/${encodeURIComponent(chatSessionId)}/turn`).catch(() => null)
     if (res?.ok) {
-      const turn = (await res.json().catch(() => null)) as { createdAt?: number } | null
+      const turn = (await res.json().catch(() => null)) as { createdAt?: number; status?: string; queuedSince?: number } | null
       if (typeof turn?.createdAt === 'number' && turn.createdAt >= startedAt - TURN_CLOCK_SKEW_MS) return true
+      if (turn?.status === 'queued' || typeof turn?.queuedSince === 'number') deadline = Date.now() + deps.turnStartTimeoutMs
     } else {
       await res?.body?.cancel().catch(() => {})
     }
@@ -610,10 +620,10 @@ async function followCallTurn(
     if (await waitForCalleeTurn(projectId, chatSessionId, startedAt, deps)) {
       result = await trackCallTurn(projectId, workspaceId, chatSessionId, startedAt, deps)
     } else {
-      // The chat stayed busy with its own turn for the whole budget, so this
-      // call never got to start. That is a different failure from a lost reply.
+      // Nothing in the queue and no turn for the whole budget: the queued item
+      // is gone. That is a different failure from a lost reply.
       neverStarted = true
-      console.warn(`[AgentCall] call ${link?.runId ?? chatSessionId} never started: callee chat was busy`)
+      console.warn(`[AgentCall] call ${link?.runId ?? chatSessionId} never started: no turn and no queued call`)
     }
   } finally {
     stopCallHeartbeat()
@@ -686,7 +696,9 @@ export async function settleAgentCallFromTurn(
   const lost = opts.neverStarted
     ? {
         code: CALLEE_TURN_NEVER_STARTED,
-        message: 'The target agent never started this run (its chat was busy).',
+        message:
+          'The target agent never started this run — the runtime lost the call before it began (it restarted, or the ' +
+          'queued call was dropped). Nothing ran; retry it.',
       }
     : { code: CALLEE_TURN_LOST, message: 'The target agent turn ended before its reply could be read.' }
   await putAgentCall(link.projectId, {

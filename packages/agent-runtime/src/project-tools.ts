@@ -968,7 +968,7 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
       const reply = res.data.reply ?? null
       // A waiting call whose turn produced no reply is not a success: reporting
       // `ok: true, reply: null` leaves the caller holding an empty answer with
-      // nothing to act on, which is exactly the silence this card is about.
+      // nothing to act on, which is exactly the silence being fixed here.
       if (!background && reply === null) {
         return textResult({
           ok: false,

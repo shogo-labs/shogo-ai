@@ -122,36 +122,70 @@ describe('pipeline calls into an openable chat', () => {
   })
 })
 
-describe('a call whose callee turn never starts', () => {
-  test('rejects with callee_turn_never_started instead of hanging', async () => {
+describe('a call into a busy chat queues instead of dropping', () => {
+  test('the call runs once the chat finishes its own turn, however long that takes', async () => {
     store = new StreamBufferStore()
     const gate = new LiveTurnGate(store, 5)
-    const turns = createBufferedTurns({ store, gate, startTimeoutMs: 25 })
+    const turns = createBufferedTurns({ store, gate })
     const live = store.create('busy-chat')
 
-    const startedAt = Date.now()
-    const outcome = await Promise.race([
-      turns.runPipelineCall(async (call) => ({ reply: 'never', sessionId: call.sessionId! }), {
-        message: 'go',
-        sessionId: 'busy-chat',
-      }).then(() => 'started' as const, (err: any) => err),
-      new Promise<'hung'>((r) => setTimeout(() => r('hung'), 2_000)),
-    ])
+    const order: string[] = []
+    let queued = false
+    let started = false
+    const pending = turns.runPipelineCall(
+      async (call) => {
+        order.push('call')
+        return { reply: 'ran after the chat', sessionId: call.sessionId! }
+      },
+      { message: 'go', sessionId: 'busy-chat' },
+      { onQueued: () => { queued = true }, onTurnStarted: () => { started = true } },
+    )
 
-    expect(outcome).not.toBe('hung')
-    expect((outcome as any).code).toBe('callee_turn_never_started')
-    expect((outcome as any).message).toContain('busy-chat')
-    expect(Date.now() - startedAt).toBeLessThan(1_000)
-    // The live turn is untouched, and no buffer was created for the doomed call.
-    expect(store.snapshot('busy-chat')?.status).toBe('active')
+    // Held far longer than any start budget: still queued, never failed.
+    await new Promise((r) => setTimeout(r, 120))
+    expect(queued).toBe(true)
+    expect(started).toBe(false)
+    expect(gate.queued('busy-chat')).toMatchObject({ depth: 1 })
+    // The live turn is untouched, and no second buffer was created over it.
     expect(store.snapshot('busy-chat')?.turnId).toBe(live.turnId)
+
+    order.push('chat done')
+    live.complete()
+    await expect(pending).resolves.toMatchObject({ reply: 'ran after the chat' })
+    expect(order).toEqual(['chat done', 'call'])
+    expect(started).toBe(true)
+    expect(gate.queued('busy-chat')).toBeNull()
+    live.complete()
+  })
+
+  test('a Stop while queued cancels the call instead of running it', async () => {
+    store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    const turns = createBufferedTurns({ store, gate })
+    const live = store.create('busy-stop')
+
+    let ran = false
+    const pending = turns.runPipelineCall(
+      async (call) => {
+        ran = true
+        return { reply: 'should not run', sessionId: call.sessionId! }
+      },
+      { message: 'go', sessionId: 'busy-stop' },
+    )
+
+    await new Promise((r) => setTimeout(r, 30))
+    gate.markStopped('busy-stop')
+
+    await expect(pending).rejects.toThrow('stopped')
+    expect(ran).toBe(false)
+    expect(gate.queued('busy-stop')).toBeNull()
     live.complete()
   })
 
   test('onTurnStarted fires only once a buffer exists', async () => {
     store = new StreamBufferStore()
     const gate = new LiveTurnGate(store, 5)
-    const turns = createBufferedTurns({ store, gate, startTimeoutMs: 5_000 })
+    const turns = createBufferedTurns({ store, gate })
     const live = store.create('busy-chat')
 
     let started = false

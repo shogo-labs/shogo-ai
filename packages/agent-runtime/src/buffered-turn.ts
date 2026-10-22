@@ -42,37 +42,11 @@ export interface BufferedTurnDeps {
   gate: Pick<LiveTurnGate, 'isBusy' | 'waitUntilFree'>
   onStreamStart?: () => void
   onStreamEnd?: () => void
-  /**
-   * How long a call waits for the chat's live turn before it gives up and
-   * reports that it never started. Defaults to `PIPELINE_START_TIMEOUT_MS`.
-   */
-  startTimeoutMs?: number
 }
 
 /**
- * A `project_call` into a chat that is already running a turn cannot start
- * until that turn ends. Ten seconds is long enough for a turn that is wrapping
- * up and short enough that a wedged one is reported while the caller is still
- * listening — the caller's own forward timeout is 15 minutes, so anything
- * longer is indistinguishable from a hang.
+ * Pipeline sessions that are runtime-internal keys rather than chats someone can open.
  */
-export const PIPELINE_START_TIMEOUT_MS = 10_000
-
-/** The call was accepted but its turn never started: no buffer, no turn, nothing to poll. */
-export const CALLEE_TURN_NEVER_STARTED = 'callee_turn_never_started'
-
-export class PipelineTurnNeverStartedError extends Error {
-  readonly code = CALLEE_TURN_NEVER_STARTED
-  constructor(readonly chatSessionId: string, readonly waitedMs: number) {
-    super(
-      `The target chat ${chatSessionId} was busy with its own turn for ${Math.round(waitedMs / 1000)}s, so this ` +
-        'call never started. Nothing ran and there is no reply to wait for — retry once the chat finishes its turn.',
-    )
-    this.name = 'PipelineTurnNeverStartedError'
-  }
-}
-
-/** Pipeline sessions that are runtime-internal keys rather than chats someone can open. */
 export function isOpenableChatSession(sessionId: string | undefined): sessionId is string {
   return !!sessionId && !sessionId.startsWith('run:') && sessionId !== 'pipeline'
 }
@@ -243,15 +217,16 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
    * call as one), the turn is buffered like a chat turn so that chat can be
    * opened and watched while the call runs.
    *
-   * `hooks.onTurnStarted` fires once the call has a buffer of its own and is
-   * actually running, so a `wait: false` caller can ack `started: true` and not
-   * just `accepted` — an accepted-but-never-started call is what used to sit
-   * there for 15 minutes.
+   * A chat that is busy with its own turn queues the call instead of dropping
+   * it: `hooks.onQueued` fires straight away (so a `wait: false` caller can
+   * answer `queued` and keep following) and the call starts the moment that
+   * turn ends, exactly like a message from a second window. `hooks.onTurnStarted`
+   * fires once the call has a buffer of its own and is actually running.
    */
   async function runPipelineCall(
     runCall: (opts: PipelineCallOptions & { writer?: UiStreamWriter }) => Promise<PipelineCallResult>,
     opts: PipelineCallOptions,
-    hooks: { onTurnStarted?: () => void } = {},
+    hooks: { onQueued?: () => void; onTurnStarted?: () => void } = {},
   ): Promise<PipelineCallResult> {
     const chatSessionKey = opts.sessionId?.trim()
     if (!isOpenableChatSession(chatSessionKey)) {
@@ -259,11 +234,9 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
       return runCall(opts)
     }
     if (deps.gate.isBusy(chatSessionKey)) {
-      const waited = await deps.gate.waitUntilFree(chatSessionKey, {
-        timeoutMs: deps.startTimeoutMs ?? PIPELINE_START_TIMEOUT_MS,
-      })
+      hooks.onQueued?.()
+      const waited = await deps.gate.waitUntilFree(chatSessionKey)
       if (waited.stopped) throw new Error('The chat was stopped before this call started')
-      if (waited.timedOut) throw new PipelineTurnNeverStartedError(chatSessionKey, waited.waitedMs)
     }
     let result: PipelineCallResult | undefined
     let failure: unknown

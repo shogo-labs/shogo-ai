@@ -6,6 +6,7 @@
  * call's reply can be read after its stream buffer expired.
  */
 import type { StreamBufferStore } from '@shogo-ai/sdk/stream-buffer'
+import type { LiveTurnQueue } from './live-turn-wait'
 
 type TurnRegistry = Pick<StreamBufferStore, 'snapshot' | 'turnReply'>
 
@@ -19,11 +20,31 @@ export interface TurnStatusResponse {
  * yet). Once terminal — or once the buffer is gone but the turn's reply was
  * recorded — `reply` carries the text the turn finished with, so a caller that
  * missed the stream can persist it instead of re-running the turn.
+ *
+ * A pipeline call waiting behind this chat's live turn is reported as
+ * `status: 'queued'` with `queuedSince`/`queuedDepth`: it has not started, but
+ * it has not been dropped either, so a follower keeps waiting on it.
  */
-export function describeTurn(store: TurnRegistry, chatSessionId: string): TurnStatusResponse {
+export function describeTurn(
+  store: TurnRegistry,
+  chatSessionId: string,
+  queued: LiveTurnQueue | null = null,
+): TurnStatusResponse {
   const snapshot = store.snapshot(chatSessionId)
   const reply = store.turnReply(chatSessionId)
   if (!snapshot) {
+    if (queued) {
+      return {
+        status: 200,
+        body: {
+          chatSessionId,
+          status: 'queued',
+          queuedSince: queued.since,
+          queuedDepth: queued.depth,
+          reply: null,
+        },
+      }
+    }
     if (!reply) return { status: 404, body: { status: 'unknown' } }
     return {
       status: 200,
@@ -52,6 +73,7 @@ export function describeTurn(store: TurnRegistry, chatSessionId: string): TurnSt
       completedAt: snapshot.completedAt,
       lastEventAt: snapshot.lastEventAt,
       reply: snapshot.status === 'active' ? null : (reply?.reply ?? null),
+      ...(queued ? { queuedSince: queued.since, queuedDepth: queued.depth } : {}),
     },
   }
 }

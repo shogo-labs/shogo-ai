@@ -309,7 +309,7 @@ export interface ToolContext {
    * `wait` timeouts). Built per turn by the gateway, so a new turn steers
    * afresh; see `turnSteeringState`.
    */
-  turnState?: import('./gateway-tools').TurnSteeringState
+  turnState?: TurnSteeringState
   /** On-demand guide registry populated by buildGuideRegistry() */
   guideRegistry?: Map<string, string>
   /**
@@ -2372,10 +2372,25 @@ function createWaitTool(ctx: ToolContext): AgentTool {
       const ids = task_ids.filter((id) => registry.get(id))
 
       // Waiting again on the same tasks after two full timeouts teaches nothing:
-      // the [Task update] is already guaranteed, so the third call stops here.
+      // the [Task update] is already guaranteed, so the third call stops here —
+      // unless something settled meanwhile, which the agent must still be told.
       const waitKey = [...ids].sort().join(',')
       const timeoutsSpent = turnSteeringState(ctx).waitTimeouts.get(waitKey) ?? 0
       if (timeoutMs > 0 && timeoutsSpent >= 2) {
+        const settled = ids.map((id) => registry.get(id)!).find((e) => e.status !== 'running')
+        if (settled) {
+          turnSteeringState(ctx).waitTimeouts.delete(waitKey)
+          registry.markConsumed([settled.id])
+          return textResult({
+            ...finishedTaskResult(ctx, settled),
+            waited_ms: 0,
+            ...(unknown.length ? { unknown_task_ids: unknown } : {}),
+            still_running: ids
+              .map((id) => registry.get(id)!)
+              .filter((e) => e.id !== settled.id && e.status === 'running')
+              .map((e) => e.id),
+          })
+        }
         return textResult({
           status: 'timeout',
           code: 'stop_waiting',

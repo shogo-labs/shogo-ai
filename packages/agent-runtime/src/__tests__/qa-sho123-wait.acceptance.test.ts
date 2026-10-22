@@ -181,23 +181,42 @@ describe('AC10: a repeated wait stops — and the next turn starts fresh', () =>
   })
 })
 
-describe('wiring: the recovery path is the one the gateway actually builds, and the ack waits for a turn', () => {
+describe('wiring: the recovery path is the one the gateway actually builds, and a busy chat queues', () => {
   test('gateway.ts resolves evicted results from the same output dir it hands the registry', () => {
     const src = readFileSync(join(SRC_DIR, 'gateway.ts'), 'utf8')
     expect(src).toContain('const outputDir = taskOutputDir(this.workspaceDir, sessionId)')
     expect(src).toMatch(/new TaskRegistry\(\{[\s\S]{0,400}?outputDir,[\s\S]{0,400}?resolveOutputRow:\s*\(id\)\s*=>\s*listTaskOutputRows\(outputDir\)/)
   })
 
-  test('the runtime acks a wait:false pipeline call only once the turn started, and 409s a call that never did', () => {
+  test('the runtime acks a wait:false pipeline call at once, saying whether it queued or started', () => {
     const src = readFileSync(join(SRC_DIR, 'server.ts'), 'utf8')
-    const branch = src.slice(src.indexOf("if (body.wait === false) {"))
-    const awaitAt = branch.indexOf('await turnStarted')
-    const ackAt = branch.indexOf('started: true')
-    // The ack is sent after the wait, never before it.
-    expect(awaitAt).toBeGreaterThan(-1)
-    expect(ackAt).toBeGreaterThan(awaitAt)
-    const beforeAck = branch.slice(0, ackAt)
-    expect(beforeAck).toContain('onTurnStarted: markStarted')
-    expect(beforeAck).toContain('CALLEE_TURN_NEVER_STARTED ? 409 : 500')
+    const branch = src.slice(src.indexOf('if (body.wait === false) {'))
+
+    // The ack never holds the response: the caller's forward timeout is 15 s.
+    expect(branch).not.toContain('await turnStarted')
+    expect(branch).toContain("status: started ? 'started' : 'queued'")
+    expect(branch).toContain('onQueued')
+    expect(branch).toContain('onTurnStarted')
+    // A queued call is not an error any more, so no error body is built here.
+    expect(branch.slice(0, branch.indexOf('try {'))).not.toContain("code: 'callee_turn_never_started'")
+
+    const buffered = readFileSync(join(SRC_DIR, 'buffered-turn.ts'), 'utf8')
+    // No start budget: a message for a busy chat waits, it is never dropped.
+    expect(buffered).not.toContain('PIPELINE_START_TIMEOUT_MS')
+    expect(buffered).toContain('onQueued?.()')
+  })
+
+  test('the turn probe reports a queued call so the caller keeps following it', () => {
+    const src = readFileSync(join(SRC_DIR, 'server.ts'), 'utf8')
+    expect(src).toContain('describeTurn(streamBufferStore, chatSessionId, liveTurnGate.queued(chatSessionId))')
+
+    const status = readFileSync(join(SRC_DIR, 'turn-status.ts'), 'utf8')
+    expect(status).toContain("status: 'queued'")
+    expect(status).toContain('queuedSince')
+
+    const api = readFileSync(join(SRC_DIR, '..', '..', '..', 'apps', 'api', 'src', 'services', 'agent-call.service.ts'), 'utf8')
+    // A queued answer pushes the follower's budget out instead of failing the call.
+    expect(api).toContain("turn?.status === 'queued'")
+    expect(api).toContain('deadline = Date.now() + deps.turnStartTimeoutMs')
   })
 })

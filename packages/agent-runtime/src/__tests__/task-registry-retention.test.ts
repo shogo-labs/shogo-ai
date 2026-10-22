@@ -65,6 +65,24 @@ describe('result retention is gated on consumption', () => {
     expect(reg.get(b.entry.id)).toBeDefined()
     expect(reg.get(c.entry.id)).toBeDefined()
   })
+
+  test('the cap drops one read row per excess unread result, not every read row', async () => {
+    const reg = new TaskRegistry({ maxUnconsumed: 2, retentionMs: 60_000, unreadRetentionMs: 60_000 })
+    const reads = ['r1', 'r2', 'r3'].map((title) => {
+      const task = reg.registerTask({ source: 'subagent', title })
+      task.finish('completed', { summary: 'ok' })
+      return task
+    })
+    const unread = [unreadFinished(reg, 'u1'), unreadFinished(reg, 'u2')]
+    // Two unread results, a cap of two: nothing has to go yet.
+    expect(reads.every((t) => reg.get(t.entry.id))).toBe(true)
+
+    unread.push(unreadFinished(reg, 'u3'))
+
+    // Exactly one read row made room for the third unread result.
+    expect(reads.filter((t) => reg.get(t.entry.id))).toHaveLength(2)
+    expect(unread.every((t) => reg.get(t.entry.id))).toBe(true)
+  })
 })
 
 describe('a restart does not mark an unread result read', () => {
@@ -79,6 +97,22 @@ describe('a restart does not mark an unread result read', () => {
     expect(restored.get(task.entry.id)?.consumed).toBe(false)
     await sleep(60)
     expect(restored.get(task.entry.id)).toBeDefined()
+    expect((await restored.wait([task.entry.id], { timeoutMs: 0 })).kind).toBe('finished')
+  })
+
+  test('an unread result older than the dock window is still in the snapshot', async () => {
+    const reg = new TaskRegistry({ retentionMs: 20 })
+    const task = unreadFinished(reg)
+    // Finished well outside the 10-minute window the dock shows, never read.
+    task.entry.finishedAt = Date.now() - 11 * 60_000
+
+    const snap = reg.snapshot()
+    expect(snap.map((s) => s.runId)).toContain(task.entry.id)
+    expect(snap.find((s) => s.runId === task.entry.id)?.consumed).toBe(false)
+
+    const restored = new TaskRegistry({ retentionMs: 20 })
+    restored.restoreStale(snap)
+    expect(restored.get(task.entry.id)?.consumed).toBe(false)
     expect((await restored.wait([task.entry.id], { timeoutMs: 0 })).kind).toBe('finished')
   })
 })

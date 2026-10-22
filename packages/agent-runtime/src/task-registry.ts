@@ -579,6 +579,7 @@ export class TaskRegistry {
     for (const entry of finished.filter((e) => !this.wantsUnreadResult(e)).sort(oldestFirst)) {
       if (excess <= 0) break
       this.forget(entry.id)
+      excess -= 1
     }
     for (const entry of unread.sort(oldestFirst)) {
       if (excess <= 0) break
@@ -1117,14 +1118,22 @@ export class TaskRegistry {
 
   /**
    * Serializable snapshot for persistence: every running task plus the
-   * recently finished rows the dock was showing. Running entries are taken
-   * from `listRunning()`, not `listDock()`, because a shell command still
-   * inside the dock visibility delay is invisible but must survive a restart.
+   * recently finished rows the dock was showing, and any finished row whose
+   * result its owner has not read yet. Running entries are taken from
+   * `listRunning()`, not `listDock()`, because a shell command still inside the
+   * dock visibility delay is invisible but must survive a restart; an unread
+   * result joins them for the same reason — the dock's 10-minute window is not
+   * its lease.
    */
   snapshot(): RunningProcessSnapshot[] {
+    const now = Date.now()
     const persisted = new Map<string, RunningProcess>()
     for (const p of this.listRunning()) persisted.set(p.id, p)
     for (const p of this.listDock()) if (!persisted.has(p.id)) persisted.set(p.id, p)
+    for (const entry of this.entries.values()) {
+      if (persisted.has(entry.id) || entry.dormant) continue
+      if (entry.status === 'running' || this.wantsUnreadResult(entry)) persisted.set(entry.id, this.toView(entry, now))
+    }
     return [...persisted.values()].map((p) => {
       const entry = this.entries.get(p.id)
       return {

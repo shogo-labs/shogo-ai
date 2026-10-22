@@ -25,17 +25,25 @@ export type LiveTurnWait = { waitedMs: number; stopped: boolean; timedOut?: bool
 /** How long a caller is willing to wait for a live turn to end. */
 export interface LiveTurnWaitOptions {
   /**
-   * Give up after this long. Without it the wait is unbounded, which is right
-   * for a queued chat message (the user is in the loop) and wrong for a
-   * `project_call`, whose caller would otherwise sit on `accepted` until the
-   * 15-minute forward timeout.
+   * Give up after this long. No caller uses it: a message for a busy chat is
+   * queued, never dropped, so a `project_call` waits exactly like a chat
+   * message from a second window does.
    */
   timeoutMs?: number
+}
+
+/** Calls waiting for a chat's live turn: how many, and since when. */
+export interface LiveTurnQueue {
+  depth: number
+  since: number
 }
 
 export class LiveTurnGate {
   /** Turn the user last stopped, per chat. */
   private readonly stoppedTurn = new Map<string, string>()
+  /** Callers waiting on each chat's live turn, with the moment they started waiting. */
+  private readonly waiters = new Map<string, Map<number, number>>()
+  private nextWaiterId = 1
   /** Bumped on every Stop, per chat, so waiters can tell a Stop happened. */
   private readonly stopEpoch = new Map<string, number>()
 
@@ -57,28 +65,63 @@ export class LiveTurnGate {
   }
 
   /**
+   * Calls queued behind this chat's live turn, or null when nothing is
+   * waiting. A caller that never got its own buffer is not lost — it is
+   * waiting, and this is how the API's follower can tell that from a call the
+   * runtime dropped.
+   */
+  queued(chatSessionId: string): LiveTurnQueue | null {
+    const waiters = this.waiters.get(chatSessionId)
+    if (!waiters?.size) return null
+    let since = Number.POSITIVE_INFINITY
+    for (const at of waiters.values()) since = Math.min(since, at)
+    return { depth: waiters.size, since }
+  }
+
+  /**
    * Resolves once `chatSessionId` has no live turn to wait for, or with
    * `stopped` when the user pressed Stop meanwhile. Callers must create their
    * buffer synchronously after this resolves, so two waiters can't both start
    * (the second sees the first one's buffer and keeps waiting).
    *
    * With a `timeoutMs` budget it resolves `timedOut` instead of waiting for a
-   * live turn that never ends — the call then never started, and saying so
-   * beats a record that stays `accepted` for 15 minutes.
+   * live turn that never ends. Nothing in the runtime passes one: a queued
+   * call waits as long as the chat's turn takes.
    */
   async waitUntilFree(chatSessionId: string, options: LiveTurnWaitOptions = {}): Promise<LiveTurnWait> {
     const started = Date.now()
     const deadline = options.timeoutMs === undefined ? Infinity : started + options.timeoutMs
     const epoch = this.stopEpoch.get(chatSessionId) ?? 0
-    while (this.isBusy(chatSessionId)) {
-      if (Date.now() >= deadline) {
-        return { waitedMs: Date.now() - started, stopped: false, timedOut: true }
+    let waiterId: number | null = null
+    try {
+      while (this.isBusy(chatSessionId)) {
+        if (waiterId === null) waiterId = this.addWaiter(chatSessionId)
+        if (Date.now() >= deadline) {
+          return { waitedMs: Date.now() - started, stopped: false, timedOut: true }
+        }
+        await new Promise((resolve) => setTimeout(resolve, this.pollMs))
+        if ((this.stopEpoch.get(chatSessionId) ?? 0) !== epoch) {
+          return { waitedMs: Date.now() - started, stopped: true, timedOut: false }
+        }
       }
-      await new Promise((resolve) => setTimeout(resolve, this.pollMs))
-      if ((this.stopEpoch.get(chatSessionId) ?? 0) !== epoch) {
-        return { waitedMs: Date.now() - started, stopped: true, timedOut: false }
-      }
+      return { waitedMs: Date.now() - started, stopped: false, timedOut: false }
+    } finally {
+      if (waiterId !== null) this.dropWaiter(chatSessionId, waiterId)
     }
-    return { waitedMs: Date.now() - started, stopped: false, timedOut: false }
+  }
+
+  private addWaiter(chatSessionId: string): number {
+    const id = this.nextWaiterId++
+    const waiters = this.waiters.get(chatSessionId) ?? new Map<number, number>()
+    waiters.set(id, Date.now())
+    this.waiters.set(chatSessionId, waiters)
+    return id
+  }
+
+  private dropWaiter(chatSessionId: string, waiterId: number): void {
+    const waiters = this.waiters.get(chatSessionId)
+    if (!waiters) return
+    waiters.delete(waiterId)
+    if (waiters.size === 0) this.waiters.delete(chatSessionId)
   }
 }

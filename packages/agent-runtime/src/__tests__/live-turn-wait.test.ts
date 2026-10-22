@@ -118,4 +118,26 @@ describe('LiveTurnGate', () => {
     expect(await waiting).toMatchObject({ stopped: false, timedOut: false })
     store.dispose()
   })
+
+  test('a waiter is reported as queued until its turn starts', async () => {
+    const store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    const live = store.create('s')
+    expect(gate.queued('s')).toBeNull()
+
+    const first = gate.waitUntilFree('s')
+    await new Promise((r) => setTimeout(r, 20))
+    const queued = gate.queued('s')
+    expect(queued?.depth).toBe(1)
+    expect(typeof queued?.since).toBe('number')
+
+    const second = gate.waitUntilFree('s')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(gate.queued('s')?.depth).toBe(2)
+
+    live.complete()
+    await Promise.all([first, second])
+    expect(gate.queued('s')).toBeNull()
+    store.dispose()
+  })
 })

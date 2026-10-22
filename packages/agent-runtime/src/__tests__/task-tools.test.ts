@@ -247,6 +247,25 @@ describe('wait: repeated timeouts stop instead of sleeping again', () => {
     task.finish('completed', { summary: 'ok' })
   })
 
+  test('a task that settles before the third wait is returned, not stopped', async () => {
+    const ctx = makeCtx(registry)
+    const task = registry.registerTask({ source: 'subagent', title: 'explore', backgrounded: true })
+
+    expect((await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 20 })).status).toBe('timeout')
+    expect((await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 20 })).status).toBe('timeout')
+    task.finish('completed', { summary: 'the report' })
+    const startedAt = Date.now()
+
+    const third = await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 5_000 })
+
+    expect(Date.now() - startedAt).toBeLessThan(50)
+    expect(third.status).toBe('completed')
+    expect(third.code).toBeUndefined()
+    expect(third.task_id).toBe(task.entry.id)
+    // The agent has now read it, so the counter and the lease both clear.
+    expect(registry.get(task.entry.id)?.consumed).toBe(true)
+  })
+
   test('a finished result clears the counter', async () => {
     const ctx = makeCtx(registry)
     const task = registry.registerTask({ source: 'subagent', title: 'explore', backgrounded: true })

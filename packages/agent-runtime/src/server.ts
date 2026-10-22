@@ -17,7 +17,7 @@ import { resolve, dirname, join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
-import { createBufferedTurns, CALLEE_TURN_NEVER_STARTED, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
+import { createBufferedTurns, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
 import { describeTurn } from './turn-status'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
@@ -2217,8 +2217,13 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
 // 30 s after a turn completes, so the reply is kept separately for an hour —
 // a caller whose stream follower missed the turn (API restart, slow poll) can
 // still persist what the agent said instead of re-running the turn.
+//
+// `status: 'queued'` (and `queuedSince`/`queuedDepth`) reports a pipeline call
+// waiting for this chat's own turn to end: the call exists, nothing is lost,
+// and a follower must keep waiting rather than declare it never started.
 app.get('/agent/chat/:chatSessionId/turn', (c) => {
-  const { status, body } = describeTurn(streamBufferStore, c.req.param('chatSessionId'))
+  const chatSessionId = c.req.param('chatSessionId')
+  const { status, body } = describeTurn(streamBufferStore, chatSessionId, liveTurnGate.queued(chatSessionId))
   return c.json(body, status as 200 | 404)
 })
 
@@ -3940,37 +3945,24 @@ app.post('/agent/pipeline/call', async (c) => {
   }
 
   if (body.wait === false) {
-    const accepted = {
-      status: 'accepted',
-      started: false,
-      runId: opts.runId,
-      sessionId: opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline'),
-    }
-    let markStarted!: () => void
-    let markFailed!: (err: unknown) => void
-    const turnStarted = new Promise<void>((resolve, reject) => {
-      markStarted = resolve
-      markFailed = reject
+    // Ack at once: the caller's forward timeout is 15 s, and a chat that is
+    // busy with its own turn queues this call rather than dropping it, so the
+    // answer is which of the two happened — not a hold on the turn.
+    const sessionId = opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline')
+    let started = false
+    const pending = runPipelineCall(opts, {
+      onQueued: () => { started = false },
+      onTurnStarted: () => { started = true },
     })
-    const pending = runPipelineCall(opts, { onTurnStarted: markStarted })
     pending.then(
       (r: { reply: string; sessionId: string; runId?: string }) =>
         console.log(`[agent-runtime] pipeline call complete (run=${r.runId ?? '-'}):`, r.reply.substring(0, 200)),
-      (err: any) => {
-        console.error('[agent-runtime] pipeline call failed:', err?.message ?? err)
-        markFailed(err)
-      },
+      (err: any) => console.error('[agent-runtime] pipeline call failed:', err?.message ?? err),
     )
-    // Ack `started` only once the turn really has a buffer. Never starting is
-    // not acceptance: the chat was busy with its own turn, nothing ran, and the
-    // caller must not sit on a run id that will never produce a reply.
-    try {
-      await turnStarted
-    } catch (err: any) {
-      const code = err?.code === CALLEE_TURN_NEVER_STARTED ? CALLEE_TURN_NEVER_STARTED : 'agent_turn_failed'
-      return c.json({ error: { code, message: err?.message ?? String(err) }, ...accepted }, code === CALLEE_TURN_NEVER_STARTED ? 409 : 500)
-    }
-    return c.json({ ...accepted, started: true }, 202)
+    // `runPipelineCall` creates the buffer synchronously when the chat is free,
+    // so by the time it returns, `started` already says whether the turn is
+    // running or still waiting for the chat's own turn to end.
+    return c.json({ status: started ? 'started' : 'queued', runId: opts.runId, sessionId }, 202)
   }
 
   try {
