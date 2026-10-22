@@ -1129,7 +1129,14 @@ async function buildPrompt(args: {
   // Only what is new since the last agent reply in this scope. When nothing has
   // been answered yet (or the trigger predates that reply) the cut is the
   // trigger itself, exactly as before SHO-137.
-  history = newSinceLastAgentReply(history, trigger?.id ?? null)
+  //
+  // Only when this agent already has a session for the thread: that is the case
+  // R3 optimises for (the older thread is in its context, and `historySeed`
+  // rebuilds it if the runtime lost it). On a thread this agent has no session
+  // for yet — its first turn — there is nothing to rebuild from, so cutting the
+  // discussion out of the prompt is how a shared agent asked to review a
+  // thread stopped seeing it (SHO-137 round 4).
+  if (args.reusedSession) history = newSinceLastAgentReply(history, trigger?.id ?? null)
 
   const budgeted = fitThreadBudget(history)
   history = budgeted.kept
