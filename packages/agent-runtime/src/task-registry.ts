@@ -1328,9 +1328,10 @@ export class TaskRegistry {
 
   /**
    * Re-seed from a persisted snapshot after a runtime restart. Local tasks
-   * that were running belonged to the dead gateway and come back `stale`
-   * (dismissable only). Remote tasks are still tracked by the API and come
-   * back live; tasks that had already settled come back finished.
+   * that were running belonged to the dead gateway: they come back
+   * `interrupted` and `stale` (dismissable only, never pollable). Remote tasks
+   * are still tracked by the API and come back live; tasks that had already
+   * settled come back finished.
    */
   restoreStale(snapshots: RunningProcessSnapshot[]): void {
     if (!snapshots?.length) return
@@ -1350,6 +1351,13 @@ export class TaskRegistry {
         changed = true
         continue
       }
+      // A snapshot that still says `running` describes a process that is gone:
+      // the runtime that owned it died before its shutdown sweep could settle
+      // the row (the substrate stops the host hard), so the last snapshot
+      // written is the one from before the kill. Nothing can poll that child
+      // any more, so the verdict is `interrupted` — the same one a footer-less
+      // log gets — and never a live row whose only affordance is Dismiss
+      // (SHO-141: a task the runtime died under is not still running).
       if (this.restoreTerminal(snap, now)) {
         changed = true
         continue
@@ -1360,14 +1368,16 @@ export class TaskRegistry {
         source: snap.source ?? 'shell',
         title: snap.title ?? snap.command,
         command: snap.command,
-        status: 'running',
+        status: 'interrupted',
         startedAt: snap.startedAt,
+        finishedAt: now,
         notify: false,
-        consumed: false,
+        consumed: true,
         stale: true,
+        shown: true,
+        result: { summary: INTERRUPTED_SUMMARY },
         outputFile: snap.outputFile,
         link: snap.link,
-        handle: makeStaleHandle(snap),
         done: Promise.resolve(),
       })
       changed = true
@@ -1617,20 +1627,4 @@ function stripFrontMatter(text: string): string {
   const close = text.lastIndexOf('\n---')
   if (close !== -1 && text.slice(close + 4).trim() === '') return ''
   return text
-}
-
-/** Build a synthetic, already-exited handle for a restored (stale) entry. */
-function makeStaleHandle(snap: RunningProcessSnapshot): CommandHandle {
-  return {
-    pid: snap.pid,
-    containerName: snap.containerName,
-    sandboxed: snap.sandboxed,
-    stdout: () => '',
-    stderr: () => '',
-    recentOutput: () => '',
-    done: Promise.resolve({ exitCode: -1, stdout: '', stderr: '', killed: false }),
-    kill: () => { /* stale: the OS child is gone, nothing to signal */ },
-    exited: () => true,
-    startedAt: snap.startedAt,
-  }
 }

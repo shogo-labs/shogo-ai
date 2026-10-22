@@ -96,7 +96,9 @@ interface Marker {
   path?: string
 }
 
-const MARKER = /\[\[e2e:(long|hold|tool|bg)((?::[a-zA-Z]+=[\w./-]+)*)\]\]/
+// Values may contain `|` so a `bg` marker can script a real pipeline
+// (`cmd=false_|_cat`), which is the shape SHO-141 has to judge.
+const MARKER = /\[\[e2e:(long|hold|tool|bg)((?::[a-zA-Z]+=[\w./|-]+)*)\]\]/
 
 /** Tool the fake model calls. `read_file` works on a missing path too: an error result still continues the turn. */
 const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
