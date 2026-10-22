@@ -62,6 +62,16 @@ function bounded(work: Promise<unknown> | undefined, ms: number): Promise<unknow
   return Promise.race([work.catch(() => undefined), budget]).finally(() => clearTimeout(timer))
 }
 
+/**
+ * Drop a handle whose tree this test already cancelled. The cancel is the
+ * assertion; re-killing the same handle in the hook only proves it twice, and
+ * on Windows that second pass is what cost `taskkill /T` plus a process-table
+ * spawn per handle.
+ */
+function forget(handle: CommandHandle): void {
+  handles = handles.filter((candidate) => candidate !== handle)
+}
+
 // A hook that overruns its budget fails the *test* it ran after, which is how
 // this spec turned the required Windows shard red in the merge queue: cleanup
 // was fine, it just took longer than 5 s on a loaded runner. Bound the work and
@@ -132,5 +142,9 @@ describe.skipIf(!IS_WINDOWS)('SHO-144 AC 1 — a wrapper that exited does not hi
     expect(found).toBe(true)
     expect(survivors).toEqual([])
     await waitFor(() => !isAlive(sleeper), 30_000, 'the sleeper to die with the job')
+
+    // The cancel above is the assertion this test exists for; re-killing the
+    // same handle in the hook would only prove it a second time.
+    forget(handle)
   }, 180_000)
 })

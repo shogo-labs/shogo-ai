@@ -64,6 +64,13 @@ function contain(
   return containment
 }
 
+/**
+ * On Windows a `killTree` costs `taskkill /T` plus process-table spawns, which
+ * can exceed bun's 5 s default hook budget on a loaded runner (SHO-144: the
+ * same shape of test failed in the merge queue by timing out its teardown).
+ */
+const CLEANUP_TIMEOUT_MS = 120_000
+
 afterEach(async () => {
   for (const containment of containments.splice(0)) {
     try { await containment.killTree({ graceMs: 0 }) } catch { /* already gone */ }
@@ -74,7 +81,7 @@ afterEach(async () => {
     try { child.kill('SIGKILL') } catch { /* already gone */ }
   }
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
-})
+}, CLEANUP_TIMEOUT_MS)
 
 describe.skipIf(IS_WINDOWS)('containChild on POSIX', () => {
   test('killTree kills a grandchild that outlived its shell, and reports no survivors', async () => {
@@ -261,4 +268,27 @@ describe.skipIf(!IS_WINDOWS)('containChild on Windows', () => {
 
     expect(survivors).toEqual([])
   }, 60_000)
+
+  test('a second killTree on a tree it already emptied does not re-walk the process table', async () => {
+    const child = spawn('powershell', ['-NoProfile', '-Command', 'Start-Sleep -Seconds 600'], {
+      stdio: 'ignore',
+    })
+    children.push(child)
+    const containment = contain(child, { label: 'exec' })
+
+    expect((await containment.killTree({ graceMs: 0 })).survivors).toEqual([])
+    // What `TaskRegistry.cancel` does once the kill is reported: the job handle
+    // goes away, so a later `killTree` has no job left to query.
+    containment.dispose()
+
+    const startedAt = Date.now()
+    const second = await containment.killTree({ graceMs: 0 })
+    const elapsed = Date.now() - startedAt
+
+    expect(second.survivors).toEqual([])
+    // Without the short-circuit this fell through to the no-job path — a 500 ms
+    // settle plus a `tasklist` and a `Get-CimInstance` spawn — which is what
+    // pushed the AC-1 acceptance teardown past bun's 5 s hook budget.
+    expect(elapsed).toBeLessThan(1_000)
+  }, 120_000)
 })

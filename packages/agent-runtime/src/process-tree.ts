@@ -487,6 +487,14 @@ class WindowsContainment implements ContainmentBackend {
   private job: number | null = null
   private jobReady: Promise<void> | null = null
   private disposed = false
+  /**
+   * Set once a `killTree` pass has proved the job holds nothing else. A later
+   * call — typically the teardown of whatever cancelled the task — must not
+   * re-prove it: after `dispose()` there is no job left to query, so it would
+   * fall through to the process table and pay for a `taskkill`, a `tasklist`
+   * and a `Get-CimInstance` spawn to learn what it already knew.
+   */
+  private emptied = false
 
   constructor(private readonly child: ChildProcess, private readonly label: string) {
     const pid = child.pid
@@ -590,6 +598,7 @@ class WindowsContainment implements ContainmentBackend {
   async killTree(opts: KillTreeOptions = {}): Promise<KillTreeResult> {
     const pid = this.child.pid
     if (!pid) return { survivors: [] }
+    if (this.emptied) return { survivors: [] }
     const budgetMs = Math.max(2_000, opts.graceMs ?? 0)
     try { await this.jobReady } catch { /* fall back to taskkill */ }
 
@@ -623,15 +632,18 @@ class WindowsContainment implements ContainmentBackend {
             .map((survivor) => ({ pid: survivor, name: names.get(survivor) ?? 'unknown' })),
         }
       }
+      this.emptied = true
       return { survivors: [] }
     }
 
-    // No job object on this machine: verify through the process table.
+    // No job object on this machine, or one already closed by `dispose()`:
+    // verify through the process table. One spawn, not two — `members()` carries
+    // the image names, and liveness is a syscall rather than a `tasklist` run.
     await delay(Math.min(budgetMs, 500))
-    const names = windowsProcessNames()
     const survivors = this.members()
-      .filter((member) => names.has(member.pid))
-      .map((member) => ({ pid: member.pid, name: names.get(member.pid) ?? member.name }))
+      .filter((member) => member.pid !== process.pid && isAlive(member.pid))
+      .map((member) => ({ pid: member.pid, name: member.name }))
+    if (survivors.length === 0) this.emptied = true
     return { survivors }
   }
 
