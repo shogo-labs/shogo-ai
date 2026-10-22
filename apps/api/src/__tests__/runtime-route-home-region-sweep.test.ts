@@ -246,6 +246,7 @@ const RESOLVER_FILES: Record<string, string> = {
   'routes/slack-agent.ts': 'guard: background resolve via resolveWorkspaceRuntimeUrl',
   'routes/workspace-chat.ts': 'route-pin: pinWorkspaceRoutesToHomeRegion on every route (asserted below)',
   'services/agent-call.service.ts': 'guard: agent-to-agent calls resolve via the resolver layer',
+  'services/publish-git.service.ts': 'route-pin: called from routes/publish.ts (pinned under /api/projects/:projectId/); the project-delete hook and the published-site sweep always pass dropPublishPointer:false, so they never resolve a pod URL',
   'services/workspace-export/files.ts': 'route-pin: pinWorkspaceRoutesToHomeRegion on every workspace export route; only reads pod files',
   'services/github-workspace.ts': 'guard: resolves via the resolver layer',
 }
