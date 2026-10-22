@@ -100,7 +100,7 @@ function waitMock(taskId: string, response: Record<string, unknown>): ToolMockSp
     type: 'pattern',
     patterns: [
       { match: { id: taskId }, response },
-      { match: { ids: '"task_ids"' }, response: { error: 'Unknown task id. Finished tasks are kept ~10 min; call task_list to see current tasks.' } },
+      { match: { ids: '"task_ids"' }, response: { error: 'Unknown task id: not in this conversation\'s tasks, and no output file to recover it from. Call task_list for the tasks that are still here.', code: 'task_result_gone' } },
     ],
     default: response,
     delayMs: 0,

@@ -680,6 +680,52 @@ describe('project_call', () => {
     expect(out.code).toBe('agent_call_timeout')
     expect(out.hint).toMatch(/wait=false/)
   })
+
+  test('a waiting call that produced no reply is a failure, not ok with reply:null', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = {
+      ok: true,
+      status: 200,
+      data: {
+        status: 'accepted',
+        chatSessionId: 'chat-9',
+        error: { code: 'callee_turn_never_started', message: 'The target agent never started this run (its chat was busy).' },
+      },
+    }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go' })
+
+    expect(out.ok).toBe(false)
+    expect(out.code).toBe('callee_turn_never_started')
+    expect(out.error).toContain('never started')
+    expect(out.reply).toBeUndefined()
+  })
+
+  test('a waiting call with a plain 202 and no error says where to read the reply', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = { ok: true, status: 202, data: { status: 'accepted', chatSessionId: 'chat-9' } }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go' })
+
+    expect(out.ok).toBe(false)
+    expect(out.code).toBe('call_without_reply')
+    expect(out.error).toContain('chat-9')
+  })
+
+  test('a background call with no reply is still accepted', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = { ok: true, status: 202, data: { status: 'accepted', sessionId: 'run:abc' } }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go', wait: false })
+    expect(out.ok).not.toBe(false)
+    expect(out.wait).toBe(false)
+  })
 })
 
 // ─── system_apply ────────────────────────────────────────────────────────────

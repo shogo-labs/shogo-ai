@@ -17,7 +17,7 @@ import { resolve, dirname, join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
-import { createBufferedTurns, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
+import { createBufferedTurns, type PipelineCallHooks, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
 import { describeTurn } from './turn-status'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
@@ -2217,8 +2217,24 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
 // 30 s after a turn completes, so the reply is kept separately for an hour —
 // a caller whose stream follower missed the turn (API restart, slow poll) can
 // still persist what the agent said instead of re-running the turn.
+//
+// `?callId=` asks about one named call, and the answer is about that call:
+// `queued` (with `queuedSince`/`queuedDepth`) while it waits for this chat's own
+// turn to end, `lost` when the gate has no record of it any more (the runtime
+// restarted, the queued item vanished, or the chat was stopped first). Without
+// a name the probe describes the chat, which cannot tell those apart.
 app.get('/agent/chat/:chatSessionId/turn', (c) => {
-  const { status, body } = describeTurn(streamBufferStore, c.req.param('chatSessionId'))
+  const chatSessionId = c.req.param('chatSessionId')
+  // `?callId=` answers for one named call: a chat that is busy with its own
+  // turn looks identical to a call still waiting behind it, so a follower that
+  // asks by name gets `queued` until the call's own turn exists.
+  const callId = c.req.query('callId')?.trim()
+  const { status, body } = describeTurn(
+    streamBufferStore,
+    chatSessionId,
+    liveTurnGate.queued(chatSessionId),
+    callId ? { callId, state: liveTurnGate.callState(chatSessionId, callId) } : null,
+  )
   return c.json(body, status as 200 | 404)
 })
 
@@ -3938,26 +3954,45 @@ app.post('/agent/pipeline/call', async (c) => {
     callerProjectId: typeof body.callerProjectId === 'string' ? body.callerProjectId : undefined,
     requesterTicket: c.req.header('x-requester-ticket') || undefined,
   }
+  // The caller names its call so the turn probe can answer for it: "queued
+  // behind the chat's own turn" and "this is the chat's live turn" are
+  // indistinguishable from the chat's state alone.
+  const callId = typeof body.callId === 'string' && body.callId.trim() ? body.callId.trim() : crypto.randomUUID()
 
   if (body.wait === false) {
-    runPipelineCall(opts).then(
+    // Ack at once: the caller's forward timeout is 15 s, and a chat that is
+    // busy with its own turn queues this call rather than dropping it, so the
+    // answer is which of the two happened — not a hold on the turn.
+    const sessionId = opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline')
+    let started = false
+    const pending = runPipelineCall({ ...opts, callId }, {
+      onQueued: () => { started = false },
+      onTurnStarted: () => { started = true },
+    })
+    pending.then(
       (r: { reply: string; sessionId: string; runId?: string }) =>
         console.log(`[agent-runtime] pipeline call complete (run=${r.runId ?? '-'}):`, r.reply.substring(0, 200)),
       (err: any) => console.error('[agent-runtime] pipeline call failed:', err?.message ?? err),
     )
-    return c.json({ status: 'accepted', runId: opts.runId, sessionId: opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline') }, 202)
+    // `runPipelineCall` creates the buffer synchronously when the chat is free,
+    // so by the time it returns, `started` already says whether the turn is
+    // running or still waiting for the chat's own turn to end.
+    return c.json({ status: started ? 'started' : 'queued', callId, runId: opts.runId, sessionId }, 202)
   }
 
   try {
-    const result = await runPipelineCall(opts)
+    const result = await runPipelineCall({ ...opts, callId })
     return c.json({ status: 'completed', ...result })
   } catch (err: any) {
     return c.json({ error: { code: 'agent_turn_failed', message: err?.message ?? String(err) } }, 500)
   }
 })
 
-function runPipelineCall(opts: PipelineCallOptions): Promise<PipelineCallResult> {
-  return bufferedTurns.runPipelineCall((call) => agentGateway!.processPipelineCall(call), opts)
+function runPipelineCall(
+  opts: PipelineCallOptions,
+  hooks: PipelineCallHooks = {},
+): Promise<PipelineCallResult> {
+  return bufferedTurns.runPipelineCall((call) => agentGateway!.processPipelineCall(call), opts, hooks)
 }
 
 /**

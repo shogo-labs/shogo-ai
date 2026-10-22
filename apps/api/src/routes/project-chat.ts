@@ -261,6 +261,12 @@ export async function trackUsageFromStream(
      * session and is ignored instead of overwriting this turn's row.
      */
     expectedTurnStartedAt?: number
+    /**
+     * The exact turn this tracker owns. The buffer is keyed by chat, so a turn
+     * that starts after ours replaces it; a buffer whose `data-turn-start`
+     * names a different turn is not ours and is never persisted as this turn.
+     */
+    expectedTurnId?: string
     /** Workspace of a `project: null` turn, so its usage can still be recorded. */
     workspaceId?: string
   } = {},
@@ -682,6 +688,12 @@ export async function trackUsageFromStream(
     }
     if (type === 'data-turn-start' && trackedTurnId === undefined) {
       const turnId = data?.data?.turnId
+      // The caller named the turn it is following; a different one in the
+      // buffer (a later turn reused the session's buffer) is not its reply.
+      if (options.expectedTurnId && typeof turnId === 'string' && turnId && turnId !== options.expectedTurnId) {
+        foreignTurn = true
+        return
+      }
       if (typeof turnId === 'string' && turnId) trackedTurnId = turnId
     }
 

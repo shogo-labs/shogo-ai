@@ -23,11 +23,19 @@ import {
   TaskOutputWriter,
   readTaskOutput,
   tailLines,
+  taskOutputBody,
   type TaskOutputRow,
 } from './task-output'
 
 /** How long to keep finished entries around so a post-hoc `wait` works. */
 export const COMPLETED_RETENTION_MS = 10 * 60 * 1000
+/**
+ * How long a finished entry whose result nobody has read is kept. Retention is
+ * a lease released by `markConsumed`, not an eviction: the short window only
+ * applies once the agent that started the task has seen the result. This bound
+ * stops the map growing without limit, and the output file outlives it.
+ */
+export const UNREAD_RETENTION_MS = 24 * 60 * 60 * 1000
 /** How long a shell command must run before it is shown in the chat dock. */
 export const UI_VISIBLE_AFTER_MS = 30_000
 /** Rolling in-memory output window per non-shell task, used by `until` matching. */
@@ -114,6 +122,10 @@ export interface TaskEntry {
   /** Shell tasks only. */
   handle?: CommandHandle
   finalResult?: ShellFinalResult
+  /** Rebuilt from its output file after its entry was evicted. */
+  recovered?: boolean
+  /** Arms the retention window for this entry's finished result. */
+  retentionTimer?: ReturnType<typeof setTimeout>
   /** Resolves when the task leaves the `running` state. */
   done: Promise<void>
   visibilityTimer?: ReturnType<typeof setTimeout>
@@ -169,6 +181,10 @@ export interface RunningProcessSnapshot {
   finishedAt?: number
   /** The snapshot was taken from a row the dock was showing. */
   shown?: boolean
+  /** The agent has seen this result; a restart must not turn an unread one read. */
+  consumed?: boolean
+  /** The agent was told it runs in the background (only these own their result). */
+  backgrounded?: boolean
 }
 
 export interface TaskNotification {
@@ -226,6 +242,17 @@ export interface TaskRegistryOptions {
   /** Workspace root, used to report output files as workspace-relative paths. */
   workspaceDir?: string
   remote?: RemoteTaskClient
+  /** How long a finished result the agent already read is kept. */
+  retentionMs?: number
+  /** How long a finished result nobody read is kept. */
+  unreadRetentionMs?: number
+  /** How many unread finished results may sit in memory before the oldest go. */
+  maxUnconsumed?: number
+  /**
+   * Find a task's log after its entry was evicted, so `resolveFinished` can
+   * rebuild the result instead of reporting the task as unknown.
+   */
+  resolveOutputRow?: (id: string) => TaskOutputRow | null
 }
 
 export function newTaskId(): string {
@@ -264,6 +291,10 @@ export class TaskRegistry {
   private readonly uiVisibleAfterMs: number
   private readonly outputDir?: string
   private readonly workspaceDir?: string
+  private readonly retentionMs: number
+  private readonly unreadRetentionMs: number
+  private readonly maxUnconsumed: number
+  private readonly findOutputRow?: (id: string) => TaskOutputRow | null
   remote?: RemoteTaskClient
 
   constructor(options: TaskRegistryOptions = {}) {
@@ -271,6 +302,10 @@ export class TaskRegistry {
     this.outputDir = options.outputDir
     this.workspaceDir = options.workspaceDir
     this.remote = options.remote
+    this.retentionMs = options.retentionMs ?? COMPLETED_RETENTION_MS
+    this.unreadRetentionMs = options.unreadRetentionMs ?? UNREAD_RETENTION_MS
+    this.maxUnconsumed = options.maxUnconsumed ?? 20
+    this.findOutputRow = options.resolveOutputRow
   }
 
   // ---------------------------------------------------------------------------
@@ -483,13 +518,83 @@ export class TaskRegistry {
     this.resolvers.get(entry.id)?.()
     this.resolvers.delete(entry.id)
     this.emitChange()
-    const cleanupTimer = setTimeout(() => this.forget(entry.id), COMPLETED_RETENTION_MS)
-    ;(cleanupTimer as any)?.unref?.()
+    this.armRetention(entry)
+  }
+
+  /**
+   * The result belongs to whoever started the task until they read it. A task
+   * the agent was told about in the background keeps its entry (and so a late
+   * `wait`) until `markConsumed`; everything else gets the short window.
+   */
+  private wantsUnreadResult(entry: TaskEntry): boolean {
+    return !!entry.backgrounded && !entry.consumed && !entry.stale
+  }
+
+  /** (Re)arm the retention window from the entry's finish time. */
+  private armRetention(entry: TaskEntry): void {
+    if (entry.retentionTimer) {
+      clearTimeout(entry.retentionTimer)
+      entry.retentionTimer = undefined
+    }
+    const finishedAt = entry.finishedAt ?? Date.now()
+    const deadline = finishedAt + (this.wantsUnreadResult(entry) ? this.unreadRetentionMs : this.retentionMs)
+    const timer = setTimeout(() => {
+      entry.retentionTimer = undefined
+      this.expire(entry.id)
+    }, Math.max(0, deadline - Date.now()))
+    ;(timer as any)?.unref?.()
+    entry.retentionTimer = timer
+    this.enforceUnconsumedCap()
+  }
+
+  /**
+   * Drop a finished entry from memory once its lease is up. An unread result
+   * that still has lease left is re-armed instead (a restore from a snapshot or
+   * a log comes back with a fresh window), and memory stays bounded by evicting
+   * the oldest entries — their output files still hold the result.
+   */
+  private expire(id: string): void {
+    const entry = this.entries.get(id)
+    if (!entry || entry.status === 'running' || entry.stale) return
+    if (this.wantsUnreadResult(entry)) {
+      const deadline = (entry.finishedAt ?? Date.now()) + this.unreadRetentionMs
+      if (Date.now() < deadline) {
+        this.armRetention(entry)
+        return
+      }
+    }
+    this.forget(id)
+    this.enforceUnconsumedCap()
+  }
+
+  /** Keep at most `maxUnconsumed` unread results in memory, oldest first. */
+  private enforceUnconsumedCap(): void {
+    const finished = [...this.entries.values()].filter((e) => e.status !== 'running' && !e.stale)
+    const unread = finished.filter((e) => this.wantsUnreadResult(e))
+    let excess = unread.length - this.maxUnconsumed
+    if (excess <= 0) return
+    const oldestFirst = (a: TaskEntry, b: TaskEntry) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0)
+    // Read results are free to drop and keep the map small; only then does an
+    // unread one go, and it is rebuildable from its log.
+    for (const entry of finished.filter((e) => !this.wantsUnreadResult(e)).sort(oldestFirst)) {
+      if (excess <= 0) break
+      this.forget(entry.id)
+      excess -= 1
+    }
+    for (const entry of unread.sort(oldestFirst)) {
+      if (excess <= 0) break
+      this.forget(entry.id)
+      excess -= 1
+    }
   }
 
   private forget(id: string): void {
     const entry = this.entries.get(id)
     if (!entry || entry.status === 'running') return
+    if (entry.retentionTimer) {
+      clearTimeout(entry.retentionTimer)
+      entry.retentionTimer = undefined
+    }
     this.entries.delete(id)
     this.recent.delete(id)
     if (entry.ref && this.aliases.get(entry.ref) === id) this.aliases.delete(entry.ref)
@@ -564,6 +669,8 @@ export class TaskRegistry {
       if (!entry || entry.consumed) continue
       entry.consumed = true
       this.completionNotes.delete(entry.id)
+      // Reading the result ends its unread lease: the short window applies now.
+      if (entry.finishedAt) this.armRetention(entry)
       if (entry.apiTracked || entry.reported) apiIds.push(entry.id)
     }
     if (apiIds.length > 0 && this.remote) {
@@ -671,6 +778,46 @@ export class TaskRegistry {
     if (!this.workspaceDir) return path
     const rel = relative(this.workspaceDir, path)
     return rel && !rel.startsWith('..') ? rel : path
+  }
+
+  /** The log `id` would have written, when output files are enabled. */
+  outputPathFor(id: string): string | undefined {
+    if (!this.outputDir) return undefined
+    return this.displayPath(join(this.outputDir, `${id}.log`))
+  }
+
+  /**
+   * A finished task's entry, rebuilt from its output file when the in-memory
+   * one was evicted. The log is the durable copy: as long as it is there the
+   * result is readable, and only a missing log means the task is really gone.
+   */
+  async resolveFinished(id: string): Promise<TaskEntry | null> {
+    const resolved = this.resolveId(id)
+    const existing = this.entries.get(resolved)
+    if (existing) return existing
+    const row = this.findOutputRow?.(resolved)
+    if (!row?.status) return null
+    const body = taskOutputBody(readTaskOutput(row.path))
+    if (body.trim()) this.recent.set(row.taskId, tailLines(body, 400, 200_000))
+    const entry: TaskEntry = {
+      id: row.taskId,
+      runId: row.taskId,
+      source: (row.source as TaskSource) ?? 'shell',
+      title: row.title,
+      command: row.title,
+      status: row.status,
+      startedAt: row.startedAt,
+      finishedAt: row.finishedAt ?? row.modifiedAt,
+      result: { exitCode: row.exitCode, summary: row.status },
+      notify: false,
+      consumed: false,
+      recovered: true,
+      outputFile: row.path,
+      done: Promise.resolve(),
+    }
+    this.entries.set(entry.id, entry)
+    this.armRetention(entry)
+    return entry
   }
 
   // ---------------------------------------------------------------------------
@@ -971,14 +1118,22 @@ export class TaskRegistry {
 
   /**
    * Serializable snapshot for persistence: every running task plus the
-   * recently finished rows the dock was showing. Running entries are taken
-   * from `listRunning()`, not `listDock()`, because a shell command still
-   * inside the dock visibility delay is invisible but must survive a restart.
+   * recently finished rows the dock was showing, and any finished row whose
+   * result its owner has not read yet. Running entries are taken from
+   * `listRunning()`, not `listDock()`, because a shell command still inside the
+   * dock visibility delay is invisible but must survive a restart; an unread
+   * result joins them for the same reason — the dock's 10-minute window is not
+   * its lease.
    */
   snapshot(): RunningProcessSnapshot[] {
+    const now = Date.now()
     const persisted = new Map<string, RunningProcess>()
     for (const p of this.listRunning()) persisted.set(p.id, p)
     for (const p of this.listDock()) if (!persisted.has(p.id)) persisted.set(p.id, p)
+    for (const entry of this.entries.values()) {
+      if (persisted.has(entry.id) || entry.dormant) continue
+      if (entry.status === 'running' || this.wantsUnreadResult(entry)) persisted.set(entry.id, this.toView(entry, now))
+    }
     return [...persisted.values()].map((p) => {
       const entry = this.entries.get(p.id)
       return {
@@ -999,6 +1154,10 @@ export class TaskRegistry {
         status: p.status,
         finishedAt: p.finishedAt,
         shown: true,
+        // Whether the agent read the result decides the lease it comes back
+        // with; a restart must not turn an unread result into a read one.
+        consumed: entry?.consumed,
+        backgrounded: entry?.backgrounded,
       }
     })
   }
@@ -1105,9 +1264,7 @@ export class TaskRegistry {
   /** Restore one settled row; false when it is unknown/too old to keep.  */
   private restoreTerminal(snap: RunningProcessSnapshot, now: number): boolean {
     if (!snap.status || snap.status === 'running' || !snap.finishedAt) return false
-    const remaining = snap.finishedAt + COMPLETED_RETENTION_MS - now
-    if (remaining <= 0) return true
-    this.entries.set(snap.runId, {
+    const entry: TaskEntry = {
       id: snap.runId,
       runId: snap.runId,
       source: snap.source ?? 'shell',
@@ -1117,14 +1274,18 @@ export class TaskRegistry {
       startedAt: snap.startedAt,
       finishedAt: snap.finishedAt,
       notify: false,
-      consumed: true,
+      // A snapshot from before this field existed assumed the row was read.
+      consumed: snap.consumed ?? true,
+      backgrounded: snap.backgrounded,
       shown: snap.shown,
       outputFile: snap.outputFile,
       link: snap.link,
       done: Promise.resolve(),
-    })
-    const cleanupTimer = setTimeout(() => this.forget(snap.runId), remaining)
-    ;(cleanupTimer as any)?.unref?.()
+    }
+    const lease = this.wantsUnreadResult(entry) ? this.unreadRetentionMs : this.retentionMs
+    if (snap.finishedAt + lease - now <= 0) return true
+    this.entries.set(snap.runId, entry)
+    this.armRetention(entry)
     return true
   }
 
