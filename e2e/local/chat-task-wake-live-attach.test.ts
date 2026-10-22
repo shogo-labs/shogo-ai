@@ -172,6 +172,34 @@ function wakeRequests(): FakeTurn[] {
   return llm.turns.filter((t) => t.userText.includes("[Task update]"))
 }
 
+/** Requests the panel makes on its own: mount probes, watch polls, refocus probes. */
+const CHAT_TRAFFIC = /\/api\/chat-messages|\/(tasks|processes|turn)(\?|$)/
+
+/**
+ * Wait until the window stops talking to the chat endpoints on its own.
+ *
+ * A freshly opened window loads history and probes `/turn`; how long that
+ * takes is the runner's, so "sleep 6s, then count" is a wall-clock guess that
+ * a cold project load outruns — the mount probes then land inside the counted
+ * window and the spec reports polling that no one did (SHO-134). Wait for the
+ * window to settle instead.
+ *
+ * `quietMs` must outlast the widest gap between the probes it is waiting out,
+ * or the wait settles inside the schedule.
+ */
+async function waitForChatQuiet(page: Page, quietMs = 6_000, deadlineMs = 120_000): Promise<boolean> {
+  let lastAt = Date.now()
+  page.on("request", (request) => {
+    if (CHAT_TRAFFIC.test(request.url())) lastAt = Date.now()
+  })
+  const started = Date.now()
+  while (Date.now() - started < deadlineMs) {
+    if (Date.now() - lastAt >= quietMs) return true
+    await page.waitForTimeout(100)
+  }
+  return false
+}
+
 async function persistedWakeReply(sessionId: string): Promise<{ update: boolean; reply: boolean }> {
   const messages = await apiJson<any>("GET", `/api/chat-messages?sessionId=${encodeURIComponent(sessionId)}`)
   const items: any[] = messages?.items ?? messages?.data ?? messages ?? []
@@ -232,11 +260,26 @@ test.describe("a server-initiated wake on an open window", () => {
   })
 
   test("a second window on the same chat renders the wake it never posted", async () => {
+    // The 90s hold below sits inside the 120s `WAKE_MS` budget and pushes this
+    // case past the file's 300s default on its failure paths, which would report
+    // "test timeout" instead of the labelled assertion that actually failed.
+    test.setTimeout(420_000)
     const sid = await createChat("wake second window")
     const first = await newWindow(sid)
     const tag = "w2"
 
-    await send(first, `${marker("bg", tag, 20, { ms: 5, cmd: "sleep 5" })} start the build in the background`)
+    // The task has to outlive window B's cold start, or the runner's speed
+    // decides the result instead of the product. The wake reply is persisted
+    // ~10.4s after this turn on every runner measured (SHO-134: +10.5s on the
+    // red attempt, +10.4s on the green one), while `newWindow` — newPage + goto
+    // + the Expo bootstrap — takes 8-13s warm and longer when the worker is
+    // loaded. With a 5s task the wake landed first, window B opened with the
+    // reply already on screen, and the precondition below read 1, which moved
+    // the wake-count baseline with it (all three CI retries, and the same
+    // shard position every time). A 90s hold makes the ordering the spec's own:
+    // the wake cannot fire until ~90s after the turn, long after window B has
+    // been asserted clean, and it still lands inside `WAKE_MS`.
+    await send(first, `${marker("bg", tag, 20, { ms: 5, cmd: "sleep 90" })} start the build in the background`)
     await llm.waitForTurn(tag, 90_000)
     await waitForTurnStart(first)
     await waitForIdle(first)
@@ -276,8 +319,13 @@ test.describe("a server-initiated wake on an open window", () => {
     })
 
     // Let the mount probes settle, then watch a window with no background work
-    // at all: the wake watch must not be armed, or every idle chat polls.
-    await page.waitForTimeout(6_000)
+    // at all: the wake watch must not be armed, or every idle chat polls. Wait
+    // for the window to actually stop probing rather than assuming 6s is
+    // enough on a cold project load (SHO-134).
+    expect(
+      await waitForChatQuiet(page),
+      "the freshly opened window stops its own mount probes",
+    ).toBe(true)
     asked.length = 0
     await page.waitForTimeout(12_000)
     soft(asked.length, `an idle chat made ${asked.length} task/turn requests in 12s`).toBe(0)

@@ -380,7 +380,16 @@ export async function recordEvent(item: { id: string; workspaceId: string }, typ
   const line = cardEventLine(type, data)
   if (line) {
     const { emitTaskEvent } = await import('./background-tasks.service')
-    await emitTaskEvent('work_item', item.id, { line, card: cardEventState(data) })
+    // Only a run *ending* is withheld from the agent that ran: it already knows
+    // it stopped, and letting that settle its own watch is the wake loop
+    // (SHO-129). A move, assignment or comment an agent makes stays news for
+    // every watch, its own included.
+    const fromAgent = (type === 'agent_stopped' || type === 'agent_failed') && actor.agentRef ? actor.agentRef : null
+    await emitTaskEvent('work_item', item.id, {
+      line,
+      card: cardEventState(data),
+      ...(fromAgent ? { fromAgentRef: fromAgent } : {}),
+    })
   }
 }
 

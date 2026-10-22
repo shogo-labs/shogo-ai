@@ -94,7 +94,7 @@ describe('CommandRegistry.listVisible', () => {
 })
 
 describe('CommandRegistry.snapshot + restoreStale', () => {
-  test('snapshot round-trips into stale entries that listRunning reports', () => {
+  test('snapshot round-trips into a stale, interrupted entry', () => {
     const source = new CommandRegistry()
     source.register('npm run dev', fakeHandle({ pid: 900, sandboxed: true, containerName: 'shogo-exec-abc' }).handle)
     const snap = source.snapshot()
@@ -103,12 +103,20 @@ describe('CommandRegistry.snapshot + restoreStale', () => {
     const restored = new CommandRegistry()
     restored.restoreStale(snap)
 
-    const running = restored.listRunning()
-    expect(running).toHaveLength(1)
-    expect(running[0]!.command).toBe('npm run dev')
-    expect(running[0]!.pid).toBe(900)
-    expect(running[0]!.stale).toBe(true)
-    expect(restored.listVisible()).toHaveLength(1)
+    // The row survives (command, pid) and is stale — but it is not running any
+    // more: nothing can poll the child, and SHO-141 says the verdict is
+    // `interrupted`, so it is absent from listRunning/listVisible and present in
+    // the dock.
+    expect(restored.listRunning()).toHaveLength(0)
+    expect(restored.listVisible()).toHaveLength(0)
+    const docked = restored.listDock()
+    expect(docked).toHaveLength(1)
+    expect(docked[0]!.command).toBe('npm run dev')
+    // No pid: it came from the handle, which died with the runtime, and a dead
+    // child's number is not a thing to report.
+    expect(docked[0]!.pid).toBeUndefined()
+    expect(docked[0]!.stale).toBe(true)
+    expect(docked[0]!.status).toBe('interrupted')
   })
 
   test('restoreStale ignores duplicate run ids', () => {
@@ -118,7 +126,7 @@ describe('CommandRegistry.snapshot + restoreStale', () => {
     ]
     reg.restoreStale(snap)
     reg.restoreStale(snap)
-    expect(reg.listRunning()).toHaveLength(1)
+    expect(reg.listDock()).toHaveLength(1)
   })
 })
 

@@ -193,7 +193,14 @@ describe('SHO-122 AC1 — the previous turn survives the boundary, structured', 
     const session = sm.getOrCreate('ac1b')
     session.messages = [...olderHistory(), ...turn('current', 12)]
     await sm.compact('ac1b')
-    expect(JSON.stringify(sm.buildHistory('ac1b'))).toBe(JSON.stringify(sm.buildHistory('ac1b')))
+    // The summary prefix pair is built per call and stamped `Date.now()`, so two
+    // calls one millisecond apart are never byte-identical through no fault of
+    // the boundary (SHO-154: …172 vs …171 red-ed the gate once). The bytes this
+    // test is about are the content, order and count; the clock is not one of
+    // them.
+    const stableBytes = (msgs: Message[]) =>
+      JSON.stringify(msgs, (key, value) => (key === 'timestamp' ? 0 : value))
+    expect(stableBytes(sm.buildHistory('ac1b'))).toBe(stableBytes(sm.buildHistory('ac1b')))
   })
 
   test('AC2 — the 516 -> 12 collapse reproduces on the legacy arm and is gone on this one', async () => {

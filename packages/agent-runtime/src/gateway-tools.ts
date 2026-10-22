@@ -52,7 +52,7 @@ import { isInQuietHours } from './quiet-hours'
 import { PROFILE_TOOL_GROUPS, disabledToolNamesForProfile } from './capability-profiles'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
-import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
+import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle, type ShellExitResult } from './sandbox-exec'
 import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
 import { consumeExecCwdMarker, execCwdDirFor, newExecCwdMarker } from './exec-cwd'
@@ -1232,13 +1232,7 @@ function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
 interface BuildExecResultOpts {
   ctx: ToolContext
   entry: CommandEntry
-  finalResult: {
-    exitCode: number
-    stdout: string
-    stderr: string
-    killed: boolean
-    killReason?: string
-  }
+  finalResult: ShellExitResult
 }
 
 function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOpts): AgentToolResult<any> {
@@ -1262,7 +1256,9 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
   }
   return textResult({
     cwd: newCwd,
-    exitCode: finalResult.exitCode,
+    ...(finalResult.exitCodeReliable === false
+      ? { exit_code_reliable: false, pipeline_status: finalResult.pipelineStatus ?? 'last-stage', status_note: `pipeline status unavailable — ${finalResult.shellLabel ?? 'this shell'} cannot report a pipeline's exit code` }
+      : { exitCode: finalResult.exitCode }),
     stdout: truncateExecOutput(stdoutTrimmed),
     stderr: stderrTrimmed ? truncateExecOutput(stderrTrimmed) : undefined,
     durationMs,
@@ -1423,12 +1419,6 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // and task execution are disabled until trust is granted.
       const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec', ctx.workspaceDir)
       if (!execTrust.ok) return textResult({ error: execTrust.message })
-
-      if (/\bgh\s+pr\s+create\b/.test(command)) {
-        return textResult({
-          error: 'Use the github_create_pr tool to create pull requests so Shogo can add attribution.',
-        })
-      }
 
       if (isBlockedCommand(attributedCommand)) {
         return textResult({ error: `Blocked command: ${command}` })
@@ -1697,6 +1687,20 @@ function requesterCredentialBlockResult(result: CheckpointCallResult<unknown>) {
   })
 }
 
+/**
+ * The `gh` command that achieves the same thing, appended to every
+ * `github_create_pr` failure so the tool never dead-ends. `gh` is not gated,
+ * so this is always a working next step.
+ */
+function ghPrFallbackHint(repository: { owner: string; repo: string } | null, head: string): string {
+  const repo = repository ? `${repository.owner}/${repository.repo}` : '<owner>/<repo>'
+  const branch = head || '<branch>'
+  return (
+    'Open the PR with gh instead: ' +
+    `exec({ command: 'gh pr create --repo ${repo} --base main --head ${branch} --title "..." --body-file .tmp/pr-body.md' }).`
+  )
+}
+
 function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
   return {
     name: 'github_create_pr',
@@ -1705,7 +1709,8 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
       'Create a GitHub pull request after the current branch has been pushed. With a project GitHub connection it is opened by the ' +
       'Shogo GitHub App, or by the connected user when the project is connected with an access token. ' +
       'The PR body always includes a Made with Shogo footer and an optional issue-pipeline runId marker. ' +
-      'If the project has no GitHub connection, the tool falls back to the user GITHUB_TOKEN from workspace .env.',
+      'If the project has no GitHub connection, the tool falls back to the user GITHUB_TOKEN from workspace .env; ' +
+      'with neither, use `gh pr create` in exec instead — that is the normal route and is never blocked.',
     parameters: Type.Object({
       title: Type.String({ description: 'Pull request title' }),
       head: Type.Optional(
@@ -1802,20 +1807,20 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
       if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
       if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
         return textResult({
-          error: botResult.error || 'Shogo GitHub App could not create the pull request.',
+          error: `${botResult.error || 'Shogo GitHub App could not create the pull request.'} ${ghPrFallbackHint(repository, head)}`,
           status: botResult.status,
         })
       }
 
       if (!repository) {
         return textResult({
-          error: 'No GitHub App connection exists and the origin remote is not a GitHub repository.',
+          error: `No GitHub App connection exists and the origin remote is not a GitHub repository. ${ghPrFallbackHint(repository, head)}`,
         })
       }
       const token = loadWorkspaceEnvForAttribution(ctx.workspaceDir).GITHUB_TOKEN || process.env.GITHUB_TOKEN
       if (!token) {
         return textResult({
-          error: 'No GitHub App connection exists. Save GITHUB_TOKEN in workspace .env to create a user-authored PR.',
+          error: `No GitHub App connection exists. Save GITHUB_TOKEN in workspace .env to create a user-authored PR, or open it with gh. ${ghPrFallbackHint(repository, head)}`,
         })
       }
 
@@ -2016,7 +2021,7 @@ export function createGitHubMergePullRequestTool(ctx: ToolContext): AgentTool {
     label: 'Merge GitHub Pull Request',
     description:
       'Merge a GitHub pull request by number. A person on the team is asked to approve before it runs, so call it only when the work ' +
-      'is reviewed and ready. Use squash unless the project says otherwise. Do not merge with `gh pr merge`; that is blocked.',
+      'is reviewed and ready. Use squash unless the project says otherwise. Prefer this tool over `gh pr merge` so the merge is attributed and approved.',
     parameters: Type.Object({
       number: Type.Number({ description: 'Pull request number' }),
       method: Type.Optional(
@@ -2295,13 +2300,21 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30_000
 const MAX_WAIT_TIMEOUT_MS = 10 * 60 * 1000
 
 function taskView(ctx: ToolContext, entry: TaskEntry) {
+  const registry = ctx.commandRegistry
+  // Never hand the agent a log path the restart already deleted (SHO-141).
+  const outputFile = registry?.displayExistingPath(entry.outputFile)
   return {
     task_id: entry.id,
     source: entry.source,
     title: entry.title,
     status: entry.status,
     elapsed_ms: (entry.finishedAt ?? Date.now()) - entry.startedAt,
-    output_file: taskOutputPath(ctx, entry),
+    ...(outputFile
+      ? { output_file: outputFile }
+      : registry?.outputMissing(entry.outputFile)
+        ? { output_missing: 'the runtime restart removed this task\'s log' }
+        : {}),
+    ...(entry.status === 'interrupted' ? { interrupted_reason: entry.result?.summary ?? 'runtime restarted' } : {}),
   }
 }
 
@@ -2312,6 +2325,14 @@ function finishedTaskResult(ctx: ToolContext, entry: TaskEntry): Record<string, 
     ...taskView(ctx, entry),
     exit_code: entry.result?.exitCode,
     ...(entry.recovered ? { recovered: true } : {}),
+  }
+  // A pipeline the shell could not verify has no exit code to report: say so
+  // instead of printing the last stage's number as the command's.
+  if (entry.result?.exitCodeReliable === false) {
+    delete base.exit_code
+    base.exit_code_reliable = false
+    base.pipeline_status = entry.result.pipelineStatus ?? 'last-stage'
+    base.status_note = entry.result.summary
   }
   if (entry.handle && entry.finalResult) {
     const meta = execRunMetadata.get(entry.handle)
@@ -2501,9 +2522,10 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
           task_id: t.id,
           source: t.source,
           title: t.title,
-          status: t.stale ? 'unknown (runtime restarted)' : t.status,
+          // A stale row is one the restart ended, not one we cannot name.
+          status: t.stale ? 'interrupted (runtime restarted)' : t.status,
           elapsed_ms: t.elapsedMs,
-          output_file: t.outputFile,
+          ...(registry.displayExistingPath(t.outputFile) ? { output_file: registry.displayExistingPath(t.outputFile) } : {}),
         })),
       })
     },
@@ -7260,7 +7282,7 @@ function createConnectTool(ctx: ToolContext): AgentTool {
     description:
       'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to the MCP catalog (postgres, etc.), then to a remote URL if provided. Files and shell commands are built in (read_file, write_file, edit_file, exec) — do not connect filesystem or computer-use. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
       'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.\n\n' +
-      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
+      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec (`gh issue list`, `gh issue create`, `gh pr list`, `gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md`, `gh run list`). Opening a PR is normally `gh pr create` in exec after pushing the source branch; the `github_create_pr` tool is an optional alternative that opens the PR as the Shogo GitHub App and adds the standard footer. Either way end the body with the standard Made with Shogo footer and a `Card: <KEY>` line. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({

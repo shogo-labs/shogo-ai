@@ -184,6 +184,11 @@ export interface SerializedSession {
    *  Persisted so a reloaded session keeps native routing; older sessions
    *  simply lack it and fall back to id-based inference. */
   modelProvider?: string
+  /** The product name of the model `modelOverride` names (e.g. "Hoshi 2.0").
+   *  Stamped by the same request that set the override, so the Account prompt
+   *  line can name the model this session actually sends instead of whatever
+   *  request landed last (SHO-145). */
+  modelDisplayName?: string
   /** Maximum Auto tier permitted after a plan/entitlement rejection. */
   autoTierCeiling?: 'economy' | 'standard' | 'premium'
   /** Timestamp of the last Auto entitlement downgrade. */
@@ -274,6 +279,8 @@ export interface ManagedSession {
   modelOverride?: string
   /** Native provider hint paired with `modelOverride` (see SerializedSession). */
   modelProvider?: string
+  /** Product name of the model `modelOverride` names (see SerializedSession). */
+  modelDisplayName?: string
   /** Maximum Auto tier permitted after a plan/entitlement rejection. */
   autoTierCeiling?: 'economy' | 'standard' | 'premium'
   /** Timestamp of the last Auto entitlement downgrade. */

@@ -24,6 +24,14 @@ import { getMergedModelEntrySync } from '../services/model-registry.service'
 export async function isModelAccessibleForWorkspace(
   workspaceId: string,
   modelId: string,
+  /**
+   * Cached entitlement for a caller gating a whole list. `hasAdvancedModelAccess`
+   * is workspace-wide, so `GET /ai/v1/models` resolves it once and passes the
+   * value — or the resolver — for every model in the list. It is a thunk, and
+   * only consulted for a model that actually needs the entitlement, so listing
+   * economy/local/OpenRouter models never touches billing.
+   */
+  known?: { advancedAccess?: boolean; resolveAdvancedAccess?: () => Promise<boolean> },
 ): Promise<boolean> {
   const trimmed = modelId.trim()
   const id = resolvePublicModelSync(trimmed)?.backingModelId?.trim() || trimmed
@@ -31,5 +39,7 @@ export async function isModelAccessibleForWorkspace(
   const provider = entry?.provider ?? inferProviderFromModel(id, 'custom')
   if (provider === 'local' || provider === 'openrouter') return true
   if ((entry?.tier ?? getModelTier(id)) === 'economy') return true
+  if (known?.advancedAccess !== undefined) return known.advancedAccess
+  if (known?.resolveAdvancedAccess) return known.resolveAdvancedAccess()
   return billingService.hasAdvancedModelAccess(workspaceId)
 }

@@ -15,6 +15,7 @@ import { join } from 'path'
 import {
   directorySize,
   isInside,
+  projectTaskStateDir,
   removeAppOwnedTree,
   removeWorkspaceFiles,
   resolveWorkspacesDir,
@@ -202,5 +203,109 @@ describe('workspaceFileInventory / removeWorkspaceFiles', () => {
     expect(report.warnings).toHaveLength(1)
     expect(report.warnings[0]).toContain('outside')
     expect(existsSync(join(root, 'user-repo', 'index.ts'))).toBe(true)
+  })
+})
+
+describe('project task-log state (<workspacesDir>/.shogo-state/<projectId>)', () => {
+  test('is derived from the same root the runtime shares as /host-workspaces', () => {
+    expect(projectTaskStateDir('/srv/workspaces', 'proj-1')).toBe('/srv/workspaces/.shogo-state/proj-1')
+  })
+
+  test('a deleted workspace sweeps every project state dir, folder-linked ones included', async () => {
+    // SHO-151: the runtime keeps task logs at `.shogo-state/<projectId>` on
+    // host-backed storage (task-log-durability.ts), outside the project tree.
+    // A workspace delete has to take them with it, and "app-owned" is what
+    // matters — a folder-linked project's own folder stays, its logs do not.
+    const workspaceId = 'ws-state'
+    const managedId = 'proj-state-managed'
+    const linkedId = 'proj-state-linked'
+    const otherId = 'proj-state-other'
+
+    const managedDir = join(workspacesDir, managedId)
+    mkdirSync(join(managedDir, 'src'), { recursive: true })
+    writeFileSync(join(managedDir, 'src', 'index.ts'), 'x'.repeat(10))
+
+    for (const [id, bytes] of [
+      [managedId, 'a'.repeat(40)],
+      [linkedId, 'b'.repeat(25)],
+      [otherId, 'c'.repeat(500)],
+    ] as const) {
+      mkdirSync(join(projectTaskStateDir(workspacesDir, id), 'tasks'), { recursive: true })
+      writeFileSync(join(projectTaskStateDir(workspacesDir, id), 'tasks', 'build.log'), bytes)
+    }
+
+    const userRepo = join(root, 'state-linked-repo')
+    mkdirSync(userRepo, { recursive: true })
+    writeFileSync(join(userRepo, 'package.json'), '{}')
+
+    const db = {
+      workspace: { findUnique: async () => ({ id: workspaceId, name: 'Sweep' }) },
+      project: {
+        findMany: async () => [
+          { id: managedId, name: 'Managed', workingMode: 'managed', projectFolders: [] },
+          {
+            id: linkedId,
+            name: 'Linked',
+            workingMode: 'external',
+            projectFolders: [{ path: userRepo, isPrimary: true }],
+          },
+        ],
+      },
+      conversation: { count: async () => 0 },
+      board: { count: async () => 0 },
+      chatSession: { count: async () => 0 },
+    }
+
+    const inventory = await workspaceFileInventory(workspaceId, { workspacesDir, prisma: db })
+
+    expect(inventory!.removedDirs).toContain(projectTaskStateDir(workspacesDir, managedId))
+    expect(inventory!.removedDirs).toContain(projectTaskStateDir(workspacesDir, linkedId))
+    // The delete dialog's total covers the logs too (10 + 40 + 25 bytes).
+    expect(inventory!.totalBytes).toBeGreaterThanOrEqual(75)
+
+    const report = removeWorkspaceFiles(inventory!, { workspacesDir })
+
+    expect(report.warnings).toEqual([])
+    expect(existsSync(projectTaskStateDir(workspacesDir, managedId))).toBe(false)
+    expect(existsSync(projectTaskStateDir(workspacesDir, linkedId))).toBe(false)
+    // Another workspace's project keeps its logs: only this workspace's
+    // projects are swept, never the whole `.shogo-state` root.
+    expect(existsSync(join(projectTaskStateDir(workspacesDir, otherId), 'tasks', 'build.log'))).toBe(true)
+    // The parent stays behind so a concurrent assign has somewhere to write.
+    expect(existsSync(join(workspacesDir, '.shogo-state'))).toBe(true)
+    expect(existsSync(join(userRepo, 'package.json'))).toBe(true)
+  })
+
+  test('a project with no task logs adds no removal entry', async () => {
+    const db = {
+      workspace: { findUnique: async () => ({ id: 'ws-state-none', name: 'Empty' }) },
+      project: {
+        findMany: async () => [
+          { id: 'proj-state-nologs', name: 'No logs', workingMode: 'managed', projectFolders: [] },
+        ],
+      },
+      conversation: { count: async () => 0 },
+      board: { count: async () => 0 },
+      chatSession: { count: async () => 0 },
+    }
+
+    const inventory = await workspaceFileInventory('ws-state-none', { workspacesDir, prisma: db })
+
+    expect(inventory!.removedDirs).toEqual([])
+  })
+
+  test('a symlinked state dir is unlinked, its target is not followed', () => {
+    const userRepo = join(root, 'state-target-repo')
+    mkdirSync(userRepo, { recursive: true })
+    writeFileSync(join(userRepo, 'keep.ts'), 'export {}')
+
+    const stateDir = projectTaskStateDir(workspacesDir, 'proj-state-linked-out')
+    mkdirSync(join(workspacesDir, '.shogo-state'), { recursive: true })
+    symlinkSync(userRepo, stateDir)
+
+    removeAppOwnedTree(stateDir, workspacesDir)
+
+    expect(existsSync(stateDir)).toBe(false)
+    expect(existsSync(join(userRepo, 'keep.ts'))).toBe(true)
   })
 })

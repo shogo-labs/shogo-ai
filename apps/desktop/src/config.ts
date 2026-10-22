@@ -60,6 +60,9 @@ export interface DesktopConfig {
   deviceId: string
   /** Defaults to 'stable'. User-controlled via Settings → Updates. */
   updateChannel: UpdateChannel
+  /** True once the user has been told — and has dismissed — that macOS
+   *  Spotlight keeps indexing the workspaces dir. See `spotlight-hint.ts`. */
+  spotlightHintDismissed: boolean
 }
 
 /** Default Shogo Cloud endpoint used when SHOGO_CLOUD_URL is not set. */
@@ -111,6 +114,7 @@ const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   island: { ...DEFAULT_ISLAND_CONFIG },
   dictation: { ...DEFAULT_DICTATION_CONFIG },
   updateChannel: 'stable',
+  spotlightHintDismissed: false,
 }
 
 function getConfigPath(): string {
@@ -176,6 +180,7 @@ export function readConfig(): DesktopConfig {
     dictation: normalizeDictationConfig(parsed.dictation),
     deviceId: existingDeviceId || generateDeviceId(),
     updateChannel: parsed.updateChannel === 'beta' ? 'beta' : 'stable',
+    spotlightHintDismissed: parsed.spotlightHintDismissed === true,
   }
 
   // Persist the freshly generated deviceId so all subsequent reads are stable.

@@ -47,6 +47,12 @@ const FLUSH_INTERVAL_MS = 200
 const FLUSH_THRESHOLD_BYTES = 64 * 1024
 /** Finished task logs older than this are removed by `cleanupTaskOutputs`. */
 export const TASK_OUTPUT_RETENTION_MS = 24 * 60 * 60 * 1000
+/**
+ * A log younger than the row-retention window can still belong to a row the
+ * dock is restoring after a restart, so no sweep may delete inside it — even a
+ * caller that passes a shorter age (SHO-141).
+ */
+export const MIN_TASK_OUTPUT_RETENTION_MS = 10 * 60 * 1000
 
 export interface TaskOutputHeader {
   taskId: string
@@ -70,7 +76,7 @@ export interface TaskOutputRow {
   startedAt: number
   path: string
   /** Present when the log has a footer block, i.e. the task settled. */
-  status?: 'completed' | 'failed' | 'cancelled'
+  status?: 'completed' | 'failed' | 'cancelled' | 'interrupted'
   exitCode?: number
   elapsedMs?: number
   finishedAt?: number
@@ -254,7 +260,7 @@ function readHeadAndTail(path: string, bytes = 4096): { head: string; tail: stri
   }
 }
 
-const SETTLED = new Set(['completed', 'failed', 'cancelled'])
+const SETTLED = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
 
 /**
  * Describe the tasks whose logs live in `dir`, newest first. The header gives
@@ -319,7 +325,10 @@ export function listTaskOutputRows(
 /** Delete task logs (and empty session dirs) older than `maxAgeMs` under `rootDir`. */
 export function cleanupTaskOutputs(rootDir: string, maxAgeMs: number = TASK_OUTPUT_RETENTION_MS): number {
   if (!existsSync(rootDir)) return 0
-  const cutoff = Date.now() - maxAgeMs
+  // Never sweep inside the window a restore can still read from: a row that
+  // survived the restart is restored from its log, and deleting it first would
+  // leave a live row pointing at nothing.
+  const cutoff = Date.now() - Math.max(maxAgeMs, MIN_TASK_OUTPUT_RETENTION_MS)
   let removed = 0
   const sweep = (dir: string) => {
     let entries: string[]

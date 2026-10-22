@@ -71,8 +71,15 @@ function insertRunningSlot(mgr: WorkerRuntimeManager, projectId: string) {
     apiServerPort: 0,
     status: 'running' as const,
     proc,
-    startedAt: Date.now(),
+    // Settled, i.e. past the startup grace: a runtime that just booted is
+    // never an eviction victim (SHO-143).
+    startedAt: Date.now() - 10 * 60_000,
     lastUsedAt: Date.now(),
+    // The activity sampler has already run and last saw this runtime doing
+    // nothing — the only state the idle reaper may act on (SHO-143). Without a
+    // sample the verdict is `unknown`, which keeps the runtime.
+    activity: { counts: { turns: 0, tasks: 0, streams: 0, children: 0 }, at: Date.now(), ok: true },
+
     restarts: 0,
     restartTimer: null,
     idleTimer: null,
