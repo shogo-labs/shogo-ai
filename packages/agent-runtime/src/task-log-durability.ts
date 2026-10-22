@@ -20,6 +20,13 @@
  * tree, and the same logical path every caller already uses, so
  * `taskOutputRoot()` and everything above it are untouched.
  *
+ * On the host, `<host-workspaces>` is the API's `WORKSPACES_DIR`, so that
+ * directory is `<workspacesDir>/.shogo-state/<projectId>` and the API has to
+ * sweep it when the project or workspace goes away —
+ * `apps/api/src/services/workspace-files.service.ts` (`projectTaskStateDir`)
+ * owns that half. The two packages share no code, so this path is written down
+ * twice on purpose: change one and you must change the other.
+ *
  * Everything here is best-effort by design: a warm-pool VM counts a throwing
  * assign as a boot failure and disables the pool after three, so a failure to
  * install the symlink must degrade to the old local-disk behaviour and warn,
@@ -63,6 +70,8 @@ export interface DurableTaskLogResult {
 
 /** Task logs for a project, on host-backed storage, outside the repo tree. */
 export function durableTaskLogRoot(hostWorkspacesRoot: string, projectId: string): string {
+  // The host-side twin of this path is `projectTaskStateDir()` in
+  // apps/api/src/services/workspace-files.service.ts — it sweeps it on delete.
   return join(hostWorkspacesRoot, '.shogo-state', projectId, 'tasks')
 }
 

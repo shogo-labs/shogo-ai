@@ -19,6 +19,11 @@ import { withProjectPermissions } from '../lib/authz/project-permissions'
 import { setProjectVisibility } from '../lib/authz/project-access'
 import { hookAccess, hookAuthorize, hookPrincipal, hookRequire } from '../lib/authz/hooks'
 import { resolveTunnelWorkspaceId } from '../lib/tunnel-workspace'
+import {
+  projectTaskStateDir,
+  removeAppOwnedTree,
+  resolveWorkspacesDir,
+} from '../services/workspace-files.service'
 
 /**
  * projectId -> what `afterDelete` needs, recorded in `beforeDelete` because the
@@ -533,6 +538,18 @@ export const projectHooks: ProjectHooks = {
       } catch (err: any) {
         console.warn(`[project.afterDelete] substrate teardown for ${id} failed:`, err?.message ?? err)
       }
+    }
+    // Task logs live outside the project tree, on host-backed storage
+    // (`<workspacesDir>/.shogo-state/<projectId>`, written by
+    // packages/agent-runtime/src/task-log-durability.ts). Nothing can restore
+    // them for a project whose row is gone, so they go with it — unlike
+    // `workspaces/<id>`, which project delete keeps on disk by design. Runs in
+    // every mode: this is app-owned state, not runtime or cloud infra.
+    try {
+      const workspacesDir = resolveWorkspacesDir()
+      removeAppOwnedTree(projectTaskStateDir(workspacesDir, id), workspacesDir)
+    } catch (err: any) {
+      console.warn(`[project.afterDelete] task-log state cleanup for ${id} failed:`, err?.message ?? err)
     }
   },
 }
