@@ -15,7 +15,8 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { resolveHistoryPaint, type PaintableMessage } from "../history-paint"
+import { resolveHistoryPaint, resolveLiveTurnAttach, type PaintableMessage } from "../history-paint"
+import { groupMessagesIntoTurns } from "../turns/useTurnGrouping"
 
 const user = (id: string): PaintableMessage => ({ id, role: "user" })
 const reply = (id: string): PaintableMessage => ({ id, role: "assistant" })
@@ -127,5 +128,222 @@ describe("resolveHistoryPaint", () => {
 
     expect(paint.keptLiveTail).toBe(false)
     expect(paint.messages).toBe(history as unknown as readonly PaintableMessage[])
+  })
+
+  // SHO-147: a turn that started right after this panel's own — a team-chat
+  // tag, a `[Task update]` wake, a queued row — has already written its user
+  // row. Refusing this paint (the `streamed-turn` rule) left that prompt off
+  // screen while the panel attached to the new stream anyway, and the reply
+  // landed in the previous reply's bubble.
+  test("paints a prompt newer than the screen instead of holding the live tail", () => {
+    const history = [user("u1"), reply("srv-a1"), user("u2")]
+    const current = [user("u1"), reply("sdk-a1")]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.keptLiveTail).toBe(false)
+    expect(paint.reason).toBe("history-has-newer-prompt")
+    expect(paint.carriedLiveReply).toBe(false)
+    expect(paint.messages).toEqual(history)
+  })
+
+  test("splices a still-unsaved reply in front of the newer prompt", () => {
+    // The reply exists only on screen: history stops on the next prompt. Both
+    // halves have to survive — the reply must not be lost to the paint, and the
+    // prompt must not be lost to the refusal.
+    const history = [user("u1"), user("u2")]
+    const current = [user("u1"), reply("sdk-a1")]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.keptLiveTail).toBe(false)
+    expect(paint.reason).toBe("history-has-newer-prompt")
+    expect(paint.carriedLiveReply).toBe(true)
+    expect(paint.messages.map((message) => message.id)).toEqual(["u1", "sdk-a1", "u2"])
+  })
+
+  test("keeps a live tail the newer prompt does not belong to", () => {
+    // Optimistic echo: the saved id of the last prompt differs from the one on
+    // screen, so only counting prompts can tell which turn the live reply is.
+    const history = [
+      user("u1"),
+      reply("a1"),
+      user("u2-server"),
+      user("u3"),
+    ]
+    const current = [user("u1"), reply("a1"), user("u2-local"), reply("sdk-a2")]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.reason).toBe("history-has-newer-prompt")
+    expect(paint.carriedLiveReply).toBe(true)
+    expect(paint.messages.map((message) => message.id)).toEqual([
+      "u1",
+      "a1",
+      "u2-server",
+      "sdk-a2",
+      "u3",
+    ])
+  })
+
+  test("never splices a reply history already holds", () => {
+    const history = [user("u1"), reply("srv-a1"), user("u2")]
+    const current = [user("u1"), reply("sdk-a1"), reply("trailing-live")]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.carriedLiveReply).toBe(false)
+    expect(paint.messages).toEqual(history)
+  })
+
+  test("never splices when the saved reply landed after the newer prompt", () => {
+    // Rows are ordered by creation time and a reply is written after its stream
+    // ends, so a fast turn can leave the reply after the next prompt. Splitting
+    // the answer in two would be worse than showing the saved order.
+    const history = [user("u1"), user("u2"), reply("srv-a1")]
+    const current = [user("u1"), reply("sdk-a1")]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.carriedLiveReply).toBe(false)
+    expect(paint.messages).toEqual(history)
+  })
+
+  test("keeps the spliced reply through the next load, before the server writes it", () => {
+    // Right after the splice a reload can land while reply 1 is still unsaved:
+    // the tail is prompt 2, and painting would drop reply 1 from the screen.
+    const history = [user("u1"), user("u2")]
+    const current = [user("u1"), reply("sdk-a1"), user("u2")]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.keptLiveTail).toBe(true)
+    expect(paint.reason).toBe("history-behind")
+    expect(paint.messages).toBe(current as unknown as readonly PaintableMessage[])
+  })
+
+  test("hands the spliced reply back to history once it is saved", () => {
+    const history = [user("u1"), reply("srv-a1"), user("u2")]
+    const current = [user("u1"), reply("sdk-a1"), user("u2")]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.keptLiveTail).toBe(false)
+    expect(paint.carriedLiveReply).toBe(false)
+    expect(paint.messages).toBe(history as unknown as readonly PaintableMessage[])
+  })
+
+  test("still paints a prompt-answered-elsewhere transcript with no live reply", () => {
+    const history = [user("u1"), reply("a1")]
+    const current = [user("u1")]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.keptLiveTail).toBe(false)
+    expect(paint.reason).toBe("tail-not-a-reply")
+  })
+})
+
+describe("resolveLiveTurnAttach", () => {
+  test("refuses to attach while history holds a prompt the screen never showed", () => {
+    // The exact SHO-147 window: reply 1 is on screen, prompt 2 is only in
+    // history, and the probe just found prompt 2's live turn. Attaching here
+    // streams reply 2 straight after reply 1, and the grouping gives reply 2
+    // reply 1's bubble.
+    const screen = [user("u1"), reply("a1")]
+    const history = [user("u1"), reply("a1"), user("u2")]
+
+    const gate = resolveLiveTurnAttach({ screen, history })
+
+    expect(gate.attach).toBe(false)
+    expect(gate.reason).toBe("history-has-newer-prompt")
+  })
+
+  test("refuses when the reply is not saved yet either", () => {
+    const gate = resolveLiveTurnAttach({
+      screen: [user("u1"), reply("sdk-a1")],
+      history: [user("u1"), user("u2")],
+    })
+
+    expect(gate.attach).toBe(false)
+    expect(gate.reason).toBe("history-has-newer-prompt")
+  })
+
+  test("attaches once the missing prompt is on screen", () => {
+    // What the paint in the same window produces: the turn's own user row is
+    // the screen's tail, so its reply belongs at the end.
+    const gate = resolveLiveTurnAttach({
+      screen: [user("u1"), reply("a1"), user("u2")],
+      history: [user("u1"), reply("a1"), user("u2")],
+    })
+
+    expect(gate.attach).toBe(true)
+    expect(gate.reason).toBe("screen-ends-on-prompt")
+  })
+
+  test("attaches when this window is streaming the reply it ends on", () => {
+    // A refocus mid-turn: the reply is on screen and history adds no prompt.
+    const gate = resolveLiveTurnAttach({
+      screen: [user("u1"), reply("partial-a1")],
+      history: [user("u1")],
+    })
+
+    expect(gate.attach).toBe(true)
+    expect(gate.reason).toBe("screen-streams-this-turn")
+  })
+
+  test("attaches into an empty screen", () => {
+    const gate = resolveLiveTurnAttach({ screen: [], history: [user("u1")] })
+
+    expect(gate.attach).toBe(true)
+    expect(gate.reason).toBe("nothing-on-screen")
+  })
+})
+
+/**
+ * The user-visible half of SHO-147, on the grouping the panel renders: the
+ * transcript groups one assistant per turn, so a second reply with no prompt
+ * between them takes the first reply's bubble. That is why the fix keeps the
+ * prompt on screen rather than touching the grouping.
+ */
+describe("the transcript the paint produces", () => {
+  const ui = (id: string, role: "user" | "assistant", text: string) =>
+    ({ id, role, parts: [{ type: "text", text }] }) as any
+
+  test("two turns, with the first reply unchanged", () => {
+    const paint = resolveHistoryPaint({
+      history: [ui("u1", "user", "one"), ui("u2", "user", "two")],
+      current: [ui("u1", "user", "one"), ui("sdk-a1", "assistant", "reply one")],
+      keepsLiveTail: true,
+    })
+
+    // The new turn's stream appends its reply to what is on screen.
+    const turns = groupMessagesIntoTurns(
+      [...(paint.messages as any[]), ui("sdk-a2", "assistant", "reply two")],
+      false,
+      undefined,
+      undefined,
+    )
+
+    expect(turns.map((turn: any) => [turn.userMessage?.id, turn.assistantMessage?.id])).toEqual([
+      ["u1", "sdk-a1"],
+      ["u2", "sdk-a2"],
+    ])
+  })
+
+  test("without the paint, the second reply takes the first one's bubble", () => {
+    const turns = groupMessagesIntoTurns(
+      [
+        ui("u1", "user", "one"),
+        ui("sdk-a1", "assistant", "reply one"),
+        ui("sdk-a2", "assistant", "reply two"),
+      ],
+      false,
+      undefined,
+      undefined,
+    )
+
+    expect(turns).toHaveLength(1)
+    expect(turns[0].assistantMessage?.id).toBe("sdk-a2")
   })
 })
