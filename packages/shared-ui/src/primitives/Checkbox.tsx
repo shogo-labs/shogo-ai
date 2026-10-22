@@ -19,7 +19,7 @@ export function Checkbox({ checked, onCheckedChange, disabled, className, label 
       disabled={disabled}
       onPress={() => onCheckedChange(!checked)}
       role="checkbox"
-      accessibilityState={{ checked }}
+      aria-checked={checked}
     >
       <View
         className={cn(

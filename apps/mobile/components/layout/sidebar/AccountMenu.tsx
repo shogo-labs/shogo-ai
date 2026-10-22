@@ -207,7 +207,7 @@ export function AccountMenu({
           role="button"
           accessibilityLabel={`${identity?.name || "Workspace"}, ${user?.name || "User"} — open account menu`}
           accessibilityHint="Opens menu to switch workspace, navigate, and manage your account"
-          accessibilityState={{ expanded: isOpen }}
+          aria-expanded={isOpen}
           className={cn(
             "flex-row items-center gap-2 active:opacity-80",
             !tile && "flex-1 min-w-0",
@@ -314,7 +314,7 @@ export function WorkspaceHeaderButton({
           {...triggerProps}
           accessibilityRole="button"
           accessibilityLabel={`${name}, workspace menu`}
-          accessibilityState={{ expanded: isOpen }}
+          aria-expanded={isOpen}
           className="min-w-0 flex-1 flex-row items-center gap-1 rounded-md py-1 active:opacity-80"
         >
           <Text className="shrink text-lg font-bold text-foreground" numberOfLines={1}>

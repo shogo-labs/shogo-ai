@@ -40,7 +40,7 @@ function LoadingDots() {
     <View
       testID="loading-indicator"
       accessibilityLabel="Loading response"
-      accessibilityState={{ busy: true }}
+      aria-busy={true}
       className="flex-row items-center gap-1.5 p-2"
     >
       {[0, 1, 2].map((i) => (

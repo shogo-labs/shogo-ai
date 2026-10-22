@@ -3973,7 +3973,7 @@ export function WorkspaceAccountActions({
                 <Pressable
                   key={workspace.id}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: isCurrent }}
+                  aria-selected={isCurrent}
                   accessibilityLabel={`Switch to ${
                     workspace.name || "workspace"
                   }`}

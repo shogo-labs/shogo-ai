@@ -22,7 +22,7 @@ export function Switch({ checked, onCheckedChange, disabled, className }: Switch
       disabled={disabled}
       onPress={() => onCheckedChange(!checked)}
       role="switch"
-      accessibilityState={{ checked }}
+      aria-checked={checked}
       style={{
         width: 44,
         height: 24,

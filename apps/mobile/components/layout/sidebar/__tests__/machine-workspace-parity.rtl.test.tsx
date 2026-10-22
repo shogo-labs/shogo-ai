@@ -19,14 +19,14 @@ import { createReactNativeMock } from "../../../../test/react-native-mock"
 mock.module("react-native", () =>
   createReactNativeMock({
     Platform: { OS: "web" },
-    Pressable: ({ accessibilityLabel, accessibilityState, testID, children, onPress, ...props }: any) =>
+    Pressable: ({ accessibilityLabel, testID, children, onPress, ...props }: any) =>
       createElement(
         "button",
         {
           ...props,
           "aria-label": accessibilityLabel,
           "data-rn-shim": testID,
-          "data-selected": accessibilityState?.selected ? "true" : undefined,
+          "data-selected": props["aria-selected"] ? "true" : undefined,
           onClick: onPress,
         },
         children,

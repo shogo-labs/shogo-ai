@@ -60,7 +60,7 @@ export default function MarketplaceAdminLayout() {
                   key={tab.href}
                   onPress={() => router.push(tab.href as any)}
                   role="tab"
-                  accessibilityState={{ selected: active }}
+                  aria-selected={active}
                   accessibilityLabel={tab.label}
                   className={cn(
                     'flex-row items-center gap-1.5 px-3 py-2 rounded-lg',

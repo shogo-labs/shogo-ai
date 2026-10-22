@@ -251,7 +251,7 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
             {...triggerProps}
             role="menuitem"
             accessibilityLabel="Appearance"
-            accessibilityState={{ expanded: appearanceOpen }}
+            aria-expanded={appearanceOpen}
             onPress={() => setAppearanceOpen((open) => !open)}
             className={cn(ROW, appearanceOpen && "bg-muted")}
           >

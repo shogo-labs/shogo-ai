@@ -17,7 +17,6 @@ mock.module("react-native", () =>
         {
           ...props,
           "aria-label": accessibilityLabel,
-          "aria-checked": props.accessibilityState?.checked,
           onClick: onPress,
           role: accessibilityRole,
         },

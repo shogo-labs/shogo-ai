@@ -89,7 +89,7 @@ export function WorkspaceRow({
       onPress={() => onPress(entry)}
       accessibilityLabel={machine ? `${entry.name} on ${entry.host.kind === 'machine' ? entry.host.hostname : entry.name}` : entry.name}
       accessibilityRole="button"
-      accessibilityState={{ selected: isCurrent }}
+      aria-selected={isCurrent}
       testID={`workspace-row:${entry.key}`}
       className={cn(
         'flex-row items-center gap-3 rounded-lg px-2 active:bg-muted',

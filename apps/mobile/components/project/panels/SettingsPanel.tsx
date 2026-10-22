@@ -255,7 +255,7 @@ function WideSidebar({
                     isActive ? 'bg-accent' : 'active:bg-muted',
                   )}
                   accessibilityRole="tab"
-                  accessibilityState={{ selected: isActive }}
+                  aria-selected={isActive}
                 >
                   <Icon
                     size={14}
@@ -378,7 +378,7 @@ function NativePhoneSidebar({
                             isActive && 'bg-muted',
                           )}
                           accessibilityRole="tab"
-                          accessibilityState={{ selected: isActive }}
+                          aria-selected={isActive}
                           accessibilityLabel={item.label}
                         >
                           <Icon
@@ -454,7 +454,7 @@ function NarrowSidebar({
                     isActive ? 'bg-accent' : 'active:bg-muted',
                   )}
                   accessibilityRole="tab"
-                  accessibilityState={{ selected: isActive }}
+                  aria-selected={isActive}
                   accessibilityLabel={item.label}
                 >
                   <Icon
