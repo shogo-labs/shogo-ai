@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { View, Text, Pressable, ActivityIndicator, type LayoutChangeEvent } from "react-native"
 import { Motion, AnimatePresence } from "@legendapp/motion"
 import { cn } from "@shogo/shared-ui/primitives"
-import { AtSign, Ban, Bot, ChevronRight, CircleCheck, CircleX, Clock, Hourglass, KanbanSquare, Send, Terminal, X } from "lucide-react-native"
+import { AlertTriangle, AtSign, Ban, Bot, ChevronRight, CircleCheck, CircleX, Clock, Hourglass, KanbanSquare, Send, Terminal, X } from "lucide-react-native"
 import type { RunningProcess } from "../../ProcessPanel"
 import type { SubagentProgress } from "../../subagent/SubagentPanel"
 import type { RecentTool } from "../../subagent/SubagentStats"
@@ -89,12 +89,17 @@ function finishedLabel(proc: RunningProcess): string {
   if (proc.waiting) return "waiting"
   if (proc.status === "failed") return "failed"
   if (proc.status === "cancelled") return "cancelled"
+  // The runtime killed it under itself (a restart). Never "completed": the
+  // process never chose to exit (SHO-141).
+  if (proc.status === "interrupted") return "interrupted"
   return "completed"
 }
 
 function StatusIcon({ proc }: { proc: RunningProcess }) {
   if (proc.status === "failed") return <CircleX size={11} className="shrink-0 text-red-400" />
   if (proc.status === "cancelled") return <Ban size={11} className="shrink-0 text-muted-foreground/70" />
+  // Neutral/warning, never the green success tick.
+  if (proc.status === "interrupted") return <AlertTriangle size={11} className="shrink-0 text-amber-500" />
   return <CircleCheck size={11} className="shrink-0 text-green-500" />
 }
 

@@ -13,7 +13,13 @@ import { describe, test, expect, afterEach } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { sandboxExecAsync } from '../sandbox-exec'
+import {
+  sandboxExecAsync,
+  chooseShell,
+  sandboxShellCommand,
+  commandHasPipeline,
+} from '../sandbox-exec'
+import { settleOutcome, formatTaskNotification } from '../task-registry'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -61,5 +67,64 @@ describe('a pipeline reports the pipeline, not its last stage', () => {
     // report. Locked deliberately — masking it would restore the bug.
     const result = await run('yes | head -1')
     expect(result.exitCode).toBe(141)
+  })
+})
+
+describe('a shell without pipefail says the status is unavailable', () => {
+  test('the container command always starts with set -o pipefail', () => {
+    expect(sandboxShellCommand('bun test | tail -5')).toBe('set -o pipefail; bun test | tail -5')
+  })
+
+  test('a pipefail-capable shell is preferred over /bin/sh', () => {
+    const plan = chooseShell({ platform: 'linux', candidates: ['/bin/sh', '/bin/bash'], probe: (s) => s.includes('bash') })
+    expect(plan.shell).toBe('/bin/bash')
+    expect(plan.pipefail).toBe(true)
+  })
+
+  test('Windows without Git-Bash falls back to cmd.exe, which has no pipefail', () => {
+    const plan = chooseShell({ platform: 'win32', candidates: [], probe: () => false })
+    expect(plan.shell).toBeNull()
+    expect(plan.pipefail).toBe(false)
+    expect(plan.label.toLowerCase()).toContain('cmd')
+  })
+
+  test('a pipeline is detected, a quoted or logical-or one is not', () => {
+    expect(commandHasPipeline('false | cat')).toBe(true)
+    expect(commandHasPipeline('false || true')).toBe(false)
+    expect(commandHasPipeline(`echo 'a | b'`)).toBe(false)
+  })
+
+  test('a real piped exec through a pipefail-less shell reports no exit code', async () => {
+    if (IS_WINDOWS) return
+    // The exact cmd.exe shape, driven with a POSIX /bin/sh so it runs in CI:
+    // the last stage succeeds, the command did not.
+    const handle = sandboxExecAsync({
+      command: 'false | cat',
+      workspaceDir: tmpWorkspace(),
+      shell: { platform: 'linux', candidates: ['/bin/sh'], probe: () => false },
+    })
+    const result = await handle.done
+    expect(result.exitCode).toBe(0)
+    expect(result.exitCodeReliable).toBe(false)
+    expect(result.pipelineStatus).toBe('last-stage')
+
+    const decision = settleOutcome({
+      exitCode: result.exitCode,
+      exitCodeReliable: result.exitCodeReliable,
+      shellLabel: result.shellLabel,
+    })
+    expect(decision.exitCode).toBeUndefined()
+    const note = formatTaskNotification({
+      taskId: 't_pipe0001',
+      source: 'shell',
+      title: 'false | cat',
+      status: decision.status,
+      exitCode: decision.exitCode,
+      exitCodeReliable: false,
+      shellLabel: result.shellLabel,
+      tail: '',
+    })
+    expect(note).toContain('pipeline status unavailable')
+    expect(note).not.toContain('(exit code')
   })
 })

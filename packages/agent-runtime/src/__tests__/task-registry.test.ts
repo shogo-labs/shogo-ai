@@ -419,7 +419,9 @@ describe('the dock list', () => {
     const byId = new Map(reg.listDock().map((p) => [p.id, p]))
     expect(byId.get('t_log00001')?.status).toBe('completed')
     expect(byId.get('t_log00001')?.outputFile).toBe('/tmp/.shogo/tasks/s/t_log00001.log')
-    expect(byId.get('t_log00002')?.status).toBe('running')
+    // SHO-141: no footer means the runtime died under it, so the row is
+    // `interrupted` — never a live `running` row.
+    expect(byId.get('t_log00002')?.status).toBe('interrupted')
     expect(byId.get('t_log00002')?.stale).toBe(true)
   })
 })

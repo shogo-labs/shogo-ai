@@ -13,7 +13,7 @@ import { describe, test, expect, afterEach } from 'bun:test'
 import { mkdtempSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { TaskRegistry, formatTaskNotification } from '../task-registry'
+import { TaskRegistry, formatTaskNotification, settleOutcome } from '../task-registry'
 import { sandboxExecAsync } from '../sandbox-exec'
 import { taskOutputDir, taskOutputRoot } from '../task-output'
 
@@ -97,7 +97,8 @@ describe('a runtime restart is not a success', () => {
         modifiedAt: Date.now(),
       },
     ])
-    expect(fromLog.listDock().find((p) => p.id === entry.id)?.status).toBe('interrupted')
+    expect(fromLog.get(entry.id)?.status).toBe('interrupted')
+    expect(fromLog.listAll().find((p) => p.id === entry.id)?.status).toBe('interrupted')
   })
 
   test('a footer-less log is a task the runtime died under, not a live one', () => {
@@ -185,5 +186,39 @@ describe('the interrupted row is not a wake, a success or a running row', () => 
     expect(registry.listRunning().map((p) => p.id)).not.toContain('t_int00001')
     expect(registry.listDock().find((p) => p.id === 't_int00001')?.status).toBe('interrupted')
     expect(registry.peekNotifications().some((n) => n.taskId === 't_int00001')).toBe(false)
+  })
+})
+
+describe('settleOutcome decides by intent, never by the number alone', () => {
+  test('a restart or a Stop carries no exit code, whatever the signal reports', () => {
+    for (const code of [0, 137]) {
+      const restarted = settleOutcome({ runtimeShutdown: true, exitCode: code })
+      expect(restarted.status).toBe('interrupted')
+      expect(restarted.exitCode).toBeUndefined()
+      expect(settleOutcome({ cancelRequested: true, exitCode: code }).status).toBe('cancelled')
+      expect(settleOutcome({ cancelRequested: true, exitCode: code }).exitCode).toBeUndefined()
+      // Intent outranks the number even when both are set.
+      expect(settleOutcome({ runtimeShutdown: true, killed: true, exitCode: code }).status).toBe('interrupted')
+    }
+    expect(settleOutcome({ runtimeShutdown: true, exitCode: 0 }).summary).toContain('runtime restarted')
+  })
+
+  test('a signal that is not a Stop is a failure with the signal code', () => {
+    const killed = settleOutcome({ killed: true, exitCode: 137 })
+    expect(killed.status).toBe('failed')
+    expect(killed.exitCode).toBe(137)
+    expect(killed.summary).toContain('killed')
+  })
+
+  test('an exit the process took on its own is judged by its code', () => {
+    expect(settleOutcome({ exitCode: 0 })).toMatchObject({ status: 'completed', exitCode: 0 })
+    expect(settleOutcome({ exitCode: 7 })).toMatchObject({ status: 'failed', exitCode: 7 })
+  })
+
+  test('a masked pipeline never reports the last stage as the command exit code', () => {
+    const masked = settleOutcome({ exitCode: 0, exitCodeReliable: false, shellLabel: 'cmd.exe' })
+    expect(masked.exitCode).toBeUndefined()
+    expect(masked.summary).toContain('pipeline status unavailable')
+    expect(masked.summary).toContain('cmd.exe')
   })
 })

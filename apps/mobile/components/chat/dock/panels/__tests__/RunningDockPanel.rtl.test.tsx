@@ -159,6 +159,16 @@ describe("RunningDockPanel", () => {
     expect(body().getByText("Waiting on 2 tasks · the agent will continue when they finish")).toBeTruthy()
   })
 
+  test("a runtime-interrupted row reads interrupted, never completed", () => {
+    const t0 = Date.now()
+    renderPanel({
+      processes: [task({ id: "t_int", command: "bun run release | tail -5", status: "interrupted", startedAt: t0 - 60_000, finishedAt: t0 - 1_000 })],
+    })
+    const view = body()
+    expect(view.getByText("interrupted")).toBeTruthy()
+    expect(view.queryByText("completed")).toBeNull()
+  })
+
   test("Output loads the task's latest output inline", async () => {
     const loaded: string[] = []
     renderPanel({
