@@ -202,6 +202,38 @@ describe('the interrupted row is not a wake, a success or a running row', () => 
     expect(registry.listDock().find((p) => p.id === 't_int00001')?.status).toBe('interrupted')
     expect(registry.peekNotifications().some((n) => n.taskId === 't_int00001')).toBe(false)
   })
+
+  /**
+   * The snapshot a hard stop leaves behind. `shogo-ai` restarting the host does
+   * not always run the shutdown sweep (`killAll`), so the last metadata write
+   * is the one from while the task was alive: `status: running`, no
+   * `finishedAt`. Restoring that verbatim painted a task whose process was dead
+   * as running forever, and the dock offered only Dismiss — the reported bug in
+   * a different disguise.
+   */
+  test('a snapshot still saying running restores interrupted, not live', () => {
+    const registry = new TaskRegistry()
+    registry.restoreStale([
+      {
+        runId: 't_live00001',
+        command: 'sleep 900',
+        pid: 4242,
+        sandboxed: false,
+        startedAt: Date.now() - 120_000,
+        status: 'running',
+      },
+    ])
+
+    const row = registry.get('t_live00001')!
+    expect(row.status).toBe('interrupted')
+    expect(registry.listRunning().map((p) => p.id)).not.toContain('t_live00001')
+    const docked = registry.listDock().find((p) => p.id === 't_live00001')
+    expect(docked?.status).toBe('interrupted')
+    // Stale stays: the child cannot be polled or killed from here, so Dismiss
+    // is the only honest affordance.
+    expect(docked?.stale).toBe(true)
+    expect(formatTaskNotification(registry.buildNotification(row))).toContain('interrupted')
+  })
 })
 
 describe('settleOutcome decides by intent, never by the number alone', () => {

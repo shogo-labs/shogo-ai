@@ -2818,7 +2818,15 @@ export class AgentGateway {
       await reg.refreshWhere((e) => e.id === entry!.id)
     }
     const local = taskOutputBody(reg.readOutput(entry)).trim()
-    const output = local || (entry.result?.summary ?? '').trim() || (entry.remoteNote ?? '').trim()
+    const body = local || (entry.result?.summary ?? '').trim() || (entry.remoteNote ?? '').trim()
+    // A task the runtime died under often produced no output at all, and the
+    // viewer strips the log's front matter — so opening its log showed an
+    // explanation of the *wake*, never the verdict the report was about. State
+    // it as the first line of what the reader sees: the same `status:` the log's
+    // footer carries, and no exit code, because the command never exited
+    // (SHO-141). Settled rows keep the body-only view.
+    const output =
+      entry.status === 'interrupted' ? [`status: interrupted`, body].filter(Boolean).join('\n\n') : body
     return {
       taskId: entry.id,
       source: entry.source,

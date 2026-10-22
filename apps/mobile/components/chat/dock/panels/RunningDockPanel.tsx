@@ -144,7 +144,12 @@ function TaskRow({
   const title = proc.title || proc.command
   const key = processKey(proc)
   const finished = isFinishedProcess(proc)
-  const canShowOutput = !!loadOutput && !proc.stale
+  // `stale` only means the child cannot be polled or signalled — reading its
+  // log is a file read on the runtime, and a task the runtime died under still
+  // has one (SHO-141). Hiding Output on every stale row left the interrupted
+  // row's log unreachable from the dock, which is the half of the report nobody
+  // could open. Rows with no output file recorded still show nothing.
+  const canShowOutput = !!loadOutput && (!proc.stale || !!proc.outputFile)
   const opensThread = linkOpensThread(proc.link)
   const frozenMs = proc.finishedAt
     ? Math.max(0, proc.finishedAt - (proc.startedAt ?? proc.finishedAt))
