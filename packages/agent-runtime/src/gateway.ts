@@ -68,7 +68,7 @@ import { buildWakeStatusSection } from './wake-status-prompt'
 import { BOARDS_GUIDE, COMPANY_OPS_GUIDE } from './board-tools'
 import { TASK_WAKE_RETRY_MS } from './remote-tasks'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
-import { buildAccountContextPrompt, type AccountContext } from './account-context'
+import { buildAccountContextPrompt, sanitizeModelDisplayName, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
 import { CanvasTypecheckGate } from './canvas-typecheck'
@@ -5349,13 +5349,14 @@ export class AgentGateway {
   ): string | undefined {
     // An Auto turn names the tier model it routed to, not "Auto".
     if (!autoRouting && session.modelOverride && session.modelDisplayName) {
-      return session.modelDisplayName
+      return sanitizeModelDisplayName(session.modelDisplayName)
     }
     const listed = getAvailableModels().find((m) => m.id === modelId)?.displayName
-    if (listed) return listed
+    if (listed) return sanitizeModelDisplayName(listed)
     // `getModelDisplayName` falls back to the raw id, which is not a product
     // name — only use it when the catalog actually knows the model.
-    return getModelEntry(modelId)?.displayName || undefined
+    const known = getModelEntry(modelId)?.displayName
+    return known ? sanitizeModelDisplayName(known) : undefined
   }
 
   /**

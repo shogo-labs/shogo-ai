@@ -24,6 +24,12 @@ import { getMergedModelEntrySync } from '../services/model-registry.service'
 export async function isModelAccessibleForWorkspace(
   workspaceId: string,
   modelId: string,
+  /**
+   * Already-resolved `hasAdvancedModelAccess(workspaceId)` for a caller that
+   * gates a whole list — the entitlement is workspace-wide, so one lookup
+   * covers every model in it (`GET /ai/v1/models`).
+   */
+  known?: { advancedAccess?: boolean },
 ): Promise<boolean> {
   const trimmed = modelId.trim()
   const id = resolvePublicModelSync(trimmed)?.backingModelId?.trim() || trimmed
@@ -31,5 +37,6 @@ export async function isModelAccessibleForWorkspace(
   const provider = entry?.provider ?? inferProviderFromModel(id, 'custom')
   if (provider === 'local' || provider === 'openrouter') return true
   if ((entry?.tier ?? getModelTier(id)) === 'economy') return true
+  if (known?.advancedAccess !== undefined) return known.advancedAccess
   return billingService.hasAdvancedModelAccess(workspaceId)
 }

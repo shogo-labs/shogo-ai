@@ -4599,16 +4599,13 @@ export function aiProxyRoutes() {
     // such as `project_configure`) happily picks a model the chat routes would
     // silently swap for Auto at request time (SHO-145) — better to report it
     // `available:false` here so the tool refuses it up front with
-    // `model_unavailable`. Memoised: the plan lookup is per workspace, not per
-    // model.
-    const accessible = new Map<string, boolean>()
-    const isAccessible = async (id: string): Promise<boolean> => {
-      const cached = accessible.get(id)
-      if (cached !== undefined) return cached
-      const ok = await isModelAccessibleForWorkspace(tokenPayload.workspaceId, id)
-      accessible.set(id, ok)
-      return ok
-    }
+    // `model_unavailable`.
+    //
+    // One entitlement lookup for the whole list: `hasAdvancedModelAccess` is
+    // workspace-wide, so resolving it per model would be the same query N times.
+    const advancedAccess = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
+    const isAccessible = (id: string): Promise<boolean> =>
+      isModelAccessibleForWorkspace(tokenPayload.workspaceId, id, { advancedAccess })
 
     const models = [
       ...(await Promise.all(visible.catalogModels.map(async (entry) => ({

@@ -44,8 +44,12 @@ test.skip(
 
 test.setTimeout(420_000)
 
-/** The stack's own DB, so the spec can change a model the way the API does. */
-function localDbPath(): string | null {
+/**
+ * The stack's own DB, so the spec can change a model the way the API does and
+ * seed a second catalog entry. Always returns the file the API was booted
+ * against; opening it fails loudly if the stack was started differently.
+ */
+function localDbPath(): string {
   if (process.env.E2E_LOCAL_DB) return process.env.E2E_LOCAL_DB
   const bundled = resolve(REPO_ROOT, "test-results/e2e-local.db")
   if (process.env.E2E_LOCAL_START_STACK === "1") return bundled
@@ -178,6 +182,46 @@ function newTurnsSince(count: number): FakeTurn[] {
   return llm.turns.slice(count)
 }
 
+/**
+ * The stack ships one available model (`LOCAL_LLM_BASIC_MODEL` and
+ * `LOCAL_LLM_ADVANCED_MODEL` are the same id in CI), which is not enough to
+ * tell one turn's model from another's. Add a second through the admin catalog
+ * route the picker uses: a `local`-provider row is always considered
+ * configured and is not plan-gated (`apps/api/src/lib/model-access.ts`), and
+ * the route invalidates the registry, so the next `/ai/v1/models` lists it.
+ *
+ * Seeding is a hard prerequisite, not a nicety: without two models the two
+ * behavioural tests below cannot distinguish a correct turn from the stale-line
+ * bug, and a skip there would report green while covering nothing (SHO-145 QA).
+ */
+async function seedSecondModel(): Promise<string> {
+  const available = (await catalog()).filter((e) => e.available !== false)
+  const ids = [...new Set(available.map((e) => e.id))]
+  if (ids.length >= 2) return ids[1]
+
+  // The admin catalog route is super-admin only; the local stack's sole user
+  // is the instance owner.
+  db.prepare("UPDATE users SET role = 'super_admin'").run()
+  const res = await context.request.post(`${API}/api/admin/settings/models`, {
+    data: {
+      provider: "local",
+      apiModel: "e2e-alternate-model",
+      displayName: `E2E Alternate Model ${Date.now().toString(36)}`,
+      shortDisplayName: "E2E Alt",
+      tier: "standard",
+    },
+  })
+  const text = await res.text()
+  if (!res.ok()) throw new Error(`could not seed a second model (HTTP ${res.status()}): ${text.slice(0, 300)}`)
+
+  const seeded = (await catalog()).filter((e) => e.available !== false)
+  const seededIds = [...new Set(seeded.map((e) => e.id))]
+  if (seededIds.length < 2) {
+    throw new Error(`seeding a model did not make a second one visible: ${JSON.stringify(seeded).slice(0, 300)}`)
+  }
+  return seededIds.find((id) => !ids.includes(id)) ?? seededIds[1]
+}
+
 test.beforeAll(async ({ browser }, info) => {
   test.setTimeout(480_000)
   // Runtime tokens are HMACs of the stack's signing secret, so the spec has to
@@ -199,7 +243,8 @@ test.beforeAll(async ({ browser }, info) => {
   if (!workspace?.id) throw new Error(`no workspace: ${JSON.stringify(workspaces).slice(0, 300)}`)
   workspaceId = workspace.id
 
-  if (DB_PATH) db = new DatabaseSync(DB_PATH, { readOnly: false })
+  db = new DatabaseSync(DB_PATH, { readOnly: false })
+  await seedSecondModel()
 })
 
 test.afterAll(async () => {
@@ -246,10 +291,12 @@ test("the models route and the runtime's cache are the same list", async () => {
 test("two chats on one runtime each name their own model", async () => {
   // Fault 2. The line used to be a process singleton refreshed only by
   // `/agent/chat`, so the second project's turn printed the first one's model.
-  test.skip(!DB_PATH, "no local SQLite database to set each project's model in (set E2E_LOCAL_DB)")
   const entries = (await catalog()).filter((e) => e.available !== false)
   const distinct = entries.filter((e, i) => entries.findIndex((o) => o.id === e.id) === i)
-  test.skip(distinct.length < 2, "the stack's catalog exposes fewer than two distinct available models")
+  expect(
+    distinct.length,
+    "fewer than two distinct available models: the seeding step did not take, and this test cannot tell one turn's model from another's",
+  ).toBeGreaterThanOrEqual(2)
   const [first, second] = distinct
 
   const projectA = await createProject("model truth A")
@@ -287,9 +334,11 @@ test("two chats on one runtime each name their own model", async () => {
 test("a model change in the database reaches the next config-sourced turn", async () => {
   // Fault 3. A heartbeat turn takes its model from `config.json`, which nothing
   // re-synced, so a change made through the API only landed after a restart.
-  test.skip(!DB_PATH, "no local SQLite database to force a due heartbeat in (set E2E_LOCAL_DB)")
   const entries = (await catalog()).filter((e) => e.available !== false)
-  test.skip(entries.length < 2, "the stack's catalog exposes fewer than two available models")
+  expect(
+    entries.length,
+    "fewer than two available models: the seeding step did not take, and a model change cannot be observed",
+  ).toBeGreaterThanOrEqual(2)
   const [before, after] = entries
 
   const projectId = await createProject("model truth heartbeat")
