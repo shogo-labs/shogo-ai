@@ -24,6 +24,7 @@
  */
 
 import { describe, expect, mock, test } from 'bun:test'
+import { decideBusy } from '@shogo-ai/worker/runtime-activity'
 import { RuntimeManager, projectWorkspaceRuntimeKey } from '../lib/runtime/manager'
 
 /**
@@ -34,7 +35,36 @@ import { RuntimeManager, projectWorkspaceRuntimeKey } from '../lib/runtime/manag
  */
 function newManager(attachments: Record<string, string[]> = {}) {
   const rm = new RuntimeManager({ healthCheckInterval: 50 }) as any
-  rm.agentManager = { touch: mock(() => {}), stop: mock(async () => {}) }
+  // The embedded worker's two LRU seams: liveness of the cached port, and the
+  // cached busy verdict (SHO-143, real `decideBusy`). Seeded runtimes are
+  // settled and provably idle, so the cap is the only thing that evicts them.
+  const startedAt = Date.now() - 10 * 60_000
+  rm.agentManager = {
+    touch: mock(() => {}),
+    stop: mock(async () => {}),
+    refreshActivity: mock(async () => {}),
+    status: (key: string) => {
+      const rt = rm.runtimes.get(key)
+      if (!rt) return undefined
+      return {
+        projectId: key,
+        status: rt.status,
+        agentPort: rt.agentPort,
+        startedAt: rt.startedAt,
+        lastUsedAt: rt.startedAt,
+        restarts: 0,
+      }
+    },
+    activityDecision: (key: string, opts?: { terminalSessions?: number; inflightCalls?: number }) =>
+      decideBusy({
+        now: Date.now(),
+        startedAt,
+        status: 'running',
+        sample: { counts: { turns: 0, tasks: 0, streams: 0, children: 0 }, at: Date.now(), ok: true },
+        terminalSessions: opts?.terminalSessions,
+        inflightCalls: opts?.inflightCalls,
+      }),
+  }
 
   rm.resolveAnchorSpawnOpts = async (anchorId: string) => ({
     workspaceId: 'ws-1',
@@ -61,6 +91,7 @@ function newManager(attachments: Record<string, string[]> = {}) {
       agentProcess: null,
     }
     rm.runtimes.set(spec.key, runtime)
+    rm.agentManagedProjects.add(spec.key)
     rm.usedPorts.add(p)
     return rm.toPublicRuntime(runtime)
   }
@@ -185,10 +216,11 @@ describe('two open projects under back-and-forth', () => {
   })
 
   test('fix: many background heartbeat starts are bounded by their OWN cap and never evict foreground', async () => {
-    // Default WORKSPACE_BACKGROUND_MAX=2. Open two foreground previews, then
-    // let the heartbeat warm a long stream of OTHER projects. Foreground must
-    // stay intact, and the background pool must stay bounded (so it can never
-    // crowd the worker's global maxRuntimes and force a preview eviction).
+    // Default WORKSPACE_BACKGROUND_MAX is 10 (SHO-143: the background pool used
+    // to be 2, which starved heartbeat work). Open two foreground previews,
+    // then let the heartbeat warm a long stream of OTHER projects. Foreground
+    // must stay intact, and the background pool must stay bounded (so it can
+    // never crowd the worker's global maxRuntimes and force a preview eviction).
     const { rm, stopped } = newManager()
     const keyA = projectWorkspaceRuntimeKey('A')
     const keyB = projectWorkspaceRuntimeKey('B')
@@ -196,7 +228,8 @@ describe('two open projects under back-and-forth', () => {
     await rm.start('A')
     await rm.start('B')
 
-    for (const id of ['C', 'D', 'E', 'F', 'G']) {
+    const background = ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N']
+    for (const id of background) {
       await rm.start(id, { background: true })
     }
 
@@ -205,17 +238,20 @@ describe('two open projects under back-and-forth', () => {
     expect(rm.runtimes.has(keyB)).toBe(true)
     expect(previewMru(rm).sort()).toEqual([keyA, keyB].sort())
 
-    // Background pool is bounded to its own cap (2) — the oldest backgrounds
+    // Background pool is bounded to its own cap (10) — the oldest backgrounds
     // were evicted among themselves, never a preview.
     const liveBg = liveAnchored(rm).filter(
       (k) => rm.runtimes.get(k)?.background === true,
     )
-    expect(liveBg.length).toBe(2)
+    expect(liveBg.length).toBe(10)
+    // The oldest backgrounds went first.
+    expect(liveBg).not.toContain(projectWorkspaceRuntimeKey('C'))
+    expect(liveBg).not.toContain(projectWorkspaceRuntimeKey('D'))
     // Everything that was stopped was a background runtime, never A or B.
     expect(stopped).not.toContain(keyA)
     expect(stopped).not.toContain(keyB)
-    // Total live runtimes stay small (2 fg + 2 bg) — well under the worker cap.
-    expect(liveAnchored(rm).length).toBe(4)
+    // Total live runtimes stay bounded (2 fg + 10 bg).
+    expect(liveAnchored(rm).length).toBe(12)
   })
 
   test('reproduction: a warm switch-back that does NOT refresh recency lets the viewed project drift to LRU and get evicted', async () => {

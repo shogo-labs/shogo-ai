@@ -53,6 +53,16 @@ import { CloudFileTransport } from '@shogo-ai/sdk/cloud-file-transport';
 import { killViteWatchFromPidfile } from '@shogo-ai/sdk/vite-watch';
 import { CloudSyncWatcher } from './cloud-sync-watcher.ts';
 import { cloneProject, gitIsAvailable, isGitRepo } from './git-cloner.ts';
+import {
+  ACTIVITY_RESAMPLE_BEFORE_EVICT_MS,
+  ACTIVITY_SAMPLE_MS,
+  ZERO_COUNTS,
+  decideBusy,
+  describeBusyReason,
+  type ActivityCounts,
+  type ActivitySample,
+  type BusyDecision,
+} from './runtime-activity.ts';
 
 /** Port range for random allocation (mirrors apps/api desktop manager). */
 const PORT_RANGE_START = 37100;
@@ -97,6 +107,13 @@ const RUNTIME_IDLE_MS = 15 * 60 * 1000;
 const STREAM_ACTIVE_WINDOW_MS = 30 * 1000;
 /** Budget for asking a runtime whether it has work in progress before evicting it. */
 const ACTIVITY_PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * How many of a runtime's last stderr lines to keep. An exit nobody asked for
+ * is logged with its code and these lines, so a host log explains the exit
+ * instead of only counting it (Samsara had 13 unexplained exits in 24h).
+ */
+const STDERR_TAIL_LINES = 8;
 
 /** Restart backoff bounds. */
 const RESTART_BACKOFF_BASE_MS = 1_000;
@@ -413,7 +430,7 @@ export interface RuntimeGoneInfo {
   signal?: NodeJS.Signals | null;
 }
 
-export type RuntimeStopReason = 'stop' | 'idle-evict' | 'lru-evict';
+export type RuntimeStopReason = 'stop' | 'idle-evict' | 'lru-evict' | 'dead';
 
 export interface AutoPullOptions {
   /** Master switch. Defaults to false; the `worker start` command flips
@@ -527,6 +544,16 @@ interface InternalRuntime {
    * dedupe instead of double-spawning.
    */
   startPromise: Promise<InternalRuntime> | null;
+  /**
+   * Cached reading of the runtime's own activity, refreshed by
+   * {@link WorkerRuntimeManager.sampleActivity} every
+   * {@link ACTIVITY_SAMPLE_MS}. Eviction decisions read THIS, never a fresh
+   * probe: a probe taken while the host is under load times out, and a
+   * timeout used to read as "idle" (SHO-143).
+   */
+  activity?: ActivitySample | null;
+  /** Last few stderr lines, logged when the process exits unrequested. */
+  stderrTail?: string[];
 }
 
 /**
@@ -657,11 +684,18 @@ export class WorkerRuntimeManager implements RuntimeResolver {
    *  to pick between git commit-push and file-transport flush modes. */
   private readonly syncModes = new Map<string, SyncMode>();
 
+  /** Timer that refreshes every running runtime's cached activity sample. */
+  private activityTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(opts: WorkerRuntimeManagerOptions = {}) {
     this.opts = opts;
     this.log = opts.logger ?? console;
     this.spawnCommand = opts.spawnCommand ?? defaultSpawnCommand;
     this.sweepOrphanedViteWatches();
+    // Activity is sampled on its own timer rather than probed at eviction
+    // time — see runtime-activity.ts. Unref'd so it never holds the process
+    // open.
+    this.ensureActivitySampler();
   }
 
   /**
@@ -874,21 +908,44 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   private async evictLru(cap: number, runningCount: number, candidates: InternalRuntime[], now: number): Promise<void> {
     let overBy = runningCount - cap;
+    // Ask every candidate at once (each answer is cached when fresh, probed
+    // when not) so one hung runtime cannot stall the pass behind its 3s
+    // timeout, and so the decision for each one is taken before anything is
+    // killed. A failed probe is `unknown`, and unknown keeps the runtime
+    // (SHO-143) — this pass may leave the host briefly over the cap rather
+    // than kill work.
+    const verdicts = new Map<string, BusyDecision>();
+    await Promise.all(
+      candidates.map(async (c) => {
+        verdicts.set(c.projectId, await this.freshActivityDecision(c.projectId));
+      }),
+    );
     for (const victim of candidates) {
       if (overBy <= 0) break;
-      const work = await this.activeWork(victim);
       if (victim.status !== 'running' || this.runtimes.get(victim.projectId) !== victim) continue;
-      if (work) {
+      const decision = verdicts.get(victim.projectId);
+      if (!decision) continue;
+      if (decision.dead) {
         this.log.log(
-          `[WorkerRuntimeManager] maxRuntimes=${cap}: not evicting ${victim.projectId} ` +
-            `(${work.turns} turn(s), ${work.tasks} task(s) active)`,
+          `[WorkerRuntimeManager] maxRuntimes=${cap}: reaping dead ${victim.projectId} (${describeBusyReason(decision)})`,
+        );
+        void this.stop(victim.projectId, 'SIGTERM', 'dead').catch((err: any) => {
+          this.log.warn(`[WorkerRuntimeManager] reap of ${victim.projectId} failed: ${err?.message ?? err}`);
+        });
+        overBy--;
+        continue;
+      }
+      if (decision.busy) {
+        this.log.log(
+          `[WorkerRuntimeManager] maxRuntimes=${cap}: keeping ${victim.projectId} over cap=${cap}: ` +
+            `${decision.reason} (${describeBusyReason(decision)})`,
         );
         continue;
       }
       const idleMs = now - victim.lastUsedAt;
       this.log.log(
         `[WorkerRuntimeManager] maxRuntimes=${cap} exceeded (${runningCount} running) — ` +
-          `LRU-evicting ${victim.projectId} (idle ${Math.round(idleMs / 1000)}s)`,
+          `LRU-evicting ${victim.projectId} (idle ${Math.round(idleMs / 1000)}s, ${decision.countsText})`,
       );
       void this.stop(victim.projectId, 'SIGTERM', 'lru-evict').catch((err: any) => {
         this.log.warn(
@@ -901,7 +958,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     if (overBy > 0) {
       this.log.log(
         `[WorkerRuntimeManager] maxRuntimes=${cap} still exceeded by ${overBy} after eviction pass — ` +
-          `remaining over-cap slots are active; will retry on next spawn / idle reap`,
+          `remaining over-cap slots are active or unverifiable; will retry on next spawn / idle reap`,
       );
     }
   }
@@ -1280,6 +1337,10 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   async stopAll(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
     this.stopped = true;
+    if (this.activityTimer) {
+      clearInterval(this.activityTimer);
+      this.activityTimer = null;
+    }
     // Stop watchers FIRST so their final flush has a chance to PUT before
     // we tear down processes. We don't await individual stops in parallel
     // with runtime stops because watcher.stop() does network IO and we
@@ -1407,6 +1468,11 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     slot.pid = proc.pid ?? null;
     slot.status = 'starting';
     slot.startedAt = Date.now();
+    // A fresh incarnation owns a fresh activity reading and stderr tail; the
+    // previous process's work (and its last words) are not evidence about this
+    // one.
+    slot.activity = null;
+    slot.stderrTail = [];
     const openAttemptId = slot.spawnConfig.extraEnv?.SHOGO_OPEN_ID;
     perfLog('agent-spawned', slot.projectId, openAttemptId, {
       pid: slot.pid,
@@ -1469,8 +1535,12 @@ export class WorkerRuntimeManager implements RuntimeResolver {
           stream: 'stderr',
         });
       }
+      const tail = (slot.stderrTail ??= []);
       for (const line of data.toString().trimEnd().split('\n')) {
-        if (line) this.log.error(`${prefix} ${line}`);
+        if (!line) continue;
+        this.log.error(`${prefix} ${line}`);
+        tail.push(line);
+        if (tail.length > STDERR_TAIL_LINES) tail.splice(0, tail.length - STDERR_TAIL_LINES);
       }
     });
 
@@ -1484,6 +1554,9 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       slot.lastUsedAt = Date.now();
       this.armIdleTimer(slot);
       this.armGraceTimer(slot);
+      // Warm the activity cache immediately; the startup grace covers the gap
+      // until this lands.
+      void this.sampleActivity(slot).catch(() => null);
       return slot;
     } catch (err: any) {
       slot.status = 'error';
@@ -1793,9 +1866,21 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   private handleExit(slot: InternalRuntime, code: number | null, signal: NodeJS.Signals | null): void {
     const exitedClean = signal === null && code === 0;
+    const requested = slot.status === 'stopping' || this.stopped;
     this.log.log(
       `[WorkerRuntimeManager] runtime ${slot.projectId} exited (code=${code}, signal=${signal})`,
     );
+    if (!requested) {
+      // Nobody asked for this. Say why as far as we can tell: the exit code,
+      // how long it ran, what it was doing, and the child's own last words.
+      // Before this, 13 of 201 exits on one host had no cause logged at all.
+      const tail = slot.stderrTail?.length ? `\n  ${slot.stderrTail.join('\n  ')}` : ' (nothing on stderr)';
+      this.log.warn(
+        `[WorkerRuntimeManager] runtime ${slot.projectId} exited WITHOUT a stop request ` +
+          `(code=${code}, signal=${signal}, uptime ${Math.round((Date.now() - slot.startedAt) / 1000)}s, ` +
+          `last activity ${this.activityDecision(slot.projectId).countsText}) — last stderr:${tail}`,
+      );
+    }
     slot.proc = null;
     if (slot.graceTimer) {
       clearTimeout(slot.graceTimer);
@@ -1931,13 +2016,26 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         return;
       }
       // Touch signals can miss work that isn't proxied through the host
-      // (schedules, heartbeats, background tasks), so ask the runtime itself.
-      const work = await this.activeWork(slot);
+      // (schedules, heartbeats, background tasks), so the verdict comes from
+      // the runtime's own activity. It reads the CACHED sample and only re-asks
+      // when that sample has aged out — never a probe issued because the host
+      // just decided to kill something, which is what used to time out under
+      // load and read as "idle" (SHO-143). A failed probe is `unknown` → keep.
+      const decision = await this.freshActivityDecision(slot.projectId);
       if (this.runtimes.get(slot.projectId) !== slot || slot.status !== 'running' || slot.idleTimer) return;
-      if (work) {
+      if (decision.dead) {
+        this.log.log(
+          `[WorkerRuntimeManager] reaping dead ${slot.projectId} (${describeBusyReason(decision)})`,
+        );
+        void this.stop(slot.projectId, 'SIGTERM', 'dead').catch((err) => {
+          this.log.warn(`[WorkerRuntimeManager] reap stop failed: ${err?.message ?? err}`);
+        });
+        return;
+      }
+      if (decision.busy) {
         this.log.log(
           `[WorkerRuntimeManager] not idle-evicting ${slot.projectId}: ` +
-            `${work.turns} turn(s), ${work.tasks} task(s), ${work.streams} stream(s) active`,
+            `${decision.reason} (${describeBusyReason(decision)})`,
         );
         this.touch(slot.projectId);
         return;
@@ -1951,17 +2049,22 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   /**
    * True while the runtime reports work in progress: agent turns (chat,
-   * schedule, heartbeat), background tasks that will wake the agent, or open
-   * chat streams. Unknown (no runtime, unreachable, older runtime) is false.
+   * schedule, heartbeat), background tasks, live child processes, or open
+   * chat streams.
+   *
+   * This is the RAW probe, and "could not tell" reads as false so callers that
+   * describe a runtime to a human (`workspaceActivity` → "Working in N other
+   * workspaces") never claim work that isn't there. Eviction must NOT use it:
+   * use {@link activityDecision}, where unknown means KEEP (SHO-143).
    */
   async hasActiveWork(projectId: string): Promise<boolean> {
     const slot = this.runtimes.get(projectId);
-    return !!slot && !!(await this.activeWork(slot));
+    if (!slot) return false;
+    const counts = await this.activeWork(slot);
+    return !!counts && counts.turns + counts.tasks + counts.streams + counts.children > 0;
   }
 
-  private async activeWork(
-    slot: InternalRuntime,
-  ): Promise<{ turns: number; tasks: number; streams: number } | null> {
+  private async activeWork(slot: InternalRuntime): Promise<ActivityCounts | null> {
     if (slot.status !== 'running' || !slot.agentPort) return null;
     try {
       const resp = await fetch(`http://127.0.0.1:${slot.agentPort}/pool/activity`, {
@@ -1969,12 +2072,150 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         signal: AbortSignal.timeout(ACTIVITY_PROBE_TIMEOUT_MS),
       });
       if (!resp.ok) return null;
-      const a = (await resp.json()) as { activeTurns?: number; activeTasks?: number; activeStreams?: number };
-      const work = { turns: a.activeTurns ?? 0, tasks: a.activeTasks ?? 0, streams: a.activeStreams ?? 0 };
-      return work.turns + work.tasks + work.streams > 0 ? work : null;
+      const a = (await resp.json()) as {
+        activeTurns?: number;
+        activeTasks?: number;
+        activeStreams?: number;
+        activeChildren?: number;
+      };
+      // A runtime too old to report task counts answers with liveness only. We
+      // cannot tell what it is running, so this is "unknown", not "idle" —
+      // returning zeros here would re-open the SHO-143 eviction bug on any
+      // rolling deploy that leaves an older runtime running.
+      const reported =
+        typeof a.activeTurns === 'number' ||
+        typeof a.activeTasks === 'number' ||
+        typeof a.activeStreams === 'number' ||
+        typeof a.activeChildren === 'number';
+      if (!reported) return null;
+      return {
+        turns: a.activeTurns ?? 0,
+        tasks: a.activeTasks ?? 0,
+        streams: a.activeStreams ?? 0,
+        children: a.activeChildren ?? 0,
+      };
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Refresh `slot.activity` from the runtime. Runs on
+   * {@link ACTIVITY_SAMPLE_MS}, NEVER from an eviction path: a probe issued at
+   * the moment the host decides to kill something times out exactly when the
+   * host is busy, and a timeout used to read as "idle".
+   */
+  async sampleActivity(slot: InternalRuntime): Promise<ActivitySample> {
+    const now = Date.now();
+    const counts = await this.activeWork(slot);
+    const prev = slot.activity;
+    const sample: ActivitySample = counts
+      ? { counts, at: now, ok: true }
+      : {
+          // Keep the last real counts for the log line only — `ok: false`
+          // means the decision treats this sample as unknown, not as idle.
+          counts: prev?.ok ? prev.counts : ZERO_COUNTS,
+          at: now,
+          ok: false,
+          error:
+            slot.status !== 'running'
+              ? `status=${slot.status}`
+              : slot.agentPort
+                ? 'no answer from /pool/activity'
+                : 'no agent port',
+          failingSince: prev && !prev.ok ? (prev.failingSince ?? now) : now,
+        };
+    slot.activity = sample;
+    return sample;
+  }
+
+  /** Re-read every running runtime's activity. Best-effort, never throws. */
+  async sampleAllActivity(): Promise<void> {
+    const running = [...this.runtimes.values()].filter((s) => s.status === 'running' && !!s.agentPort);
+    if (running.length === 0) return;
+    await Promise.all(running.map((s) => this.sampleActivity(s).catch(() => null)));
+  }
+
+  private ensureActivitySampler(): void {
+    if (this.activityTimer) return;
+    const timer = setInterval(() => {
+      void this.sampleAllActivity();
+    }, ACTIVITY_SAMPLE_MS);
+    (timer as { unref?: () => void }).unref?.();
+    this.activityTimer = timer;
+  }
+
+  /**
+   * The one eviction verdict, shared with the desktop API's pools. Reads the
+   * cached sample, so it never does I/O and can never be delayed into a wrong
+   * answer by CPU pressure. Unknown (no sample, failed probe, stale sample,
+   * still starting) is BUSY; only a provably dead runtime is `dead`.
+   */
+  activityDecision(
+    projectId: string,
+    opts?: { terminalSessions?: number; inflightCalls?: number },
+  ): BusyDecision {
+    const now = Date.now();
+    const slot = this.runtimes.get(projectId);
+    if (!slot) {
+      // No slot at all: nothing to keep, nothing to evict.
+      return decideBusy({ now, startedAt: now, status: 'stopped', processExited: true });
+    }
+    return decideBusy({
+      now,
+      startedAt: slot.startedAt,
+      status: slot.status,
+      sample: slot.activity ?? null,
+      terminalSessions: opts?.terminalSessions,
+      inflightCalls: opts?.inflightCalls,
+      processExited: this.processExited(slot),
+    });
+  }
+
+  private processExited(slot: InternalRuntime): boolean {
+    if (slot.status === 'stopped' || slot.status === 'failed') return true;
+    // A live handle means a live process. `handleExit` nulls `proc` before any
+    // decision runs, so a null handle plus a slot that still claims to be
+    // running is a stale record, not a running runtime.
+    if (slot.proc) return false;
+    return slot.status === 'running';
+  }
+
+  /**
+   * {@link activityDecision} with a fresh sample when the cached one has aged
+   * out (or does not exist yet). Eviction paths use this so a stale cache
+   * never decides alone — and a probe that fails is still "unknown", i.e.
+   * keep, so re-asking can cost time but can never kill work.
+   *
+   * {@link ACTIVITY_RESAMPLE_BEFORE_EVICT_MS} is deliberately much shorter than
+   * {@link ACTIVITY_SAMPLE_MS}: the timer keeps the cache warm, this covers the
+   * window in which a turn started after the last tick.
+   */
+  private async freshActivityDecision(
+    projectId: string,
+    opts?: { terminalSessions?: number; inflightCalls?: number },
+  ): Promise<BusyDecision> {
+    const slot = this.runtimes.get(projectId);
+    if (slot && slot.status === 'running' && slot.agentPort) {
+      const sample = slot.activity;
+      if (!sample || Date.now() - sample.at > ACTIVITY_RESAMPLE_BEFORE_EVICT_MS) {
+        await this.sampleActivity(slot).catch(() => null);
+      }
+    }
+    return this.activityDecision(projectId, opts);
+  }
+
+  /**
+   * Re-read one runtime's activity now, by key. The desktop API's pools call
+   * this before evicting so they decide on the same fresh sample the worker's
+   * own LRU uses, instead of whatever the timer last cached.
+   */
+  async refreshActivity(projectId: string): Promise<void> {
+    const slot = this.runtimes.get(projectId);
+    if (!slot || slot.status !== 'running' || !slot.agentPort) return;
+    const sample = slot.activity;
+    if (sample && Date.now() - sample.at <= ACTIVITY_RESAMPLE_BEFORE_EVICT_MS) return;
+    await this.sampleActivity(slot).catch(() => null);
   }
 
   private async allocatePort(): Promise<number> {
