@@ -3115,7 +3115,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             liveSessionId: currentSessionIdRef.current,
           })
         ) {
-          setActiveWorkspaceId(workspaceId)
+          setActiveWorkspaceId(workspaceId, { reason: "automatic" })
         }
         refetchUsageWallet()
 
