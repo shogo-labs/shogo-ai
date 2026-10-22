@@ -15,6 +15,16 @@
 -- not home-region routed, so the rows are kept (and pruned) where they were
 -- written.
 --
+-- `device_version_events` is per-region install telemetry. Its backfill in
+-- `20261021120000_add_device_version_events` derived ids as
+-- `'dve_' || md5(deviceId || ':' || version)`, so both regions materialised the
+-- SAME primary keys from the already-replicated `api_keys` snapshot. While the
+-- table was published, EU's tablesync COPY hit
+-- `duplicate key value violates unique constraint "device_version_events_pkey"`
+-- on its first row, which disabled `sub_from_us`: US->EU replication stopped at
+-- 2026-10-22 04:40Z for ~25 min and rebuilt a 540 MB backlog. Each region only
+-- records the installs that reach it, so the table is region-local.
+--
 -- THE DRIFT THIS GUARDS
 -- ---------------------
 -- The Publication CR (k8s/cnpg/production-*-oci/platform-publication.yaml)
@@ -35,7 +45,7 @@
 
 DO $$
 DECLARE
-  region_local text[] := ARRAY['storage_usage', 'usage_wallets', 'proxy_turns'];
+  region_local text[] := ARRAY['storage_usage', 'usage_wallets', 'proxy_turns', 'device_version_events'];
   is_schema_pub boolean;
   t text;
 BEGIN
