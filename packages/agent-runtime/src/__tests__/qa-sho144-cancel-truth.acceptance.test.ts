@@ -79,10 +79,16 @@ afterEach(async () => {
     try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
   }
   // `killAll` is async and sweeps the ledger: await it, or the rmSync below can
-  // delete a directory a still-running sweep is writing to.
+  // delete a directory a still-running sweep is writing to. Its own budget is
+  // 3 s, so the hook states a budget larger than bun's 5 s default rather than
+  // letting teardown be reported as the spec failing.
   try { await registry?.killAll() } catch { /* already gone */ }
-  rmSync(TEST_DIR, { recursive: true, force: true })
-})
+  try {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  } catch {
+    // A directory a killed process still holds is teardown noise, not a verdict.
+  }
+}, 30_000)
 
 afterAll(() => clearTrustForTests())
 

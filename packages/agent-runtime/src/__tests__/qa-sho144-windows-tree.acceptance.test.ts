@@ -48,16 +48,39 @@ async function waitFor(predicate: () => boolean, timeoutMs = 20_000, label = 'co
 let handles: CommandHandle[] = []
 let strays: number[] = []
 
+/** Teardown must never outbid the test: bun's default hook budget is 5 s. */
+const CLEANUP_BUDGET_MS = 2_500
+
+/** Let `work` settle, but never wait longer than `ms` for it. */
+function bounded(work: Promise<unknown> | undefined, ms: number): Promise<unknown> {
+  if (!work) return Promise.resolve()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const budget = new Promise((resolve) => {
+    timer = setTimeout(resolve, ms)
+    ;(timer as any)?.unref?.()
+  })
+  return Promise.race([work.catch(() => undefined), budget]).finally(() => clearTimeout(timer))
+}
+
+// A hook that overruns its budget fails the *test* it ran after, which is how
+// this spec turned the required Windows shard red in the merge queue: cleanup
+// was fine, it just took longer than 5 s on a loaded runner. Bound the work and
+// state the budget, so a slow kill can never be reported as AC 1 failing.
 afterEach(async () => {
   for (const pid of strays.splice(0)) {
     try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
   }
   for (const handle of handles.splice(0)) {
     try { handle.kill('SIGKILL') } catch { /* already gone */ }
-    try { await handle.killTree?.({ graceMs: 0 }) } catch { /* already gone */ }
+    await bounded(handle.killTree?.({ graceMs: 0 }), CLEANUP_BUDGET_MS)
   }
-  rmSync(TEST_DIR, { recursive: true, force: true })
-})
+  try {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  } catch {
+    // A process still holding the directory is a leaked process, not a test
+    // failure; the assertion above is what speaks for the tree.
+  }
+}, 30_000)
 
 describe.skipIf(!IS_WINDOWS)('SHO-144 AC 1 — a wrapper that exited does not hide the child', () => {
   test('cancelling a powershell tree whose cmd /c wrapper is gone leaves nothing alive', async () => {
