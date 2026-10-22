@@ -194,6 +194,74 @@ describe('AC5/AC6: a queued call keeps waiting; only a lost one fails', () => {
     expect(calls.filter((c) => c.url.endsWith('/agent/pipeline/call'))).toHaveLength(1)
   })
 
+  it('a queued call is followed by its own name, not the turn it is waiting behind', async () => {
+    await db.agentCall.deleteMany({})
+    await db.agentCallSessionLink.deleteMany({})
+    let probes = 0
+    let trackedAt = 0
+    let trackedTurnId: string | undefined
+    const probeUrls: string[] = []
+    svc.setCallTurnDeps({
+      track: (async (_body: any, _a: any, _b: any, options: any) => {
+        trackedAt = probes
+        trackedTurnId = options?.expectedTurnId
+        return { outcome: 'complete', status: 'completed', text: 'the call answer', assistantMessageId: 'm-call' }
+      }) as any,
+      markTurnStarted: async () => 't',
+      markTurnEnded: async () => {},
+      startTurnHeartbeat: () => () => {},
+      turnPollIntervalMs: 1,
+      turnStartTimeoutMs: 500,
+    })
+
+    // The chat's own turn started 5 s before the call — inside the 30 s skew a
+    // timestamp check cannot see through — and it answers as `active` with its
+    // own `createdAt` plus our call's `queuedSince` for the first 8 polls.
+    const busyStartedAt = Date.now() - 5_000
+    const queued = () => ({
+      chatSessionId: 'c-1',
+      status: 'active',
+      turnId: 't-busy',
+      createdAt: busyStartedAt,
+      queuedSince: Date.now(),
+      queuedDepth: 1,
+      reply: null,
+    })
+    globalThis.fetch = (async (url: any) => {
+      const u = String(url)
+      if (u.endsWith('/agent/pipeline/call')) return ackQueued()
+      if (u.includes('/turn')) {
+        probeUrls.push(u)
+        probes++
+        if (probes <= 8) return new Response(JSON.stringify(queued()), { status: 200 })
+        return new Response(
+          JSON.stringify({ chatSessionId: 'c-1', callId: 'run-q', turnId: 't-ours', status: 'active', createdAt: Date.now(), reply: null }),
+          { status: 200 },
+        )
+      }
+      if (u.includes('/stream')) return new Response('data: {"type":"text-delta"}\n\n', { status: 200 })
+      return new Response('not found', { status: 404 })
+    }) as any
+
+    const out = await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', {
+      message: 'job',
+      runId: 'run-q',
+      wait: false,
+      track: true,
+    })
+    expect(out.status).toBe(202)
+
+    const rec = await settled('run-q')
+    // The follower asked about this call by name, waited through every queued
+    // answer instead of taking the busy chat's turn on the first probe, and only
+    // then followed the turn the callee named as ours.
+    expect(probeUrls.every((u) => u.includes('callId=run-q'))).toBe(true)
+    expect(trackedAt).toBeGreaterThanOrEqual(8)
+    expect(trackedTurnId).toBe('t-ours')
+    expect(rec).toMatchObject({ status: 'completed', reply: 'the call answer' })
+    expect(rec!.reply).not.toBe('the busy turn’s reply')
+  })
+
   it('control: a callee that starts its turn still completes with the reply', async () => {
     await db.agentCall.deleteMany({})
     await db.agentCallSessionLink.deleteMany({})

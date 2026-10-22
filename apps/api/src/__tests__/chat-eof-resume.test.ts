@@ -618,6 +618,40 @@ describe('trackUsageFromStream — reattach options and result', () => {
     expect(persistedMessages[0]?.content).toBe('reply')
   })
 
+  test('expectedTurnId ignores a later turn that reused the session buffer', async () => {
+    persistedMessages.push({ id: 'msg-call', sessionId: 'sess-next', role: 'assistant', content: 'our call so far' })
+    const result = await trackUsageFromStream(
+      makeSseStream([
+        // Same session, same wall clock — a turn that started after ours and is
+        // inside any skew. Only the name can tell them apart.
+        dataFrame({ type: 'data-turn-start', data: { turnId: 'someone-elses', startedAt: Date.now() } }),
+        dataFrame({ type: 'text-delta', delta: 'a different turn' }),
+        dataFrame({ type: 'data-turn-complete', data: { status: 'completed' } }),
+      ]),
+      { chatSessionId: 'sess-next', agentMode: 'sonnet' },
+      null,
+      { existingAssistantMessageId: 'msg-call', expectedTurnId: 't-ours' },
+    )
+
+    expect(result.outcome).toBe('foreign')
+    expect(persistedMessages).toEqual([{ id: 'msg-call', sessionId: 'sess-next', role: 'assistant', content: 'our call so far' }])
+  })
+
+  test('expectedTurnId still tracks the turn it names', async () => {
+    const result = await trackUsageFromStream(
+      makeSseStream([
+        dataFrame({ type: 'data-turn-start', data: { turnId: 't-ours', startedAt: Date.now() } }),
+        dataFrame({ type: 'text-delta', delta: 'the call answer' }),
+        dataFrame({ type: 'data-turn-complete', data: { status: 'completed' } }),
+      ]),
+      { chatSessionId: 'sess-ours', agentMode: 'sonnet' },
+      null,
+      { expectedTurnId: 't-ours' },
+    )
+    expect(result.outcome).toBe('complete')
+    expect(result.text).toBe('the call answer')
+  })
+
   test('reports a partial outcome when the buffer is gone before the turn finishes', async () => {
     const result = await trackUsageFromStream(
       makeSseStream([dataFrame({ type: 'text-delta', delta: 'cut off' })]),

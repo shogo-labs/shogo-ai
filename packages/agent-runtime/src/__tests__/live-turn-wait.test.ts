@@ -141,3 +141,49 @@ describe('LiveTurnGate', () => {
     store.dispose()
   })
 })
+
+/**
+ * A named call's progress is the only way the turn probe can answer for that
+ * call: "the chat has a waiter" is also true for another window's message, and
+ * the chat's live turn is not the call's turn.
+ */
+describe('LiveTurnGate call state', () => {
+  test('a queued call is queued, then names the turn it started', async () => {
+    const store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    store.create('s')
+
+    expect(gate.callState('s', 'run-1')).toBeNull()
+    gate.noteCallQueued('s', 'run-1')
+    const queued = gate.callState('s', 'run-1')
+    expect(typeof queued?.queuedSince).toBe('number')
+    expect(queued?.turnId).toBeUndefined()
+
+    gate.noteCallStarted('s', 'run-1', 't-1')
+    expect(gate.callState('s', 'run-1')).toMatchObject({ turnId: 't-1' })
+    expect(gate.callState('s', 'run-1')?.queuedSince).toBeUndefined()
+    // Another call, and another chat, are unaffected.
+    expect(gate.callState('s', 'run-2')).toBeNull()
+    expect(gate.callState('other', 'run-1')).toBeNull()
+    store.dispose()
+  })
+
+  test('a stop before the call started is recorded as stopped', () => {
+    const store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    gate.noteCallQueued('s', 'run-1')
+    gate.noteCallStopped('s', 'run-1')
+    expect(gate.callState('s', 'run-1')).toEqual({ stopped: true })
+    store.dispose()
+  })
+
+  test('re-queueing keeps the original wait start', () => {
+    const store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    gate.noteCallQueued('s', 'run-1')
+    const first = gate.callState('s', 'run-1')!.queuedSince
+    gate.noteCallQueued('s', 'run-1')
+    expect(gate.callState('s', 'run-1')!.queuedSince).toBe(first!)
+    store.dispose()
+  })
+})

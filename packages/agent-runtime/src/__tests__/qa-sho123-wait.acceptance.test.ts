@@ -188,13 +188,16 @@ describe('wiring: the recovery path is the one the gateway actually builds, and 
     expect(src).toMatch(/new TaskRegistry\(\{[\s\S]{0,400}?outputDir,[\s\S]{0,400}?resolveOutputRow:\s*\(id\)\s*=>\s*listTaskOutputRows\(outputDir\)/)
   })
 
-  test('the runtime acks a wait:false pipeline call at once, saying whether it queued or started', () => {
+  test('the runtime acks a wait:false pipeline call at once, naming the call it queued', () => {
     const src = readFileSync(join(SRC_DIR, 'server.ts'), 'utf8')
     const branch = src.slice(src.indexOf('if (body.wait === false) {'))
 
     // The ack never holds the response: the caller's forward timeout is 15 s.
     expect(branch).not.toContain('await turnStarted')
     expect(branch).toContain("status: started ? 'started' : 'queued'")
+    // ...and it names the call, so the probe can answer for that call and not
+    // for whatever turn the chat happens to be running.
+    expect(branch).toContain('callId')
     expect(branch).toContain('onQueued')
     expect(branch).toContain('onTurnStarted')
     // A queued call is not an error any more, so no error body is built here.
@@ -204,19 +207,33 @@ describe('wiring: the recovery path is the one the gateway actually builds, and 
     // No start budget: a message for a busy chat waits, it is never dropped.
     expect(buffered).not.toContain('PIPELINE_START_TIMEOUT_MS')
     expect(buffered).toContain('onQueued?.()')
+    // The queued call is registered under its name, and the turn it starts is
+    // recorded against that name.
+    expect(buffered).toContain('noteCallQueued')
+    expect(buffered).toContain('noteCallStarted')
   })
 
-  test('the turn probe reports a queued call so the caller keeps following it', () => {
+  test('the turn probe answers for the named call, so a busy chat is not its turn', () => {
     const src = readFileSync(join(SRC_DIR, 'server.ts'), 'utf8')
-    expect(src).toContain('describeTurn(streamBufferStore, chatSessionId, liveTurnGate.queued(chatSessionId))')
+    expect(src).toContain('liveTurnGate.callState(chatSessionId, callId)')
+    expect(src).toContain("c.req.query('callId')")
 
     const status = readFileSync(join(SRC_DIR, 'turn-status.ts'), 'utf8')
-    expect(status).toContain("status: 'queued'")
-    expect(status).toContain('queuedSince')
+    // `queued` is answered before the chat's snapshot is even considered, so a
+    // busy chat's live turn cannot be offered as the queued call's turn.
+    const callBranch = status.slice(status.indexOf('function describeCallTurn'))
+    expect(callBranch.indexOf("status: 'queued'")).toBeLessThan(callBranch.indexOf('store.snapshot'))
+    expect(callBranch).toContain("status: 'lost'")
 
     const api = readFileSync(join(SRC_DIR, '..', '..', '..', 'apps', 'api', 'src', 'services', 'agent-call.service.ts'), 'utf8')
-    // A queued answer pushes the follower's budget out instead of failing the call.
-    expect(api).toContain("turn?.status === 'queued'")
+    // The follower asks by name, treats `queued` as authoritative over any
+    // timestamp, and follows only the turn the callee named as ours.
+    expect(api).toContain('callId: call.runId')
+    expect(api).toContain('?callId=')
+    expect(api).toContain("probe.status === 'queued'")
+    const readProbe = api.slice(api.indexOf('export function readCalleeTurn'))
+    expect(readProbe.indexOf("probe.status === 'queued'")).toBeLessThan(readProbe.indexOf('TURN_CLOCK_SKEW_MS'))
     expect(api).toContain('deadline = Date.now() + deps.turnStartTimeoutMs')
+    expect(api).toContain('expectedTurnId')
   })
 })

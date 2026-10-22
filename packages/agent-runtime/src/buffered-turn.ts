@@ -26,6 +26,12 @@ export interface BufferedTurn {
 export interface PipelineCallOptions {
   message: string
   runId?: string
+  /**
+   * The caller's name for this call. The turn probe answers for that name, so a
+   * follower can tell "queued behind the chat's own turn" from "this is the
+   * chat's live turn" — the two look identical from the chat's state alone.
+   */
+  callId?: string
   sessionId?: string
   callerProjectId?: string
   requesterTicket?: string
@@ -37,9 +43,15 @@ export interface PipelineCallResult {
   runId?: string
 }
 
+/** Fired as the call queues (before it waits) and once it has a turn of its own. */
+export interface PipelineCallHooks {
+  onQueued?: () => void
+  onTurnStarted?: () => void
+}
+
 export interface BufferedTurnDeps {
   store: Pick<StreamBufferStore, 'create'> & Partial<Pick<StreamBufferStore, 'recordTurnReply'>>
-  gate: Pick<LiveTurnGate, 'isBusy' | 'waitUntilFree'>
+  gate: Pick<LiveTurnGate, 'isBusy' | 'waitUntilFree' | 'noteCallQueued' | 'noteCallStarted' | 'noteCallStopped'>
   onStreamStart?: () => void
   onStreamEnd?: () => void
 }
@@ -226,17 +238,22 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
   async function runPipelineCall(
     runCall: (opts: PipelineCallOptions & { writer?: UiStreamWriter }) => Promise<PipelineCallResult>,
     opts: PipelineCallOptions,
-    hooks: { onQueued?: () => void; onTurnStarted?: () => void } = {},
+    hooks: PipelineCallHooks = {},
   ): Promise<PipelineCallResult> {
     const chatSessionKey = opts.sessionId?.trim()
+    const callId = opts.callId?.trim() || undefined
     if (!isOpenableChatSession(chatSessionKey)) {
       hooks.onTurnStarted?.()
       return runCall(opts)
     }
     if (deps.gate.isBusy(chatSessionKey)) {
       hooks.onQueued?.()
+      if (callId) deps.gate.noteCallQueued(chatSessionKey, callId)
       const waited = await deps.gate.waitUntilFree(chatSessionKey)
-      if (waited.stopped) throw new Error('The chat was stopped before this call started')
+      if (waited.stopped) {
+        if (callId) deps.gate.noteCallStopped(chatSessionKey, callId)
+        throw new Error('The chat was stopped before this call started')
+      }
     }
     let result: PipelineCallResult | undefined
     let failure: unknown
@@ -248,6 +265,9 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
         throw err
       }
     })
+    // Name the turn for this call before anything can observe it, so a probe
+    // never has to guess "is the chat's live turn ours?" from a timestamp.
+    if (callId) deps.gate.noteCallStarted(chatSessionKey, callId, turn.turnId)
     hooks.onTurnStarted?.()
     await turn.done
     if (failure) throw failure

@@ -38,11 +38,33 @@ export interface LiveTurnQueue {
   since: number
 }
 
+/**
+ * Where one named call stands in a chat. A call cannot be identified by "the
+ * chat has a waiter": a message from another window queues on the same gate, so
+ * "somebody is waiting" is also true for a call that already started. The
+ * caller names its call (`callId`) and this is the answer for that name.
+ */
+export interface LiveCallState {
+  /** Set while the call is still waiting for the chat's own turn to end. */
+  queuedSince?: number
+  /** The turn the call got once it started. */
+  turnId?: string
+  /** When that turn started. */
+  startedAt?: number
+  /** The chat was stopped before the call could start. */
+  stopped?: boolean
+}
+
+/** How long a call stays answerable on the turn probe, so a slow follower can still find it. */
+const CALL_STATE_TTL_MS = 60 * 60_000
+
 export class LiveTurnGate {
   /** Turn the user last stopped, per chat. */
   private readonly stoppedTurn = new Map<string, string>()
   /** Callers waiting on each chat's live turn, with the moment they started waiting. */
-  private readonly waiters = new Map<string, Map<number, number>>()
+  private readonly waiters = new Map<string, Map<number, { since: number }>>()
+  /** Named calls, per chat: queued since, or the turn they started. */
+  private readonly calls = new Map<string, Map<string, LiveCallState>>()
   private nextWaiterId = 1
   /** Bumped on every Stop, per chat, so waiters can tell a Stop happened. */
   private readonly stopEpoch = new Map<string, number>()
@@ -74,8 +96,52 @@ export class LiveTurnGate {
     const waiters = this.waiters.get(chatSessionId)
     if (!waiters?.size) return null
     let since = Number.POSITIVE_INFINITY
-    for (const at of waiters.values()) since = Math.min(since, at)
+    for (const waiter of waiters.values()) since = Math.min(since, waiter.since)
     return { depth: waiters.size, since }
+  }
+
+  /** Record that a named call is queued behind this chat's live turn. */
+  noteCallQueued(chatSessionId: string, callId: string): void {
+    const calls = this.callsFor(chatSessionId)
+    const state = calls.get(callId) ?? {}
+    state.queuedSince ??= Date.now()
+    calls.set(callId, state)
+  }
+
+  /** Record that a queued call got a turn of its own. */
+  noteCallStarted(chatSessionId: string, callId: string, turnId: string): void {
+    const calls = this.callsFor(chatSessionId)
+    calls.set(callId, { turnId, startedAt: Date.now() })
+  }
+
+  /** Record that the chat was stopped before this call started. */
+  noteCallStopped(chatSessionId: string, callId: string): void {
+    this.callsFor(chatSessionId).set(callId, { stopped: true })
+  }
+
+  /**
+   * Where this named call stands, or null when the gate never heard of it (the
+   * runtime restarted, or the queued item is gone) — which is a loss, and the
+   * difference the follower needs from "still queued".
+   */
+  callState(chatSessionId: string, callId: string): LiveCallState | null {
+    const state = this.calls.get(chatSessionId)?.get(callId)
+    return state ? { ...state } : null
+  }
+
+  private callsFor(chatSessionId: string): Map<string, LiveCallState> {
+    const now = Date.now()
+    const existing = this.calls.get(chatSessionId)
+    if (existing) {
+      for (const [callId, state] of existing) {
+        const at = state.startedAt ?? state.queuedSince
+        if (at !== undefined && now - at > CALL_STATE_TTL_MS) existing.delete(callId)
+      }
+      if (existing.size > 0) return existing
+    }
+    const fresh = new Map<string, LiveCallState>()
+    this.calls.set(chatSessionId, fresh)
+    return fresh
   }
 
   /**
@@ -112,8 +178,8 @@ export class LiveTurnGate {
 
   private addWaiter(chatSessionId: string): number {
     const id = this.nextWaiterId++
-    const waiters = this.waiters.get(chatSessionId) ?? new Map<number, number>()
-    waiters.set(id, Date.now())
+    const waiters = this.waiters.get(chatSessionId) ?? new Map<number, { since: number }>()
+    waiters.set(id, { since: Date.now() })
     this.waiters.set(chatSessionId, waiters)
     return id
   }
