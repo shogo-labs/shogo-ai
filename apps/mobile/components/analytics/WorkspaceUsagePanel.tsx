@@ -8,7 +8,7 @@
  * and usage/cost figures for a linked cloud plan come from the cloud summary.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { View, Pressable, Platform, Linking } from "react-native";
 import { useRouter } from "expo-router";
 import {
@@ -75,6 +75,16 @@ interface SpendTimeseriesPayload {
   metric: "spend" | "tokens" | "requests";
 }
 
+/** One request now carries the whole tab; `chat` and `usage` are null below Business. */
+interface UsageDashboardPayload {
+  window: { from: string; to: string; period: string };
+  summary: UsageSummaryData;
+  timeseries: SpendTimeseriesPayload;
+  usage: UsageBreakdownData | null;
+  logCount: number;
+  chat: ChatAnalyticsData | null;
+}
+
 function fmtUsd(n: number): string {
   if (n === 0) return "$0.00";
   if (n < 0.01) return `$${n.toFixed(4)}`;
@@ -129,6 +139,7 @@ export function WorkspaceUsagePanel() {
 
   const [period, setPeriod] = useState<AnalyticsPeriod>("7d");
   const [logPage, setLogPage] = useState(1);
+  const [summaryPage, setSummaryPage] = useState(1);
   const [groupBy, setGroupBy] = useState<SpendGroupBy>("model");
   const [metric, setMetric] = useState<SpendMetric>("spend");
   const [spendLimitOpen, setSpendLimitOpen] = useState(false);
@@ -156,92 +167,103 @@ export function WorkspaceUsagePanel() {
 
   const [loadErrors, setLoadErrors] = useState<LoadErrors>({});
 
-  const loadAll = useCallback(async () => {
+  // Each loader only answers for the newest request it started, so a slow
+  // earlier response can never overwrite a newer one.
+  const dashboardSeq = useRef(0);
+  const logSeq = useRef(0);
+
+  // One request for the summary, the chart, the breakdown and the chat stats
+  // (it used to take four, and toggling the chart refetched all of them).
+  const loadDashboard = useCallback(async () => {
     if (!workspaceId) return;
-    const p = { period };
-    const errors: LoadErrors = {};
-    const section = <T,>(label: string, request: Promise<T>) =>
-      request.catch((err: any) => {
-        errors[label] = err?.message || "Request failed";
-        return null;
-      });
+    const seq = (dashboardSeq.current += 1);
+    const dim = (state: { data: unknown }) => ({ loading: state.data === null });
+    setUsageSummary((s) => ({ ...s, ...dim(s) }));
+    setSpend((s) => ({ ...s, ...dim(s) }));
+    setUsage((s) => ({ ...s, ...dim(s) }));
+    setChatStats((s) => ({ ...s, ...dim(s) }));
 
-    setUsageSummary((s) => ({ ...s, loading: true }));
-    setUsageLog((s) => ({ ...s, loading: true }));
-    setSpend((s) => ({ ...s, loading: true }));
-
-    const basicFetches = [
-      section(
-        "usage summary",
-        api.getWorkspaceAnalytics<UsageSummaryData>(
-          http,
-          workspaceId,
-          "usage-summary",
-          p
-        )
-      ),
-      section(
-        "event log",
-        api.getWorkspaceAnalytics<UsageLogData>(http, workspaceId, "usage-log", {
-          ...p,
-          page: String(logPage),
+    try {
+      const data = await api.getWorkspaceAnalytics<UsageDashboardPayload>(
+        http,
+        workspaceId,
+        "dashboard",
+        {
+          period,
+          groupBy,
+          metric,
+          page: String(summaryPage),
           limit: "50",
-        })
-      ),
-      section(
-        "team usage chart",
-        api.getWorkspaceAnalytics<SpendTimeseriesPayload>(
-          http,
-          workspaceId,
-          "spend-timeseries",
-          { ...p, groupBy, metric }
-        )
-      ),
-    ] as const;
-
-    if (isBusinessOrHigher) {
-      setUsage((s) => ({ ...s, loading: true }));
-      setChatStats((s) => ({ ...s, loading: true }));
-
-      const [uSum, uLog, sp, us, ch] = await Promise.all([
-        ...basicFetches,
-        section(
-          "usage breakdown",
-          api.getWorkspaceAnalytics<UsageBreakdownData>(
-            http,
-            workspaceId,
-            "usage",
-            p
-          )
-        ),
-        section(
-          "chat stats",
-          api.getWorkspaceAnalytics<ChatAnalyticsData>(
-            http,
-            workspaceId,
-            "chat",
-            p
-          )
-        ),
-      ]);
-
-      setUsageSummary({ data: uSum, loading: false });
-      setUsageLog({ data: uLog, loading: false });
-      setSpend({ data: sp, loading: false });
-      setUsage({ data: us, loading: false });
-      setChatStats({ data: ch, loading: false });
-    } else {
-      const [uSum, uLog, sp] = await Promise.all(basicFetches);
-      setUsageSummary({ data: uSum, loading: false });
-      setUsageLog({ data: uLog, loading: false });
-      setSpend({ data: sp, loading: false });
+        }
+      );
+      if (seq !== dashboardSeq.current) return;
+      setUsageSummary({ data: data.summary, loading: false });
+      setSpend({ data: data.timeseries, loading: false });
+      setUsage({ data: data.usage, loading: false });
+      setChatStats({ data: data.chat ?? null, loading: false });
+      setLoadErrors((errors) => {
+        if (!errors.usage) return errors;
+        const { usage: _cleared, ...rest } = errors;
+        return rest;
+      });
+    } catch (err: any) {
+      if (seq !== dashboardSeq.current) return;
+      setUsageSummary((s) => ({ ...s, loading: false }));
+      setSpend((s) => ({ ...s, loading: false }));
+      setUsage((s) => ({ ...s, loading: false }));
+      setChatStats((s) => ({ ...s, loading: false }));
+      setLoadErrors((errors) => ({
+        ...errors,
+        usage: err?.message || "Request failed",
+      }));
     }
-    setLoadErrors(errors);
-  }, [http, workspaceId, period, logPage, groupBy, metric, isBusinessOrHigher]);
+  }, [http, workspaceId, period, groupBy, metric, summaryPage]);
+
+  // Paging the event log refetches only the log.
+  const loadLog = useCallback(async () => {
+    if (!workspaceId) return;
+    const seq = (logSeq.current += 1);
+    setUsageLog((s) => ({ ...s, loading: s.data === null }));
+
+    try {
+      const data = await api.getWorkspaceAnalytics<UsageLogData>(
+        http,
+        workspaceId,
+        "usage-log",
+        { period, page: String(logPage), limit: "50" }
+      );
+      if (seq !== logSeq.current) return;
+      setUsageLog({ data, loading: false });
+      setLoadErrors((errors) => {
+        if (!errors["event log"]) return errors;
+        const { "event log": _cleared, ...rest } = errors;
+        return rest;
+      });
+    } catch (err: any) {
+      if (seq !== logSeq.current) return;
+      setUsageLog((s) => ({ ...s, loading: false }));
+      setLoadErrors((errors) => ({
+        ...errors,
+        "event log": err?.message || "Request failed",
+      }));
+    }
+  }, [http, workspaceId, period, logPage]);
 
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    void loadLog();
+  }, [loadLog]);
+
+  const handlePeriodChange = useCallback((next: AnalyticsPeriod) => {
+    // A new window starts both lists over.
+    setPeriod(next);
+    setLogPage(1);
+    setSummaryPage(1);
+  }, []);
+
 
   if (!workspaceId) {
     return (
@@ -304,7 +326,7 @@ export function WorkspaceUsagePanel() {
 
       {/* Date range pills: one period drives every section below */}
       <View className="flex-row items-center justify-between flex-wrap gap-3">
-        <DateRangePills value={period} onChange={setPeriod} />
+        <DateRangePills value={period} onChange={handlePeriodChange} />
       </View>
 
       <LoadErrorNotice errors={loadErrors} />
@@ -420,6 +442,8 @@ export function WorkspaceUsagePanel() {
             logLoading={usageLog.loading}
             onLogPageChange={setLogPage}
             logPage={logPage}
+            onSummaryPageChange={setSummaryPage}
+            summaryPage={summaryPage}
             isLocalMode={localMode}
           />
         </View>

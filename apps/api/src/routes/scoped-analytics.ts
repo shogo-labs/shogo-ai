@@ -332,6 +332,56 @@ export function scopedAnalyticsRoutes(): Hono {
     await next()
   }
 
+  router.get('/workspaces/:workspaceId/analytics/dashboard', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
+      if (!access) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const fromIso = url.searchParams.get('from') || undefined
+      const toIso = url.searchParams.get('to') || undefined
+      const groupBy = (url.searchParams.get('groupBy') || 'model') as 'model' | 'user' | 'source'
+      const metric = (url.searchParams.get('metric') || 'spend') as 'spend' | 'tokens' | 'requests'
+      const topN = parseInt(url.searchParams.get('topN') || '8', 10)
+      const page = parseInt(url.searchParams.get('page') || '1', 10)
+      const limit = parseInt(url.searchParams.get('limit') || '50', 10)
+      // Members only ever see themselves; admins may narrow to one member.
+      const requestedUserId = url.searchParams.get('userId') || undefined
+      if (!access.isAdmin && requestedUserId && requestedUserId !== auth.userId) {
+        return c.json({ error: { code: 'forbidden', message: 'Members can only view their own usage' } }, 403)
+      }
+      const userId = access.isAdmin ? requestedUserId : auth.userId
+
+      // The whole Usage tab from one grouped scan; `chat` rides along so the
+      // screen needs two requests, not five (SHO-140). Both the chat stats and
+      // the usage breakdown are Business-only elsewhere (`/analytics/chat`,
+      // `/analytics/usage`), so they stay Business-only here — otherwise this
+      // endpoint is a way around the plan gate.
+      const business = isLocalMode || await isBusinessOrHigherPlan(workspaceId)
+      const [dashboard, chat] = await Promise.all([
+        analytics.getUsageDashboard(
+          { workspaceId, ...(userId ? { userId } : {}) },
+          { period, fromIso, toIso, groupBy, metric, topN, page, limit },
+        ),
+        business
+          ? analytics.getChatAnalytics({ workspaceId }, period)
+          : Promise.resolve(null),
+      ])
+      return c.json({
+        ok: true,
+        data: { ...dashboard, usage: business ? dashboard.usage : null, chat },
+      })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
   router.get('/workspaces/:workspaceId/analytics/growth', requireBusinessPlan, async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
