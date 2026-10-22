@@ -335,7 +335,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     <Pressable
       onPress={() => setAlsoToChannel((v) => !v)}
       accessibilityRole="checkbox"
-      accessibilityState={{ checked: alsoToChannel }}
+      aria-checked={alsoToChannel}
       className="flex-row items-center gap-1.5 rounded-md px-1.5 py-1"
     >
       <View className={cn('h-3.5 w-3.5 rounded border', alsoToChannel ? 'border-primary bg-primary' : 'border-border')} />
@@ -376,7 +376,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         <Pressable
           onPress={() => setAlsoToChannel((v) => !v)}
           accessibilityRole="checkbox"
-          accessibilityState={{ checked: alsoToChannel }}
+          aria-checked={alsoToChannel}
           accessibilityLabel="Also send to channel"
           className="min-h-12 flex-row items-center gap-3 border-b border-border/40 px-3 py-3 active:bg-muted/50"
         >

@@ -64,7 +64,7 @@ function RolePicker({
           onPress={() => role !== value && onChange(role)}
           disabled={disabled}
           accessibilityRole="button"
-          accessibilityState={{ selected: role === value, disabled }}
+          aria-selected={role === value} aria-disabled={disabled}
           className={cn('rounded-md px-2 py-1', role === value && 'bg-muted', disabled && 'opacity-50')}
         >
           <Text
@@ -246,7 +246,7 @@ export function ProjectAccessPanel({ projectId, embedded = false, onVisibilityCh
               onPress={() => handleVisibility(id)}
               disabled={busyId === 'visibility'}
               accessibilityRole="radio"
-              accessibilityState={{ checked: active }}
+              aria-checked={active}
               className={cn(
                 'flex-row items-start gap-2.5 rounded-lg border p-3',
                 active ? 'border-primary/40 bg-primary/5' : 'border-border active:bg-muted',

@@ -11,13 +11,13 @@ const opened: string[] = []
 mock.module('react-native', () =>
   createReactNativeMock({
     Platform: { OS: 'web', select: (s: any) => s.web ?? s.default },
-    Pressable: ({ accessibilityLabel, accessibilityState, children, disabled, onPress }: any) =>
+    Pressable: ({ accessibilityLabel, 'aria-selected': ariaSelected, 'aria-checked': ariaChecked, children, disabled, onPress }: any) =>
       createElement(
         'div',
         {
           role: 'button',
           'aria-label': accessibilityLabel,
-          'aria-pressed': accessibilityState?.selected ?? accessibilityState?.checked ?? undefined,
+          'aria-pressed': ariaSelected ?? ariaChecked ?? undefined,
           'aria-disabled': disabled ? 'true' : undefined,
           onClick: disabled ? undefined : onPress,
         },

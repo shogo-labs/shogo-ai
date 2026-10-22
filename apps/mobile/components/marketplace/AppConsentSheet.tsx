@@ -106,7 +106,7 @@ export function AppConsentSheet({
                       key={s.scope}
                       onPress={() => toggle(s.scope)}
                       accessibilityRole="checkbox"
-                      accessibilityState={{ checked: on }}
+                      aria-checked={on}
                       accessibilityLabel={s.description}
                       className="flex-row gap-2 items-start active:opacity-70"
                       testID={`consent-optional-${s.scope}`}

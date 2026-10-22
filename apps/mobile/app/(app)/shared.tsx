@@ -385,7 +385,7 @@ export default observer(function SharedWithMePage() {
         <Pressable
           onPress={() => toggleCollapsed(group.workspace.id)}
           accessibilityRole="button"
-          accessibilityState={{ expanded: !isCollapsed }}
+          aria-expanded={!isCollapsed}
           className="mx-4 flex-row items-center rounded-xl border border-border bg-card py-3 pl-3 pr-4 active:bg-muted"
         >
           <View

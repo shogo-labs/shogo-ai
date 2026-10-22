@@ -44,7 +44,8 @@ export function AccountSettingsRow({
   onPress,
   trailing,
   accessibilityLabel,
-  accessibilityState,
+  ariaExpanded,
+  ariaChecked,
   separator = true,
   showChevron = true,
 }: {
@@ -53,7 +54,8 @@ export function AccountSettingsRow({
   onPress?: () => void;
   trailing?: ReactNode;
   accessibilityLabel?: string;
-  accessibilityState?: { expanded?: boolean; checked?: boolean };
+  ariaExpanded?: boolean;
+  ariaChecked?: boolean;
   separator?: boolean;
   showChevron?: boolean;
 }) {
@@ -95,7 +97,8 @@ export function AccountSettingsRow({
       role="menuitem"
       accessibilityRole="menuitem"
       accessibilityLabel={accessibilityLabel ?? label}
-      accessibilityState={accessibilityState}
+      aria-expanded={ariaExpanded}
+      aria-checked={ariaChecked}
       className={rowClass}
     >
       {content}

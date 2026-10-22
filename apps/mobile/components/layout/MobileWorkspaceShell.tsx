@@ -595,7 +595,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                 accessibilityLabel={
                   sessionsOpen ? "Close chat sessions" : "Open chat sessions"
                 }
-                accessibilityState={{ expanded: sessionsOpen }}
+                aria-expanded={sessionsOpen}
                 onPress={() =>
                   sessionsOpen ? closeSessions() : openSessions()
                 }
@@ -797,9 +797,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                             accessibilityLabel={`${
                               showArchivedSideChats ? "Collapse" : "Expand"
                             } archived side chats`}
-                            accessibilityState={{
-                              expanded: showArchivedSideChats,
-                            }}
+                            aria-expanded={showArchivedSideChats}
                             onPress={() =>
                               setArchivedSideChatsExpanded((value) => !value)
                             }
@@ -970,7 +968,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                 } chats for ${
                                   project.name || "Untitled project"
                                 }`}
-                                accessibilityState={{ expanded }}
+                                aria-expanded={expanded}
                                 onPress={(event) => {
                                   event.stopPropagation?.();
                                   toggleProjectChats(project.id);
@@ -1123,9 +1121,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                           } archived chats for ${
                                             project.name || "this project"
                                           }`}
-                                          accessibilityState={{
-                                            expanded: archivedChatsExpanded,
-                                          }}
+                                          aria-expanded={archivedChatsExpanded}
                                           onPress={() =>
                                             setExpandedArchivedProjectIds(
                                               (current) => {

@@ -16,7 +16,7 @@ let tasks: any[] = []
 mock.module("react-native", () =>
   createReactNativeMock({
     Platform: { OS: "ios" },
-    Pressable: ({ accessibilityLabel, accessibilityRole, accessibilityState, children, onPress, ...props }: any) =>
+    Pressable: ({ accessibilityLabel, accessibilityRole, children, onPress, ...props }: any) =>
       createElement(
         "button",
         { ...props, "aria-label": accessibilityLabel, onClick: onPress, role: accessibilityRole },

@@ -175,7 +175,7 @@ function ChoiceRow({
       testID={testID}
       accessibilityRole="radio"
       accessibilityLabel={label}
-      accessibilityState={{ checked }}
+      aria-checked={checked}
       onPress={onPress}
       className={cn(
         'flex-row items-center gap-3 rounded-lg border px-3 py-2',
