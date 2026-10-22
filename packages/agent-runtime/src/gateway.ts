@@ -18,7 +18,7 @@
  * multi-provider LLMs (Anthropic, OpenAI, Google, xAI, Groq, etc.).
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import type { Message, ImageContent } from '@mariozechner/pi-ai'
@@ -2818,7 +2818,15 @@ export class AgentGateway {
       await reg.refreshWhere((e) => e.id === entry!.id)
     }
     const local = taskOutputBody(reg.readOutput(entry)).trim()
-    const output = local || (entry.result?.summary ?? '').trim() || (entry.remoteNote ?? '').trim()
+    const body = local || (entry.result?.summary ?? '').trim() || (entry.remoteNote ?? '').trim()
+    // A task the runtime died under often produced no output at all, and the
+    // viewer strips the log's front matter — so opening its log showed an
+    // explanation of the *wake*, never the verdict the report was about. State
+    // it as the first line of what the reader sees: the same `status:` the log's
+    // footer carries, and no exit code, because the command never exited
+    // (SHO-141). Settled rows keep the body-only view.
+    const output =
+      entry.status === 'interrupted' ? [`status: interrupted`, body].filter(Boolean).join('\n\n') : body
     return {
       taskId: entry.id,
       source: entry.source,
@@ -2865,7 +2873,12 @@ export class AgentGateway {
   private disposeSessionState(sessionId: string): void {
     const reg = this.commandRegistries.get(sessionId)
     if (reg) {
-      reg.killAll()
+      // `clear`: the session is being wiped, so its rows go with it. Hydration
+      // falls back to the per-task logs when no snapshot survives, so those have
+      // to go too — a footer-less log now restores as `interrupted` (SHO-141),
+      // which would otherwise bring a cleared session's tasks back to life.
+      reg.killAll({ clear: true })
+      try { rmSync(taskOutputDir(this.workspaceDir, sessionId), { recursive: true, force: true }) } catch { /* best effort */ }
       this.commandRegistries.delete(sessionId)
     }
     const wake = this.taskWakeTimers.get(sessionId)
@@ -7187,13 +7200,22 @@ export class AgentGateway {
 
   /**
    * Work that means this runtime is not idle: agent turns running now (chat,
-   * schedule, heartbeat, channel) and background tasks that will wake the
-   * agent when they finish. Hosts check this before evicting the runtime.
+   * schedule, heartbeat, channel), every task still running in a session's
+   * registry (not just the ones that will notify), and their live child
+   * processes. Hosts read this before evicting the runtime, so it must count
+   * work that does NOT wake the agent — a long foreground `exec` whose turn
+   * already returned, a `wait`-tracked task, a child process still running
+   * after a gateway restart — or the host kills that work (SHO-143).
    */
-  getActiveWork(): { turns: number; tasks: number } {
+  getActiveWork(): { turns: number; tasks: number; children: number } {
     let tasks = 0
-    for (const reg of this.commandRegistries.values()) tasks += reg.pendingNotifyCount()
-    return { turns: this.turnLocks.size, tasks }
+    let children = 0
+    for (const reg of this.commandRegistries.values()) {
+      const counts = reg.activeWorkCounts()
+      tasks += counts.tasks
+      children += counts.children
+    }
+    return { turns: this.turnLocks.size, tasks, children }
   }
 
   abortCurrentTurn(sessionId: string): boolean {

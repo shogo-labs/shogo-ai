@@ -52,7 +52,7 @@ import { isInQuietHours } from './quiet-hours'
 import { PROFILE_TOOL_GROUPS, disabledToolNamesForProfile } from './capability-profiles'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
-import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
+import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle, type ShellExitResult } from './sandbox-exec'
 import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
 import { checkSelfDetach, selfDetachRefusal } from './exec-detach'
@@ -1222,13 +1222,7 @@ function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
 interface BuildExecResultOpts {
   ctx: ToolContext
   entry: CommandEntry
-  finalResult: {
-    exitCode: number
-    stdout: string
-    stderr: string
-    killed: boolean
-    killReason?: string
-  }
+  finalResult: ShellExitResult
 }
 
 function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOpts): AgentToolResult<any> {
@@ -1252,7 +1246,9 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
   }
   return textResult({
     cwd: newCwd,
-    exitCode: finalResult.exitCode,
+    ...(finalResult.exitCodeReliable === false
+      ? { exit_code_reliable: false, pipeline_status: finalResult.pipelineStatus ?? 'last-stage', status_note: `pipeline status unavailable — ${finalResult.shellLabel ?? 'this shell'} cannot report a pipeline's exit code` }
+      : { exitCode: finalResult.exitCode }),
     stdout: truncateExecOutput(stdoutTrimmed),
     stderr: stderrTrimmed ? truncateExecOutput(stderrTrimmed) : undefined,
     durationMs,
@@ -2267,13 +2263,21 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30_000
 const MAX_WAIT_TIMEOUT_MS = 10 * 60 * 1000
 
 function taskView(ctx: ToolContext, entry: TaskEntry) {
+  const registry = ctx.commandRegistry
+  // Never hand the agent a log path the restart already deleted (SHO-141).
+  const outputFile = registry?.displayExistingPath(entry.outputFile)
   return {
     task_id: entry.id,
     source: entry.source,
     title: entry.title,
     status: entry.status,
     elapsed_ms: (entry.finishedAt ?? Date.now()) - entry.startedAt,
-    output_file: taskOutputPath(ctx, entry),
+    ...(outputFile
+      ? { output_file: outputFile }
+      : registry?.outputMissing(entry.outputFile)
+        ? { output_missing: 'the runtime restart removed this task\'s log' }
+        : {}),
+    ...(entry.status === 'interrupted' ? { interrupted_reason: entry.result?.summary ?? 'runtime restarted' } : {}),
   }
 }
 
@@ -2284,6 +2288,14 @@ function finishedTaskResult(ctx: ToolContext, entry: TaskEntry): Record<string, 
     ...taskView(ctx, entry),
     exit_code: entry.result?.exitCode,
     ...(entry.recovered ? { recovered: true } : {}),
+  }
+  // A pipeline the shell could not verify has no exit code to report: say so
+  // instead of printing the last stage's number as the command's.
+  if (entry.result?.exitCodeReliable === false) {
+    delete base.exit_code
+    base.exit_code_reliable = false
+    base.pipeline_status = entry.result.pipelineStatus ?? 'last-stage'
+    base.status_note = entry.result.summary
   }
   if (entry.handle && entry.finalResult) {
     const meta = execRunMetadata.get(entry.handle)
@@ -2473,9 +2485,10 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
           task_id: t.id,
           source: t.source,
           title: t.title,
-          status: t.stale ? 'unknown (runtime restarted)' : t.status,
+          // A stale row is one the restart ended, not one we cannot name.
+          status: t.stale ? 'interrupted (runtime restarted)' : t.status,
           elapsed_ms: t.elapsedMs,
-          output_file: t.outputFile,
+          ...(registry.displayExistingPath(t.outputFile) ? { output_file: registry.displayExistingPath(t.outputFile) } : {}),
         })),
       })
     },
