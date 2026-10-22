@@ -1125,10 +1125,10 @@ function createCopyToProjectTool(ctx: ToolContext): AgentTool {
  */
 async function previewProjectViaApi(ctx: ToolContext, projectId: string): Promise<AgentToolResult<any>> {
   const workspaceId = resolveWorkspaceId(ctx)
-  const path =
-    `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}` +
-    `/sessions/${encodeURIComponent(ctx.sessionId || '')}` +
-    `/projects/${encodeURIComponent(projectId)}/preview`
+  // One literal, not concatenation: `local-route-parity.test.ts` scans this
+  // file for internal-API paths, and a `+` would stop it at the workspace
+  // segment — hiding the rest of the route from the desktop 404 check.
+  const path = `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/projects/${encodeURIComponent(projectId)}/preview`
   try {
     const result = await workspaceMetaFetch(
       ctx,
