@@ -19,9 +19,24 @@ import { withProjectPermissions } from '../lib/authz/project-permissions'
 import { setProjectVisibility } from '../lib/authz/project-access'
 import { hookAccess, hookAuthorize, hookPrincipal, hookRequire } from '../lib/authz/hooks'
 import { resolveTunnelWorkspaceId } from '../lib/tunnel-workspace'
+import {
+  projectTaskStateDir,
+  removeAppOwnedTree,
+  resolveWorkspacesDir,
+} from '../services/workspace-files.service'
 
-/** projectId -> workspaceId, recorded in beforeDelete for use in afterDelete. */
-const deletingProjectWorkspaces = new Map<string, string>()
+/**
+ * projectId -> what `afterDelete` needs, recorded in `beforeDelete` because the
+ * row is already gone by the time `afterDelete` runs: the workspace (so team
+ * chat can drop the agent) and the published subdomain (so a live site can be
+ * torn down instead of outliving the project).
+ */
+interface DeletedProjectContext {
+  workspaceId: string | null
+  publishedSubdomain: string | null
+}
+
+const deletingProjects = new Map<string, DeletedProjectContext>()
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -397,12 +412,24 @@ export const projectHooks: ProjectHooks = {
 
   /** Require project:delete (workspace owner/admin or project admin). */
   beforeDelete: async (id, ctx) => {
-    // Remember the workspace so afterDelete can tell team chat the agent is gone.
+    // Remember what afterDelete needs: the workspace (to tell team chat the
+    // agent is gone) and the published subdomain — `afterDelete` runs once the
+    // row is deleted, so `publishedSubdomain` can't be read there. Without this,
+    // a deleted project's live site keeps serving at its *.shogo.one subdomain.
     try {
-      const row = await ctx.prisma.project.findUnique({ where: { id }, select: { workspaceId: true } })
-      if (row?.workspaceId) deletingProjectWorkspaces.set(id, row.workspaceId)
+      const row = await ctx.prisma.project.findUnique({
+        where: { id },
+        select: { workspaceId: true, publishedSubdomain: true },
+      })
+      if (row) {
+        deletingProjects.set(id, {
+          workspaceId: row.workspaceId ?? null,
+          publishedSubdomain: row.publishedSubdomain ?? null,
+        })
+      }
     } catch {
-      // Best-effort; afterDelete falls back to the conversations the agent was in.
+      // Best-effort; afterDelete falls back to the conversations the agent was in
+      // and simply has no published site to tear down.
     }
     const userId = ctx.userId
     if (!userId) {
@@ -443,8 +470,10 @@ export const projectHooks: ProjectHooks = {
    */
   afterDelete: async (id) => {
     // Drop the project's agent from team chat (DMs archived, channel memberships removed).
-    const workspaceId = deletingProjectWorkspaces.get(id) ?? null
-    deletingProjectWorkspaces.delete(id)
+    const deleted = deletingProjects.get(id)
+    deletingProjects.delete(id)
+    const workspaceId = deleted?.workspaceId ?? null
+    const publishedSubdomain = deleted?.publishedSubdomain ?? null
     try {
       const { removeProjectAgent } = await import('../services/conversation.service')
       await removeProjectAgent(id, workspaceId)
@@ -471,12 +500,56 @@ export const projectHooks: ProjectHooks = {
     // snapshot on NVMe/S3 — until an admin/GC sweep. Destroy both substrates so
     // nothing leaks (covers the drain window where a project has both).
     if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+      // The PUBLISHED site first: `destroyProjectRuntime` only knows the PREVIEW
+      // runtime, so the published `published-{id}` ksvc/microVM, its
+      // DomainMapping, the S3 bundle, the password/server-backed KV entries and
+      // the `published/<subdomain>` pointer are all separate resources it leaves
+      // alone. A deleted project must stop serving, so tear the site down through
+      // the same function the unpublish route uses — and purge the published-data
+      // archive, since nothing can republish again.
+      if (publishedSubdomain) {
+        try {
+          const { teardownPublishedSite } = await import('../services/published-site-teardown')
+          const outcomes = await teardownPublishedSite(id, publishedSubdomain, {
+            purgePublishedData: true,
+            // The pointer tag lives in the project's own pod repo; dropping it
+            // resolves the pod URL, which would cold-start a runtime for a
+            // project whose row is already gone. The row is the only thing that
+            // resolves that pointer, so leaving the tag is harmless.
+            dropPublishPointer: false,
+          })
+          const failed = outcomes.filter((o) => !o.ok)
+          if (failed.length) {
+            console.warn(
+              `[project.afterDelete] published-site teardown for ${id} (${publishedSubdomain}) left ${failed.length} failed step(s):`,
+              failed.map((f) => `${f.step}: ${f.error}`).join('; '),
+            )
+          }
+        } catch (err: any) {
+          console.warn(
+            `[project.afterDelete] published-site teardown for ${id} failed:`,
+            err?.message ?? err,
+          )
+        }
+      }
       try {
         const { destroyProjectRuntime } = await import('../lib/substrate')
         await destroyProjectRuntime(id)
       } catch (err: any) {
         console.warn(`[project.afterDelete] substrate teardown for ${id} failed:`, err?.message ?? err)
       }
+    }
+    // Task logs live outside the project tree, on host-backed storage
+    // (`<workspacesDir>/.shogo-state/<projectId>`, written by
+    // packages/agent-runtime/src/task-log-durability.ts). Nothing can restore
+    // them for a project whose row is gone, so they go with it — unlike
+    // `workspaces/<id>`, which project delete keeps on disk by design. Runs in
+    // every mode: this is app-owned state, not runtime or cloud infra.
+    try {
+      const workspacesDir = resolveWorkspacesDir()
+      removeAppOwnedTree(projectTaskStateDir(workspacesDir, id), workspacesDir)
+    } catch (err: any) {
+      console.warn(`[project.afterDelete] task-log state cleanup for ${id} failed:`, err?.message ?? err)
     }
   },
 }
