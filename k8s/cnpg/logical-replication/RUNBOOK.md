@@ -549,10 +549,19 @@ reader happens to be in. To rejoin one:
    `subenabled` must be true in every region, and both error counters must be
    unchanged from before the deploy.
 
-The refresh must **not** copy data. Each region keeps the history it wrote;
-`COPY`-ing ~hundreds of already-existing rows back and forth is how a duplicate
-key aborts the sync. Use
-`ALTER SUBSCRIPTION sub_from_us REFRESH PUBLICATION WITH (copy_data = false)`.
+`copy_data` decides whether the peer re-`COPY`s a table's existing rows — not
+whether a region keeps its own history. `.github/workflows/deploy.yml` mostly
+issues a plain `REFRESH PUBLICATION` (default `copy_data = true`, L1768/L2248);
+only the EU→US step pins `WITH (copy_data = false)` (L2294). A plain refresh pulls
+the peer's already-replicated rows into the new table, which is how a key that two
+regions computed identically aborts the sync. Since `20261022120000` the
+device-version keys are region-scoped, so that `COPY` now **succeeds** — but each
+region also imports the peer's ~226 pre-region rows as extra `region IS NULL`
+copies (EU 226 → 454 measured on a scratch PG). Harmless only because the adoption
+reader collapses by `deviceId`, so do not read it as licence to copy freely. When
+refreshing by hand, prefer
+`ALTER SUBSCRIPTION sub_from_us REFRESH PUBLICATION WITH (copy_data = false)`
+unless the peer genuinely has no rows for that table yet.
 
 ### 4. The 2026-10-22 incident (three lines)
 

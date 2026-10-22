@@ -123,6 +123,20 @@ describe('derived ids into a published table', () => {
     expect(violations).toHaveLength(1)
     expect(violations[0].expression).toBe("md5('a')")
   })
+
+  test('a bare column copy fails, through INSERT ... SELECT and UPDATE', () => {
+    const inserted = check(`
+      INSERT INTO "device_version_events" ("id", "deviceId") SELECT "deviceId", "deviceId" FROM "api_keys";
+    `)
+    expect(inserted).toHaveLength(1)
+    expect(inserted[0].expression).toBe('"deviceId"')
+
+    const updated = check(`
+      UPDATE "device_version_events" SET "id" = "deviceId" WHERE "id" IS NULL;
+    `)
+    expect(updated).toHaveLength(1)
+    expect(updated[0].expression).toBe('"deviceId"')
+  })
 })
 
 // ===========================================================================
@@ -233,6 +247,21 @@ describe('isDerivedExpression', () => {
     expect(isDerivedExpression('gen_random_uuid()')).toBe(false)
     expect(isDerivedExpression(`'p_' || gen_random_uuid()::text`)).toBe(false)
     expect(isDerivedExpression(`'p_' || "a"`)).toBe(true)
+  })
+
+  test('a bare column copy is derived, however it is spelled', () => {
+    // The shapes the first cut missed (SHO-142 QA round 1, N3).
+    expect(isDerivedExpression('"deviceId"')).toBe(true)
+    expect(isDerivedExpression('deviceId')).toBe(true)
+    expect(isDerivedExpression(`coalesce("a", gen_random_uuid()::text)`)).toBe(true)
+    expect(isDerivedExpression(`lower("a")`)).toBe(true)
+  })
+
+  test('a literal is not, even when it contains a quoted word', () => {
+    expect(isDerivedExpression(`'say "hi"'`)).toBe(false)
+    expect(isDerivedExpression(`'it''s "quoted"'`)).toBe(false)
+    expect(isDerivedExpression('NULL')).toBe(false)
+    expect(isDerivedExpression('DEFAULT')).toBe(false)
   })
 })
 

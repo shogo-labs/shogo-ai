@@ -34,8 +34,11 @@
  *
  *   - a hash of columns: `md5(`, `sha1(`, `sha256(`, `sha512(`, `digest(`,
  *     `encode(`;
- *   - or a concatenation that references a row column (`||` next to a quoted
- *     identifier).
+ *   - or any other read of a row column — concatenated (`'p_' || "a"`), copied
+ *     bare (`SET "id" = "deviceId"`, `SELECT "id"`), or wrapped
+ *     (`coalesce("a", gen_random_uuid())`). A published id is only safe when it
+ *     is random or a literal, so there is no such thing as a harmless column
+ *     read here.
  *
  * Exempt, deliberately:
  *   - tables in `INTENTIONALLY_UNPUBLISHED` (region-local: they are never
@@ -297,10 +300,42 @@ function referencesRowColumn(expression: string): boolean {
   return /"[A-Za-z_][\w]*"/.test(expression)
 }
 
+/** Blank out `'...'` bodies so a literal that happens to contain `"x"` is not read as a column. */
+function stripStringLiterals(expression: string): string {
+  let out = ''
+  for (let i = 0; i < expression.length; i++) {
+    if (expression[i] !== "'") {
+      out += expression[i]
+      continue
+    }
+    i++
+    while (i < expression.length) {
+      if (expression[i] === "'") {
+        if (expression[i + 1] === "'") {
+          i += 2
+          continue
+        }
+        break
+      }
+      i++
+    }
+    out += "''"
+  }
+  return out
+}
+
+/** Values that are not a column read when they stand alone. */
+const BARE_LITERALS = new Set(['null', 'default', 'true', 'false'])
+
 export function isDerivedExpression(expression: string): boolean {
-  if (DERIVED_ID_FUNCS.test(expression)) return true
-  if (expression.includes('||') && referencesRowColumn(expression)) return true
-  return false
+  const code = stripStringLiterals(expression).trim()
+  if (DERIVED_ID_FUNCS.test(code)) return true
+  // A published row's id is only safe when it is random or a literal, so *any*
+  // read of a row column is derived — concatenated (`'p_' || "a"`), copied bare
+  // (`SET "id" = "deviceId"`), or wrapped (`coalesce("a", …)`). A lone unquoted
+  // word that is not a SQL literal is a column too.
+  if (referencesRowColumn(code)) return true
+  return /^[A-Za-z_]\w*$/.test(code) && !BARE_LITERALS.has(code.toLowerCase())
 }
 
 const INSERT_RE =
