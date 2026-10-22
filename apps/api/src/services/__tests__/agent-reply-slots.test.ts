@@ -135,4 +135,13 @@ describe('agent reply slots', () => {
     expect(await agentReplySlotState(WORKSPACE, 'run-a')).toEqual({ state: 'waiting', position: null })
     second.release()
   })
+
+  test('a run the queue has no record of is not reported as queued', async () => {
+    // An orphaned running row (a restart, a lost book) must not read
+    // "Queued · —" for the rest of its life.
+    expect(await agentReplySlotState(WORKSPACE, 'run-unknown')).toEqual({
+      state: 'running',
+      position: null,
+    })
+  })
 })

@@ -1436,8 +1436,13 @@ export async function readAgentStream(
     try { chunk = JSON.parse(raw) } catch { return }
     // `tool` is the tool still open (null between calls): a frame that arrives
     // with one open is progress, but the run is waiting on it, not working.
-    onActivity?.({ kind: TRANSIENT_FRAMES.has(String(chunk?.type)) ? 'heartbeat' : 'content', tool })
+    // A frame that *opens* a tool already carries the wait, so report the tool
+    // it opens — otherwise a stream that goes straight to a 60 s `wait` after
+    // `tool-input-start` reports "no tool open" for that frame.
     const type = chunk?.type
+    const opens = type === 'tool-input-start' || type === 'tool-call-start'
+    const frameTool = opens ? String(chunk.toolName || chunk.name || 'a tool') : tool
+    onActivity?.({ kind: TRANSIENT_FRAMES.has(String(type)) ? 'heartbeat' : 'content', tool: frameTool })
     if (type === 'text-start') {
       segments++
       if (segments > 1 && text) text += '\n\n'

@@ -217,12 +217,16 @@ export async function agentReplySlotState(
   const client = redis()
   if (!client) {
     const i = b?.waiters.findIndex((w) => w.runId === runId) ?? -1
-    return { state: 'queued', position: i >= 0 ? i + 1 : null }
+    return i >= 0 ? { state: 'queued', position: i + 1 } : { state: 'running', position: null }
   }
   const known = redisRunStates.get(runId)
   if (known && known !== 'queued') return { state: known, position: null }
   const positions = await ranksOf(client, workspaceId, [runId])
-  return { state: 'queued', position: positions.get(runId) ?? null }
+  const rank = positions.get(runId) ?? null
+  // A run the queue has no record of is not waiting in it. Saying 'queued'
+  // would leave an orphaned running row (a restart, a lost book) reading
+  // "Queued · —" for as long as the row lives.
+  return rank ? { state: 'queued', position: rank } : { state: 'running', position: null }
 }
 
 // ─── Redis keys and scripts ──────────────────────────────────────────────────
