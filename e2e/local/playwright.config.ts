@@ -116,7 +116,12 @@ export default defineConfig({
     screenshot: "on",
     video: "retain-on-failure",
     actionTimeout: 15_000,
-    navigationTimeout: 30_000,
+    // A cold `/projects/:id` is a Metro on-demand compile plus a project
+    // runtime spawn, which on a loaded runner outruns the 30s default and reds
+    // a spec at `page.goto` before it asserts anything (SHO-134). Behaviour is
+    // still asserted on its own budgets; this only stops the harness failing
+    // on cold-start latency.
+    navigationTimeout: 120_000,
   },
 
   projects: [
