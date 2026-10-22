@@ -2390,19 +2390,20 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         { method: "POST", body: "{}", signal: c.req.raw.signal },
       )
       const result: any = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        return c.json(
-          { compacted: false, queued: false, reason: result?.error ?? result?.reason ?? `runtime ${response.status}` },
-          response.status as any,
-        )
-      }
-
       // An idle or evicted session is the normal case here, not an error: the
-      // runtime has nothing in memory and used to answer `unknown-session`,
-      // leaving the button dead on exactly the chats that need it most. The
-      // rows are all in ChatMessage, so summarize them API-side and store the
-      // block on the ChatSession (SHO-137 round 3, R5).
-      if (result?.status === "unknown-session" || result?.error === "unknown-session") {
+      // runtime holds nothing in memory, so `compactSession()` answers
+      // `unknown-session`, which `server.ts` turns into HTTP 404 with
+      // `{reason: "session not found"}`. The rows are all in ChatMessage, so
+      // summarize them API-side and store the block on the ChatSession
+      // (SHO-137 round 3, R5). This branch has to come BEFORE `!response.ok`,
+      // or the 404 returns first and the button is dead on exactly the chats
+      // that need it most (round 4, B1).
+      const evicted =
+        response.status === 404 ||
+        result?.status === "unknown-session" ||
+        result?.error === "unknown-session" ||
+        result?.reason === "session not found"
+      if (evicted) {
         const fromDb = await summarizeSessionFromDb(chatSessionId)
         if (!fromDb) {
           return c.json(
@@ -2427,6 +2428,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           messagesAfter: fromDb.messagesAfter,
           summaryChars: fromDb.summary.length,
         })
+      }
+
+      if (!response.ok) {
+        return c.json(
+          { compacted: false, queued: false, reason: result?.error ?? result?.reason ?? `runtime ${response.status}` },
+          response.status as any,
+        )
       }
 
       if (result?.compacted) {

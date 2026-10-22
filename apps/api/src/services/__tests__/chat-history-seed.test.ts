@@ -238,6 +238,67 @@ describe('history seed', () => {
     expect(session.contextSummaryThroughCount).toBe(4)
   })
 
+  test('R1 — a fold bigger than one summarizer call still covers every message', async () => {
+    const { ensureDurableSummary } = await import('../chat-history-seed.service')
+    addSession('chat-1')
+    // More than the summarizer takes in one call: the old code folded only the
+    // newest 150 and moved the watermark over all of them (round 4, B2).
+    const covered = Array.from({ length: 400 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      text: `m${i + 1}`,
+    }))
+    const batches: Array<{ texts: string[]; previous: string | null }> = []
+    setChatContextSummarizer(async ({ messages, previous }) => {
+      batches.push({ texts: messages.map((m) => m.text), previous: previous ?? null })
+      return `S(${batches.length})`
+    })
+
+    const result = await ensureDurableSummary({
+      sessionId: 'chat-1',
+      label: 'deploy chat',
+      existing: null,
+      existingThrough: 0,
+      through: 400,
+      covered,
+    })
+
+    // Three calls of at most 150, oldest first, each condensing the last.
+    expect(batches.map((b) => b.texts.length)).toEqual([150, 150, 100])
+    expect(batches.map((b) => b.previous)).toEqual([null, 'S(1)', 'S(2)'])
+    expect(batches.flatMap((b) => b.texts)).toEqual(covered.map((m) => m.text))
+    expect(result.through).toBe(400)
+    expect(store.sessions.get('chat-1').contextSummaryThroughCount).toBe(400)
+  })
+
+  test('R1 — a summarizer outage across several batches still covers every one', async () => {
+    const { ensureDurableSummary } = await import('../chat-history-seed.service')
+    addSession('chat-1', { contextSummary: 'Earlier briefing.', contextSummaryThroughCount: 5 })
+    setChatContextSummarizer(async () => {
+      throw new Error('model down')
+    })
+    const covered = Array.from({ length: 165 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      text: `note ${i + 1}`,
+    }))
+
+    await ensureDurableSummary({
+      sessionId: 'chat-1',
+      label: 'deploy chat',
+      existing: 'Earlier briefing.',
+      existingThrough: 5,
+      through: 165,
+      covered,
+    })
+
+    const summary = store.sessions.get('chat-1').contextSummary
+    expect(summary).toContain('Earlier briefing.')
+    // The first message of the first batch and the last of the second — the
+    // batch after the one the old code would have stopped at.
+    expect(summary).toContain('note 6')
+    expect(summary).toContain('note 165')
+    expect(store.sessions.get('chat-1').contextSummaryThroughCount).toBe(165)
+  })
+
   test('R4 — a typed turn drops a trailing row that duplicates the prompt it is sending', async () => {
     addSession('chat-1')
     addMessage('chat-1', 'user', 'first question')
@@ -265,6 +326,23 @@ describe('history seed', () => {
     const session = store.sessions.get('chat-1')
     expect(session.contextSummary).toContain('briefing of')
     expect(session.contextSummaryThroughCount).toBe(result!.through)
+  })
+
+  test('R5 — summarize-now folds a chat that fits in the tail instead of doing nothing', async () => {
+    addSession('chat-1')
+    for (let i = 0; i < 5; i++) addMessage('chat-1', i % 2 === 0 ? 'user' : 'assistant', `turn ${i}`)
+    setChatContextSummarizer(async ({ messages }) => `briefing of ${messages.length} messages`)
+
+    const { summarizeSessionFromDb } = await import('../chat-history-seed.service')
+    const result = await summarizeSessionFromDb('chat-1')
+
+    // Everything but the newest turn is folded: a short chat under the tail
+    // budget used to fold nothing, so the button's DB path answered
+    // "nothing-to-compact" on every chat small enough to fit (round 4).
+    expect(result).not.toBeNull()
+    expect(result!.through).toBe(4)
+    expect(result!.messagesAfter).toBe(1)
+    expect(store.sessions.get('chat-1').contextSummary).toContain('briefing of 4 messages')
   })
 
   test('R3 — a warm turn carries only what is new since the last agent reply', async () => {

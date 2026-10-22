@@ -215,6 +215,50 @@ function persistSummary(sessionId: string, summary: string, through: number): Pr
 }
 
 /**
+ * Fold `messages` (oldest first) into `previous`, in summarizer-sized batches.
+ *
+ * The summarizer takes at most `SUMMARY_INPUT_LIMIT` messages per call, so a
+ * turn that elides more than that used to be folded from its *newest* 150 while
+ * the watermark advanced over all of them — everything older sat in neither the
+ * summary nor the tail (SHO-137 round 4, B2). Walking oldest-first in batches,
+ * passing the running block as `previous` each time, covers every message and
+ * keeps the result a briefing rather than a transcript.
+ *
+ * With no model, the batch still gets covered: appended one-line digests
+ * (`extractiveDigest`) are the fallback, so a summarizer outage costs detail,
+ * never coverage.
+ */
+async function foldInBatches(args: {
+  sessionId: string
+  label: string
+  previous: string | null
+  messages: SeedMessage[]
+}): Promise<string> {
+  let summary = args.previous
+  for (let i = 0; i < args.messages.length; i += SUMMARY_INPUT_LIMIT) {
+    const batch = args.messages.slice(i, i + SUMMARY_INPUT_LIMIT)
+    let folded: string | null = null
+    try {
+      folded = await summarizer({
+        sessionId: args.sessionId,
+        label: args.label,
+        messages: batch,
+        previous: summary,
+      })
+    } catch (err: any) {
+      console.warn(`[ChatContext] summarizer failed for ${args.sessionId}:`, err?.message ?? err)
+    }
+    if (!folded) {
+      folded = summary
+        ? `${summary}\n${extractiveDigest(batch)}`
+        : `${summaryHeading(args.label)}\n${extractiveDigest(batch)}`
+    }
+    summary = folded.slice(0, CONTEXT_SUMMARY_MAX_CHARS)
+  }
+  return summary ?? ''
+}
+
+/**
  * The stored summary, advanced so it covers exactly `through` messages.
  *
  * Round 1 of SHO-137 regenerated the summary only every 20 messages, which left
@@ -223,12 +267,10 @@ function persistSummary(sessionId: string, summary: string, through: number): Pr
  * `through`, and every message up to `through` is folded into the summary on
  * the turn that elides it.
  *
- * Cheap by default — the newly elided messages are appended as one-line
- * digests (`extractiveDigest`), no model call — and the model only runs when
- * the block would exceed `CONTEXT_SUMMARY_MAX_CHARS`, where it rewrites the
- * whole thing (previous summary included) back down to a briefing. That keeps
- * the common turn free, keeps the block stable while it fits, and makes the
- * expensive path the rare one.
+ * The fold runs with the model, `previous` included, in batched calls (see
+ * `foldInBatches`) — so no elided message is skipped and the block condenses
+ * instead of restarting. A summarizer outage appends digests for the same
+ * messages rather than dropping them.
  *
  * Last resort: if the model fails *and* the digests do not fit, the block is
  * truncated. The messages themselves stay in `ChatMessage` for good; only the
@@ -256,26 +298,15 @@ export async function ensureDurableSummary(
   }
 
   // Fold with the model — `previous` included, so a fold condenses instead of
-  // restarting — exactly once per turn that newly elides something. Anything
+  // restarting — in batches that cover every newly elided message. Anything
   // cheaper (appending digests without the model) is the *fallback*, used when
   // the summarizer is unavailable, so the block always covers these messages.
-  let summary: string | null = null
-  try {
-    summary = await summarizer({
-      sessionId: args.sessionId,
-      label: args.label,
-      messages: newlyElided.slice(-SUMMARY_INPUT_LIMIT),
-      previous: existing,
-    })
-  } catch (err: any) {
-    console.warn(`[ChatContext] summarizer failed for ${args.sessionId}:`, err?.message ?? err)
-  }
-  if (!summary) {
-    summary = existing
-      ? `${existing}\n${extractiveDigest(newlyElided)}`
-      : `${summaryHeading(args.label)}\n${extractiveDigest(newlyElided)}`
-  }
-  summary = summary.slice(0, CONTEXT_SUMMARY_MAX_CHARS)
+  const summary = await foldInBatches({
+    sessionId: args.sessionId,
+    label: args.label,
+    previous: existing,
+    messages: newlyElided,
+  })
 
   await persistSummary(args.sessionId, summary, through)
   return { summary, through }
@@ -602,7 +633,11 @@ export async function summarizeSessionFromDb(
   if (messages.length === 0) return null
 
   // Everything except the newest block is folded; the newest block stays
-  // verbatim in the transcript the next turn sends.
+  // verbatim in the transcript the next turn sends. The fold always takes at
+  // least one message and leaves at least the newest one out: a short chat fits
+  // under `keepTailChars` entirely, and folding nothing made the button's DB
+  // path a silent no-op — the one thing a user pressing "Summarize now" cannot
+  // be told (round 4).
   const keepTailChars = options.keepTailChars ?? 12_000
   let carried = 0
   let split = messages.length
@@ -614,22 +649,21 @@ export async function summarizeSessionFromDb(
     }
     split = i
   }
+  // The whole chat fits the tail, so the loop never broke: fold everything
+  // except the newest turn rather than nothing at all.
+  if (split === 0 && messages.length > 1) split = messages.length - 1
   const fold = messages.slice(0, split)
   if (fold.length === 0) return null
 
-  let summary: string | null = null
-  try {
-    summary = await summarizer({
-      sessionId: chatSessionId,
-      label: session.inferredName || 'chat',
-      messages: fold.slice(-SUMMARY_INPUT_LIMIT),
-      previous: session.contextSummary,
-    })
-  } catch (err: any) {
-    console.warn(`[ChatContext] summarize-now failed for ${chatSessionId}:`, err?.message ?? err)
-  }
-  if (!summary) summary = extractiveSummary(session.inferredName || 'chat', fold.slice(-SUMMARY_INPUT_LIMIT))
-  summary = summary.slice(0, CONTEXT_SUMMARY_MAX_CHARS)
+  // Every folded message is covered, in batches: this path can elide a whole
+  // long chat in one press, and slicing to the newest 150 while the watermark
+  // claimed all of them lost the rest (SHO-137 round 4, B2).
+  const summary = await foldInBatches({
+    sessionId: chatSessionId,
+    label: session.inferredName || 'chat',
+    previous: session.contextSummary,
+    messages: fold,
+  })
 
   await persistSummary(chatSessionId, summary, fold.length)
 
