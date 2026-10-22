@@ -596,6 +596,12 @@ jobs:
           # than joining the job above: that one runs 1 worker at a time and
           # already finishes at 34m37s of a 35m cap.
           - { name: 'E2E (chat context)', spec: 'chat-context-survives-idle' }
+          # agent-model-truth (SHO-145) needs the fake model (it reads the model
+          # and prompt off each captured request) and the stack's SQLite file
+          # (it changes a project's model the way the API does, then forces a
+          # heartbeat tick). Neither is available in a shard, and it must not
+          # ride the chat-resume job: that job runs to its cap already.
+          - { name: 'E2E (agent model truth)', spec: 'agent-model-truth' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length

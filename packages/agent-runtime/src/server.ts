@@ -2023,6 +2023,11 @@ app.post('/agent/chat', async (c) => {
   // provider's native endpoint instead of inferring `custom` from the id.
   // Optional — absent requests fall back to id-based inference.
   const modelProvider = (body.modelProvider as string | undefined) || undefined
+  // Product name of the model `agentMode` resolves to (e.g. "Hoshi 2.0"),
+  // stamped by the API alongside `modelProvider`. The gateway pairs it with the
+  // session override so the Account prompt line names the model this turn
+  // actually sends (SHO-145).
+  const modelDisplayName = (body.modelDisplayName as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
@@ -2062,6 +2067,7 @@ app.post('/agent/chat', async (c) => {
     await agentGateway!.processChatMessageStream(userText || '', writer, {
       modelOverride,
       modelProvider,
+      modelDisplayName,
       fileParts: userFileParts.length > 0 ? userFileParts : undefined,
       userId: chatUserId,
       requesterTicket,
