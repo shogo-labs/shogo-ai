@@ -1,0 +1,49 @@
+# TEMPORARY — SHO-154 probe. Deleted before the PR opens.
+#
+# Runs the exec-memory-guard probe on ubuntu-latest to answer why
+# `sampleTreeRssKb([handle.pid])` reads ~52 MB for a child holding a 192 MB
+# Buffer, and (second job) how often the over-budget test passes there.
+name: tmp-sho154-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [sho-154-exec-memory-guard-flake]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.3'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Probe how the sampler sees a 192 MB child
+        run: bun --no-env-file --conditions=development packages/agent-runtime/scripts/tmp-sho154-probe.ts
+
+      - name: Repeat the over-budget test
+        run: |
+          cd packages/agent-runtime
+          fail=0
+          for i in $(seq 1 10); do
+            if bun --no-env-file --conditions=development test src/__tests__/exec-memory-guard.test.ts >/tmp/run-$i.log 2>&1; then
+              echo "run $i: PASS"
+            else
+              echo "run $i: FAIL"
+              fail=$((fail+1))
+              grep -E "expected|Received|exec-memory-guard" /tmp/run-$i.log | head -20
+            fi
+          done
+          echo "failed $fail of 10"
