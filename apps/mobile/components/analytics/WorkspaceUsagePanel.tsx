@@ -75,12 +75,12 @@ interface SpendTimeseriesPayload {
   metric: "spend" | "tokens" | "requests";
 }
 
-/** One request now carries the whole tab; `chat` is null below Business. */
+/** One request now carries the whole tab; `chat` and `usage` are null below Business. */
 interface UsageDashboardPayload {
   window: { from: string; to: string; period: string };
   summary: UsageSummaryData;
   timeseries: SpendTimeseriesPayload;
-  usage: UsageBreakdownData;
+  usage: UsageBreakdownData | null;
   logCount: number;
   chat: ChatAnalyticsData | null;
 }

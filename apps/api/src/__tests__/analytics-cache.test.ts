@@ -12,6 +12,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   ANALYTICS_CACHE_BUCKET_MS,
+  ANALYTICS_CACHE_DEFAULT_TTL_MS,
   analyticsCacheKey,
   clearAnalyticsCache,
   invalidateAnalyticsCache,
@@ -114,5 +115,12 @@ describe('analyticsCacheKey', () => {
       shape: 'usage-groups',
     })
     expect(later).not.toBe(a)
+  })
+
+  test('a key cannot change while an entry is still being served', () => {
+    // QA round 1 (SHO-140): with a 30 s bucket under a 60 s TTL, an open 31 s
+    // after the first computed a different key and scanned again, so half the
+    // TTL was unreachable. The bucket has to cover the whole TTL.
+    expect(ANALYTICS_CACHE_BUCKET_MS).toBeGreaterThanOrEqual(ANALYTICS_CACHE_DEFAULT_TTL_MS)
   })
 })

@@ -2696,19 +2696,143 @@ async function scanUsageGroups(
   from: Date,
   to: Date,
 ): Promise<UsageGroupRow[]> {
-  // The JSON keys live in `actionMetadata`, which is `jsonb` on Postgres and
-  // TEXT on SQLite. Reading them in the aggregation keeps ~42 MB of JSON per
-  // scan in the database instead of shipping it to Node to be summed.
+  // Which engine decides how the JSON is read, because the two disagree about
+  // the cost (measured, SHO-140):
+  //  - Postgres: `jsonb` operators roll the whole window up in the database, so
+  //    ~42 MB of `actionMetadata` per scan never crosses the wire. That is the
+  //    cloud fix.
+  //  - SQLite (desktop): `json_extract` cannot use an index, so reading ten
+  //    keys per row costs more than shipping the row to Node — the plan's own
+  //    measurement was 93 ms in SQL against 33 ms for the scan underneath. Here
+  //    the JSON is parsed in Node instead, but from **one** scan: the old code
+  //    scanned the same window three times for the three shapes.
+  // Either way this is one statement/one pass over `usage_events`, and it is the
+  // same function for both tracks — no desktop-only vs cloud-only behaviour, the
+  // numbers are identical (golden fixture test).
+  if (process.env.SHOGO_LOCAL_MODE === 'true') return scanUsageGroupsInNode(scope, from, to)
+  return scanUsageGroupsInSql(scope, from, to)
+}
+
+/**
+ * The desktop path: one row scan, rolled up in Node. `actionMetadata` is read
+ * here on purpose — on a local SQLite file there is no wire to protect, and
+ * `json_extract` per key over every row is measurably slower than `JSON.parse`.
+ */
+async function scanUsageGroupsInNode(
+  scope: AnalyticsScope,
+  from: Date,
+  to: Date,
+): Promise<UsageGroupRow[]> {
+  const where: Prisma.UsageEventWhereInput = { createdAt: { gte: from, lt: to } }
+  if (scope.workspaceId) where.workspaceId = scope.workspaceId
+  if (scope.projectId) where.projectId = scope.projectId
+  if (scope.userId) where.memberId = scope.userId
+
+  const events = await prisma.usageEvent.findMany({
+    where,
+    select: {
+      memberId: true,
+      actionType: true,
+      source: true,
+      billedUsd: true,
+      rawUsd: true,
+      createdAt: true,
+      actionMetadata: true,
+    },
+  })
+
+  const groups = new Map<string, UsageGroupRow>()
+  for (const event of events) {
+    const meta = parseMeta(event.actionMetadata)
+    // A JSON number only, so a legacy string value counts as 0 — the same rule
+    // as the `jsonb_typeof(...) = 'number'` / `typeof(json_extract(...))` guard
+    // on the SQL paths.
+    const numOrNull = (key: string): number | null => {
+      const value = meta[key]
+      return typeof value === 'number' && Number.isFinite(value) ? value : null
+    }
+    const num = (key: string) => numOrNull(key) ?? 0
+
+    const billedUsd = Number(event.billedUsd ?? 0)
+    const rawUsd = Number(event.rawUsd ?? 0)
+    const metaRaw = numOrNull('rawUsd') ?? numOrNull('dollarCost') ?? 0
+    const costUsd = billedUsd > 0 ? billedUsd : rawUsd > 0 ? rawUsd : metaRaw
+    const inputTokens = num('inputTokens')
+    const outputTokens = num('outputTokens')
+    const cachedInputTokens = num('cachedInputTokens')
+    const cacheWriteTokens = num('cacheWriteTokens')
+    const totalTokensField = num('totalTokens')
+
+    const day = isoDay(event.createdAt)
+    const memberId = String(event.memberId)
+    const actionType = String(event.actionType)
+    const source = String(event.source)
+    const model = String(meta.model ?? meta.modelUsed ?? 'unknown')
+    const provider = String(meta.provider ?? 'anthropic')
+    const key = `${day}::${memberId}::${actionType}::${source}::${model}::${provider}`
+
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        day,
+        memberId,
+        actionType,
+        source,
+        model,
+        provider,
+        requests: 0,
+        billedUsd: 0,
+        rawUsd: 0,
+        metaRawUsd: 0,
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+        durationMs: 0,
+        unpricedRequests: 0,
+      }
+      groups.set(key, group)
+    }
+
+    group.requests += 1
+    group.billedUsd += billedUsd
+    group.rawUsd += rawUsd
+    group.metaRawUsd += metaRaw
+    group.costUsd += costUsd
+    group.inputTokens += inputTokens
+    group.outputTokens += outputTokens
+    group.totalTokens += totalTokensField !== 0
+      ? totalTokensField
+      : inputTokens + outputTokens + cachedInputTokens + cacheWriteTokens
+    group.cachedInputTokens += cachedInputTokens
+    group.cacheWriteTokens += cacheWriteTokens
+    group.durationMs += num('durationMs')
+    if (meta.pricingUnknown === true) group.unpricedRequests += 1
+  }
+
+  return [...groups.values()]
+}
+
+async function scanUsageGroupsInSql(
+  scope: AnalyticsScope,
+  from: Date,
+  to: Date,
+): Promise<UsageGroupRow[]> {
+  // The JSON keys live in `actionMetadata`. Reading them in the aggregation
+  // keeps ~42 MB of JSON per scan in the database instead of shipping it to Node
+  // to be summed — the whole reason the cloud page is slow.
   //
-  // Written as one parameterised statement per engine rather than through the
-  // `Prisma.sql` tag so this module keeps importing only `prisma` (tests in
-  // this package replace `lib/prisma` wholesale, and the tag would need the
-  // `Prisma` namespace from it). Values are always bound, never interpolated.
-  const isSqlite = process.env.SHOGO_LOCAL_MODE === 'true'
+  // Postgres only: `scanUsageGroups` sends SQLite down the Node path above.
+  // Written as one parameterised statement rather than through the `Prisma.sql`
+  // tag so this module keeps importing only `prisma` (tests in this package
+  // replace `lib/prisma` wholesale, and the tag would need the `Prisma`
+  // namespace from it). Values are always bound, never interpolated.
   const params: unknown[] = []
   const bind = (value: unknown) => {
     params.push(value)
-    return isSqlite ? '?' : `$${params.length}`
+    return `$${params.length}`
   }
 
   const where: string[] = []
@@ -2717,29 +2841,18 @@ async function scanUsageGroups(
   if (scope.userId) where.push(`"memberId" = ${bind(scope.userId)}`)
   where.push(`"createdAt" >= ${bind(from)}`, `"createdAt" < ${bind(to)}`)
 
-  const day = isSqlite
-    ? `strftime('%Y-%m-%d', "createdAt")`
-    : `DATE_TRUNC('day', "createdAt")`
+  const day = `DATE_TRUNC('day', "createdAt")`
 
   // A JSON number only, so a legacy string value counts as 0 like the old
   // `Number(meta.x || 0)` path did. `numOrNull` keeps the difference between
   // "absent" and "zero" for the cost fallback below.
-  const numOrNull = (key: string) => (isSqlite
-    ? `(CASE WHEN typeof(json_extract("actionMetadata", '$.${key}')) IN ('integer', 'real')`
-      + ` THEN json_extract("actionMetadata", '$.${key}') ELSE NULL END)`
-    : `(CASE WHEN jsonb_typeof("actionMetadata"->'${key}') = 'number'`
-      + ` THEN ("actionMetadata"->>'${key}')::numeric ELSE NULL END)`)
+  const numOrNull = (key: string) => `(CASE WHEN jsonb_typeof("actionMetadata"->'${key}') = 'number'`
+    + ` THEN ("actionMetadata"->>'${key}')::numeric ELSE NULL END)`
   const num = (key: string) => `COALESCE(${numOrNull(key)}, 0)`
 
-  const rawModel = isSqlite
-    ? `COALESCE(json_extract("actionMetadata", '$.model'), json_extract("actionMetadata", '$.modelUsed'), 'unknown')`
-    : `COALESCE("actionMetadata"->>'model', "actionMetadata"->>'modelUsed', 'unknown')`
-  const rawProvider = isSqlite
-    ? `COALESCE(json_extract("actionMetadata", '$.provider'), 'anthropic')`
-    : `COALESCE("actionMetadata"->>'provider', 'anthropic')`
-  const rawUnpriced = isSqlite
-    ? `CASE WHEN json_type("actionMetadata", '$.pricingUnknown') = 'true' THEN 1 ELSE 0 END`
-    : `CASE WHEN jsonb_typeof("actionMetadata"->'pricingUnknown') = 'boolean' AND ("actionMetadata"->>'pricingUnknown')::boolean THEN 1 ELSE 0 END`
+  const rawModel = `COALESCE("actionMetadata"->>'model', "actionMetadata"->>'modelUsed', 'unknown')`
+  const rawProvider = `COALESCE("actionMetadata"->>'provider', 'anthropic')`
+  const rawUnpriced = `CASE WHEN jsonb_typeof("actionMetadata"->'pricingUnknown') = 'boolean' AND ("actionMetadata"->>'pricingUnknown')::boolean THEN 1 ELSE 0 END`
 
   const input = num('inputTokens')
   const output = num('outputTokens')
@@ -2785,7 +2898,10 @@ async function scanUsageGroups(
   const rows = await prisma.$queryRawUnsafe<any[]>(sql, ...params)
 
   return rows.map((r) => ({
-    day: r.day instanceof Date ? isoDay(r.day) : String(r.day),
+    // `DATE_TRUNC` comes back as a Date through the pg driver; a driver (or a
+    // test double) handing back the raw timestamp string must not lose the
+    // bucket, or the day would never merge with the zero-filled series.
+    day: r.day instanceof Date ? isoDay(r.day) : isoDay(new Date(String(r.day))),
     memberId: String(r.memberId),
     actionType: String(r.actionType),
     source: String(r.source),

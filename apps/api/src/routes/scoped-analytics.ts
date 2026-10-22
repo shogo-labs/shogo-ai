@@ -359,7 +359,10 @@ export function scopedAnalyticsRoutes(): Hono {
       const userId = access.isAdmin ? requestedUserId : auth.userId
 
       // The whole Usage tab from one grouped scan; `chat` rides along so the
-      // screen needs two requests, not five (SHO-140).
+      // screen needs two requests, not five (SHO-140). Both the chat stats and
+      // the usage breakdown are Business-only elsewhere (`/analytics/chat`,
+      // `/analytics/usage`), so they stay Business-only here — otherwise this
+      // endpoint is a way around the plan gate.
       const business = isLocalMode || await isBusinessOrHigherPlan(workspaceId)
       const [dashboard, chat] = await Promise.all([
         analytics.getUsageDashboard(
@@ -370,7 +373,10 @@ export function scopedAnalyticsRoutes(): Hono {
           ? analytics.getChatAnalytics({ workspaceId }, period)
           : Promise.resolve(null),
       ])
-      return c.json({ ok: true, data: { ...dashboard, chat } })
+      return c.json({
+        ok: true,
+        data: { ...dashboard, usage: business ? dashboard.usage : null, chat },
+      })
     } catch (error: any) {
       return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
     }

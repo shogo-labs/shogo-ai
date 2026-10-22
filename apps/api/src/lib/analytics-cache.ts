@@ -17,8 +17,18 @@
 
 const DEFAULT_TTL_MS = 60_000
 
-/** Rolling windows are bucketed to this before they become a cache key. */
-export const ANALYTICS_CACHE_BUCKET_MS = 30_000
+/**
+ * Rolling windows are bucketed to this before they become a cache key.
+ *
+ * It must never be shorter than the TTL. The key is what a request looks up, so
+ * an entry only ever helps requests that land in the same bucket: with a 30 s
+ * bucket and a 60 s TTL a second open 31 s later computed a different key and
+ * scanned again, i.e. half the TTL was unreachable. At 60 s == TTL the key is
+ * stable for exactly as long as an entry can be served, and because a caller
+ * always buckets with *its own* clock an entry can never be served outside the
+ * bucket it was written in (so a window is never read from the wrong bucket).
+ */
+export const ANALYTICS_CACHE_BUCKET_MS = 60_000
 
 interface CacheEntry {
   expiresAt: number
@@ -36,7 +46,7 @@ const entries = new Map<string, CacheEntry>()
  * `from`/`to` are the *bucketed* window ends: a rolling "last 30 days" window
  * moves with every request, so the raw timestamps would miss on every call. The
  * query still runs with the exact window; a hit means the caller gets rows read
- * up to one bucket (30 s) ago, which the insert-time invalidation clears.
+ * up to one bucket ago, which the insert-time invalidation clears.
  */
 export function analyticsCacheKey(parts: {
   workspaceId?: string
