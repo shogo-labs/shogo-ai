@@ -16,7 +16,7 @@ import { mentionNames, newestReadableSeq } from '../../lib/team-chat-state'
 import { runningAgentTypists, typingLabel } from '../../lib/team-chat-typing'
 import { useComposerColumnStyle } from '../chat/composer/useComposerColumnStyle'
 import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive, matchesActivityFilters, type ActivityFilterState } from '../../lib/activity-channel-filters'
-import { TIMELINE_SOFT_LIMIT, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
+import { TIMELINE_SOFT_LIMIT, useChannelDirectory, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
 import { threadCrumbs } from '../../lib/team-chat-nav'
 import { nonMemberMentionIds } from '../../lib/team-chat-mention-nudge'
@@ -130,15 +130,23 @@ export function TimelinePane(props: TimelinePaneProps) {
   const chrome = usePhoneChromeOverlay()
   const insets = useSafeAreaInsets()
   /**
-   * What tapping an @-mention does. A person opens their profile through the
-   * host (`onOpenProfile`), an agent opens its own profile page, and the
-   * broadcast/channel/group targets stay plain highlights — so a host that
-   * offers no profile gets exactly today's behaviour.
+   * What tapping a mention does. A person opens their profile through the
+   * host (`onOpenProfile`), an agent opens its own profile page, a `#channel`
+   * opens that channel in place, and the broadcast/group targets stay plain
+   * highlights — so a host that offers no profile gets exactly today's
+   * behaviour, except a channel reference still navigates.
    */
   const mentionPress = useMemo(() => {
-    if (!props.onOpenProfile) return undefined
     const openProfile = props.onOpenProfile
     return (target: MentionTarget) => {
+      if (target.kind === 'c') {
+        router.push({
+          pathname: '/(app)/c/[conversationId]',
+          params: { conversationId: target.id },
+        } as any)
+        return
+      }
+      if (!openProfile) return
       if (target.kind === 'u') return openProfile(target.id)
       if (target.kind === 'a') {
         router.push({ pathname: '/(app)/agents/[key]', params: { key: target.id } } as any)
@@ -157,19 +165,24 @@ export function TimelinePane(props: TimelinePaneProps) {
   const canMakeCards = !!props.onOpenCard && (conversation.kind === 'public' || conversation.kind === 'private') && conversation.canReply
   const showActivityFilters = conversation.kind === 'activity' && !threadRootId
   const channelList = useConversationList(showActivityFilters ? workspaceId : null)
+  const channelDirectory = useChannelDirectory(workspaceId)
   const [activityFilter, setActivityFilter] = useState<ActivityFilterState>(EMPTY_ACTIVITY_FILTER)
   const timeline = useConversationTimeline(workspaceId, conversation.id, threadRootId)
   const typing = useTypingUsers(workspaceId, conversation.id, threadRootId)
   // The typing row shares the composer's edges, so it lines up with the input box.
   const typingColumnStyle = useComposerColumnStyle({ presentation: 'agent' })
-  const names = useMemo(() => {
-    const base = mentionNames(mentionables)
-    if (!showActivityFilters) return base
-    return {
-      ...base,
-      conversations: new Map(channelList.list.map((c) => [c.id, c.slug ?? c.name ?? 'channel'])),
-    }
-  }, [mentionables, showActivityFilters, channelList.list])
+  // `#channel` references resolve against the channels this reader can see, so a
+  // private channel they are not in renders as `#privatechannel`, not a name.
+  const channelNames = useMemo(
+    () =>
+      new Map(
+        channelDirectory
+          .filter((c) => c.kind === 'public' || c.kind === 'private')
+          .map((c) => [c.id, c.slug ?? c.name ?? 'channel']),
+      ),
+    [channelDirectory],
+  )
+  const names = useMemo(() => mentionNames(mentionables, channelNames), [mentionables, channelNames])
   const newestSeq = useMemo(() => newestReadableSeq(timeline.state.messages), [timeline.state.messages])
   // What was unread when the reader opened this conversation; messages arriving later aren't "new".
   const [unread, setUnread] = useState<{ afterSeq: number; upToSeq: number } | null>(() =>
@@ -479,6 +492,7 @@ export function TimelinePane(props: TimelinePaneProps) {
         onSend={handleSend}
         onEditLast={onEditLast}
         channelMemberIds={channelMemberIds}
+        channels={channelDirectory}
       />
     </>
   )
