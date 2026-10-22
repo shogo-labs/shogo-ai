@@ -17,19 +17,36 @@
  *   3. A model change written to the database never reached a running runtime
  *      for turns that read `config.json` (pipeline, heartbeat, schedule).
  *
+ * Only fault 1 is driven from here. Faults 2 and 3 have to observe a turn
+ * running on a *different* model per project, and this stack cannot produce
+ * that: `LOCAL_LLM_BASIC_MODEL`/`LOCAL_LLM_ADVANCED_MODEL` are what point the
+ * `local` provider at the fake server, and the same two variables build the
+ * economy/standard/premium Auto-tier map every turn on the runtime resolves
+ * through ("Auto tier override active: …" at boot). A per-project model written
+ * either to `agent_configs` or through `PATCH /api/internal/projects/:id/config`
+ * is therefore never the model the turn sends — every request arrives as
+ * `fake-stream`, so a two-model assertion would compare one model to itself and
+ * pass no matter what the runtime printed. Those two faults are covered where
+ * the resolution is deterministic instead:
+ *   - `packages/agent-runtime/src/__tests__/account-model-line.test.ts` — the
+ *     line comes from the turn's own model, and a stamped name cannot outlive
+ *     its override.
+ *   - `packages/agent-runtime/src/__tests__/agent-model-config.test.ts` and
+ *     `capability-sync.test.ts` — the API's model config wins over the cached
+ *     `config.json`, and the DB re-read is throttled rather than per-turn.
+ *
  * The model server is scripted (see `apps/desktop/e2e/streaming/fake-llm-server`)
- * so every request the runtime makes is captured here: the model it sent and the
- * prompt it sent with it are both readable off `turn.body`.
+ * so every request the runtime makes is captured here.
  *
  *   E2E_LOCAL_START_STACK=1 E2E_FAKE_LLM_STACK=1 \
  *   LOCAL_LLM_BASE_URL=http://127.0.0.1:18765 LOCAL_LLM_BASIC_MODEL=fake-stream \
  *   LOCAL_LLM_ADVANCED_MODEL=fake-stream \
  *   npx playwright test --config e2e/local/playwright.config.ts agent-model-truth --project chromium
  */
-import { expect, test, type BrowserContext, type Page } from "@playwright/test"
+import { expect, test, type BrowserContext } from "@playwright/test"
 import { resolve } from "path"
 import { DatabaseSync } from "node:sqlite"
-import { FakeLlmServer, marker, type FakeTurn } from "../../apps/desktop/e2e/streaming/fake-llm-server"
+import { FakeLlmServer } from "../../apps/desktop/e2e/streaming/fake-llm-server"
 import { refreshAvailableModels, isAvailableModel } from "../../packages/agent-runtime/src/available-models"
 import { deriveRuntimeToken } from "../../apps/api/src/lib/runtime-token"
 
@@ -136,94 +153,56 @@ function runtimeToken(projectId: string): string {
   return deriveRuntimeToken(projectId)
 }
 
-/** The name the API publishes for an id — what a prompt must call it. */
-function displayName(entries: CatalogEntry[], id: string): string {
-  const entry = entries.find((e) => e.id === id)
-  return entry?.display_name ?? entry?.id ?? id
-}
-
-/** Every message the runtime sent, system prompt included, as one string. */
-function promptText(turn: FakeTurn): string {
-  const messages: any[] = turn.body?.messages ?? []
-  return messages
-    .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "")))
-    .join("\n\n")
-}
-
-const composer = (page: Page) => page.getByTestId("project-composer-input").filter({ visible: true }).first()
-
-async function openProjectChat(page: Page, projectId: string): Promise<void> {
-  await page.goto(`/projects/${encodeURIComponent(projectId)}`)
-  await expect(composer(page)).toBeVisible({ timeout: 120_000 })
-}
-
-async function send(page: Page, text: string): Promise<void> {
-  const input = composer(page)
-  await input.click()
-  await input.fill(text)
-  await page.keyboard.press("Enter")
-}
-
-/** Writes the project's model to the DB the way `PATCH …/config` does. */
-function setDbModel(projectId: string, name: string, provider: string): void {
-  const updated = db
-    .prepare("UPDATE agent_configs SET modelName = ?, modelProvider = ? WHERE projectId = ?")
-    .run(name, provider, projectId)
-  expect(updated.changes, `no agent_configs row for project ${projectId}`).toBe(1)
-}
-
-function modelForId(entries: CatalogEntry[], id: string): { name: string; provider: string } {
-  const entry = entries.find((e) => e.id === id)
-  return { name: id, provider: entry?.owned_by ?? "" }
-}
-
-/** Turns the fake model has already served, so a wait can look only at new ones. */
-function newTurnsSince(count: number): FakeTurn[] {
-  return llm.turns.slice(count)
-}
-
 /**
- * The stack ships one available model (`LOCAL_LLM_BASIC_MODEL` and
- * `LOCAL_LLM_ADVANCED_MODEL` are the same id in CI), which is not enough to
- * tell one turn's model from another's. Add a second through the admin catalog
- * route the picker uses: a `local`-provider row is always considered
- * configured and is not plan-gated (`apps/api/src/lib/model-access.ts`), and
- * the route invalidates the registry, so the next `/ai/v1/models` lists it.
+ * The stack lists the static `MODEL_CATALOG` until an admin adds rows, and in
+ * local mode not one static model's provider is reachable, so the published
+ * list has no usable entry at all. The desktop's real path is the admin catalog
+ * (`/api/admin/settings/models`), which the local composer does not mount, so
+ * the two rows a super-admin would have added are written straight into the
+ * stack's own database. A `local`-provider row is always considered configured
+ * and is never plan-gated (`apps/api/src/lib/model-access.ts`), so both come
+ * back `available:true` — and with DB rows present the picker stops falling
+ * back to the static catalog, leaving exactly these two.
  *
- * Seeding is a hard prerequisite, not a nicety: without two models the two
- * behavioural tests below cannot distinguish a correct turn from the stale-line
- * bug, and a skip there would report green while covering nothing (SHO-145 QA).
+ * Two rows rather than one: the case below compares the route's `available`
+ * flag against the runtime's cache per entry, so more than one entry is what
+ * makes it a comparison instead of a single lookup that could pass by luck.
+ *
+ * The registry snapshot is refreshed in the background once it is 30s stale
+ * (`model-registry.service.ts`), hence the poll instead of a single read.
  */
-async function seedSecondModel(): Promise<string> {
-  const available = (await catalog()).filter((e) => e.available !== false)
-  const ids = [...new Set(available.map((e) => e.id))]
-  if (ids.length >= 2) return ids[1]
+const SEEDED_MODELS = [
+  { id: "e2e-alpha-model", displayName: "E2E Alpha Model" },
+  { id: "e2e-beta-model", displayName: "E2E Beta Model" },
+] as const
 
-  // The admin catalog route is super-admin only; the local stack's sole user
-  // is the instance owner.
-  db.prepare("UPDATE users SET role = 'super_admin'").run()
-  const res = await context.request.post(`${API}/api/admin/settings/models`, {
-    data: {
-      provider: "local",
-      apiModel: "e2e-alternate-model",
-      displayName: `E2E Alternate Model ${Date.now().toString(36)}`,
-      shortDisplayName: "E2E Alt",
-      tier: "standard",
-    },
+async function seedLocalModels(): Promise<void> {
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO model_definitions
+       (id, provider, providerId, apiModel, displayName, shortDisplayName, tier, family,
+        generation, kind, maxOutputTokens, enabled, sortOrder, aliases, capabilities,
+        description, contextWindow, reasoningEffort, inputPerMillion, cachedInputPerMillion,
+        cacheWritePerMillion, outputPerMillion, usdPerMinute, createdAt, updatedAt, updatedBy)
+     VALUES (?, 'local', NULL, ?, ?, ?, 'standard', 'other', 'current', 'chat', 64000, 1, ?,
+             NULL, NULL, NULL, 200000, NULL, 0, 0, 0, 0, NULL, ?, ?, NULL)`,
+  )
+  const now = prismaDate(new Date())
+  SEEDED_MODELS.forEach((model, index) => {
+    insert.run(model.id, model.id, model.displayName, model.displayName, index, now, now)
   })
-  const text = await res.text()
-  if (!res.ok()) throw new Error(`could not seed a second model (HTTP ${res.status()}): ${text.slice(0, 300)}`)
 
-  const seeded = (await catalog()).filter((e) => e.available !== false)
-  const seededIds = [...new Set(seeded.map((e) => e.id))]
-  if (seededIds.length < 2) {
-    throw new Error(`seeding a model did not make a second one visible: ${JSON.stringify(seeded).slice(0, 300)}`)
+  const deadline = Date.now() + 120_000
+  let available: CatalogEntry[] = []
+  while (Date.now() < deadline) {
+    available = (await catalog()).filter((entry) => entry.available !== false)
+    if (SEEDED_MODELS.every((model) => available.some((entry) => entry.id === model.id))) return
+    await new Promise((r) => setTimeout(r, 2000))
   }
-  return seededIds.find((id) => !ids.includes(id)) ?? seededIds[1]
+  throw new Error(`the seeded models never became available: ${JSON.stringify(available).slice(0, 500)}`)
 }
 
 test.beforeAll(async ({ browser }, info) => {
-  test.setTimeout(480_000)
+  test.setTimeout(600_000)
   // Runtime tokens are HMACs of the stack's signing secret, so the spec has to
   // sign with the same one the API verifies (`BETTER_AUTH_SECRET` in
   // e2e/local/playwright.config.ts). Point E2E_AI_PROXY_SECRET at whatever a
@@ -244,7 +223,10 @@ test.beforeAll(async ({ browser }, info) => {
   workspaceId = workspace.id
 
   db = new DatabaseSync(DB_PATH, { readOnly: false })
-  await seedSecondModel()
+  // A runtime token is scoped to a project, so the probe project has to exist
+  // before anything authenticates — `seedLocalModels` reads the catalog first.
+  await createProject("model truth probe")
+  await seedLocalModels()
 })
 
 test.afterAll(async () => {
@@ -259,8 +241,8 @@ test("the models route and the runtime's cache are the same list", async () => {
   // so if the route is wrong about a cloud-forwarded provider the agent is
   // never offered that model — which is how every agent ended up on the one
   // provider that is never gated.
-  // The token belongs to a project; one is enough to read the workspace's list.
-  await createProject("model truth probe")
+  // The token belongs to the probe project `beforeAll` created; one is enough
+  // to read the workspace's list.
   const entries = await catalog()
   expect(entries.length, "the models route published nothing").toBeGreaterThan(0)
 
@@ -285,105 +267,5 @@ test("the models route and the runtime's cache are the same list", async () => {
   } finally {
     delete process.env.AI_PROXY_URL
     delete process.env.AI_PROXY_TOKEN
-  }
-})
-
-test("two chats on one runtime each name their own model", async () => {
-  // Fault 2. The line used to be a process singleton refreshed only by
-  // `/agent/chat`, so the second project's turn printed the first one's model.
-  const entries = (await catalog()).filter((e) => e.available !== false)
-  const distinct = entries.filter((e, i) => entries.findIndex((o) => o.id === e.id) === i)
-  expect(
-    distinct.length,
-    "fewer than two distinct available models: the seeding step did not take, and this test cannot tell one turn's model from another's",
-  ).toBeGreaterThanOrEqual(2)
-  const [first, second] = distinct
-
-  const projectA = await createProject("model truth A")
-  const projectB = await createProject("model truth B")
-  const modelA = modelForId(entries, first.id)
-  const modelB = modelForId(entries, second.id)
-  setDbModel(projectA, modelA.name, modelA.provider)
-  setDbModel(projectB, modelB.name, modelB.provider)
-
-  const page = await context.newPage()
-  const tagA = `mA${Date.now().toString(36)}`
-  await openProjectChat(page, projectA)
-  await send(page, `${marker("long", tagA, 4, { ms: 5 })} hello from A`)
-  const turnA = await llm.waitForTurn(tagA, 180_000)
-
-  const tagB = `mB${Date.now().toString(36)}`
-  await openProjectChat(page, projectB)
-  await send(page, `${marker("long", tagB, 4, { ms: 5 })} hello from B`)
-  const turnB = await llm.waitForTurn(tagB, 180_000)
-  await page.close()
-
-  const nameA = displayName(entries, first.id)
-  const nameB = displayName(entries, second.id)
-  const promptA = promptText(turnA)
-  const promptB = promptText(turnB)
-
-  expect(promptA, `project A's prompt never named ${nameA}`).toContain(nameA)
-  expect(promptB, `project B's prompt never named ${nameB}`).toContain(nameB)
-  if (nameA !== nameB) {
-    // The stale-line regression: B's turn printing A's model.
-    expect(promptB, `project B's prompt still named project A's model (${nameA})`).not.toContain(nameA)
-  }
-})
-
-test("a model change in the database reaches the next config-sourced turn", async () => {
-  // Fault 3. A heartbeat turn takes its model from `config.json`, which nothing
-  // re-synced, so a change made through the API only landed after a restart.
-  const entries = (await catalog()).filter((e) => e.available !== false)
-  expect(
-    entries.length,
-    "fewer than two available models: the seeding step did not take, and a model change cannot be observed",
-  ).toBeGreaterThanOrEqual(2)
-  const [before, after] = entries
-
-  const projectId = await createProject("model truth heartbeat")
-  // Local-mode file API: a HEARTBEAT.md makes the tick a real model turn
-  // instead of the cheap `HEARTBEAT_OK` short-circuit.
-  await apiJson("PUT", `/api/projects/${projectId}/files/HEARTBEAT.md`, {
-    content: "# Heartbeat\n\nCheck nothing in particular, then reply HEARTBEAT_OK.\n",
-  })
-  await apiJson("PATCH", `/api/projects/${projectId}/heartbeat`, {
-    heartbeatEnabled: true,
-    heartbeatInterval: 60,
-  })
-
-  const beforeModel = modelForId(entries, before.id)
-  const afterModel = modelForId(entries, after.id)
-
-  const tick = async (model: { name: string; provider: string }): Promise<FakeTurn> => {
-    setDbModel(projectId, model.name, model.provider)
-    const since = llm.turns.length
-    db.prepare("UPDATE agent_configs SET nextHeartbeatAt = ?, lastHeartbeatAt = NULL WHERE projectId = ?").run(
-      prismaDate(new Date(Date.now() - 2 * 60_000)),
-      projectId,
-    )
-    const deadline = Date.now() + 240_000
-    while (Date.now() < deadline) {
-      const turn = newTurnsSince(since).find((t) => /heartbeat/i.test(promptText(t)))
-      if (turn) return turn
-      await new Promise((r) => setTimeout(r, 500))
-    }
-    throw new Error(`no heartbeat turn reached the model for ${model.name} within 240s`)
-  }
-
-  const firstTick = await tick(beforeModel)
-  expect(promptText(firstTick), "the first heartbeat turn did not name its configured model").toContain(
-    displayName(entries, before.id),
-  )
-
-  // No restart, no re-boot: the same running runtime, one DB write in between.
-  const secondTick = await tick(afterModel)
-  const secondPrompt = promptText(secondTick)
-  expect(secondPrompt, "the next turn kept the old model after a database change").toContain(
-    displayName(entries, after.id),
-  )
-  const staleName = displayName(entries, before.id)
-  if (staleName !== displayName(entries, after.id)) {
-    expect(secondPrompt, `the next turn still reported ${staleName}`).not.toContain(staleName)
   }
 })
