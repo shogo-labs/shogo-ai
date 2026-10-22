@@ -168,6 +168,9 @@ describe('social routes', () => {
       body: JSON.stringify({
         content: 'Launch day',
         accountIds: [ig.id, tt.id],
+        // Instagram and TikTok refuse a text-only post, so the request carries
+        // one picture; it goes out as `mediaItems` on the provider body.
+        mediaUrls: ['https://cdn.example.com/launch.jpg'],
         publishNow: true,
         variants: { [tt.id]: { content: 'Launch day — TikTok cut' } },
       }),
