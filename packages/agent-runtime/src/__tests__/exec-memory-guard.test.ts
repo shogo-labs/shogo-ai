@@ -55,8 +55,12 @@ const fakeSample = (sizesMB: Record<number, number>) => async (roots: number[]) 
 /** Bytes the over-budget test's child really holds: 192 MB, above the ceiling. */
 const MEMORY_HOG_MB = 192
 
-/** Ceiling for the integration test: above any plain process, below the hog. */
-const OVER_BUDGET_MB = 128
+/**
+ * Ceiling for the integration test. A command budget, not a rounding test: far
+ * above a `sleep` (~2 MB) or a bare runtime's footprint, so only the memory the
+ * command really holds can breach it.
+ */
+const OVER_BUDGET_MB = 64
 
 /**
  * Source of the child the over-budget test runs: hold the 192 MB above and
@@ -157,18 +161,21 @@ describe('sandboxExecAsync integration', () => {
     // 192 MB to touch, which on a loaded runner can outlast any fixed number of
     // samples — the guard then never strikes and `done` never resolves, which
     // surfaces as a test timeout rather than as a guard failure. So wait for the
-    // OS to report the whole allocation resident, then hand the guard that
-    // state; a failure here names what was measured instead of hanging.
-    const hogKb = MEMORY_HOG_MB * 1024
+    // OS to report the group over the ceiling, then hand the guard that state; a
+    // failure here names what was measured instead of hanging.
+    const ceilingKb = OVER_BUDGET_MB * 1024
     const deadline = Date.now() + 20_000
     let measuredKb = 0
     while (Date.now() < deadline && !handle.exited()) {
       const sizes = await sampleTreeRssKb([handle.pid!])
       measuredKb = Math.max(measuredKb, sizes.get(handle.pid!) ?? 0)
-      if (measuredKb >= hogKb) break
+      if (measuredKb > ceilingKb) break
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
-    expect(measuredKb).toBeGreaterThanOrEqual(hogKb)
+    expect(measuredKb).toBeGreaterThan(ceilingKb)
+    // Crossing the ceiling can happen mid-`Buffer.alloc`, so give the fill a
+    // moment to finish before the guard takes the reading it reports.
+    await new Promise((resolve) => setTimeout(resolve, 500))
 
     // Strikes are required once, so one sample of a group the OS reports over
     // the ceiling has to stop it.
