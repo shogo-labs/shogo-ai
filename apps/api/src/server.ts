@@ -158,7 +158,7 @@ import { historyRoutes } from './routes/history'
 import { voiceMediaRoutes } from './routes/voice-media'
 import { chatMentionRoutes } from './routes/chat-mentions'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
-import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
+import { createRuntimeManager, resolveRuntimeMaxCount, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
@@ -358,15 +358,17 @@ async function verifyProjectAccess(
  * Get or create the RuntimeManager singleton.
  *
  * Configurable via environment variables:
- * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: 10)
+ * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: preview + background pools + headroom,
+ *   see resolveRuntimeMaxCount)
  * - RUNTIME_DOMAIN_SUFFIX: Domain suffix for URLs (default: localhost)
  * - WORKSPACES_DIR: Directory containing project workspaces (default: PROJECT_ROOT/workspaces)
  */
 function getRuntimeManager(): IRuntimeManager {
   if (!runtimeManager) {
     const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    const maxRuntimes = resolveRuntimeMaxCount()
     runtimeManager = createRuntimeManager({
-      maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
+      maxRuntimes,
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
       templateDir: '_template',
@@ -382,7 +384,7 @@ function getRuntimeManager(): IRuntimeManager {
     setRuntimeManager(runtimeManager as ReturnType<typeof createRuntimeManager>)
     console.log('[Runtime] RuntimeManager initialized:', {
       portRange: '37100-37900 (random)',
-      maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
+      maxRuntimes,
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
     })
