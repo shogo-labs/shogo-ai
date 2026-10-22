@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Text, View } from 'react-native'
+import { Clock } from 'lucide-react-native'
 import { WorkGroup } from '../chat/turns/WorkGroup'
 import { WorkedForGroup } from '../chat/turns/WorkedForGroup'
 import { AssistantContent } from '../chat/turns/AssistantContent'
@@ -57,6 +58,23 @@ export function AgentWorkingStatus({ tools }: { tools: Array<{ name: string; don
           />
         ) : null,
       )}
+    </View>
+  )
+}
+
+/**
+ * A reply that is not working yet: it is in line for an agent slot, or it parked
+ * on an open tool (a `wait`, a subagent) and gave its slot back. Deliberately
+ * plain text rather than the working shimmer — nothing is generating.
+ */
+export function AgentQueueStatus({ position, waiting }: { position?: number | null; waiting?: { tool: string | null } | null }) {
+  const text = waiting
+    ? `Waiting on ${waiting.tool ?? 'an open tool'}…`
+    : position ? `Queued · #${position} in line` : 'Queued'
+  return (
+    <View className="mt-1 flex-row items-center gap-1.5" testID="agent-queue-status">
+      <Clock size={11} className="text-muted-foreground" />
+      <Text className="text-xs text-muted-foreground">{text}</Text>
     </View>
   )
 }

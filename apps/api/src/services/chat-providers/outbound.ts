@@ -205,6 +205,21 @@ function externalProgressText(state: { text: string; tool: string | null }): str
   return state.tool ? `_Using ${state.tool}…_` : WORKING_TEXT
 }
 
+/**
+ * A reply waiting for a slot says so on Slack/Teams instead of claiming it is
+ * working. `null` restores the working line when it is admitted.
+ */
+export async function queueAgentReplyNotice(handle: AgentReplyHandle, queue: { position: number | null } | null): Promise<void> {
+  const ext = handle.external
+  if (!ext?.provider.updateMessage || !ext.provider.capabilities.edits) return
+  const text = queue
+    ? queue.position ? `_Queued (#${queue.position})…_` : '_Queued…_'
+    : WORKING_TEXT
+  handle.lastExternalUpdate = Date.now()
+  await ext.provider.updateMessage(ext.conv, ext.ref, { text: await providerText(ext.conv.workspaceId, text), author: handle.author })
+    .catch((err) => console.warn(`[ChatOutbound] ${ext.provider.kind} queue status failed:`, (err as Error).message))
+}
+
 /** Live progress. Shogo clients get every delta; external providers get throttled edits. */
 export async function streamAgentReply(
   handle: AgentReplyHandle,

@@ -43,6 +43,7 @@ import { getMinimumInstanceSize } from '@shogo/shared-runtime';
 import { usageLimitErrorPayload, type BalanceCheck, type UsageBlockReason } from './usage-limits';
 import { recordLocalUsage } from './billing-local';
 import { invalidateAnalyticsCache } from '../lib/analytics-cache';
+import { invalidateAgentReplyCapacity } from './agent-reply-capacity';
 export { usageLimitErrorPayload, type BalanceCheck, type UsageBlockReason };
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
@@ -1774,7 +1775,7 @@ export async function syncFromStripe(data: {
   cancelAtPeriodEnd?: boolean;
 }) {
   const seats = Math.max(1, Math.floor(data.seats ?? 1));
-  return prisma.subscription.upsert({
+  const subscription = await prisma.subscription.upsert({
     where: { workspaceId: data.workspaceId },
     create: {
       workspaceId: data.workspaceId,
@@ -1800,6 +1801,9 @@ export async function syncFromStripe(data: {
       cancelAtPeriodEnd: data.cancelAtPeriodEnd ?? false,
     },
   });
+  // A new plan changes the agent-reply ceiling, and the queue must not wait out its cache.
+  invalidateAgentReplyCapacity(data.workspaceId);
+  return subscription;
 }
 
 /**
