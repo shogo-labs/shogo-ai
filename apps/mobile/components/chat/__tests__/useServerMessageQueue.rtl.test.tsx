@@ -65,7 +65,10 @@ const collection = observable({
 mock.module("@shogo/shared-app/domain", () => ({
   useSDKDomains: () => ({ studioChat: { chatQueuedMessageCollection: collection } }),
 }))
-mock.module("mobx-state-tree", () => ({ getEnv: () => ({ http: { post: async () => ({ data: { ok: true } }) } }) }))
+let postResponse: { data?: any } = { data: { ok: true } }
+mock.module("mobx-state-tree", () => ({
+  getEnv: () => ({ http: { post: async () => postResponse } }),
+}))
 
 const { useServerMessageQueue } = await import("../useServerMessageQueue")
 
@@ -95,8 +98,12 @@ function reset() {
   pendingIds = []
   dispatchedBeforeObserved = false
   serverSeq = 0
+  postResponse = { data: { ok: true } }
   act(() => runInAction(() => { collection.all.splice(0, collection.all.length) }))
 }
+
+const dockText = (view: ReturnType<typeof render>) =>
+  view.queryAllByRole("listitem").map((li) => li.textContent)
 
 describe("useServerMessageQueue", () => {
   test("shows rows added after mount and follows reorders", () => {
@@ -265,5 +272,105 @@ describe("useServerMessageQueue", () => {
 
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
     expect(turns).toEqual([{ id: "srv-1", text: "queued" }])
+  })
+
+  /**
+   * "Send now" is a POST the server answers before it has dispatched anything:
+   * it stops the turn and fires `dispatchNext` without awaiting it, so the row
+   * is still on the queue when the click's own reload lands. The dock has to
+   * drop it on the click, and the row still has to reach the transcript exactly
+   * once when the server does take it.
+   */
+  test("send now takes the row out of the dock before the server dispatches it", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
+    expect(dockText(view)).toEqual(["first", "second"])
+
+    await act(async () => { await queueApi!.sendNow("q2") })
+    expect(dockText(view)).toEqual(["first"])
+
+    // Neither the click's reload nor the next poll has seen the delete yet.
+    await act(async () => { await queueApi!.reload() })
+    expect(dockText(view)).toEqual(["first"])
+  })
+
+  test("a row sent now reaches the transcript once and never returns to the dock", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
+    await act(async () => { await queueApi!.sendNow("q2") })
+    expect(dockText(view)).toEqual(["first"])
+
+    // The server started the turn and deleted the row while the previous
+    // stream was still open.
+    act(() => runInAction(() => { collection.all.splice(1, 1) }))
+    expect(dockText(view)).toEqual(["first"])
+    expect(pendingIds).toEqual(["q2"])
+
+    view.rerender(<Probe isStreaming={false} />)
+    expect(turns).toEqual([{ id: "q2", text: "second" }])
+    expect(pendingIds).toEqual([])
+    expect(dockText(view)).toEqual(["first"])
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    expect(turns).toEqual([{ id: "q2", text: "second" }])
+    expect(dockText(view)).toEqual(["first"])
+  })
+
+  test("a send now the server refuses puts the row back in the dock", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
+    postResponse = { data: { ok: false, error: { message: "Could not stop the turn" } } }
+
+    let failure: unknown
+    await act(async () => {
+      try {
+        await queueApi!.sendNow("q2")
+      } catch (error) {
+        failure = error
+      }
+    })
+    expect(String(failure)).toContain("Could not stop the turn")
+    expect(dockText(view)).toEqual(["first", "second"])
+
+    // Nothing was sent, so nothing may be reported as its turn either.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    expect(turns).toEqual([])
+    expect(pendingIds).toEqual([])
+  })
+
+  test("a row whose dispatch fails comes back to the dock with its error", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
+    await act(async () => { await queueApi!.sendNow("q2") })
+    expect(dockText(view)).toEqual(["first"])
+
+    act(() => runInAction(() => {
+      const failed = collection.all[1]!
+      failed.status = "failed"
+      failed.error = "Model refused"
+      failed.updatedAt += 1
+    }))
+    expect(dockText(view)).toEqual(["first", "second"])
+    expect(queueApi!.queuedMessages.find((m) => m.id === "q2")?.error).toBe("Model refused")
+  })
+
+  test("a row this window queued and then sent now reports one turn", async () => {
+    reset()
+    const view = render(<Probe isStreaming={false} />)
+    await act(async () => {
+      await queueApi!.enqueue({ content: "mine", body: { text: "mine" } })
+    })
+    await act(async () => { await queueApi!.sendNow("srv-1") })
+    expect(dockText(view)).toEqual([])
+
+    act(() => runInAction(() => { collection.all.splice(0, 1) }))
+    expect(turns).toEqual([{ id: "srv-1", text: "mine" }])
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    expect(turns).toEqual([{ id: "srv-1", text: "mine" }])
   })
 })

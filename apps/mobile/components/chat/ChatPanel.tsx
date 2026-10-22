@@ -6538,6 +6538,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [clearOptimisticEcho, serverQueue],
   )
 
+  /**
+   * Local queue rows the person clicked "Send now" on while a turn was
+   * streaming. The local queue is drained by this window, not the server: the
+   * row leaves `messageQueue` only when the drain takes it on the falling edge
+   * of the stop this click asks for, so the dock would keep showing a message
+   * the person has already sent. Cleared when the row leaves the queue, and on
+   * that falling edge — a row the drain did not take is still queued.
+   */
+  const [sentNowIds, setSentNowIds] = useState<Set<string>>(() => new Set())
+
   // "Send now" — interrupt the current streaming turn and immediately drain
   // the chosen queued message. Implemented as "promote to front + stop" so we
   // re-use the existing falling-edge drain effect (see `processMessageQueue`
@@ -6568,6 +6578,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       })
       if (!promoted) return
       if (isStreaming) {
+        setSentNowIds((current) => {
+          if (current.has(messageId)) return current
+          const next = new Set(current)
+          next.add(messageId)
+          return next
+        })
         handleStop()
       } else {
         void processMessageQueue()
@@ -6575,6 +6591,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
     [isStreaming, handleStop, processMessageQueue, serverQueue],
   )
+
+  // A hidden local row is gone from the queue (the drain took it) or the turn
+  // came to rest without taking it (still queued, so it has to be visible).
+  useEffect(() => {
+    if (sentNowIds.size === 0) return
+    if (!isStreaming) {
+      setSentNowIds(new Set())
+      return
+    }
+    const queued = new Set(messageQueue.map((m) => m.id))
+    let stale = false
+    for (const id of sentNowIds) if (!queued.has(id)) stale = true
+    if (!stale) return
+    setSentNowIds((current) => {
+      const next = new Set(current)
+      for (const id of current) if (!queued.has(id)) next.delete(id)
+      return next
+    })
+  }, [isStreaming, messageQueue, sentNowIds])
 
   /**
    * The waiting chip's Resume: deliver the updates a paused session is holding.
@@ -6590,8 +6625,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
   const displayedQueue = useMemo(
-    () => [...serverQueue.queuedMessages, ...messageQueue],
-    [messageQueue, serverQueue.queuedMessages],
+    () =>
+      [...serverQueue.queuedMessages, ...messageQueue].filter(
+        (message) => !sentNowIds.has(message.id),
+      ),
+    [messageQueue, sentNowIds, serverQueue.queuedMessages],
   )
 
   const enqueueServerMessage = useCallback(
