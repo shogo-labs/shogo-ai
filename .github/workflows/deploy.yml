@@ -929,10 +929,17 @@ jobs:
     concurrency:
       group: deploy-v2-staging-rollout
       cancel-in-progress: false
+    # A called workflow's jobs may only request scopes this job grants. The
+    # e2e-critical / e2e-critical-retry jobs in deploy-staging.yml (and the
+    # `classify` job they nest from e2e-hosted.yml) open a platform issue when a
+    # red run is an environment defect (SHO-136), so without `issues: write`
+    # here GitHub rejects the whole call and the deploy run dies at startup
+    # with zero jobs.
     permissions:
       contents: read
       actions: read
       statuses: write
+      issues: write
     uses: ./.github/workflows/deploy-staging.yml
     with:
       environment: ${{ needs.resolve-config.outputs.environment }}
