@@ -56,6 +56,7 @@ import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle, type ShellExitResult } from './sandbox-exec'
 import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
+import { consumeExecCwdMarker, execCwdDirFor, newExecCwdMarker } from './exec-cwd'
 import { checkSelfDetach, selfDetachRefusal } from './exec-detach'
 import { findPolledTasks, type PollMatch } from './exec-poll'
 import { CommandRegistry, type CommandEntry } from './command-registry'
@@ -1200,22 +1201,31 @@ interface ExecRunMetadata {
   isSandboxed: boolean
   previousCwd: string
   cwdReset: boolean
+  /**
+   * Final cwd the trap reported, captured when the process exits — see the
+   * `handle.done` handler where the meta is registered. Cached because the
+   * marker file is gone by then.
+   */
+  resolvedCwd?: string
 }
 
 const execRunMetadata = new WeakMap<CommandHandle, ExecRunMetadata>()
 
-/** Read the trap-written cwd file and update shellState. Idempotent on retry. */
+/**
+ * The run's final cwd: from the exit-time capture when we have it, otherwise
+ * by reading (and removing) the marker now. Both routes unlink the marker, so
+ * a run that exits without anyone draining its result leaves nothing behind.
+ */
+function resolveRunCwd(ctx: ToolContext, meta: ExecRunMetadata): string | undefined {
+  if (meta.resolvedCwd) return meta.resolvedCwd
+  const rawCwd = consumeExecCwdMarker(meta.cwdFileHost)
+  if (!rawCwd) return undefined
+  return meta.isSandboxed ? containerToHost(rawCwd, ctx.workspaceDir) : rawCwd
+}
+
+/** Apply the trap-written cwd to shellState. Idempotent on retry. */
 function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
-  let newCwd = meta.previousCwd
-  try {
-    const rawCwd = readFileSync(meta.cwdFileHost, 'utf-8').trim()
-    if (rawCwd) {
-      newCwd = meta.isSandboxed ? containerToHost(rawCwd, ctx.workspaceDir) : rawCwd
-    }
-    unlinkSync(meta.cwdFileHost)
-  } catch {
-    /* trap may not have fired or already cleaned up */
-  }
+  const newCwd = resolveRunCwd(ctx, meta) ?? meta.previousCwd
   ctx.shellState?.setCwd(newCwd)
   return newCwd
 }
@@ -1411,12 +1421,6 @@ function createExecTool(ctx: ToolContext): AgentTool {
       const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec', ctx.workspaceDir)
       if (!execTrust.ok) return textResult({ error: execTrust.message })
 
-      if (/\bgh\s+pr\s+create\b/.test(command)) {
-        return textResult({
-          error: 'Use the github_create_pr tool to create pull requests so Shogo can add attribution.',
-        })
-      }
-
       if (isBlockedCommand(attributedCommand)) {
         return textResult({ error: `Blocked command: ${command}` })
       }
@@ -1497,8 +1501,13 @@ function createExecTool(ctx: ToolContext): AgentTool {
         cwdReset = true
         ctx.shellState?.setCwd(currentCwd)
       }
-      const cwdMarker = `.shogo-cwd-${Date.now()}-${Math.random().toString(36).slice(2)}`
-      const cwdFileHost = join(ctx.workspaceDir, cwdMarker)
+      // The cwd marker is a temp file with a lifetime, not workspace state, so
+      // it goes under `.shogo/exec-cwd/` — already excluded from checkpoints,
+      // exports and the managed git ignore block — instead of the workspace
+      // root, where a folder-linked repo would show it as untracked junk.
+      const cwdMarker = newExecCwdMarker()
+      const cwdDirHost = execCwdDirFor(ctx.workspaceDir)
+      const cwdFileHost = cwdDirHost ? join(cwdDirHost, cwdMarker) : join(ctx.workspaceDir, cwdMarker)
 
       const isSandboxed = shouldSandbox({
         command: attributedCommand,
@@ -1508,7 +1517,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
         mainSessionIds: ctx.mainSessionIds,
       })
 
-      const cwdFileCmd = isSandboxed ? `/workspace/${cwdMarker}` : cwdFileHost
+      const cwdFileCmd = isSandboxed ? hostToContainer(cwdFileHost, ctx.workspaceDir) : cwdFileHost
       const cdTarget = isSandboxed ? hostToContainer(currentCwd, ctx.workspaceDir) : currentCwd
 
       const wrappedCommand = [
@@ -1549,6 +1558,19 @@ function createExecTool(ctx: ToolContext): AgentTool {
         cwdReset,
       }
       execRunMetadata.set(handle, meta)
+
+      // Capture the trap's cwd the moment the process exits, not only when a
+      // result is drained: `background: true`, a soft timeout, an abort and a
+      // crash all hand back "running" and may never be waited on, and the
+      // marker must not outlive the shell that wrote it.
+      handle.done
+        .then(() => {
+          const resolved = resolveRunCwd(ctx, meta)
+          if (resolved) meta.resolvedCwd = resolved
+        })
+        .catch(() => {
+          consumeExecCwdMarker(cwdFileHost)
+        })
 
       // Always register so a follow-up exec_wait can find this run, even if it
       // completes within the soft timeout (defensive against races where the
@@ -1666,6 +1688,20 @@ function requesterCredentialBlockResult(result: CheckpointCallResult<unknown>) {
   })
 }
 
+/**
+ * The `gh` command that achieves the same thing, appended to every
+ * `github_create_pr` failure so the tool never dead-ends. `gh` is not gated,
+ * so this is always a working next step.
+ */
+function ghPrFallbackHint(repository: { owner: string; repo: string } | null, head: string): string {
+  const repo = repository ? `${repository.owner}/${repository.repo}` : '<owner>/<repo>'
+  const branch = head || '<branch>'
+  return (
+    'Open the PR with gh instead: ' +
+    `exec({ command: 'gh pr create --repo ${repo} --base main --head ${branch} --title "..." --body-file .tmp/pr-body.md' }).`
+  )
+}
+
 function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
   return {
     name: 'github_create_pr',
@@ -1674,7 +1710,8 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
       'Create a GitHub pull request after the current branch has been pushed. With a project GitHub connection it is opened by the ' +
       'Shogo GitHub App, or by the connected user when the project is connected with an access token. ' +
       'The PR body always includes a Made with Shogo footer and an optional issue-pipeline runId marker. ' +
-      'If the project has no GitHub connection, the tool falls back to the user GITHUB_TOKEN from workspace .env.',
+      'If the project has no GitHub connection, the tool falls back to the user GITHUB_TOKEN from workspace .env; ' +
+      'with neither, use `gh pr create` in exec instead — that is the normal route and is never blocked.',
     parameters: Type.Object({
       title: Type.String({ description: 'Pull request title' }),
       head: Type.Optional(
@@ -1771,20 +1808,20 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
       if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
       if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
         return textResult({
-          error: botResult.error || 'Shogo GitHub App could not create the pull request.',
+          error: `${botResult.error || 'Shogo GitHub App could not create the pull request.'} ${ghPrFallbackHint(repository, head)}`,
           status: botResult.status,
         })
       }
 
       if (!repository) {
         return textResult({
-          error: 'No GitHub App connection exists and the origin remote is not a GitHub repository.',
+          error: `No GitHub App connection exists and the origin remote is not a GitHub repository. ${ghPrFallbackHint(repository, head)}`,
         })
       }
       const token = loadWorkspaceEnvForAttribution(ctx.workspaceDir).GITHUB_TOKEN || process.env.GITHUB_TOKEN
       if (!token) {
         return textResult({
-          error: 'No GitHub App connection exists. Save GITHUB_TOKEN in workspace .env to create a user-authored PR.',
+          error: `No GitHub App connection exists. Save GITHUB_TOKEN in workspace .env to create a user-authored PR, or open it with gh. ${ghPrFallbackHint(repository, head)}`,
         })
       }
 
@@ -1985,7 +2022,7 @@ export function createGitHubMergePullRequestTool(ctx: ToolContext): AgentTool {
     label: 'Merge GitHub Pull Request',
     description:
       'Merge a GitHub pull request by number. A person on the team is asked to approve before it runs, so call it only when the work ' +
-      'is reviewed and ready. Use squash unless the project says otherwise. Do not merge with `gh pr merge`; that is blocked.',
+      'is reviewed and ready. Use squash unless the project says otherwise. Prefer this tool over `gh pr merge` so the merge is attributed and approved.',
     parameters: Type.Object({
       number: Type.Number({ description: 'Pull request number' }),
       method: Type.Optional(
@@ -7259,7 +7296,7 @@ function createConnectTool(ctx: ToolContext): AgentTool {
     description:
       'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to the MCP catalog (postgres, etc.), then to a remote URL if provided. Files and shell commands are built in (read_file, write_file, edit_file, exec) — do not connect filesystem or computer-use. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
       'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.\n\n' +
-      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
+      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec (`gh issue list`, `gh issue create`, `gh pr list`, `gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md`, `gh run list`). Opening a PR is normally `gh pr create` in exec after pushing the source branch; the `github_create_pr` tool is an optional alternative that opens the PR as the Shogo GitHub App and adds the standard footer. Either way end the body with the standard Made with Shogo footer and a `Card: <KEY>` line. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({

@@ -53,7 +53,7 @@ export function NativeAccountPersonalGroups({
         <AccountSettingsRow
           icon={<Monitor size={iconSize} className={iconClass} />}
           label="Appearance"
-          accessibilityState={appearanceOpensSheet ? undefined : { expanded: appearanceOpen }}
+          ariaExpanded={appearanceOpensSheet ? undefined : appearanceOpen}
           trailing={
             <Text className={cn("text-muted-foreground", density.text.body)}>
               {themeDisplayName(theme)}

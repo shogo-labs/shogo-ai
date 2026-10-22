@@ -11,6 +11,7 @@ import {
   workspaceRuntimeKey,
 } from '../lib/runtime/manager'
 import { countTerminalSession } from '../lib/terminal-session-pin'
+import { decideBusy } from '@shogo-ai/worker/runtime-activity'
 
 function fakeProcess() {
   const proc = {
@@ -40,10 +41,54 @@ type PrivateRM = RuntimeManager & {
   workspacePreviewMax: number
 }
 
+const COUNTS = { turns: 0, tasks: 0, streams: 0, children: 0 }
+
+/** Keys the stubbed worker reports as mid-turn for the manager under test. */
+const busyKeys = new Set<string>()
+
+function markBusy(key: string) {
+  busyKeys.add(key)
+}
+
+/**
+ * A manager whose embedded worker is stubbed at exactly the two seams the LRU
+ * uses: `status(key)` (liveness of the cached port) and `activityDecision`
+ * (the cached busy verdict, SHO-143). The verdict comes from the REAL
+ * `decideBusy`, so terminal pins, in-flight calls and unknown-is-busy behave as
+ * they do in production.
+ */
 function newManager(): PrivateRM {
   const rm = new RuntimeManager({ healthCheckInterval: 50 }) as PrivateRM
-  // Neutralize the embedded worker manager so touch/stop don't do real work.
-  rm.agentManager = { touch: mock(() => {}), stop: mock(async () => {}) }
+  busyKeys.clear()
+  const startedAt = Date.now() - 10 * 60_000
+  rm.agentManager = {
+    touch: mock(() => {}),
+    stop: mock(async () => {}),
+    // The LRU re-reads a stale sample before deciding; a stub that answers
+    // instantly keeps the test on the eviction logic itself.
+    refreshActivity: mock(async () => {}),
+    status: (key: string) => {
+      const rt = rm.runtimes.get(key)
+      if (!rt) return undefined
+      return {
+        projectId: key,
+        status: rt.status,
+        agentPort: rt.agentPort,
+        startedAt: rt.startedAt,
+        lastUsedAt: rt.startedAt,
+        restarts: 0,
+      }
+    },
+    activityDecision: (key: string, opts?: { terminalSessions?: number; inflightCalls?: number }) =>
+      decideBusy({
+        now: Date.now(),
+        startedAt,
+        status: 'running',
+        sample: { counts: busyKeys.has(key) ? { ...COUNTS, turns: 1 } : COUNTS, at: Date.now(), ok: true },
+        terminalSessions: opts?.terminalSessions,
+        inflightCalls: opts?.inflightCalls,
+      }),
+  }
   return rm
 }
 
@@ -75,10 +120,15 @@ function seedAnchored(rm: PrivateRM, projectId: string, port: number) {
     agentPort: port + 1000,
     status: 'running',
     url: `http://localhost:${port}`,
-    startedAt: Date.now(),
+    // Settled, not freshly spawned: a runtime inside its startup grace is never
+    // an eviction victim (SHO-143).
+    startedAt: Date.now() - 10 * 60_000,
     process: null,
     agentProcess: fakeProcess(),
   })
+  // The embedded worker owns these runtimes in production, and with them the
+  // activity verdict the LRU reads.
+  rm.agentManagedProjects.add(key)
   rm.usedPorts.add(port)
   return key
 }
@@ -187,10 +237,11 @@ describe('RuntimeManager — workspace-session runtimes share the warm cap', () 
       agentPort: port + 1000,
       status: 'running',
       url: `http://localhost:${port}`,
-      startedAt: Date.now(),
+      startedAt: Date.now() - 10 * 60_000,
       process: null,
       agentProcess: fakeProcess(),
     })
+    rm.agentManagedProjects.add(key)
     rm.usedPorts.add(port)
     return key
   }
@@ -240,7 +291,7 @@ describe('RuntimeManager — workspace-session runtimes share the warm cap', () 
     const w3 = seedWorkspaceRuntime(rm, 'w3', 37322)
     const w4 = seedWorkspaceRuntime(rm, 'w4', 37323) // oldest, but busy
     rm.workspacePreviewMru = [w1, w2, w3, w4]
-    ;(rm as any).hasActiveWork = mock(async (key: string) => key === w4)
+    markBusy(w4)
 
     const stopped: string[] = []
     ;(rm as any).stop = mock(async (key: string) => {

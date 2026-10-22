@@ -37,7 +37,7 @@ export function SelectableCard({
       testID={testID}
       onPress={onPress}
       accessibilityRole={role}
-      accessibilityState={{ checked: selected }}
+      aria-checked={selected}
       accessibilityLabel={title}
       className={cn(
         'flex-1 flex-row items-start gap-4 rounded-2xl border p-5 active:opacity-90',

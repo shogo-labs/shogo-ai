@@ -631,6 +631,29 @@ describe('AI proxy model listing and token generation', () => {
     expect(data.data.some((model: any) => model.id === 'gpt-5.6-luna')).toBe(false)
   })
 
+  // SHO-145: a model the plan can't run must not be listed as available — the
+  // agent runtime feeds this list to `project_configure`, so an available:false
+  // entry is what turns a silent downgrade to Auto into a clean
+  // `model_unavailable` refusal.
+  test('GET /ai/v1/models marks a model this plan cannot run unavailable', async () => {
+    const app = buildApp()
+
+    const free = await app.fetch(new Request('http://x/api/ai/v1/models', {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    }))
+    const freeModels = (await free.json() as any).data
+    expect(freeModels.some((m: any) => m.id === 'claude-opus-5-5' && m.available === false)).toBe(true)
+    // Economy models stay usable on every plan.
+    expect(freeModels.some((m: any) => m.id === 'claude-haiku-5-5' && m.available === true)).toBe(true)
+
+    const proToken = await generateProxyToken('proj-1', 'ws-pro', 'user-1')
+    const pro = await app.fetch(new Request('http://x/api/ai/v1/models', {
+      headers: { Authorization: `Bearer ${proToken}` },
+    }))
+    const proModels = (await pro.json() as any).data
+    expect(proModels.some((m: any) => m.id === 'claude-opus-5-5' && m.available === true)).toBe(true)
+  })
+
   test('POST /ai/proxy/tokens validates input, project scope, and returns an expiring token', async () => {
     const app = buildApp()
 

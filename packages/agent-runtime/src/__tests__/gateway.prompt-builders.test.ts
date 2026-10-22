@@ -277,16 +277,33 @@ describe('loadBootstrapContext profile routing', () => {
     expect((gw as any).loadBootstrapContext()).not.toContain('## Viewer')
   })
 
-  test('account context names the model and the publish gate until the next request clears it', () => {
+  test('account context names the plan and the publish gate until the next request clears it', () => {
     const ws = makeWs('boot-account')
     const gw = new AgentGateway(ws, 'p1')
     gw.setAccountContext({ modelDisplayName: 'Hoshi 2.0', planId: 'free', canPublishSubdomain: false })
     const out: string = (gw as any).loadBootstrapContext()
     expect(out).toContain('## Account')
-    expect(out).toContain('**Hoshi 2.0** model')
     expect(out).toMatch(/requires Pro or higher/)
     gw.setAccountContext({})
     expect((gw as any).loadBootstrapContext()).not.toContain('## Account')
+  })
+
+  // SHO-145: the model line describes the TURN, not the last /agent/chat
+  // request. The request's own `modelDisplayName` is never carried over, and
+  // the caller passes the name of the model it is about to send.
+  test('the Account model line comes from the turn, never from a previous request', () => {
+    const ws = makeWs('boot-account-model')
+    const gw = new AgentGateway(ws, 'p1')
+    gw.setAccountContext({ modelDisplayName: 'Hoshi 2.0', planId: 'free', canPublishSubdomain: true })
+
+    // A request's stamp alone renders no model line — it is not this turn's.
+    const fromRequestOnly: string = (gw as any).loadBootstrapContext()
+    expect(fromRequestOnly).toContain('## Account')
+    expect(fromRequestOnly).not.toContain('Hoshi 2.0')
+
+    const withTurn: string = (gw as any).loadBootstrapContext(undefined, undefined, undefined, 'Claude Opus 5.5')
+    expect(withTurn).toContain('**Claude Opus 5.5** model')
+    expect(withTurn).not.toContain('Hoshi 2.0')
   })
 })
 

@@ -51,7 +51,7 @@ export function PersonalAgentHeader({
               {...triggerProps}
               accessibilityRole="button"
               accessibilityLabel={`${profile.name} profile and settings`}
-              accessibilityState={{ expanded: menuOpen }}
+              aria-expanded={menuOpen}
               className="w-full flex-row items-center gap-3 active:opacity-80"
             >
               <WorkspaceAgentAvatar size={48} state={avatarState} />
