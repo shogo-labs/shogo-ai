@@ -172,6 +172,34 @@ function wakeRequests(): FakeTurn[] {
   return llm.turns.filter((t) => t.userText.includes("[Task update]"))
 }
 
+/** Requests the panel makes on its own: mount probes, watch polls, refocus probes. */
+const CHAT_TRAFFIC = /\/api\/chat-messages|\/(tasks|processes|turn)(\?|$)/
+
+/**
+ * Wait until the window stops talking to the chat endpoints on its own.
+ *
+ * A freshly opened window loads history and probes `/turn`; how long that
+ * takes is the runner's, so "sleep 6s, then count" is a wall-clock guess that
+ * a cold project load outruns — the mount probes then land inside the counted
+ * window and the spec reports polling that no one did (SHO-134). Wait for the
+ * window to settle instead.
+ *
+ * `quietMs` must outlast the widest gap between the probes it is waiting out,
+ * or the wait settles inside the schedule.
+ */
+async function waitForChatQuiet(page: Page, quietMs = 6_000, deadlineMs = 120_000): Promise<boolean> {
+  let lastAt = Date.now()
+  page.on("request", (request) => {
+    if (CHAT_TRAFFIC.test(request.url())) lastAt = Date.now()
+  })
+  const started = Date.now()
+  while (Date.now() - started < deadlineMs) {
+    if (Date.now() - lastAt >= quietMs) return true
+    await page.waitForTimeout(100)
+  }
+  return false
+}
+
 async function persistedWakeReply(sessionId: string): Promise<{ update: boolean; reply: boolean }> {
   const messages = await apiJson<any>("GET", `/api/chat-messages?sessionId=${encodeURIComponent(sessionId)}`)
   const items: any[] = messages?.items ?? messages?.data ?? messages ?? []
@@ -276,8 +304,13 @@ test.describe("a server-initiated wake on an open window", () => {
     })
 
     // Let the mount probes settle, then watch a window with no background work
-    // at all: the wake watch must not be armed, or every idle chat polls.
-    await page.waitForTimeout(6_000)
+    // at all: the wake watch must not be armed, or every idle chat polls. Wait
+    // for the window to actually stop probing rather than assuming 6s is
+    // enough on a cold project load (SHO-134).
+    expect(
+      await waitForChatQuiet(page),
+      "the freshly opened window stops its own mount probes",
+    ).toBe(true)
     asked.length = 0
     await page.waitForTimeout(12_000)
     soft(asked.length, `an idle chat made ${asked.length} task/turn requests in 12s`).toBe(0)
