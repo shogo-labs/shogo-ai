@@ -385,12 +385,18 @@ describe('SHO-87 QA: machine-bound workspace calls are served by the machine', (
     expect(templates).toContain('/api/workspaces/${workspaceId}/cost-analytics/${endpoint}')
     // A family whose names the resolver dropped would make the test below pass
     // for the wrong reason, so every family has to arrive with its callers: the
-    // usage panel alone passes six analytics names, and the cost tab's five
-    // sections plus budget/experiments posts come through two pass-throughs.
+    // usage panel passes `dashboard` + `usage-log` since SHO-140 collapsed its
+    // five reads into one, and the cost tab's five sections plus
+    // budget/experiments posts come through two pass-throughs.
     for (const { callers } of families.values()) {
       expect(callers.size).toBeGreaterThan(0)
     }
-    expect(families.get('/api/workspaces/${workspaceId}/analytics/${endpoint}')!.callers.size).toBeGreaterThan(5)
+    const analyticsCallers = families.get('/api/workspaces/${workspaceId}/analytics/${endpoint}')!.callers
+    expect(analyticsCallers.size).toBeGreaterThanOrEqual(4)
+    // The names the Usage tab really passes: it is the caller this family is
+    // mostly about, so a renamed tail (SHO-140) has to show up here.
+    expect([...analyticsCallers]).toContain('dashboard')
+    expect([...analyticsCallers]).toContain('usage-log')
     expect(families.get('/api/workspaces/${workspaceId}/cost-analytics/${endpoint}')!.callers.size).toBeGreaterThanOrEqual(5)
 
     // A call site whose tail is a runtime value is a place this spec cannot
