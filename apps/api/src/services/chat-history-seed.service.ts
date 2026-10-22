@@ -215,6 +215,58 @@ function persistSummary(sessionId: string, summary: string, through: number): Pr
 }
 
 /**
+ * The shortest a fallback digest line may be cut to before it stops carrying
+ * an identity (`u: turn-042`): the floor that decides how many messages fit.
+ */
+const DIGEST_LINE_MIN_CHARS = 12
+
+function digestLine(message: SeedMessage): string | null {
+  const body = normalizeText(message.text)
+  if (!body) return null
+  return `${message.role === 'user' ? 'u' : 'a'}: ${body}`
+}
+
+/**
+ * One line per message inside `budget` characters.
+ *
+ * Full length when it fits; otherwise every line is cut to the same per-message
+ * share, so a batch that has to fall back to digests still shows *all* of its
+ * turns instead of the ones that happened to fit — truncating the joined block
+ * kept the oldest bytes and dropped everything after them while the watermark
+ * claimed the lot (SHO-137 round 4, B3). When not even
+ * `DIGEST_LINE_MIN_CHARS` per message fits, the surplus is left off the end and
+ * `kept` says how many lines are really there, so the caller can keep the
+ * watermark honest rather than claim messages that are not in the block.
+ */
+function renderDigest(lines: string[], budget: number): { text: string; kept: number } {
+  if (lines.length === 0) return { text: '', kept: 0 }
+  const room = Math.max(0, budget)
+  const joined = lines.join('\n')
+  if (joined.length <= room) return { text: joined, kept: lines.length }
+
+  // Each line also costs its newline, so a line's share is the room minus the
+  // separators, over the number of lines.
+  const perLine = Math.floor((room - (lines.length - 1)) / lines.length)
+  if (perLine >= DIGEST_LINE_MIN_CHARS) {
+    return {
+      text: lines
+        .map((line) => (line.length > perLine ? `${line.slice(0, perLine - 1).trimEnd()}…` : line))
+        .join('\n'),
+      kept: lines.length,
+    }
+  }
+
+  const fit = Math.max(0, Math.floor((room + 1) / (DIGEST_LINE_MIN_CHARS + 1)))
+  return {
+    text: lines
+      .slice(0, fit)
+      .map((line) => `${line.slice(0, DIGEST_LINE_MIN_CHARS - 1).trimEnd()}…`)
+      .join('\n'),
+    kept: fit,
+  }
+}
+
+/**
  * Fold `messages` (oldest first) into `previous`, in summarizer-sized batches.
  *
  * The summarizer takes at most `SUMMARY_INPUT_LIMIT` messages per call, so a
@@ -224,17 +276,38 @@ function persistSummary(sessionId: string, summary: string, through: number): Pr
  * passing the running block as `previous` each time, covers every message and
  * keeps the result a briefing rather than a transcript.
  *
- * With no model, the batch still gets covered: appended one-line digests
- * (`extractiveDigest`) are the fallback, so a summarizer outage costs detail,
- * never coverage.
+ * With no model, the batch is still covered: one digest line per message,
+ * compressed to fit (`renderDigest`) rather than truncated, so an outage costs
+ * detail and never coverage. `covered` reports how many of `messages` the block
+ * really holds; a caller must not advance its watermark beyond that.
  */
 async function foldInBatches(args: {
   sessionId: string
   label: string
   previous: string | null
   messages: SeedMessage[]
-}): Promise<string> {
-  let summary = args.previous
+}): Promise<{ summary: string; covered: number }> {
+  const heading = summaryHeading(args.label)
+  const previous = args.previous ?? ''
+  // A block we wrote as digests is re-rendered line by line, so each message
+  // keeps a share of the budget. Anything else (a model briefing) is prose we
+  // must not re-cut: new digest lines are fitted into the room it leaves.
+  const isDigestBlock = previous === '' || previous.startsWith(`${heading}\n`)
+  let prose = isDigestBlock ? '' : previous
+  let lines = isDigestBlock && previous ? previous.slice(heading.length + 1).split('\n').filter(Boolean) : []
+  // Digest lines the block arrived with are messages an earlier turn already
+  // claimed; only the surplus over them is ours to claim now.
+  let baseline = lines.length
+  let proseCovered = 0
+  let covered = 0
+
+  const render = () => {
+    const room = CONTEXT_SUMMARY_MAX_CHARS - (prose ? prose.length + 1 : heading.length + 1)
+    const rendered = renderDigest(lines, room)
+    const body = prose && rendered.text ? `${prose}\n${rendered.text}` : prose || rendered.text
+    return { text: body ? `${prose ? '' : `${heading}\n`}${body}` : '', kept: rendered.kept }
+  }
+
   for (let i = 0; i < args.messages.length; i += SUMMARY_INPUT_LIMIT) {
     const batch = args.messages.slice(i, i + SUMMARY_INPUT_LIMIT)
     let folded: string | null = null
@@ -243,19 +316,28 @@ async function foldInBatches(args: {
         sessionId: args.sessionId,
         label: args.label,
         messages: batch,
-        previous: summary,
+        previous: render().text || null,
       })
     } catch (err: any) {
       console.warn(`[ChatContext] summarizer failed for ${args.sessionId}:`, err?.message ?? err)
     }
-    if (!folded) {
-      folded = summary
-        ? `${summary}\n${extractiveDigest(batch)}`
-        : `${summaryHeading(args.label)}\n${extractiveDigest(batch)}`
+    if (folded) {
+      // The model read the whole block plus this batch, so the briefing it
+      // returns stands in for the digest lines and covers everything so far.
+      prose = folded.slice(0, CONTEXT_SUMMARY_MAX_CHARS)
+      lines = []
+      baseline = 0
+      proseCovered = i + batch.length
+      covered = proseCovered
+    } else {
+      for (const message of batch) {
+        const line = digestLine(message)
+        if (line) lines.push(line)
+      }
+      covered = proseCovered + Math.max(0, render().kept - baseline)
     }
-    summary = folded.slice(0, CONTEXT_SUMMARY_MAX_CHARS)
   }
-  return summary ?? ''
+  return { summary: render().text, covered }
 }
 
 /**
@@ -301,15 +383,27 @@ export async function ensureDurableSummary(
   // restarting — in batches that cover every newly elided message. Anything
   // cheaper (appending digests without the model) is the *fallback*, used when
   // the summarizer is unavailable, so the block always covers these messages.
-  const summary = await foldInBatches({
+  const folded = await foldInBatches({
     sessionId: args.sessionId,
     label: args.label,
     previous: existing,
     messages: newlyElided,
   })
 
-  await persistSummary(args.sessionId, summary, through)
-  return { summary, through }
+  // The watermark follows the block, not the input: when the summarizer is down
+  // and even compressed digests cannot hold every message, the surplus stays
+  // above the watermark and is folded again next turn rather than being claimed
+  // and lost (SHO-137 round 4, B3).
+  const base = Math.max(existingThrough, offset)
+  const nextThrough = base + folded.covered
+  if (folded.covered < newlyElided.length) {
+    console.warn(
+      `[ChatContext] summary_shortfall session=${args.sessionId} folded=${folded.covered}/${newlyElided.length} watermark=${nextThrough}`,
+    )
+  }
+
+  await persistSummary(args.sessionId, folded.summary, nextThrough)
+  return { summary: folded.summary, through: nextThrough }
 }
 
 export interface BuildHistorySeedOptions {
@@ -658,19 +752,19 @@ export async function summarizeSessionFromDb(
   // Every folded message is covered, in batches: this path can elide a whole
   // long chat in one press, and slicing to the newest 150 while the watermark
   // claimed all of them lost the rest (SHO-137 round 4, B2).
-  const summary = await foldInBatches({
+  const folded = await foldInBatches({
     sessionId: chatSessionId,
     label: session.inferredName || 'chat',
     previous: session.contextSummary,
     messages: fold,
   })
 
-  await persistSummary(chatSessionId, summary, fold.length)
+  await persistSummary(chatSessionId, folded.summary, folded.covered)
 
   return {
-    summary,
-    through: fold.length,
+    summary: folded.summary,
+    through: folded.covered,
     messagesBefore: messages.length,
-    messagesAfter: messages.length - fold.length,
+    messagesAfter: messages.length - folded.covered,
   }
 }

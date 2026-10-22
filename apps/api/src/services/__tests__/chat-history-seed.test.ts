@@ -270,6 +270,36 @@ describe('history seed', () => {
     expect(store.sessions.get('chat-1').contextSummaryThroughCount).toBe(400)
   })
 
+  test('R1 — a summarizer outage compresses the block instead of dropping messages', async () => {
+    const { ensureDurableSummary, CONTEXT_SUMMARY_MAX_CHARS } = await import('../chat-history-seed.service')
+    addSession('chat-1')
+    setChatContextSummarizer(async () => null)
+    const covered = Array.from({ length: 400 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      text: `turn-${String(i).padStart(3, '0')} ${'x'.repeat(900)}`,
+    }))
+
+    const result = await ensureDurableSummary({
+      sessionId: 'chat-1',
+      label: 'deploy chat',
+      existing: null,
+      existingThrough: 0,
+      through: 400,
+      covered,
+    })
+
+    // With no model the block is the fallback, but it must still account for
+    // every message: truncating the joined digests kept the oldest bytes and
+    // dropped the rest while the watermark claimed all 400 (round 4, B3).
+    const summary = store.sessions.get('chat-1').contextSummary
+    expect(summary.length).toBeLessThanOrEqual(CONTEXT_SUMMARY_MAX_CHARS)
+    const missing = covered.filter((m) => !summary.includes(m.text.slice(0, 8)))
+    expect(missing.map((m) => m.text.slice(0, 8))).toEqual([])
+    // And the watermark claims exactly what the block holds.
+    expect(result.through).toBe(400)
+    expect(store.sessions.get('chat-1').contextSummaryThroughCount).toBe(400)
+  })
+
   test('R1 — a summarizer outage across several batches still covers every one', async () => {
     const { ensureDurableSummary } = await import('../chat-history-seed.service')
     addSession('chat-1', { contextSummary: 'Earlier briefing.', contextSummaryThroughCount: 5 })
@@ -366,6 +396,27 @@ describe('history seed', () => {
   test('an unknown chat yields no seed at all', async () => {
     expect(await buildChatHistorySeed('missing')).toBeNull()
     expect(await historySeedFor('missing')).toBeNull()
+  })
+
+  test('R1 — the round-4 probe: 400 large rows, no model, nothing in neither place', async () => {
+    addSession('chat-1')
+    setChatContextSummarizer(async () => null)
+    const rows = Array.from({ length: 400 }, (_, i) => `turn-${String(i).padStart(3, '0')} ${'x'.repeat(900)}`)
+    for (let i = 0; i < rows.length; i++) addMessage('chat-1', i % 2 === 0 ? 'user' : 'assistant', rows[i]!)
+
+    const seed = await buildChatHistorySeed('chat-1')
+    const carried = [seed!.summary ?? '', ...seed!.messages.map((m) => m.text)].join('\n')
+
+    // Every message is in the summary or in the tail. Truncating the fallback to
+    // the first ~26 digests left 308 of these in neither place (round 4, B3).
+    const missing = rows.filter((text) => !carried.includes(text.slice(0, 8)))
+    expect(missing).toEqual([])
+    // And the split is where the watermark says it is: everything after it is
+    // carried verbatim.
+    expect(seed!.summaryThrough).toBe(400 - seed!.messages.length)
+    for (let i = seed!.summaryThrough; i < rows.length; i++) {
+      expect(carried).toContain(rows[i]!.slice(0, 8))
+    }
   })
 
   test('a session that only has a stored summary still carries it', async () => {
