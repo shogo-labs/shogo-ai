@@ -117,6 +117,8 @@ export function remoteProjectsGuidance(opts: { copyToProject?: boolean } = {}): 
       ? 'To move several files or any binary files into another project, use `copy_to_project`: never copy into a folder ' +
         'named after another project here (it lands only on this runtime), and never use `share_file` for this. '
       : 'Never copy into a folder named after another project here: it lands only on this runtime. ') +
+    "Previews are per project too: call `preview_project` with that project's id and use only the URL it " +
+    'returns — do not build a link from this runtime\'s base URL. ' +
     "Use `project_call` to hand work to that project's agent."
   )
 }
@@ -130,6 +132,8 @@ export class RemoteToolError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
+    /** The failed call's JSON body, when the API or runtime sent one. */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message)
     this.name = 'RemoteToolError'
@@ -185,6 +189,7 @@ export async function callRemoteTool(
     `Remote ${tool} in project ${targetProjectId} failed (HTTP ${res.status}): ${message}`,
     res.status,
     code,
+    json && typeof json === 'object' && !Array.isArray(json) ? (json as Record<string, unknown>) : undefined,
   )
 }
 

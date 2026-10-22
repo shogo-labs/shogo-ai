@@ -530,6 +530,13 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       })
 
       if (!res.ok) {
+        // A 5xx means the API could not answer — not that the token is bad.
+        // Caching that as "invalid" used to poison a perfectly good token for
+        // 30s across a deploy or an API blip (SHO-125).
+        if (res.status >= 500) {
+          console.warn(`[${config.name}] Runtime token validation deferred: API HTTP ${res.status}`)
+          return { valid: false }
+        }
         runtimeTokenCache.set(token, { valid: false, expiresAt: now + RUNTIME_CACHE_INVALID_MS })
         return { valid: false }
       }
@@ -539,6 +546,8 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       runtimeTokenCache.set(token, { valid: data.valid, projectId: data.projectId, workspaceId: data.workspaceId, expiresAt: now + ttl })
       return { valid: data.valid, projectId: data.projectId, workspaceId: data.workspaceId }
     } catch (err) {
+      // Timeout / transport failure: the token's validity is unknown, so never
+      // remember it as invalid. The next request re-validates.
       console.error(`[${config.name}] Runtime token validation failed:`, err)
       return { valid: false }
     }
@@ -554,10 +563,22 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     const auth = c.req.header('authorization') || ''
     const runtimeToken = c.req.header('x-runtime-token') || ''
 
-    // Fast path: incoming token matches our env-injected token byte-for-byte.
-    // This is the common case after a successful /pool/assign and signing-
-    // secret stability — no API round-trip needed.
-    if (auth === `Bearer ${runtimeSecret}` || runtimeToken === runtimeSecret) return null
+    // Fast path: incoming token matches one of our env-injected tokens
+    // byte-for-byte. This is the common case after a successful /pool/assign
+    // and signing-secret stability — no API round-trip needed.
+    //
+    // A project pod holds TWO tokens: its own project token (`rt_v1_…`, which
+    // it also presents *outbound* to the API and which is RUNTIME_AUTH_SECRET),
+    // and the workspace token (`wrt_v1_…`, WORKSPACE_RUNTIME_AUTH_SECRET) that
+    // the API presents *inbound* — every remote tool call, `project_call` and
+    // preview hop. Holding both is what lets the byte-compare hit instead of
+    // falling through to the API on every cross-project call, where a single
+    // blip was cached as "invalid", refused for 30s and read as a 401 burst
+    // (SHO-125).
+    const envSecrets = [runtimeSecret, process.env.WORKSPACE_RUNTIME_AUTH_SECRET].filter(
+      (secret): secret is string => Boolean(secret),
+    )
+    if (envSecrets.some((secret) => auth === `Bearer ${secret}` || runtimeToken === secret)) return null
     if (runtimeToken && config.acceptsScopedToken?.(c.req.path, runtimeToken)) return null
 
     const candidate = runtimeToken || (auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '')
@@ -623,20 +644,34 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     }
 
     logRuntimeAuthRejection(candidate, workspaceId, apiVerdict)
-    return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
+    return c.json(
+      {
+        error: 'Unauthorized — missing or invalid runtime token',
+        // Identity only (never token material) so the caller can tell "wrong
+        // workspace / wrong project" (do NOT retry) from "the API could not
+        // answer" (a retry may work). Without this the agent retried 19 times
+        // against an auth mismatch it could not see (SHO-125).
+        code: 'auth_mismatch',
+        tokenScope: tokenScopeOf(candidate),
+        apiVerdict,
+      },
+      401,
+    )
   }
 
   // Identity only, never token material: enough to tell a guest bound to the
   // wrong workspace from a signing-secret mismatch. Throttled because callers
   // retry a refused turn for minutes.
   let lastAuthRejectionLogAt = 0
+  function tokenScopeOf(candidate: string): string {
+    return candidate.match(/^(w?rt_v1_[^_]+)_/)?.[1] ?? (candidate ? 'unrecognized' : 'none')
+  }
   function logRuntimeAuthRejection(candidate: string, workspaceId: string | undefined, apiVerdict: string): void {
     const now = Date.now()
     if (now - lastAuthRejectionLogAt < 60_000) return
     lastAuthRejectionLogAt = now
-    const scope = candidate.match(/^(w?rt_v1_[^_]+)_/)?.[1] ?? (candidate ? 'unrecognized' : 'none')
     console.warn(`[${config.name}] runtime auth rejected ${JSON.stringify({
-      tokenScope: scope,
+      tokenScope: tokenScopeOf(candidate),
       workspaceId: workspaceId ?? null,
       currentProjectId: state.currentProjectId,
       poolMode: IS_POOL_MODE,
