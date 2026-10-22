@@ -29,6 +29,10 @@
 # An `environment:` or `unknown:` classification is a platform defect, never a
 # pass. The worker cap that keeps the critical suite inside what three nodes can
 # absorb lives in e2e/playwright.config.ts (resolveWorkers).
+#
+# Every artifact name ends with $ARTIFACT_SUFFIX (`<attempt>-<run_attempt>`)
+# because deploy-staging.yml calls this workflow twice in one run — a fixed name
+# would fail the retry's own preflight upload and skip the suite entirely.
 # =============================================================================
 
 name: E2E Hosted
@@ -79,9 +83,13 @@ on:
         description: 'Classification of the attempt this run retries (degraded runs are never a clean green)'
         type: string
         default: ''
+      attempt:
+        description: 'Which attempt this is (first | retry). Scopes artifact names so two calls in one run cannot collide'
+        type: string
+        default: 'first'
     outputs:
       classification:
-        description: 'environment | product | clean'
+        description: 'environment | product | unknown | clean'
         value: ${{ jobs.classify.outputs.classification }}
       annotation:
         description: 'environment: <reason> | product: <n> specs'
@@ -100,6 +108,16 @@ env:
   IS_STAGING: ${{ (inputs.target || 'staging') == 'staging' }}
   NS_SYSTEM: shogo-staging-system
   NS_WORKSPACES: shogo-staging-workspaces
+  # Artifact names are scoped to the *workflow run*, not to a job, and
+  # actions/upload-artifact@v4 fails the step (not just warns) when a name
+  # already exists in the run. deploy-staging.yml calls this workflow twice —
+  # `first`, then `retry` — so a fixed name makes the retry's preflight upload
+  # die, which skips `playwright: needs: [preflight]` and means the retry never
+  # reaches the suite at all. Every artifact name therefore carries this
+  # suffix: one namespace per attempt (inputs.attempt) and per re-run
+  # (github.run_attempt), so a rerun of the whole workflow cannot collide with
+  # the previous attempt's artifacts either. Upload and download both use it.
+  ARTIFACT_SUFFIX: ${{ inputs.attempt || 'first' }}-${{ github.run_attempt }}
 
 jobs:
   preflight:
@@ -163,7 +181,7 @@ jobs:
         if: always() && env.IS_STAGING == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: capacity-probe-before
+          name: capacity-probe-before-${{ env.ARTIFACT_SUFFIX }}
           path: .tmp/probe-before.json
           retention-days: 7
           if-no-files-found: warn
@@ -253,7 +271,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report-${{ inputs.target || 'staging' }}-${{ inputs.suite || 'full' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: playwright-report-${{ inputs.target || 'staging' }}-${{ inputs.suite || 'full' }}-${{ env.ARTIFACT_SUFFIX }}
           path: test-results/
           retention-days: 7
 
@@ -262,7 +280,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-json
+          name: playwright-json-${{ env.ARTIFACT_SUFFIX }}
           path: test-results/e2e-report.json
           retention-days: 7
           if-no-files-found: warn
@@ -325,7 +343,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: capacity-probe-after
+          name: capacity-probe-after-${{ env.ARTIFACT_SUFFIX }}
           path: .tmp/probe-after.json
           retention-days: 7
           if-no-files-found: warn
@@ -361,19 +379,19 @@ jobs:
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: capacity-probe-before
+          name: capacity-probe-before-${{ env.ARTIFACT_SUFFIX }}
           path: .tmp
 
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: capacity-probe-after
+          name: capacity-probe-after-${{ env.ARTIFACT_SUFFIX }}
           path: .tmp
 
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: playwright-json
+          name: playwright-json-${{ env.ARTIFACT_SUFFIX }}
           path: test-results
 
       - name: Classify the run
@@ -410,7 +428,7 @@ jobs:
 
           - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           - Commit: ${{ github.sha }}
-          - Diagnostics artifact: \`staging-e2e-diagnostics-${{ github.sha }}\`
+          - Diagnostics artifact: \`staging-e2e-diagnostics-${{ github.sha }}-${{ env.ARTIFACT_SUFFIX }}\`
 
           The guard for this is SHO-136: kubelet image GC at 70/60, the critical
           suite capped at 4 workers, and a staging pool floor of 3. If this keeps
@@ -529,7 +547,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: staging-e2e-diagnostics-${{ github.sha }}
+          name: staging-e2e-diagnostics-${{ github.sha }}-${{ env.ARTIFACT_SUFFIX }}
           path: .tmp/diagnostics
           retention-days: 14
           if-no-files-found: warn

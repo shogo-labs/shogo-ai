@@ -598,6 +598,11 @@ jobs:
       target: staging
       suite: critical
       report_status: true
+      # Scopes this call's artifact names (`<attempt>-<run_attempt>`). The retry
+      # is a second invocation in the *same* run, so it must not reuse them:
+      # actions/upload-artifact@v4 fails on a duplicate name, which would fail
+      # the retry's preflight and skip its Playwright job outright.
+      attempt: first
     secrets: inherit
 
   # One retry, and it is a safety net — never a capacity fix (SHO-136).
@@ -622,4 +627,6 @@ jobs:
       # `|| 'unknown'` keeps the retry flagged as degraded even when the first
       # attempt failed too early to publish its classification.
       previous_classification: ${{ needs.e2e-critical.outputs.classification || 'unknown' }}
+      # Its own artifact namespace — see `attempt: first` above.
+      attempt: retry
     secrets: inherit
