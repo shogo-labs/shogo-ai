@@ -269,6 +269,26 @@ describe.skipIf(!IS_WINDOWS)('containChild on Windows', () => {
     expect(survivors).toEqual([])
   }, 60_000)
 
+  test('a kill in flight is not disarmed by the dispose that follows it', async () => {
+    const child = spawn('powershell', ['-NoProfile', '-Command', 'Start-Sleep -Seconds 600'], {
+      stdio: 'ignore',
+    })
+    children.push(child)
+    const containment = contain(child, { label: 'exec' })
+    const pid = child.pid as number
+
+    // The real order: `handle.kill()` starts the sweep and does not await it,
+    // the shell dies, and its `exit` handler disposes the containment while the
+    // sweep is still running. Disarm used to clear KILL_ON_JOB_CLOSE and close
+    // the handle first, which left the tree alive and reported it empty.
+    const inFlight = containment.killTree({ graceMs: 0 })
+    containment.dispose()
+
+    const { survivors } = await inFlight
+    expect(survivors).toEqual([])
+    await waitFor(() => !isAlive(pid), 20_000, 'the shell to die with its job')
+  }, 120_000)
+
   test('a second killTree on a tree it already emptied does not re-walk the process table', async () => {
     const child = spawn('powershell', ['-NoProfile', '-Command', 'Start-Sleep -Seconds 600'], {
       stdio: 'ignore',

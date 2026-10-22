@@ -495,6 +495,8 @@ class WindowsContainment implements ContainmentBackend {
    * and a `Get-CimInstance` spawn to learn what it already knew.
    */
   private emptied = false
+  /** The pass currently killing this tree, so a second caller joins it. */
+  private killInFlight: Promise<KillTreeResult> | null = null
 
   constructor(private readonly child: ChildProcess, private readonly label: string) {
     const pid = child.pid
@@ -553,12 +555,11 @@ class WindowsContainment implements ContainmentBackend {
   }
 
   /** Processes still assigned to the job, per the kernel. */
-  private jobProcessIds(k32: Kernel32): number[] {
-    if (!this.job) return []
+  private jobProcessIds(k32: Kernel32, job: number): number[] {
     try {
       const buffer = Buffer.alloc(8 + 4096 * 8)
       const ok = (k32.QueryInformationJobObject as any)(
-        this.job,
+        job,
         JOB_OBJECT_BASIC_PROCESS_ID_LIST,
         buffer,
         buffer.length,
@@ -577,12 +578,11 @@ class WindowsContainment implements ContainmentBackend {
     }
   }
 
-  private activeProcesses(k32: Kernel32): number | null {
-    if (!this.job) return null
+  private activeProcesses(k32: Kernel32, job: number): number | null {
     try {
       const buffer = Buffer.alloc(64)
       const ok = (k32.QueryInformationJobObject as any)(
-        this.job,
+        job,
         JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
         buffer,
         buffer.length,
@@ -596,9 +596,25 @@ class WindowsContainment implements ContainmentBackend {
   }
 
   async killTree(opts: KillTreeOptions = {}): Promise<KillTreeResult> {
+    // Two callers ask at once: `handle.kill()` starts an unawaited sweep and
+    // `TaskRegistry.cancel` awaits its own. A second pass used to race the first
+    // over the same job handle — and `dispose()` (which the shell's exit fires)
+    // nulled that handle mid-pass, so the loop polled a job that no longer
+    // existed, `jobProcessIds` answered `[]` from a null handle, and the kill
+    // reported an empty tree it had never verified. Single-flight it.
+    if (this.killInFlight) return this.killInFlight
+    if (this.emptied) return { survivors: [] }
+    const run = this.killOnce(opts)
+    const tracked = run.finally(() => {
+      if (this.killInFlight === tracked) this.killInFlight = null
+    })
+    this.killInFlight = tracked
+    return tracked
+  }
+
+  private async killOnce(opts: KillTreeOptions): Promise<KillTreeResult> {
     const pid = this.child.pid
     if (!pid) return { survivors: [] }
-    if (this.emptied) return { survivors: [] }
     const budgetMs = Math.max(2_000, opts.graceMs ?? 0)
     try { await this.jobReady } catch { /* fall back to taskkill */ }
 
@@ -608,32 +624,18 @@ class WindowsContainment implements ContainmentBackend {
     taskkillTree(pid)
     try { this.child.kill('SIGKILL') } catch { /* already gone */ }
 
-    const k32 = this.job ? await loadKernel32() : null
-    if (k32 && this.job) {
-      try {
-        ;(k32.TerminateJobObject as any)(this.job, 1)
-      } catch {
-        // Windows 7-era kernel32 without the symbol; taskkill already ran.
+    // Hold the handle for the whole pass: `this.job` goes null the moment
+    // `dispose()` runs, which is exactly when the shell exits after `taskkill`.
+    const job = this.job
+    const k32 = job ? await loadKernel32() : null
+    if (k32 && job) {
+      const result = await this.terminateJobTree(k32, job, budgetMs)
+      if (result) {
+        if (result.survivors.length === 0) this.emptied = true
+        return result
       }
-      const deadline = Date.now() + budgetMs
-      while (Date.now() < deadline) {
-        const active = this.activeProcesses(k32)
-        if (active === 0) break
-        await delay(25)
-      }
-      const remaining = this.jobProcessIds(k32)
-      if (remaining.length > 0) {
-        const names = windowsProcessNames()
-        // A pid still listed in the job's process list is alive: the kernel
-        // drops terminated pids, which is why `ActiveProcesses` is the poll.
-        return {
-          survivors: remaining
-            .filter((survivor) => survivor !== process.pid)
-            .map((survivor) => ({ pid: survivor, name: names.get(survivor) ?? 'unknown' })),
-        }
-      }
-      this.emptied = true
-      return { survivors: [] }
+      // The kernel would not answer, so the job cannot vouch for this tree:
+      // fall through to the table walk rather than claim it is empty.
     }
 
     // No job object on this machine, or one already closed by `dispose()`:
@@ -647,6 +649,43 @@ class WindowsContainment implements ContainmentBackend {
     return { survivors }
   }
 
+  /**
+   * Terminate the job and report what is left in it, or `null` when the kernel
+   * would not answer — the caller must not call a tree empty on that.
+   */
+  private async terminateJobTree(
+    k32: Kernel32,
+    job: number,
+    budgetMs: number,
+  ): Promise<KillTreeResult | null> {
+    let terminated = false
+    try {
+      terminated = Boolean((k32.TerminateJobObject as any)(job, 1))
+    } catch {
+      // Windows 7-era kernel32 without the symbol; taskkill already ran.
+    }
+    if (!terminated) return null
+
+    const deadline = Date.now() + budgetMs
+    let observed: number | null = null
+    while (Date.now() < deadline) {
+      observed = this.activeProcesses(k32, job)
+      if (observed === 0) break
+      await delay(25)
+    }
+    if (observed === null) return null
+
+    const remaining = this.jobProcessIds(k32, job)
+    const names = remaining.length > 0 ? windowsProcessNames() : null
+    // A pid still listed in the job's process list is alive: the kernel drops
+    // terminated pids, which is why `ActiveProcesses` is the poll.
+    return {
+      survivors: remaining
+        .filter((survivor) => survivor !== process.pid)
+        .map((survivor) => ({ pid: survivor, name: names?.get(survivor) ?? 'unknown' })),
+    }
+  }
+
   dispose(): void {
     this.disposed = true
     // A KILL_ON_JOB_CLOSE handle would take the tree down on close, which is
@@ -656,6 +695,12 @@ class WindowsContainment implements ContainmentBackend {
   }
 
   private async disarm(): Promise<void> {
+    // Never surrender a tree a kill was told to take down: clearing
+    // KILL_ON_JOB_CLOSE and closing the handle first is how a cancelled tree
+    // survived its own cancel (SHO-144, 1 in 10 on windows-latest).
+    if (this.killInFlight) {
+      try { await this.killInFlight } catch { /* the caller saw the failure */ }
+    }
     const job = this.job
     if (!job) return
     this.job = null
