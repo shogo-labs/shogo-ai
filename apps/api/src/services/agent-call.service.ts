@@ -1027,11 +1027,15 @@ export async function forwardToProjectRuntime(
     // `wakeRemoteTarget` returns as soon as it has a URL, which on metal can be
     // before the guest accepts connections. One retry turns that instant into a
     // normal call instead of a hard failure (SHO-125).
+    //
+    // A timeout is not that: it already spent the whole budget, so retrying
+    // doubles the wait on a hung target for no new information.
+    const isTimeout = (err: any) => err?.name === 'TimeoutError' || err?.name === 'AbortError'
     let res: Response
     try {
       res = await post()
     } catch (err) {
-      if (!opts.retryOnTransportError) throw err
+      if (!opts.retryOnTransportError || isTimeout(err)) throw err
       await new Promise((resolve) => setTimeout(resolve, REMOTE_TRANSPORT_RETRY_DELAY_MS))
       res = await post()
     }

@@ -765,10 +765,11 @@ export class PermissionEngine {
   private checkWithinWorkspace(params: Record<string, any>): boolean {
     const filePath = (params.path as string) || ''
     try {
-      return isWithinAnyCanonicalRoot(
-        [this.workspaceDir, ...linkedFolderRoots()],
-        resolve(this.workspaceDir, filePath),
-      )
+      // Canonical on both sides — a project runtime's WORKSPACE_DIR is a
+      // symlink, so a raw compare prompted for its own files. Linked folders
+      // are deliberately *not* a root here: they are a separate grant and keep
+      // their approval prompt in balanced mode (SHO-125 review).
+      return isWithinAnyCanonicalRoot([this.workspaceDir], resolve(this.workspaceDir, filePath))
     } catch {
       return false
     }

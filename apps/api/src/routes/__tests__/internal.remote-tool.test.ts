@@ -244,6 +244,25 @@ describe('POST /projects/:projectId/remote-tool', () => {
       expect(attempts()).toBe(2)
     })
 
+    test('a timeout on a read is not retried: the budget is already spent', async () => {
+      let attempts = 0
+      globalThis.fetch = (async () => {
+        attempts += 1
+        const err: any = new Error('The operation was aborted due to timeout')
+        err.name = 'TimeoutError'
+        throw err
+      }) as unknown as typeof fetch
+
+      const res = await remoteTool(
+        w.projects.open,
+        { tool: 'read_file', args: { path: 'README.md' } },
+        { 'x-runtime-token': tokenA, 'X-Requester-Ticket': ticketFor(w.users.member) },
+      )
+      expect(res.status).toBe(504)
+      expect(res.body.error.code).toBe('agent_call_timeout')
+      expect(attempts).toBe(1)
+    })
+
     test('a write is never replayed: one attempt, 503 with a retry hint', async () => {
       const attempts = flakyRuntime(5)
       const res = await remoteTool(
