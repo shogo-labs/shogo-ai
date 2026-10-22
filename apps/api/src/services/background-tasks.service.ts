@@ -477,6 +477,13 @@ export interface TaskEvent {
    * a milestone, instead of re-parsing the rendered line.
    */
   card?: CardEventState
+  /**
+   * The agent whose run produced this event (`project:<id>` / `workspace`).
+   * A watch never hears its own agent: the run that just ended knows what it
+   * did, so waking it for that is a wake that buys another wake — the loop
+   * that made one mention re-run an agent a dozen times (SHO-129).
+   */
+  fromAgentRef?: string
 }
 
 export interface CardEventState {
@@ -641,12 +648,43 @@ export async function emitTaskEvent(source: string, targetRef: string, event: Ta
       },
       take: 50,
     })
-    for (const row of rows) await applyEvent(row, event)
-    return rows.length
+    const own = await watchedByAgent(rows, event.fromAgentRef)
+    let applied = 0
+    for (const row of rows) {
+      // The run that wrote this line is the one watching: it already knows, and
+      // settling it would queue a wake whose run writes the next line.
+      if (own.has(row.id)) continue
+      await applyEvent(row, event)
+      applied++
+    }
+    if (own.size) {
+      console.log(`[BackgroundTasks] ${source}:${targetRef} ignored by ${own.size} watch(es) of its own agent ${event.fromAgentRef}`)
+    }
+    return applied
   } catch (err) {
     console.warn(`[BackgroundTasks] emit ${source}:${targetRef} failed:`, (err as Error).message)
     return 0
   }
+}
+
+/**
+ * The watches in `rows` held by `agentRef`, i.e. sitting in one of its chat
+ * sessions. The session is the only record of who owns a watch.
+ */
+async function watchedByAgent(rows: BackgroundTaskRow[], agentRef: string | undefined): Promise<Set<string>> {
+  if (!agentRef || !rows.length) return new Set()
+  const sessions: Array<{ id: string; contextType: string | null; contextId: string | null }> = await db.chatSession
+    .findMany({
+      where: { id: { in: [...new Set(rows.map((row) => row.chatSessionId))] } },
+      select: { id: true, contextType: true, contextId: true },
+    })
+    .catch(() => [])
+  const mine = new Set(
+    sessions
+      .filter((s) => (s.contextType === 'project' && s.contextId ? `project:${s.contextId}` : 'workspace') === agentRef)
+      .map((s) => s.id),
+  )
+  return new Set(rows.filter((row) => mine.has(row.chatSessionId)).map((row) => row.id))
 }
 
 export function newTaskId(): string {
@@ -939,10 +977,14 @@ export async function consecutiveWakeWaits(chatSessionId: string, limit: number)
   if (taskWakeResetsRun(recent[0]!.parts)) return 1
 
   const ids = [...new Set(run.flatMap((wake) => wake.taskIds))]
-  const rows: Array<{ id: string; createdAt: Date }> = ids.length
-    ? await db.backgroundTask.findMany({ where: { id: { in: ids } }, select: { id: true, createdAt: true } })
+  const rows: Array<{ id: string; createdAt: Date; finishedAt: Date | null }> = ids.length
+    ? await db.backgroundTask.findMany({ where: { id: { in: ids } }, select: { id: true, createdAt: true, finishedAt: true } })
     : []
-  const startedAt = new Map(rows.map((row) => [row.id, row.createdAt.getTime()]))
+  // A re-armed card watch keeps its id (one task per card), so `createdAt` says
+  // nothing about how many times it has woken its session. Its latest `finishedAt`
+  // does: a milestone that landed after the previous wake is a new wait, which is
+  // what stops a watch from waking on its own run forever (SHO-129).
+  const startedAt = new Map(rows.map((row) => [row.id, Math.max(row.createdAt.getTime(), row.finishedAt?.getTime() ?? 0)]))
 
   let waits = 1
   for (let i = 0; i + 1 < run.length; i++) {
