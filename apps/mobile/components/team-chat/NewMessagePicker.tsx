@@ -110,7 +110,6 @@ export function NewMessagePicker({
             key={f.id}
             accessibilityRole="tab"
             aria-selected={filter === f.id}
-            aria-selected={filter === f.id}
             onPress={() => setFilter(f.id)}
             className={cn('rounded-full px-3 py-1', filter === f.id ? 'bg-primary' : 'bg-muted active:bg-muted/70')}
           >
