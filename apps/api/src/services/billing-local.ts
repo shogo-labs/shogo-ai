@@ -7,6 +7,7 @@
  * it is part of the local API bundle.
  */
 import { prisma } from '../lib/prisma'
+import { invalidateAnalyticsCache } from '../lib/analytics-cache'
 import type { ConsumeUsageParams, ConsumeUsageResult } from './billing.service'
 
 type UsageEventData = Parameters<typeof prisma.usageEvent.create>[0]['data']
@@ -29,6 +30,7 @@ export async function recordLocalUsage(params: ConsumeUsageParams): Promise<Cons
         actionMetadata: (actionMetadata ?? null) as UsageEventData['actionMetadata'],
       },
     })
+    invalidateAnalyticsCache({ workspaceId, projectId })
   } catch (e) {
     console.warn('[billing] Failed to record local usage event:', e)
   }
