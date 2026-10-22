@@ -32,6 +32,7 @@ const WORKSPACE_SLUG = `usage-golden-${crypto.randomUUID().slice(0, 8)}`
 
 let scope: { workspaceId: string }
 let otherScope: { workspaceId: string }
+let shapeScope: { workspaceId: string }
 
 /** Deterministic PRNG so the fixture is identical on every run. */
 function mulberry32(seed: number) {
@@ -187,6 +188,68 @@ beforeAll(async () => {
     })
   }
 
+  // Two shapes the loop above can never produce, because every row it seeds
+  // carries both the `rawUsd` column and a `totalTokens` field — which is
+  // exactly why the fixture missed the under-counted money and the chart's
+  // token fallback:
+  //  - rows whose cost is only inside `actionMetadata` (`rawUsd`, or the older
+  //    `dollarCost`) with a NULL column, as the AI-proxy paths write them, and
+  //    one whose cost is column-only, as `live-session-meter` writes it;
+  //  - completions with no `totalTokens` field, where the chart reports the
+  //    recorded field only while the summary derives input + output.
+  // They live in their own workspace so the expected totals below are exact.
+  const shapeWorkspace = await db.workspace.create({
+    data: { name: 'Shaped Usage', slug: `${WORKSPACE_SLUG}-shapes`, kind: 'team' },
+  })
+  shapeScope = { workspaceId: shapeWorkspace.id }
+  const shapeRows: any[] = [
+    {
+      memberId: alice.id,
+      billedUsd: 0,
+      rawUsd: null,
+      meta: { model: 'claude-sonnet-4-5', provider: 'anthropic', rawUsd: 0.0088657, inputTokens: 900, outputTokens: 100, totalTokens: 1000 },
+    },
+    {
+      memberId: bob.id,
+      billedUsd: 0,
+      rawUsd: null,
+      meta: { model: 'gpt-5', provider: 'openai', dollarCost: 0.01030257, inputTokens: 400, outputTokens: 60, totalTokens: 460 },
+    },
+    {
+      memberId: alice.id,
+      billedUsd: 0,
+      rawUsd: 0.004,
+      meta: { model: 'hoshi-2-0', provider: 'deepseek', inputTokens: 300, outputTokens: 40, totalTokens: 340 },
+    },
+    {
+      memberId: carol.id,
+      billedUsd: 0.002,
+      rawUsd: null,
+      meta: { model: 'claude-sonnet-4-5', provider: 'anthropic', inputTokens: 700, outputTokens: 130, cachedInputTokens: 90 },
+    },
+    {
+      memberId: carol.id,
+      billedUsd: 0,
+      rawUsd: null,
+      meta: { model: 'gpt-5', provider: 'openai', inputTokens: 250, outputTokens: 25 },
+    },
+  ]
+  shapeRows.forEach((row, i) => {
+    rows.push({
+      workspaceId: shapeWorkspace.id,
+      projectId: null,
+      memberId: row.memberId,
+      actionType: 'ai_proxy_completion',
+      source: 'daily',
+      billedUsd: row.billedUsd,
+      rawUsd: row.rawUsd,
+      balanceBefore: 0,
+      balanceAfter: 0,
+      createdAt: new Date(now - 3_600_000 - i * 1000),
+      actionMetadata: row.meta,
+    })
+  })
+
   await db.usageEvent.createMany({ data: rows })
 
   // Tool calls, one of them on a workspace-scoped session (no project) — the
@@ -257,6 +320,45 @@ describe('getUsageDashboard matches the pre-change read paths', () => {
     expect(legacyToolCalls).toBe(1)
     expect(newToolCalls).toBe(2)
   })
+
+  /**
+   * QA round 3: `totalRawUsd` must include rows whose cost lives only in
+   * `actionMetadata`. The desktop renders this column as its cost, so a
+   * column-only `SUM("rawUsd")` silently showed less money than was spent.
+   */
+  test('totalRawUsd counts the cost recorded only in actionMetadata', async () => {
+    const [dashboard, legacy] = await Promise.all([
+      analytics.getUsageDashboard(shapeScope, { period: PERIOD, page: 1, limit: 50 }),
+      analytics.getUsageSummary(shapeScope, PERIOD, { page: 1, limit: 50 }),
+    ])
+    // 0.0088657 via metadata `rawUsd` + 0.01030257 via metadata `dollarCost` +
+    // 0.004 recorded only on the column + the billed-only row's NULL column.
+    expect(legacy.totals.totalRawUsd).toBeCloseTo(0.02316827, 9)
+    expectSameNumbers(dashboard.summary.summaries, legacy.summaries)
+    expect(dashboard.summary.totals.totalRawUsd).toBeCloseTo(legacy.totals.totalRawUsd, 9)
+  })
+
+  /**
+   * QA round 3: the chart's `tokens` metric has always read the recorded
+   * `totalTokens` field, so a completion without one contributes 0 there even
+   * though the summary derives input + output. The grouped scan must not apply
+   * the summary's fallback to the chart.
+   */
+  test('the tokens chart ignores rows with no totalTokens field, like getSpendTimeseries', async () => {
+    const [dashboard, legacy] = await Promise.all([
+      analytics.getUsageDashboard(shapeScope, { period: PERIOD, metric: 'tokens' }),
+      analytics.getSpendTimeseries(shapeScope, PERIOD, { metric: 'tokens' }),
+    ])
+    expectSameNumbers(withSortedModels(dashboard.timeseries), withSortedModels(legacy))
+
+    const chartTokens = dashboard.timeseries.days.reduce((s: number, d: any) => s + d.total, 0)
+    expect(chartTokens).toBe(1000 + 460 + 340)
+    const summary = await analytics.getUsageDashboard(shapeScope, { period: PERIOD })
+    // The two completions without a `totalTokens` field contribute 700+130+90
+    // and 250+25 to the summary and nothing to the chart.
+    expect(summary.summary.totals.totalTokens - chartTokens).toBe(1195)
+  })
+
 
   test('a second summary page equals the legacy page', async () => {
     const [dashboard, legacy] = await Promise.all([

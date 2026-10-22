@@ -2594,6 +2594,15 @@ interface UsageGroupRow {
   costUsd: number
   inputTokens: number
   outputTokens: number
+  /**
+   * `meta.totalTokens` exactly as recorded (0 when absent) — the chart's rule
+   * (`getSpendTimeseries` uses `meta.totalTokens || 0`).
+   */
+  totalTokensField: number
+  /**
+   * What the summary reports: the recorded field, else input + output + cached
+   * + cache-write, matching `aggregateUsageByModel`.
+   */
   totalTokens: number
   cachedInputTokens: number
   cacheWriteTokens: number
@@ -2754,8 +2763,12 @@ async function scanUsageGroupsInNode(
     const num = (key: string) => numOrNull(key) ?? 0
 
     const billedUsd = Number(event.billedUsd ?? 0)
-    const rawUsd = Number(event.rawUsd ?? 0)
     const metaRaw = numOrNull('rawUsd') ?? numOrNull('dollarCost') ?? 0
+    // `??`, not `||`: `aggregateUsageByModel` reads
+    // `event.rawUsd ?? Number(meta.rawUsd ?? meta.dollarCost ?? 0)`, so a
+    // row that only carries the cost in `actionMetadata` (the
+    // `ai_live_session_minutes` shape) must still contribute its money.
+    const rawUsd = event.rawUsd ?? metaRaw
     const costUsd = billedUsd > 0 ? billedUsd : rawUsd > 0 ? rawUsd : metaRaw
     const inputTokens = num('inputTokens')
     const outputTokens = num('outputTokens')
@@ -2787,6 +2800,7 @@ async function scanUsageGroupsInNode(
         costUsd: 0,
         inputTokens: 0,
         outputTokens: 0,
+        totalTokensField: 0,
         totalTokens: 0,
         cachedInputTokens: 0,
         cacheWriteTokens: 0,
@@ -2803,6 +2817,7 @@ async function scanUsageGroupsInNode(
     group.costUsd += costUsd
     group.inputTokens += inputTokens
     group.outputTokens += outputTokens
+    group.totalTokensField += totalTokensField
     group.totalTokens += totalTokensField !== 0
       ? totalTokensField
       : inputTokens + outputTokens + cachedInputTokens + cacheWriteTokens
@@ -2872,7 +2887,7 @@ async function scanUsageGroupsInSql(
       ${rawProvider}                  AS "provider",
       COUNT(*)                        AS "requests",
       COALESCE(SUM("billedUsd"), 0)   AS "billedUsd",
-      COALESCE(SUM("rawUsd"), 0)      AS "rawUsd",
+      COALESCE(SUM(COALESCE("rawUsd", ${metaRaw})), 0) AS "rawUsd",
       COALESCE(SUM(${metaRaw}), 0)    AS "metaRawUsd",
       COALESCE(SUM(
         CASE
@@ -2883,6 +2898,7 @@ async function scanUsageGroupsInSql(
       ), 0)                           AS "costUsd",
       COALESCE(SUM(${input}), 0)      AS "inputTokens",
       COALESCE(SUM(${output}), 0)     AS "outputTokens",
+      COALESCE(SUM(${totalTokens}), 0) AS "totalTokensField",
       COALESCE(SUM(
         CASE WHEN ${totalTokens} <> 0 THEN ${totalTokens}
              ELSE ${input} + ${output} + ${cached} + ${cacheWrite} END
@@ -2914,6 +2930,7 @@ async function scanUsageGroupsInSql(
     costUsd: Number(r.costUsd),
     inputTokens: Number(r.inputTokens),
     outputTokens: Number(r.outputTokens),
+    totalTokensField: Number(r.totalTokensField),
     totalTokens: Number(r.totalTokens),
     cachedInputTokens: Number(r.cachedInputTokens),
     cacheWriteTokens: Number(r.cacheWriteTokens),
@@ -3068,8 +3085,12 @@ function buildUsageDashboardTimeseries(
       : groupBy === 'source'
         ? g.source
         : labelFor(g.model)
+    // The chart has always read the recorded `totalTokens` field only
+    // (`meta.totalTokens || 0` in `getSpendTimeseries`), so a row with no
+    // `totalTokens` contributes nothing here even though the summary derives a
+    // value from its input/output counts.
     const value = metric === 'tokens'
-      ? g.totalTokens
+      ? g.totalTokensField
       : metric === 'requests'
         ? g.requests
         : g.costUsd
