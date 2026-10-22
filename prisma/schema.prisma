@@ -204,6 +204,10 @@ model Workspace {
   chatMode          String?
   // External chat provider for "external" / "bridged": "slack" | "teams" | "google_chat".
   chatProvider      String?
+  // How many agent replies may be *working at once* in this workspace, or null
+  // for the maximum the plan (or local mode) allows. An admin can lower it; the
+  // plan value is the ceiling in the cloud (see `agent-reply-capacity.ts`).
+  agentReplyConcurrency Int?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 

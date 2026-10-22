@@ -156,6 +156,29 @@ export const ALWAYS_ON_SLOTS_PER_SEAT: Record<PlanId, number | null> = {
   enterprise: null,
 }
 
+/**
+ * Agent replies that may be *working at once* in a workspace, by plan.
+ *
+ * This is an admission rule for new runs, not a cap on how many runs exist: a
+ * run that is only blocked in `wait` (or any other open tool) gives its slot
+ * back, so a busy workspace keeps admitting tagged agents (see
+ * `agent-reply-slots.ts`). A workspace admin may lower it; the plan value is
+ * the ceiling in the cloud.
+ */
+export const AGENT_REPLY_CONCURRENCY: Record<PlanId, number> = {
+  free: 2,
+  basic: 4,
+  pro: 8,
+  business: 12,
+  enterprise: 24,
+}
+
+/**
+ * Desktop's default, and its ceiling: local mode has no plan, so an admin may
+ * set anything from 1 to this, and 24 is what a fresh workspace gets.
+ */
+export const LOCAL_AGENT_REPLY_CONCURRENCY = 24
+
 /** Plans whose always-on slot allowance scales with the paid seat count. */
 const PER_SEAT_ALWAYS_ON_PLANS: ReadonlySet<PlanId> = new Set<PlanId>(['pro', 'business'])
 

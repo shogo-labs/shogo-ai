@@ -28,6 +28,7 @@ import { useChatSettings } from '../../hooks/useChatPrefs'
 import { useMentionables } from '../../hooks/useTeamChat'
 import { useCustomEmojiFeed } from '../../hooks/useCustomEmoji'
 import { CustomEmojiCard, UserGroupsCard } from '../team-chat/WorkspaceChatAdmin'
+import { AgentCapacityCard } from '../team-chat/AgentCapacityCard'
 import type { HuddleSound, MessageSound, MobilePushDelay, NotifyLevel } from '../../lib/team-chat-api'
 import { previewMessageSound } from '../../lib/notification-sound'
 import { previewHuddleSound } from '../../lib/huddle-ringtone'
@@ -250,7 +251,7 @@ function useDesktopPermission(): [string, () => void] {
   return [perm, request]
 }
 
-export function ChatPreferencesTab() {
+export function ChatPreferencesTab({ highlightSection }: { highlightSection?: string } = {}) {
   const workspace = useActiveWorkspace()
   const experience = useWorkspaceExperience()
   const workspaceId: string | null = experience.kind === 'team' ? workspace?.id ?? null : null
@@ -278,6 +279,17 @@ export function ChatPreferencesTab() {
       setQuietEnd(b)
     }
   }, [settings?.statusEmoji, settings?.statusText, settings?.keywords.join(','), settings?.quietHours])
+
+  // `?section=agent-concurrency` (the limit banner's "Change" link) lands on the
+  // Chat tab and needs the stepper in view, not just the top of the page.
+  const highlight = highlightSection === 'agent-concurrency'
+  useEffect(() => {
+    if (!highlight || Platform.OS !== 'web' || typeof document === 'undefined') return
+    const timer = setTimeout(() => {
+      document.getElementById('agent-concurrency')?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [highlight])
 
   if (experience.resolved && experience.kind !== 'team') {
     return (
@@ -570,6 +582,14 @@ export function ChatPreferencesTab() {
           <Text className="mb-2 text-xs text-muted-foreground">
             Shared with everyone in {workspace?.name ?? 'this workspace'}.
           </Text>
+          <Section title="Agent replies">
+            <View
+              nativeID="agent-concurrency"
+              className={highlight ? '-m-2 rounded-lg border border-primary/50 p-2' : ''}
+            >
+              <AgentCapacityCard workspaceId={workspaceId} />
+            </View>
+          </Section>
           <Section title="User groups">
             <UserGroupsCard workspaceId={workspaceId} mentionables={mentionables} />
           </Section>

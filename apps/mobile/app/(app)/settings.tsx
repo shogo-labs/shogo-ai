@@ -4184,19 +4184,22 @@ export const SettingsContent = observer(function SettingsContent({
   localMode = false,
   onSelectTab,
   onClose,
+  section,
 }: {
   activeTab: TabId;
   localMode?: boolean;
   onSelectTab?: (tab: TabId) => void;
   /** Set when Settings is shown in a sheet that must close before navigating away. */
   onClose?: () => void;
+  /** `?section=` deep link inside a tab, e.g. `agent-concurrency` on Chat. */
+  section?: string;
 }) {
   const isLocal = localMode;
   return (
     <>
       {activeTab === "workspace" && <WorkspaceSettingsTab />}
       {activeTab === "people" && !isLocal && <PeopleTab />}
-      {activeTab === "chat" && <ChatPreferencesTab />}
+      {activeTab === "chat" && <ChatPreferencesTab highlightSection={section} />}
       {activeTab === "models" && <WorkspaceModelsTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
       {activeTab === "automations" && (
@@ -4230,7 +4233,7 @@ export default observer(function SettingsPage({
 }) {
   const { ExternalLink, ArrowLeft } = useSettingsIcons();
   const router = useRouter();
-  const params = useLocalSearchParams<{ tab?: string; workspace?: string }>();
+  const params = useLocalSearchParams<{ tab?: string; workspace?: string; section?: string }>();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const isWide = width >= SETTINGS_WIDE_BREAKPOINT;
@@ -4362,6 +4365,7 @@ export default observer(function SettingsPage({
               activeTab={activeTab}
               localMode={localMode || !features.billing}
               onSelectTab={setActiveTab}
+              section={typeof params.section === "string" ? params.section : undefined}
             />
           </View>
         </ScrollView>
@@ -4417,6 +4421,7 @@ export default observer(function SettingsPage({
             activeTab={activeTab}
             localMode={localMode || !features.billing}
             onSelectTab={setActiveTab}
+            section={typeof params.section === "string" ? params.section : undefined}
           />
         </View>
       </ScrollView>

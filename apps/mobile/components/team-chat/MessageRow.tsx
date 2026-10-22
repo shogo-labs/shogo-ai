@@ -33,7 +33,7 @@ import { approvalOf, connectRequestsOf, isAskedOf, messageKind, questionRefsOf, 
 import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { ImagePreviewModal } from '../chat/ImagePreviewModal'
-import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
+import { AgentWorkedFor, AgentWorkingStatus, AgentQueueStatus } from './AgentWork'
 import { markdownToPlainText, renderMentions, renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
 import { isVoiceNote } from '../../lib/voice-note'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
@@ -77,7 +77,13 @@ export interface MessageRowProps {
   grouped: boolean
   me: string | null
   names: MentionNames
-  streaming?: { text: string; tool: string | null }
+  streaming?: {
+    text: string
+    tool: string | null
+    tools?: Array<{ name: string; done: boolean }>
+    queue?: { position: number; ahead: number; running: number; limit: number } | null
+    waiting?: { tool: string | null } | null
+  }
   canManage: boolean
   /** Can pin (anyone who can post or reply here). */
   canPin?: boolean
@@ -457,6 +463,9 @@ function MessageRowImpl(props: MessageRowProps) {
     setProfileOpen(true)
   }, [message.authorType, message.authorUserId, props.onOpenProfile])
   const running = message.authorType === 'agent' && message.agentStatus === 'running'
+  // A reply created while there was no free slot carries `blocks.queued` until it
+  // starts, so its place in line survives a reload.
+  const queuedSince = !!(message.blocks as { queued?: { since?: string } } | null | undefined)?.queued
   const rawBody = running ? streaming?.text ?? '' : message.text
   // A link to another message renders as a quote of it and is taken out of the
   // text; the quote itself is fetched per viewer and never stored on the row.
@@ -893,7 +902,13 @@ function MessageRowImpl(props: MessageRowProps) {
             {running && (
               // Display only: navigation is the header's Open session button, so the status takes no hover or press.
               <View className="mt-1" pointerEvents="none" testID="agent-working-status">
-                <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} />
+                {streaming?.waiting ? (
+                  <AgentQueueStatus waiting={streaming.waiting} />
+                ) : streaming?.queue || queuedSince ? (
+                  <AgentQueueStatus position={streaming?.queue?.position ?? null} />
+                ) : (
+                  <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} />
+                )}
               </View>
             )}
             {message.authorType === 'agent' && message.agentStatus === 'error' && (

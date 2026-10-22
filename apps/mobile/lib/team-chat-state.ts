@@ -5,7 +5,7 @@
  * the conversation list's unread badges, and mention encoding for the
  * composer / display.
  */
-import type { ChatMessage, ConversationSummary, Mentionables, TeamChatEvent } from './team-chat-api'
+import type { ChatMessage, ConversationSummary, Mentionables, QueuePosition, TeamChatEvent } from './team-chat-api'
 import { normalizeRichTextPaste } from './rich-text-paste'
 import { voiceNotePreview } from './voice-note'
 import { MENTION_HREF_PREFIX, mentionHref } from '../components/chat/file-links'
@@ -21,8 +21,18 @@ export interface TimelineScope {
 export interface TimelineState {
   messages: ChatMessage[]
   hasMoreOlder: boolean
-  /** Live text for agent replies that are still running, by message id. */
-  streaming: Record<string, { text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> }>
+  /**
+   * Live state for agent replies that are still running, by message id: the
+   * streamed text, the open tool, the reply's place in the agent queue while it
+   * waits for a slot, and whether it parked on a tool (which frees its slot).
+   */
+  streaming: Record<string, {
+    text: string
+    tool: string | null
+    tools?: Array<{ name: string; done: boolean }>
+    queue?: QueuePosition | null
+    waiting?: { tool: string | null } | null
+  }>
 }
 
 export const emptyTimeline: TimelineState = { messages: [], hasMoreOlder: false, streaming: {} }
@@ -124,7 +134,17 @@ export function applyTimelineEvent(state: TimelineState, event: TeamChatEvent, s
     }
     case 'agent.delta': {
       if (!state.messages.some((m) => m.id === event.messageId)) return state
-      return { ...state, streaming: { ...state.streaming, [event.messageId]: { text: event.text, tool: event.tool, tools: event.tools } } }
+      const prev = state.streaming[event.messageId]
+      // A queue or waiting notice carries no text: keep what the run already said.
+      const notice = event.queue !== undefined || event.waiting !== undefined
+      const next = notice
+        ? {
+            ...(prev ?? { text: '', tool: null }),
+            ...(event.queue !== undefined ? { queue: event.queue } : {}),
+            ...(event.waiting !== undefined ? { waiting: event.waiting } : {}),
+          }
+        : { ...(prev ?? {}), text: event.text, tool: event.tool, tools: event.tools }
+      return { ...state, streaming: { ...state.streaming, [event.messageId]: next } }
     }
     default:
       return state
