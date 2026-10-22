@@ -15,15 +15,11 @@
 -- not home-region routed, so the rows are kept (and pruned) where they were
 -- written.
 --
--- `device_version_events` is per-region install telemetry. Its backfill in
--- `20261021120000_add_device_version_events` derived ids as
--- `'dve_' || md5(deviceId || ':' || version)`, so both regions materialised the
--- SAME primary keys from the already-replicated `api_keys` snapshot. While the
--- table was published, EU's tablesync COPY hit
--- `duplicate key value violates unique constraint "device_version_events_pkey"`
--- on its first row, which disabled `sub_from_us`: US->EU replication stopped at
--- 2026-10-22 04:40Z for ~25 min and rebuilt a 540 MB backlog. Each region only
--- records the installs that reach it, so the table is region-local.
+-- `device_version_events` REJOINED the mesh (SHO-142, reverse of #1635): its
+-- ids are random since `20261022120000_device_version_events_region_ids` and
+-- its unique key is `(region, deviceId, version)`, so the two regions cannot
+-- collide on it any more. It is published again on purpose — keep it off this
+-- list.
 --
 -- THE DRIFT THIS GUARDS
 -- ---------------------
@@ -45,7 +41,9 @@
 
 DO $$
 DECLARE
-  region_local text[] := ARRAY['storage_usage', 'usage_wallets', 'proxy_turns', 'device_version_events'];
+  -- `device_version_events` rejoined the mesh (SHO-142): random ids +
+  -- (region, deviceId, version) key, so it is published on purpose again.
+  region_local text[] := ARRAY['storage_usage', 'usage_wallets', 'proxy_turns'];
   is_schema_pub boolean;
   t text;
 BEGIN

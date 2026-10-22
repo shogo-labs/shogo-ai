@@ -44,7 +44,9 @@ import {
   openApiCrashLog,
 } from './local-server'
 import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter, type DesktopLogLevel } from './signoz-log-exporter'
-import { getWebDir, getBunPath, getDbPath } from './paths'
+import { getWebDir, getBunPath, getDbPath, getWorkspacesDirDecision } from './paths'
+import { runSpotlightHint, SPOTLIGHT_SETTINGS_URL } from './spotlight-hint'
+import type { WorkspacesDirDecision } from './spotlight-exclusion'
 import {
   routeShogoRequest,
   verifyWebBundleIntegrity as verifyWebBundleIntegrityPure,
@@ -1918,6 +1920,54 @@ function setupSessionHandlers(): void {
   })
 }
 
+/**
+ * One-time, darwin-only nudge when the workspaces dir could not be excluded
+ * from Spotlight indexing (SHO-152). Shown after the window exists so it has
+ * something to be modal to; the dismissal is remembered in `config.json`.
+ * Headless e2e runs never see it.
+ */
+function maybeShowSpotlightHint(decision: WorkspacesDirDecision | null): void {
+  if (process.platform !== 'darwin') return
+  // Any e2e run: `SHOGO_E2E` is set to '1' by some harnesses and 'true' by
+  // others, and a modal dialog would hang a headless one either way.
+  if (process.env.SHOGO_E2E) return
+  if (!decision?.blocked) return
+  void runSpotlightHint(
+    {
+      workspacesDir: decision.workspacesDir,
+      blocked: decision.blocked,
+      detail: decision.detail,
+    },
+    {
+      isDismissed: () => readConfig().spotlightHintDismissed,
+      rememberDismissed: () => {
+        try {
+          writeConfig({ spotlightHintDismissed: true })
+        } catch {
+          // Best-effort: worst case the hint shows again next launch.
+        }
+      },
+      openSettings: () => {
+        void shell.openExternal(SPOTLIGHT_SETTINGS_URL)
+      },
+      ask: async ({ message, detail, buttons }) => {
+        const { response } = await dialog.showMessageBox({
+          type: 'warning',
+          message,
+          detail,
+          buttons,
+          defaultId: 0,
+          cancelId: buttons.length - 1,
+          noLink: true,
+        })
+        return response
+      },
+    },
+  ).catch(() => {
+    // The hint is advisory; never let it interfere with startup.
+  })
+}
+
 app.whenReady().then(async () => {
   const config = readConfig()
   isCloudMode = config.mode === 'cloud'
@@ -1986,6 +2036,12 @@ app.whenReady().then(async () => {
   buildAppMenu()
   buildDockMenu()
 
+  // macOS: move the workspaces dir to `workspaces.noindex` before the API
+  // server, every runtime and every terminal resolve paths against it — the
+  // API receives the resulting real path as `WORKSPACES_DIR`. No-op off darwin
+  // and on every launch after the first (SHO-152).
+  const workspacesDecision = isCloudMode ? null : getWorkspacesDirDecision()
+
   const skipLocalServer = !isCloudMode && process.env.SHOGO_SKIP_LOCAL_SERVER === 'true'
   if (!isCloudMode && !skipLocalServer) {
     console.log('[Desktop] Starting local server...')
@@ -2032,6 +2088,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+  maybeShowSpotlightHint(workspacesDecision)
   void loadDictation().then((service) => service.start(readConfig().dictation))
   islandWindow = new IslandWindow(windowManager, {
     loadApp: (window) => loadAppWindow(window, '/island'),

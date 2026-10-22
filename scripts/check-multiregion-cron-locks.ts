@@ -271,10 +271,10 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'One queued wake per (trigger message, agent): written by the message-post, card-move and chained-hand-off paths in the region serving that conversation. A cross-region duplicate would only queue the same wake twice, which the drain runs serially anyway — dedupe, not leader election.',
   },
   {
-    key: 'DeviceVersionEvent.(deviceId,version)',
+    key: 'DeviceVersionEvent.(deviceId,region,version)',
     category: 'request_scoped',
     reason:
-      'One history row per (device, version), upserted by the device mint / heartbeat / resolveApiKey touch in the region serving that device\'s requests. A cross-region duplicate would need the same device to report the same version to two regions mid-failover; the row is analytics-only (no side effects), so a conflict is deduped by the unique index rather than leader-elected.',
+      '`region` is part of the unique key, so two regions can never mint the same key: the row written in US is (us-ashburn-1, device, version) and the one in EU is (eu-*, device, version). A peer\'s row is a second tag for the same (device, version) rather than a conflict, and the analytics reader collapses tags through a `Set` (analytics.service.ts adoption series). Before 2026-10-22 the key was (deviceId, version) — an insert/insert there aborts the apply worker, which is exactly what took `sub_from_us` down (SHO-142) and why this is no longer "a conflict is deduped by the unique index".',
   },
   {
     key: 'Huddle.roomName',
