@@ -11,6 +11,7 @@ import { join } from 'path'
 import {
   memoryKillNote,
   sampleOnce,
+  sampleTreeRssKb,
   trackExecProcess,
   trackedExecPids,
 } from '../exec-memory-guard'
@@ -66,7 +67,7 @@ const MEMORY_HOG_SCRIPT =
   `const bytes = ${MEMORY_HOG_MB} * 1024 * 1024\n` +
   `const hog = Buffer.alloc(bytes, 1)\n` +
   `if (hog[0] !== 1 || hog[hog.length - 1] !== 1) process.exit(2)\n` +
-  `setTimeout(() => process.exit(0), 30000)\n`
+  `setTimeout(() => process.exit(0), 60000)\n`
 
 /** Quote a path for the shell `sandboxExecAsync` will run the command under. */
 function quotePath(value: string): string {
@@ -151,17 +152,27 @@ describe('sandboxExecAsync integration', () => {
     })
     expect(trackedExecPids()).toContain(handle.pid!)
 
-    // One `ps` read is a snapshot of an instant: a process group that has just
-    // been forked can still read as empty (or under budget) on a loaded runner,
-    // and a single missed sample means the guard never strikes and `done` never
-    // resolves — which surfaces here as the 20 s timeout, not as a guard
-    // failure. Sample the way the real timer does, repeatedly, until the breach
-    // lands.
-    for (let i = 0; i < 40 && !handle.exited(); i++) {
-      await sampleOnce()
-      if (handle.exited()) break
-      await new Promise((resolve) => setTimeout(resolve, 100))
+    // One `ps` read is a snapshot of an instant, and the child is not over
+    // budget the moment it is spawned: it still has a runtime to start and 192
+    // MB to touch, which on a loaded runner can outlast any fixed number of
+    // samples — the guard then never strikes and `done` never resolves, which
+    // surfaces as a test timeout rather than as a guard failure. So wait for the
+    // OS to really report the group over the ceiling, then hand the guard that
+    // state; a failure here says what was measured instead of hanging.
+    const overBudgetKb = OVER_BUDGET_MB * 1024
+    const deadline = Date.now() + 20_000
+    let measuredKb = 0
+    while (Date.now() < deadline && !handle.exited()) {
+      const sizes = await sampleTreeRssKb([handle.pid!])
+      measuredKb = Math.max(measuredKb, sizes.get(handle.pid!) ?? 0)
+      if (measuredKb > overBudgetKb) break
+      await new Promise((resolve) => setTimeout(resolve, 50))
     }
+    expect(measuredKb).toBeGreaterThan(overBudgetKb)
+
+    // Strikes are required once, so one sample of a group the OS reports over
+    // the ceiling has to stop it.
+    await sampleOnce()
     const result = await handle.done
 
     expect(result.killed).toBe(true)
@@ -169,10 +180,10 @@ describe('sandboxExecAsync integration', () => {
     expect(result.stderr).toContain('out of memory')
     // The note reports what the guard measured, so this is what proves the
     // command was over budget because of the memory it holds, not its size.
-    const measured = /using (\d+) MB/.exec(result.killReason ?? '')
-    expect(Number(measured?.[1])).toBeGreaterThanOrEqual(MEMORY_HOG_MB)
+    const reported = /using (\d+) MB/.exec(result.killReason ?? '')
+    expect(Number(reported?.[1])).toBeGreaterThanOrEqual(MEMORY_HOG_MB)
     expect(trackedExecPids()).not.toContain(handle.pid!)
-  }, 20_000)
+  }, 60_000)
 
   test('a command that exits on its own is untracked', async () => {
     const handle = sandboxExecAsync({ command: 'echo hi', workspaceDir: dir })
