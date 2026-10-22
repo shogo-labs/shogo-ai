@@ -36,6 +36,15 @@ const hog = Buffer.allocUnsafe(${HOLD_MB} * ${MB})
 for (let i = 0; i < hog.length; i += 4096) hog[i] = 1
 hog[hog.length - 1] = 1
 `,
+  'kept-alive-by-timer': `
+const hog = Buffer.alloc(${HOLD_MB} * ${MB}, 1)
+function report() {
+  if (hog[0] !== 1 || hog[hog.length - 1] !== 1) process.exit(2)
+  console.log('[memory-hog] holding=${HOLD_MB} rss=' + process.memoryUsage().rss)
+}
+report()
+setInterval(report, 500)
+`,
 }
 
 const REPORT_TAIL = `
