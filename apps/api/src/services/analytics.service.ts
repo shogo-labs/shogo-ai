@@ -14,6 +14,11 @@ import { prisma, Prisma } from '../lib/prisma'
 import { resolveModelLabels } from './model-registry.service'
 import { countLineChanges } from '../lib/tool-line-stats'
 import {
+  ANALYTICS_CACHE_DEFAULT_TTL_MS,
+  analyticsCacheKey,
+  withAnalyticsCache,
+} from '../lib/analytics-cache'
+import {
   compareSemver,
   deviceOsLabel,
   isSameRelease,
@@ -133,6 +138,22 @@ function scopeWhere(scope: AnalyticsScope) {
     ...(scope.userId ? { memberId: scope.userId } : {}),
   }
 }
+
+/**
+ * The action types the Usage tab meters (token / voice usage). Internal,
+ * non-billable events (`ai_proxy_internal`, …) are deliberately outside it: the
+ * log, the summary, the spend chart and the dashboard's group scan must agree
+ * on exactly one set, so it is defined once.
+ */
+export const USAGE_METERED_ACTION_TYPES = [
+  'ai_proxy_completion',
+  'chat_message',
+  'voice_minutes_inbound',
+  'voice_minutes_outbound',
+  'voice_number_setup',
+  'voice_number_monthly',
+  'ai_live_session_minutes',
+] as const
 
 interface UsageModelAggregate {
   userId: string
@@ -749,15 +770,7 @@ export async function getMemberInsights(
     workspaceId,
     createdAt: { gte: since },
     actionType: {
-      in: [
-        'ai_proxy_completion',
-        'chat_message',
-        'voice_minutes_inbound',
-        'voice_minutes_outbound',
-        'voice_number_setup',
-        'voice_number_monthly',
-        'ai_live_session_minutes',
-      ],
+      in: [...USAGE_METERED_ACTION_TYPES],
     },
     ...(options.userId ? { memberId: options.userId } : {}),
   }
@@ -1106,15 +1119,7 @@ export async function getSpendTimeseries(
   const where: any = {
     ...scopeWhere(scope),
     actionType: {
-      in: [
-        'ai_proxy_completion',
-        'chat_message',
-        'voice_minutes_inbound',
-        'voice_minutes_outbound',
-        'voice_number_setup',
-        'voice_number_monthly',
-        'ai_live_session_minutes',
-      ],
+      in: [...USAGE_METERED_ACTION_TYPES],
     },
     createdAt: { gte: from, lt: to },
   }
@@ -2355,15 +2360,7 @@ export async function getUsageLog(
 
   const where: any = {
     actionType: {
-      in: [
-        'ai_proxy_completion',
-        'chat_message',
-        'voice_minutes_inbound',
-        'voice_minutes_outbound',
-        'voice_number_setup',
-        'voice_number_monthly',
-        'ai_live_session_minutes',
-      ],
+      in: [...USAGE_METERED_ACTION_TYPES],
     },
     createdAt: { gte: since },
   }
@@ -2452,15 +2449,7 @@ export async function getUsageSummary(
 
   const where: any = {
     actionType: {
-      in: [
-        'ai_proxy_completion',
-        'chat_message',
-        'voice_minutes_inbound',
-        'voice_minutes_outbound',
-        'voice_number_setup',
-        'voice_number_monthly',
-        'ai_live_session_minutes',
-      ],
+      in: [...USAGE_METERED_ACTION_TYPES],
     },
     createdAt: { gte: since },
   }
@@ -2503,19 +2492,9 @@ export async function getUsageSummary(
 
   // Also get tool call counts per user (from ToolCallLog → ChatSession → Project)
   // We aggregate tool calls through the workspace scope if available
-  const toolCallWhere: any = { status: 'complete' }
-  if (scope.workspaceId) {
-    toolCallWhere.chatSession = { project: { workspaceId: scope.workspaceId } }
-  }
-  if (scope.projectId) {
-    toolCallWhere.chatSession = { contextId: scope.projectId }
-  }
-  if (since) {
-    toolCallWhere.createdAt = { gte: since }
-  }
-
-  // Get total tool calls at platform or workspace level
-  const totalToolCalls = await prisma.toolCallLog.count({ where: toolCallWhere })
+  const totalToolCalls = await prisma.toolCallLog.count({
+    where: toolCallWhereFor(scope, since),
+  })
 
   const summaries: UsageSummaryEntry[] = [...aggregateMap.values()]
     .map((agg) => {
@@ -2564,6 +2543,651 @@ export async function getUsageSummary(
   const paged = summaries.slice((page - 1) * limit, (page - 1) * limit + limit)
 
   return { summaries: paged, totals, total, page, limit }
+}
+
+/**
+ * `ToolCallLog` has no workspace column: it reaches the workspace through its
+ * chat session. A session can belong to a workspace directly (`workspaceId`
+ * set, `contextId` null) or through a project, and the old project-only join
+ * silently dropped the first kind — so a workspace's tool-call total was
+ * low (SHO-140).
+ */
+function toolCallWhereFor(scope: AnalyticsScope, since?: Date): any {
+  const where: any = { status: 'complete' }
+  if (scope.projectId) {
+    where.chatSession = { contextId: scope.projectId }
+  } else if (scope.workspaceId) {
+    where.chatSession = {
+      OR: [
+        { workspaceId: scope.workspaceId },
+        { project: { workspaceId: scope.workspaceId } },
+      ],
+    }
+  }
+  if (since) where.createdAt = { gte: since }
+  return where
+}
+
+// ============================================================================
+// Usage Dashboard (the whole Usage tab from one scan)
+// ============================================================================
+
+/**
+ * One aggregated row of `usage_events` for a workspace over a window.
+ *
+ * The Usage tab used to `findMany` every event three times and aggregate in JS
+ * — 42 MB of `actionMetadata` out of Postgres per scan on a 148k-event
+ * workspace (SHO-140). Everything the tab shows is a sum over these rows, so
+ * the JSON is opened inside the database and only the roll-up travels.
+ */
+interface UsageGroupRow {
+  day: string
+  memberId: string
+  actionType: string
+  source: string
+  model: string
+  provider: string
+  requests: number
+  billedUsd: number
+  rawUsd: number
+  metaRawUsd: number
+  costUsd: number
+  inputTokens: number
+  outputTokens: number
+  /**
+   * `meta.totalTokens` exactly as recorded (0 when absent) — the chart's rule
+   * (`getSpendTimeseries` uses `meta.totalTokens || 0`).
+   */
+  totalTokensField: number
+  /**
+   * What the summary reports: the recorded field, else input + output + cached
+   * + cache-write, matching `aggregateUsageByModel`.
+   */
+  totalTokens: number
+  cachedInputTokens: number
+  cacheWriteTokens: number
+  durationMs: number
+  unpricedRequests: number
+}
+
+export interface UsageDashboardOptions {
+  period?: AnalyticsPeriod
+  fromIso?: string
+  toIso?: string
+  groupBy?: 'model' | 'user' | 'source'
+  metric?: 'spend' | 'tokens' | 'requests'
+  topN?: number
+  page?: number
+  limit?: number
+}
+
+/**
+ * Every number the Usage tab renders, derived from a single scan of
+ * `usage_events`. Shapes are identical to `getUsageSummary`,
+ * `getSpendTimeseries` and `getUsageAnalytics` so the existing UI components
+ * need no change (the totals are covered by the golden fixture test).
+ */
+export async function getUsageDashboard(
+  scope: AnalyticsScope = {},
+  options: UsageDashboardOptions = {},
+) {
+  const { from, to } = periodToWindow(options.period, options.fromIso, options.toIso)
+  const page = Math.max(1, options.page ?? 1)
+  const limit = Math.min(Math.max(1, options.limit ?? 50), 1000)
+  const groupBy = options.groupBy ?? 'model'
+  const metric = options.metric ?? 'spend'
+  const topN = options.topN ?? 8
+
+  const groups = await loadUsageGroups(scope, from, to)
+
+  // Everything below is a roll-up of `groups`: no further database reads except
+  // the two label lookups (users, model names) and the tool-call count.
+  const metered = groups.filter((g) => METERED_ACTION_TYPE_SET.has(g.actionType))
+
+  const memberIds = [...new Set(groups.map((g) => g.memberId))].filter((id) => id !== 'system')
+  const models = [...new Set(metered.map((g) => g.model))]
+  const [users, modelLabels, totalToolCalls] = await Promise.all([
+    memberIds.length === 0
+      ? Promise.resolve([] as { id: string; name: string | null; email: string; image: string | null }[])
+      : prisma.user.findMany({
+        where: { id: { in: memberIds } },
+        select: { id: true, name: true, email: true, image: true },
+      }),
+    resolveModelLabels(models),
+    prisma.toolCallLog.count({ where: toolCallWhereFor(scope, from) }),
+  ])
+  const userMap = new Map(users.map((u) => [u.id, u]))
+  const labelFor = (model: string) => modelLabels.get(model) ?? model
+
+  return {
+    window: { from: from.toISOString(), to: to.toISOString(), period: options.period ?? '30d' },
+    summary: buildUsageDashboardSummary(metered, {
+      userMap,
+      labelFor,
+      totalToolCalls,
+      page,
+      limit,
+    }),
+    timeseries: buildUsageDashboardTimeseries(groups, {
+      from,
+      to,
+      groupBy,
+      metric,
+      topN,
+      labelFor,
+      userMap,
+    }),
+    usage: buildUsageDashboardBreakdown(groups),
+    logCount: metered.reduce((sum, g) => sum + g.requests, 0),
+  }
+}
+
+/** The metered action types as a Set, for the in-memory roll-ups. */
+const METERED_ACTION_TYPE_SET: Set<string> = new Set(USAGE_METERED_ACTION_TYPES)
+
+/**
+ * One grouped scan of `usage_events` for a scope + window, cached for the
+ * Analytics TTL so an open, a chart toggle and a re-render share it.
+ */
+export async function loadUsageGroups(
+  scope: AnalyticsScope,
+  from: Date,
+  to: Date,
+): Promise<UsageGroupRow[]> {
+  const key = analyticsCacheKey({ ...scope, from, to, shape: 'usage-groups' })
+  return withAnalyticsCache(key, ANALYTICS_CACHE_DEFAULT_TTL_MS, () =>
+    scanUsageGroups(scope, from, to),
+  )
+}
+
+async function scanUsageGroups(
+  scope: AnalyticsScope,
+  from: Date,
+  to: Date,
+): Promise<UsageGroupRow[]> {
+  // Which engine decides how the JSON is read, because the two disagree about
+  // the cost (measured, SHO-140):
+  //  - Postgres: `jsonb` operators roll the whole window up in the database, so
+  //    ~42 MB of `actionMetadata` per scan never crosses the wire. That is the
+  //    cloud fix.
+  //  - SQLite (desktop): `json_extract` cannot use an index, so reading ten
+  //    keys per row costs more than shipping the row to Node — the plan's own
+  //    measurement was 93 ms in SQL against 33 ms for the scan underneath. Here
+  //    the JSON is parsed in Node instead, but from **one** scan: the old code
+  //    scanned the same window three times for the three shapes.
+  // Either way this is one statement/one pass over `usage_events`, and it is the
+  // same function for both tracks — no desktop-only vs cloud-only behaviour, the
+  // numbers are identical (golden fixture test).
+  if (process.env.SHOGO_LOCAL_MODE === 'true') return scanUsageGroupsInNode(scope, from, to)
+  return scanUsageGroupsInSql(scope, from, to)
+}
+
+/**
+ * The desktop path: one row scan, rolled up in Node. `actionMetadata` is read
+ * here on purpose — on a local SQLite file there is no wire to protect, and
+ * `json_extract` per key over every row is measurably slower than `JSON.parse`.
+ */
+async function scanUsageGroupsInNode(
+  scope: AnalyticsScope,
+  from: Date,
+  to: Date,
+): Promise<UsageGroupRow[]> {
+  const where: Prisma.UsageEventWhereInput = { createdAt: { gte: from, lt: to } }
+  if (scope.workspaceId) where.workspaceId = scope.workspaceId
+  if (scope.projectId) where.projectId = scope.projectId
+  if (scope.userId) where.memberId = scope.userId
+
+  const events = await prisma.usageEvent.findMany({
+    where,
+    select: {
+      memberId: true,
+      actionType: true,
+      source: true,
+      billedUsd: true,
+      rawUsd: true,
+      createdAt: true,
+      actionMetadata: true,
+    },
+  })
+
+  const groups = new Map<string, UsageGroupRow>()
+  for (const event of events) {
+    const meta = parseMeta(event.actionMetadata)
+    // A JSON number only, so a legacy string value counts as 0 — the same rule
+    // as the `jsonb_typeof(...) = 'number'` / `typeof(json_extract(...))` guard
+    // on the SQL paths.
+    const numOrNull = (key: string): number | null => {
+      const value = meta[key]
+      return typeof value === 'number' && Number.isFinite(value) ? value : null
+    }
+    const num = (key: string) => numOrNull(key) ?? 0
+
+    const billedUsd = Number(event.billedUsd ?? 0)
+    const metaRaw = numOrNull('rawUsd') ?? numOrNull('dollarCost') ?? 0
+    // `??`, not `||`: `aggregateUsageByModel` reads
+    // `event.rawUsd ?? Number(meta.rawUsd ?? meta.dollarCost ?? 0)`, so a
+    // row that only carries the cost in `actionMetadata` (the
+    // `ai_live_session_minutes` shape) must still contribute its money.
+    const rawUsd = event.rawUsd ?? metaRaw
+    const costUsd = billedUsd > 0 ? billedUsd : rawUsd > 0 ? rawUsd : metaRaw
+    const inputTokens = num('inputTokens')
+    const outputTokens = num('outputTokens')
+    const cachedInputTokens = num('cachedInputTokens')
+    const cacheWriteTokens = num('cacheWriteTokens')
+    const totalTokensField = num('totalTokens')
+
+    const day = isoDay(event.createdAt)
+    const memberId = String(event.memberId)
+    const actionType = String(event.actionType)
+    const source = String(event.source)
+    const model = String(meta.model ?? meta.modelUsed ?? 'unknown')
+    const provider = String(meta.provider ?? 'anthropic')
+    const key = `${day}::${memberId}::${actionType}::${source}::${model}::${provider}`
+
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        day,
+        memberId,
+        actionType,
+        source,
+        model,
+        provider,
+        requests: 0,
+        billedUsd: 0,
+        rawUsd: 0,
+        metaRawUsd: 0,
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokensField: 0,
+        totalTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+        durationMs: 0,
+        unpricedRequests: 0,
+      }
+      groups.set(key, group)
+    }
+
+    group.requests += 1
+    group.billedUsd += billedUsd
+    group.rawUsd += rawUsd
+    group.metaRawUsd += metaRaw
+    group.costUsd += costUsd
+    group.inputTokens += inputTokens
+    group.outputTokens += outputTokens
+    group.totalTokensField += totalTokensField
+    group.totalTokens += totalTokensField !== 0
+      ? totalTokensField
+      : inputTokens + outputTokens + cachedInputTokens + cacheWriteTokens
+    group.cachedInputTokens += cachedInputTokens
+    group.cacheWriteTokens += cacheWriteTokens
+    group.durationMs += num('durationMs')
+    if (meta.pricingUnknown === true) group.unpricedRequests += 1
+  }
+
+  return [...groups.values()]
+}
+
+async function scanUsageGroupsInSql(
+  scope: AnalyticsScope,
+  from: Date,
+  to: Date,
+): Promise<UsageGroupRow[]> {
+  // The JSON keys live in `actionMetadata`. Reading them in the aggregation
+  // keeps ~42 MB of JSON per scan in the database instead of shipping it to Node
+  // to be summed — the whole reason the cloud page is slow.
+  //
+  // Postgres only: `scanUsageGroups` sends SQLite down the Node path above.
+  // Written as one parameterised statement rather than through the `Prisma.sql`
+  // tag so this module keeps importing only `prisma` (tests in this package
+  // replace `lib/prisma` wholesale, and the tag would need the `Prisma`
+  // namespace from it). Values are always bound, never interpolated.
+  const params: unknown[] = []
+  const bind = (value: unknown) => {
+    params.push(value)
+    return `$${params.length}`
+  }
+
+  const where: string[] = []
+  if (scope.workspaceId) where.push(`"workspaceId" = ${bind(scope.workspaceId)}`)
+  if (scope.projectId) where.push(`"projectId" = ${bind(scope.projectId)}`)
+  if (scope.userId) where.push(`"memberId" = ${bind(scope.userId)}`)
+  where.push(`"createdAt" >= ${bind(from)}`, `"createdAt" < ${bind(to)}`)
+
+  const day = `DATE_TRUNC('day', "createdAt")`
+
+  // A JSON number only, so a legacy string value counts as 0 like the old
+  // `Number(meta.x || 0)` path did. `numOrNull` keeps the difference between
+  // "absent" and "zero" for the cost fallback below.
+  const numOrNull = (key: string) => `(CASE WHEN jsonb_typeof("actionMetadata"->'${key}') = 'number'`
+    + ` THEN ("actionMetadata"->>'${key}')::numeric ELSE NULL END)`
+  const num = (key: string) => `COALESCE(${numOrNull(key)}, 0)`
+
+  const rawModel = `COALESCE("actionMetadata"->>'model', "actionMetadata"->>'modelUsed', 'unknown')`
+  const rawProvider = `COALESCE("actionMetadata"->>'provider', 'anthropic')`
+  const rawUnpriced = `CASE WHEN jsonb_typeof("actionMetadata"->'pricingUnknown') = 'boolean' AND ("actionMetadata"->>'pricingUnknown')::boolean THEN 1 ELSE 0 END`
+
+  const input = num('inputTokens')
+  const output = num('outputTokens')
+  const cached = num('cachedInputTokens')
+  const cacheWrite = num('cacheWriteTokens')
+  const totalTokens = num('totalTokens')
+  // Same per-event fallback as `eventCostUsd` in `getSpendTimeseries`: the
+  // billed amount when it exists, else the recorded provider cost.
+  const metaRaw = `COALESCE(${numOrNull('rawUsd')}, ${numOrNull('dollarCost')}, 0)`
+
+  const sql = `SELECT
+      ${day}                          AS "day",
+      "memberId"                      AS "memberId",
+      "actionType"                    AS "actionType",
+      "source"                        AS "source",
+      ${rawModel}                     AS "model",
+      ${rawProvider}                  AS "provider",
+      COUNT(*)                        AS "requests",
+      COALESCE(SUM("billedUsd"), 0)   AS "billedUsd",
+      COALESCE(SUM(COALESCE("rawUsd", ${metaRaw})), 0) AS "rawUsd",
+      COALESCE(SUM(${metaRaw}), 0)    AS "metaRawUsd",
+      COALESCE(SUM(
+        CASE
+          WHEN "billedUsd" > 0 THEN "billedUsd"
+          WHEN COALESCE("rawUsd", 0) > 0 THEN "rawUsd"
+          ELSE ${metaRaw}
+        END
+      ), 0)                           AS "costUsd",
+      COALESCE(SUM(${input}), 0)      AS "inputTokens",
+      COALESCE(SUM(${output}), 0)     AS "outputTokens",
+      COALESCE(SUM(${totalTokens}), 0) AS "totalTokensField",
+      COALESCE(SUM(
+        CASE WHEN ${totalTokens} <> 0 THEN ${totalTokens}
+             ELSE ${input} + ${output} + ${cached} + ${cacheWrite} END
+      ), 0)                           AS "totalTokens",
+      COALESCE(SUM(${cached}), 0)     AS "cachedInputTokens",
+      COALESCE(SUM(${cacheWrite}), 0) AS "cacheWriteTokens",
+      COALESCE(SUM(${num('durationMs')}), 0) AS "durationMs",
+      COALESCE(SUM(${rawUnpriced}), 0) AS "unpricedRequests"
+    FROM "usage_events"
+    WHERE ${where.join(' AND ')}
+    GROUP BY 1, 2, 3, 4, 5, 6`
+
+  const rows = await prisma.$queryRawUnsafe<any[]>(sql, ...params)
+
+  return rows.map((r) => ({
+    // `DATE_TRUNC` comes back as a Date through the pg driver; a driver (or a
+    // test double) handing back the raw timestamp string must not lose the
+    // bucket, or the day would never merge with the zero-filled series.
+    day: r.day instanceof Date ? isoDay(r.day) : isoDay(new Date(String(r.day))),
+    memberId: String(r.memberId),
+    actionType: String(r.actionType),
+    source: String(r.source),
+    model: String(r.model ?? 'unknown'),
+    provider: String(r.provider ?? 'anthropic'),
+    requests: Number(r.requests),
+    billedUsd: Number(r.billedUsd),
+    rawUsd: Number(r.rawUsd),
+    metaRawUsd: Number(r.metaRawUsd),
+    costUsd: Number(r.costUsd),
+    inputTokens: Number(r.inputTokens),
+    outputTokens: Number(r.outputTokens),
+    totalTokensField: Number(r.totalTokensField),
+    totalTokens: Number(r.totalTokens),
+    cachedInputTokens: Number(r.cachedInputTokens),
+    cacheWriteTokens: Number(r.cacheWriteTokens),
+    durationMs: Number(r.durationMs),
+    unpricedRequests: Number(r.unpricedRequests),
+  }))
+}
+
+interface UsageDashboardLabels {
+  userMap: Map<string, { name: string | null; email: string; image: string | null }>
+  labelFor: (model: string) => string
+  totalToolCalls: number
+  page: number
+  limit: number
+}
+
+/** Same rows, totals and pagination as `getUsageSummary`. */
+function buildUsageDashboardSummary(
+  groups: UsageGroupRow[],
+  { userMap, labelFor, totalToolCalls, page, limit }: UsageDashboardLabels,
+) {
+  const byMemberModel = new Map<string, {
+    memberId: string
+    model: string
+    provider: string
+    requests: number
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+    billedUsd: number
+    rawUsd: number
+    durationMs: number
+    cachedInputTokens: number
+    cacheWriteTokens: number
+    unpricedRequests: number
+  }>()
+
+  for (const g of groups) {
+    const key = `${g.memberId}::${g.model}`
+    const agg = byMemberModel.get(key)
+    if (agg) {
+      agg.requests += g.requests
+      agg.inputTokens += g.inputTokens
+      agg.outputTokens += g.outputTokens
+      agg.totalTokens += g.totalTokens
+      agg.billedUsd += g.billedUsd
+      agg.rawUsd += g.rawUsd
+      agg.durationMs += g.durationMs
+      agg.cachedInputTokens += g.cachedInputTokens
+      agg.cacheWriteTokens += g.cacheWriteTokens
+      agg.unpricedRequests += g.unpricedRequests
+    } else {
+      byMemberModel.set(key, {
+        memberId: g.memberId,
+        model: g.model,
+        provider: g.provider,
+        requests: g.requests,
+        inputTokens: g.inputTokens,
+        outputTokens: g.outputTokens,
+        totalTokens: g.totalTokens,
+        billedUsd: g.billedUsd,
+        rawUsd: g.rawUsd,
+        durationMs: g.durationMs,
+        cachedInputTokens: g.cachedInputTokens,
+        cacheWriteTokens: g.cacheWriteTokens,
+        unpricedRequests: g.unpricedRequests,
+      })
+    }
+  }
+
+  const summaries: UsageSummaryEntry[] = [...byMemberModel.values()]
+    .map((agg): UsageSummaryEntry => {
+      const user = userMap.get(agg.memberId)
+      return {
+        userId: agg.memberId,
+        userName: user?.name ?? null,
+        userEmail: user?.email ?? agg.memberId,
+        userImage: user?.image ?? null,
+        model: labelFor(agg.model),
+        provider: agg.provider,
+        requestCount: agg.requests,
+        totalInputTokens: agg.inputTokens,
+        totalOutputTokens: agg.outputTokens,
+        totalTokens: agg.totalTokens,
+        totalBilledUsd: agg.billedUsd,
+        totalRawUsd: agg.rawUsd,
+        avgDurationMs: agg.requests > 0 ? Math.round(agg.durationMs / agg.requests) : 0,
+        totalCachedInputTokens: agg.cachedInputTokens,
+        cacheHitRatio: promptCacheHitRatio(
+          agg.cachedInputTokens,
+          agg.inputTokens,
+          agg.cacheWriteTokens,
+        ),
+        unpricedRequests: agg.unpricedRequests,
+      }
+    })
+    .sort((a, b) => b.totalTokens - a.totalTokens)
+
+  const totals = {
+    totalRequests: groups.reduce((s, g) => s + g.requests, 0),
+    totalInputTokens: summaries.reduce((s, e) => s + e.totalInputTokens, 0),
+    totalOutputTokens: summaries.reduce((s, e) => s + e.totalOutputTokens, 0),
+    totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
+    totalBilledUsd: summaries.reduce((s, e) => s + e.totalBilledUsd, 0),
+    totalRawUsd: summaries.reduce((s, e) => s + e.totalRawUsd, 0),
+    unpricedRequests: summaries.reduce((s, e) => s + e.unpricedRequests, 0),
+    totalToolCalls,
+    uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
+    uniqueModels: new Set([...byMemberModel.values()].map((a) => a.model)).size,
+  }
+
+  return {
+    summaries: summaries.slice((page - 1) * limit, (page - 1) * limit + limit),
+    totals,
+    total: summaries.length,
+    page,
+    limit,
+  }
+}
+
+/** Same series, totals and zero-filled days as `getSpendTimeseries`. */
+function buildUsageDashboardTimeseries(
+  groups: UsageGroupRow[],
+  {
+    from,
+    to,
+    groupBy,
+    metric,
+    topN,
+    labelFor,
+    userMap,
+  }: {
+    from: Date
+    to: Date
+    groupBy: 'model' | 'user' | 'source'
+    metric: 'spend' | 'tokens' | 'requests'
+    topN: number
+    labelFor: (model: string) => string
+    userMap: UsageDashboardLabels['userMap']
+  },
+): SpendTimeseriesData {
+  const byDay = new Map<string, Map<string, number>>()
+  const seriesTotals = new Map<string, number>()
+  let totalSpendUsd = 0
+  let totalIncludedUsd = 0
+  let totalOnDemandUsd = 0
+
+  for (const g of groups) {
+    if (!METERED_ACTION_TYPE_SET.has(g.actionType)) continue
+    const series = groupBy === 'user'
+      ? (userMap.get(g.memberId)?.email || userMap.get(g.memberId)?.name || g.memberId)
+      : groupBy === 'source'
+        ? g.source
+        : labelFor(g.model)
+    // The chart has always read the recorded `totalTokens` field only
+    // (`meta.totalTokens || 0` in `getSpendTimeseries`), so a row with no
+    // `totalTokens` contributes nothing here even though the summary derives a
+    // value from its input/output counts.
+    const value = metric === 'tokens'
+      ? g.totalTokensField
+      : metric === 'requests'
+        ? g.requests
+        : g.costUsd
+
+    if (!byDay.has(g.day)) byDay.set(g.day, new Map())
+    const dayMap = byDay.get(g.day)!
+    dayMap.set(series, (dayMap.get(series) ?? 0) + value)
+    seriesTotals.set(series, (seriesTotals.get(series) ?? 0) + value)
+
+    totalSpendUsd += g.costUsd
+    if (g.source === 'overage') totalOnDemandUsd += g.costUsd
+    else totalIncludedUsd += g.costUsd
+  }
+
+  const ranked = [...seriesTotals.entries()].sort((a, b) => b[1] - a[1])
+  const top = new Set(ranked.slice(0, topN).map(([k]) => k))
+  const collapsed = new Set(ranked.slice(topN).map(([k]) => k))
+  const includeOther = collapsed.size > 0
+  const models = ranked.slice(0, topN).map(([k]) => k)
+  if (includeOther) models.push('Other')
+
+  const days: SpendTimeseriesPoint[] = []
+  for (const key of zeroFilledDays(from, to)) {
+    const sourceMap = byDay.get(key) ?? new Map<string, number>()
+    const byModel: Record<string, number> = {}
+    for (const m of models) byModel[m] = 0
+    let dayTotal = 0
+    for (const [series, value] of sourceMap.entries()) {
+      const targetKey = top.has(series) ? series : (collapsed.has(series) ? 'Other' : series)
+      byModel[targetKey] = (byModel[targetKey] ?? 0) + value
+      dayTotal += value
+    }
+    days.push({ date: key, byModel, total: dayTotal })
+  }
+
+  return {
+    days,
+    totals: {
+      totalSpendUsd,
+      totalIncludedUsd,
+      totalOnDemandUsd,
+      uniqueModels: seriesTotals.size,
+    },
+    models,
+    groupBy,
+    metric,
+  }
+}
+
+/** Same breakdown as `getUsageAnalytics` (which counts every event type). */
+function buildUsageDashboardBreakdown(groups: UsageGroupRow[]) {
+  const byActionType: Record<string, { count: number; totalSpendUsd: number }> = {}
+  const bySource: Record<string, number> = {}
+  const byMember = new Map<string, number>()
+  const daily = new Map<string, number>()
+  let totalSpendUsd = 0
+  let totalEvents = 0
+
+  for (const g of groups) {
+    totalEvents += g.requests
+    totalSpendUsd += g.billedUsd
+    const action = byActionType[g.actionType] ?? { count: 0, totalSpendUsd: 0 }
+    action.count += g.requests
+    action.totalSpendUsd += g.billedUsd
+    byActionType[g.actionType] = action
+    bySource[g.source] = (bySource[g.source] ?? 0) + g.billedUsd
+    byMember.set(g.memberId, (byMember.get(g.memberId) ?? 0) + g.billedUsd)
+    daily.set(g.day, (daily.get(g.day) ?? 0) + g.requests)
+  }
+
+  return {
+    totalEvents,
+    totalSpendUsd,
+    byActionType,
+    bySource,
+    topConsumers: [...byMember.entries()]
+      .map(([memberId, spend]) => ({ memberId, totalSpendUsd: spend }))
+      .sort((a, b) => b.totalSpendUsd - a.totalSpendUsd)
+      .slice(0, 10),
+    dailyUsage: [...daily.entries()]
+      .map(([date, count]) => ({ date, count }))
+      .sort((a, b) => a.date.localeCompare(b.date)),
+  }
+}
+
+/** Every UTC day key from `from` to `to` inclusive, in order. */
+function zeroFilledDays(from: Date, to: Date): string[] {
+  const keys: string[] = []
+  const cursor = new Date(from)
+  cursor.setUTCHours(0, 0, 0, 0)
+  const last = new Date(to)
+  last.setUTCHours(0, 0, 0, 0)
+  while (cursor <= last) {
+    keys.push(isoDay(cursor))
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return keys
 }
 
 // ============================================================================

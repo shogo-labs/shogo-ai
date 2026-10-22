@@ -596,11 +596,15 @@ jobs:
           # than joining the job above: that one runs 1 worker at a time and
           # already finishes at 34m37s of a 35m cap.
           - { name: 'E2E (chat context)', spec: 'chat-context-survives-idle' }
-          # agent-model-truth (SHO-145) needs the fake model (it reads the model
-          # and prompt off each captured request) and the stack's SQLite file
-          # (it changes a project's model the way the API does, then forces a
-          # heartbeat tick). Neither is available in a shard, and it must not
-          # ride the chat-resume job: that job runs to its cap already.
+          # chat-task-interrupted-restart (SHO-141) runs a background task, then
+          # restarts the host runtime under it via /api/local/system/restart-runtime,
+          # so it needs the fake-model stack. Own entry, not a place in the list
+          # above: that job is already at 34m37s of its 35m cap (SHO-133).
+          - { name: 'E2E (task restart)', spec: 'chat-task-interrupted-restart' }
+          # agent-model-truth (SHO-145) seeds two `local` models into the stack's
+          # SQLite file and checks /ai/v1/models against the runtime's model
+          # cache entry by entry, so it needs the fake-model stack. Own entry:
+          # the chat-resume job already runs to its cap.
           - { name: 'E2E (agent model truth)', spec: 'agent-model-truth' }
     permissions:
       contents: read

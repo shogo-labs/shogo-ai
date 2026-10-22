@@ -828,7 +828,10 @@ describe('gateway-tools', () => {
     test('command producing massive stdout still captures cwd', async () => {
       mkdirSync(join(TEST_DIR, 'bigout'), { recursive: true })
       const ctx = createStatefulCtx()
-      const result = await execStateful(ctx, 'cd bigout && yes | head -10000')
+      // Not `yes | head`: with pipefail on, `yes` is SIGPIPE'd by `head` and the
+      // pipeline reports 141 (locked in exec-pipefail.test.ts). This test is
+      // about cwd survival under a flood of stdout, not pipeline status.
+      const result = await execStateful(ctx, 'cd bigout && seq 1 10000')
       expect(result.cwd).toBe(join(REAL_TEST_DIR, 'bigout'))
       expect(result.exitCode).toBe(0)
     })

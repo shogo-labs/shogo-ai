@@ -2552,6 +2552,7 @@ import { getProjectUser } from '../lib/project-user-context'
 import { accumulateUsage, accumulateImageUsage, accumulateVideoUsage, accumulate3dUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { buildUsageLimitInfo } from '../lib/usage-limit-info'
+import { invalidateAnalyticsCache } from '../lib/analytics-cache'
 export { buildUsageLimitInfo }
 
 /**
@@ -2697,6 +2698,7 @@ export async function recordUsage(
         },
       })
       console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${billingModel}) — not billed`)
+      invalidateAnalyticsCache({ workspaceId: tokenPayload.workspaceId, projectId: billingProjectId ?? undefined })
     } catch (err) {
       console.error('[AI Proxy] Failed to record internal usage:', err)
     }

@@ -438,6 +438,24 @@ async function startTrackedCall(
 /** Error code for a call whose callee turn ended without a reply this side saw. */
 export const CALLEE_TURN_LOST = 'callee_turn_lost'
 
+/**
+ * Error code for a call whose callee turn never started at all. Distinct from
+ * `callee_turn_lost`: nothing ran, so there is no partial reply to read and no
+ * point polling — the caller should know immediately instead of waiting 15
+ * minutes on a record that says `accepted`.
+ */
+export const CALLEE_TURN_NEVER_STARTED = 'callee_turn_never_started'
+
+/**
+ * How long the callee may show no sign of this call before the follower
+ * declares it lost. A call that is queued behind the chat's own turn keeps
+ * pushing this window out (the runtime reports it as `queued`), so the budget
+ * only runs out when nothing is waiting for the call any more — the runtime
+ * restarted, or the queued item vanished. It does not cap how long a chat may
+ * be busy: a message for a busy chat is queued, never dropped.
+ */
+export const CALLEE_TURN_START_TIMEOUT_MS = 90_000
+
 /** The runtime's clock and ours can disagree by this much. */
 const TURN_CLOCK_SKEW_MS = 30_000
 
@@ -469,7 +487,7 @@ async function callTurnDeps(): Promise<CallTurnDeps> {
     markTurnEnded: o.markTurnEnded ?? turnState!.markTurnEnded,
     startTurnHeartbeat: o.startTurnHeartbeat ?? ((id, turnId) => turnState!.startTurnHeartbeat(id, turnId)),
     turnPollIntervalMs: o.turnPollIntervalMs ?? 1_000,
-    turnStartTimeoutMs: o.turnStartTimeoutMs ?? 15 * 60_000,
+    turnStartTimeoutMs: o.turnStartTimeoutMs ?? CALLEE_TURN_START_TIMEOUT_MS,
   }
 }
 
@@ -536,7 +554,16 @@ async function startBackgroundCall(
     projectId,
     workspaceId,
     '/agent/pipeline/call',
-    JSON.stringify({ message: call.message, runId: call.runId, sessionId: chatSessionId, wait: false, callerProjectId: call.callerProjectId }),
+    JSON.stringify({
+      message: call.message,
+      runId: call.runId,
+      // The callee answers for this name on its turn probe, so the follower
+      // never has to infer "is the chat's live turn our call?" from timestamps.
+      callId: call.runId,
+      sessionId: chatSessionId,
+      wait: false,
+      callerProjectId: call.callerProjectId,
+    }),
     {
       runtimeUrl: target.url,
       timeoutMs: 15_000,
@@ -546,25 +573,85 @@ async function startBackgroundCall(
   if (ack.status < 200 || ack.status >= 300) return ack
 
   if (link) await linkAgentCallSession(chatSessionId, link).catch(() => {})
-  void followCallTurn(projectId, workspaceId, chatSessionId, startedAt, link).catch((err) =>
+  void followCallTurn(projectId, workspaceId, chatSessionId, call.runId, startedAt, link).catch((err) =>
     console.warn(`[AgentCall] following call ${call.runId} failed:`, err?.message ?? err),
   )
   return ack
 }
 
-async function waitForCalleeTurn(projectId: string, chatSessionId: string, startedAt: number, deps: CallTurnDeps): Promise<boolean> {
-  const deadline = Date.now() + deps.turnStartTimeoutMs
+/**
+ * Wait until the callee reports a turn for **this call**. A call queued behind
+ * the chat's own live turn is not a failure — the runtime answers `queued` for
+ * the call by name (`?callId=`) and each such answer restarts the budget, so a
+ * chat that is busy for ten minutes still runs the call. Only silence for the
+ * whole budget, or an explicit `lost`, means the call was dropped.
+ *
+ * The call's own name is what makes this exact: the chat's live turn carries a
+ * `createdAt` of its own, so "a turn exists and it is recent enough" used to
+ * mistake a busy chat's turn for ours and settle the caller with its reply.
+ * `queued` therefore wins over any `createdAt`; a turn answers for the call only
+ * when the runtime echoes our `callId` (or, from a runtime that predates it,
+ * when it started after we asked).
+ */
+async function waitForCalleeTurn(
+  projectId: string,
+  chatSessionId: string,
+  callId: string,
+  startedAt: number,
+  deps: CallTurnDeps,
+): Promise<CalleeTurn> {
+  let deadline = Date.now() + deps.turnStartTimeoutMs
   for (;;) {
-    const res = await fetchCalleeRuntime(projectId, `/agent/chat/${encodeURIComponent(chatSessionId)}/turn`).catch(() => null)
+    const path = `/agent/chat/${encodeURIComponent(chatSessionId)}/turn?callId=${encodeURIComponent(callId)}`
+    const res = await fetchCalleeRuntime(projectId, path).catch(() => null)
     if (res?.ok) {
-      const turn = (await res.json().catch(() => null)) as { createdAt?: number } | null
-      if (typeof turn?.createdAt === 'number' && turn.createdAt >= startedAt - TURN_CLOCK_SKEW_MS) return true
+      const probe = (await res.json().catch(() => null)) as CalleeTurnProbe | null
+      const answer = readCalleeTurn(probe, startedAt)
+      if (answer.kind === 'queued') deadline = Date.now() + deps.turnStartTimeoutMs
+      else if (answer.kind !== 'waiting') return answer
     } else {
       await res?.body?.cancel().catch(() => {})
     }
-    if (Date.now() >= deadline) return false
+    if (Date.now() >= deadline) return { kind: 'lost' }
     await new Promise((resolve) => setTimeout(resolve, deps.turnPollIntervalMs))
   }
+}
+
+/**
+ * What the callee said about our call, decided by the call's name when the
+ * runtime knows it and by the turn's age only for a runtime that does not.
+ */
+export type CalleeTurn =
+  | { kind: 'started'; turnId?: string }
+  | { kind: 'queued' }
+  | { kind: 'waiting' }
+  | { kind: 'lost'; reason?: 'stopped' | 'unknown' }
+
+type CalleeTurnProbe = {
+  status?: string
+  callId?: string
+  turnId?: string
+  createdAt?: number
+  queuedSince?: number
+  reason?: string
+  reply?: string | null
+}
+
+export function readCalleeTurn(probe: CalleeTurnProbe | null, startedAt: number): CalleeTurn {
+  if (!probe) return { kind: 'waiting' }
+  if (probe.status === 'lost') return { kind: 'lost', reason: probe.reason === 'stopped' ? 'stopped' : 'unknown' }
+  // Queued is the answer for the call, and it beats any timestamps: while a call
+  // is queued the only turn in the chat is the one it is waiting behind.
+  if (probe.status === 'queued' || typeof probe.queuedSince === 'number') return { kind: 'queued' }
+  const answeredForCall = typeof probe.callId === 'string' && probe.callId.length > 0
+  const hasTurn = probe.status === 'started' || typeof probe.createdAt === 'number'
+  if (answeredForCall) return hasTurn ? { kind: 'started', turnId: probe.turnId } : { kind: 'waiting' }
+  // Runtime without per-call identity: fall back to the turn's start time.
+  if (typeof probe.createdAt === 'number' && probe.createdAt >= startedAt - TURN_CLOCK_SKEW_MS) {
+    return { kind: 'started', turnId: probe.turnId }
+  }
+  if (probe.status === 'active') return { kind: 'queued' }
+  return { kind: 'waiting' }
 }
 
 /**
@@ -575,6 +662,7 @@ async function followCallTurn(
   projectId: string,
   workspaceId: string,
   chatSessionId: string,
+  callId: string,
   startedAt: number,
   link: AgentCallSessionLink | null,
 ): Promise<void> {
@@ -589,16 +677,25 @@ async function followCallTurn(
   // whose follower died.
   const stopCallHeartbeat = link ? startAgentCallHeartbeat(link.projectId, link.runId) : () => {}
   let result: TrackedStreamResult | null = null
+  let neverStarted = false
   try {
-    if (await waitForCalleeTurn(projectId, chatSessionId, startedAt, deps)) {
-      result = await trackCallTurn(projectId, workspaceId, chatSessionId, startedAt, deps)
+    const turn = await waitForCalleeTurn(projectId, chatSessionId, callId, startedAt, deps)
+    if (turn.kind === 'started') {
+      result = await trackCallTurn(projectId, workspaceId, chatSessionId, startedAt, deps, turn.turnId)
     } else {
-      console.warn(`[AgentCall] callee turn for ${chatSessionId} never started`)
+      // Nothing in the queue and no turn for the whole budget, or the runtime
+      // said the call is gone: the queued item vanished or the chat was
+      // stopped. That is a different failure from a lost reply.
+      neverStarted = true
+      console.warn(
+        `[AgentCall] call ${link?.runId ?? chatSessionId} never started: ` +
+          (turn.kind === 'lost' ? `lost (${turn.reason ?? 'unknown'})` : 'no turn and no queued call'),
+      )
     }
   } finally {
     stopCallHeartbeat()
     stopHeartbeat()
-    if (link) await settleAgentCallFromTurn(link, chatSessionId, result).catch(() => {})
+    if (link) await settleAgentCallFromTurn(link, chatSessionId, result, { neverStarted }).catch(() => {})
     if (turnId) await deps.markTurnEnded(chatSessionId, turnId).catch(() => {})
   }
 }
@@ -610,6 +707,7 @@ async function trackCallTurn(
   chatSessionId: string,
   startedAt: number,
   deps: CallTurnDeps,
+  turnId?: string,
 ): Promise<TrackedStreamResult | null> {
   const streamPath = (fromSeq: number) => `/agent/chat/${encodeURIComponent(chatSessionId)}/stream?fromSeq=${fromSeq}`
   const res = await fetchCalleeRuntime(projectId, streamPath(0)).catch(() => null)
@@ -621,6 +719,10 @@ async function trackCallTurn(
     chatSessionId,
     suppressCompletionPush: true,
     expectedTurnStartedAt: startedAt,
+    // The buffer is keyed by chat, so a turn that started after ours replaces
+    // it. The callee told us which turn is ours; anything else is not persisted
+    // as this call's reply.
+    expectedTurnId: turnId,
     resume: async (fromSeq) => {
       try {
         return await fetchCalleeRuntime(projectId, streamPath(fromSeq))
@@ -643,6 +745,7 @@ export async function settleAgentCallFromTurn(
   link: AgentCallSessionLink,
   chatSessionId: string,
   result: TrackedStreamResult | null,
+  opts: { neverStarted?: boolean } = {},
 ): Promise<void> {
   const base = { runId: link.runId, sessionId: chatSessionId, chatSessionId, startedAt: link.startedAt, updatedAt: Date.now() }
   // The tracker owns the assistant row when it persisted one.
@@ -662,13 +765,21 @@ export async function settleAgentCallFromTurn(
     if (!replyRowWritten) await ensureCallReplyRow(link.projectId, chatSessionId, result.text || null, 'agent_turn_failed')
     return
   }
+  const lost = opts.neverStarted
+    ? {
+        code: CALLEE_TURN_NEVER_STARTED,
+        message:
+          'The target agent never started this run — the runtime lost the call before it began (it restarted, or the ' +
+          'queued call was dropped). Nothing ran; retry it.',
+      }
+    : { code: CALLEE_TURN_LOST, message: 'The target agent turn ended before its reply could be read.' }
   await putAgentCall(link.projectId, {
     ...base,
     status: 'failed',
     reply: result?.text || null,
-    error: { code: CALLEE_TURN_LOST, message: 'The target agent turn ended before its reply could be read.' },
+    error: lost,
   })
-  if (!replyRowWritten) await ensureCallReplyRow(link.projectId, chatSessionId, result?.text || null, CALLEE_TURN_LOST)
+  if (!replyRowWritten) await ensureCallReplyRow(link.projectId, chatSessionId, result?.text || null, lost.code)
 }
 
 export interface RemoteToolRequest {

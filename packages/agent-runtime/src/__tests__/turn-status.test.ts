@@ -81,3 +81,91 @@ describe('describeTurn', () => {
     expect(describeTurn(store, 'sess-1').body.reply).toBeNull()
   })
 })
+
+/**
+ * A chat busy with its own turn looks exactly like a call waiting behind it:
+ * `active` with a `createdAt` of its own. Asking by name is the only way the
+ * probe can answer for the call — and `queued` has to win over that live turn,
+ * or a follower tracks the wrong turn and settles the caller with its reply.
+ */
+describe('describeTurn for a named call', () => {
+  test('a call queued behind the chat live turn is queued, not that turn', () => {
+    store = new StreamBufferStore()
+    const busy = store.create('sess-1')
+    busy.append(enc.encode('data: {"type":"text-delta"}\n\n'))
+    const busySnapshot = store.snapshot('sess-1')!
+    const queuedSince = busySnapshot.createdAt + 5_000
+
+    const answer = describeTurn(store, 'sess-1', { depth: 1, since: queuedSince }, {
+      callId: 'run-q',
+      state: { queuedSince },
+    })
+
+    expect(answer.status).toBe(200)
+    expect(answer.body).toMatchObject({
+      callId: 'run-q',
+      status: 'queued',
+      queuedSince,
+      queuedDepth: 1,
+      reply: null,
+    })
+    // The chat's own turn must not be offered as this call's turn.
+    expect(answer.body.turnId).toBeUndefined()
+    expect(answer.body.createdAt).toBeUndefined()
+  })
+
+  test('a call that started answers with its own turn, even while the chat shows another', () => {
+    store = new StreamBufferStore()
+    store.create('sess-1').complete()
+    store.recordTurnReply('sess-1', 'not ours')
+    const startedAt = Date.now() - 1_000
+
+    const answer = describeTurn(store, 'sess-1', null, { callId: 'run-q', state: { turnId: 't-ours', startedAt } })
+
+    expect(answer.body).toMatchObject({ callId: 'run-q', turnId: 't-ours', status: 'started' })
+    expect(answer.body.reply).toBeNull()
+  })
+
+  test('a call whose turn is the live one reports that turn normally', () => {
+    store = new StreamBufferStore()
+    const writer = store.create('sess-1')
+    const turnId = store.snapshot('sess-1')!.turnId
+    writer.append(enc.encode('data: {"type":"text-delta"}\n\n'))
+
+    expect(describeTurn(store, 'sess-1', null, { callId: 'run-q', state: { turnId, startedAt: Date.now() } }).body).toMatchObject({
+      callId: 'run-q',
+      turnId,
+      status: 'active',
+      reply: null,
+    })
+
+    writer.complete()
+    store.recordTurnReply('sess-1', 'the call answer')
+    expect(describeTurn(store, 'sess-1', null, { callId: 'run-q', state: { turnId, startedAt: Date.now() } }).body).toMatchObject({
+      callId: 'run-q',
+      turnId,
+      status: 'completed',
+      reply: 'the call answer',
+    })
+  })
+
+  test('a call the gate never heard of, or one the chat stopped first, is lost', () => {
+    store = new StreamBufferStore()
+    store.create('sess-1').append(enc.encode('data: {"type":"text-delta"}\n\n'))
+
+    expect(describeTurn(store, 'sess-1', null, { callId: 'run-gone', state: null }).body).toMatchObject({
+      callId: 'run-gone',
+      status: 'lost',
+    })
+    expect(describeTurn(store, 'sess-1', null, { callId: 'run-stop', state: { stopped: true } }).body).toMatchObject({
+      callId: 'run-stop',
+      status: 'lost',
+      reason: 'stopped',
+    })
+    // Known, no longer queued, and it never got a turn: also lost, not queued.
+    expect(describeTurn(store, 'sess-1', null, { callId: 'run-empty', state: {} }).body).toMatchObject({
+      callId: 'run-empty',
+      status: 'lost',
+    })
+  })
+})
