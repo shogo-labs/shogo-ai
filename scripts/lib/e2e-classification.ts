@@ -39,7 +39,12 @@ export interface CapacityProbe {
   healthReason?: string
 }
 
-export type Classification = 'clean' | 'environment' | 'product'
+/**
+ * `unknown` exists because a red run that files no parseable report is not a
+ * pass. It is treated exactly like `environment`: annotated, and filed as a
+ * platform defect.
+ */
+export type Classification = 'clean' | 'environment' | 'product' | 'unknown'
 
 export interface ClassifyInput {
   failures: FailedSpec[]
@@ -47,6 +52,13 @@ export interface ClassifyInput {
   before?: CapacityProbe
   /** Probe taken with `if: always()` after the suite finished. */
   after?: CapacityProbe
+  /**
+   * The Playwright job's result (`success` / `failure` / `cancelled`). Required
+   * to tell "nothing failed" from "nothing was reported": the JSON reporter only
+   * writes at the end, so a job killed at its 60-minute timeout leaves `failures`
+   * empty while the run was in fact red.
+   */
+  outcome?: string
 }
 
 export interface ClassifyResult {
@@ -75,6 +87,11 @@ const ENVIRONMENT_PATTERNS: RegExp[] = [
   /\b(?:status|HTTP|response(?: code)?)\D{0,24}(5\d\d)\b/i,
   // Bare 5xx codes, but not "500ms" / "5030ms" style durations.
   /\b5\d\d\b(?!\s*ms)/,
+  // The runner's browser image is missing its binary or its shared libraries.
+  // Playwright reports these at the top level of the report, and they can never
+  // be caused by the product under test.
+  /Executable (?:doesn't|doesn’t) exist/i,
+  /Host system is missing dependencies/i,
 ]
 
 /** True when an error message looks like the environment failed, not the code. */
@@ -102,9 +119,11 @@ function breaches(probe: CapacityProbe | undefined): string[] {
  * separate "everything timed out" from "three specs asserted the wrong value".
  */
 export function classifyE2eRun(input: ClassifyInput): ClassifyResult {
-  const { failures, before, after } = input
+  const { failures, before, after, outcome } = input
 
-  if (failures.length === 0) {
+  // Nothing failed and the job succeeded: a green run is never attributed, even
+  // if a probe caught the cluster above a threshold on the way past.
+  if (failures.length === 0 && (!outcome || outcome === 'success')) {
     return { kind: 'clean', annotation: '', reasons: [], productSpecs: [] }
   }
 
@@ -123,14 +142,28 @@ export function classifyE2eRun(input: ClassifyInput): ClassifyResult {
     }
   }
 
+  // A measured breach is worth more than "we could not read the report", so this
+  // sits after the probe check: red, nothing parseable, cluster verifiably fine.
+  if (failures.length === 0) {
+    return {
+      kind: 'unknown',
+      annotation: `unknown: ${outcome ?? 'failure'} with no parseable report`,
+      reasons: ['the Playwright report was missing, unreadable, or listed no specs'],
+      productSpecs: [],
+    }
+  }
+
   const environmentShaped = failures.filter((f) => isEnvironmentFailure(f.message))
   if (environmentShaped.length === failures.length) {
     const timeouts = environmentShaped.filter((f) => /timeout/i.test(f.message)).length
-    const shape = timeouts === environmentShaped.length ? 'timeout' : 'timeout/5xx'
+    // "timeout" only when every failure was one; anything else (5xx, a broken
+    // browser image, a dropped socket) is environment-shaped but not a timeout.
+    const allTimeouts = timeouts === environmentShaped.length
+    const shape = allTimeouts ? 'timeout' : 'environment-shaped'
     return {
       kind: 'environment',
       annotation: `environment: ${failures.length} ${shape} failure${failures.length === 1 ? '' : 's'} with a healthy cluster`,
-      reasons: [`${failures.length}/${failures.length} failures were ${shape}-shaped`],
+      reasons: [`${failures.length}/${failures.length} failures were ${allTimeouts ? 'timeout-shaped' : 'environment-shaped'}`],
       productSpecs: [],
     }
   }
@@ -169,6 +202,12 @@ interface PlaywrightSuite {
 
 interface PlaywrightReport {
   suites?: PlaywrightSuite[]
+  /**
+   * Playwright's own top-level failures — globalSetup/globalTeardown, a browser
+   * that never launched, a reporter that died. They carry no spec, which is why
+   * dropping them made such a run look `clean`.
+   */
+  errors?: { message?: string; location?: { file?: string } }[]
 }
 
 function walkSuites(suites: PlaywrightSuite[] | undefined, file: string, out: FailedSpec[]): void {
@@ -186,9 +225,25 @@ function walkSuites(suites: PlaywrightSuite[] | undefined, file: string, out: Fa
   }
 }
 
-/** Flatten a Playwright JSON report down to its failed specs (skipped ≠ failed). */
+/** Flatten a Playwright JSON report down to its failures (skipped ≠ failed). */
 export function collectFailedSpecs(report: PlaywrightReport | undefined): FailedSpec[] {
   const out: FailedSpec[] = []
+  for (const error of report?.errors ?? []) {
+    out.push({
+      file: error.location?.file ?? '(report)',
+      title: 'top-level error',
+      message: error.message ?? 'report-level error without a message',
+    })
+  }
   walkSuites(report?.suites, '', out)
   return out
+}
+
+/**
+ * `environment` and `unknown` both mean "the platform could not tell us this
+ * run passed", so both must annotate and file a platform issue. Only `clean`
+ * and `product` are the product's problem.
+ */
+export function isPlatformClassification(kind: Classification): boolean {
+  return kind === 'environment' || kind === 'unknown'
 }

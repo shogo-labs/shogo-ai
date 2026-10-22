@@ -30,24 +30,36 @@ fi
 
 ROWS=""
 OVER=""
+NA_IMAGEFS=""
 while read -r node; do
   summary=$(kubectl get --raw "/api/v1/nodes/${node}/proxy/stats/summary" 2>/dev/null || true)
   if [[ -z "$summary" ]]; then
     ROWS+="| ${node} | ? | ? | ? | ? | ? |"$'\n'
     continue
   fi
+  # `n/a` when the runtime exposes no separate imageFs: cri-o shares nodefs, so
+  # reporting `0%` there was a fabricated measurement (SHO-136 QA round 1).
   read -r nodefs imagefs used cap <<<"$(echo "$summary" | jq -r '
     def used($fs): ($fs.usedBytes // 0) as $u | ($fs.capacityBytes // 0) as $c
-      | if $c > 0 then (($u / $c) * 100) else 0 end;
-    "\(used(.node.fs) | floor) \(used(.node.runtime.imageFs // {}) | floor) \((.node.fs.usedBytes // 0) / 1e9 | floor) \((.node.fs.capacityBytes // 0) / 1e9 | floor)"
+      | if $c > 0 then (($u / $c) * 100 | floor | tostring) else "n/a" end;
+    "\(used(.node.fs)) \(used(.node.runtime.imageFs)) \((.node.fs.usedBytes // 0) / 1e9 | floor) \((.node.fs.capacityBytes // 0) / 1e9 | floor)"
   ')"
   read -r img_gb img_count rt_digests api_digests <<<"$(kubectl get node "$node" -o json | jq -r '
     [.status.images[]? | select((.names // []) | length > 0)] as $i
     | "\(($i | map(.sizeBytes // 0) | add // 0) / 1e9 | floor) \($i | length) \([$i[] | select((.names | join(" ")) | test("/shogo-runtime|/agent-runtime"))] | length) \([$i[] | select((.names | join(" ")) | test("/shogo-api"))] | length)"
   ')"
-  ROWS+="| ${node} | ${nodefs}% | ${imagefs}% | ${used} / ${cap} GB | ${img_gb} GB (${img_count}) | ${rt_digests} / ${api_digests} |"$'\n'
-  if [[ "${nodefs}" -ge "${WARN_PCT}" || "${imagefs}" -ge "${WARN_PCT}" ]]; then
-    OVER+="${node} (nodefs ${nodefs}%, imagefs ${imagefs}%); "
+  if [[ "$imagefs" =~ ^[0-9]+$ ]]; then
+    imagefs_display="${imagefs}%"
+  else
+    imagefs_display="n/a"
+    NA_IMAGEFS=1
+  fi
+  ROWS+="| ${node} | ${nodefs}% | ${imagefs_display} | ${used} / ${cap} GB | ${img_gb} GB (${img_count}) | ${rt_digests} / ${api_digests} |"$'\n'
+  over=0
+  [[ "$nodefs" =~ ^[0-9]+$ ]] && [[ "$nodefs" -ge "$WARN_PCT" ]] && over=1
+  [[ "$imagefs" =~ ^[0-9]+$ ]] && [[ "$imagefs" -ge "$WARN_PCT" ]] && over=1
+  if [[ "$over" -eq 1 ]]; then
+    OVER+="${node} (nodefs ${nodefs}%, imagefs ${imagefs_display}); "
   fi
 done < <(kubectl get nodes -o json | jq -r '.items[] | select(.spec.unschedulable != true) | .metadata.name')
 
@@ -62,6 +74,10 @@ TABLE=$(
   echo "| node | nodefs used | imagefs used | nodefs used / capacity | images (total, count) | runtime / api digests |"
   echo "|---|---|---|---|---|---|"
   printf '%s' "$ROWS"
+  if [[ -n "$NA_IMAGEFS" ]]; then
+    echo
+    echo "_imagefs \`n/a\`: the runtime exposes no separate image filesystem (cri-o shares nodefs), so image layers are counted in nodefs._"
+  fi
 )
 
 echo "$TABLE"

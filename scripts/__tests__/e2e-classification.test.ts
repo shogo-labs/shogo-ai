@@ -36,6 +36,11 @@ describe('isEnvironmentFailure', () => {
     expect(isEnvironmentFailure('Test timeout of 120000ms exceeded.')).toBe(true)
   })
 
+  it('treats a broken browser image on the runner as the environment', () => {
+    expect(isEnvironmentFailure("browserType.launch: Executable doesn't exist at /ms-playwright/chromium-1140/chrome-linux/chrome")).toBe(true)
+    expect(isEnvironmentFailure('Host system is missing dependencies to run browsers.')).toBe(true)
+  })
+
   it('does not mistake an assertion for the environment', () => {
     expect(isEnvironmentFailure(assertion.message)).toBe(false)
     expect(isEnvironmentFailure('')).toBe(false)
@@ -125,6 +130,33 @@ describe('classifyE2eRun', () => {
     expect(classifyE2eRun({ failures: [timeout] }).kind).toBe('environment')
     expect(classifyE2eRun({ failures: [assertion] }).kind).toBe('product')
   })
+
+  // QA round 1 on SHO-136: a red run with no parseable report was `clean`, so a
+  // job killed at its timeout said the cluster was fine. That is the exact
+  // "lie about why it failed" this card exists to end.
+  it('is unknown — never clean — when a red run reported nothing', () => {
+    const result = classifyE2eRun({ failures: [], outcome: 'failure', before: healthy, after: healthy })
+    expect(result.kind).toBe('unknown')
+    expect(result.annotation).toBe('unknown: failure with no parseable report')
+    expect(classifyE2eRun({ failures: [], outcome: 'cancelled' }).kind).toBe('unknown')
+  })
+
+  it('still reports a green run as clean', () => {
+    expect(classifyE2eRun({ failures: [], outcome: 'success', before: healthy, after: healthy }).kind).toBe('clean')
+  })
+
+  it('prefers a measured capacity breach over "no parseable report"', () => {
+    // Red, nothing parseable, and the post-run probe caught the real cause: the
+    // measurement is more useful than "unknown", and both file a platform issue.
+    const result = classifyE2eRun({
+      failures: [],
+      outcome: 'failure',
+      before: healthy,
+      after: { ...healthy, diskOk: false, diskReason: 'node b at 88% nodefs' },
+    })
+    expect(result.kind).toBe('environment')
+    expect(result.annotation).toContain('node b at 88% nodefs')
+  })
 })
 
 describe('degradedRetryNote', () => {
@@ -170,6 +202,27 @@ describe('collectFailedSpecs', () => {
   it('tolerates an empty or missing report', () => {
     expect(collectFailedSpecs(undefined)).toEqual([])
     expect(collectFailedSpecs({})).toEqual([])
+  })
+
+  // The other half of the round-1 hole: Playwright puts a browser that never
+  // launched, or a globalSetup throw, in the report's top-level `errors`, not in
+  // a spec. Dropping that array made such a run look clean.
+  it('keeps a report-level error as a failure', () => {
+    const launch = "browserType.launch: Executable doesn't exist at /ms-playwright/chromium-1140/chrome-linux/chrome"
+    const failures = collectFailedSpecs({
+      suites: [],
+      errors: [{ message: launch, location: { file: 'e2e/staging/fixtures.ts' } }],
+    })
+    expect(failures).toEqual([{ file: 'e2e/staging/fixtures.ts', title: 'top-level error', message: launch }])
+    // The message is what makes it classify: a runner with no browser is the
+    // platform, and the run is red.
+    expect(classifyE2eRun({ failures, outcome: 'failure', before: healthy, after: healthy }).kind).toBe('environment')
+  })
+
+  it('labels an error with no location instead of throwing', () => {
+    expect(collectFailedSpecs({ errors: [{}] })).toEqual([
+      { file: '(report)', title: 'top-level error', message: 'report-level error without a message' },
+    ])
   })
 })
 

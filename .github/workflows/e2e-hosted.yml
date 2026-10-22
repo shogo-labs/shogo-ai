@@ -21,14 +21,14 @@
 #                studio revisions, api health) and records it
 #   postrun    — the same probe with `if: always()`, so a suite that fell over
 #                mid-run is distinguishable from one that started on a bad node
-#   classify   — attributes the run (`environment:` vs `product:`), annotates
-#                the run, opens/refreshes a platform issue for a defect, and
-#                publishes the commit status
+#   classify   — attributes the run (`environment:` vs `product:` vs `unknown:`),
+#                annotates the run, opens/refreshes a platform issue for a
+#                defect, and publishes the commit status
 #   diagnostics— on failure, dumps nodes/pods/events/logs/images into one
 #                artifact
-# An `environment:` classification is a platform defect, never a pass. The
-# worker cap that keeps the critical suite inside what three nodes can absorb
-# lives in e2e/playwright.config.ts (resolveWorkers).
+# An `environment:` or `unknown:` classification is a platform defect, never a
+# pass. The worker cap that keeps the critical suite inside what three nodes can
+# absorb lives in e2e/playwright.config.ts (resolveWorkers).
 # =============================================================================
 
 name: E2E Hosted
@@ -348,6 +348,7 @@ jobs:
     outputs:
       classification: ${{ steps.classify.outputs.classification }}
       annotation: ${{ steps.classify.outputs.annotation }}
+      platform: ${{ steps.classify.outputs.platform }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -388,12 +389,12 @@ jobs:
             --previous "$PREVIOUS" \
             --outcome "$OUTCOME"
 
-      # An environment-classified run is a platform defect: it opens (or
-      # refreshes) one durable, linkable record so "green after a retry" cannot
+      # An environment- or unknown-classified run is a platform defect: it opens
+      # (or refreshes) one durable, linkable record so "green after a retry" cannot
       # become the steady state. The workspace can turn this issue into a board
       # card with a GitHub trigger; this workflow only has to file it.
       - name: File or refresh the platform issue
-        if: steps.classify.outputs.classification == 'environment'
+        if: steps.classify.outputs.platform == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           ANNOTATION: ${{ steps.classify.outputs.annotation }}

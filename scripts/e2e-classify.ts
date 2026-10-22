@@ -8,14 +8,17 @@
  * `preflight` / `postrun` jobs wrote (see
  * .github/scripts/probe-staging-capacity.sh) and prints:
  *
- *   classification=environment|product|clean
+ *   classification=environment|product|unknown|clean
  *   annotation=environment: node 10.0.24.140 at 74% nodefs
  *
  * Writes the same markdown the workflow renders to $GITHUB_STEP_SUMMARY and the
- * `classification` / `annotation` / `degraded` outputs to $GITHUB_OUTPUT.
+ * `classification` / `annotation` / `degraded` / `platform` outputs to
+ * $GITHUB_OUTPUT.
  *
- * An `environment:` classification is a platform defect, never a pass: the
- * `classify` job turns it into a warning annotation and a platform issue.
+ * An `environment:` or `unknown:` classification is a platform defect, never a
+ * pass: the `classify` job turns both into a warning annotation and a platform
+ * issue. `unknown` is a red run with no parseable report — the JSON reporter
+ * only writes at the end, so a job killed at its timeout files nothing.
  */
 
 import { appendFileSync, existsSync, readFileSync } from 'fs'
@@ -25,6 +28,7 @@ import {
   classifyE2eRun,
   collectFailedSpecs,
   degradedRetryNote,
+  isPlatformClassification,
 } from './lib/e2e-classification'
 
 interface Options {
@@ -94,8 +98,14 @@ export function renderSummary(result: ReturnType<typeof classifyE2eRun>, opts: O
   if (opts.outcome !== 'success') {
     lines.push('', `Probes: before=\`${opts.before ?? 'none'}\` after=\`${opts.after ?? 'none'}\``)
   }
-  const degraded = result.kind === 'environment'
-  if (degraded) lines.push('', `> platform defect: this is the cluster failing to carry the load, not a broken spec.`)
+  if (result.kind === 'environment') {
+    lines.push('', '> platform defect: this is the cluster failing to carry the load, not a broken spec.')
+  } else if (result.kind === 'unknown') {
+    lines.push(
+      '',
+      '> platform defect: the run is red but produced no parseable report — it cannot be called clean.',
+    )
+  }
   return `${lines.join('\n')}\n`
 }
 
@@ -105,6 +115,7 @@ if (import.meta.main) {
     failures: readReport(opts.report),
     before: readProbe(opts.before),
     after: readProbe(opts.after),
+    outcome: opts.outcome,
   })
 
   // A run that passed after a red first attempt is reported as degraded, never
@@ -123,10 +134,13 @@ if (import.meta.main) {
       `classification=${result.kind}`,
       `annotation=${result.annotation}`,
       `degraded=${note}`,
+      // One flag the workflow gates on, so `unknown` cannot be forgotten at a
+      // second call site the way a bare `== 'environment'` comparison can.
+      `platform=${isPlatformClassification(result.kind)}`,
     ]
     appendFileSync(process.env.GITHUB_OUTPUT, `${outputs.join('\n')}\n`)
   }
-  if (result.kind === 'environment') {
+  if (isPlatformClassification(result.kind)) {
     console.log(`::warning::${result.annotation}`)
   }
 }
