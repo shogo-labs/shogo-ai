@@ -112,12 +112,12 @@ async function send(page: Page, text: string): Promise<void> {
  * runtime and would skip the path under test.
  */
 async function restartRuntime(): Promise<string[]> {
-  const res = await context.request.post(`${API}/api/internal/e2e/restart-local-runtime`, {
+  const res = await context.request.post(`${API}/api/local/system/restart-runtime`, {
     headers: { "x-e2e-bootstrap-secret": BOOTSTRAP_SECRET },
   })
   const body = await res.json().catch(() => ({}))
   if (!res.ok() || body?.ok !== true) {
-    throw new Error(`restart-local-runtime failed (${res.status()}): ${JSON.stringify(body)}`)
+    throw new Error(`restart-runtime failed (${res.status()}): ${JSON.stringify(body)}`)
   }
   return body.stopped ?? []
 }

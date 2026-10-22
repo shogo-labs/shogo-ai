@@ -250,38 +250,3 @@ describe('internal-e2e bootstrap route', () => {
     expect(syncArgs.workspaceId).toBe('ws_123')
   })
 })
-
-/**
- * `restart-local-runtime` stops every host runtime the API supervises, so it
- * must not be reachable without the same guardrails as the subscription
- * backdoor (SHO-141). The happy path is exercised end-to-end by
- * `e2e/local/chat-task-interrupted-restart.test.ts`, which cannot run against a
- * mocked manager.
- */
-describe('internal-e2e restart-local-runtime guardrails', () => {
-  beforeEach(() => {
-    setNodeEnv('test')
-    setSecret('test-secret-shh')
-    setOverride(undefined)
-  })
-
-  test('401 when the secret header is missing', async () => {
-    const res = await post('/restart-local-runtime')
-    expect(res.status).toBe(401)
-  })
-
-  test('401 when the secret header is wrong', async () => {
-    const res = await post('/restart-local-runtime', {
-      headers: { 'x-e2e-bootstrap-secret': 'not-the-secret' },
-    })
-    expect(res.status).toBe(401)
-  })
-
-  test('503 in production without the override', async () => {
-    setNodeEnv('production')
-    const res = await post('/restart-local-runtime', {
-      headers: { 'x-e2e-bootstrap-secret': 'test-secret-shh' },
-    })
-    expect(res.status).toBe(503)
-  })
-})

@@ -55,7 +55,7 @@ const localEnv = {
   // Trigger (event subscription) agents run from a script that automations-agent.test.ts writes.
   SHOGO_EVENT_AGENT_SCRIPT: resolve(repoRoot, "test-results/event-agents.script.json"),
   // chat-task-interrupted-restart.test.ts restarts the host runtime through
-  // POST /api/internal/e2e/restart-local-runtime, which needs this secret.
+  // POST /api/local/system/restart-runtime, which needs this secret.
   SHOGO_E2E_BOOTSTRAP_SECRET: "e2e-local-restart",
   BROWSER: "none",
   // desktop-cloud-workspaces.test.ts: a cloud-mode API for the desktop to sign in to.

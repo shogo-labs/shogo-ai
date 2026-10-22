@@ -597,9 +597,9 @@ jobs:
           # already finishes at 34m37s of a 35m cap.
           - { name: 'E2E (chat context)', spec: 'chat-context-survives-idle' }
           # chat-task-interrupted-restart (SHO-141) runs a background task, then
-          # restarts the host runtime under it, so it needs the fake-model stack.
-          # Own entry, not a place in the list above: that job is already at
-          # 34m37s of its 35m cap (SHO-133).
+          # restarts the host runtime under it via /api/local/system/restart-runtime,
+          # so it needs the fake-model stack. Own entry, not a place in the list
+          # above: that job is already at 34m37s of its 35m cap (SHO-133).
           - { name: 'E2E (task restart)', spec: 'chat-task-interrupted-restart' }
     permissions:
       contents: read

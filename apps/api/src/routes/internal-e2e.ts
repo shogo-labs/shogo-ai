@@ -232,48 +232,6 @@ app.post('/bootstrap-subscription', async (c) => {
 })
 
 /**
- * POST /api/internal/e2e/restart-local-runtime
- *
- * Body: none.
- *
- * Stops every host-mode agent runtime the API is supervising, so the next
- * request cold-starts one. This is the deterministic "the runtime went away
- * under a running background task" the SHO-141 specs need: killing the child
- * by hand races the supervisor, and a page reload re-attaches to the still-warm
- * runtime.
- *
- * Local/desktop only — on k8s/metal the substrate owns the process, and
- * `/suspend-runtime` / `/recycle-runtime` are the honest equivalents there.
- * Gated by the same three guardrails as the subscription backdoor.
- */
-app.post('/restart-local-runtime', async (c) => {
-  if (!bootstrapEnabled()) {
-    return c.json({ ok: false, error: 'e2e_bootstrap_disabled' }, 503)
-  }
-  if (!secretMatches(c.req.header('x-e2e-bootstrap-secret'))) {
-    return c.json({ ok: false, error: 'unauthorized' }, 401)
-  }
-
-  try {
-    const { getRuntimeManager } = await import('../lib/runtime/manager')
-    const manager: any = getRuntimeManager()
-    const stopped: string[] =
-      typeof manager?.getActiveProjects === 'function' ? manager.getActiveProjects() : []
-    await manager.stopAll()
-    // eslint-disable-next-line no-console
-    console.info('[e2e-bootstrap] restarted local runtimes', JSON.stringify({ stopped }))
-    return c.json({ ok: true, stopped })
-  } catch (err: any) {
-    // eslint-disable-next-line no-console
-    console.error('[e2e-bootstrap] restart-local-runtime failed', err)
-    return c.json(
-      { ok: false, error: 'restart_failed', message: err?.message ?? 'unknown' },
-      500,
-    )
-  }
-})
-
-/**
  * POST /api/internal/e2e/suspend-runtime
  *
  * Body: { projectId: string }
