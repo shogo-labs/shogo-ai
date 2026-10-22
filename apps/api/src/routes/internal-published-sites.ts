@@ -94,16 +94,30 @@ app.post('/sweep', async (c) => {
   // Peer regions: a project homed elsewhere must never be deleted from here.
   // `PUBLISHED_SITE_SWEEP_PEERS` is a comma-separated list of api base URLs
   // (e.g. "http://api.production-us.shogo.svc.cluster.local:3000").
+  //
+  // Coverage FAILS CLOSED. Both selection rules read an ABSENT row as an orphan,
+  // so a peer we could not reach (or never asked) turns a live project into a
+  // teardown candidate. A deployment that really has no peer region declares it
+  // with `PUBLISHED_SITE_SWEEP_SINGLE_REGION=true`; anything else must name its
+  // peers, and every one of them has to answer.
   const peerUrls = (process.env.PUBLISHED_SITE_SWEEP_PEERS || '')
     .split(',')
     .map((s) => s.trim().replace(/\/$/, ''))
     .filter(Boolean)
+  const declaredSingleRegion = process.env.PUBLISHED_SITE_SWEEP_SINGLE_REGION === 'true'
   const secret = sweepSecret()
 
   const deps = await createPublishedSiteSweepDeps({
     loadPeerRows: async (projectIds) => {
-      if (peerUrls.length === 0 || !secret) return []
-      const out: Array<{ id: string } & ProjectPublishRow> = []
+      if (declaredSingleRegion && peerUrls.length === 0) return { rows: [], complete: true }
+      if (peerUrls.length === 0 || !secret) {
+        console.warn(
+          '[published-site-sweep] no peer regions configured and PUBLISHED_SITE_SWEEP_SINGLE_REGION is not "true" — row coverage is incomplete, so nothing will be selected',
+        )
+        return { rows: [], complete: false }
+      }
+      const rows: Array<{ id: string } & ProjectPublishRow> = []
+      const unreachable: string[] = []
       await Promise.all(
         peerUrls.map(async (base) => {
           try {
@@ -116,16 +130,28 @@ app.post('/sweep', async (c) => {
             )
             if (!res.ok) {
               console.warn(`[published-site-sweep] peer ${base} returned ${res.status}`)
+              unreachable.push(`${base} (${res.status})`)
               return
             }
             const json = (await res.json()) as { rows?: Array<{ id: string } & ProjectPublishRow> }
-            out.push(...(json.rows ?? []))
+            if (!Array.isArray(json.rows)) {
+              unreachable.push(`${base} (no rows array)`)
+              return
+            }
+            rows.push(...json.rows)
           } catch (err: any) {
             console.warn(`[published-site-sweep] peer ${base} lookup failed:`, err?.message ?? err)
+            unreachable.push(`${base} (${err?.message ?? 'error'})`)
           }
         }),
       )
-      return out
+      if (unreachable.length) {
+        console.warn(
+          `[published-site-sweep] ${unreachable.length}/${peerUrls.length} peer region(s) unreachable: ${unreachable.join(', ')}`,
+        )
+        return { rows, complete: false }
+      }
+      return { rows, complete: true }
     },
   })
 
@@ -136,15 +162,34 @@ app.post('/sweep', async (c) => {
 
   console.log(
     `[published-site-sweep] ${report.dryRun ? 'DRY RUN' : 'APPLY'}: ` +
+      `row coverage ${report.rowCoverageComplete ? 'complete' : 'INCOMPLETE'}, ` +
       `${report.selected.length} to remove, ${report.tornDown.length} removed, ` +
-      `${report.failed.length} failed, ${report.skipped.length} kept`,
+      `${report.failed.length} failed, ${report.skipped.length} kept` +
+      (report.blocked ? ` — blocked: ${report.blocked}` : ''),
   )
 
-  return c.json({
+  const payload = {
     region: process.env.SHOGO_REGION || process.env.REGION_ID || null,
     peers: peerUrls.length,
+    singleRegion: declaredSingleRegion,
     ...report,
-  })
+  }
+
+  // An apply on incomplete coverage is a refusal, not a no-op success: the
+  // operator has to fix the peer configuration before anything may be deleted.
+  if (report.blocked === 'row-coverage-incomplete') {
+    return c.json(
+      {
+        ...payload,
+        error: 'row-coverage-incomplete',
+        message:
+          'Refusing to delete: project rows for every region were not available. Set PUBLISHED_SITE_SWEEP_PEERS (and the same secret on each peer), or PUBLISHED_SITE_SWEEP_SINGLE_REGION=true if this deployment truly has no peer region.',
+      },
+      412,
+    )
+  }
+
+  return c.json(payload)
 })
 
 export function publishedSiteSweepRoutes(): Hono {

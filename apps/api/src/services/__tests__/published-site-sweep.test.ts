@@ -71,7 +71,9 @@ describe('selectOrphanedPublishedSites', () => {
     const { selected, skipped } = selectOrphanedPublishedSites({
       runtimes: [runtime()],
       rowsById: new Map([
-        ['proj-1', { publishedSubdomain: null, publishStatus: 'publishing' } as ProjectPublishRow],
+        // A real `PublishStatus` member from the window before the publish
+        // writes `publishedSubdomain` (QA's acceptance test pins all three).
+        ['proj-1', { publishedSubdomain: null, publishStatus: 'uploading' } as ProjectPublishRow],
       ]),
       now: NOW,
     })
@@ -139,23 +141,24 @@ describe('selectOrphanedPublishedSites', () => {
   })
 })
 
-describe('runPublishedSiteSweep', () => {
-  function deps(over: Record<string, unknown> = {}) {
-    const tornDown: Array<[string, string]> = []
-    return {
-      tornDown,
-      deps: {
-        listRuntimes: async () => [runtime()],
-        loadProjectRows: async () => new Map<string, ProjectPublishRow>(),
-        teardown: async (projectId: string, subdomain: string) => {
-          tornDown.push([projectId, subdomain])
-        },
-        now: () => NOW,
-        ...over,
+/** Sweep deps with everything stubbed; override any field, record teardowns. */
+function deps(over: Record<string, unknown> = {}) {
+  const tornDown: Array<[string, string]> = []
+  return {
+    tornDown,
+    deps: {
+      listRuntimes: async () => [runtime()],
+      loadProjectRows: async () => ({ rows: new Map<string, ProjectPublishRow>(), complete: true }),
+      teardown: async (projectId: string, subdomain: string) => {
+        tornDown.push([projectId, subdomain])
       },
-    }
+      now: () => NOW,
+      ...over,
+    },
   }
+}
 
+describe('runPublishedSiteSweep', () => {
   test('is a dry run by default — nothing is torn down', async () => {
     const { tornDown, deps: d } = deps()
 
@@ -238,5 +241,49 @@ describe('mergeProjectRows', () => {
     })
 
     expect(selected).toEqual([])
+  })
+})
+
+describe('row coverage — the sweep fails closed', () => {
+  test('selects nothing when the row load could not cover every region', () => {
+    // Without the peer rows, an alive project homed in the other region has no
+    // row here and is indistinguishable from a deleted one.
+    const { selected, skipped } = selectOrphanedPublishedSites({
+      runtimes: [runtime()],
+      rowsById: new Map(),
+      now: NOW,
+      rowCoverageComplete: false,
+    })
+
+    expect(selected).toEqual([])
+    expect(skipped.map((s) => s.reason)).toEqual(['row-coverage-incomplete'])
+  })
+
+  test('apply refuses on incomplete coverage, and says why', async () => {
+    const warnings: string[] = []
+    const { deps: d, tornDown } = deps({
+      loadProjectRows: async () => ({ rows: new Map<string, ProjectPublishRow>(), complete: false }),
+      warn: (m: string) => warnings.push(m),
+    })
+
+    const report = await runPublishedSiteSweep(d, { dryRun: false })
+
+    expect(report.blocked).toBe('row-coverage-incomplete')
+    expect(report.rowCoverageComplete).toBe(false)
+    expect(report.tornDown).toEqual([])
+    expect(tornDown).toEqual([])
+    expect(warnings.join(' ')).toContain('apply refused')
+  })
+
+  test('a dry run still reports the inventory it refused to act on', async () => {
+    const { deps: d } = deps({
+      loadProjectRows: async () => ({ rows: new Map<string, ProjectPublishRow>(), complete: false }),
+    })
+
+    const report = await runPublishedSiteSweep(d, {})
+
+    expect(report.dryRun).toBe(true)
+    expect(report.blocked).toBeNull()
+    expect(report.skipped.map((s) => s.reason)).toEqual(['row-coverage-incomplete'])
   })
 })

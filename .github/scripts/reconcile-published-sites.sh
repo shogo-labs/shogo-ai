@@ -70,13 +70,22 @@ fi
 
 echo "$RESPONSE" | jq -r '
   "region: \(.region // "unknown")  peers: \(.peers // 0)  dryRun: \(.dryRun)",
+  (if (.rowCoverageComplete == false) then "row coverage: INCOMPLETE — nothing is selectable until every peer region answers (set PUBLISHED_SITE_SWEEP_PEERS, or PUBLISHED_SITE_SWEEP_SINGLE_REGION=true if there is genuinely no peer)" else empty end),
+  (if .blocked then "BLOCKED: \(.blocked) — \(.message // "")" else empty end),
   (if .dryRun then "would remove:" else "removed:" end),
   (if .dryRun then (.selected[] | "  \(.projectId)  \(.subdomain)  (\(.substrate), \(.reason))")
    else (.tornDown[] | "  \(.projectId)  \(.subdomain)") end),
   (if (.failed | length) > 0 then "failed:" else empty end),
   (.failed[] | "  \(.projectId)  \(.subdomain): \(.error)"),
-  "kept: \(.skipped | length) (has-subdomain/publishing/too-young/no-subdomain)"
+  "kept: \(.skipped | length) (has-subdomain/publishing/too-young/no-subdomain/row-coverage-incomplete)"
 '
+
+# An apply that refused is a failure of the run, not a quiet no-op: the peer
+# configuration has to be fixed before the sweep may delete anything.
+if [[ "$(echo "$RESPONSE" | jq -r '.blocked // empty')" == "row-coverage-incomplete" ]]; then
+  echo "::error::sweep apply refused — project rows for every region were not available (peer regions unreachable or unconfigured)"
+  exit 1
+fi
 
 REMOVED=$(echo "$RESPONSE" | jq '.selected | length')
 echo "→ $REMOVED site(s) $( [[ "$DRY_RUN" == "true" ]] && echo 'would be removed' || echo 'removed')"

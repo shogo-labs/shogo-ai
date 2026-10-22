@@ -40,7 +40,12 @@ export interface ProjectPublishRow {
   publishStatus: string | null
 }
 
-export type SweepSkipReason = 'no-subdomain' | 'has-subdomain' | 'publishing' | 'too-young'
+export type SweepSkipReason =
+  | 'no-subdomain'
+  | 'has-subdomain'
+  | 'publishing'
+  | 'too-young'
+  | 'row-coverage-incomplete'
 
 export interface SweepDecision {
   projectId: string
@@ -57,8 +62,15 @@ export interface SweepSkip {
   reason: SweepSkipReason
 }
 
-/** Publish states that mean "a publish is happening right now — hands off". */
-const PUBLISHING_STATES = new Set(['publishing', 'building'])
+/**
+ * Publish states that mean "a publish is happening right now — hands off".
+ * These are exactly the members of the Prisma `PublishStatus` enum that a first
+ * publish passes through BEFORE `publishedSubdomain` is written (at the very
+ * end, together with `live`): `building` → `uploading` → `configuring`. The
+ * last one matters most — `configuring` is when `published-{id}` and its
+ * DomainMapping are created, i.e. when this sweep first has something to find.
+ */
+const PUBLISHING_STATES = new Set(['building', 'uploading', 'configuring'])
 
 export const DEFAULT_SWEEP_MIN_AGE_MS = 60 * 60 * 1000
 
@@ -74,16 +86,25 @@ export const DEFAULT_SWEEP_MIN_AGE_MS = 60 * 60 * 1000
  * flight, that is younger than `minAgeMs`, or whose subdomain we don't know
  * (without it we can't purge the right S3 prefix / KV entry, and a half teardown
  * is worse than none).
+ *
+ * `rowCoverageComplete: false` selects NOTHING. Both rules above are conclusions
+ * drawn from what the row map does *not* contain, so a row map missing a peer
+ * region reads as "this project's row is gone" for a project that is in fact
+ * alive in that region — and the teardown is not recoverable. Callers that
+ * cannot prove they saw every region must leave this false; the default is true
+ * only so a single caller with local rows can state the pure rule directly.
  */
 export function selectOrphanedPublishedSites(input: {
   runtimes: PublishedRuntimeSnapshot[]
   rowsById: Map<string, ProjectPublishRow> | Record<string, ProjectPublishRow>
   now?: number
   minAgeMs?: number
+  rowCoverageComplete?: boolean
 }): { selected: SweepDecision[]; skipped: SweepSkip[] } {
   const now = input.now ?? Date.now()
   const minAgeMs = input.minAgeMs ?? DEFAULT_SWEEP_MIN_AGE_MS
   const rows = input.rowsById instanceof Map ? input.rowsById : new Map(Object.entries(input.rowsById))
+  const rowCoverageComplete = input.rowCoverageComplete !== false
 
   const selected: SweepDecision[] = []
   const skipped: SweepSkip[] = []
@@ -96,6 +117,11 @@ export function selectOrphanedPublishedSites(input: {
     // Two substrates can hold the same project's site during a cutover; one
     // decision per project is enough (the teardown covers both).
     if (seen.has(rt.projectId)) continue
+
+    if (!rowCoverageComplete) {
+      skip('row-coverage-incomplete')
+      continue
+    }
 
     if (!rt.subdomain) {
       skip('no-subdomain')
@@ -166,11 +192,21 @@ export function mergeProjectRows(
   return merged
 }
 
+/**
+ * What a row load saw. `complete` is the load's own claim that it covered
+ * EVERY region this deployment can have a project row in — the sweep refuses to
+ * select anything when it is false, so a loader that cannot check must say so.
+ */
+export interface ProjectRowLoad {
+  rows: Map<string, ProjectPublishRow>
+  complete: boolean
+}
+
 export interface PublishedSiteSweepDeps {
   /** Published runtimes on every substrate this region runs. */
   listRuntimes: () => Promise<PublishedRuntimeSnapshot[]>
   /** Every project row visible across regions, keyed by project id. */
-  loadProjectRows: (projectIds: string[]) => Promise<Map<string, ProjectPublishRow>>
+  loadProjectRows: (projectIds: string[]) => Promise<ProjectRowLoad>
   /** Tear a site down for good (substrates + S3 + KV + pointer + data archive). */
   teardown: (projectId: string, subdomain: string) => Promise<void>
   now?: () => number
@@ -180,6 +216,10 @@ export interface PublishedSiteSweepDeps {
 
 export interface SweepReport {
   dryRun: boolean
+  /** Did the row load cover every region? False ⇒ nothing was selected. */
+  rowCoverageComplete: boolean
+  /** Why an apply refused to run, when it did. */
+  blocked: 'row-coverage-incomplete' | null
   selected: SweepDecision[]
   skipped: SweepSkip[]
   tornDown: Array<{ projectId: string; subdomain: string }>
@@ -191,6 +231,11 @@ export interface SweepReport {
  * anything. Enumeration errors are reported, never thrown: a partial inventory
  * still produces a valid (smaller) report, and the decision function is safe on
  * a partial one.
+ *
+ * Apply REFUSES when the row load could not cover every region
+ * (`rowCoverageComplete: false`): without all the rows, an alive project looks
+ * deleted, and a torn-down site cannot be restored. The dry run still reports
+ * the runtime inventory so an operator can see why it is blocking.
  */
 export async function runPublishedSiteSweep(
   deps: PublishedSiteSweepDeps,
@@ -200,17 +245,37 @@ export async function runPublishedSiteSweep(
   const now = deps.now?.() ?? Date.now()
 
   const runtimes = await deps.listRuntimes()
-  const rows = await deps.loadProjectRows(runtimes.map((r) => r.projectId))
+  const load = await deps.loadProjectRows(runtimes.map((r) => r.projectId))
+  const rowCoverageComplete = load.complete
 
   const { selected, skipped } = selectOrphanedPublishedSites({
     runtimes,
-    rowsById: rows,
+    rowsById: load.rows,
     now,
     minAgeMs: opts.minAgeMs,
+    rowCoverageComplete,
   })
 
-  const report: SweepReport = { dryRun, selected, skipped, tornDown: [], failed: [] }
+  const report: SweepReport = {
+    dryRun,
+    rowCoverageComplete,
+    blocked: null,
+    selected,
+    skipped,
+    tornDown: [],
+    failed: [],
+  }
   if (dryRun) return report
+
+  if (!rowCoverageComplete) {
+    // Defence in depth: the decision function already selected nothing, and an
+    // apply must not be able to delete on a partial row map even if it did.
+    report.blocked = 'row-coverage-incomplete'
+    deps.warn?.(
+      'apply refused: project rows for every region were not available, so an orphan cannot be told apart from a project homed in another region',
+    )
+    return report
+  }
 
   for (const decision of selected) {
     try {
@@ -233,8 +298,15 @@ export async function runPublishedSiteSweep(
  * how the pieces fit.
  */
 export async function createPublishedSiteSweepDeps(opts: {
-  /** Extra regions' rows, e.g. from a peer API. Empty → this region only. */
-  loadPeerRows?: (projectIds: string[]) => Promise<Array<{ id: string } & ProjectPublishRow>>
+  /**
+   * Extra regions' rows, e.g. from a peer API. The loader must report whether it
+   * actually saw every peer — a `complete: false` result stops the sweep from
+   * selecting anything, because "no row" and "no row *here*" are the same thing
+   * in the map and only one of them means the project is gone.
+   */
+  loadPeerRows?: (
+    projectIds: string[],
+  ) => Promise<{ rows: Array<{ id: string } & ProjectPublishRow>; complete: boolean }>
 } = {}): Promise<PublishedSiteSweepDeps> {
   return {
     listRuntimes: async () => {
@@ -323,8 +395,19 @@ export async function createPublishedSiteSweepDeps(opts: {
           publishStatus: (row as any).publishStatus ?? null,
         })
       }
-      const peerRows = (await opts.loadPeerRows?.(projectIds)) ?? []
-      return mergeProjectRows(rows, peerRows)
+      const peers = opts.loadPeerRows
+        ? await opts.loadPeerRows(projectIds)
+        : {
+            // No peer loader at all: this caller cannot see another region.
+            // Treating that as "complete" is what makes a project homed
+            // elsewhere look deleted, so it is incomplete by definition.
+            rows: [] as Array<{ id: string } & ProjectPublishRow>,
+            complete: false,
+          }
+      return {
+        rows: mergeProjectRows(rows, peers.rows),
+        complete: peers.complete,
+      }
     },
 
     teardown: async (projectId, subdomain) => {
