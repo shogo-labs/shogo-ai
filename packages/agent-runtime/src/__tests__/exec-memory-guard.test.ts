@@ -152,23 +152,23 @@ describe('sandboxExecAsync integration', () => {
     })
     expect(trackedExecPids()).toContain(handle.pid!)
 
-    // One `ps` read is a snapshot of an instant, and the child is not over
-    // budget the moment it is spawned: it still has a runtime to start and 192
-    // MB to touch, which on a loaded runner can outlast any fixed number of
+    // One `ps` read is a snapshot of an instant, and the child is not holding
+    // its memory the moment it is spawned: it still has a runtime to start and
+    // 192 MB to touch, which on a loaded runner can outlast any fixed number of
     // samples — the guard then never strikes and `done` never resolves, which
     // surfaces as a test timeout rather than as a guard failure. So wait for the
-    // OS to really report the group over the ceiling, then hand the guard that
-    // state; a failure here says what was measured instead of hanging.
-    const overBudgetKb = OVER_BUDGET_MB * 1024
+    // OS to report the whole allocation resident, then hand the guard that
+    // state; a failure here names what was measured instead of hanging.
+    const hogKb = MEMORY_HOG_MB * 1024
     const deadline = Date.now() + 20_000
     let measuredKb = 0
     while (Date.now() < deadline && !handle.exited()) {
       const sizes = await sampleTreeRssKb([handle.pid!])
       measuredKb = Math.max(measuredKb, sizes.get(handle.pid!) ?? 0)
-      if (measuredKb > overBudgetKb) break
+      if (measuredKb >= hogKb) break
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
-    expect(measuredKb).toBeGreaterThan(overBudgetKb)
+    expect(measuredKb).toBeGreaterThanOrEqual(hogKb)
 
     // Strikes are required once, so one sample of a group the OS reports over
     // the ceiling has to stop it.
@@ -178,10 +178,10 @@ describe('sandboxExecAsync integration', () => {
     expect(result.killed).toBe(true)
     expect(result.killReason).toContain('out of memory')
     expect(result.stderr).toContain('out of memory')
-    // The note reports what the guard measured, so this is what proves the
-    // command was over budget because of the memory it holds, not its size.
+    // The note reports what the guard measured, and that reading has to clear
+    // the ceiling — not merely be a command that looks big.
     const reported = /using (\d+) MB/.exec(result.killReason ?? '')
-    expect(Number(reported?.[1])).toBeGreaterThanOrEqual(MEMORY_HOG_MB)
+    expect(Number(reported?.[1])).toBeGreaterThan(OVER_BUDGET_MB)
     expect(trackedExecPids()).not.toContain(handle.pid!)
   }, 60_000)
 
