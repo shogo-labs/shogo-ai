@@ -215,4 +215,9 @@ function main(): number {
   return 1
 }
 
-process.exit(main())
+// Only run when executed as a script: `scripts/check-migration-derived-ids.ts`
+// imports INTENTIONALLY_UNPUBLISHED from here so there is one source of truth
+// for "which tables are region-local".
+if (import.meta.main) {
+  process.exit(main())
+}

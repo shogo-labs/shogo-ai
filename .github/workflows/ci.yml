@@ -380,6 +380,16 @@ jobs:
         if: needs.prelude.outputs.verified != 'true'
         run: bun run check:publication
 
+      - name: Check no migration derives a primary key from row content
+        if: needs.prelude.outputs.verified != 'true'
+        # 2026-10-22 (SHO-142): a migration backfilled ids as
+        # `'dve_' || md5(deviceId, version)` on a published table. Both regions
+        # ran it against already-replicated `api_keys`, so both minted the same
+        # primary keys, EU's tablesync COPY died on a duplicate key and
+        # `sub_from_us` was disabled — US -> EU replication down 25 minutes.
+        # A derived key is identical in every region by construction.
+        run: bun run check:migration-ids
+
       - name: Check generated What's New catalog
         if: needs.prelude.outputs.verified != 'true'
         run: bun run check:whats-new
