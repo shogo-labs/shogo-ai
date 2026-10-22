@@ -161,6 +161,14 @@ export interface SessionPersistence {
   load(id: string): Promise<SerializedSession | null>
   delete(id: string): Promise<void>
   loadAll(): Promise<SerializedSession[]>
+  /**
+   * Optional cheap scan for reclamation: ids of stored sessions untouched
+   * since `cutoffMs` whose copy holds no messages. Implementations should avoid
+   * parsing the whole store — the sweep runs every few minutes.
+   */
+  listMessageLessIds?(cutoffMs: number): Promise<string[]>
+  /** Optional size of the store in bytes, for a growth warning. */
+  sizeBytes?(): number
 }
 
 export interface SerializedSession {
@@ -219,6 +227,13 @@ export interface SessionManagerConfig {
   keepRecentMessages: number
   /** Interval in seconds between pruning sweeps (default: 300 = 5 min) */
   pruneIntervalSeconds: number
+  /**
+   * Days a *message-less* session may sit before its persisted copy is
+   * reclaimed (default: 30). A session that holds messages is never
+   * reclaimed by age — a conversation never loses its history because it
+   * went quiet (SHO-137). 0 disables reclamation.
+   */
+  emptySessionRetentionDays?: number
   /** Tool result pruning config (false to disable) */
   pruning?: Partial<PruningConfig> | false
   /**
@@ -377,6 +392,12 @@ export type SummarizeFn = (messages: Message[], previousSummary?: string) => Pro
 /** Max tokens of message text handed to the summarizer in one call. */
 export const DEFAULT_SUMMARIZE_CHUNK_TOKENS = 24_000
 
+/** Days a message-less persisted session is kept before reclamation. */
+export const DEFAULT_EMPTY_SESSION_RETENTION_DAYS = 30
+
+/** Log a growth warning once the session store passes this size. */
+export const SESSION_STORE_WARN_BYTES = 512 * 1024 * 1024
+
 const DEFAULT_CONFIG: SessionManagerConfig = {
   sessionTtlSeconds: 3600,
   maxMessages: 30,
@@ -384,6 +405,7 @@ const DEFAULT_CONFIG: SessionManagerConfig = {
   maxEstimatedTokens: 100_000,
   keepRecentMessages: 10,
   pruneIntervalSeconds: 300,
+  emptySessionRetentionDays: DEFAULT_EMPTY_SESSION_RETENTION_DAYS,
 }
 
 export class SessionManager {
@@ -473,7 +495,12 @@ export class SessionManager {
   startPruning(): void {
     if (this.pruneTimer) return
     this.pruneTimer = setInterval(
-      () => this.pruneExpired(),
+      () => {
+        this.pruneExpired()
+        // Bounded growth without touching a conversation: only rows that never
+        // held a message are reclaimed (SHO-137).
+        void this.reclaimEmptySessions().catch(() => {})
+      },
       this.config.pruneIntervalSeconds * 1000
     )
   }
@@ -506,20 +533,27 @@ export class SessionManager {
     return session
   }
 
+  /**
+   * Load a persisted session into memory *without* creating one when nothing
+   * is stored. The difference matters: `getOrCreate` on a cold pod fabricates
+   * an empty session that the next `persistSession` writes over the good copy
+   * (SHO-137). Callers that want "whatever is on disk, or nothing" use this.
+   */
+  async loadSession(id: string): Promise<ManagedSession | null> {
+    const loaded = this.sessions.get(id)
+    if (loaded) return loaded
+    if (!this.persistence) return null
+    const data = await this.persistence.load(id)
+    if (!data) return null
+    const session: ManagedSession = { ...data, stopRequested: false, metadata: data.metadata || {} }
+    this.sessions.set(id, session)
+    return session
+  }
+
   /** Async version that checks disk persistence before creating a new session */
   async getOrCreateAsync(id: string): Promise<ManagedSession> {
-    let session = this.sessions.get(id)
-    if (session) return session
-
-    if (this.persistence) {
-      const data = await this.persistence.load(id)
-      if (data) {
-        session = { ...data, stopRequested: false, metadata: data.metadata || {} }
-        this.sessions.set(id, session)
-        return session
-      }
-    }
-
+    const loaded = await this.loadSession(id)
+    if (loaded) return loaded
     return this.getOrCreate(id)
   }
 
@@ -597,6 +631,37 @@ export class SessionManager {
   /** Delete a session entirely */
   delete(id: string): boolean {
     return this.sessions.delete(id)
+  }
+
+  /**
+   * Wipe a session for real — memory *and* the persisted copy. Only for a
+   * deliberate delete (the user removed the chat, or history was cleared), so
+   * `pruneExpired()` must never call it: idle time does not destroy history.
+   */
+  async deleteSession(id: string): Promise<boolean> {
+    const known = this.sessions.delete(id)
+    if (this.persistence) {
+      try {
+        await this.persistence.delete(id)
+      } catch (err: any) {
+        console.error(`[SessionManager] Failed to delete persisted session ${id}:`, err?.message ?? err)
+      }
+    }
+    return known
+  }
+
+  /**
+   * Install a durable summary for a session, e.g. the API's copy of what an
+   * evicted conversation was about. Never replaces a longer existing summary
+   * (a compaction already folded this turn's history into it).
+   */
+  setCompactedSummary(id: string, summary: string | null, opts: { replace?: boolean } = {}): void {
+    const session = this.getOrCreate(id)
+    const next = summary?.trim() ? summary.trim() : null
+    if (!next) return
+    if (session.compactedSummary && !opts.replace) return
+    session.compactedSummary = next
+    this.persistSession(session)
   }
 
   /** Check if a session needs compaction (purely token-based, no message count limit) */
@@ -888,7 +953,20 @@ export class SessionManager {
     return msgs
   }
 
-  /** Prune all sessions that have exceeded their TTL */
+  /**
+   * Evict idle sessions from *memory*.
+   *
+   * This is a memory bound, never a data bound: the persisted copy is left
+   * alone, so a conversation that goes quiet overnight is still there when a
+   * background task or a person wakes it (SHO-137). Deleting the row here used
+   * to wipe the only durable copy — `.shogo/sessions.db` is S3-synced, so every
+   * replica went with it, and the next wake turn started from nothing.
+   *
+   * Persisted growth is bounded deliberately instead: `reclaimEmptySessions()`
+   * drops rows that hold no messages, and `deleteSession()` wipes one when the
+   * user actually deletes the chat. A session with messages is never removed
+   * for being old.
+   */
   pruneExpired(): string[] {
     const now = Date.now()
     const ttlMs = this.config.sessionTtlSeconds * 1000
@@ -897,18 +975,63 @@ export class SessionManager {
     for (const [id, session] of this.sessions) {
       if (now - session.lastActivityAt > ttlMs) {
         this.sessions.delete(id)
-        this.persistence?.delete(id).catch((err) => {
-          console.error(`[SessionManager] Failed to delete persisted session ${id}:`, err.message)
-        })
         pruned.push(id)
       }
     }
 
     if (pruned.length > 0) {
-      console.log(`[SessionManager] Pruned ${pruned.length} expired sessions: ${pruned.join(', ')}`)
+      console.log(`[SessionManager] Evicted ${pruned.length} idle session(s) from memory: ${pruned.join(', ')}`)
     }
 
     return pruned
+  }
+
+  /**
+   * Reclaim persisted sessions that never held a message and have been idle
+   * past `emptySessionRetentionDays`. These are the rows chat creation leaves
+   * behind; they cost disk and S3 sync forever and carry nothing a turn needs.
+   * A session with messages is skipped, whatever its age.
+   */
+  async reclaimEmptySessions(now = Date.now()): Promise<string[]> {
+    const days = this.config.emptySessionRetentionDays ?? DEFAULT_EMPTY_SESSION_RETENTION_DAYS
+    if (!this.persistence || !days || days <= 0) return []
+    const cutoff = now - days * 24 * 60 * 60 * 1000
+    const reclaimed: string[] = []
+    let candidates: string[]
+    try {
+      candidates = this.persistence.listMessageLessIds
+        ? await this.persistence.listMessageLessIds(cutoff)
+        : (await this.persistence.loadAll())
+            .filter((data) => data.messages.length === 0 && data.lastActivityAt <= cutoff)
+            .map((data) => data.id)
+    } catch (err: any) {
+      console.error('[SessionManager] Failed to scan persisted sessions:', err?.message ?? err)
+      return []
+    }
+    for (const id of candidates) {
+      try {
+        await this.persistence.delete(id)
+        this.sessions.delete(id)
+        reclaimed.push(id)
+      } catch (err: any) {
+        console.error(`[SessionManager] Failed to reclaim empty session ${id}:`, err?.message ?? err)
+      }
+    }
+    if (reclaimed.length > 0) {
+      console.log(`[SessionManager] Reclaimed ${reclaimed.length} empty persisted session(s)`)
+    }
+    // The store is meant to be bounded, but it now holds conversations forever
+    // by design (SHO-137). If reclaiming empty rows is not enough, say so with
+    // numbers instead of letting it grow invisibly.
+    const bytes = this.persistence.sizeBytes?.()
+    if (bytes !== undefined && bytes > SESSION_STORE_WARN_BYTES) {
+      console.warn(
+        `[SessionManager] sessions.db is ${(bytes / 1024 / 1024).toFixed(1)}MB ` +
+          `(> ${(SESSION_STORE_WARN_BYTES / 1024 / 1024).toFixed(0)}MB); ` +
+          `conversation history is never deleted by age, so this is retention to review, not a bug to prune`,
+      )
+    }
+    return reclaimed
   }
 
   /** Get stats for all sessions */

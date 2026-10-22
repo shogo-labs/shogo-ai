@@ -591,6 +591,11 @@ jobs:
           # was cancelled at the cap, SHO-133). Its own entry gets its own
           # stack and its own timeout.
           - { name: 'E2E (machine agent turn)', spec: 'machine-workspace-agent-turn-live' }
+          # chat-context-survives-idle (SHO-137) drives a wake turn into a
+          # runtime that has never seen the chat. It gets its own entry rather
+          # than joining the job above: that one runs 1 worker at a time and
+          # already finishes at 34m37s of a 35m cap.
+          - { name: 'E2E (chat context)', spec: 'chat-context-survives-idle' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length

@@ -213,6 +213,7 @@ import {
   listAvailableWorkspaceProjects,
 } from './workspace-members'
 import { seedEmptyChatSession } from './file-attachment-utils'
+import { parseHistorySeed } from './history-seed'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
@@ -1393,12 +1394,29 @@ app.get('/agent/status', (c) => {
 // plus the metadata the StatusPanel needs to render its expanded view.
 // Sessions live in memory on this pod; if the id has been evicted (TTL)
 // or never existed, this returns 404.
-app.get('/agent/sessions/:sessionId/summary', (c) => {
+app.get('/agent/sessions/:sessionId/summary', async (c) => {
   const sm = agentGateway?.getSessionManager()
   if (!sm) return c.json({ error: 'Agent gateway not running' }, 503)
-  const detail = sm.getDetail(c.req.param('sessionId'))
+  const sessionId = c.req.param('sessionId')
+  // An evicted session is still on disk; load it before reporting 404.
+  await sm.loadSession(sessionId)
+  const detail = sm.getDetail(sessionId)
   if (!detail) return c.json({ error: 'session not found' }, 404)
   return c.json(detail)
+})
+
+/**
+ * Forget a chat's persisted history for good. Called only when the chat itself
+ * is deleted — never for idle time (that is what `pruneExpired()` stopped
+ * doing; see SHO-137). Wipes memory and the durable copy, so a deleted chat
+ * cannot come back from `sessions.db`.
+ */
+app.delete('/agent/sessions/:sessionId', async (c) => {
+  const sm = agentGateway?.getSessionManager()
+  if (!sm) return c.json({ error: 'Agent gateway not running' }, 503)
+  const sessionId = c.req.param('sessionId')
+  const existed = await sm.deleteSession(sessionId)
+  return c.json({ forgotten: true, existed })
 })
 
 // Manually summarize a session's context — the context-usage dock's button.
@@ -1931,7 +1949,10 @@ app.post('/agent/chat', async (c) => {
   }
   const chatSessionKey = rawChatSessionKey
   const sessionManager = agentGateway!.getSessionManager()
-  sessionManager.getOrCreate(chatSessionKey)
+  // Load, don't fabricate: on a pod that has not restored this id yet, a
+  // memory-only `getOrCreate` would hand the turn an empty session and the
+  // next persist would write that emptiness over the real history (SHO-137).
+  await sessionManager.getOrCreateAsync(chatSessionKey)
   const wokenByTasks: unknown = body.taskNotification?.taskIds
   if (Array.isArray(wokenByTasks)) {
     agentGateway!.acknowledgeTaskNotification(chatSessionKey, wokenByTasks.filter((id): id is string => typeof id === 'string'))
@@ -1958,6 +1979,41 @@ app.post('/agent/chat', async (c) => {
     )
     if (seeded > 0) {
       console.log(`[AgentRuntime][chat] seeded ${seeded} history message(s) for session ${chatSessionKey}`)
+    }
+  }
+  // A server-initiated turn (background-task wake, queued message, scheduled
+  // run, team-chat dispatch) carries exactly one message, so the block above
+  // never runs and a session with no local copy starts from the wake note
+  // alone. The API sends the conversation it already stores as `historySeed`
+  // for exactly that case (SHO-137).
+  if (allMessages.length <= 1) {
+    const seed = parseHistorySeed(body.historySeed)
+    const restored = seed && (sessionManager.get(chatSessionKey)?.messages.length ?? 0) === 0
+    if (seed && restored) {
+      const seeded = seedEmptyChatSession(
+        sessionManager,
+        chatSessionKey,
+        seed.messages.map((m) => ({ role: m.role, parts: [{ type: 'text', text: m.text }] })),
+        { label: 'chat_history' },
+      )
+      if (seed.summary) {
+        // The durable summary must win over a runtime copy that covers less.
+        // The runtime has no watermark of its own (its counts are not the
+        // API's `ChatMessage` counts), so the comparable signal is coverage:
+        // a longer durable block folds more of the conversation. Every runtime
+        // compaction is also written back to the API, so it is never the older
+        // copy for long (SHO-137 round 3, R4).
+        const runtimeSummary = sessionManager.get(chatSessionKey)?.compactedSummary ?? null
+        sessionManager.setCompactedSummary(chatSessionKey, seed.summary, {
+          replace: !runtimeSummary || seed.summary.trim().length > runtimeSummary.trim().length,
+        })
+      }
+      if (seeded > 0 || seed.summary) {
+        console.log(
+          `[AgentRuntime][chat] restored ${seeded} message(s) and ${seed.summary ? 'a summary' : 'no summary'} ` +
+            `from historySeed for session ${chatSessionKey}`,
+        )
+      }
     }
   }
 

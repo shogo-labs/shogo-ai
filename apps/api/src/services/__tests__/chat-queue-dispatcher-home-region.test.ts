@@ -59,6 +59,7 @@ const mockPrisma = {
       state.persisted++
       return create
     },
+    findMany: async () => [],
   },
 }
 
