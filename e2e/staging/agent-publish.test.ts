@@ -10,7 +10,6 @@ import {
   createProject,
   ensureAuthenticated,
   sendProjectChatMessage,
-  transcript,
 } from "./agent-chat"
 
 /**
@@ -23,23 +22,82 @@ import {
  * Run against staging:
  *   E2E_TARGET_URL=https://studio.staging.shogo.ai E2E_STRIPE_MODE=test \
  *     bunx playwright test --config e2e/playwright.config.ts agent-publish
+ *
+ * Every assertion here reads the agent's own messages (`agentMessageText`),
+ * never the page body: the body also carries the user's echoed prompt, and the
+ * publish prompt names the requested subdomain — so a whole-page read makes the
+ * "agent must use the requested subdomain" guarantee pass on the echo alone,
+ * even when the agent published somewhere else entirely (SHO-132). The guard
+ * test in agent-localhost-publish.test.ts pins this at source level.
  */
 
 const TEST_USER = makeTestUser("PublishPro")
 
-/** Asks the agent to publish to an explicit subdomain and waits for it. */
-async function publishToSubdomain(page: Page, subdomain: string): Promise<string> {
-  await sendProjectChatMessage(
-    page,
+/** The message `publishToSubdomain` sends — shared with the stubbed tests below. */
+function publishPrompt(subdomain: string): string {
+  return (
     `Publish this app now to the subdomain "${subdomain}". ` +
-      `I confirm that exact subdomain — use it verbatim, do not pick a ` +
-      `different name. Go ahead and publish immediately without asking me to ` +
-      `confirm again, then reply with the live URL.`,
+    `I confirm that exact subdomain — use it verbatim, do not pick a ` +
+    `different name. Go ahead and publish immediately without asking me to ` +
+    `confirm again, then reply with the live URL.`
   )
+}
+
+/**
+ * Asks the agent to publish to an explicit subdomain and waits for it, returning
+ * the agent's own reply — not the page body, whose echoed prompt would satisfy
+ * every subdomain assertion below by construction (SHO-132).
+ */
+async function publishToSubdomain(page: Page, subdomain: string): Promise<string> {
+  await sendProjectChatMessage(page, publishPrompt(subdomain))
   // Publish builds/uploads/provisions (slow) on the happy path; a taken
   // subdomain is rejected fast, well before that.
   await waitForAgentResponse(page, 300_000)
-  return transcript(page)
+  return agentMessageText(page)
+}
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+/**
+ * The product promise of "agent honors a user-provided subdomain verbatim": the
+ * agent uses the name the user gave it, and every `*.shogo.one` URL it surfaces
+ * is that name. A plain function over text so the stubbed tests at the bottom of
+ * this file can prove it really fails on a substituted name.
+ *
+ * Subdomains are case-insensitive, so both sides are lowercased — a reply that
+ * capitalizes the requested name is not a substitution.
+ */
+function assertSubdomainVerbatim(text: string, subdomain: string): void {
+  const reply = text.toLowerCase()
+  const wanted = subdomain.toLowerCase()
+  expect(
+    reply,
+    `agent must use the requested subdomain "${subdomain}", not substitute its own`,
+  ).toContain(wanted)
+  // Any *.shogo.one URL it surfaced must be that subdomain — not a foreign one.
+  for (const m of reply.matchAll(/https?:\/\/([a-z0-9-]+)\.shogo\.one/gi)) {
+    expect(
+      m[1],
+      `agent published to "${m[1]}.shogo.one" instead of requested "${subdomain}"`,
+    ).toBe(wanted)
+  }
+}
+
+/**
+ * "publishing a subdomain already taken by another project fails": the agent
+ * says the name is taken and does not claim a live publish on it. Same plain
+ * function so the stubbed tests below cover both halves.
+ */
+function assertSubdomainTaken(text: string, subdomain: string): void {
+  // The agent must surface that the subdomain is taken …
+  expect(text, "agent should report that the subdomain is already in use").toMatch(
+    /already in use|already taken|is taken|not available|in use|unavailable/i,
+  )
+  // … and must NOT claim the project is now live on that subdomain.
+  expect(
+    text,
+    "agent must not falsely report a successful publish to a taken subdomain",
+  ).not.toMatch(new RegExp(`live at[^\\n]*${escapeRegExp(subdomain)}\\.shogo\\.one`, "i"))
 }
 
 /**
@@ -208,10 +266,12 @@ test.describe("Agent publish (Pro)", () => {
     const match = text.match(PUBLISHED_URL_RE)
     expect(match, "agent should surface a *.shogo.one published URL").toBeTruthy()
     const publishedUrl = match![0]
-    // The agent may name-derive the subdomain (the tool description lets it
-    // propose one from the app name) rather than echo ours verbatim, so we do
-    // not hard-assert the exact subdomain — only that a real .shogo.one URL was
-    // returned and that it actually serves.
+    // The agent may name-derive the subdomain on a FIRST publish (the tool
+    // description lets it propose one from the app name), so this test only
+    // claims a real, serving .shogo.one URL came back — that is the whole of
+    // its assertion, so tolerating a derived name here cannot mask a broken
+    // promise. The verbatim guarantee is the next test, and it asserts on the
+    // agent's own reply, not the prompt (SHO-132).
     // Cleanup polls whatever the agent actually published, not what we asked for.
     project.subdomain = new URL(publishedUrl).hostname.split(".")[0]
     if (!publishedUrl.includes(subdomain)) {
@@ -245,23 +305,16 @@ test.describe("Agent publish (Pro)", () => {
     // A distinctive subdomain the agent would NOT name-derive from "hello".
     const subdomain = `e2e-keepme-${Date.now().toString(36)}`
     project.subdomain = subdomain
+    // The agent's reply only — the prompt we sent names this subdomain, so
+    // reading the page body would satisfy the assertion below no matter where
+    // the agent actually published (SHO-132).
     const text = await publishToSubdomain(page, subdomain)
 
     // The agent must publish to the EXACT subdomain the user named — never
     // substitute a derived name. We assert on the subdomain (the behavior we
     // control) rather than reachability, which currently depends on a known
     // publish-bucket infra issue tracked separately.
-    expect(
-      text,
-      `agent must use the requested subdomain "${subdomain}", not substitute its own`,
-    ).toContain(subdomain)
-    // Any *.shogo.one URL it surfaced must be that subdomain — not a foreign one.
-    for (const m of text.matchAll(/https?:\/\/([a-z0-9-]+)\.shogo\.one/gi)) {
-      expect(
-        m[1],
-        `agent published to "${m[1]}.shogo.one" instead of requested "${subdomain}"`,
-      ).toBe(subdomain)
-    }
+    assertSubdomainVerbatim(text, subdomain)
   })
 
   test("publishing a subdomain already taken by another project fails", async () => {
@@ -278,24 +331,92 @@ test.describe("Agent publish (Pro)", () => {
     // The subdomain reservation lands in the DB at the start of publish (before
     // build/upload), so Project A holds it regardless of the known bucket infra
     // issue. We only need proof A targeted this exact subdomain.
-    expect(
-      textA,
-      `Project A should have published to subdomain "${subdomain}"`,
-    ).toContain(subdomain)
+    assertSubdomainVerbatim(textA, subdomain)
 
     // Project B tries to grab the same subdomain — must be rejected.
     await createTrackedProject(page)
     const textB = await publishToSubdomain(page, subdomain)
 
-    // The agent must surface that the subdomain is taken …
-    expect(
-      textB,
-      "agent should report that the subdomain is already in use",
-    ).toMatch(/already in use|already taken|is taken|not available|in use|unavailable/i)
-    // … and must NOT claim Project B is now live on that subdomain.
-    expect(
-      textB,
-      "agent must not falsely report a successful publish to a taken subdomain",
-    ).not.toMatch(new RegExp(`live at[^\\n]*${subdomain}\\.shogo\\.one`, "i"))
+    // The agent must surface that the subdomain is taken, and must not claim
+    // Project B is now live on it.
+    assertSubdomainTaken(textB, subdomain)
+  })
+})
+
+/**
+ * The assertions above, on strings — no browser, no Pro account, no live
+ * publish. A test that cannot fail is worse than no test (SHO-132), so the
+ * substituted-subdomain reply that the old whole-page scope let through is
+ * pinned here: if `assertSubdomainVerbatim` ever stops rejecting it, this reds
+ * locally instead of passing a broken agent on staging.
+ */
+test.describe("Agent publish subdomain assertions", () => {
+  const REQUESTED = "e2e-keepme-requested"
+
+  test("a reply that names a different subdomain fails", () => {
+    // Answers with its own name and never types a URL — nothing for the URL
+    // loop to reject, so the name check itself has to catch it.
+    const reply = `Done — I published it to "e2e-keepme-other", which is shorter and reads better.`
+    expect(() => assertSubdomainVerbatim(reply, REQUESTED)).toThrow(
+      /must use the requested subdomain/,
+    )
+  })
+
+  test("a substituted *.shogo.one URL fails even when the reply names the request", () => {
+    // Prose satisfies the plain `toContain`; only the URL loop can catch the
+    // substitution, which is exactly the hole the whole-page scope hid.
+    const reply =
+      `Publishing "${REQUESTED}" as you asked — your app is live at ` +
+      `https://e2e-keepme-other.shogo.one`
+    expect(reply).toContain(REQUESTED)
+    expect(() => assertSubdomainVerbatim(reply, REQUESTED)).toThrow(/instead of requested/)
+  })
+
+  test("a reply that used the requested subdomain passes", () => {
+    expect(() =>
+      assertSubdomainVerbatim(
+        `Published — https://${REQUESTED}.shogo.one is serving 200.`,
+        REQUESTED,
+      ),
+    ).not.toThrow()
+    // A reply that names the subdomain without printing a URL is also a pass:
+    // the URL loop only has something to reject when a URL is there.
+    expect(() => assertSubdomainVerbatim(`Published to "${REQUESTED}".`, REQUESTED)).not.toThrow()
+    // Case is not a substitution — DNS names are case-insensitive.
+    expect(() =>
+      assertSubdomainVerbatim(`Live at https://${REQUESTED.toUpperCase()}.shogo.one`, REQUESTED),
+    ).not.toThrow()
+  })
+
+  test("the echoed prompt cannot stand in for the agent's reply", () => {
+    // The prompt we send names the requested subdomain. That echo is what made
+    // the old whole-page scope unfalsifiable: it passed for a reply that never
+    // mentioned the name at all, let alone used it.
+    const prompt = publishPrompt(REQUESTED)
+    expect(prompt).toContain(REQUESTED)
+    const reply = "Your app is published and now live on its *.shogo.one URL."
+    expect(() => assertSubdomainVerbatim(reply, REQUESTED)).toThrow(
+      /must use the requested subdomain/,
+    )
+  })
+
+  test("a reply that reports the subdomain as taken passes", () => {
+    expect(() =>
+      assertSubdomainTaken(
+        `"${REQUESTED}" is already in use by another project — pick a different name.`,
+        REQUESTED,
+      ),
+    ).not.toThrow()
+    expect(() =>
+      assertSubdomainTaken("That subdomain is already taken, so I did not publish.", REQUESTED),
+    ).not.toThrow()
+  })
+
+  test("a reply that calls it taken and also claims a live publish fails", () => {
+    // The plausible wrong answer: report the clash, then claim success anyway.
+    const reply =
+      `The subdomain is already in use elsewhere, but I published anyway — ` +
+      `it is live at https://${REQUESTED}.shogo.one`
+    expect(() => assertSubdomainTaken(reply, REQUESTED)).toThrow(/must not falsely report/)
   })
 })
