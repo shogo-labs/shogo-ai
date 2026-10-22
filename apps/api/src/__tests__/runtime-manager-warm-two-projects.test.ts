@@ -42,6 +42,7 @@ function newManager(attachments: Record<string, string[]> = {}) {
   rm.agentManager = {
     touch: mock(() => {}),
     stop: mock(async () => {}),
+    refreshActivity: mock(async () => {}),
     status: (key: string) => {
       const rt = rm.runtimes.get(key)
       if (!rt) return undefined

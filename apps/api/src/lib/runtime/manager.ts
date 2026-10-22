@@ -3158,6 +3158,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // Oldest first: the tail of the MRU is the coldest, and it should go
     // before a newer one just because the list happens to be walked forwards.
     const evictable = liveBackground.slice(cap).reverse()
+    await this.refreshActivityFor(evictable)
     let overBy = liveBackground.length - cap
     for (const key of evictable) {
       const verdict = await this.isBusy(key)
@@ -3215,8 +3216,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     })
     if (livePreviews.length <= cap) return
     // Evict the tail (oldest opens) beyond the cap.
+    const evictable = livePreviews.slice(cap).reverse()
+    await this.refreshActivityFor(evictable)
     let overBy = livePreviews.length - cap
-    for (const key of livePreviews.slice(cap).reverse()) {
+    for (const key of evictable) {
       const verdict = await this.isBusy(key)
       if (verdict.dead) {
         await this.reapDeadRuntime(key, 'preview LRU', verdict)
@@ -3321,7 +3324,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     })
     if (live.length === 0) return false
     // Oldest (MRU tail) first.
-    for (const key of [...live].reverse()) {
+    const candidates = [...live].reverse()
+    await this.refreshActivityFor(candidates)
+    for (const key of candidates) {
       const verdict = await this.isBusy(key)
       if (verdict.dead) {
         await this.reapDeadRuntime(key, 'memory guard', verdict)
@@ -3339,6 +3344,24 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       }
     }
     return false
+  }
+
+  /**
+   * Re-read the activity of every runtime about to be considered for eviction,
+   * in PARALLEL, so the loops below decide on current data instead of whatever
+   * the sampling timer last cached (up to one sampling interval ago).
+   *
+   * Parallel on purpose: the verdicts are probed concurrently, so an
+   * unresponsive runtime costs one probe timeout for the whole pass rather than
+   * one per candidate. A probe that fails leaves the cached `unknown` verdict,
+   * which keeps the runtime alive — never evicts it.
+   */
+  private async refreshActivityFor(keys: string[]): Promise<void> {
+    const managed = keys.filter(
+      (k) => this.agentManagedProjects.has(k) && !this.runtimes.get(k)?.remoteRuntime,
+    )
+    if (managed.length === 0) return
+    await Promise.all(managed.map((k) => this.agentManager.refreshActivity(k).catch(() => null)))
   }
 
   /**

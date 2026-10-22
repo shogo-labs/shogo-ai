@@ -54,6 +54,7 @@ import { killViteWatchFromPidfile } from '@shogo-ai/sdk/vite-watch';
 import { CloudSyncWatcher } from './cloud-sync-watcher.ts';
 import { cloneProject, gitIsAvailable, isGitRepo } from './git-cloner.ts';
 import {
+  ACTIVITY_RESAMPLE_BEFORE_EVICT_MS,
   ACTIVITY_SAMPLE_MS,
   ZERO_COUNTS,
   decideBusy,
@@ -2184,7 +2185,11 @@ export class WorkerRuntimeManager implements RuntimeResolver {
    * {@link activityDecision} with a fresh sample when the cached one has aged
    * out (or does not exist yet). Eviction paths use this so a stale cache
    * never decides alone — and a probe that fails is still "unknown", i.e.
-   * keep.
+   * keep, so re-asking can cost time but can never kill work.
+   *
+   * {@link ACTIVITY_RESAMPLE_BEFORE_EVICT_MS} is deliberately much shorter than
+   * {@link ACTIVITY_SAMPLE_MS}: the timer keeps the cache warm, this covers the
+   * window in which a turn started after the last tick.
    */
   private async freshActivityDecision(
     projectId: string,
@@ -2193,11 +2198,24 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     const slot = this.runtimes.get(projectId);
     if (slot && slot.status === 'running' && slot.agentPort) {
       const sample = slot.activity;
-      if (!sample || Date.now() - sample.at > ACTIVITY_SAMPLE_MS) {
+      if (!sample || Date.now() - sample.at > ACTIVITY_RESAMPLE_BEFORE_EVICT_MS) {
         await this.sampleActivity(slot).catch(() => null);
       }
     }
     return this.activityDecision(projectId, opts);
+  }
+
+  /**
+   * Re-read one runtime's activity now, by key. The desktop API's pools call
+   * this before evicting so they decide on the same fresh sample the worker's
+   * own LRU uses, instead of whatever the timer last cached.
+   */
+  async refreshActivity(projectId: string): Promise<void> {
+    const slot = this.runtimes.get(projectId);
+    if (!slot || slot.status !== 'running' || !slot.agentPort) return;
+    const sample = slot.activity;
+    if (sample && Date.now() - sample.at <= ACTIVITY_RESAMPLE_BEFORE_EVICT_MS) return;
+    await this.sampleActivity(slot).catch(() => null);
   }
 
   private async allocatePort(): Promise<number> {

@@ -29,6 +29,17 @@
 export const ACTIVITY_SAMPLE_MS = 10 * 1000
 
 /**
+ * A sample older than this is re-read once more before a runtime is killed.
+ *
+ * The timer above keeps the cache warm, but a turn can start inside the gap
+ * between two samples. Two seconds bounds "we killed work that began a moment
+ * ago" without turning the decision back into a probe on the critical path —
+ * and because a failed probe now reads as `unknown` (keep), re-asking is
+ * never the reason a runtime dies.
+ */
+export const ACTIVITY_RESAMPLE_BEFORE_EVICT_MS = 2 * 1000
+
+/**
  * A sample older than this is not evidence of anything. Three missed samples
  * (rather than one) keeps a host that is briefly CPU-starved from reading as
  * "idle" — which is exactly how the 146 evictions happened.

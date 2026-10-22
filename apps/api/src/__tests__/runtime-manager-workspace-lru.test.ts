@@ -64,6 +64,9 @@ function newManager(): PrivateRM {
   rm.agentManager = {
     touch: mock(() => {}),
     stop: mock(async () => {}),
+    // The LRU re-reads a stale sample before deciding; a stub that answers
+    // instantly keeps the test on the eviction logic itself.
+    refreshActivity: mock(async () => {}),
     status: (key: string) => {
       const rt = rm.runtimes.get(key)
       if (!rt) return undefined

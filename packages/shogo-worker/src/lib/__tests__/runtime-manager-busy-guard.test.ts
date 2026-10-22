@@ -11,6 +11,7 @@
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { WorkerRuntimeManager } from '../runtime-manager.ts';
+import { ZERO_COUNTS } from '../runtime-activity.ts';
 
 type Line = string;
 const servers: Array<{ stop: (force?: boolean) => void }> = [];
@@ -260,6 +261,68 @@ describe('WorkerRuntimeManager — the decision reads a cached sample', () => {
 
     expect(stopped).toEqual(['dead:dead']);
   });
+});
+
+describe('WorkerRuntimeManager — a stale verdict is refreshed before it kills anything', () => {
+  it('re-probes a runtime whose cached "idle" aged out, and keeps it when the turn has started since', async () => {
+    // The timer sampled `turns=0` a minute ago; a turn started inside that gap.
+    // Evicting on the stale verdict is exactly the SHO-143 failure.
+    const server = activityServer({ response: () => ({ activeTurns: 1 }) });
+    const { lines, logger } = logs();
+    const gone: string[] = [];
+    const mgr = new WorkerRuntimeManager({ logger, maxRuntimes: 1, onRuntimeGone: (id) => gone.push(id) });
+    insertSlot(mgr, 'stale-idle', {
+      agentPort: server.port,
+      lastUsedAt: Date.now() - 20 * 60_000,
+      activity: { counts: { ...ZERO_COUNTS }, at: Date.now() - 60_000, ok: true },
+    });
+    insertSlot(mgr, 'new');
+
+    (mgr as unknown as { enforceMaxRuntimes: (k: string) => void }).enforceMaxRuntimes('new');
+    await sleep(400);
+
+    expect(gone).toEqual([]);
+    expect(server.seen.length).toBe(1);
+    expect(lines.some((l) => l.includes('keeping stale-idle') && l.includes('turns=1'))).toBe(true);
+  }, 15_000);
+
+  it('does not probe a runtime whose verdict is fresh, so eviction never waits on the wire', async () => {
+    const server = activityServer({ response: () => ({}) });
+    const { logger } = logs();
+    const gone: string[] = [];
+    const mgr = new WorkerRuntimeManager({ logger, maxRuntimes: 1, onRuntimeGone: (id) => gone.push(id) });
+    insertSlot(mgr, 'fresh-idle', {
+      agentPort: server.port,
+      lastUsedAt: Date.now() - 20 * 60_000,
+      activity: { counts: { ...ZERO_COUNTS }, at: Date.now(), ok: true },
+    });
+    insertSlot(mgr, 'new');
+
+    (mgr as unknown as { enforceMaxRuntimes: (k: string) => void }).enforceMaxRuntimes('new');
+    await sleep(200);
+
+    expect(gone).toEqual(['fresh-idle']);
+    expect(server.seen.length).toBe(0);
+  });
+
+  it('refreshActivity re-reads only when the cached sample is stale', async () => {
+    const server = activityServer({ response: () => ({ activeTurns: 1 }) });
+    const { logger } = logs();
+    const mgr = new WorkerRuntimeManager({ logger });
+    const slot = insertSlot(mgr, 'p', {
+      agentPort: server.port,
+      activity: { counts: { ...ZERO_COUNTS }, at: Date.now(), ok: true },
+    });
+
+    await mgr.refreshActivity('p');
+    expect(server.seen.length).toBe(0);
+
+    slot.activity = { ...(slot.activity as { counts: typeof ZERO_COUNTS; ok: boolean }), at: Date.now() - 60_000 };
+    await mgr.refreshActivity('p');
+
+    expect(server.seen.length).toBe(1);
+    expect(mgr.activityDecision('p').reason).toBe('work');
+  }, 15_000);
 });
 
 describe('WorkerRuntimeManager — unexplained exits say why', () => {
