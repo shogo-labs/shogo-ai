@@ -88,6 +88,76 @@ describe('gateway-tools', () => {
       const result = await exec(createCtx(), 'exec', { command: 'pwd' })
       expect(result.stdout).toContain('test-gateway-tools')
     })
+
+    test('does not refuse a command that only mentions gh pr create', async () => {
+      // The old guard matched the raw command string, so `echo`/`rg`/a heredoc
+      // that merely contained the phrase was refused as if it were the command.
+      const result = await exec(createCtx(), 'exec', { command: 'echo "gh pr create --title x"' })
+      expect(result.error).toBeUndefined()
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe('gh pr create --title x')
+    })
+
+    test('runs gh pr create and reports gh own output and argv', async () => {
+      // The test that would have caught the 52 prod refusals: a fake `gh` on
+      // PATH, so nothing leaves the machine and no token is needed.
+      const binDir = join(TEST_DIR, 'bin')
+      mkdirSync(binDir, { recursive: true })
+      const shim = join(binDir, 'gh')
+      writeFileSync(
+        shim,
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$(dirname "$0")/gh-argv.txt"\necho "https://github.com/o/r/pull/7"\nexit 0\n',
+        { mode: 0o755 },
+      )
+
+      const command = 'gh pr create --repo o/r --base main --head b --title t --body-file .tmp/pr-body.md'
+      const result = await exec(createCtx(), 'exec', {
+        command: `PATH="${binDir}:$PATH" ${command}`,
+      })
+
+      expect(result.error).toBeUndefined()
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('https://github.com/o/r/pull/7')
+      expect(readFileSync(join(binDir, 'gh-argv.txt'), 'utf8').trim().split('\n')).toEqual([
+        'pr',
+        'create',
+        '--repo',
+        'o/r',
+        '--base',
+        'main',
+        '--head',
+        'b',
+        '--title',
+        't',
+        '--body-file',
+        '.tmp/pr-body.md',
+      ])
+    })
+  })
+
+  describe('github tool guidance', () => {
+    test('the connect description teaches gh pr create and does not require the tool', () => {
+      const connect = getTool(createCtx(), 'connect')
+      expect(connect.description).toContain('gh pr create')
+      expect(connect.description).toContain('optional alternative')
+      expect(connect.description).not.toContain('Use the `github_create_pr` tool to create a PR')
+    })
+
+    test('github_merge_pr does not claim gh pr merge is blocked', () => {
+      const merge = getTool(createCtx(), 'github_merge_pr')
+      expect(merge.description).not.toContain('that is blocked')
+    })
+
+    test('github_create_pr names the gh command when the App path is unavailable', async () => {
+      // No API configured in this test context, so the API call fails before the
+      // no-connection branch: the passthrough error must still name the way out.
+      const result = await exec(createCtx(), 'github_create_pr', {
+        title: 't',
+        head: 'sho-1-test',
+      })
+      expect(result.error).toContain('gh pr create')
+      expect(result.error).toContain('--head sho-1-test')
+    })
   })
 
   describe('read_file', () => {
