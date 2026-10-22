@@ -304,6 +304,31 @@ async function ranksOf(client: SlotRedis, workspaceId: string, runIds: string[])
 
 // ─── The queue ───────────────────────────────────────────────────────────────
 
+/**
+ * Admit local waiters while there is room. The limit is read fresh every time,
+ * so a workspace whose limit was just raised drains without a restart.
+ */
+async function admitLocalWaiters(workspaceId: string): Promise<void> {
+  const b = book(workspaceId)
+  if (!b.waiters.length) return
+  const limit = (await resolveAgentReplyCapacity(workspaceId).catch(() => null))?.limit ?? 1
+  while (b.waiters.length && activeCount(b) < limit) {
+    b.waiters.shift()!.admit()
+  }
+  notifyChange(workspaceId)
+}
+
+/**
+ * Re-check the limit and admit whoever fits now. Called after the limit changes:
+ * without it a local waiter would sit until some other run released its slot,
+ * which is exactly the "change applies to the next admission" gap AC8 names.
+ * Redis waiters do this themselves on their admission poll.
+ */
+export async function drainAgentReplyWaiters(workspaceId: string): Promise<void> {
+  if (redis()) return
+  await admitLocalWaiters(workspaceId)
+}
+
 export interface EnqueueAgentReplySlotInput {
   workspaceId: string
   /** The reply's message id: what the thread and the agent tools call the run. */
@@ -379,14 +404,7 @@ function localSlot(input: EnqueueAgentReplySlotInput): SlotJoin {
     b.holders.delete(runId)
   }
 
-  const pump = async () => {
-    if (!b.waiters.length) return
-    const limit = (await resolveAgentReplyCapacity(workspaceId).catch(() => null))?.limit ?? 1
-    while (b.waiters.length && activeCount(b) < limit) {
-      b.waiters.shift()!.admit()
-    }
-    notifyChange(workspaceId)
-  }
+  const pump = () => admitLocalWaiters(workspaceId)
 
   if (signal?.aborted) {
     released = true
@@ -509,9 +527,10 @@ function redisSlot(client: SlotRedis, input: EnqueueAgentReplySlotInput): SlotJo
       )
       .catch(() => null)
     if (!out || released || state !== 'queued') return
-    const [held, position] = out as [number, number, number, number]
+    const [held, rawRank] = out as [number, number, number, number]
     if (held) return take()
-    const next = Number(position) > 0 ? Number(position) : null
+    // TICK reports a zero-based ZRANK (-1 when absent); the thread says "#1".
+    const next = Number(rawRank) >= 0 ? Number(rawRank) + 1 : null
     if (next !== rank) {
       rank = next
       notifyChange(workspaceId)

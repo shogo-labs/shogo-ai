@@ -69,7 +69,7 @@ import { getFrontendUrl } from '../lib/cloud-urls'
 import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
 import { catchUp, registerConversationActivity } from '../services/conversation-activity'
 import { agentPostTargets, respondToPermission, stopAgentReply } from '../services/conversation-agent-dispatcher'
-import { agentReplySlotState, slotSnapshot } from '../services/agent-reply-slots'
+import { agentReplySlotState, drainAgentReplyWaiters, slotSnapshot } from '../services/agent-reply-slots'
 import { invalidateAgentReplyCapacity, resolveAgentReplyCapacity } from '../services/agent-reply-capacity'
 import { createReplyTasks } from '../services/background-tasks.service'
 import { decideApproval, listPendingApprovals } from '../services/conversation-approvals'
@@ -277,6 +277,9 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     try {
       await db.workspace.update({ where: { id: auth.workspaceId }, data: { agentReplyConcurrency: raw } })
       invalidateAgentReplyCapacity(auth.workspaceId)
+      // A raised limit should start the replies that were waiting on it, not
+      // wait for the next run to release a slot.
+      await drainAgentReplyWaiters(auth.workspaceId).catch(() => {})
       const [capacity, snapshot] = await Promise.all([
         resolveAgentReplyCapacity(auth.workspaceId),
         slotSnapshot(auth.workspaceId),

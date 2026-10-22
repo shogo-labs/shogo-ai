@@ -29,6 +29,7 @@ const {
   enqueueAgentReplySlot,
   slotSnapshot,
   agentReplySlotState,
+  drainAgentReplyWaiters,
   _resetAgentReplySlotsForTests,
 } = await import('../agent-reply-slots')
 
@@ -103,6 +104,23 @@ describe('agent reply slots', () => {
     controller.abort()
 
     await expect(queued.acquired).rejects.toThrow('stopped before it started')
+    expect((await slotSnapshot(WORKSPACE)).queued).toBe(0)
+  })
+
+  test('a raised limit starts the replies that were already waiting', async () => {
+    const first = await enqueueAgentReplySlot({ workspaceId: WORKSPACE, runId: 'run-a' })
+    const second = await enqueueAgentReplySlot({ workspaceId: WORKSPACE, runId: 'run-b' })
+    const third = await enqueueAgentReplySlot({ workspaceId: WORKSPACE, runId: 'run-c' })
+    expect(second.state()).toBe('queued')
+    expect(third.state()).toBe('queued')
+
+    // The admin raises the limit; the route re-admits without waiting for a release.
+    capacity.limit = 3
+    await drainAgentReplyWaiters(WORKSPACE)
+
+    expect(first.state()).toBe('running')
+    expect(second.state()).toBe('running')
+    expect(third.state()).toBe('running')
     expect((await slotSnapshot(WORKSPACE)).queued).toBe(0)
   })
 

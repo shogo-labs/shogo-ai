@@ -3,12 +3,17 @@
 /**
  * When the workspace has more tagged messages than agent slots, the extra runs
  * wait in line rather than disappearing — but nobody can see a line they were
- * never told about, so this strip says how many are waiting and where to change
- * the limit. Admins get a link straight to the stepper; everyone else reads the
- * count and knows why their reply is slow.
+ * never told about, so this strip names the backlog and offers the one action
+ * that actually helps:
  *
- * It shows only while replies are actually queued, and a dismissal lasts until
- * the queue empties (a fresh backlog is news again).
+ *   - cloud, at the plan ceiling → "Upgrade your plan", because the "+" on the
+ *     stepper is disabled there and Settings would be a dead end;
+ *   - cloud, below the ceiling (an admin lowered it) → the stepper;
+ *   - desktop, where the ceiling is 100 and there is no plan → the stepper.
+ *
+ * It shows only while replies are actually queued: the counts arrive live from
+ * the queue's `agent.capacity` event. A dismissal is remembered per workspace
+ * and lasts until the queue drains — a fresh backlog is news again.
  */
 import { useEffect, useState } from 'react'
 import { Pressable, View } from 'react-native'
@@ -19,26 +24,56 @@ import { useActiveWorkspace } from '../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../hooks/useWorkspaceExperience'
 import { useAgentCapacity } from '../hooks/useAgentCapacity'
 
-/** How often the banner re-reads the queue. Matches the capacity route's cache window. */
-const POLL_MS = 20_000
+const PLAN_LABELS: Record<string, string> = {
+  free: 'Free',
+  starter: 'Starter',
+  pro: 'Pro',
+  business: 'Business',
+  enterprise: 'Enterprise',
+}
+
+const CHAT_LIMIT_HREF = '/(app)/settings?tab=chat&section=agent-concurrency'
+const BILLING_HREF = '/(app)/settings?tab=billing'
+
+/** Dismissals outlive the component: the banner unmounts on navigation. */
+const dismissed = new Set<string>()
+
+/** Test hook: forget the dismissals remembered this session. */
+export function _resetAgentLimitBannerForTests(): void {
+  dismissed.clear()
+}
 
 export function AgentLimitBanner() {
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const experience = useWorkspaceExperience()
   const workspaceId = experience.kind === 'team' ? workspace?.id ?? null : null
-  const { capacity } = useAgentCapacity(workspaceId, { pollMs: POLL_MS })
-  const [dismissed, setDismissed] = useState(false)
+  const { capacity } = useAgentCapacity(workspaceId)
+  const [dismissedNow, setDismissedNow] = useState(false)
 
   const queued = capacity?.queued ?? 0
   useEffect(() => {
-    if (queued === 0) setDismissed(false)
-  }, [queued])
+    // A drained queue clears the dismissal: the next backlog is news again.
+    if (queued > 0) return
+    if (workspaceId) dismissed.delete(workspaceId)
+    setDismissedNow(false)
+  }, [queued, workspaceId])
 
-  if (!capacity || queued === 0 || dismissed) return null
+  const remembered = !!workspaceId && dismissed.has(workspaceId)
+  if (!capacity || queued === 0 || remembered || dismissedNow) return null
 
-  const change = () => {
-    router.push('/(app)/settings?tab=chat&section=agent-concurrency' as never)
+  const cloud = capacity.source === 'plan'
+  const planLabel = PLAN_LABELS[capacity.planId] ?? capacity.planId
+  const atCeiling = capacity.limit >= capacity.max
+  const action = !capacity.canManage
+    ? null
+    : cloud && atCeiling
+      ? { label: 'Upgrade your plan', href: BILLING_HREF }
+      : { label: 'Change settings', href: CHAT_LIMIT_HREF }
+
+  const dismiss = () => {
+    if (workspaceId) dismissed.add(workspaceId)
+    setDismissedNow(true)
   }
 
   return (
@@ -47,23 +82,27 @@ export function AgentLimitBanner() {
       className="relative flex-row flex-wrap items-center justify-center gap-x-2 gap-y-1 bg-amber-600 px-8 py-1.5"
     >
       <Text className="text-xs font-medium text-white">
-        {queued === 1 ? 'An agent is waiting' : `${queued} agents are waiting`} — {capacity.limit}{' '}
-        {capacity.limit === 1 ? 'works' : 'work'} at once.
+        Agent limit reached: {capacity.running} running, {queued} queued.
       </Text>
-      {capacity.canManage ? (
+      <Text className="text-xs text-white/80">
+        {cloud
+          ? `Your ${planLabel} plan runs up to ${capacity.max} at once.`
+          : `This desktop runs up to ${capacity.max} at once.`}
+      </Text>
+      {action ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Change how many agents work at once"
-          onPress={change}
+          accessibilityLabel={action.label}
+          onPress={() => router.push(action.href as never)}
           className="ml-2 rounded bg-white/20 px-2 py-0.5 active:bg-white/30"
         >
-          <Text className="text-xs font-semibold text-white">Change</Text>
+          <Text className="text-xs font-semibold text-white">{action.label}</Text>
         </Pressable>
       ) : null}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Dismiss"
-        onPress={() => setDismissed(true)}
+        onPress={dismiss}
         className="absolute right-2 p-1"
       >
         <X size={12} className="text-white" />

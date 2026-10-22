@@ -3,11 +3,13 @@
 
 /**
  * When more tagged messages arrive than the workspace has agent slots, the extra
- * runs wait in line. The banner is the only place that says so: it has to show
- * the count, send an admin to the stepper, and stay out of the way otherwise.
+ * runs wait in line. This banner is the only place that says so, and the action
+ * it offers has to match the surface: in the cloud at the plan ceiling the
+ * stepper cannot go any higher, so the only useful button is Upgrade; on the
+ * desktop (or a cloud workspace an admin lowered) it is the stepper.
  */
 import { resolve } from 'node:path'
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { createElement } from 'react'
 import { createReactNativeMock } from '../../test/react-native-mock'
@@ -47,76 +49,112 @@ mock.module(resolve(import.meta.dir, '../../hooks/useAgentCapacity'), () => ({
     capacity: workspaceId ? capacity.value : null,
     error: null,
     saving: false,
+    realtime: 'open',
     refresh: async () => {},
     setConcurrency: async () => null,
   }),
 }))
 
-const { AgentLimitBanner } = await import('../AgentLimitBanner')
+const { AgentLimitBanner, _resetAgentLimitBannerForTests } = await import('../AgentLimitBanner')
 
 function capacityOf(partial: Partial<AgentCapacity>): AgentCapacity {
   return {
-    limit: 1,
-    max: 3,
-    defaultLimit: 3,
+    limit: 8,
+    max: 8,
+    defaultLimit: 8,
     configured: null,
     source: 'plan',
     planId: 'pro',
-    running: 1,
+    running: 8,
     parked: 0,
-    queued: 0,
+    queued: 3,
     canManage: true,
     ...partial,
   }
 }
 
+const banner = () => screen.getByTestId('agent-limit-banner')
+
 beforeEach(() => {
   pushes.length = 0
   experience.kind = 'team'
   capacity.value = null
+  _resetAgentLimitBannerForTests()
+})
+
+afterEach(() => {
+  _resetAgentLimitBannerForTests()
 })
 
 describe('AgentLimitBanner', () => {
   test('stays hidden while nothing is queued', () => {
-    capacity.value = capacityOf({ queued: 0, running: 1 })
+    capacity.value = capacityOf({ queued: 0 })
     render(createElement(AgentLimitBanner))
     expect(screen.queryByTestId('agent-limit-banner')).toBeNull()
   })
 
-  test('names the backlog and the limit, and links admins to the stepper', () => {
-    capacity.value = capacityOf({ queued: 2, limit: 1, running: 1 })
+  test('cloud at the plan ceiling: counts, plan line, and Upgrade → Billing', () => {
+    capacity.value = capacityOf({ limit: 8, max: 8, running: 8, queued: 3, source: 'plan', planId: 'pro' })
     render(createElement(AgentLimitBanner))
 
-    expect(screen.getByTestId('agent-limit-banner')).toBeTruthy()
-    expect(screen.getByTestId('agent-limit-banner').textContent).toContain('2 agents are waiting')
-    expect(screen.getByTestId('agent-limit-banner').textContent).toContain('1 works at once')
+    expect(banner().textContent).toContain('Agent limit reached: 8 running, 3 queued.')
+    expect(banner().textContent).toContain('Your Pro plan runs up to 8 at once.')
 
-    fireEvent.click(screen.getByLabelText('Change how many agents work at once'))
+    fireEvent.click(screen.getByLabelText('Upgrade your plan'))
+    expect(pushes).toEqual(['/(app)/settings?tab=billing'])
+  })
+
+  test('cloud with the limit lowered below the plan: the stepper is the fix, not an upgrade', () => {
+    capacity.value = capacityOf({ limit: 2, max: 8, configured: 2, running: 2, queued: 1 })
+    render(createElement(AgentLimitBanner))
+
+    expect(banner().textContent).toContain('Your Pro plan runs up to 8 at once.')
+    fireEvent.click(screen.getByLabelText('Change settings'))
     expect(pushes).toEqual(['/(app)/settings?tab=chat&section=agent-concurrency'])
   })
 
-  test('singular for one waiting agent, and no Change link for a non-admin', () => {
-    capacity.value = capacityOf({ queued: 1, limit: 2, canManage: false })
+  test('desktop: no plan text, and Change settings → the concurrency stepper', () => {
+    capacity.value = capacityOf({
+      limit: 24,
+      max: 24,
+      defaultLimit: 24,
+      configured: null,
+      source: 'local',
+      planId: 'free',
+      running: 24,
+      queued: 2,
+    })
     render(createElement(AgentLimitBanner))
 
-    expect(screen.getByTestId('agent-limit-banner').textContent).toContain('An agent is waiting')
-    expect(screen.getByTestId('agent-limit-banner').textContent).toContain('2 work at once')
-    expect(screen.queryByLabelText('Change how many agents work at once')).toBeNull()
+    expect(banner().textContent).toContain('Agent limit reached: 24 running, 2 queued.')
+    expect(banner().textContent).toContain('This desktop runs up to 24 at once.')
+    expect(banner().textContent).not.toContain('plan runs up to')
+
+    fireEvent.click(screen.getByLabelText('Change settings'))
+    expect(pushes).toEqual(['/(app)/settings?tab=chat&section=agent-concurrency'])
   })
 
-  test('a dismissal hides it until the queue empties', () => {
+  test('a viewer gets the counts but no action', () => {
+    capacity.value = capacityOf({ canManage: false })
+    render(createElement(AgentLimitBanner))
+
+    expect(banner().textContent).toContain('3 queued')
+    expect(screen.queryByLabelText('Upgrade your plan')).toBeNull()
+    expect(screen.queryByLabelText('Change settings')).toBeNull()
+  })
+
+  test('a dismissal hides it until the queue drains, and a fresh backlog brings it back', () => {
     capacity.value = capacityOf({ queued: 3 })
     const { rerender } = render(createElement(AgentLimitBanner))
 
     fireEvent.click(screen.getByLabelText('Dismiss'))
     expect(screen.queryByTestId('agent-limit-banner')).toBeNull()
 
-    // Still queued: the dismissal holds.
+    // Still queued: the dismissal holds across a re-render (and a remount).
     rerender(createElement(AgentLimitBanner))
     expect(screen.queryByTestId('agent-limit-banner')).toBeNull()
 
-    // A fresh backlog after the line drained is news again.
-    capacity.value = capacityOf({ queued: 0, running: 1 })
+    capacity.value = capacityOf({ queued: 0 })
     rerender(createElement(AgentLimitBanner))
     capacity.value = capacityOf({ queued: 2 })
     rerender(createElement(AgentLimitBanner))
