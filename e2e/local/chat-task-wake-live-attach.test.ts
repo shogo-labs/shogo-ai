@@ -260,11 +260,26 @@ test.describe("a server-initiated wake on an open window", () => {
   })
 
   test("a second window on the same chat renders the wake it never posted", async () => {
+    // The 90s hold below sits inside the 120s `WAKE_MS` budget and pushes this
+    // case past the file's 300s default on its failure paths, which would report
+    // "test timeout" instead of the labelled assertion that actually failed.
+    test.setTimeout(420_000)
     const sid = await createChat("wake second window")
     const first = await newWindow(sid)
     const tag = "w2"
 
-    await send(first, `${marker("bg", tag, 20, { ms: 5, cmd: "sleep 5" })} start the build in the background`)
+    // The task has to outlive window B's cold start, or the runner's speed
+    // decides the result instead of the product. The wake reply is persisted
+    // ~10.4s after this turn on every runner measured (SHO-134: +10.5s on the
+    // red attempt, +10.4s on the green one), while `newWindow` — newPage + goto
+    // + the Expo bootstrap — takes 8-13s warm and longer when the worker is
+    // loaded. With a 5s task the wake landed first, window B opened with the
+    // reply already on screen, and the precondition below read 1, which moved
+    // the wake-count baseline with it (all three CI retries, and the same
+    // shard position every time). A 90s hold makes the ordering the spec's own:
+    // the wake cannot fire until ~90s after the turn, long after window B has
+    // been asserted clean, and it still lands inside `WAKE_MS`.
+    await send(first, `${marker("bg", tag, 20, { ms: 5, cmd: "sleep 90" })} start the build in the background`)
     await llm.waitForTurn(tag, 90_000)
     await waitForTurnStart(first)
     await waitForIdle(first)
