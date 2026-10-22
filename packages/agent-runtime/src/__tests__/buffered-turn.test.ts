@@ -122,6 +122,54 @@ describe('pipeline calls into an openable chat', () => {
   })
 })
 
+describe('a call whose callee turn never starts', () => {
+  test('rejects with callee_turn_never_started instead of hanging', async () => {
+    store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    const turns = createBufferedTurns({ store, gate, startTimeoutMs: 25 })
+    const live = store.create('busy-chat')
+
+    const startedAt = Date.now()
+    const outcome = await Promise.race([
+      turns.runPipelineCall(async (call) => ({ reply: 'never', sessionId: call.sessionId! }), {
+        message: 'go',
+        sessionId: 'busy-chat',
+      }).then(() => 'started' as const, (err: any) => err),
+      new Promise<'hung'>((r) => setTimeout(() => r('hung'), 2_000)),
+    ])
+
+    expect(outcome).not.toBe('hung')
+    expect((outcome as any).code).toBe('callee_turn_never_started')
+    expect((outcome as any).message).toContain('busy-chat')
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    // The live turn is untouched, and no buffer was created for the doomed call.
+    expect(store.snapshot('busy-chat')?.status).toBe('active')
+    expect(store.snapshot('busy-chat')?.turnId).toBe(live.turnId)
+    live.complete()
+  })
+
+  test('onTurnStarted fires only once a buffer exists', async () => {
+    store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    const turns = createBufferedTurns({ store, gate, startTimeoutMs: 5_000 })
+    const live = store.create('busy-chat')
+
+    let started = false
+    const pending = turns.runPipelineCall(
+      async (call) => ({ reply: 'done', sessionId: call.sessionId! }),
+      { message: 'go', sessionId: 'busy-chat' },
+      { onTurnStarted: () => { started = true } },
+    )
+
+    await new Promise((r) => setTimeout(r, 60))
+    expect(started).toBe(false)
+
+    live.complete()
+    await pending
+    expect(started).toBe(true)
+  })
+})
+
 describe('isOpenableChatSession', () => {
   test('only real chat ids are openable', () => {
     expect(isOpenableChatSession('8a1c7e2e-0000-5000-8000-000000000000')).toBe(true)

@@ -89,4 +89,33 @@ describe('LiveTurnGate', () => {
     expect(gate.isBusy('b')).toBe(false)
     store.dispose()
   })
+
+  test('a bounded wait gives up instead of waiting for a turn that never ends', async () => {
+    const store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    const live = store.create('s')
+
+    const startedAt = Date.now()
+    const result = await Promise.race([
+      gate.waitUntilFree('s', { timeoutMs: 25 }),
+      new Promise<'hung'>((r) => setTimeout(() => r('hung'), 2_000)),
+    ])
+
+    expect(result).not.toBe('hung')
+    expect(result).toMatchObject({ stopped: false, timedOut: true })
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    expect(gate.isBusy('s')).toBe(true)
+    live.complete()
+    store.dispose()
+  })
+
+  test('without a budget it still waits for the live turn', async () => {
+    const store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    const live = store.create('s')
+    const waiting = gate.waitUntilFree('s')
+    live.complete()
+    expect(await waiting).toMatchObject({ stopped: false, timedOut: false })
+    store.dispose()
+  })
 })

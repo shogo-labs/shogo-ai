@@ -438,6 +438,22 @@ async function startTrackedCall(
 /** Error code for a call whose callee turn ended without a reply this side saw. */
 export const CALLEE_TURN_LOST = 'callee_turn_lost'
 
+/**
+ * Error code for a call whose callee turn never started at all. Distinct from
+ * `callee_turn_lost`: nothing ran, so there is no partial reply to read and no
+ * point polling — the caller should know immediately instead of waiting 15
+ * minutes on a record that says `accepted`.
+ */
+export const CALLEE_TURN_NEVER_STARTED = 'callee_turn_never_started'
+
+/**
+ * How long the callee's chat may be busy with its own turn before this call is
+ * declared never-started. The runtime applies the same 10 s budget to its own
+ * buffer, so a stuck chat is reported while the caller is still listening;
+ * 15 minutes only ever meant a caller that hung.
+ */
+export const CALLEE_TURN_START_TIMEOUT_MS = 90_000
+
 /** The runtime's clock and ours can disagree by this much. */
 const TURN_CLOCK_SKEW_MS = 30_000
 
@@ -469,7 +485,7 @@ async function callTurnDeps(): Promise<CallTurnDeps> {
     markTurnEnded: o.markTurnEnded ?? turnState!.markTurnEnded,
     startTurnHeartbeat: o.startTurnHeartbeat ?? ((id, turnId) => turnState!.startTurnHeartbeat(id, turnId)),
     turnPollIntervalMs: o.turnPollIntervalMs ?? 1_000,
-    turnStartTimeoutMs: o.turnStartTimeoutMs ?? 15 * 60_000,
+    turnStartTimeoutMs: o.turnStartTimeoutMs ?? CALLEE_TURN_START_TIMEOUT_MS,
   }
 }
 
@@ -589,16 +605,20 @@ async function followCallTurn(
   // whose follower died.
   const stopCallHeartbeat = link ? startAgentCallHeartbeat(link.projectId, link.runId) : () => {}
   let result: TrackedStreamResult | null = null
+  let neverStarted = false
   try {
     if (await waitForCalleeTurn(projectId, chatSessionId, startedAt, deps)) {
       result = await trackCallTurn(projectId, workspaceId, chatSessionId, startedAt, deps)
     } else {
-      console.warn(`[AgentCall] callee turn for ${chatSessionId} never started`)
+      // The chat stayed busy with its own turn for the whole budget, so this
+      // call never got to start. That is a different failure from a lost reply.
+      neverStarted = true
+      console.warn(`[AgentCall] call ${link?.runId ?? chatSessionId} never started: callee chat was busy`)
     }
   } finally {
     stopCallHeartbeat()
     stopHeartbeat()
-    if (link) await settleAgentCallFromTurn(link, chatSessionId, result).catch(() => {})
+    if (link) await settleAgentCallFromTurn(link, chatSessionId, result, { neverStarted }).catch(() => {})
     if (turnId) await deps.markTurnEnded(chatSessionId, turnId).catch(() => {})
   }
 }
@@ -643,6 +663,7 @@ export async function settleAgentCallFromTurn(
   link: AgentCallSessionLink,
   chatSessionId: string,
   result: TrackedStreamResult | null,
+  opts: { neverStarted?: boolean } = {},
 ): Promise<void> {
   const base = { runId: link.runId, sessionId: chatSessionId, chatSessionId, startedAt: link.startedAt, updatedAt: Date.now() }
   // The tracker owns the assistant row when it persisted one.
@@ -662,13 +683,19 @@ export async function settleAgentCallFromTurn(
     if (!replyRowWritten) await ensureCallReplyRow(link.projectId, chatSessionId, result.text || null, 'agent_turn_failed')
     return
   }
+  const lost = opts.neverStarted
+    ? {
+        code: CALLEE_TURN_NEVER_STARTED,
+        message: 'The target agent never started this run (its chat was busy).',
+      }
+    : { code: CALLEE_TURN_LOST, message: 'The target agent turn ended before its reply could be read.' }
   await putAgentCall(link.projectId, {
     ...base,
     status: 'failed',
     reply: result?.text || null,
-    error: { code: CALLEE_TURN_LOST, message: 'The target agent turn ended before its reply could be read.' },
+    error: lost,
   })
-  if (!replyRowWritten) await ensureCallReplyRow(link.projectId, chatSessionId, result?.text || null, CALLEE_TURN_LOST)
+  if (!replyRowWritten) await ensureCallReplyRow(link.projectId, chatSessionId, result?.text || null, lost.code)
 }
 
 export interface RemoteToolRequest {

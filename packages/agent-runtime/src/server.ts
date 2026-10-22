@@ -17,7 +17,7 @@ import { resolve, dirname, join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
-import { createBufferedTurns, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
+import { createBufferedTurns, CALLEE_TURN_NEVER_STARTED, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
 import { describeTurn } from './turn-status'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
@@ -3884,12 +3884,37 @@ app.post('/agent/pipeline/call', async (c) => {
   }
 
   if (body.wait === false) {
-    runPipelineCall(opts).then(
+    const accepted = {
+      status: 'accepted',
+      started: false,
+      runId: opts.runId,
+      sessionId: opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline'),
+    }
+    let markStarted!: () => void
+    let markFailed!: (err: unknown) => void
+    const turnStarted = new Promise<void>((resolve, reject) => {
+      markStarted = resolve
+      markFailed = reject
+    })
+    const pending = runPipelineCall(opts, { onTurnStarted: markStarted })
+    pending.then(
       (r: { reply: string; sessionId: string; runId?: string }) =>
         console.log(`[agent-runtime] pipeline call complete (run=${r.runId ?? '-'}):`, r.reply.substring(0, 200)),
-      (err: any) => console.error('[agent-runtime] pipeline call failed:', err?.message ?? err),
+      (err: any) => {
+        console.error('[agent-runtime] pipeline call failed:', err?.message ?? err)
+        markFailed(err)
+      },
     )
-    return c.json({ status: 'accepted', runId: opts.runId, sessionId: opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline') }, 202)
+    // Ack `started` only once the turn really has a buffer. Never starting is
+    // not acceptance: the chat was busy with its own turn, nothing ran, and the
+    // caller must not sit on a run id that will never produce a reply.
+    try {
+      await turnStarted
+    } catch (err: any) {
+      const code = err?.code === CALLEE_TURN_NEVER_STARTED ? CALLEE_TURN_NEVER_STARTED : 'agent_turn_failed'
+      return c.json({ error: { code, message: err?.message ?? String(err) }, ...accepted }, code === CALLEE_TURN_NEVER_STARTED ? 409 : 500)
+    }
+    return c.json({ ...accepted, started: true }, 202)
   }
 
   try {
@@ -3900,8 +3925,11 @@ app.post('/agent/pipeline/call', async (c) => {
   }
 })
 
-function runPipelineCall(opts: PipelineCallOptions): Promise<PipelineCallResult> {
-  return bufferedTurns.runPipelineCall((call) => agentGateway!.processPipelineCall(call), opts)
+function runPipelineCall(
+  opts: PipelineCallOptions,
+  hooks: { onTurnStarted?: () => void } = {},
+): Promise<PipelineCallResult> {
+  return bufferedTurns.runPipelineCall((call) => agentGateway!.processPipelineCall(call), opts, hooks)
 }
 
 /**

@@ -20,7 +20,18 @@ import type { StreamBufferStore } from '@shogo-ai/sdk/stream-buffer'
 
 const POLL_MS = 100
 
-export type LiveTurnWait = { waitedMs: number; stopped: boolean }
+export type LiveTurnWait = { waitedMs: number; stopped: boolean; timedOut?: boolean }
+
+/** How long a caller is willing to wait for a live turn to end. */
+export interface LiveTurnWaitOptions {
+  /**
+   * Give up after this long. Without it the wait is unbounded, which is right
+   * for a queued chat message (the user is in the loop) and wrong for a
+   * `project_call`, whose caller would otherwise sit on `accepted` until the
+   * 15-minute forward timeout.
+   */
+  timeoutMs?: number
+}
 
 export class LiveTurnGate {
   /** Turn the user last stopped, per chat. */
@@ -50,16 +61,24 @@ export class LiveTurnGate {
    * `stopped` when the user pressed Stop meanwhile. Callers must create their
    * buffer synchronously after this resolves, so two waiters can't both start
    * (the second sees the first one's buffer and keeps waiting).
+   *
+   * With a `timeoutMs` budget it resolves `timedOut` instead of waiting for a
+   * live turn that never ends — the call then never started, and saying so
+   * beats a record that stays `accepted` for 15 minutes.
    */
-  async waitUntilFree(chatSessionId: string): Promise<LiveTurnWait> {
+  async waitUntilFree(chatSessionId: string, options: LiveTurnWaitOptions = {}): Promise<LiveTurnWait> {
     const started = Date.now()
+    const deadline = options.timeoutMs === undefined ? Infinity : started + options.timeoutMs
     const epoch = this.stopEpoch.get(chatSessionId) ?? 0
     while (this.isBusy(chatSessionId)) {
+      if (Date.now() >= deadline) {
+        return { waitedMs: Date.now() - started, stopped: false, timedOut: true }
+      }
       await new Promise((resolve) => setTimeout(resolve, this.pollMs))
       if ((this.stopEpoch.get(chatSessionId) ?? 0) !== epoch) {
-        return { waitedMs: Date.now() - started, stopped: true }
+        return { waitedMs: Date.now() - started, stopped: true, timedOut: false }
       }
     }
-    return { waitedMs: Date.now() - started, stopped: false }
+    return { waitedMs: Date.now() - started, stopped: false, timedOut: false }
   }
 }

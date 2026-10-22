@@ -522,7 +522,7 @@ describe('callProjectAgentAsChat — chat persistence', () => {
       expect(rec).toMatchObject({ status: 'failed', reply: 'half a reply', error: { code: svc.CALLEE_TURN_LOST } })
     })
 
-    it('fails the call with callee_turn_lost when the callee turn never starts', async () => {
+    it('fails the call with callee_turn_never_started when the callee turn never starts', async () => {
       fakeCallee({ turnVisible: () => false })
       svc.setCallTurnDeps({
         track: (async (...args: any[]) => { trackCalls.push(args) }) as any,
@@ -534,8 +534,13 @@ describe('callProjectAgentAsChat — chat persistence', () => {
       })
       await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-never', wait: false, track: true })
       const rec = await settled('run-never')
-      expect(rec).toMatchObject({ status: 'failed', error: { code: svc.CALLEE_TURN_LOST } })
+      expect(rec).toMatchObject({ status: 'failed', error: { code: svc.CALLEE_TURN_NEVER_STARTED } })
+      expect(rec!.error!.message).toContain('never started')
       expect(trackCalls).toHaveLength(0)
+    })
+
+    it('budgets a callee start at 90s, not 15 minutes', () => {
+      expect(svc.CALLEE_TURN_START_TIMEOUT_MS).toBe(90_000)
     })
 
     it('records a failed callee turn as failed', async () => {
