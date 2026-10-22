@@ -8,7 +8,7 @@
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Image, Platform, Pressable, Text, View } from 'react-native'
-import { AlarmClock, Check, Clock, Smile, Users } from 'lucide-react-native'
+import { AlarmClock, Check, Clock, Hash, Smile, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   ChatInput,
@@ -30,13 +30,16 @@ import { bytesPart, localFilePart, type UploadPart } from '../../lib/upload-part
 import { useVoiceNoteRecorder } from '../../lib/use-voice-note'
 import { RecordingBar } from './RecordingBar'
 import {
+  activeChannelQuery,
   activeMentionQuery,
+  channelCandidates,
   decodeMentions,
   encodeMentions,
   filterCandidates,
   isRemindCommand,
   mentionCandidates,
   scheduleOptions,
+  type ChannelCandidateSource,
   type MentionCandidate,
 } from '../../lib/team-chat-state'
 import type { SendInput } from '../../hooks/useTeamChat'
@@ -65,6 +68,8 @@ export interface ComposerProps {
   onEditLast?: () => boolean
   /** This conversation's members, for a channel only: flags @-mention candidates who aren't in it. */
   channelMemberIds?: Set<string> | null
+  /** Channels this reader can see, for typing `#` to reference one. */
+  channels?: ChannelCandidateSource[] | null
 }
 
 export interface ComposerHandle {
@@ -73,12 +78,14 @@ export interface ComposerHandle {
 }
 
 function mentionReference(c: MentionCandidate): ChatReference {
-  return { type: 'mention', id: c.token, name: c.display, label: `@${c.display}` }
+  const label = c.kind === 'channel' ? `#${c.display}` : `@${c.display}`
+  return { type: 'mention', id: c.token, name: c.display, label }
 }
 
 function MentionIcon({ candidate, workspaceId }: { candidate: MentionCandidate; workspaceId: string }) {
   if (candidate.kind === 'agent') return <AgentAvatar name={candidate.display} projectId={candidate.projectId ?? null} workspaceId={workspaceId} size={20} />
   if (candidate.kind === 'user') return <PresenceDot userId={candidate.userId} />
+  if (candidate.kind === 'channel') return <Hash size={14} className="text-muted-foreground" />
   return <Users size={14} className="text-muted-foreground" />
 }
 
@@ -103,11 +110,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     () => mentionCandidates(mentionables, me, props.channelMemberIds),
     [mentionables, me, props.channelMemberIds],
   )
-  const byToken = useMemo(() => new Map(candidates.map((c) => [c.token, c])), [candidates])
+  /** `#` references: only channels this reader can see, never the one they're in. */
+  const channelChoices = useMemo(
+    () => channelCandidates(props.channels, conversationId),
+    [props.channels, conversationId],
+  )
+  // Draft restore re-encodes whatever tokens it decoded, so both kinds resolve here.
+  const byAnyToken = useMemo(
+    () => new Map([...candidates, ...channelChoices].map((c) => [c.token, c])),
+    [candidates, channelChoices],
+  )
   const picksFrom = useCallback(
     (refs: ChatReference[] | undefined) =>
-      (refs ?? []).flatMap((r) => (r.type === 'mention' && byToken.has(r.id) ? [byToken.get(r.id)!] : [])),
-    [byToken],
+      (refs ?? []).flatMap((r) => (r.type === 'mention' && byAnyToken.has(r.id) ? [byAnyToken.get(r.id)!] : [])),
+    [byAnyToken],
   )
 
   const completions = useMemo<ComposerCompletionSource[]>(
@@ -123,6 +139,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             trailing: c.kind === 'user' && c.inChannel === false ? 'Not in channel' : undefined,
             icon: <MentionIcon candidate={c} workspaceId={workspaceId} />,
             insert: `@${c.display}`,
+            reference: mentionReference(c),
+          })),
+      },
+      {
+        id: 'channels',
+        detect: activeChannelQuery,
+        items: (query) =>
+          filterCandidates(channelChoices, query).map((c) => ({
+            key: c.token,
+            label: c.display,
+            subtitle: c.subtitle,
+            icon: <MentionIcon candidate={c} workspaceId={workspaceId} />,
+            insert: `#${c.display}`,
             reference: mentionReference(c),
           })),
       },
@@ -149,7 +178,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         },
       },
     ],
-    [candidates, customEmoji],
+    [candidates, customEmoji, channelChoices, workspaceId],
   )
 
   const draft = useDraft(conversationId, threadRootId)
