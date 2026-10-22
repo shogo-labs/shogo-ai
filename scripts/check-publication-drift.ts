@@ -66,7 +66,11 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
  * until the single-writer work lands and they rejoin the mesh — see
  * `docs/runbooks/usage-wallet-single-writer-plan.md`. `proxy_turns` summarizes
  * LLM traffic served by the local region and stays next to that region's
- * capture bucket.
+ * capture bucket. `device_version_events` is per-region install telemetry: its
+ * backfill in `20261021120000_add_device_version_events` derived ids as
+ * `'dve_' || md5(deviceId || ':' || version)`, so both regions materialised the
+ * same primary keys from the replicated `api_keys` snapshot and the subscriber's
+ * tablesync COPY duplicate-keyed, disabling `sub_from_us` on 2026-10-22.
  *
  * IMPORTANT DRIFT NOTE: a `FOR TABLES IN SCHEMA public` publication cannot
  * exclude individual tables (`ALTER PUBLICATION ... DROP TABLE` is unsupported
@@ -78,7 +82,12 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
  * pages if that happens. Keep this list in sync with the monitor's
  * EXCLUDED_TABLES and exclude-region-local-tables.sql.
  */
-export const INTENTIONALLY_UNPUBLISHED = ['storage_usage', 'usage_wallets', 'proxy_turns'] as const
+export const INTENTIONALLY_UNPUBLISHED = [
+  'storage_usage',
+  'usage_wallets',
+  'proxy_turns',
+  'device_version_events',
+] as const
 
 interface Violation {
   file: string
