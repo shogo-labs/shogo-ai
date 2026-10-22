@@ -265,12 +265,13 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     }
     const { max, source, planId } = await resolveAgentReplyCapacity(auth.workspaceId)
     if (raw !== null && (raw < 1 || raw > max)) {
+      const planName = planId.charAt(0).toUpperCase() + planId.slice(1)
       return c.json({
         error: {
           code: 'above_max',
           message: source === 'local'
             ? `Choose between 1 and ${max} agents at once.`
-            : `Your ${planId} plan allows at most ${max} agents working at once. Upgrade to raise it.`,
+            : `Your ${planName} plan allows at most ${max} agents working at once. Upgrade to raise it.`,
         },
       }, 400)
     }

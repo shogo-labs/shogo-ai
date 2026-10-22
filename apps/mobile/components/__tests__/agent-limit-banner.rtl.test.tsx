@@ -104,6 +104,14 @@ describe('AgentLimitBanner', () => {
     expect(pushes).toEqual(['/(app)/settings?tab=billing'])
   })
 
+  test('names every plan tier, including the one with no decoration', () => {
+    // `basic` is a real plan id and the only one whose name is not its id
+    // capitalised by luck; a lookup table that missed it printed "basic".
+    capacity.value = capacityOf({ limit: 4, max: 4, running: 4, queued: 1, source: 'plan', planId: 'basic' })
+    render(createElement(AgentLimitBanner))
+    expect(banner().textContent).toContain('Your Basic plan runs up to 4 at once.')
+  })
+
   test('cloud with the limit lowered below the plan: the stepper is the fix, not an upgrade', () => {
     capacity.value = capacityOf({ limit: 2, max: 8, configured: 2, running: 2, queued: 1 })
     render(createElement(AgentLimitBanner))

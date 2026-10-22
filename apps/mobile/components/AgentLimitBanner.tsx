@@ -23,14 +23,7 @@ import { Text } from './settings/account-sheet-chrome'
 import { useActiveWorkspace } from '../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../hooks/useWorkspaceExperience'
 import { useAgentCapacity } from '../hooks/useAgentCapacity'
-
-const PLAN_LABELS: Record<string, string> = {
-  free: 'Free',
-  starter: 'Starter',
-  pro: 'Pro',
-  business: 'Business',
-  enterprise: 'Enterprise',
-}
+import { getPlanDisplayName } from '../lib/billing-config'
 
 const CHAT_LIMIT_HREF = '/(app)/settings?tab=chat&section=agent-concurrency'
 const BILLING_HREF = '/(app)/settings?tab=billing'
@@ -63,7 +56,7 @@ export function AgentLimitBanner() {
   if (!capacity || queued === 0 || remembered || dismissedNow) return null
 
   const cloud = capacity.source === 'plan'
-  const planLabel = PLAN_LABELS[capacity.planId] ?? capacity.planId
+  const planLabel = getPlanDisplayName(capacity.planId)
   const atCeiling = capacity.limit >= capacity.max
   const action = !capacity.canManage
     ? null
