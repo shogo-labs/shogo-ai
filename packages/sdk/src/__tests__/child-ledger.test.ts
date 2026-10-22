@@ -93,6 +93,20 @@ describe('child ledger storage', () => {
     expect(readChildLedger(workspace).map((e) => e.pid)).toEqual([second.pid])
   })
 
+  test('removing the last entry leaves no ledger file behind', () => {
+    const workspace = tempWorkspace()
+    const child = spawnSleeper()
+    addChildLedgerEntry(workspace, entryFor(child))
+    expect(existsSync(childLedgerPath(workspace))).toBe(true)
+
+    removeChildLedgerEntry(workspace, child.pid as number)
+
+    // An empty `[]` would show up as an untracked file in the workspace's git
+    // status, which SHO-139's AC 4 asserts stays clean after a background exec.
+    expect(existsSync(childLedgerPath(workspace))).toBe(false)
+    expect(readChildLedger(workspace)).toEqual([])
+  })
+
   test('a lock left behind by a dead writer does not wedge the ledger', () => {
     const workspace = tempWorkspace()
     const lockPath = `${childLedgerPath(workspace)}.lock`

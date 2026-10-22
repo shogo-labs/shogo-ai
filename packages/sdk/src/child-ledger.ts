@@ -104,11 +104,13 @@ export function readChildLedger(workspaceDir: string): ChildLedgerEntry[] {
 function writeAll(workspaceDir: string, entries: ChildLedgerEntry[]): void {
   const path = childLedgerPath(workspaceDir)
   try {
-    mkdirSync(dirname(path), { recursive: true })
     if (entries.length === 0) {
-      writeFileSync(path, '[]\n', 'utf8')
+      // An empty ledger is no ledger: leaving `[]` behind would show up as an
+      // untracked file in the workspace's git status (SHO-139 AC 4).
+      rmSync(path, { force: true })
       return
     }
+    mkdirSync(dirname(path), { recursive: true })
     // Write-then-rename so a concurrent reader never sees a partial file.
     const tmp = `${path}.${process.pid}.tmp`
     writeFileSync(tmp, JSON.stringify(entries) + '\n', 'utf8')
