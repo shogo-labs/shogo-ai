@@ -147,7 +147,7 @@ jobs:
           changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
           printf '%s\n' "$changed"
           if printf '%s\n' "$changed" | grep -Eq \
-            '^(packages/agent-runtime/src/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|trust-resolver|workspace-runtime-mode|runtime-lsp-routes|pty-[a-z-]+|runtime-terminal-routes|quick-commands|detected-urls)\.ts$|packages/agent-runtime/src/__tests__/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|canvas-file-watcher-mounts|trust-resolver-workspace-mounts|runtime-lsp-routes-scope|workspace-runtime-mode|pty-session|pty-ws-e2e|runtime-terminal-routes)\.test\.ts$|packages/agent-runtime/src/__tests__/helpers/pty-shell\.ts$|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/(run-tests-isolated|postinstall|db-generate-all|__tests__/desktop-next-beta-version\.test)\.ts$|package\.json$|\.github/workflows/ci\.yml$)'; then
+            '^(packages/agent-runtime/src/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|trust-resolver|workspace-runtime-mode|runtime-lsp-routes|pty-[a-z-]+|runtime-terminal-routes|quick-commands|detected-urls|process-tree|sandbox-exec)\.ts$|packages/agent-runtime/src/__tests__/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|canvas-file-watcher-mounts|trust-resolver-workspace-mounts|runtime-lsp-routes-scope|workspace-runtime-mode|pty-session|pty-ws-e2e|runtime-terminal-routes|process-tree|qa-sho144-cancel-truth\.acceptance|qa-sho144-windows-tree\.acceptance)\.test\.ts$|packages/sdk/src/(child-ledger|vite-watch)\.ts$|packages/agent-runtime/src/__tests__/helpers/pty-shell\.ts$|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/(run-tests-isolated|postinstall|db-generate-all|__tests__/desktop-next-beta-version\.test)\.ts$|package\.json$|\.github/workflows/ci\.yml$)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
@@ -1168,7 +1168,7 @@ jobs:
         run: |
           set -euo pipefail
           cd packages/agent-runtime
-          bun --no-env-file test src/__tests__/path-boundary.test.ts src/__tests__/permission-engine.test.ts src/__tests__/runtime-trust.test.ts src/__tests__/canvas-file-watcher.test.ts src/__tests__/fs-tree-walker.test.ts src/__tests__/workspace-file-routes.test.ts src/__tests__/canvas-file-watcher-mounts.test.ts src/__tests__/trust-resolver-workspace-mounts.test.ts src/__tests__/runtime-lsp-routes-scope.test.ts src/__tests__/workspace-runtime-mode.test.ts
+          bun --no-env-file test src/__tests__/path-boundary.test.ts src/__tests__/permission-engine.test.ts src/__tests__/runtime-trust.test.ts src/__tests__/canvas-file-watcher.test.ts src/__tests__/fs-tree-walker.test.ts src/__tests__/workspace-file-routes.test.ts src/__tests__/canvas-file-watcher-mounts.test.ts src/__tests__/trust-resolver-workspace-mounts.test.ts src/__tests__/runtime-lsp-routes-scope.test.ts src/__tests__/workspace-runtime-mode.test.ts src/__tests__/process-tree.test.ts src/__tests__/qa-sho144-windows-tree.acceptance.test.ts
           cd ../..
           bun --no-env-file test scripts/__tests__/desktop-next-beta-version.test.ts
           # The Windows installer ships this bundle; build it on the platform that packages it.

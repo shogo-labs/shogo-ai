@@ -37,6 +37,7 @@ export default defineConfig({
     // present in CI / minimal install envs).
     'src/projects/cloud-file-transport.ts',
     'src/vite-watch.ts',
+    'src/child-ledger.ts',
     // Back-compat shims for symbols that moved to @shogo-ai/{core,agent}.
     // Each compiles to a tiny re-export chunk; the actual implementation
     // lives in the published per-package dist.

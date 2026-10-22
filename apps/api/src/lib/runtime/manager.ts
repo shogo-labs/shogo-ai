@@ -21,6 +21,7 @@ import {
   realpathSync,
   renameSync,
   copyFileSync,
+  readdirSync,
 } from 'fs'
 import { join, dirname, resolve, basename } from 'path'
 import { fileURLToPath } from 'url'
@@ -28,6 +29,7 @@ import { createHash } from 'crypto'
 import { pkg } from '../../../../../packages/cli/src/pkg'
 import { stackSeedsItself } from '../../../../../packages/core/src/tech-stack-registry'
 import { cloneTree, defaultCloneMode, type CloneMode } from './clone-tree'
+import { reapChildLedger } from '@shogo-ai/sdk/child-ledger'
 import {
   WorkerRuntimeManager,
   type ProjectSpawnConfig,
@@ -666,13 +668,50 @@ export class RuntimeManager implements IRuntimeManager {
     }
 
     const pgids = selectOrphanedViteWatcherPgids(psOutput, dirs)
-    if (pgids.length === 0) return
-    console.log(`[RuntimeManager] Cleaning up ${pgids.length} orphaned vite watcher group(s): ${pgids.join(', ')}`)
-    for (const pgid of pgids) {
+    if (pgids.length > 0) {
+      console.log(`[RuntimeManager] Cleaning up ${pgids.length} orphaned vite watcher group(s): ${pgids.join(', ')}`)
+      for (const pgid of pgids) {
+        try {
+          process.kill(-pgid, 'SIGKILL')
+        } catch {
+          // Group already gone — fine.
+        }
+      }
+    }
+    this.reapOrphanedChildLedgers(workspacesDir)
+  }
+
+  /**
+   * Reap the detached groups each project's runtime recorded before it died
+   * (SHO-144). `cleanupOrphanedViteWatchers` only ever knew about vite, which
+   * is the one child that leaves a pidfile; an exec shell or an API sidecar of
+   * a runtime that was SIGKILLed had no trail at all and survived to launchd.
+   *
+   * The ledger is per project workspace, so this walks one level down. Each
+   * entry is only signalled while its command line still matches what was
+   * recorded — a reused pid is dropped, never killed.
+   */
+  private reapOrphanedChildLedgers(workspacesDir: string): void {
+    if (process.platform === 'win32') return
+    let entries: Array<{ name: string; isDirectory: () => boolean }>
+    try {
+      entries = readdirSync(workspacesDir, { withFileTypes: true }) as any
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+      const workspaceDir = join(workspacesDir, entry.name)
       try {
-        process.kill(-pgid, 'SIGKILL')
-      } catch {
-        // Group already gone — fine.
+        const { reaped } = reapChildLedger(workspaceDir)
+        if (reaped.length > 0) {
+          console.log(
+            `[RuntimeManager] Reaped ${reaped.length} orphaned child group(s) for ${entry.name}: ` +
+              reaped.map((child) => `${child.label}(pgid=${child.pgid})`).join(', '),
+          )
+        }
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] Child ledger reap failed for ${entry.name}: ${err?.message ?? err}`)
       }
     }
   }

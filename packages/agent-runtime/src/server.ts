@@ -2633,6 +2633,7 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
+import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
@@ -7479,6 +7480,17 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
+// Windows has no SIGTERM: `TerminateProcess` ends this process without running
+// a single line of the shutdown above, which is why every runtime stop there
+// stranded its execs, the API sidecar and vite. Putting the runtime in a
+// kill-on-close job makes their death the kernel's job instead of ours — and
+// because we are the only holder of the handle, no crash can dodge it (SHO-144).
+// No-op on POSIX and on a Windows without job objects, where the worker's
+// `taskkill /T` and the POSIX ledger remain the fallback.
+void installRuntimeJobGuard().then((armed) => {
+  if (armed) console.log('[agent-runtime] Arming runtime job object (kill-on-close) for its process tree')
+})
 
 // =============================================================================
 // Start Server

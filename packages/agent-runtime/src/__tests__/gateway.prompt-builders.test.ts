@@ -632,7 +632,7 @@ describe('session bookkeeping helpers', () => {
     const gw = new AgentGateway(ws, 'p1')
     const reg = (gw as any).getOrCreateCommandRegistry('s9')
     let killed = false
-    reg.killAll = () => { killed = true }
+    reg.killAll = async () => { killed = true }
     ;(gw as any).disposeSessionState('s9')
     expect(killed).toBe(true)
     expect((gw as any).commandRegistries.has('s9')).toBe(false)

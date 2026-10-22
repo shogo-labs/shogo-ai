@@ -2000,9 +2000,9 @@ export class AgentGateway {
     // longer has a hard-timeout SIGKILL ceiling, so this shutdown sweep is the
     // backstop that prevents long-running children from being orphaned when
     // the gateway goes away.
-    for (const reg of this.commandRegistries.values()) {
-      try { reg.killAll() } catch { /* already gone */ }
-    }
+    await Promise.all([...this.commandRegistries.values()].map(async (reg) => {
+      try { await reg.killAll() } catch { /* already gone */ }
+    }))
     this.commandRegistries.clear()
     for (const timer of this.taskWakeTimers.values()) clearTimeout(timer)
     this.taskWakeTimers.clear()
@@ -2908,7 +2908,9 @@ export class AgentGateway {
       // falls back to the per-task logs when no snapshot survives, so those have
       // to go too — a footer-less log now restores as `interrupted` (SHO-141),
       // which would otherwise bring a cleared session's tasks back to life.
-      reg.killAll({ clear: true })
+      // Not awaited (SHO-144): the wipe itself is synchronous, and clearing a
+      // session must not wait on a tree.
+      void reg.killAll({ clear: true })
       try { rmSync(taskOutputDir(this.workspaceDir, sessionId), { recursive: true, force: true }) } catch { /* best effort */ }
       this.commandRegistries.delete(sessionId)
     }

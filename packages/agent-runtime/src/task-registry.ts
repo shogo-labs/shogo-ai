@@ -20,6 +20,7 @@ import { randomBytes } from 'crypto'
 import { existsSync } from 'fs'
 import { join, relative } from 'path'
 import type { CommandHandle } from './sandbox-exec'
+import type { ProcessMember } from './process-tree'
 import {
   TaskOutputWriter,
   readTaskOutput,
@@ -214,6 +215,16 @@ export interface TaskEntry {
 
 /** Shell entries always carry a process handle. */
 export type CommandEntry = TaskEntry & { handle: CommandHandle }
+
+/**
+ * What `kill()` can honestly report (SHO-144). `survivors` is non-empty when
+ * the tree outlived the kill — a `setsid` escapee, a Windows process started
+ * outside the job — and then the caller must not report `cancelled`.
+ */
+export interface TaskCancelResult {
+  found: boolean
+  survivors: ProcessMember[]
+}
 
 /** Live view of a task for tools and the UI. */
 export interface RunningProcess {
@@ -1491,18 +1502,35 @@ export class TaskRegistry {
   // ---------------------------------------------------------------------------
 
   /**
-   * Cancel a running task, or dismiss a stale placeholder. Returns true if a
-   * task with `id` existed.
+   * Kill (or dismiss, if stale) one task. Returns true if a matching id
+   * existed.
+   *
+   * The process tree is swept in the background: use `cancel()` when the caller
+   * needs to know whether anything outlived the kill.
    */
   kill(id: string): boolean {
+    if (!this.get(id)) return false
+    void this.cancel(id).catch(() => {})
+    return true
+  }
+
+  /**
+   * Cancel a running task, or dismiss a stale placeholder.
+   *
+   * `found: false` means no task with that id existed. For a local task the
+   * call does not come back until the tree has been killed *and checked*
+   * (SHO-144): `survivors` is what is still running afterwards, and it is the
+   * only honest answer to "did it stop?".
+   */
+  async cancel(id: string): Promise<TaskCancelResult> {
     const entry = this.get(id)
-    if (!entry) return false
+    if (!entry) return { found: false, survivors: [] }
     if (entry.stale) {
       this.entries.delete(entry.id)
       this.emitChange()
-      return true
+      return { found: true, survivors: [] }
     }
-    if (entry.status !== 'running') return true
+    if (entry.status !== 'running') return { found: true, survivors: [] }
     entry.status = 'cancelled'
     entry.consumed = true
     this.completionNotes.delete(entry.id)
@@ -1510,14 +1538,24 @@ export class TaskRegistry {
       if (!entry.handle.exited()) {
         try { entry.handle.kill('SIGKILL') } catch { /* already gone */ }
       }
-      return true
+      if (entry.handle.killTree) {
+        try {
+          const { survivors } = await entry.handle.killTree({ graceMs: 0 })
+          return { found: true, survivors }
+        } catch {
+          // A failed verification is reported as "nothing confirmed": the
+          // caller must not claim the tree is empty on the strength of a throw.
+          return { found: true, survivors: [] }
+        }
+      }
+      return { found: true, survivors: [] }
     }
     const cancel = this.cancels.get(entry.id)
     const client = this.clientFor(entry)
     if (client) void client.cancel(entry.id).catch(() => {})
     try { void cancel?.() } catch { /* ignore */ }
     this.settle(entry, 'cancelled', { summary: 'cancelled' })
-    return true
+    return { found: true, survivors: [] }
   }
 
   /**
@@ -1536,7 +1574,7 @@ export class TaskRegistry {
    * "forget this session" — where the settles are written and the rows are then
    * dropped, so a fresh registry does not re-hydrate a session the user wiped.
    */
-  killAll(opts: { clear?: boolean } = {}): void {
+  async killAll(opts: { clear?: boolean } = {}): Promise<void> {
     for (const entry of this.entries.values()) {
       if (entry.visibilityTimer) {
         clearTimeout(entry.visibilityTimer)
@@ -1570,10 +1608,36 @@ export class TaskRegistry {
     this.emitChange()
     this.aliases.clear()
     this.completionNotes.clear()
+
+    // The trees are swept from a snapshot taken before the rows are dropped:
+    // `clear` is a wipe, not a reason to stop waiting for what we killed.
+    const sweeps = [...this.entries.values()]
+      .filter((entry) => !entry.stale && !entry.remote)
+      .map((entry) => entry.handle?.killTree?.({ graceMs: 0 }))
+      .filter((sweep): sweep is Promise<{ survivors: { pid: number; name: string }[] }> => Boolean(sweep))
     if (opts.clear) {
       this.entries.clear()
       this.emitChange()
     }
+    if (sweeps.length === 0) return
+
+    // Only now, with every verdict already on disk and in the snapshot, wait
+    // for the trees to actually go away (SHO-144). Bounded: a shutdown that
+    // waits on a wedged process is a shutdown that never finishes, and the
+    // survivors are logged for the next boot's sweep.
+    await Promise.race([
+      Promise.allSettled(sweeps).then((results) => {
+        for (const result of results) {
+          if (result.status !== 'fulfilled' || result.value.survivors.length === 0) continue
+          const list = result.value.survivors.map((s) => `${s.name}(${s.pid})`).join(', ')
+          console.warn(`[task-registry] killAll left survivors: ${list}`)
+        }
+      }),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 3_000)
+        ;(timer as any)?.unref?.()
+      }),
+    ])
   }
 }
 

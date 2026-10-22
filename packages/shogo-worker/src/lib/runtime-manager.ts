@@ -51,6 +51,7 @@ import {
 import type { ResolveRejection, RuntimeResolver } from './tunnel.ts';
 import { CloudFileTransport } from '@shogo-ai/sdk/cloud-file-transport';
 import { killViteWatchFromPidfile } from '@shogo-ai/sdk/vite-watch';
+import { reapChildLedger } from '@shogo-ai/sdk/child-ledger';
 import { CloudSyncWatcher } from './cloud-sync-watcher.ts';
 import { cloneProject, gitIsAvailable, isGitRepo } from './git-cloner.ts';
 import {
@@ -1260,6 +1261,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       // the rest of the group too in case any child ignored SIGTERM.
       this.killProcessGroup(r, 'SIGKILL');
       this.killViteWatch(r);
+      this.reapChildLedgerFor(projectId, r.spawnConfig.projectDir);
     }
     r.pid = null;
     this.releasePort(r.agentPort);
@@ -1824,6 +1826,38 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   }
 
   /**
+   * Reap the detached process groups a runtime recorded before it died
+   * (SHO-144).
+   *
+   * Every exec shell and the preview API sidecar lead their own group, so the
+   * runtime's own group kill never reached them — a SIGKILL, a jetsam kill or a
+   * crash left them orphaned to launchd/init. The ledger's command-line check
+   * means a reused pid is never signalled. POSIX only: on Windows the runtime's
+   * own kill-on-close job object does this in the kernel.
+   */
+  private reapChildLedgerFor(projectId: string, workspaceDir: string | undefined): void {
+    if (!workspaceDir || process.platform === 'win32') return;
+    try {
+      const { reaped, dropped } = reapChildLedger(workspaceDir, { logger: this.log });
+      if (reaped.length > 0) {
+        this.log.log(
+          `[WorkerRuntimeManager] Reaped ${reaped.length} leftover child group(s) for ${projectId}: ` +
+            reaped.map((child) => `${child.label}(pgid=${child.pgid})`).join(', '),
+        );
+      }
+      if (dropped.length > 0) {
+        this.log.log(
+          `[WorkerRuntimeManager] Dropped ${dropped.length} stale ledger entr(ies) for ${projectId} (process gone or pid reused)`,
+        );
+      }
+    } catch (err: any) {
+      this.log.warn(
+        `[WorkerRuntimeManager] Child ledger reap for ${projectId} failed: ${err?.message ?? err}`,
+      );
+    }
+  }
+
+  /**
    * Clean pidfiles left by a previous worker process before this manager
    * starts accepting projects. The command-line verification in
    * killViteWatchFromPidfile prevents a reused PID from being signalled.
@@ -1848,6 +1882,9 @@ export class WorkerRuntimeManager implements RuntimeResolver {
             `[WorkerRuntimeManager] Reaped orphaned Vite watch for ${entry.name} (pid=${reaped.pid})`,
           );
         }
+        // The ledger covers what the pidfile never could: the exec shells and
+        // the API sidecar of a runtime that was killed without a shutdown.
+        this.reapChildLedgerFor(entry.name, workspaceDir);
       } catch (err: any) {
         this.log.warn(
           `[WorkerRuntimeManager] Vite watch startup sweep failed for ${entry.name}: ${err?.message ?? err}`,
@@ -1926,6 +1963,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     //      circuit breaker below stops that loop.
     this.killProcessGroup(slot, 'SIGKILL');
     this.killViteWatch(slot);
+    this.reapChildLedgerFor(slot.projectId, slot.spawnConfig.projectDir);
     slot.pid = null;
 
     const now = Date.now();

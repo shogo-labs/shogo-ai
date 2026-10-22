@@ -52,7 +52,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  registry.killAll()
+  void registry.killAll()
   rmSync(TEST_DIR, { recursive: true, force: true })
 })
 
@@ -382,6 +382,41 @@ describe('task_cancel on a shell task', () => {
     await run(ctx, 'task_cancel', { task_id: started.task_id })
     await new Promise((r) => setTimeout(r, 300))
     expect(() => process.kill(childPid, 0)).toThrow()
+  })
+
+  test('reports an empty survivors list for a tree it actually emptied', async () => {
+    const ctx = makeCtx(registry)
+    const started = await run(ctx, 'exec', { command: 'sleep 30', background: true })
+
+    const cancelled = await run(ctx, 'task_cancel', { task_id: started.task_id })
+
+    expect(cancelled).toMatchObject({ ok: true, status: 'cancelled', survivors: [] })
+    expect(registry.get(started.task_id)?.status).toBe('cancelled')
+  })
+
+  test('a tree it could not empty is named, never reported as cancelled', async () => {
+    const ctx = makeCtx(registry)
+    const entry = registry.register('merge waiter', {
+      pid: 999_999,
+      sandboxed: false,
+      stdout: () => '',
+      stderr: () => '',
+      recentOutput: () => '',
+      done: new Promise(() => {}),
+      kill: () => {},
+      exited: () => false,
+      startedAt: Date.now(),
+      killTree: async () => ({ survivors: [{ pid: 991, name: 'sleep' }] }),
+    })
+
+    const cancelled = await run(ctx, 'task_cancel', { task_id: entry.id })
+
+    expect(cancelled).toMatchObject({
+      ok: false,
+      status: 'cancel_incomplete',
+      survivors: [{ pid: 991, name: 'sleep' }],
+    })
+    expect(cancelled.hint).toContain('991')
   })
 
   test('exec refuses a command that detaches itself and starts nothing', async () => {

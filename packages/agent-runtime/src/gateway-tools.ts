@@ -50,6 +50,7 @@ import {
 import { isSearchEnabled } from './search-flag'
 import { isInQuietHours } from './quiet-hours'
 import { PROFILE_TOOL_GROUPS, disabledToolNamesForProfile } from './capability-profiles'
+import { survivorHint } from './process-tree'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle, type ShellExitResult } from './sandbox-exec'
@@ -2646,7 +2647,7 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
 function createTaskCancelTool(ctx: ToolContext): AgentTool {
   return {
     name: 'task_cancel',
-    description: 'Cancel a background task you started (stops the command, subagent, or tracking).',
+    description: 'Cancel a background task you started (stops the command, subagent, or tracking). Reports the processes still running if the tree could not be emptied.',
     label: 'Cancel Task',
     parameters: Type.Object({
       task_id: Type.String({ description: 'Task id to cancel' }),
@@ -2656,8 +2657,21 @@ function createTaskCancelTool(ctx: ToolContext): AgentTool {
       const registry = ctx.commandRegistry
       const entry = registry?.get(task_id)
       if (!registry || !entry) return textResult({ error: `Unknown task id: ${task_id}` })
-      registry.kill(entry.id)
-      return textResult({ ok: true, task_id: entry.id, status: registry.get(entry.id)?.status ?? 'cancelled' })
+      // `cancelled` is a claim about the process tree, not about the signal we
+      // sent: the registry waits for the kill to be verified and tells us what
+      // is still running (SHO-144).
+      const { survivors } = await registry.cancel(entry.id)
+      const status = registry.get(entry.id)?.status ?? 'cancelled'
+      if (survivors.length > 0) {
+        return textResult({
+          ok: false,
+          task_id: entry.id,
+          status: 'cancel_incomplete',
+          survivors,
+          hint: survivorHint(survivors),
+        })
+      }
+      return textResult({ ok: true, task_id: entry.id, status, survivors: [] })
     },
   }
 }

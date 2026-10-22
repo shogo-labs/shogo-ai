@@ -17,6 +17,7 @@ import { join, isAbsolute, resolve, sep } from 'path'
 import { randomBytes } from 'crypto'
 import type { SandboxConfig } from './types'
 import { trackExecProcess } from './exec-memory-guard'
+import { containChild, type Containment, type ProcessMember } from './process-tree'
 
 // ---------------------------------------------------------------------------
 // Windows shell resolution — use Git Bash when available so Unix commands
@@ -821,6 +822,14 @@ export interface CommandHandle {
   done: Promise<ShellExitResult>
   /** Send a termination signal. SIGTERM is graceful, SIGKILL is forceful. */
   kill: (signal?: 'SIGTERM' | 'SIGKILL') => void
+  /**
+   * Kill the whole tree, wait for it, and report what is still alive (SHO-144).
+   *
+   * `kill()` only *sends* a signal; this is the call that can say whether the
+   * job actually stopped. Absent on handles that own no OS process of their own
+   * (a restored snapshot, a remote task).
+   */
+  killTree?: (opts?: { graceMs?: number }) => Promise<{ survivors: ProcessMember[] }>
   /** True once the child has exited. */
   exited: () => boolean
   startedAt: number
@@ -914,6 +923,12 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     pipefailApplied = choice.pipefail
   }
 
+  // Containment (SHO-144): whatever this tree starts has to be killable and,
+  // just as important, verifiable. Docker keeps its own container teardown.
+  const containment: Containment | null = !useSandbox && child.pid
+    ? containChild(child, { label: 'exec', workspaceDir: opts.workspaceDir })
+    : null
+
   let killed = false
   let killReason: string | undefined
   let exited = false
@@ -962,16 +977,32 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
 
   function sendKill(signal: 'SIGTERM' | 'SIGKILL'): void {
     killed = true
-    // Windows has no process groups and TerminateProcess stops only the shell,
-    // leaving what it launched running. Walk the tree while the shell is alive.
-    if (!useSandbox && !ownGroup && process.platform === 'win32' && child.pid && !exited) {
+    // The contained tree is the authority on how to reach every process in it:
+    // a process group on POSIX, a job object plus `taskkill /T` on Windows.
+    // A forceful kill starts the verified sweep here and does not wait for it;
+    // callers that must know the outcome use `killTree()` (SHO-144).
+    if (containment) {
+      // Windows has no SIGTERM: `child.kill` is a TerminateProcess on the shell
+      // and nothing else, so even the graceful step has to go through the tree
+      // (`taskkill /T` while the parent chain is intact, then the job object).
+      if (signal === 'SIGKILL' || process.platform === 'win32') {
+        void containment.killTree({ graceMs: signal === 'SIGKILL' ? 0 : 2_000 })
+        // POSIX only: the sweep signals the group, so a leader whose group
+        // snapshot comes back empty would otherwise never see this signal.
+        // On Windows the direct kill has to wait until after `taskkill /T` has
+        // walked the parent chain, which `killTree` does itself.
+        if (process.platform !== 'win32') {
+          try { child.kill(signal) } catch { /* already gone */ }
+        }
+        return
+      }
       try {
-        spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
-          stdio: 'ignore',
-          windowsHide: true,
-          timeout: 10_000,
-        })
-      } catch { /* fall through to child.kill */ }
+        if (ownGroup && child.pid) process.kill(-child.pid, signal)
+        else child.kill(signal)
+      } catch {
+        try { child.kill(signal) } catch { /* already gone */ }
+      }
+      return
     }
     try {
       // The shell's children (`bun run dev` → `bun server.ts`) share its
@@ -1009,6 +1040,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     child.on('exit', (code, signal) => {
       exited = true
       untrack()
+      containment?.dispose()
       const exitCode = typeof code === 'number'
         ? code
         : (signal ? 128 + (signalNumber(signal) ?? 0) : 1)
@@ -1041,6 +1073,9 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
         sendKill('SIGKILL')
       }
     },
+    ...(containment
+      ? { killTree: (opts?: { graceMs?: number }) => containment.killTree(opts ?? {}) }
+      : {}),
     exited: () => exited,
     startedAt,
     onData: (listener) => {
