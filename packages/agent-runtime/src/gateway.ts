@@ -7200,13 +7200,22 @@ export class AgentGateway {
 
   /**
    * Work that means this runtime is not idle: agent turns running now (chat,
-   * schedule, heartbeat, channel) and background tasks that will wake the
-   * agent when they finish. Hosts check this before evicting the runtime.
+   * schedule, heartbeat, channel), every task still running in a session's
+   * registry (not just the ones that will notify), and their live child
+   * processes. Hosts read this before evicting the runtime, so it must count
+   * work that does NOT wake the agent — a long foreground `exec` whose turn
+   * already returned, a `wait`-tracked task, a child process still running
+   * after a gateway restart — or the host kills that work (SHO-143).
    */
-  getActiveWork(): { turns: number; tasks: number } {
+  getActiveWork(): { turns: number; tasks: number; children: number } {
     let tasks = 0
-    for (const reg of this.commandRegistries.values()) tasks += reg.pendingNotifyCount()
-    return { turns: this.turnLocks.size, tasks }
+    let children = 0
+    for (const reg of this.commandRegistries.values()) {
+      const counts = reg.activeWorkCounts()
+      tasks += counts.tasks
+      children += counts.children
+    }
+    return { turns: this.turnLocks.size, tasks, children }
   }
 
   abortCurrentTurn(sessionId: string): boolean {

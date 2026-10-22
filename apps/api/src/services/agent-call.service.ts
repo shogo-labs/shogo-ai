@@ -26,6 +26,7 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from 'hono'
 import { PROJECT_CALL_MESSAGE_AGENT, runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 import { linkAgentCallSession, putAgentCall, startAgentCallHeartbeat, type AgentCallSessionLink } from '../lib/agent-call-store'
+import { noteInflightCall } from '../lib/runtime/inflight-calls'
 import type { TrackedStreamResult } from '../routes/project-chat'
 
 export { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
@@ -923,6 +924,10 @@ export async function forwardToProjectRuntime(
   },
 ): Promise<AgentCallOutcome> {
   const extraHeaders = opts.headers ?? {}
+  // This request exists to make the target runtime work. Until its turn lock
+  // shows up there it looks idle to a probe, and the background pool can be
+  // evicting it in exactly that gap (SHO-143). Count it as work while it flies.
+  noteInflightCall(projectId, 1)
   try {
     const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
     const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId })
@@ -981,5 +986,7 @@ export async function forwardToProjectRuntime(
         },
       },
     }
+  } finally {
+    noteInflightCall(projectId, -1)
   }
 }
