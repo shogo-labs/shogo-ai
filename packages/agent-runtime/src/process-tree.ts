@@ -337,14 +337,19 @@ function delay(ms: number): Promise<void> {
 
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
-const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
+/**
+ * `JobObjectBasicProcessIdList`. Deliberately not
+ * `JobObjectBasicAccountingInformation` (class 1) for the ActiveProcesses count:
+ * on windows-latest that query fails with ERROR_BAD_LENGTH (24) for a buffer
+ * larger than the struct, so the poll never saw the job empty, burned its whole
+ * budget and then guessed. The pid list answers the same question and, unlike a
+ * count, names who is left.
+ */
 const JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
 /** sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION) on x64. */
 const EXTENDED_LIMIT_INFO_BYTES = 144
 /** `LimitFlags` sits after two LARGE_INTEGERs. */
 const LIMIT_FLAGS_OFFSET = 16
-/** `ActiveProcesses` sits after nine 8-byte counters / dwords. */
-const ACTIVE_PROCESSES_OFFSET = 40
 
 interface Kernel32 {
   CreateJobObjectW(a: number, b: number): number
@@ -554,8 +559,8 @@ class WindowsContainment implements ContainmentBackend {
     return windowsTreesByPpid(pid)
   }
 
-  /** Processes still assigned to the job, per the kernel. */
-  private jobProcessIds(k32: Kernel32, job: number): number[] {
+  /** Processes still assigned to the job per the kernel, or `null` if it would not say. */
+  private jobProcessIds(k32: Kernel32, job: number): number[] | null {
     try {
       const buffer = Buffer.alloc(8 + 4096 * 8)
       const ok = (k32.QueryInformationJobObject as any)(
@@ -565,7 +570,7 @@ class WindowsContainment implements ContainmentBackend {
         buffer.length,
         0,
       )
-      if (!ok) return []
+      if (!ok) return null
       const count = buffer.readUInt32LE(4)
       const ids: number[] = []
       for (let i = 0; i < count; i++) {
@@ -573,23 +578,6 @@ class WindowsContainment implements ContainmentBackend {
         if (pid > 0) ids.push(pid)
       }
       return ids
-    } catch {
-      return []
-    }
-  }
-
-  private activeProcesses(k32: Kernel32, job: number): number | null {
-    try {
-      const buffer = Buffer.alloc(64)
-      const ok = (k32.QueryInformationJobObject as any)(
-        job,
-        JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
-        buffer,
-        buffer.length,
-        0,
-      )
-      if (!ok) return null
-      return buffer.readUInt32LE(ACTIVE_PROCESSES_OFFSET)
     } catch {
       return null
     }
@@ -666,24 +654,20 @@ class WindowsContainment implements ContainmentBackend {
     }
     if (!terminated) return null
 
-    const deadline = Date.now() + budgetMs
-    let observed: number | null = null
-    while (Date.now() < deadline) {
-      observed = this.activeProcesses(k32, job)
-      if (observed === 0) break
-      await delay(25)
-    }
-    if (observed === null) return null
-
-    const remaining = this.jobProcessIds(k32, job)
-    const names = remaining.length > 0 ? windowsProcessNames() : null
     // A pid still listed in the job's process list is alive: the kernel drops
-    // terminated pids, which is why `ActiveProcesses` is the poll.
-    return {
-      survivors: remaining
-        .filter((survivor) => survivor !== process.pid)
-        .map((survivor) => ({ pid: survivor, name: names?.get(survivor) ?? 'unknown' })),
+    // terminated pids, so this poll is both the wait and the verdict.
+    const deadline = Date.now() + budgetMs
+    let remaining = this.jobProcessIds(k32, job)
+    while (remaining !== null && remaining.length > 0 && Date.now() < deadline) {
+      await delay(25)
+      remaining = this.jobProcessIds(k32, job)
     }
+    if (remaining === null) return null
+
+    const survivors = remaining.filter((survivor) => survivor !== process.pid)
+    if (survivors.length === 0) return { survivors: [] }
+    const names = windowsProcessNames()
+    return { survivors: survivors.map((pid) => ({ pid, name: names.get(pid) ?? 'unknown' })) }
   }
 
   dispose(): void {
