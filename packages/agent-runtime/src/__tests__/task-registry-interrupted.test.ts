@@ -70,6 +70,21 @@ describe('a runtime restart is not a success', () => {
     expect(notes).toEqual([])
   })
 
+  test('a cleared session forgets its rows, a shutdown keeps them', async () => {
+    const kept = await registryWithRunningTask()
+    kept.registry.killAll()
+    await tick(50)
+    // The shutdown sweep leaves the verdict in place for the restart to read.
+    expect(kept.registry.listAll().find((p) => p.id === kept.entry.id)?.status).toBe('interrupted')
+
+    const cleared = await registryWithRunningTask()
+    cleared.registry.killAll({ clear: true })
+    await tick(50)
+    // Wiping a session's history drops its tasks — nothing left to re-hydrate.
+    expect(cleared.registry.listAll()).toHaveLength(0)
+    expect(cleared.registry.snapshot()).toHaveLength(0)
+  })
+
   test('the verdict survives both restore paths and never comes back completed', async () => {
     const { registry, entry, workspace } = await registryWithRunningTask()
 

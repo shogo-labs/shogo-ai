@@ -1375,9 +1375,11 @@ export class TaskRegistry {
    *
    * The settled rows are then emitted (which is what persists the snapshot) and
    * deliberately left in place: clearing them wiped `runningProcesses` to `[]`,
-   * so the restart had no verdict left to restore.
+   * so the restart had no verdict left to restore. `clear` is the other path —
+   * "forget this session" — where the settles are written and the rows are then
+   * dropped, so a fresh registry does not re-hydrate a session the user wiped.
    */
-  async killAll(): Promise<void> {
+  async killAll(opts: { clear?: boolean } = {}): Promise<void> {
     for (const entry of this.entries.values()) {
       if (entry.visibilityTimer) {
         clearTimeout(entry.visibilityTimer)
@@ -1412,15 +1414,22 @@ export class TaskRegistry {
     this.aliases.clear()
     this.completionNotes.clear()
 
-    // Only now, with every verdict already on disk and in the snapshot, wait
-    // for the trees to actually go away (SHO-144). Bounded: a shutdown that
-    // waits on a wedged process is a shutdown that never finishes, and the
-    // survivors are logged for the next boot's sweep.
+    // The trees are swept from a snapshot taken before the rows are dropped:
+    // `clear` is a wipe, not a reason to stop waiting for what we killed.
     const sweeps = [...this.entries.values()]
       .filter((entry) => !entry.stale && !entry.remote)
       .map((entry) => entry.handle?.killTree?.({ graceMs: 0 }))
       .filter((sweep): sweep is Promise<{ survivors: { pid: number; name: string }[] }> => Boolean(sweep))
+    if (opts.clear) {
+      this.entries.clear()
+      this.emitChange()
+    }
     if (sweeps.length === 0) return
+
+    // Only now, with every verdict already on disk and in the snapshot, wait
+    // for the trees to actually go away (SHO-144). Bounded: a shutdown that
+    // waits on a wedged process is a shutdown that never finishes, and the
+    // survivors are logged for the next boot's sweep.
     await Promise.race([
       Promise.allSettled(sweeps).then((results) => {
         for (const result of results) {

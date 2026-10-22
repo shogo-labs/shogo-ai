@@ -18,7 +18,7 @@
  * multi-provider LLMs (Anthropic, OpenAI, Google, xAI, Groq, etc.).
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import type { Message, ImageContent } from '@mariozechner/pi-ai'
@@ -2861,9 +2861,14 @@ export class AgentGateway {
   private disposeSessionState(sessionId: string): void {
     const reg = this.commandRegistries.get(sessionId)
     if (reg) {
-      // Not awaited: clearing a session must not wait on a tree, and killAll
-      // settles the rows and writes its verdicts before it starts waiting.
-      void reg.killAll()
+      // `clear`: the session is being wiped, so its rows go with it. Hydration
+      // falls back to the per-task logs when no snapshot survives, so those have
+      // to go too — a footer-less log now restores as `interrupted` (SHO-141),
+      // which would otherwise bring a cleared session's tasks back to life.
+      // Not awaited (SHO-144): the wipe itself is synchronous, and clearing a
+      // session must not wait on a tree.
+      void reg.killAll({ clear: true })
+      try { rmSync(taskOutputDir(this.workspaceDir, sessionId), { recursive: true, force: true }) } catch { /* best effort */ }
       this.commandRegistries.delete(sessionId)
     }
     const wake = this.taskWakeTimers.get(sessionId)
