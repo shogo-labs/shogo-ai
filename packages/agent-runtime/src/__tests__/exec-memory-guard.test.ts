@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -50,6 +50,28 @@ const readPids = () => JSON.parse(readFileSync(process.env.SHOGO_EXEC_PIDS_FILE!
 
 const fakeSample = (sizesMB: Record<number, number>) => async (roots: number[]) =>
   new Map(roots.filter((r) => r in sizesMB).map((r) => [r, sizesMB[r]! * 1024] as [number, number]))
+
+/** Bytes the over-budget test's child really holds: 192 MB, above the ceiling. */
+const MEMORY_HOG_MB = 192
+
+/** Ceiling for the integration test: above any plain process, below the hog. */
+const OVER_BUDGET_MB = 128
+
+/**
+ * Source of the child the over-budget test runs: hold the 192 MB above and
+ * write every page so the resident set is real rather than reserved, then idle
+ * long enough for the guard to sample it.
+ */
+const MEMORY_HOG_SCRIPT =
+  `const bytes = ${MEMORY_HOG_MB} * 1024 * 1024\n` +
+  `const hog = Buffer.alloc(bytes, 1)\n` +
+  `if (hog[0] !== 1 || hog[hog.length - 1] !== 1) process.exit(2)\n` +
+  `setTimeout(() => process.exit(0), 30000)\n`
+
+/** Quote a path for the shell `sandboxExecAsync` will run the command under. */
+function quotePath(value: string): string {
+  return process.platform === 'win32' ? `"${value}"` : `'${value.replace(/'/g, `'\\''`)}'`
+}
 
 describe('exec PID publishing', () => {
   test('writes live exec PIDs for the runtime watchdog and removes them on untrack', () => {
@@ -114,9 +136,19 @@ describe('memory budget for exec commands', () => {
 
 describe('sandboxExecAsync integration', () => {
   test('a command over budget is stopped and the reason lands in its output', async () => {
-    process.env.SHOGO_EXEC_MEMORY_MB = '1'
+    // What the command *is* has to matter: `sleep 30` is ~1.5 MB on
+    // ubuntu-24.04 and ~2 MB on macOS, so a 1 MB ceiling struck here and never
+    // on CI, no matter how many samples were taken. Run a child that really
+    // holds 192 MB instead, under a ceiling a plain process stays well below —
+    // so only the allocation can breach it.
+    process.env.SHOGO_EXEC_MEMORY_MB = String(OVER_BUDGET_MB)
     process.env.SHOGO_EXEC_MEMORY_STRIKES = '1'
-    const handle = sandboxExecAsync({ command: 'sleep 30', workspaceDir: dir })
+    const hogScript = join(dir, 'memory-hog.js')
+    writeFileSync(hogScript, MEMORY_HOG_SCRIPT)
+    const handle = sandboxExecAsync({
+      command: `${quotePath(process.execPath)} ${quotePath(hogScript)}`,
+      workspaceDir: dir,
+    })
     expect(trackedExecPids()).toContain(handle.pid!)
 
     // One `ps` read is a snapshot of an instant: a process group that has just
@@ -135,6 +167,10 @@ describe('sandboxExecAsync integration', () => {
     expect(result.killed).toBe(true)
     expect(result.killReason).toContain('out of memory')
     expect(result.stderr).toContain('out of memory')
+    // The note reports what the guard measured, so this is what proves the
+    // command was over budget because of the memory it holds, not its size.
+    const measured = /using (\d+) MB/.exec(result.killReason ?? '')
+    expect(Number(measured?.[1])).toBeGreaterThanOrEqual(MEMORY_HOG_MB)
     expect(trackedExecPids()).not.toContain(handle.pid!)
   }, 20_000)
 
