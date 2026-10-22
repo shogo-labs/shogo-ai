@@ -107,7 +107,7 @@ import {
   useSDKHttpOptional,
 } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
-import { resolveHistoryPaint } from "./history-paint"
+import { resolveHistoryPaint, resolveLiveTurnAttach } from "./history-paint"
 import { useResolvedTheme } from "../../contexts/theme"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import {
@@ -3328,6 +3328,32 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // but tight enough to kill a tight reconnect loop.
   const autoResumeTimestampsRef = useRef<number[]>([])
   const autoResumeCircuitTrippedRef = useRef(false)
+  // One reload per blocked attach: repainting history is what puts the missing
+  // prompt on screen, and the reload's own probe attaches from there.
+  const blockedAttachReloadAtRef = useRef(0)
+  /** A probe found a live turn whose prompt the screen has not painted (SHO-147). */
+  const reportLiveTurnAttachBlocked = useCallback(
+    (context: string, reason: string) => {
+      console.warn(
+        `[ChatPanel] Refused to attach the live turn (${context}, reason=${reason}); reloading history first`,
+      )
+      try {
+        Sentry.captureMessage("chat_live_turn_attach_blocked", {
+          level: "warning",
+          tags: { context, reason },
+          extra: {
+            sessionId: currentSessionIdRef.current,
+            turnId: currentTurnIdRef.current,
+            screenRows: cachedMessagesRef.current?.length ?? 0,
+            historyRows: sessionMessages?.all?.length ?? 0,
+          },
+        })
+      } catch (err) {
+        console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+      }
+    },
+    [sessionMessages],
+  )
   const guardedAutoResumeStream = useCallback(
     (reason: "live-turn-probe" | "stall-recovery") => {
       if (autoResumeCircuitTrippedRef.current) {
@@ -3338,6 +3364,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (
         resumeStreamInFlightRef.current.current?.sessionId === currentSessionId
       ) {
+        return
+      }
+      // Never attach to a turn whose prompt is not on screen (SHO-147). The
+      // stream carries only the assistant reply, so with no user row between it
+      // and the reply above, the one-assistant-per-turn grouping gives the new
+      // reply the previous turn's bubble. Painting history is what puts the
+      // missing prompt there — and that load's own probe attaches from there.
+      const gate = resolveLiveTurnAttach({
+        screen: cachedMessagesRef.current ?? [],
+        history: sessionMessages?.all ?? [],
+      })
+      if (!gate.attach) {
+        reportLiveTurnAttachBlocked(reason, gate.reason)
+        if (Date.now() - blockedAttachReloadAtRef.current > 1000) {
+          blockedAttachReloadAtRef.current = Date.now()
+          reloadAndAttachLiveTurnRef.current({ settle: false })
+        }
         return
       }
       const { timestamps, tripped } = recordAutoResumeAttempt(
@@ -3373,7 +3416,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
       void resumeStreamSingleFlight()
     },
-    [currentSessionId, projectId, resumeStreamSingleFlight],
+    [currentSessionId, projectId, resumeStreamSingleFlight, reportLiveTurnAttachBlocked, sessionMessages],
   )
   // A session switch means the user navigated away from whatever was
   // looping — give the (new) session a clean breaker rather than carrying a
@@ -4198,16 +4241,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
         reportHistoryPaintKeptLiveTail("paintLoadedHistory", paint.reason, aiMessages)
         return
       }
+      // Paint the decision's transcript, not raw history: when history is ahead
+      // of the screen it carries the reply that only exists on screen (SHO-147).
+      const painted = paint.messages as any[]
       const unchanged =
-        cached?.length === aiMessages.length &&
-        cached?.[aiMessages.length - 1]?.id === aiMessages[aiMessages.length - 1]?.id &&
-        cached?.[aiMessages.length - 1]?.content === aiMessages[aiMessages.length - 1]?.content
+        cached?.length === painted.length &&
+        cached?.[painted.length - 1]?.id === painted[painted.length - 1]?.id &&
+        cached?.[painted.length - 1]?.content === painted[painted.length - 1]?.content
       if (!unchanged) {
-        cachedMessagesRef.current = aiMessages
-        setMessages(aiMessages)
-        liveReplySessionRef.current = null
+        cachedMessagesRef.current = painted
+        setMessages(painted)
       }
-      sessionMessageCache.set(sessionId, aiMessages)
+      // History accounts for the screen again: the reply it was missing has been
+      // written (or was never this panel's), so the next paint may go ahead
+      // without the live-tail guard (SHO-85).
+      if (!paint.carriedLiveReply) liveReplySessionRef.current = null
+      sessionMessageCache.set(sessionId, painted)
     },
     [sessionMessages, setMessages, reportHistoryPaintKeptLiveTail],
   )
@@ -5034,6 +5083,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
           reportHistoryPaintKeptLiveTail("effect-1", paint.reason, aiMessages)
           return
         }
+        // Paint the decision's transcript rather than raw history: when history
+        // is ahead of the screen it also carries the reply that only exists on
+        // screen, spliced in front of the prompt that started the next turn
+        // (SHO-147).
+        const painted = paint.messages as any[]
         const textLength = (m: any): number => {
           const fromParts = (m?.parts ?? []).reduce(
             (n: number, p: any) =>
@@ -5046,26 +5100,26 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // only grows, so compare its text too.
         const changed =
           !cached ||
-          cached.length !== aiMessages.length ||
+          cached.length !== painted.length ||
           cached[cached.length - 1]?.id !==
-            aiMessages[aiMessages.length - 1]?.id ||
+            painted[painted.length - 1]?.id ||
           textLength(cached[cached.length - 1]) !==
-            textLength(aiMessages[aiMessages.length - 1])
+            textLength(painted[painted.length - 1])
 
         if (changed) {
-          cachedMessagesRef.current = aiMessages
-          sessionMessageCache.set(loadSessionId, aiMessages)
-          setMessages(aiMessages)
-          // History accounts for the screen again: the reply it was missing has
-          // been written (or was never this panel's), so the next paint may go
-          // ahead without the live-tail guard (SHO-85).
-          liveReplySessionRef.current = null
+          cachedMessagesRef.current = painted
+          sessionMessageCache.set(loadSessionId, painted)
+          setMessages(painted)
           historyPaintAttemptRef.current = 0
         } else {
           // Same shape as cache — still refresh the module cache entry so any
           // later in-flight mutations (status flips, etc.) don't drift.
-          sessionMessageCache.set(loadSessionId, aiMessages)
+          sessionMessageCache.set(loadSessionId, painted)
         }
+        // History accounts for the screen again: the reply it was missing has
+        // been written (or was never this panel's), so the next paint may go
+        // ahead without the live-tail guard (SHO-85).
+        if (!paint.carriedLiveReply) liveReplySessionRef.current = null
       })
       .catch((err: any) =>
         console.error("[ChatPanel] Failed to load messages:", err),
@@ -5270,10 +5324,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return
       }
 
-      cachedMessagesRef.current = aiMessages
-      sessionMessageCache.set(currentSessionId, aiMessages)
-      setMessages(aiMessages)
-      liveReplySessionRef.current = null
+      cachedMessagesRef.current = paint.messages as any[]
+      sessionMessageCache.set(currentSessionId, paint.messages as any[])
+      setMessages(paint.messages as any[])
+      if (!paint.carriedLiveReply) liveReplySessionRef.current = null
       historyPaintAttemptRef.current = 0
       // NOTE: isLoadingOlderRef is intentionally NOT reset here.
       // It is reset in onContentSizeChange after scroll position is adjusted,

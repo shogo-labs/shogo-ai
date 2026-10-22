@@ -415,6 +415,9 @@ export class AgentManager {
           inst.result = {
             responseText: wasCancelled ? 'Subagent cancelled' : err.message,
             toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+            // The rejection reason has to survive with the instance, or a spawn
+            // that died at setup reaches its parent as "no output".
+            ...(wasCancelled ? {} : { error: { message: err.message }, responseEmpty: true }),
           }
         }
         const wallTime = Date.now() - startTime

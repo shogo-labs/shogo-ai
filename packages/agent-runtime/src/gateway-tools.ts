@@ -52,10 +52,11 @@ import { isInQuietHours } from './quiet-hours'
 import { PROFILE_TOOL_GROUPS, disabledToolNamesForProfile } from './capability-profiles'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
-import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
+import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle, type ShellExitResult } from './sandbox-exec'
 import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
 import { checkSelfDetach, selfDetachRefusal } from './exec-detach'
+import { findPolledTasks, type PollMatch } from './exec-poll'
 import { CommandRegistry, type CommandEntry } from './command-registry'
 import type { TaskEntry } from './task-registry'
 import { tailLines } from './task-output'
@@ -303,6 +304,12 @@ export interface ToolContext {
   }
   /** Background tasks of this session (shell, subagents, remote tasks) — backs `wait` / `task_list` / `task_cancel`. */
   commandRegistry?: import('./task-registry').TaskRegistry
+  /**
+   * Steering state for the current turn (sleep polls already made, repeated
+   * `wait` timeouts). Built per turn by the gateway, so a new turn steers
+   * afresh; see `turnSteeringState`.
+   */
+  turnState?: TurnSteeringState
   /** On-demand guide registry populated by buildGuideRegistry() */
   guideRegistry?: Map<string, string>
   /**
@@ -1215,13 +1222,7 @@ function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
 interface BuildExecResultOpts {
   ctx: ToolContext
   entry: CommandEntry
-  finalResult: {
-    exitCode: number
-    stdout: string
-    stderr: string
-    killed: boolean
-    killReason?: string
-  }
+  finalResult: ShellExitResult
 }
 
 function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOpts): AgentToolResult<any> {
@@ -1245,7 +1246,9 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
   }
   return textResult({
     cwd: newCwd,
-    exitCode: finalResult.exitCode,
+    ...(finalResult.exitCodeReliable === false
+      ? { exit_code_reliable: false, pipeline_status: finalResult.pipelineStatus ?? 'last-stage', status_note: `pipeline status unavailable — ${finalResult.shellLabel ?? 'this shell'} cannot report a pipeline's exit code` }
+      : { exitCode: finalResult.exitCode }),
     stdout: truncateExecOutput(stdoutTrimmed),
     stderr: stderrTrimmed ? truncateExecOutput(stderrTrimmed) : undefined,
     durationMs,
@@ -1289,8 +1292,88 @@ function buildSoftTimeoutResult(ctx: ToolContext, entry: CommandEntry, softTimeo
 export const BACKGROUND_TASK_HINT =
   'Call wait({ task_ids: [task_id] }) to block on it, or end your turn and you will get a [Task update] when it finishes.'
 
-function createExecTool(ctx: ToolContext): AgentTool {
+/**
+ * Per-turn steering state. A tool instance is built per turn, but a test (or a
+ * subagent) may build several from one context, so the state lives on the
+ * context: one turn shares it, the next turn starts empty.
+ */
+export interface TurnSteeringState {
+  /** Running-task sets already sleep-polled this turn. */
+  sleepPolls: Set<string>
+  /** Consecutive `wait` timeouts per task-id set this turn. */
+  waitTimeouts: Map<string, number>
+}
+
+export function turnSteeringState(ctx: ToolContext): TurnSteeringState {
+  if (!ctx.turnState) ctx.turnState = { sleepPolls: new Set(), waitTimeouts: new Map() }
+  return ctx.turnState
+}
+
+function waitCallFor(ids: string[], until?: string): string {
+  const list = `[${ids.map((id) => `"${id}"`).join(', ')}]`
+  return until ? `wait({ task_ids: ${list}, until: ${until} })` : `wait({ task_ids: ${list} })`
+}
+
+function waitInsteadOfPollHint(ids: string[], reason: PollMatch['reason']): string {
+  const reads = reason === 'reads_task_output'
+  return (
+    `${waitCallFor(ids)} returns the moment the task finishes${reads ? ' and gives you the output you are about to read' : ' or its stdout matches'}; ` +
+    'a sleep cannot — it always spends the whole delay and then only tells you to look again. ' +
+    `To wait for a server to accept connections, use ${waitCallFor(ids, "'<ready line>'")}. ` +
+    'If you would rather not block, end your turn: the [Task update] is guaranteed.'
+  )
+}
+
+/** Merge a steering note into a tool result the model and the UI both read. */
+function withSteering(result: AgentToolResult<any>, steering: Record<string, unknown>): AgentToolResult<any> {
+  const details = result?.details
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return result
+  return { ...result, ...textResult({ ...(details as Record<string, unknown>), steering }) }
+}
+
+/**
+ * A sleep that waits on a running task cannot see that task finish early, so it
+ * is a poll. Only a sleep tied to the task counts — one that reads its output or
+ * does nothing but wait (see `findPolledTasks`); a sleep waiting on CI, a port or
+ * a rebuild is left alone. The first poll still runs (it may be a real delay the
+ * command needs) and carries the steering; a second identical one is refused,
+ * naming the `wait` call that would have returned as soon as the task settled.
+ */
+function withSleepPollSteering(tool: AgentTool, ctx: ToolContext): AgentTool {
+  const run = tool.execute
   return {
+    ...tool,
+    execute: async (toolCallId, params, signal) => {
+      const { command = '', background = false } = params as { command?: string; background?: boolean }
+      // `background: true` starts a new task; its sleep is that task's own delay.
+      const running = background ? [] : (ctx.commandRegistry?.listRunning() ?? [])
+      const match = findPolledTasks(command, running)
+      if (!match) return run(toolCallId, params, signal)
+
+      const ids = match.ids
+      const key = [...ids].sort().join(',')
+      const state = turnSteeringState(ctx)
+      if (state.sleepPolls.has(key)) {
+        return textResult({
+          ok: false,
+          code: 'use_wait_instead',
+          running_tasks: ids,
+          hint: waitInsteadOfPollHint(ids, match.reason),
+        })
+      }
+      state.sleepPolls.add(key)
+      const result = await run(toolCallId, params, signal)
+      return withSteering(result, {
+        code: 'wait_instead_of_poll',
+        running_tasks: ids,
+        hint: waitInsteadOfPollHint(ids, match.reason),
+      })
+    },
+  }
+}
+
+function createExecTool(ctx: ToolContext): AgentTool {
+  return withSleepPollSteering({
     name: 'exec',
     description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running.`,
     label: 'Execute Command',
@@ -1499,7 +1582,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
 
       return withOtherProjectFolderWarning(ctx.workspaceDir, topLevelBefore, buildCompletedExecResult({ ctx, entry, finalResult: winner }))
     },
-  }
+  }, ctx)
 }
 
 /**
@@ -2025,7 +2108,7 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
       const found = registry.get(run_id)
       if (!found) {
         return textResult({
-          error: `Unknown run_id: ${run_id}. The run may have been cleaned up (entries are kept ~10 min after completion).`,
+          error: `Unknown run_id: ${run_id}. It is not in this conversation's tasks, and no output file to recover it from.` + ' Call task_list for the tasks that are still here.',
         })
       }
       if (!found.handle) {
@@ -2180,13 +2263,21 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30_000
 const MAX_WAIT_TIMEOUT_MS = 10 * 60 * 1000
 
 function taskView(ctx: ToolContext, entry: TaskEntry) {
+  const registry = ctx.commandRegistry
+  // Never hand the agent a log path the restart already deleted (SHO-141).
+  const outputFile = registry?.displayExistingPath(entry.outputFile)
   return {
     task_id: entry.id,
     source: entry.source,
     title: entry.title,
     status: entry.status,
     elapsed_ms: (entry.finishedAt ?? Date.now()) - entry.startedAt,
-    output_file: taskOutputPath(ctx, entry),
+    ...(outputFile
+      ? { output_file: outputFile }
+      : registry?.outputMissing(entry.outputFile)
+        ? { output_missing: 'the runtime restart removed this task\'s log' }
+        : {}),
+    ...(entry.status === 'interrupted' ? { interrupted_reason: entry.result?.summary ?? 'runtime restarted' } : {}),
   }
 }
 
@@ -2196,6 +2287,15 @@ function finishedTaskResult(ctx: ToolContext, entry: TaskEntry): Record<string, 
   const base: Record<string, unknown> = {
     ...taskView(ctx, entry),
     exit_code: entry.result?.exitCode,
+    ...(entry.recovered ? { recovered: true } : {}),
+  }
+  // A pipeline the shell could not verify has no exit code to report: say so
+  // instead of printing the last stage's number as the command's.
+  if (entry.result?.exitCodeReliable === false) {
+    delete base.exit_code
+    base.exit_code_reliable = false
+    base.pipeline_status = entry.result.pipelineStatus ?? 'last-stage'
+    base.status_note = entry.result.summary
   }
   if (entry.handle && entry.finalResult) {
     const meta = execRunMetadata.get(entry.handle)
@@ -2264,14 +2364,61 @@ function createWaitTool(ctx: ToolContext): AgentTool {
       const registry = ctx.commandRegistry
       if (!registry) return textResult({ error: 'Background tasks are not available in this context.' })
 
-      const unknown = task_ids.filter((id) => !registry.get(id))
+      // A result whose entry was evicted is still in its output file, so a late
+      // `wait` recovers it instead of claiming the task never existed.
+      const unknown: string[] = []
+      for (const id of task_ids) {
+        if (registry.get(id)) continue
+        if (await registry.resolveFinished(id)) continue
+        unknown.push(id)
+      }
       if (unknown.length === task_ids.length) {
+        const paths = unknown.map((id) => registry.outputPathFor(id)).filter((p): p is string => !!p)
         return textResult({
-          error: `Unknown task id${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}. Finished tasks are kept ~10 min; call task_list to see current tasks.`,
+          error:
+            `Unknown task id${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')} — not in this conversation's tasks, ` +
+            `and no output file to recover a result from${paths.length ? ` (looked at ${paths.join(', ')})` : ''}. ` +
+            'Call task_list for the tasks that are still here.',
+          code: 'task_result_gone',
+          ...(paths.length ? { output_file: paths.join(', ') } : {}),
+          hint: 'Call task_list for the tasks that are still here.',
         })
       }
 
       const ids = task_ids.filter((id) => registry.get(id))
+
+      // Waiting again on the same tasks after two full timeouts teaches nothing:
+      // the [Task update] is already guaranteed, so the third call stops here —
+      // unless something settled meanwhile, which the agent must still be told.
+      const waitKey = [...ids].sort().join(',')
+      const timeoutsSpent = turnSteeringState(ctx).waitTimeouts.get(waitKey) ?? 0
+      if (timeoutMs > 0 && timeoutsSpent >= 2) {
+        const settled = ids.map((id) => registry.get(id)!).find((e) => e.status !== 'running')
+        if (settled) {
+          turnSteeringState(ctx).waitTimeouts.delete(waitKey)
+          registry.markConsumed([settled.id])
+          return textResult({
+            ...finishedTaskResult(ctx, settled),
+            waited_ms: 0,
+            ...(unknown.length ? { unknown_task_ids: unknown } : {}),
+            still_running: ids
+              .map((id) => registry.get(id)!)
+              .filter((e) => e.id !== settled.id && e.status === 'running')
+              .map((e) => e.id),
+          })
+        }
+        return textResult({
+          status: 'timeout',
+          code: 'stop_waiting',
+          repeated: timeoutsSpent,
+          waited_ms: 0,
+          tasks: ids.map((id) => taskView(ctx, registry.get(id)!)),
+          hint:
+            'Stop waiting — end your turn. The [Task update] is guaranteed when it finishes, and waiting again only ' +
+            'spends another timeout.',
+        })
+      }
+
       const emitWait = (active: boolean) => {
         try {
           ctx.uiWriter?.write({
@@ -2291,6 +2438,7 @@ function createWaitTool(ctx: ToolContext): AgentTool {
       }
 
       if (outcome.kind === 'finished' && outcome.task) {
+        turnSteeringState(ctx).waitTimeouts.delete(waitKey)
         return textResult({
           ...finishedTaskResult(ctx, outcome.task),
           ...(unknown.length ? { unknown_task_ids: unknown } : {}),
@@ -2302,6 +2450,7 @@ function createWaitTool(ctx: ToolContext): AgentTool {
       }
 
       if (outcome.kind === 'matched' && outcome.task) {
+        turnSteeringState(ctx).waitTimeouts.delete(waitKey)
         return textResult({
           ...taskView(ctx, outcome.task),
           matched: outcome.matched,
@@ -2309,6 +2458,7 @@ function createWaitTool(ctx: ToolContext): AgentTool {
         })
       }
 
+      if (timeoutMs > 0) turnSteeringState(ctx).waitTimeouts.set(waitKey, timeoutsSpent + 1)
       return textResult({
         status: 'timeout',
         waited_ms: Date.now() - startedAt,
@@ -2335,9 +2485,10 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
           task_id: t.id,
           source: t.source,
           title: t.title,
-          status: t.stale ? 'unknown (runtime restarted)' : t.status,
+          // A stale row is one the restart ended, not one we cannot name.
+          status: t.stale ? 'interrupted (runtime restarted)' : t.status,
           elapsed_ms: t.elapsedMs,
-          output_file: t.outputFile,
+          ...(registry.displayExistingPath(t.outputFile) ? { output_file: registry.displayExistingPath(t.outputFile) } : {}),
         })),
       })
     },
@@ -7517,7 +7668,11 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         if (task && inst) {
           ctx.commandRegistry!.addAlias(instanceId, task.entry.id)
           void inst.promise.then((result) => {
-            const report = result.responseText?.trim() || '(Subagent returned no output.)'
+            // A failed background run must finish with its cause: the [Task
+            // update] is the only thing the parent sees.
+            const report = result.error?.message?.trim()
+              || result.responseText?.trim()
+              || '(Subagent completed but returned no output.)'
             task.append(`\n\n=== Final report ===\n${report}\n`)
             const status = inst.status === 'cancelled'
               ? 'cancelled'
@@ -7563,6 +7718,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       }
 
       const accumulated = spawn?.getAccumulatedOutput()
+      const failed = inst.status === 'failed' || result.responseEmpty === true
       return subagentToolResult({
         instance_id: instanceId,
         agent_id: result.agentId,
@@ -7572,6 +7728,13 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         tokens: { input: result.inputTokens, output: result.outputTokens },
         parts: accumulated?.parts,
         model: accumulated?.model || result.effectiveModelId || inst.model,
+        ...(result.responseEmpty ? { responseEmpty: true } : {}),
+        // A spawn that dies at setup used to reach the parent as a placeholder;
+        // the reason and where it got to are what make it actionable.
+        ...(result.error ? { error: result.error } : {}),
+        ...(failed && (inst.recentActivity?.length ?? 0) > 0
+          ? { activity: inst.recentActivity!.slice(-5).map((a) => a.summary) }
+          : {}),
       }, result.responseText)
     },
   }
@@ -7614,6 +7777,10 @@ export function capSubagentResponse(text: string): string {
  * streamed `parts` transcript) is kept whole, but the model only sees the
  * capped final report and a per-tool call count. Re-sending the subagent's
  * full transcript to the parent defeats the point of delegating.
+ *
+ * A failed run answers with its cause. A placeholder ("returned no output")
+ * reads as a successful run of a silent agent, so it is kept only for a run
+ * that genuinely completed without text.
  */
 export function subagentToolResult(
   details: Record<string, any>,
@@ -7624,9 +7791,15 @@ export function subagentToolResult(
   for (const p of (parts ?? []) as any[]) {
     if (p?.type === 'tool' && p.tool?.toolName) toolCounts[p.tool.toolName] = (toolCounts[p.tool.toolName] ?? 0) + 1
   }
+  const error = rest.error as { code?: string; message: string } | undefined
+  const failed = rest.status === 'failed' || !!error || rest.responseEmpty === true
+  const response = error?.message
+    ? error.message
+    : responseText?.trim() || (failed ? '(Subagent failed without a message.)' : '(Subagent completed but returned no output.)')
   const modelFacing = {
     ...rest,
-    response: capSubagentResponse(responseText?.trim() || '(Subagent completed but returned no output.)'),
+    response: capSubagentResponse(response),
+    ...(failed ? { reason: error?.code ?? 'no_output' } : {}),
     ...(Object.keys(toolCounts).length > 0 ? { tools_used: toolCounts } : {}),
   }
   return {

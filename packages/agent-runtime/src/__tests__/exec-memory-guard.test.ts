@@ -119,7 +119,17 @@ describe('sandboxExecAsync integration', () => {
     const handle = sandboxExecAsync({ command: 'sleep 30', workspaceDir: dir })
     expect(trackedExecPids()).toContain(handle.pid!)
 
-    await sampleOnce()
+    // One `ps` read is a snapshot of an instant: a process group that has just
+    // been forked can still read as empty (or under budget) on a loaded runner,
+    // and a single missed sample means the guard never strikes and `done` never
+    // resolves — which surfaces here as the 20 s timeout, not as a guard
+    // failure. Sample the way the real timer does, repeatedly, until the breach
+    // lands.
+    for (let i = 0; i < 40 && !handle.exited(); i++) {
+      await sampleOnce()
+      if (handle.exited()) break
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
     const result = await handle.done
 
     expect(result.killed).toBe(true)

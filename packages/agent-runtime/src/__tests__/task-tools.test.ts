@@ -14,7 +14,7 @@ import { join } from 'path'
 import { createTools, HIDDEN_LEGACY_TOOLS, type ToolContext } from '../gateway-tools'
 import { TaskRegistry } from '../task-registry'
 import { sandboxExecAsync } from '../sandbox-exec'
-import { taskOutputDir } from '../task-output'
+import { taskOutputDir, listTaskOutputRows } from '../task-output'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 const TEST_DIR = '/tmp/test-task-tools'
@@ -191,6 +191,161 @@ describe('wait', () => {
     expect(res.task_id).toBe(started.task_id)
     expect(res.matched).toBe('ready on port \\d+')
     expect(res.output).toContain('ready on port 4321')
+  })
+})
+
+describe('wait: a result the runtime already dropped', () => {
+  test('a missing task names task_list and the log, never the old retention wording', async () => {
+    const ctx = makeCtx(registry)
+    const res = await run(ctx, 'wait', { task_ids: ['t_nope1234'] })
+    expect(res.code).toBe('task_result_gone')
+    expect(String(res.error)).toContain('task_list')
+    expect(String(res.error)).toContain('.shogo/tasks/chat-1/t_nope1234.log')
+    expect(String(res.error)).not.toContain('kept ~10 min')
+  })
+
+  test('a result evicted from memory comes back from its output file', async () => {
+    const dir = taskOutputDir(TEST_DIR, 'chat-rec')
+    const reg = new TaskRegistry({
+      outputDir: dir,
+      workspaceDir: TEST_DIR,
+      retentionMs: 20,
+      resolveOutputRow: (id) => listTaskOutputRows(dir).find((r) => r.taskId === id) ?? null,
+    })
+    const ctx = makeCtx(reg)
+    const started = await run(ctx, 'exec', { command: 'sleep 0.1; echo "18 pass"', background: true })
+    await run(ctx, 'wait', { task_ids: [started.task_id], timeout_ms: 10_000 })
+    await new Promise((r) => setTimeout(r, 80))
+    expect(reg.get(started.task_id)).toBeUndefined()
+
+    const res = await run(ctx, 'wait', { task_ids: [started.task_id], timeout_ms: 0 })
+    expect(res.status).toBe('completed')
+    expect(res.recovered).toBe(true)
+    expect(res.output_file).toBe(started.output_file)
+    expect(String(res.output)).toContain('18 pass')
+  })
+})
+
+describe('wait: repeated timeouts stop instead of sleeping again', () => {
+  test('the third wait on the same ids returns at once and says to stop', async () => {
+    const ctx = makeCtx(registry)
+    const task = registry.registerTask({ source: 'subagent', title: 'explore', backgrounded: true })
+
+    const first = await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 20 })
+    const second = await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 20 })
+    const startedAt = Date.now()
+    const third = await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 5_000 })
+    const elapsed = Date.now() - startedAt
+
+    expect(first.status).toBe('timeout')
+    expect(second.status).toBe('timeout')
+    expect(second.code).toBeUndefined()
+    expect(third.code).toBe('stop_waiting')
+    expect(third.repeated).toBe(2)
+    expect(String(third.hint)).toContain('[Task update]')
+    expect(elapsed).toBeLessThan(50)
+    task.finish('completed', { summary: 'ok' })
+  })
+
+  test('a task that settles before the third wait is returned, not stopped', async () => {
+    const ctx = makeCtx(registry)
+    const task = registry.registerTask({ source: 'subagent', title: 'explore', backgrounded: true })
+
+    expect((await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 20 })).status).toBe('timeout')
+    expect((await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 20 })).status).toBe('timeout')
+    task.finish('completed', { summary: 'the report' })
+    const startedAt = Date.now()
+
+    const third = await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 5_000 })
+
+    expect(Date.now() - startedAt).toBeLessThan(50)
+    expect(third.status).toBe('completed')
+    expect(third.code).toBeUndefined()
+    expect(third.task_id).toBe(task.entry.id)
+    // The agent has now read it, so the counter and the lease both clear.
+    expect(registry.get(task.entry.id)?.consumed).toBe(true)
+  })
+
+  test('a finished result clears the counter', async () => {
+    const ctx = makeCtx(registry)
+    const task = registry.registerTask({ source: 'subagent', title: 'explore', backgrounded: true })
+    await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 10 })
+    task.finish('completed', { summary: 'ok' })
+    expect((await run(ctx, 'wait', { task_ids: [task.entry.id], timeout_ms: 10 })).status).toBe('completed')
+
+    const next = registry.registerTask({ source: 'subagent', title: 'again', backgrounded: true })
+    const res = await run(ctx, 'wait', { task_ids: [next.entry.id], timeout_ms: 10 })
+    expect(res.status).toBe('timeout')
+    expect(res.code).toBeUndefined()
+    next.finish('completed', { summary: 'ok' })
+  })
+})
+
+describe('exec: a sleep poll while a task runs', () => {
+  test('the first poll still runs, and carries the steering', async () => {
+    const ctx = makeCtx(registry)
+    const started = await run(ctx, 'exec', { command: 'sleep 5', background: true })
+
+    const res = await run(ctx, 'exec', { command: 'sleep 0.05 && echo checking' })
+
+    expect(res.steering.code).toBe('wait_instead_of_poll')
+    expect(res.steering.running_tasks).toEqual([started.task_id])
+    expect(res.steering.hint).toContain(`wait({ task_ids: ["${started.task_id}"] })`)
+    expect(res.stdout ?? res.output).toContain('checking')
+    registry.kill(started.task_id)
+  })
+
+  test('a second poll is refused and names the wait call', async () => {
+    const ctx = makeCtx(registry)
+    const started = await run(ctx, 'exec', { command: 'sleep 5', background: true })
+    await run(ctx, 'exec', { command: 'sleep 0.05' })
+
+    const res = await run(ctx, 'exec', { command: 'sleep 0.05 && echo nope again' })
+
+    expect(res.ok).toBe(false)
+    expect(res.code).toBe('use_wait_instead')
+    expect(res.running_tasks).toEqual([started.task_id])
+    expect(res.hint).toContain(`wait({ task_ids: ["${started.task_id}"] })`)
+    registry.kill(started.task_id)
+  })
+
+  test('a poll that reads the task output names that task, and how to wait for a port', async () => {
+    const ctx = makeCtx(registry)
+    const quiet = await run(ctx, 'exec', { command: 'sleep 5', background: true })
+    const served = await run(ctx, 'exec', { command: 'sleep 6', background: true })
+
+    const res = await run(ctx, 'exec', { command: `sleep 0.05 && tail -3 ${served.output_file}` })
+
+    expect(res.steering.code).toBe('wait_instead_of_poll')
+    expect(res.steering.running_tasks).toEqual([served.task_id])
+    expect(res.steering.hint).toContain(`wait({ task_ids: ["${served.task_id}"] })`)
+    expect(res.steering.hint).toContain('until')
+    registry.kill(quiet.task_id)
+    registry.kill(served.task_id)
+  })
+
+  test('a sleep waiting on a server, CI or a rebuild is left alone', async () => {
+    const ctx = makeCtx(registry)
+    const started = await run(ctx, 'exec', { command: 'sleep 5', background: true })
+
+    for (const command of [
+      'sleep 0.05 && curl -s localhost:3000',
+      'sleep 0.05 && tail .shogo/logs/build.log',
+      'sleep 0.05 && gh pr checks 1633',
+    ]) {
+      const res = await run(ctx, 'exec', { command })
+      expect(res.steering).toBeUndefined()
+      expect(res.code).toBeUndefined()
+    }
+    registry.kill(started.task_id)
+  })
+
+  test('with nothing running a sleep still runs untouched', async () => {
+    const ctx = makeCtx(registry)
+    const res = await run(ctx, 'exec', { command: 'sleep 0.05 && echo paced' })
+    expect(res.steering).toBeUndefined()
+    expect(res.code).toBeUndefined()
+    expect(res.stdout ?? res.output).toContain('paced')
   })
 })
 

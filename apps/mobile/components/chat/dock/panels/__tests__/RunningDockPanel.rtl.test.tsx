@@ -159,6 +159,45 @@ describe("RunningDockPanel", () => {
     expect(body().getByText("Waiting on 2 tasks · the agent will continue when they finish")).toBeTruthy()
   })
 
+  test("a runtime-interrupted row reads interrupted, never completed", () => {
+    const t0 = Date.now()
+    renderPanel({
+      processes: [task({ id: "t_int", command: "bun run release | tail -5", status: "interrupted", startedAt: t0 - 60_000, finishedAt: t0 - 1_000 })],
+    })
+    const view = body()
+    expect(view.getByText("interrupted")).toBeTruthy()
+    expect(view.queryByText("completed")).toBeNull()
+  })
+
+  test("a stale row with a log still offers Output, one without a log does not", async () => {
+    // A task the runtime died under: the child cannot be polled or signalled,
+    // but its log is a file the runtime can still read (SHO-141). Stale alone
+    // used to hide Output, so the report's log was unreachable from the dock.
+    const loaded: string[] = []
+    renderPanel({
+      processes: [
+        task({
+          id: "t_stale_log",
+          command: "npm run release",
+          status: "interrupted",
+          stale: true,
+          outputFile: ".shogo/tasks/s/t_stale_log.log",
+        }),
+        task({ id: "t_stale_bare", command: "lost build", status: "interrupted", stale: true }),
+      ],
+      loadOutput: async (id) => {
+        loaded.push(id)
+        return { taskId: id, output: "status: interrupted" }
+      },
+    })
+    const view = body()
+    // Exactly one row offers it: the one that knows where its log is.
+    expect(view.getAllByText("Output")).toHaveLength(1)
+    fireEvent.click(view.getByText("Output"))
+    await waitFor(() => expect(view.getByText(/status: interrupted/)).toBeTruthy())
+    expect(loaded).toEqual(["t_stale_log"])
+  })
+
   test("Output loads the task's latest output inline", async () => {
     const loaded: string[] = []
     renderPanel({
