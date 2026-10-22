@@ -4,18 +4,18 @@
  * A background task the runtime dies under is reported honestly (SHO-141, #1634).
  *
  * The bug: `t_514e92a0 completed (exit code 0)` for a task that merged nothing.
- * Three defects stacked into that one sentence — the verdict was inferred from
- * the exit code, the code was the last stage of a pipeline (`tail`'s), and the
+ * Three defects stacked into one sentence — the verdict was inferred from the
+ * exit code, the code was the last stage of a pipeline (`tail`'s), and the
  * restart deleted the log the report pointed at.
  *
- * From the user's path, this spec drives the real local API + agent runtime
- * against the scripted fake model and asserts:
- *   1. after the runtime restarts under a running background task, the dock row
- *      reads `interrupted` and never `completed`;
- *   2. the task's output log is still readable after that restart, and its
- *      footer says `interrupted` with no `exit_code`;
- *   3. a piped background command reports its own failure (`false | cat` is a
- *      failure, not `tail`'s success).
+ * From the user's path, against the real local API + agent runtime and the
+ * scripted fake model:
+ *   1. after the runtime restarts under a running background task, a cold panel
+ *      brings the row back as `interrupted` and never `completed`;
+ *   2. the row's log is still readable after that restart, and its footer says
+ *      `status: interrupted` with no `exit_code`;
+ *   3. a piped background command reports its own failure — `false | cat` is a
+ *      failure, not `cat`'s success.
  *
  * Runs the real local API + agent runtime against the scripted fake model:
  *
@@ -86,6 +86,10 @@ const runningChip = (page: Page) =>
 const cancelButtons = (page: Page) =>
   page.getByRole("button", { name: /^(Kill process|Cancel task|Dismiss)$/ })
 
+/** A dock row's status text, matched exactly (the label under the command). */
+const settledRow = (page: Page, label: string) =>
+  page.getByText(label, { exact: true }).filter({ visible: true }).first()
+
 async function openWorkspaceChat(page: Page): Promise<void> {
   await openTeamHome(page)
   await page.goto(AGENT_CHAT_PATH)
@@ -104,7 +108,7 @@ async function send(page: Page, text: string): Promise<void> {
 /**
  * Restart the host agent runtime the way a runtime restart does: the API stops
  * the supervised process (a graceful stop, so the shutdown sweep runs) and the
- * next request cold-starts it. A page reload alone re-attaches to the warm
+ * next request cold-starts it. Reloading the page alone re-attaches to the warm
  * runtime and would skip the path under test.
  */
 async function restartRuntime(): Promise<string[]> {
@@ -118,14 +122,39 @@ async function restartRuntime(): Promise<string[]> {
   return body.stopped ?? []
 }
 
-/** A dock row that reads exactly `label` (the status text under the command). */
-const settledRow = (page: Page, label: string) =>
-  page.getByText(label, { exact: true }).filter({ visible: true }).first()
+/**
+ * Record every status label the page ever paints, from document start.
+ *
+ * A settled dock row is readable for a beat (1.5 s floor from first sight, 4 s
+ * from the runtime's `finishedAt`) and then retires, so asserting on a live
+ * locator after a reload races the retire. This samples the labels instead and
+ * answers "did `interrupted` ever show, and did `completed` ever show".
+ */
+async function recordStatusLabels(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const seen = { interrupted: false, completed: false }
+    ;(window as any).__sho141 = seen
+    const scan = () => {
+      for (const el of Array.from(document.querySelectorAll("div,span"))) {
+        if (el.childElementCount !== 0) continue
+        const text = (el.textContent || "").trim()
+        if (text === "interrupted") seen.interrupted = true
+        if (text === "completed") seen.completed = true
+      }
+      setTimeout(scan, 50)
+    }
+    setTimeout(scan, 50)
+  })
+}
+
+const seenLabels = (page: Page) =>
+  page.evaluate(() => (window as any).__sho141 ?? { interrupted: false, completed: false })
 
 test.describe("a task the runtime restart killed", () => {
-  test("the dock reads interrupted after the restart, never completed", async () => {
+  test("a cold panel brings it back interrupted, and never completed", async () => {
     const page = await context.newPage()
     await openWorkspaceChat(page)
+    await recordStatusLabels(page)
 
     const command = "sleep 900"
     await send(page, `${marker("bg", "ir1", 20, { ms: 5, cmd: command })} start the long build in the background`)
@@ -133,31 +162,30 @@ test.describe("a task the runtime restart killed", () => {
     await expect(cancelButtons(page).first()).toBeVisible({ timeout: 30_000 })
     await expect(page.getByText(command, { exact: false }).first()).toBeVisible({ timeout: 90_000 })
 
-    const stopped = await restartRuntime()
-    expect(stopped.length, "the restart stopped no runtime, so nothing was tested").toBeGreaterThan(0)
+    expect((await restartRuntime()).length, "the restart stopped no runtime, so nothing was tested").toBeGreaterThan(0)
 
     // Cold panel against a cold runtime: the row comes back from the snapshot
-    // the shutdown persisted (or from its footer-less log), not from live frames.
+    // the shutdown persisted (or from its footer), not from live frames.
     await page.reload()
     await expect(composer(page)).toBeVisible({ timeout: 120_000 })
 
-    await expect(settledRow(page, "interrupted")).toBeVisible({ timeout: 150_000 })
-    await expect(page.getByText(command, { exact: false }).first()).toBeVisible({ timeout: 60_000 })
-    // The verdict the reporter saw, and any exit-code variant of it, is gone.
-    await expect(page.getByText("completed", { exact: true })).toHaveCount(0)
-    await expect(page.getByText(/completed \(exit code/)).toHaveCount(0)
+    await expect
+      .poll(async () => (await seenLabels(page)).interrupted, { timeout: 180_000, intervals: [250] })
+      .toBe(true)
 
-    // The runtime is really back: a fresh turn runs and still does not rewrite
-    // the killed task's verdict.
+    // The runtime is really back, and a fresh turn does not rewrite the verdict.
     await send(page, `${marker("long", "ir1b", 6, { ms: 5 })} are you back?`)
     await expect(page.getByText("tir1bw0006", { exact: false }).first()).toBeVisible({ timeout: 120_000 })
-    await expect(settledRow(page, "interrupted")).toBeVisible({ timeout: 30_000 })
-    await expect(page.getByText("completed", { exact: true })).toHaveCount(0)
+
+    const seen = await seenLabels(page)
+    expect(seen.interrupted).toBe(true)
+    expect(seen.completed, "a task the restart killed was painted as completed").toBe(false)
+    await expect(page.getByText(/completed \(exit code/)).toHaveCount(0)
 
     await page.close()
   })
 
-  test("the log the interrupted row points at still exists and says interrupted", async () => {
+  test("the row's log is still readable after the restart, and says interrupted", async () => {
     const page = await context.newPage()
     await openWorkspaceChat(page)
 
@@ -167,18 +195,20 @@ test.describe("a task the runtime restart killed", () => {
 
     expect((await restartRuntime()).length).toBeGreaterThan(0)
 
-    await page.reload()
-    await expect(composer(page)).toBeVisible({ timeout: 120_000 })
-    await expect(settledRow(page, "interrupted")).toBeVisible({ timeout: 150_000 })
+    // No reload: the row is already in the client's list, so the dock turns it
+    // settled in place (full linger) instead of painting it once on mount.
+    await expect(settledRow(page, "interrupted")).toBeVisible({ timeout: 180_000 })
 
-    // "Output" opens the task's log through the runtime. A report that points at
-    // a deleted file shows nothing here — which is the half of AC4 that this
-    // surface can prove (a VM re-assignment deletes the tree; see the card).
+    // "Output" opens the task's log through the runtime. If the restart had
+    // taken the file, there would be nothing to open — that is the half of AC4
+    // this surface can prove locally (a VM re-assignment deletes the tree; see
+    // the card).
     await page.getByLabel("Show output").filter({ visible: true }).first().click()
-    const viewer = page.getByLabel("Hide output").filter({ visible: true }).first()
-    await expect(viewer).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByLabel("Hide output").filter({ visible: true }).first()).toBeVisible({
+      timeout: 30_000,
+    })
 
-    // The footer is written by the shutdown sweep: the verdict, and no exit code.
+    // The footer the shutdown sweep wrote: the verdict, and no exit code.
     await expect(page.getByText(/status: interrupted/).first()).toBeVisible({ timeout: 30_000 })
     await expect(page.getByText(/exit_code:/)).toHaveCount(0)
 
@@ -190,7 +220,7 @@ test.describe("a task the runtime restart killed", () => {
     await openWorkspaceChat(page)
 
     // `false | cat`: `cat` exits 0 and used to be reported as the command's own
-    // success (the reporter's `cmd | tail -25` in miniature).
+    // success — the reporter's `cmd | tail -25` in miniature.
     await send(page, `${marker("bg", "ir3", 20, { ms: 5, cmd: "false | cat" })} run the check in the background`)
     await expect(page.getByText("false | cat", { exact: false }).first()).toBeVisible({ timeout: 90_000 })
 
