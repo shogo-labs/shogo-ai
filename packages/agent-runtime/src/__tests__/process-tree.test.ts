@@ -13,8 +13,8 @@
  * and is part of the `test-windows` CI job (`process-tree.test.ts` is in its
  * path filter and its step list).
  */
-import { afterEach, describe, expect, test } from 'bun:test'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,6 +22,26 @@ import { readChildLedger } from '@shogo-ai/sdk/child-ledger'
 import { containChild, survivorHint, type Containment } from '../process-tree'
 
 const IS_WINDOWS = process.platform === 'win32'
+
+/**
+ * Warm the host once before the Windows specs run.
+ *
+ * The first PowerShell launch on a cold `windows-latest` runner costs tens of
+ * seconds (payload extraction plus Defender scanning the script we just wrote),
+ * while every later launch costs about a second. Measured at head `be785a85d`:
+ * runs 1-2 of a 10x probe timed out waiting for the wrapper pid file, runs 3-10
+ * passed with the same body in ~1 s. Warming once here keeps the per-test waits
+ * tight enough that a real spawn failure still fails fast.
+ */
+beforeAll(() => {
+  if (!IS_WINDOWS) return
+  spawnSync('powershell', ['-NoProfile', '-Command', 'exit 0'], {
+    stdio: 'ignore',
+    timeout: 240_000,
+    windowsHide: true,
+  })
+  spawnSync('cmd', ['/c', 'exit 0'], { stdio: 'ignore', timeout: 60_000, windowsHide: true })
+}, 240_000)
 
 const children: ChildProcess[] = []
 const dirs: string[] = []
@@ -262,12 +282,12 @@ describe.skipIf(!IS_WINDOWS)('containChild on Windows', () => {
     children.push(child)
     const containment = contain(child, { label: 'exec' })
 
-    await waitFor(() => existsSync(pidFile), 20_000, 'the wrapper pid file')
+    await waitFor(() => existsSync(pidFile), 90_000, 'the wrapper pid file')
 
     const { survivors } = await containment.killTree({ graceMs: 0 })
 
     expect(survivors).toEqual([])
-  }, 60_000)
+  }, 180_000)
 
   test('a kill in flight is not disarmed by the dispose that follows it', async () => {
     const child = spawn('powershell', ['-NoProfile', '-Command', 'Start-Sleep -Seconds 600'], {

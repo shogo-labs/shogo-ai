@@ -17,7 +17,8 @@
  * wrapper; the tool-level assertions live in
  * `qa-sho144-cancel-truth.acceptance.test.ts`.
  */
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { sandboxExecAsync, type CommandHandle } from '../sandbox-exec'
@@ -26,6 +27,29 @@ import { taskOutputDir } from '../task-output'
 
 const IS_WINDOWS = process.platform === 'win32'
 const TEST_DIR = '/tmp/qa-sho144-windows-tree'
+
+/**
+ * Warm the host once before the Windows specs run.
+ *
+ * A cold `windows-latest` runner pays tens of seconds on the first PowerShell
+ * launch (payload extraction, Defender scanning the `.ps1` we just wrote), and
+ * this spec spawns *nested* powershells through `cmd /c start`, so the first run
+ * in a job can miss a setup window that every later run meets in about a second.
+ * Measured at head `be785a85d`: runs 1-2 of a 10x probe failed on "Timed out
+ * waiting for the sleeper pid" (60 s), runs 3-10 passed in 0.96-1.02 s each.
+ *
+ * The budget is deliberately generous because it is the cold path; the waits
+ * below stay tight so a genuine spawn failure still fails fast.
+ */
+beforeAll(() => {
+  if (!IS_WINDOWS) return
+  spawnSync('powershell', ['-NoProfile', '-Command', 'exit 0'], {
+    stdio: 'ignore',
+    timeout: 240_000,
+    windowsHide: true,
+  })
+  spawnSync('cmd', ['/c', 'exit 0'], { stdio: 'ignore', timeout: 60_000, windowsHide: true })
+}, 240_000)
 
 function isAlive(pid: number): boolean {
   try {
@@ -130,7 +154,7 @@ describe.skipIf(!IS_WINDOWS)('SHO-144 AC 1 — a wrapper that exited does not hi
 
     await waitFor(
       () => existsSync(pidFile) && readFileSync(pidFile, 'utf8').trim().length > 0,
-      60_000,
+      90_000,
       'the sleeper pid',
     )
     const sleeper = Number(readFileSync(pidFile, 'utf8').trim())
