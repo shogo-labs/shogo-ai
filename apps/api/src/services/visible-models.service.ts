@@ -22,6 +22,7 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { fetchCloudVisibleModels } from '../lib/federated-upstream'
 import { NATIVE_PROVIDER_ENV_KEY, getNativeProviderApiKeySync } from './provider-credentials.service'
 import * as workspaceModelsService from './workspace-models.service'
@@ -181,12 +182,21 @@ export async function writeVisibleModelsConfig(
   return next
 }
 
-/** A model is presentable only when its provider has a usable key. `custom`
- *  models carry their own encrypted key (and are only merged when enabled), so
- *  they're always considered configured. Unknown/legacy providers aren't gated
- *  to avoid hiding models we don't have an env mapping for. */
+/** A model is presentable only when its provider is actually reachable from
+ *  this process. `custom` models carry their own encrypted key (and are only
+ *  merged when enabled), so they're always considered configured.
+ *  Unknown/legacy providers aren't gated to avoid hiding models we don't have
+ *  an env mapping for.
+ *
+ *  A desktop forwarding AI traffic to Shogo Cloud has no local provider key at
+ *  all — the cloud holds them and answers the forwarded call. Gating on a
+ *  local key there hid every model the plan allows (SHO-145), which left the
+ *  runtime with nothing but Hoshi to offer and made `project_configure` refuse
+ *  Opus with `model_unavailable`. With `AI_MODE=api-keys|local-llm` the
+ *  upstream is no longer used and this keeps the local-key gate. */
 export function isModelProviderConfigured(provider: string): boolean {
   if (provider === 'custom' || provider === 'local') return true
+  if (isShogoCloudForwarding()) return true
   if (!NATIVE_PROVIDER_ENV_KEY[provider]) return true
   // Respect admin-stored (encrypted DB) keys as well as env vars.
   return !!getNativeProviderApiKeySync(provider)

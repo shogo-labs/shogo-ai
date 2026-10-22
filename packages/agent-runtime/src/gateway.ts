@@ -68,7 +68,7 @@ import { buildWakeStatusSection } from './wake-status-prompt'
 import { BOARDS_GUIDE, COMPANY_OPS_GUIDE } from './board-tools'
 import { TASK_WAKE_RETRY_MS } from './remote-tasks'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
-import { buildAccountContextPrompt, type AccountContext } from './account-context'
+import { buildAccountContextPrompt, sanitizeModelDisplayName, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
 import { CanvasTypecheckGate } from './canvas-typecheck'
@@ -76,6 +76,7 @@ import {
   inferProviderFromModel as catalogInferProvider,
   resolveModelId,
   getContextWindowTokens,
+  getModelEntry,
   AGENT_MODE_DEFAULTS,
   setAgentModeOverrides,
   isAutoModel,
@@ -97,7 +98,8 @@ import { buildCodeAgentGeneralGuide, OUTPUT_CONTRACT_GUIDE } from './code-agent-
 import { isSearchEnabled } from './search-flag'
 import { smartTruncateJson } from './response-transforms'
 import { getShogoSdkGuide } from './shogo-sdk-prompt'
-import { refreshAvailableModels } from './available-models'
+import { refreshAvailableModels, getAvailableModels } from './available-models'
+import { mergeAgentModelIntoConfig, type AgentModelSnapshot } from './agent-model-config'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager, resolveBin, WorktreeManager } from '@shogo/shared-runtime'
@@ -295,6 +297,8 @@ const AUTO_TIER_ORDER: AutoTierCeiling[] = ['economy', 'standard', 'premium']
 // transient cloud configuration error can recover without requiring a new
 // chat session.
 const AUTO_TIER_CEILING_TTL_MS = 5 * 60 * 1000
+/** How often a turn re-reads the DB-owned model into `config.json` (SHO-145). */
+const CONFIG_MODEL_SYNC_MS = 30_000
 /** Finished tasks arriving this close together wake an idle session once. */
 const TASK_WAKE_COALESCE_MS = 2_000
 /**
@@ -784,7 +788,15 @@ export class AgentGateway {
   private userTimezone: string | null = null
   /** Last Studio viewer (phone vs desktop) from the chat body. */
   private viewerContextPrompt: string | null = null
-  private accountContextPrompt: string | null = null
+  /**
+   * Request-scoped half of the Account prompt block: the workspace plan gates
+   * that come from the API. Deliberately does NOT hold a model name — one
+   * runtime serves several chats and a turn can start with no `/agent/chat`
+   * request at all, so the model line is resolved per turn instead (SHO-145).
+   */
+  private accountContext: AccountContext = {}
+  /** Last successful (or attempted) DB model pull into `config.json` (SHO-145). */
+  private lastConfigModelSyncAt = 0
   /** Permission engine for local-mode security guardrails */
   private permissionEngine: PermissionEngine | null = null
   /** Callback to push permission-related SSE events to the connected client */
@@ -1141,9 +1153,17 @@ export class AgentGateway {
     this.viewerContextPrompt = viewer ? buildViewerContextPrompt(viewer) : null
   }
 
-  /** Replaced on every chat request, like setViewerContext. */
+  /** Replaced on every chat request, like setViewerContext. Only the plan half
+   *  is kept: the model name a request carries describes THAT request, and a
+   *  heartbeat/schedule/pipeline turn has no request to read it from, so the
+   *  model line is rendered per turn (see `loadBootstrapContext`). */
   setAccountContext(ctx: AccountContext): void {
-    this.accountContextPrompt = buildAccountContextPrompt(ctx)
+    this.accountContext = {
+      ...(ctx.planId ? { planId: ctx.planId } : {}),
+      ...(typeof ctx.canPublishSubdomain === 'boolean'
+        ? { canPublishSubdomain: ctx.canPublishSubdomain }
+        : {}),
+    }
   }
 
   /** Set an eval label for log tracing (used by eval runner) */
@@ -2237,6 +2257,7 @@ export class AgentGateway {
         // Channel models carry no provider hint; clear any stale one so the
         // provider is inferred from this id.
         session.modelProvider = undefined
+        session.modelDisplayName = undefined
       }
 
       try {
@@ -2371,6 +2392,10 @@ export class AgentGateway {
        *  an opaque UUID route to its real provider (e.g. `anthropic`) instead
        *  of being inferred as `custom`. Absent → id-based inference. */
       modelProvider?: string
+      /** The product name of the model `modelOverride` names (e.g. "Hoshi
+       *  2.0"), stamped by the same request. Used for the per-turn Account
+       *  line so it never quotes a different turn's model (SHO-145). */
+      modelDisplayName?: string
       fileParts?: FilePart[]
       userId?: string
       /** API-signed proof of who sent this message (see integration-credentials.ts). */
@@ -2408,6 +2433,10 @@ export class AgentGateway {
       // undefined so a previously-hinted model can't leave a stale provider
       // behind once the selection changes.
       session.modelProvider = options.modelProvider
+      // The display name is paired with the same override — it names the model
+      // that selection resolves to, so the Account line can quote it without
+      // trusting any other request's stamp (SHO-145).
+      session.modelDisplayName = options.modelDisplayName
       // Remember the hint beyond this session so subagents, forks and
       // channel turns that run the same model infer the same provider.
       rememberProviderHint(resolveModelId(options.modelOverride), options.modelProvider)
@@ -2572,6 +2601,7 @@ export class AgentGateway {
         // Slash-command/programmatic override carries no provider hint; clear
         // any stale one so the provider is inferred from this id.
         session.modelProvider = undefined
+        session.modelDisplayName = undefined
       },
       getStatus: () => this.getStatus(),
     }
@@ -2951,7 +2981,7 @@ export class AgentGateway {
     // capabilities_configure tool — reads the same config.
     const resolvedChatContext = this.resolveChatContext(sessionId, chatContext)
     this.rememberChatContext(sessionId, resolvedChatContext)
-    const turnConfig = this.configForTurn(sessionId, resolvedChatContext)
+    let turnConfig = this.configForTurn(sessionId, resolvedChatContext)
 
     // Reload skills and quick actions from disk so any files created/edited/deleted by file tools are picked up
     this.skills = loadAllSkills(this.workspaceDir)
@@ -2983,43 +3013,24 @@ export class AgentGateway {
     }
 
     await this.primeTurnFacts(sessionId)
-    let systemPrompt = this.loadBootstrapContext(sessionId, turnConfig, resolvedChatContext)
 
-    console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
-    // Interaction mode system prompt injection
-    if (interactionMode === 'plan') {
-      const planModePrompt = [
-        '## PLAN MODE ACTIVE',
-        '',
-        'Plan mode is active. You MUST NOT edit source files, run mutating commands, or otherwise change the workspace before the user clicks Build. This supersedes all other instructions.',
-        'Exception: you may create or update the plan artifact using create_plan/update_plan; those tools only write under .shogo/plans/ for user review.',
-        '',
-        'Your job:',
-        `1. Research the user's request using read-only tools (read_file, ${isSearchEnabled() ? 'search, ' : ''}web, etc.)`,
-        '2. If you need more information, ask clarifying questions using ask_user',
-        '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
-        '4. If there are multiple valid approaches, ask the user which they prefer',
-        '5. When you have enough context, call create_plan with a structured plan',
-        '6. If the user asks to modify, refine, or extend an existing plan, use update_plan with the plan\'s filepath instead of creating a new one',
-        '7. The plan should be concise, specific, and actionable — cite file paths and code snippets',
-        '8. Do NOT make any changes until the user confirms the plan',
-      ].join('\n')
-      systemPrompt = planModePrompt + '\n\n---\n\n' + systemPrompt
-    } else if (interactionMode === 'ask') {
-      const askModePrompt = [
-        '## ASK MODE ACTIVE',
-        '',
-        'Ask mode is active. You are in a read-only conversational mode. Answer the user\'s questions directly using your knowledge and conversation context. You have no tools available. Do not attempt to make changes, run commands, or take any actions. Just provide helpful, informative answers.',
-      ].join('\n')
-      systemPrompt = askModePrompt + '\n\n---\n\n' + systemPrompt
-    }
-
-    if (this.config.coordinatorMode) {
-      const { COORDINATOR_SYSTEM_PROMPT } = await import('./coordinator-prompt')
-      systemPrompt += '\n\n' + COORDINATOR_SYSTEM_PROMPT
-    }
-
+    // The model is resolved BEFORE the system prompt is built so the Account
+    // block can name the model this turn actually sends (SHO-145). Turns with
+    // no session override take their model from `config.json`, which only the
+    // API owns — refresh it here (throttled) so a change made from the project
+    // settings or another project's agent lands on this turn, not after a
+    // restart.
     const session = this.sessionManager.getOrCreate(sessionId)
+    if (!session.modelOverride && (await this.refreshConfigModelIfStale())) {
+      // The refresh replaced `this.config` with a freshly read object, so the
+      // surface config captured above is one revision behind — re-derive it so
+      // the rest of this turn reads the same values.
+      turnConfig = this.configForTurn(sessionId, resolvedChatContext)
+    }
+    // Tool descriptions and the Account line both quote the workspace's models,
+    // so load the list before either is built (cached for a few minutes; a
+    // no-op without AI_PROXY_URL).
+    await refreshAvailableModels()
     const modelAlias = session.modelOverride || this.config.model.name
     const autoRouting = isAutoModel(modelAlias)
 
@@ -3084,6 +3095,49 @@ export class AgentGateway {
       modelId = resolveModelAlias(effectiveAlias)
       provider = session.modelProvider ?? inferProviderFromModel(modelId, this.config.model.provider)
       console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider}${session.modelProvider ? ' (hint)' : ''} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
+    }
+
+    const turnModelDisplayName = this.turnModelDisplayName(modelId, session, autoRouting)
+
+    let systemPrompt = this.loadBootstrapContext(
+      sessionId,
+      turnConfig,
+      resolvedChatContext,
+      turnModelDisplayName,
+    )
+
+    console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
+    // Interaction mode system prompt injection
+    if (interactionMode === 'plan') {
+      const planModePrompt = [
+        '## PLAN MODE ACTIVE',
+        '',
+        'Plan mode is active. You MUST NOT edit source files, run mutating commands, or otherwise change the workspace before the user clicks Build. This supersedes all other instructions.',
+        'Exception: you may create or update the plan artifact using create_plan/update_plan; those tools only write under .shogo/plans/ for user review.',
+        '',
+        'Your job:',
+        `1. Research the user's request using read-only tools (read_file, ${isSearchEnabled() ? 'search, ' : ''}web, etc.)`,
+        '2. If you need more information, ask clarifying questions using ask_user',
+        '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
+        '4. If there are multiple valid approaches, ask the user which they prefer',
+        '5. When you have enough context, call create_plan with a structured plan',
+        '6. If the user asks to modify, refine, or extend an existing plan, use update_plan with the plan\'s filepath instead of creating a new one',
+        '7. The plan should be concise, specific, and actionable — cite file paths and code snippets',
+        '8. Do NOT make any changes until the user confirms the plan',
+      ].join('\n')
+      systemPrompt = planModePrompt + '\n\n---\n\n' + systemPrompt
+    } else if (interactionMode === 'ask') {
+      const askModePrompt = [
+        '## ASK MODE ACTIVE',
+        '',
+        'Ask mode is active. You are in a read-only conversational mode. Answer the user\'s questions directly using your knowledge and conversation context. You have no tools available. Do not attempt to make changes, run commands, or take any actions. Just provide helpful, informative answers.',
+      ].join('\n')
+      systemPrompt = askModePrompt + '\n\n---\n\n' + systemPrompt
+    }
+
+    if (this.config.coordinatorMode) {
+      const { COORDINATOR_SYSTEM_PROMPT } = await import('./coordinator-prompt')
+      systemPrompt += '\n\n' + COORDINATOR_SYSTEM_PROMPT
     }
 
     // Reset per-turn state and wire/clear the SSE writer for permission requests.
@@ -3244,11 +3298,6 @@ export class AgentGateway {
         }
       }
     }
-
-
-    // Tool descriptions list the workspace's models, so refresh the list first
-    // (cached for a few minutes; a no-op without AI_PROXY_URL).
-    await refreshAvailableModels()
     const baseTools = createTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
@@ -5302,6 +5351,32 @@ export class AgentGateway {
   }
 
   /**
+   * The product name of the model this turn actually sends, for the Account
+   * line. Never a name from another turn: the session's stamped name is only
+   * used when this session's own override drove the turn, and everything else
+   * is looked up from the id that is about to be sent.
+   *
+   * Returns undefined when no name can be established — better to say nothing
+   * than to name the wrong model (SHO-145).
+   */
+  private turnModelDisplayName(
+    modelId: string,
+    session: { modelOverride?: string; modelDisplayName?: string },
+    autoRouting: boolean,
+  ): string | undefined {
+    // An Auto turn names the tier model it routed to, not "Auto".
+    if (!autoRouting && session.modelOverride && session.modelDisplayName) {
+      return sanitizeModelDisplayName(session.modelDisplayName)
+    }
+    const listed = getAvailableModels().find((m) => m.id === modelId)?.displayName
+    if (listed) return sanitizeModelDisplayName(listed)
+    // `getModelDisplayName` falls back to the raw id, which is not a product
+    // name — only use it when the catalog actually knows the model.
+    const known = getModelEntry(modelId)?.displayName
+    return known ? sanitizeModelDisplayName(known) : undefined
+  }
+
+  /**
    * Build the system prompt for one turn. `cfg` is the turn's surface config
    * (`configForTurn`), so capability guidance and gates match the surface the
    * turn runs in; it defaults to the runtime's project config for callers with
@@ -5311,6 +5386,7 @@ export class AgentGateway {
     sessionId?: string,
     cfg: GatewayConfig = this.config,
     chatContext: ChatContext = this.resolveChatContext(sessionId),
+    modelDisplayName?: string,
   ): string {
     if (cfg.promptProfile === 'swe') {
       return this.buildSWEPrompt(sessionId, cfg, chatContext)
@@ -5673,8 +5749,15 @@ export class AgentGateway {
     if (this.viewerContextPrompt) {
       pushDynamic('viewer-context', this.viewerContextPrompt)
     }
-    if (this.accountContextPrompt) {
-      pushDynamic('account-context', this.accountContextPrompt)
+    // The model line comes from the turn (`modelDisplayName`), never from a
+    // process-wide value: this runtime serves several chats, and pipeline /
+    // heartbeat / schedule turns start without a chat request of their own.
+    const accountPrompt = buildAccountContextPrompt({
+      ...this.accountContext,
+      ...(modelDisplayName ? { modelDisplayName } : {}),
+    })
+    if (accountPrompt) {
+      pushDynamic('account-context', accountPrompt)
     }
 
     // 10. Dynamic workspace context (changes as files are added/removed)
@@ -6725,6 +6808,32 @@ export class AgentGateway {
   }
 
   /**
+   * Pull the DB-owned model into `config.json` at most once every
+   * `CONFIG_MODEL_SYNC_MS`, for turns that take their model from `config.json`
+   * rather than from a session override: pipeline (`project_call`), heartbeat,
+   * schedule and webhook turns.
+   *
+   * `PATCH /api/internal/projects/:id/config` writes the model to the database,
+   * and there is no API→runtime push for a change made from another project's
+   * agent, so without this a model change only landed after a restart. A failed
+   * sync keeps the last-known config: naming a stale model for one more turn is
+   * better than refusing to run.
+   *
+   * Returns true when the config was reloaded (the caller's surface config is
+   * then one revision behind and should be re-derived).
+   */
+  private async refreshConfigModelIfStale(): Promise<boolean> {
+    if (Date.now() - this.lastConfigModelSyncAt < CONFIG_MODEL_SYNC_MS) return false
+    this.lastConfigModelSyncAt = Date.now()
+    try {
+      return await this.syncCapabilitiesFromApi()
+    } catch (err: any) {
+      console.warn(`[AgentGateway] model sync failed; keeping the last-known config: ${err?.message ?? err}`)
+      return false
+    }
+  }
+
+  /**
    * Pull capability toggles from the database into `config.json`: the
    * project's `Project.settings` (flat, as before) and, in a workspace
    * runtime, the workspace agent's own `Workspace.settings` (under
@@ -6749,7 +6858,7 @@ export class AgentGateway {
    * Returns true when at least one database read was applied.
    */
   async syncCapabilitiesFromApi(
-    fetchConfig?: (projectId: string) => Promise<{ ok: boolean; data?: { settings?: unknown } | null }>,
+    fetchConfig?: (projectId: string) => Promise<{ ok: boolean; data?: { settings?: unknown; agent?: AgentModelSnapshot | null } | null }>,
     fetchWorkspaceConfig?: (workspaceId: string) => Promise<{ ok: boolean; data?: { settings?: unknown } | null }>,
   ): Promise<boolean> {
     if (!fetchConfig && !fetchWorkspaceConfig && !hasInternalApiCredentials()) return false
@@ -6791,7 +6900,7 @@ export class AgentGateway {
     }
 
     if (projectId && projectSyncAllowed) {
-      let result: { ok: boolean; data?: { settings?: unknown } | null } | undefined
+      let result: { ok: boolean; data?: { settings?: unknown; agent?: AgentModelSnapshot | null } | null } | undefined
       try {
         result = fetchConfig ? await fetchConfig(projectId) : await getProjectConfig(projectId, 3_000)
       } catch (err: any) {
@@ -6799,6 +6908,13 @@ export class AgentGateway {
       }
       if (result?.ok && result.data) {
         next = mergeCapabilitySettingsIntoConfig(next, result.data.settings).config
+        // The model is DB-owned exactly like the toggles: `PATCH …/config`
+        // writes `AgentConfig.modelName`, and the runtime caches it in
+        // `config.json` for the turns that don't go through the channel
+        // dispatcher. Merging it here is what makes a model change land on the
+        // next pipeline/heartbeat/schedule turn instead of after a restart
+        // (SHO-145).
+        next = mergeAgentModelIntoConfig(next, result.data.agent).config
         applied = true
       } else if (result) {
         console.warn('[AgentGateway] capability sync skipped; keeping the last-known config.json')

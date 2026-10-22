@@ -611,6 +611,11 @@ jobs:
           # so it needs the fake-model stack. Own entry, not a place in the list
           # above: that job is already at 34m37s of its 35m cap (SHO-133).
           - { name: 'E2E (task restart)', spec: 'chat-task-interrupted-restart' }
+          # agent-model-truth (SHO-145) seeds two `local` models into the stack's
+          # SQLite file and checks /ai/v1/models against the runtime's model
+          # cache entry by entry, so it needs the fake-model stack. Own entry:
+          # the chat-resume job already runs to its cap.
+          - { name: 'E2E (agent model truth)', spec: 'agent-model-truth' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
