@@ -29,7 +29,11 @@ const http = { id: 'http' }
 mock.module('../../../contexts/domain', () => ({ useDomainHttp: () => http }))
 
 const getWorkspaceAnalytics = mock(async (..._args: any[]): Promise<any> => ({}))
-mock.module('../../../lib/api', () => ({ api: { getWorkspaceAnalytics } }))
+const realApiModule = await import('../../../lib/api')
+mock.module('../../../lib/api', () => ({
+  ...realApiModule,
+  api: { ...realApiModule.api, getWorkspaceAnalytics },
+}))
 
 mock.module('expo-router', () => ({ useRouter: () => ({ push: () => {}, navigate: () => {} }) }))
 mock.module('../../../hooks/useActiveWorkspace', () => ({
@@ -54,7 +58,11 @@ mock.module('../../../lib/billing-config', () => ({
 }))
 mock.module('../../../lib/usage-log-csv', () => ({ useUsageLogCsvUrl: () => 'http://x/usage.csv' }))
 mock.module('../../../lib/platform-config', () => ({ usePlatformConfig: () => ({ localMode: true }) }))
-mock.module('../../../lib/visible-models', () => ({ useVisibleModels: () => {} }))
+const realVisibleModels = await import('../../../lib/visible-models')
+mock.module('../../../lib/visible-models', () => ({
+  ...realVisibleModels,
+  useVisibleModels: () => {},
+}))
 mock.module('../../../lib/native-active-shadow', () => ({
   nativeActivePill: () => ({ className: '', style: undefined }),
 }))
