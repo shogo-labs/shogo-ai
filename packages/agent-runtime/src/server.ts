@@ -140,6 +140,7 @@ import {
   SQLITE_SIDECAR_ENTRY,
 } from './writable-state'
 import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
+import { sweepExecCwdMarkers } from './exec-cwd'
 import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { handleExportHome, handleHydrateHome } from './home-state-routes'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
@@ -7117,6 +7118,10 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
 
   gatewayStarting = true
   logTiming('Starting agent gateway...')
+
+  // Clear cwd markers a previous process (or a crash) left behind, including
+  // the `.shogo-cwd-*` files older builds wrote into the workspace root.
+  sweepExecCwdMarkers(WORKSPACE_DIR)
 
   gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
 

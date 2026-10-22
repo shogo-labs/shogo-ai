@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync, symlinkSync } from 'fs'
+import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync, symlinkSync, existsSync } from 'fs'
 import { join } from 'path'
 import { createTools, TOOL_GROUP_MAP, ALL_TOOL_NAMES, resolveToolNames, hostToContainer, containerToHost, type ToolContext } from '../gateway-tools'
 import { FileStateCache } from '../file-state-cache'
+import { TaskRegistry } from '../task-registry'
+import { taskOutputDir } from '../task-output'
 import { MCPClientManager } from '../mcp-client'
 import { MockChannel } from './helpers/mock-channel'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
@@ -684,9 +686,9 @@ describe('gateway-tools', () => {
     }
 
     // Reuse the same ctx across calls within a single test to verify persistence
-    async function execStateful(ctx: ToolContext, command: string) {
+    async function execStateful(ctx: ToolContext, command: string, extra: Record<string, any> = {}) {
       const tool = getTool(ctx, 'exec')
-      const result = await tool.execute('test-call', { command })
+      const result = await tool.execute('test-call', { command, ...extra })
       return result.details
     }
 
@@ -948,6 +950,31 @@ describe('gateway-tools', () => {
 
     // --- Temp file hygiene ---
 
+    /** Every cwd marker still on disk, at the workspace root and in `.shogo/exec-cwd`. */
+    function leftoverMarkers(): string[] {
+      const root = readdirSync(TEST_DIR).filter((f) => f.startsWith('.shogo-cwd-'))
+      let nested: string[] = []
+      try {
+        nested = readdirSync(join(TEST_DIR, '.shogo', 'exec-cwd')).filter((f) => f.startsWith('.shogo-cwd-'))
+      } catch {}
+      return [...root, ...nested]
+    }
+
+    /** Let a task reach a terminal status WITHOUT draining its result (no `wait`). */
+    async function settle(registry: TaskRegistry, taskId: string): Promise<void> {
+      const startedAt = Date.now()
+      while (registry.get(taskId)?.status === 'running') {
+        if (Date.now() - startedAt > 10_000) throw new Error(`task ${taskId} did not finish`)
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      // The exit-time capture runs on `handle.done`, alongside the settle.
+      await new Promise((r) => setTimeout(r, 50))
+    }
+
+    function newRegistry(): TaskRegistry {
+      return new TaskRegistry({ outputDir: taskOutputDir(TEST_DIR, 'chat-1'), workspaceDir: TEST_DIR })
+    }
+
     test('temp file cleaned up on success', async () => {
       const ctx = createStatefulCtx()
       await execStateful(ctx, 'echo clean')
@@ -960,6 +987,69 @@ describe('gateway-tools', () => {
       await execStateful(ctx, 'false')
       const remaining = readdirSync(TEST_DIR).filter(f => f.startsWith('.shogo-cwd-'))
       expect(remaining).toHaveLength(0)
+    })
+
+    test('the marker lives under .shogo/exec-cwd, not the workspace root', async () => {
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'true')
+      expect(existsSync(join(TEST_DIR, '.shogo', 'exec-cwd'))).toBe(true)
+      expect(leftoverMarkers()).toEqual([])
+    })
+
+    test('a background command nobody waits on leaves no marker', async () => {
+      const registry = newRegistry()
+      const ctx = createStatefulCtx({ commandRegistry: registry })
+      const started = await execStateful(ctx, 'sleep 0.2', { background: true })
+      expect(started.status).toBe('running')
+      await settle(registry, started.task_id)
+      expect(registry.get(started.task_id)?.status).toBe('completed')
+      expect(leftoverMarkers()).toEqual([])
+    })
+
+    test('a command past its soft timeout leaves no marker', async () => {
+      const registry = newRegistry()
+      const ctx = createStatefulCtx({ commandRegistry: registry })
+      const started = await execStateful(ctx, 'sleep 0.5', { timeout: 50 })
+      expect(started.status).toBe('running')
+      await settle(registry, started.task_id)
+      expect(leftoverMarkers()).toEqual([])
+    })
+
+    test('a cancelled command leaves no marker', async () => {
+      const registry = newRegistry()
+      const ctx = createStatefulCtx({ commandRegistry: registry })
+      const started = await execStateful(ctx, 'sleep 30', { background: true })
+      await exec(ctx, 'task_cancel', { task_id: started.task_id })
+      await settle(registry, started.task_id)
+      expect(leftoverMarkers()).toEqual([])
+    })
+
+    test('wait still updates the shell cwd from the task final cwd', async () => {
+      mkdirSync(join(TEST_DIR, 'bgdir'), { recursive: true })
+      const registry = newRegistry()
+      const shell = { cwd: REAL_TEST_DIR }
+      const ctx = createCtx({
+        sessionId: 'test-session',
+        commandRegistry: registry,
+        shellState: { getCwd: () => shell.cwd, setCwd: (cwd: string) => { shell.cwd = cwd } },
+      })
+      const started = await exec(ctx, 'exec', { command: 'cd bgdir', background: true })
+      await exec(ctx, 'wait', { task_ids: [started.task_id], timeout_ms: 10_000 })
+      expect(shell.cwd).toBe(join(REAL_TEST_DIR, 'bgdir'))
+      expect(leftoverMarkers()).toEqual([])
+    })
+
+    test('a background exec adds nothing to a folder-linked repo working tree', async () => {
+      const registry = newRegistry()
+      const ctx = createCtx({ sessionId: 'test-session', commandRegistry: registry })
+      // A folder-linked project gets no managed exclude block, so the repo's
+      // own `.gitignore` covers `.shogo/` (as this project's does). What must
+      // not appear is a marker: before SHO-139 each exec left one here.
+      await exec(ctx, 'exec', { command: 'git init -q . && printf ".shogo/\\n" > .gitignore' })
+      const started = await exec(ctx, 'exec', { command: 'sleep 0.2', background: true })
+      await settle(registry, started.task_id)
+      const status = await exec(ctx, 'exec', { command: 'git status --porcelain --untracked-files=all' })
+      expect(status.stdout.split('\n')).toEqual(['?? .gitignore'])
     })
   })
 

@@ -29,6 +29,7 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
+import { sweepExecCwdMarkers } from './exec-cwd'
 import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
 import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig, type PerCallUsage, type AgentLoopResult } from './agent-loop'
@@ -3013,6 +3014,10 @@ export class AgentGateway {
     }
 
     await this.primeTurnFacts(sessionId)
+    // Clear exec cwd markers no exit path could collect (a runtime killed with
+    // a command in flight, a worktree pruned mid-run). Cheap: two readdirs.
+    sweepExecCwdMarkers(this.workspaceDir)
+    if (sessionWorkspaceDir !== this.workspaceDir) sweepExecCwdMarkers(sessionWorkspaceDir)
 
     // The model is resolved BEFORE the system prompt is built so the Account
     // block can name the model this turn actually sends (SHO-145). Turns with

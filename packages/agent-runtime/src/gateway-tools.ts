@@ -55,6 +55,7 @@ import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle, type ShellExitResult } from './sandbox-exec'
 import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
+import { consumeExecCwdMarker, execCwdDirFor, newExecCwdMarker } from './exec-cwd'
 import { checkSelfDetach, selfDetachRefusal } from './exec-detach'
 import { findPolledTasks, type PollMatch } from './exec-poll'
 import { CommandRegistry, type CommandEntry } from './command-registry'
@@ -1199,22 +1200,31 @@ interface ExecRunMetadata {
   isSandboxed: boolean
   previousCwd: string
   cwdReset: boolean
+  /**
+   * Final cwd the trap reported, captured when the process exits — see the
+   * `handle.done` handler where the meta is registered. Cached because the
+   * marker file is gone by then.
+   */
+  resolvedCwd?: string
 }
 
 const execRunMetadata = new WeakMap<CommandHandle, ExecRunMetadata>()
 
-/** Read the trap-written cwd file and update shellState. Idempotent on retry. */
+/**
+ * The run's final cwd: from the exit-time capture when we have it, otherwise
+ * by reading (and removing) the marker now. Both routes unlink the marker, so
+ * a run that exits without anyone draining its result leaves nothing behind.
+ */
+function resolveRunCwd(ctx: ToolContext, meta: ExecRunMetadata): string | undefined {
+  if (meta.resolvedCwd) return meta.resolvedCwd
+  const rawCwd = consumeExecCwdMarker(meta.cwdFileHost)
+  if (!rawCwd) return undefined
+  return meta.isSandboxed ? containerToHost(rawCwd, ctx.workspaceDir) : rawCwd
+}
+
+/** Apply the trap-written cwd to shellState. Idempotent on retry. */
 function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
-  let newCwd = meta.previousCwd
-  try {
-    const rawCwd = readFileSync(meta.cwdFileHost, 'utf-8').trim()
-    if (rawCwd) {
-      newCwd = meta.isSandboxed ? containerToHost(rawCwd, ctx.workspaceDir) : rawCwd
-    }
-    unlinkSync(meta.cwdFileHost)
-  } catch {
-    /* trap may not have fired or already cleaned up */
-  }
+  const newCwd = resolveRunCwd(ctx, meta) ?? meta.previousCwd
   ctx.shellState?.setCwd(newCwd)
   return newCwd
 }
@@ -1490,8 +1500,13 @@ function createExecTool(ctx: ToolContext): AgentTool {
         cwdReset = true
         ctx.shellState?.setCwd(currentCwd)
       }
-      const cwdMarker = `.shogo-cwd-${Date.now()}-${Math.random().toString(36).slice(2)}`
-      const cwdFileHost = join(ctx.workspaceDir, cwdMarker)
+      // The cwd marker is a temp file with a lifetime, not workspace state, so
+      // it goes under `.shogo/exec-cwd/` — already excluded from checkpoints,
+      // exports and the managed git ignore block — instead of the workspace
+      // root, where a folder-linked repo would show it as untracked junk.
+      const cwdMarker = newExecCwdMarker()
+      const cwdDirHost = execCwdDirFor(ctx.workspaceDir)
+      const cwdFileHost = cwdDirHost ? join(cwdDirHost, cwdMarker) : join(ctx.workspaceDir, cwdMarker)
 
       const isSandboxed = shouldSandbox({
         command: attributedCommand,
@@ -1501,7 +1516,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
         mainSessionIds: ctx.mainSessionIds,
       })
 
-      const cwdFileCmd = isSandboxed ? `/workspace/${cwdMarker}` : cwdFileHost
+      const cwdFileCmd = isSandboxed ? hostToContainer(cwdFileHost, ctx.workspaceDir) : cwdFileHost
       const cdTarget = isSandboxed ? hostToContainer(currentCwd, ctx.workspaceDir) : currentCwd
 
       const wrappedCommand = [
@@ -1542,6 +1557,19 @@ function createExecTool(ctx: ToolContext): AgentTool {
         cwdReset,
       }
       execRunMetadata.set(handle, meta)
+
+      // Capture the trap's cwd the moment the process exits, not only when a
+      // result is drained: `background: true`, a soft timeout, an abort and a
+      // crash all hand back "running" and may never be waited on, and the
+      // marker must not outlive the shell that wrote it.
+      handle.done
+        .then(() => {
+          const resolved = resolveRunCwd(ctx, meta)
+          if (resolved) meta.resolvedCwd = resolved
+        })
+        .catch(() => {
+          consumeExecCwdMarker(cwdFileHost)
+        })
 
       // Always register so a follow-up exec_wait can find this run, even if it
       // completes within the soft timeout (defensive against races where the
