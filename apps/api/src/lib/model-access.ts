@@ -25,11 +25,13 @@ export async function isModelAccessibleForWorkspace(
   workspaceId: string,
   modelId: string,
   /**
-   * Already-resolved `hasAdvancedModelAccess(workspaceId)` for a caller that
-   * gates a whole list — the entitlement is workspace-wide, so one lookup
-   * covers every model in it (`GET /ai/v1/models`).
+   * Cached entitlement for a caller gating a whole list. `hasAdvancedModelAccess`
+   * is workspace-wide, so `GET /ai/v1/models` resolves it once and passes the
+   * value — or the resolver — for every model in the list. It is a thunk, and
+   * only consulted for a model that actually needs the entitlement, so listing
+   * economy/local/OpenRouter models never touches billing.
    */
-  known?: { advancedAccess?: boolean },
+  known?: { advancedAccess?: boolean; resolveAdvancedAccess?: () => Promise<boolean> },
 ): Promise<boolean> {
   const trimmed = modelId.trim()
   const id = resolvePublicModelSync(trimmed)?.backingModelId?.trim() || trimmed
@@ -38,5 +40,6 @@ export async function isModelAccessibleForWorkspace(
   if (provider === 'local' || provider === 'openrouter') return true
   if ((entry?.tier ?? getModelTier(id)) === 'economy') return true
   if (known?.advancedAccess !== undefined) return known.advancedAccess
+  if (known?.resolveAdvancedAccess) return known.resolveAdvancedAccess()
   return billingService.hasAdvancedModelAccess(workspaceId)
 }

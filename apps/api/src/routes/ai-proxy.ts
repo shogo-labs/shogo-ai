@@ -4601,11 +4601,18 @@ export function aiProxyRoutes() {
     // `available:false` here so the tool refuses it up front with
     // `model_unavailable`.
     //
-    // One entitlement lookup for the whole list: `hasAdvancedModelAccess` is
-    // workspace-wide, so resolving it per model would be the same query N times.
-    const advancedAccess = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
+    // One entitlement resolution per request, and only for a model that needs
+    // it: `hasAdvancedModelAccess` is workspace-wide, so it is memoised here
+    // rather than consulted once per model id.
+    let advancedAccess: boolean | undefined
     const isAccessible = (id: string): Promise<boolean> =>
-      isModelAccessibleForWorkspace(tokenPayload.workspaceId, id, { advancedAccess })
+      isModelAccessibleForWorkspace(tokenPayload.workspaceId, id, {
+        advancedAccess,
+        resolveAdvancedAccess: async () => {
+          advancedAccess ??= await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
+          return advancedAccess
+        },
+      })
 
     const models = [
       ...(await Promise.all(visible.catalogModels.map(async (entry) => ({
