@@ -78,8 +78,15 @@ check_headroom() {
 
   # Skip unschedulable (cordoned) nodes — they're intentionally drained and
   # shouldn't gate a deploy.
+  #
+  # NOTE (SHO-136): this list used to come from a kubectl jsonpath filter,
+  # `{range .items[?(@.spec.unschedulable!=true)]}`. A schedulable node does NOT
+  # set `spec.unschedulable` at all, and jsonpath's `!=` needs both sides to
+  # exist, so that filter matched NOTHING and this gate looped over zero nodes —
+  # i.e. it passed vacuously on every cluster, including the one that reached
+  # DiskPressure. jq treats the absent field as null, which is what we want.
   local node summary pct
-  for node in $(kubectl get nodes -o jsonpath='{range .items[?(@.spec.unschedulable!=true)]}{.metadata.name}{"\n"}{end}'); do
+  for node in $(kubectl get nodes -o json | jq -r '.items[] | select(.spec.unschedulable != true) | .metadata.name'); do
     summary=$(kubectl get --raw "/api/v1/nodes/${node}/proxy/stats/summary" 2>/dev/null || echo "")
     if [[ -z "$summary" ]]; then
       # No live truth — fall back to the (lagging) DiskPressure condition.
