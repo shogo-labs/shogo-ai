@@ -80,7 +80,6 @@ export interface RequestMessageDigest {
    * typed has to look at both ends.
    */
   tail: string
->>>>>>> origin/main
 }
 
 interface Marker {
