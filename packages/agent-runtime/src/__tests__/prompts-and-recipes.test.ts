@@ -87,6 +87,10 @@ describe('optimized-prompts constants', () => {
     expect(OPTIMIZED_MCP_DISCOVERY_GUIDE).toContain('Tool')
     expect(OPTIMIZED_MCP_DISCOVERY_GUIDE).toContain('gh issue list')
     expect(OPTIMIZED_MCP_DISCOVERY_GUIDE).toContain('GitHub is always CLI-first')
+    // Opening a PR is `gh` now; the tool is an option, not the required route.
+    expect(OPTIMIZED_MCP_DISCOVERY_GUIDE).toContain('gh pr create')
+    expect(OPTIMIZED_MCP_DISCOVERY_GUIDE).not.toContain('except for creating pull requests')
+    expect(OPTIMIZED_MCP_DISCOVERY_GUIDE).toContain('github_create_pr')
     expect(BROWSER_TOOL_GUIDE).toContain('Browser')
   })
 })
