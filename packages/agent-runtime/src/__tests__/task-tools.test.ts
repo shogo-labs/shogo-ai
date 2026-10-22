@@ -309,6 +309,37 @@ describe('exec: a sleep poll while a task runs', () => {
     registry.kill(started.task_id)
   })
 
+  test('a poll that reads the task output names that task, and how to wait for a port', async () => {
+    const ctx = makeCtx(registry)
+    const quiet = await run(ctx, 'exec', { command: 'sleep 5', background: true })
+    const served = await run(ctx, 'exec', { command: 'sleep 6', background: true })
+
+    const res = await run(ctx, 'exec', { command: `sleep 0.05 && tail -3 ${served.output_file}` })
+
+    expect(res.steering.code).toBe('wait_instead_of_poll')
+    expect(res.steering.running_tasks).toEqual([served.task_id])
+    expect(res.steering.hint).toContain(`wait({ task_ids: ["${served.task_id}"] })`)
+    expect(res.steering.hint).toContain('until')
+    registry.kill(quiet.task_id)
+    registry.kill(served.task_id)
+  })
+
+  test('a sleep waiting on a server, CI or a rebuild is left alone', async () => {
+    const ctx = makeCtx(registry)
+    const started = await run(ctx, 'exec', { command: 'sleep 5', background: true })
+
+    for (const command of [
+      'sleep 0.05 && curl -s localhost:3000',
+      'sleep 0.05 && tail .shogo/logs/build.log',
+      'sleep 0.05 && gh pr checks 1633',
+    ]) {
+      const res = await run(ctx, 'exec', { command })
+      expect(res.steering).toBeUndefined()
+      expect(res.code).toBeUndefined()
+    }
+    registry.kill(started.task_id)
+  })
+
   test('with nothing running a sleep still runs untouched', async () => {
     const ctx = makeCtx(registry)
     const res = await run(ctx, 'exec', { command: 'sleep 0.05 && echo paced' })

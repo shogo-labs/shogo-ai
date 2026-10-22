@@ -56,7 +56,7 @@ import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from
 import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
 import { checkSelfDetach, selfDetachRefusal } from './exec-detach'
-import { checkSleepPoll } from './exec-poll'
+import { findPolledTasks, type PollMatch } from './exec-poll'
 import { CommandRegistry, type CommandEntry } from './command-registry'
 import type { TaskEntry } from './task-registry'
 import { tailLines } from './task-output'
@@ -1313,15 +1313,18 @@ export function turnSteeringState(ctx: ToolContext): TurnSteeringState {
   return ctx.turnState
 }
 
-function waitCallFor(ids: string[]): string {
-  return `wait({ task_ids: [${ids.map((id) => `"${id}"`).join(', ')}] })`
+function waitCallFor(ids: string[], until?: string): string {
+  const list = `[${ids.map((id) => `"${id}"`).join(', ')}]`
+  return until ? `wait({ task_ids: ${list}, until: ${until} })` : `wait({ task_ids: ${list} })`
 }
 
-function waitInsteadOfPollHint(ids: string[]): string {
+function waitInsteadOfPollHint(ids: string[], reason: PollMatch['reason']): string {
+  const reads = reason === 'reads_task_output'
   return (
-    `${waitCallFor(ids)} returns the moment the task finishes or its output matches; a sleep cannot — it always spends ` +
-    'the whole delay and then only tells you to look again. If you would rather not block, end your turn: the ' +
-    '[Task update] is guaranteed.'
+    `${waitCallFor(ids)} returns the moment the task finishes${reads ? ' and gives you the output you are about to read' : ' or its stdout matches'}; ` +
+    'a sleep cannot — it always spends the whole delay and then only tells you to look again. ' +
+    `To wait for a server to accept connections, use ${waitCallFor(ids, "'<ready line>'")}. ` +
+    'If you would rather not block, end your turn: the [Task update] is guaranteed.'
   )
 }
 
@@ -1333,10 +1336,12 @@ function withSteering(result: AgentToolResult<any>, steering: Record<string, unk
 }
 
 /**
- * A sleep while a task is running cannot see the task finish early, so it is a
- * poll. The first one runs (it may be a real delay the command needs) and
- * carries the steering; a second identical one is refused, naming the `wait`
- * call that would have returned as soon as the task settled.
+ * A sleep that waits on a running task cannot see that task finish early, so it
+ * is a poll. Only a sleep tied to the task counts — one that reads its output or
+ * does nothing but wait (see `findPolledTasks`); a sleep waiting on CI, a port or
+ * a rebuild is left alone. The first poll still runs (it may be a real delay the
+ * command needs) and carries the steering; a second identical one is refused,
+ * naming the `wait` call that would have returned as soon as the task settled.
  */
 function withSleepPollSteering(tool: AgentTool, ctx: ToolContext): AgentTool {
   const run = tool.execute
@@ -1345,12 +1350,11 @@ function withSleepPollSteering(tool: AgentTool, ctx: ToolContext): AgentTool {
     execute: async (toolCallId, params, signal) => {
       const { command = '', background = false } = params as { command?: string; background?: boolean }
       // `background: true` starts a new task; its sleep is that task's own delay.
-      const running = background || !checkSleepPoll(command).poll
-        ? []
-        : (ctx.commandRegistry?.listRunning() ?? [])
-      if (running.length === 0) return run(toolCallId, params, signal)
+      const running = background ? [] : (ctx.commandRegistry?.listRunning() ?? [])
+      const match = findPolledTasks(command, running)
+      if (!match) return run(toolCallId, params, signal)
 
-      const ids = running.map((task) => task.id)
+      const ids = match.ids
       const key = [...ids].sort().join(',')
       const state = turnSteeringState(ctx)
       if (state.sleepPolls.has(key)) {
@@ -1358,7 +1362,7 @@ function withSleepPollSteering(tool: AgentTool, ctx: ToolContext): AgentTool {
           ok: false,
           code: 'use_wait_instead',
           running_tasks: ids,
-          hint: waitInsteadOfPollHint(ids),
+          hint: waitInsteadOfPollHint(ids, match.reason),
         })
       }
       state.sleepPolls.add(key)
@@ -1366,7 +1370,7 @@ function withSleepPollSteering(tool: AgentTool, ctx: ToolContext): AgentTool {
       return withSteering(result, {
         code: 'wait_instead_of_poll',
         running_tasks: ids,
-        hint: waitInsteadOfPollHint(ids),
+        hint: waitInsteadOfPollHint(ids, match.reason),
       })
     },
   }
