@@ -488,6 +488,105 @@ describe('auth middleware', () => {
     expect(res.status).toBe(401)
   })
 
+  // SHO-125 §4b — the API authenticates *to* a project pod with the WORKSPACE
+  // token. The pod has to hold it too, or the byte-compare can never match and
+  // every remote tool call costs an API round-trip (and 401s during a blip).
+  test('accepts the workspace token the API sends when the pod also holds it (no API call)', async () => {
+    fetchImpl = () => Promise.reject(new Error('API unreachable'))
+    const { app } = await buildApp({
+      env: {
+        PROJECT_ID: 'test-project-123',
+        RUNTIME_AUTH_SECRET: 'rt_v1_test-project-123_podtoken',
+        WORKSPACE_RUNTIME_AUTH_SECRET: 'wrt_v1_ws-9_wstoken',
+      },
+    })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_wstoken' },
+    })
+    expect(res.status).toBe(200)
+    // Byte-compare hit: the API was never consulted.
+    expect(fetchCalls.length).toBe(0)
+  })
+
+  test('a workspace runtime holding the workspace token in RUNTIME_AUTH_SECRET still fast-paths', async () => {
+    fetchImpl = () => Promise.reject(new Error('API unreachable'))
+    const { app } = await buildApp({
+      env: {
+        RUNTIME_AUTH_SECRET: 'wrt_v1_ws-9_wstoken',
+        WORKSPACE_ID: 'ws-9',
+      },
+    })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_wstoken' },
+    })
+    expect(res.status).toBe(200)
+    expect(fetchCalls.length).toBe(0)
+  })
+
+  test('still refuses a workspace token the pod does not hold', async () => {
+    fetchImpl = () => Promise.reject(new Error('API unreachable'))
+    const { app } = await buildApp({
+      env: {
+        RUNTIME_AUTH_SECRET: 'rt_v1_test-project-123_podtoken',
+        WORKSPACE_RUNTIME_AUTH_SECRET: 'wrt_v1_ws-9_wstoken',
+      },
+    })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_othertoken' },
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test('a 5xx from the validator is not cached as invalid', async () => {
+    fetchResponses = [
+      { ok: false, status: 503, body: { error: 'deploying' } },
+      { ok: true, body: { valid: true, projectId: 'test-project-123' } },
+    ]
+    const { app } = await buildApp()
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const headers = { 'x-runtime-token': 'rt_v1_test-project-123_transient' }
+    expect((await app.request('/agent/secret', { headers })).status).toBe(401)
+    expect((await app.request('/agent/secret', { headers })).status).toBe(200)
+    expect(fetchCalls.length).toBe(2)
+  })
+
+  test('a timeout from the validator is not cached as invalid', async () => {
+    let calls = 0
+    fetchImpl = () => {
+      calls += 1
+      if (calls === 1) return Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }))
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ valid: true, projectId: 'test-project-123' }),
+        text: () => Promise.resolve('{}'),
+      })
+    }
+    const { app } = await buildApp()
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const headers = { 'x-runtime-token': 'rt_v1_test-project-123_timeout' }
+    expect((await app.request('/agent/secret', { headers })).status).toBe(401)
+    expect((await app.request('/agent/secret', { headers })).status).toBe(200)
+    expect(calls).toBe(2)
+  })
+
+  test('a 401 body names the token scope so a caller knows not to retry', async () => {
+    fetchImpl = () => Promise.reject(new Error('network down'))
+    const { app } = await buildApp({ env: { WORKSPACE_ID: 'ws-9' } })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_other-ws_abcdef' },
+    })
+    expect(res.status).toBe(401)
+    const body = await res.json() as Record<string, unknown>
+    expect(body.code).toBe('auth_mismatch')
+    expect(body.tokenScope).toBe('wrt_v1_other-ws')
+    expect(String(body.error)).not.toContain('abcdef')
+  })
+
   test('accepts valid preview JWT via API callback', async () => {
     fetchResponses = [
       { ok: true, body: { valid: true, projectId: 'test-project-123' } },

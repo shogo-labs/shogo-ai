@@ -595,6 +595,12 @@ function workspaceMetaToolEnabled(ctx: ToolContext): boolean {
  */
 const WORKSPACE_MEMBER_TIMEOUT_MS = 180_000
 
+/**
+ * The internal preview route waits on the target's build (its own budget is
+ * 75s), so the tool has to outlast that plus the round-trip.
+ */
+const PREVIEW_START_REQUEST_TIMEOUT_MS = 100_000
+
 async function workspaceMetaFetch(
   ctx: ToolContext,
   path: string,
@@ -626,16 +632,22 @@ async function workspaceMetaFetch(
   }
   if (!response.ok) {
     const detail = result?.error?.message || result?.error
-    if (typeof detail === 'string' && detail.trim() && !detail.trim().startsWith('<')) {
-      throw new Error(detail)
-    }
     const snippet = text.trim().slice(0, 200)
-    // Cloudflare and other proxies answer 502 with an HTML page. Don't hand
-    // that document to the agent; the status is the useful part.
-    if (!snippet || snippet.startsWith('<')) {
-      throw new Error(`Workspace API HTTP ${response.status}`)
-    }
-    throw new Error(`Workspace API HTTP ${response.status}: ${snippet}`)
+    // Carry the status and the API's error code so the caller can say what is
+    // actually wrong (project_not_attached vs target_not_ready vs auth) instead
+    // of parsing a message (SHO-125).
+    const failure = new Error(
+      typeof detail === 'string' && detail.trim() && !detail.trim().startsWith('<')
+        ? detail
+        : // Cloudflare and other proxies answer 502 with an HTML page. Don't
+          // hand that document to the agent; the status is the useful part.
+          !snippet || snippet.startsWith('<')
+          ? `Workspace API HTTP ${response.status}`
+          : `Workspace API HTTP ${response.status}: ${snippet}`,
+    ) as Error & { status?: number; code?: string }
+    failure.status = response.status
+    if (typeof result?.error?.code === 'string') failure.code = result.error.code
+    throw failure
   }
   return result
 }
@@ -833,11 +845,47 @@ function remoteFailure(err: unknown, project: { id: string; name: string }): Age
   const message = err instanceof Error ? err.message : String(err)
   const code = err instanceof RemoteToolError ? err.code : undefined
   const status = err instanceof RemoteToolError ? err.status : undefined
+  const details = err instanceof RemoteToolError ? err.details : undefined
   if (code === 'project_not_attached' || /project_not_attached/.test(message)) {
     return textResult({
       error: projectNotAttachedMessage(project.id),
       code: 'project_not_attached',
       project,
+    })
+  }
+  // A token mismatch between the caller and the target's runtime is a
+  // configuration fault: no number of retries fixes it, and the raw 401 body
+  // reads like a transient failure — which is exactly why it was retried into
+  // a burst (SHO-125). `tokenScope`/`apiVerdict` are identity only, never token
+  // material, so they can be shown to the agent.
+  if (status === 401 || code === 'auth_mismatch') {
+    const scope = typeof details?.tokenScope === 'string' ? details.tokenScope : undefined
+    const verdict = typeof details?.apiVerdict === 'string' ? details.apiVerdict : undefined
+    return textResult({
+      error:
+        `${project.name}'s runtime rejected the runtime token this call presented` +
+        `${scope ? ` (token scope: ${scope})` : ''}${verdict ? `, API verdict: ${verdict}` : ''}. ` +
+        'This is an authentication mismatch, not a transient failure — retrying will not help.',
+      code: 'auth_mismatch',
+      project,
+      ...(scope ? { tokenScope: scope } : {}),
+      ...(verdict ? { apiVerdict: verdict } : {}),
+      hint: 'Tell the user this failed; do not retry it.',
+    })
+  }
+  // The target resolved but was not accepting connections yet; the API already
+  // retried the read-only tools once (SHO-125).
+  if (code === 'target_not_ready') {
+    const retryAfter =
+      typeof (details?.error as Record<string, unknown> | undefined)?.retryAfterSeconds === 'number'
+        ? (details!.error as { retryAfterSeconds: number }).retryAfterSeconds
+        : undefined
+    return textResult({
+      error: message,
+      code: 'target_not_ready',
+      project,
+      ...(retryAfter ? { retryAfterSeconds: retryAfter } : {}),
+      hint: 'The project runtime was still starting. Retry once after the delay; do not retry a write blindly.',
     })
   }
   return textResult({
@@ -1072,18 +1120,73 @@ function createCopyToProjectTool(ctx: ToolContext): AgentTool {
 }
 
 /**
- * Builds (or reuses) a mounted member's static preview and returns the ONE
+ * Metal-only preview: ask the API for the project's own runtime URL and start
+ * its build there. The response is the contract the agent sees; every failure
+ * becomes a code it can act on instead of the mount-era 410 (SHO-125).
+ */
+async function previewProjectViaApi(ctx: ToolContext, projectId: string): Promise<AgentToolResult<any>> {
+  const workspaceId = resolveWorkspaceId(ctx)
+  // One literal, not concatenation: `local-route-parity.test.ts` scans this
+  // file for internal-API paths, and a `+` would stop it at the workspace
+  // segment — hiding the rest of the route from the desktop 404 check.
+  const path = `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/projects/${encodeURIComponent(projectId)}/preview`
+  try {
+    const result = await workspaceMetaFetch(
+      ctx,
+      path,
+      { method: 'POST', body: JSON.stringify({ userId: ctx.userId, sessionId: ctx.sessionId }) },
+      PREVIEW_START_REQUEST_TIMEOUT_MS,
+    )
+    return textResult({
+      projectId,
+      url: result.url,
+      mode: result.mode ?? 'metal',
+      status: result.status ?? 'ready',
+    })
+  } catch (error: any) {
+    const code = typeof error?.code === 'string' ? error.code : undefined
+    if (code === 'project_not_attached') {
+      return textResult({
+        error: `Project ${projectId} is not part of this workspace, so it has no preview. Check the id with list_projects.`,
+        code: 'project_not_attached',
+      })
+    }
+    if (code === 'target_not_ready') {
+      return textResult({
+        error: `${error?.message ?? 'The project runtime is still starting.'} Retry in a couple of seconds.`,
+        code: 'target_not_ready',
+        retryAfterSeconds: 2,
+        noFallbackUrl: true,
+        guidance: 'There is no working localhost/fallback link. Retry this tool; do not construct a URL.',
+      })
+    }
+    return textResult({
+      error: error?.message || 'preview start failed',
+      ...(code ? { code } : {}),
+      noFallbackUrl: true,
+      guidance:
+        'There is no working localhost/fallback link. Tell the user this failed — do not construct or offer any other URL.',
+    })
+  }
+}
+
+/**
+ * Builds (or reuses) a member project's static preview and returns the ONE
  * URL that's actually reachable — never this runtime's own control-plane
  * port (`process.env.PORT`), which only serves the chat/tool API and is
  * meaningless to open in a browser.
  *
- * A workspace runtime multiplexes every mounted project's `dist/` under
- * `/p/<projectId>/` on its own HTTP port (see `workspace-runtime-mode.ts` +
- * the `/p/:projectId/*` routes in `server.ts`); mounted (non-anchor) members
- * don't auto-build on mount (cross-folder editing is the common case, and
- * spinning up a vite watch + API sidecar per attachment would be wasteful),
- * so this tool is what actually triggers that on-demand build via the
- * runtime's own `POST /p/<projectId>/preview/start`.
+ * Two substrates, two mechanisms:
+ *
+ *   - Merged-root (local / cloud): this runtime multiplexes every mounted
+ *     project's `dist/` under `/p/<projectId>/` on its own HTTP port (see
+ *     `workspace-runtime-mode.ts` + the `/p/:projectId/*` routes in
+ *     `server.ts`); mounted members don't auto-build on mount, so this tool
+ *     triggers that on-demand build via `POST /p/<projectId>/preview/start`.
+ *   - Metal: each project has its OWN runtime and other projects are never
+ *     mounted here, so the local route can only answer 410. The API resolves
+ *     the project's runtime, starts its build and returns
+ *     `<podUrl>/p/<projectId>/` (SHO-125).
  */
 function createPreviewProjectTool(ctx: ToolContext): AgentTool {
   return {
@@ -1091,7 +1194,8 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
     label: 'Preview Project',
     description:
       "Build and serve a project's app so it can be opened in a browser, and return the one URL that is " +
-      'actually reachable. If the project is not mounted yet, this mounts it first and then starts the preview. ' +
+      'actually reachable. Works for any project of this workspace: each project runs in its own runtime, ' +
+      'and this tool starts that project\'s build (it never mounts the project here). ' +
       'Call this before sharing any "preview"/"running app" link — never construct or hand out ' +
       "a localhost/port link yourself (e.g. from this runtime's own base URL or an env var); only the URL this " +
       'tool returns is guaranteed to work. If this tool errors, there is NO working localhost fallback — report ' +
@@ -1099,7 +1203,7 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
       "runtime's own base URL.",
     parameters: Type.Object({
       projectId: Type.String({
-        description: 'The project id to preview. Mounts it first when it is not already attached.',
+        description: "The project id to preview. Not needed when it is the project this runtime serves.",
       }),
     }),
     execute: async (_toolCallId, params: any) => {
@@ -1109,6 +1213,13 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
         })
       const projectId = String(params?.projectId || '')
       if (!projectId) return textResult({ error: 'projectId is required' })
+
+      // Metal: the project's own runtime serves its app; this runtime has no
+      // route to it and never will (mounting was removed). Ask the API.
+      if (isMetalRuntime() && projectId !== currentRuntimeProjectId()) {
+        return previewProjectViaApi(ctx, projectId)
+      }
+
       const port = process.env.PORT || '8080'
       const startPreview = () =>
         fetch(`http://localhost:${port}/p/${encodeURIComponent(projectId)}/preview/start`, {

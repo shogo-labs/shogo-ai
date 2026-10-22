@@ -51,6 +51,8 @@ export interface AgentCallRequest {
 export interface AgentCallOutcome {
   status: number
   body: any
+  /** Response headers the caller should copy through (e.g. `Retry-After`). */
+  headers?: Record<string, string>
 }
 
 /**
@@ -816,6 +818,10 @@ export async function callProjectRemoteTool(
     {
       runtimeUrl: resolved.url,
       timeoutMs,
+      // Reads and polls are safe to replay once against a runtime that is still
+      // warming up; writes and shell commands are not (SHO-125).
+      retryOnTransportError: isRemoteIdempotentTool(req.tool),
+      reportUndelivered: true,
       ...(req.requesterTicket ? { headers: { 'X-Requester-Ticket': req.requesterTicket } } : {}),
       timeoutMessage: `The target project did not finish ${req.tool} within ${Math.round(timeoutMs / 1000)}s.`,
     },
@@ -861,6 +867,7 @@ export async function callProjectRemoteImport(
       runtimeUrl: resolved.url,
       timeoutMs,
       ...(req.requesterTicket ? { headers: { 'X-Requester-Ticket': req.requesterTicket } } : {}),
+      reportUndelivered: true,
       timeoutMessage: `The target project did not finish importing files within ${Math.round(timeoutMs / 1000)}s.`,
     },
   )
@@ -906,6 +913,56 @@ export function setProjectRuntimeUrlResolver(
 }
 
 /**
+ * Resolve a project's runtime URL the way every remote call does — including
+ * the wake that opening its app requires — so a preview and a remote tool land
+ * on the same pod. Returns the outcome to hand back instead when it cannot be
+ * resolved (502 `target_unavailable`, 409 `workspace_capacity`).
+ */
+export async function resolveRemoteProjectUrl(
+  projectId: string,
+  logTag: string,
+): Promise<{ url: string } | AgentCallOutcome> {
+  return wakeRemoteTarget(projectId, logTag)
+}
+
+/**
+ * Tools whose remote call is safe to repeat: reading and polling cannot
+ * double-apply anything. Used to decide whether a transport failure may be
+ * retried once against a runtime that was still warming up (SHO-125).
+ * Mirrors `REMOTE_READONLY_TOOLS` in packages/agent-runtime/src/remote-tools.ts
+ * — the API cannot import the runtime package, so they are listed here too and
+ * a test asserts the two lists agree.
+ */
+export const REMOTE_IDEMPOTENT_TOOLS: readonly string[] = ['read_file', 'search', 'exec_list', 'exec_wait']
+
+/** One retry is enough to cover a guest that resolved but is not listening yet. */
+const REMOTE_TRANSPORT_RETRY_DELAY_MS = 250
+
+export function isRemoteIdempotentTool(tool: string): boolean {
+  return REMOTE_IDEMPOTENT_TOOLS.includes(tool)
+}
+
+export interface ForwardOptions {
+  timeoutMs: number
+  timeoutMessage?: string
+  headers?: Record<string, string>
+  /** Already-resolved runtime URL; skips the resolver below. */
+  runtimeUrl?: string
+  /**
+   * Retry once after a short delay when the fetch fails at the transport
+   * level. Only for idempotent tools — a write must never be replayed.
+   */
+  retryOnTransportError?: boolean
+  /**
+   * This hop delivers a tool (or starts a build) on the target project. A
+   * transport failure then means the work may not have run, which callers must
+   * see as 503 `target_not_ready` with a retry hint. Chat and pipeline hops
+   * leave it unset and keep their 502 `agent_call_failed`.
+   */
+  reportUndelivered?: boolean
+}
+
+/**
  * POST `body` to a runtime-token-guarded path on the project's runtime
  * (pinned Instance tunnel first, then cloud pod / host runtime).
  */
@@ -915,13 +972,7 @@ export async function forwardToProjectRuntime(
   workspaceId: string,
   agentPath: string,
   forwardBody: string,
-  opts: {
-    timeoutMs: number
-    timeoutMessage?: string
-    headers?: Record<string, string>
-    /** Already-resolved runtime URL; skips the resolver below. */
-    runtimeUrl?: string
-  },
+  opts: ForwardOptions,
 ): Promise<AgentCallOutcome> {
   const extraHeaders = opts.headers ?? {}
   // This request exists to make the target runtime work. Until its turn lock
@@ -965,24 +1016,69 @@ export async function forwardToProjectRuntime(
       runtimeUrl = resolution.url
     }
 
-    const res = await fetch(`${runtimeUrl}${agentPath}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken, ...extraHeaders },
-      body: forwardBody,
-      signal: AbortSignal.timeout(opts.timeoutMs),
-    })
+    const post = () =>
+      fetch(`${runtimeUrl}${agentPath}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken, ...extraHeaders },
+        body: forwardBody,
+        signal: AbortSignal.timeout(opts.timeoutMs),
+      })
+
+    // `wakeRemoteTarget` returns as soon as it has a URL, which on metal can be
+    // before the guest accepts connections. One retry turns that instant into a
+    // normal call instead of a hard failure (SHO-125).
+    //
+    // A timeout is not that: it already spent the whole budget, so retrying
+    // doubles the wait on a hung target for no new information.
+    const isTimeout = (err: any) => err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    let res: Response
+    try {
+      res = await post()
+    } catch (err) {
+      if (!opts.retryOnTransportError || isTimeout(err)) throw err
+      await new Promise((resolve) => setTimeout(resolve, REMOTE_TRANSPORT_RETRY_DELAY_MS))
+      res = await post()
+    }
     const json = await res.json().catch(() => ({}))
     return { status: res.status, body: json }
   } catch (err: any) {
     const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    if (!timedOut) {
+      if (!opts.reportUndelivered) {
+        // A chat/pipeline hop keeps its old contract: the runtime was reachable
+        // but the call failed. Only a tool delivery (below) reports "not
+        // delivered".
+        return {
+          status: 502,
+          body: { error: { code: 'agent_call_failed', message: err?.message ?? 'Failed to reach the target runtime' } },
+        }
+      }
+      // A transport failure means we could not deliver, not that a gateway
+      // returned a bad response. MDN's 502 is the latter; the target simply
+      // was not ready, and that is a 503 with a retry hint (SHO-125).
+      return {
+        status: 503,
+        body: {
+          error: {
+            code: 'target_not_ready',
+            message:
+              opts.retryOnTransportError
+                ? `Project ${projectId}'s runtime is not accepting requests yet (${err?.message ?? err}). Retry shortly.`
+                : `Project ${projectId}'s runtime did not accept the request (${err?.message ?? err}), so it may not have run. Check the project's files before retrying.`,
+            retryAfterSeconds: 2,
+          },
+        },
+        // Also in the body: a keepalive response has already sent its status
+        // line, so `Retry-After` can only travel in the body for those callers.
+        headers: { 'Retry-After': '2' },
+      }
+    }
     return {
-      status: timedOut ? 504 : 502,
+      status: 504,
       body: {
         error: {
-          code: timedOut ? 'agent_call_timeout' : 'agent_call_failed',
-          message: timedOut
-            ? (opts.timeoutMessage ?? `The target runtime did not reply within ${Math.round(opts.timeoutMs / 1000)}s.`)
-            : (err?.message ?? 'Failed to reach the target runtime'),
+          code: 'agent_call_timeout',
+          message: opts.timeoutMessage ?? `The target runtime did not reply within ${Math.round(opts.timeoutMs / 1000)}s.`,
         },
       },
     }
