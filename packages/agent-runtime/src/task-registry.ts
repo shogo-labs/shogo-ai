@@ -17,6 +17,7 @@
  */
 
 import { randomBytes } from 'crypto'
+import { existsSync } from 'fs'
 import { join, relative } from 'path'
 import type { CommandHandle } from './sandbox-exec'
 import {
@@ -48,7 +49,69 @@ const REMOTE_POLL_SLICE_MS = 25_000
 const REMOTE_MIN_POLL_GAP_MS = 500
 
 export type TaskSource = 'shell' | 'subagent' | 'project_call' | 'agent_reply' | 'work_item'
-export type TaskStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+/**
+ * A task's outcome. `interrupted` is a task the runtime killed under itself —
+ * a restart or shutdown sweep — and it is deliberately NOT `completed`: the
+ * process never chose to exit, so no exit code can say it succeeded (SHO-141).
+ */
+export type TaskStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+
+/** Every status a task can never leave. */
+export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = ['completed', 'failed', 'cancelled', 'interrupted']
+
+export function isTerminalStatus(status: TaskStatus | undefined): boolean {
+  return !!status && status !== 'running'
+}
+
+/** What every notice and tool result says about a runtime-killed task. */
+export const INTERRUPTED_SUMMARY = 'interrupted — the runtime restarted while it was running'
+
+/** The line a notice prints about the output file, when the file is gone. */
+export const OUTPUT_REMOVED_NOTE = 'output log was removed by the restart — the verdict and its last output are all that survive'
+
+/**
+ * The one decision about how a task ended, extracted from the `handle.done`
+ * closure so it can be read and tested on its own.
+ *
+ * The bug this exists to prevent (SHO-141, #1634): a task killed by a runtime
+ * restart was reported `completed (exit code 0)` because the verdict was
+ * inferred from `result.exitCode === 0` — and for `cmd | tail -25` that 0 was
+ * `tail`'s, not the command's. Intent decides the verdict; the number can only
+ * ever describe an exit the process took on its own.
+ */
+export function settleOutcome(input: {
+  /** The user pressed Stop (`entry.status === 'cancelled'`). */
+  cancelRequested?: boolean
+  /** The runtime is shutting down or restarting (`killAll()`). */
+  runtimeShutdown?: boolean
+  /** Shogo signalled it: a memory kill, an external signal. Not a free exit. */
+  killed?: boolean
+  exitCode?: number
+  /** False when a shell without pipefail reported its last stage instead of the command. */
+  exitCodeReliable?: boolean
+  shellLabel?: string
+}): { status: Exclude<TaskStatus, 'running'>; exitCode?: number; summary: string } {
+  if (input.cancelRequested) return { status: 'cancelled', summary: 'cancelled' }
+  // A restart is not an outcome the command produced. It carries no exit code:
+  // 137 from SIGKILL and 0 from a masked pipeline both describe the killer.
+  if (input.runtimeShutdown) return { status: 'interrupted', summary: INTERRUPTED_SUMMARY }
+  if (input.killed) {
+    return {
+      status: 'failed',
+      summary: input.exitCode === undefined ? 'killed' : `killed (signal ${input.exitCode})`,
+      ...(input.exitCode === undefined ? {} : { exitCode: input.exitCode }),
+    }
+  }
+  if (input.exitCodeReliable === false) {
+    const shell = input.shellLabel ?? 'this shell'
+    return {
+      status: input.exitCode === 0 ? 'completed' : 'failed',
+      summary: `pipeline status unavailable — ${shell} cannot report a pipeline's exit code`,
+    }
+  }
+  const code = input.exitCode ?? 1
+  return { status: code === 0 ? 'completed' : 'failed', exitCode: code, summary: `exit code ${code}` }
+}
 
 /**
  * Where a task's work is actually happening. The chat dock opens this instead
@@ -74,9 +137,25 @@ export type TaskLink =
 export interface TaskResult {
   exitCode?: number
   summary: string
+  /** False when the number belongs to the last stage of a pipeline, not the command. */
+  exitCodeReliable?: boolean
+  pipelineStatus?: 'last-stage'
+  /** The shell that ran it, named in the "status unavailable" message. */
+  shellLabel?: string
+  /** Kept for a row whose log the restart deleted: the evidence that survives. */
+  tail?: string
 }
 
-type ShellFinalResult = { exitCode: number; stdout: string; stderr: string; killed: boolean; killReason?: string }
+type ShellFinalResult = {
+  exitCode: number
+  stdout: string
+  stderr: string
+  killed: boolean
+  killReason?: string
+  exitCodeReliable?: boolean
+  pipelineStatus?: 'last-stage'
+  shellLabel?: string
+}
 
 export interface TaskEntry {
   id: string
@@ -122,6 +201,8 @@ export interface TaskEntry {
   /** Shell tasks only. */
   handle?: CommandHandle
   finalResult?: ShellFinalResult
+  /** The runtime is sweeping this task on shutdown: it ends `interrupted`, never `completed`. */
+  runtimeShutdown?: boolean
   /** Rebuilt from its output file after its entry was evicted. */
   recovered?: boolean
   /** Arms the retention window for this entry's finished result. */
@@ -179,6 +260,13 @@ export interface RunningProcessSnapshot {
   /** Terminal rows keep their outcome and freeze so a restart still lists them. */
   status?: TaskStatus
   finishedAt?: number
+  /**
+   * The verdict, plus the last output when the log itself may not survive the
+   * restart. A cloud VM is re-assigned by swapping `<workspace>/.shogo` for a
+   * per-VM overlay, so task logs are disposable; sessions.db (which holds this
+   * snapshot) is the durable copy (SHO-141).
+   */
+  result?: TaskResult
   /** The snapshot was taken from a row the dock was showing. */
   shown?: boolean
   /** The agent has seen this result; a restart must not turn an unread one read. */
@@ -194,6 +282,12 @@ export interface TaskNotification {
   status: TaskStatus
   exitCode?: number
   outputFile?: string
+  /** The log this task pointed at no longer exists: do not print its path. */
+  outputMissing?: boolean
+  /** Its exit code is the last stage's, not the command's. */
+  exitCodeReliable?: boolean
+  pipelineStatus?: 'last-stage'
+  shellLabel?: string
   tail: string
   remote?: boolean
   /** When the task settled; a turn only injects notes that finished after it started. */
@@ -267,11 +361,19 @@ export function formatTaskNotification(n: TaskNotification): string {
   const outcome =
     n.status === 'cancelled'
       ? 'was cancelled'
-      : n.exitCode !== undefined
-        ? `${n.status} (exit code ${n.exitCode})`
-        : n.status
+      : n.status === 'interrupted'
+        // Never "completed" and never a number: the restart, not the command,
+        // decided this.
+        ? INTERRUPTED_SUMMARY
+        : n.exitCodeReliable === false
+          ? `${n.status} (pipeline status unavailable — ${n.shellLabel ?? 'this shell'} cannot report a pipeline's exit code)`
+          : n.exitCode !== undefined
+            ? `${n.status} (exit code ${n.exitCode})`
+            : n.status
   const lines = [`[Task update] ${n.title} (${n.taskId}) ${outcome}.`]
+  // A report that points at a deleted file is worse than no report.
   if (n.outputFile) lines.push(`Output: ${n.outputFile}`)
+  else if (n.outputMissing) lines.push(OUTPUT_REMOVED_NOTE)
   if (n.tail.trim()) lines.push('Last output:', n.tail)
   return lines.join('\n')
 }
@@ -352,12 +454,20 @@ export class TaskRegistry {
     handle.done.then((result) => {
       unsubscribe?.()
       entry.finalResult = result
-      const status: TaskStatus = result.killed && entry.status === 'cancelled'
-        ? 'cancelled'
-        : result.exitCode === 0 ? 'completed' : 'failed'
-      this.settle(entry, status, {
+      const decision = settleOutcome({
+        cancelRequested: entry.status === 'cancelled',
+        runtimeShutdown: entry.runtimeShutdown,
+        killed: result.killed,
         exitCode: result.exitCode,
-        summary: result.killReason ?? `exit code ${result.exitCode}`,
+        exitCodeReliable: result.exitCodeReliable,
+        shellLabel: result.shellLabel,
+      })
+      this.settle(entry, decision.status, {
+        exitCode: decision.exitCode,
+        summary: result.killReason ?? decision.summary,
+        ...(result.exitCodeReliable === false
+          ? { exitCodeReliable: false, pipelineStatus: result.pipelineStatus, shellLabel: result.shellLabel }
+          : {}),
       })
     }).catch(() => {
       unsubscribe?.()
@@ -499,14 +609,19 @@ export class TaskRegistry {
   }
 
   private settle(entry: TaskEntry, status: TaskStatus, result: TaskResult): void {
-    if (entry.status !== 'running' && entry.finishedAt) return
+    if (isTerminalStatus(entry.status) && entry.finishedAt) return
     if (entry.visibilityTimer) {
       clearTimeout(entry.visibilityTimer)
       entry.visibilityTimer = undefined
     }
-    entry.status = entry.status === 'cancelled' ? 'cancelled' : status
+    // A cancel the user asked for outranks whatever the signal reports.
+    const decided = entry.status === 'cancelled' ? 'cancelled' : status
+    entry.status = decided
     entry.finishedAt = Date.now()
-    entry.result = result
+    // An interrupted row is the one whose log may vanish with the machine, so
+    // its last output is captured into the snapshot while it is still in memory.
+    const tail = decided === 'interrupted' ? tailLines(stripAnsi(this.readOutput(entry))) : undefined
+    entry.result = tail ? { ...result, tail } : result
     this.writers.get(entry.id)?.finish({
       status: entry.status,
       exitCode: result.exitCode,
@@ -615,14 +730,22 @@ export class TaskRegistry {
   }
 
   buildNotification(entry: TaskEntry): TaskNotification {
+    // The log of a task the runtime killed may have gone with the machine (a
+    // cloud VM re-assignment swaps `.shogo` for a per-VM overlay). Printing a
+    // path that is not there sends the reader to an empty file.
+    const outputFile = this.existingOutputPath(entry.outputFile)
     return {
       taskId: entry.id,
       source: entry.source,
       title: entry.title,
       status: entry.status,
       exitCode: entry.result?.exitCode,
-      outputFile: this.displayPath(entry.outputFile),
-      tail: tailLines(stripAnsi(this.readOutput(entry))),
+      outputFile: outputFile ? this.displayPath(outputFile) : undefined,
+      outputMissing: !outputFile && !!entry.outputFile,
+      exitCodeReliable: entry.result?.exitCodeReliable,
+      pipelineStatus: entry.result?.pipelineStatus,
+      shellLabel: entry.result?.shellLabel,
+      tail: entry.result?.tail || tailLines(stripAnsi(this.readOutput(entry))),
       remote: entry.remote,
       finishedAt: entry.finishedAt,
     }
@@ -778,6 +901,29 @@ export class TaskRegistry {
     if (!this.workspaceDir) return path
     const rel = relative(this.workspaceDir, path)
     return rel && !rel.startsWith('..') ? rel : path
+  }
+
+  /** The output file, or undefined when the restart took it. */
+  private existingOutputPath(path: string | undefined): string | undefined {
+    if (!path) return undefined
+    try {
+      return existsSync(path) ? path : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Workspace-relative output path for a tool result, or undefined when the file
+   * is gone. A result must never point the agent at a log that does not exist.
+   */
+  displayExistingPath(path: string | undefined): string | undefined {
+    return this.displayPath(this.existingOutputPath(path))
+  }
+
+  /** True when the task's log is gone (the restart took it). */
+  outputMissing(path: string | undefined): boolean {
+    return !!path && !this.existingOutputPath(path)
   }
 
   /** The log `id` would have written, when output files are enabled. */
@@ -1033,7 +1179,7 @@ export class TaskRegistry {
       source: entry.source,
       title: entry.title,
       command: entry.command,
-      status: entry.stale ? 'running' : entry.status,
+      status: entry.status,
       pid: entry.handle?.pid,
       sandboxed: entry.handle?.sandboxed ?? false,
       containerName: entry.handle?.containerName,
@@ -1049,6 +1195,9 @@ export class TaskRegistry {
   }
 
   private isRunning(entry: TaskEntry): boolean {
+    // A terminal row is never running, stale or not: an interrupted task came
+    // back from the dead gateway with its verdict, not as a live process.
+    if (isTerminalStatus(entry.status)) return false
     if (entry.stale) return true
     if (entry.handle) return !entry.handle.exited() && entry.status === 'running'
     return entry.status === 'running'
@@ -1153,6 +1302,10 @@ export class TaskRegistry {
         // as a finished row for the rest of its retention window.
         status: p.status,
         finishedAt: p.finishedAt,
+        // The verdict travels with the row: `interrupted` (and the last output
+        // that justified it) must survive a restart even though the task log
+        // itself lives on a disk the next VM assignment throws away.
+        result: entry?.result,
         shown: true,
         // Whether the agent read the result decides the lease it comes back
         // with; a restart must not turn an unread result into a read one.
@@ -1164,9 +1317,10 @@ export class TaskRegistry {
 
   /**
    * Re-seed from a persisted snapshot after a runtime restart. Local tasks
-   * that were running belonged to the dead gateway and come back `stale`
-   * (dismissable only). Remote tasks are still tracked by the API and come
-   * back live; tasks that had already settled come back finished.
+   * that were running belonged to the dead gateway: they come back
+   * `interrupted` and `stale` (dismissable only, never pollable). Remote tasks
+   * are still tracked by the API and come back live; tasks that had already
+   * settled come back finished.
    */
   restoreStale(snapshots: RunningProcessSnapshot[]): void {
     if (!snapshots?.length) return
@@ -1186,6 +1340,13 @@ export class TaskRegistry {
         changed = true
         continue
       }
+      // A snapshot that still says `running` describes a process that is gone:
+      // the runtime that owned it died before its shutdown sweep could settle
+      // the row (the substrate stops the host hard), so the last snapshot
+      // written is the one from before the kill. Nothing can poll that child
+      // any more, so the verdict is `interrupted` — the same one a footer-less
+      // log gets — and never a live row whose only affordance is Dismiss
+      // (SHO-141: a task the runtime died under is not still running).
       if (this.restoreTerminal(snap, now)) {
         changed = true
         continue
@@ -1196,14 +1357,16 @@ export class TaskRegistry {
         source: snap.source ?? 'shell',
         title: snap.title ?? snap.command,
         command: snap.command,
-        status: 'running',
+        status: 'interrupted',
         startedAt: snap.startedAt,
+        finishedAt: now,
         notify: false,
-        consumed: false,
+        consumed: true,
         stale: true,
+        shown: true,
+        result: { summary: INTERRUPTED_SUMMARY },
         outputFile: snap.outputFile,
         link: snap.link,
-        handle: makeStaleHandle(snap),
         done: Promise.resolve(),
       })
       changed = true
@@ -1215,7 +1378,8 @@ export class TaskRegistry {
    * Restore what the per-task output logs say ran in this session. Used when
    * no snapshot survived (first run after the snapshot existed, or metadata
    * pruned): a log with a footer is a finished row, one without is a task the
-   * previous runtime died under — today's `stale` placeholder.
+   * previous runtime died under — `interrupted`, because the process never
+   * chose to exit and no exit code exists to read.
    */
   restoreFromOutputRows(rows: TaskOutputRow[]): void {
     if (!rows?.length) return
@@ -1234,26 +1398,32 @@ export class TaskRegistry {
         outputFile: row.path,
         status: row.status,
         finishedAt: row.finishedAt,
+        ...(row.exitCode === undefined ? {} : { result: { exitCode: row.exitCode, summary: `exit code ${row.exitCode}` } }),
       }
       if (this.restoreTerminal(snap, now)) {
         changed = true
         continue
       }
       if (now - row.startedAt > COMPLETED_RETENTION_MS) continue
+      // No footer: the runtime died while this was running. Keep `stale` for
+      // the "cannot be polled" affordance, but the verdict is `interrupted` —
+      // a footer-less log must never come back as a live row.
       this.entries.set(row.taskId, {
         id: row.taskId,
         runId: row.taskId,
         source: snap.source ?? 'shell',
         title: row.title,
         command: row.title,
-        status: 'running',
+        status: 'interrupted',
         startedAt: row.startedAt,
+        finishedAt: row.modifiedAt,
         notify: false,
-        consumed: false,
+        consumed: true,
         stale: true,
+        shown: true,
+        result: { summary: INTERRUPTED_SUMMARY },
         outputFile: row.path,
         link: snap.link,
-        handle: makeStaleHandle(snap),
         done: Promise.resolve(),
       })
       changed = true
@@ -1263,14 +1433,14 @@ export class TaskRegistry {
 
   /** Restore one settled row; false when it is unknown/too old to keep.  */
   private restoreTerminal(snap: RunningProcessSnapshot, now: number): boolean {
-    if (!snap.status || snap.status === 'running' || !snap.finishedAt) return false
+    if (!isTerminalStatus(snap.status) || !snap.finishedAt) return false
     const entry: TaskEntry = {
       id: snap.runId,
       runId: snap.runId,
       source: snap.source ?? 'shell',
       title: snap.title ?? snap.command,
       command: snap.command,
-      status: snap.status,
+      status: snap.status!,
       startedAt: snap.startedAt,
       finishedAt: snap.finishedAt,
       notify: false,
@@ -1280,6 +1450,9 @@ export class TaskRegistry {
       shown: snap.shown,
       outputFile: snap.outputFile,
       link: snap.link,
+      // The verdict travels with the row, so a restored `interrupted` still
+      // explains itself and cannot be re-derived into `completed`.
+      result: snap.result ?? { summary: snap.status === 'interrupted' ? INTERRUPTED_SUMMARY : snap.status! },
       done: Promise.resolve(),
     }
     const lease = this.wantsUnreadResult(entry) ? this.unreadRetentionMs : this.retentionMs
@@ -1323,8 +1496,23 @@ export class TaskRegistry {
     return true
   }
 
-  /** Forcefully terminate every local task. Used on session shutdown. */
-  killAll(): void {
+  /**
+   * Forcefully terminate every local task. Used on session shutdown and on a
+   * runtime restart.
+   *
+   * The sweep marks before it kills (SHO-141, #1634): an entry swept here ends
+   * `interrupted`, whatever number the signal produces. Without the mark the
+   * settle path judged it by `result.exitCode` — 137 on POSIX, or 0 when the
+   * last stage of a pipeline was `tail` — and reported a task that merged
+   * nothing as `completed (exit code 0)`.
+   *
+   * The settled rows are then emitted (which is what persists the snapshot) and
+   * deliberately left in place: clearing them wiped `runningProcesses` to `[]`,
+   * so the restart had no verdict left to restore. `clear` is the other path —
+   * "forget this session" — where the settles are written and the rows are then
+   * dropped, so a fresh registry does not re-hydrate a session the user wiped.
+   */
+  killAll(opts: { clear?: boolean } = {}): void {
     for (const entry of this.entries.values()) {
       if (entry.visibilityTimer) {
         clearTimeout(entry.visibilityTimer)
@@ -1336,6 +1524,9 @@ export class TaskRegistry {
         if (entry.handle) try { entry.handle.kill('SIGKILL') } catch { /* already gone */ }
         continue
       }
+      // Mark first, kill second: the flag is what turns the kill into
+      // `interrupted` instead of an exit the command chose.
+      entry.runtimeShutdown = true
       entry.notify = false
       if (entry.handle) {
         try { entry.handle.kill('SIGKILL') } catch { /* already gone */ }
@@ -1343,11 +1534,22 @@ export class TaskRegistry {
         try { void this.cancels.get(entry.id)?.() } catch { /* ignore */ }
       }
     }
+
+    // Settle synchronously, before the process that owns this registry goes
+    // away: the footer (`status: interrupted`, no exit_code) has to be on disk
+    // and the row has to be in the snapshot. A late `handle.done` is a no-op.
+    for (const entry of [...this.entries.values()]) {
+      if (entry.status !== 'running' || entry.stale || entry.remote) continue
+      this.settle(entry, 'interrupted', { summary: INTERRUPTED_SUMMARY })
+    }
     for (const writer of this.writers.values()) writer.flush()
-    this.entries.clear()
+    this.emitChange()
     this.aliases.clear()
     this.completionNotes.clear()
-    this.emitChange()
+    if (opts.clear) {
+      this.entries.clear()
+      this.emitChange()
+    }
   }
 }
 
@@ -1361,20 +1563,4 @@ function stripFrontMatter(text: string): string {
   const close = text.lastIndexOf('\n---')
   if (close !== -1 && text.slice(close + 4).trim() === '') return ''
   return text
-}
-
-/** Build a synthetic, already-exited handle for a restored (stale) entry. */
-function makeStaleHandle(snap: RunningProcessSnapshot): CommandHandle {
-  return {
-    pid: snap.pid,
-    containerName: snap.containerName,
-    sandboxed: snap.sandboxed,
-    stdout: () => '',
-    stderr: () => '',
-    recentOutput: () => '',
-    done: Promise.resolve({ exitCode: -1, stdout: '', stderr: '', killed: false }),
-    kill: () => { /* stale: the OS child is gone, nothing to signal */ },
-    exited: () => true,
-    startedAt: snap.startedAt,
-  }
 }

@@ -145,6 +145,7 @@ import { handleExportHome, handleHydrateHome } from './home-state-routes'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
+import { ensureDurableTaskLogs } from './task-log-durability'
 import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
@@ -794,6 +795,8 @@ const { app, state, logTiming } = await createRuntimeApp({
       const localShogoDir = join(POOL_STATE_ROOT, projectId, '.shogo')
       mkdirSync(localShogoDir, { recursive: true })
       const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+      /** `.shogo` dirs moved aside here; their `tasks/` is carried to host storage. */
+      const adoptedShogoDirs: string[] = []
 
       let existingStat: ReturnType<typeof lstatSync> | null = null
       try { existingStat = lstatSync(workspaceShogoDir) } catch { /* doesn't exist — easy path */ }
@@ -815,6 +818,7 @@ const { app, state, logTiming } = await createRuntimeApp({
         try {
           renameSync(workspaceShogoDir, asidePath)
           cleared = true
+          adoptedShogoDirs.push(asidePath)
         } catch (err: any) {
           renameErrMsg = err?.message ?? String(err)
         }
@@ -837,6 +841,17 @@ const { app, state, logTiming } = await createRuntimeApp({
       if (!alreadyCorrect) {
         symlinkSync(localShogoDir, workspaceShogoDir)
       }
+
+      // Task logs must outlive this VM (SHO-141). `.shogo` is on the overlay so
+      // SQLite works; `tasks/` is a symlink out to host-backed storage, which
+      // keeps `<workspace>/.shogo/tasks/<session>/<task>.log` the same path
+      // every caller already uses while the bytes survive a re-assign.
+      ensureDurableTaskLogs({
+        localShogoDir,
+        hostWorkspacesRoot,
+        projectId,
+        adoptFrom: adoptedShogoDirs,
+      })
 
       // Suppress .virtfs_metadata in git (created by 9p security_model=mapped-file)
       try {
@@ -6457,6 +6472,18 @@ async function initializeEssentials(): Promise<void> {
     const localShogoDir = join(POOL_STATE_ROOT, projectId, '.shogo')
     mkdirSync(localShogoDir, { recursive: true })
     const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+    // A real `.shogo` here is HOST-mode state that is about to be replaced by
+    // the overlay symlink. Carry its task logs to host storage first, so the
+    // cold-start path loses nothing that the assign path keeps (SHO-141).
+    let adoptWorkspaceShogo: string[] = []
+    try {
+      if (!lstatSync(workspaceShogoDir).isSymbolicLink()) adoptWorkspaceShogo = [workspaceShogoDir]
+    } catch { /* nothing there yet */ }
+    const hostRoot = process.env.SHOGO_HOST_WORKSPACES_ROOT || '/host-workspaces'
+    const hostWorkspacesRoot = existsSync(hostRoot) ? hostRoot : undefined
+    if (adoptWorkspaceShogo.length > 0) {
+      ensureDurableTaskLogs({ localShogoDir, projectId, hostWorkspacesRoot, adoptFrom: adoptWorkspaceShogo })
+    }
     try {
       const st = lstatSync(workspaceShogoDir)
       if (!st.isSymbolicLink()) {
@@ -6466,6 +6493,13 @@ async function initializeEssentials(): Promise<void> {
     } catch {
       try { symlinkSync(localShogoDir, workspaceShogoDir) } catch {}
     }
+    // Same durability rule as onAssign: the logs go to host-backed storage even
+    // though `.shogo` itself has to stay on the overlay (SHO-141).
+    ensureDurableTaskLogs({
+      localShogoDir,
+      projectId,
+      hostWorkspacesRoot,
+    })
     logTiming('.shogo symlinked to local overlay (9p mount)')
   }
 

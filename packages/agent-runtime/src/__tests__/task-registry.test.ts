@@ -267,10 +267,19 @@ describe('listing and persistence', () => {
 
     const restored = new TaskRegistry()
     restored.restoreStale(snap)
+    // API-tracked work outlives the runtime: the API still owns it and the next
+    // poll reports the truth, so it comes back live.
     const byId = new Map(restored.listRunning().map((p) => [p.id, p]))
     expect(byId.get('t_api00002')?.stale).toBeUndefined()
     expect(byId.get('t_api00002')?.remote).toBe(true)
-    expect([...byId.values()].find((p) => p.source === 'subagent')?.stale).toBe(true)
+    // A local task belonged to the dead gateway: never live again, and its
+    // verdict is `interrupted` (SHO-141), not a running row awaiting Dismiss.
+    expect(restored.listRunning().map((p) => p.id)).not.toContain(
+      restored.listDock().find((p) => p.source === 'subagent')?.id,
+    )
+    const local = restored.listDock().find((p) => p.source === 'subagent')
+    expect(local?.stale).toBe(true)
+    expect(local?.status).toBe('interrupted')
   })
 })
 
@@ -374,9 +383,13 @@ describe('the dock list', () => {
 
     const restored = new TaskRegistry()
     restored.restoreStale(snap)
-    const byId = new Map(restored.listRunning().map((p) => [p.id, p]))
-    expect(byId.get(hidden.id)?.stale).toBe(true)
-    expect(byId.get(hidden.id)?.command).toBe('npm run dev')
+    // It survives the restart (the row and its command are back) but not as a
+    // live task: the process it described died with the runtime.
+    const back = restored.get(hidden.id)
+    expect(back?.command).toBe('npm run dev')
+    expect(back?.stale).toBe(true)
+    expect(back?.status).toBe('interrupted')
+    expect(restored.listDock().map((p) => p.id)).toContain(hidden.id)
   })
 
   test('a finished row past its retention is not restored', () => {
@@ -419,7 +432,9 @@ describe('the dock list', () => {
     const byId = new Map(reg.listDock().map((p) => [p.id, p]))
     expect(byId.get('t_log00001')?.status).toBe('completed')
     expect(byId.get('t_log00001')?.outputFile).toBe('/tmp/.shogo/tasks/s/t_log00001.log')
-    expect(byId.get('t_log00002')?.status).toBe('running')
+    // SHO-141: no footer means the runtime died under it, so the row is
+    // `interrupted` — never a live `running` row.
+    expect(byId.get('t_log00002')?.status).toBe('interrupted')
     expect(byId.get('t_log00002')?.stale).toBe(true)
   })
 })
