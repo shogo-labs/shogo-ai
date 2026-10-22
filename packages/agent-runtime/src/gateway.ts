@@ -2185,7 +2185,9 @@ export class AgentGateway {
     this.emitLog(`Channel message from ${input.channelType || 'unknown'}: "${(input.text || '').substring(0, 100)}"`)
     const sessionId = input.channelId || 'default'
     const qs = this.getQueueState(sessionId)
-    this.sessionManager.getOrCreate(sessionId)
+    // Same load-on-miss rule as the chat path: a channel turn on a cold pod
+    // must read the stored conversation, not create an empty one (SHO-137).
+    await this.sessionManager.getOrCreateAsync(sessionId)
 
     await this.hookEmitter.emit(
       HookEmitter.createEvent('message', 'received', sessionId, {
@@ -2393,6 +2395,12 @@ export class AgentGateway {
       throw new Error('processChatMessageStream: chatSessionId is required')
     }
     const sessionId = options.chatSessionId
+    // A turn must never start from a fabricated empty session. In-process
+    // callers (channels, evals, project_call) reach the gateway directly, so
+    // the load-on-miss guarantee has to hold here too, not only at the HTTP
+    // edge: on a cold pod `getOrCreate` would create an empty session and the
+    // next persist would overwrite the conversation on disk (SHO-137).
+    await this.sessionManager.getOrCreateAsync(sessionId)
     if (options?.modelOverride) {
       const session = this.sessionManager.getOrCreate(sessionId)
       session.modelOverride = options.modelOverride
@@ -7083,6 +7091,12 @@ export class AgentGateway {
     // The prefix was rewritten — drop stable-compaction decisions, exactly as
     // every other compaction path does.
     this.contentReplacementStates.delete(sessionId)
+    // Keep the durable copy: the API stores the summary on the ChatSession so
+    // losing sessions.db cannot lose it (SHO-137 round 3, R4). Best-effort.
+    if (result.summary) {
+      const { postContextSummary } = await import('./internal-api')
+      void postContextSummary(sessionId, result.summary).catch(() => {})
+    }
     const after = this.sessionManager.getDetail(sessionId)
     return {
       status: 'compacted',
