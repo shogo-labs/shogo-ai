@@ -79,7 +79,6 @@ import { RootErrorBoundary } from "../components/RootErrorBoundary";
 import { ShareFileHost } from "../components/chat/share-file-context";
 import { UpdateBanner } from "../components/UpdateBanner";
 import { LocalApiStatusBanner } from "../components/LocalApiStatusBanner";
-import { AgentLimitBanner } from "../components/AgentLimitBanner";
 import { GlobalDictationListener } from "../components/dictation/GlobalDictationListener";
 import { captureAttribution } from "../lib/attribution";
 import { safeSetItem } from "../lib/safe-storage";
@@ -209,7 +208,6 @@ function AuthenticatedAppShell({
           <GlobalDictationListener />
           <UpdateBanner />
           <LocalApiStatusBanner />
-          <AgentLimitBanner />
           <WhatsNewModal
             release={whatsNew.release}
             visible={whatsNew.visible}

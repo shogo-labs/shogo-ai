@@ -14,6 +14,11 @@
  * It shows only while replies are actually queued: the counts arrive live from
  * the queue's `agent.capacity` event. A dismissal is remembered per workspace
  * and lasts until the queue drains — a fresh backlog is news again.
+ *
+ * Mount it inside `(app)`, where the domain store context exists: it reads the
+ * active workspace through `useActiveWorkspace`/`useWorkspaceExperience`, which
+ * throw above `DomainProvider` (the root layout has no provider, so mounting
+ * there blanks every screen).
  */
 import { useEffect, useState } from 'react'
 import { Pressable, View } from 'react-native'
