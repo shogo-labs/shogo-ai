@@ -462,6 +462,122 @@ The CI guard `bun run check:publication` rejects any PR that puts
 hand-list is what caused incident #501 (api_keys + 25 other tables silently
 absent from EU/India for weeks). The shape is intentionally non-negotiable.
 
+## Multi-region migration rules
+
+Two rules, both learned the hard way. `bun run check:migration-ids` enforces the
+first in CI and `bun run check:multiregion` enforces the second's schema half;
+`bun run check:publication` keeps the table lists honest.
+
+### 1. Never derive a primary key from row content on a published table
+
+Every region runs `prisma migrate deploy` against **its own** primary, but the
+source tables it reads from have usually already been replicated. A key
+computed from row content (`md5(deviceId || ':' || version)`, `'pa_1_' || "id"`,
+any hash of columns) is therefore **identical in every region by construction** —
+two independent writers mint the same primary keys.
+
+That matters at tablesync, not at apply: when a table joins
+`shogo_all_pub`, the subscriber runs a `COPY` of the whole table. The first row
+whose key already exists locally aborts it:
+
+```
+duplicate key value violates unique constraint "<table>_pkey"
+```
+
+The `conflict-watchdog` **cannot** recover from this. It can skip a
+*transaction*; it cannot skip a *tablesync COPY*, so it re-disables the
+subscription every few minutes until someone repairs the publication and
+subscription by hand. Both regions also lose the ability to converge, because
+each holds a row the other will never accept.
+
+Use the model's `@default(cuid())` — omit `"id"` from the statement and let the
+default fire — or a `gen_random_uuid()` expression that references no column.
+The CI check reports `file:line` and the offending expression; the only
+legitimate exemptions are the two migrations it already lists, which are
+applied history.
+
+### 2. A unique index on non-region-scoped columns is the same poison pill
+
+A random id is not enough. If a table carries `@@unique([deviceId, version])`,
+two regions that both see one logical row (failover, or an opportunistic touch
+on a read path) mint two ids for it, and the peer's apply hits a unique
+violation it cannot resolve — `last_update_wins` has nothing to arbitrate,
+because the keys differ but the unique columns do not. The apply worker aborts,
+the watchdog SKIPs the transaction (data loss), and it does it again five
+minutes later.
+
+The fix is the shape `infra_snapshots` already uses and `device_version_events`
+now uses: carry a `region` column and put it **in** the unique key —
+`@@unique([region, deviceId, version])` — and write it on every insert from
+`RAW_REGION_ID`. A peer's row is then a second tag for the same logical row
+rather than a conflict, and the reader collapses the tags. Scope the column with
+`region` or keep the table region-local; do not leave the unique index
+non-region-scoped.
+
+`region` must stay **NULL-able**. Pre-tagging rows have no honest value, and
+NULLs are distinct in a Postgres (and SQLite) unique index, so they can never
+collide across regions. A `NOT NULL DEFAULT 'legacy'` backfill would hand both
+regions the same key and re-run the same outage on the next publish. Let the
+application always write a region; let NULL mean "written before region
+tagging".
+
+### 3. How to move a table back onto the mesh
+
+Region-local is a stopgap, not a resting state: while a table is out of
+`shogo_all_pub`, every read that used to see the fleet only sees the region the
+reader happens to be in. To rejoin one:
+
+1. Make it safe first — the two rules above. Random (or region-scoped) keys, and
+   `region` in any unique index.
+2. Remove it from **all three** lists, or the guard will re-exclude it on the
+   next deploy: the `region_local` array in `exclude-region-local-tables.sql`,
+   `EXCLUDED_TABLES` in `replication-monitor.yaml`, and
+   `INTENTIONALLY_UNPUBLISHED` in `scripts/check-publication-drift.ts`
+   (`check:migration-ids` imports that last one — one source of truth).
+3. Deploy. `deploy.yml` re-applies the exclude script, which publishes the table
+   in every region, and then refreshes the subscriptions.
+4. Verify membership and health afterwards:
+   ```sql
+   SELECT tablename FROM pg_publication_tables
+   WHERE pubname = 'shogo_all_pub' AND tablename = '<table>';
+
+   SELECT subname, subenabled FROM pg_subscription WHERE subname LIKE 'sub_from_%';
+
+   SELECT subname, apply_error_count, sync_error_count
+   FROM pg_stat_subscription_stats WHERE subname LIKE 'sub_from_%';
+   ```
+   `subenabled` must be true in every region, and both error counters must be
+   unchanged from before the deploy.
+
+`copy_data` decides whether the peer re-`COPY`s a table's existing rows — not
+whether a region keeps its own history. `.github/workflows/deploy.yml` mostly
+issues a plain `REFRESH PUBLICATION` (default `copy_data = true`, L1768/L2248);
+only the EU→US step pins `WITH (copy_data = false)` (L2294). A plain refresh pulls
+the peer's already-replicated rows into the new table, which is how a key that two
+regions computed identically aborts the sync. Since `20261022120000` the
+device-version keys are region-scoped, so that `COPY` now **succeeds** — but each
+region also imports the peer's ~226 pre-region rows as extra `region IS NULL`
+copies (EU 226 → 454 measured on a scratch PG). Harmless only because the adoption
+reader collapses by `deviceId`, so do not read it as licence to copy freely. When
+refreshing by hand, prefer
+`ALTER SUBSCRIPTION sub_from_us REFRESH PUBLICATION WITH (copy_data = false)`
+unless the peer genuinely has no rows for that table yet.
+
+### 4. The 2026-10-22 incident (three lines)
+
+1. `20261021120000_add_device_version_events` backfilled ids as
+   `'dve_' || md5("deviceId" || ':' || "deviceAppVersion")`, and the table was in
+   `shogo_all_pub`. Both regions computed the same 456-ish keys from the same
+   replicated `api_keys` (US 228, EU 226).
+2. EU's tablesync `COPY` failed on its first row with a duplicate key on
+   `device_version_events_pkey`, which disabled `sub_from_us`. US → EU
+   replication was down **04:40Z–05:05Z** with a **540 MB** backlog, repaired by
+   hand (publication/subscription refresh in both regions).
+3. Fixed forward by `20261022120000_device_version_events_region_ids` (random
+   ids + `@@unique([region, deviceId, version])`, table rejoins the mesh) and
+   guarded now by `bun run check:migration-ids`, which rejects any migration
+   that writes a content-derived id into a published table.
+
 ## Monitoring Queries
 
 Run these on any region to check health:
