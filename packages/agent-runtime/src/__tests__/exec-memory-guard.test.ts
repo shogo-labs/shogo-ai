@@ -156,31 +156,36 @@ describe('sandboxExecAsync integration', () => {
     })
     expect(trackedExecPids()).toContain(handle.pid!)
 
-    // One `ps` read is a snapshot of an instant, and the child is not holding
-    // its memory the moment it is spawned: it still has a runtime to start and
-    // 192 MB to touch, which on a loaded runner can outlast any fixed number of
-    // samples — the guard then never strikes and `done` never resolves, which
-    // surfaces as a test timeout rather than as a guard failure. So wait for the
-    // OS to report the group over the ceiling, then hand the guard that state; a
-    // failure here names what was measured instead of hanging.
+    // Two things make a single reading unreliable on a loaded runner. The child
+    // is not holding its memory the moment it is spawned — it still has a
+    // runtime to start and 192 MB to touch — and a `ps` read can be slow enough
+    // that one sample lands before that. So keep sampling while the OS reports
+    // the group over the ceiling, and stop as soon as the guard has killed it.
+    // Sampling once and hoping is what turned "the guard never struck" into a
+    // 20 s test timeout with no guard output at all.
     const ceilingKb = OVER_BUDGET_MB * 1024
     const deadline = Date.now() + 20_000
     let measuredKb = 0
     while (Date.now() < deadline && !handle.exited()) {
       const sizes = await sampleTreeRssKb([handle.pid!])
       measuredKb = Math.max(measuredKb, sizes.get(handle.pid!) ?? 0)
-      if (measuredKb > ceilingKb) break
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      if (measuredKb > ceilingKb) await sampleOnce()
+      if (handle.exited()) break
+      await new Promise((resolve) => setTimeout(resolve, 100))
     }
     expect(measuredKb).toBeGreaterThan(ceilingKb)
-    // Crossing the ceiling can happen mid-`Buffer.alloc`, so give the fill a
-    // moment to finish before the guard takes the reading it reports.
-    await new Promise((resolve) => setTimeout(resolve, 500))
 
-    // Strikes are required once, so one sample of a group the OS reports over
-    // the ceiling has to stop it.
-    await sampleOnce()
-    const result = await handle.done
+    const result = await Promise.race([
+      handle.done,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+    ])
+    if (!result) {
+      handle.kill('SIGKILL')
+      throw new Error(
+        `the guard did not stop a command the OS reports at ${Math.floor(measuredKb / 1024)} MB, ` +
+          `over the ${OVER_BUDGET_MB} MB ceiling`,
+      )
+    }
 
     expect(result.killed).toBe(true)
     expect(result.killReason).toContain('out of memory')
