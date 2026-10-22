@@ -74,11 +74,13 @@ async function run(ctx: ToolContext, name: string, params: Record<string, any>) 
 let registry: TaskRegistry
 const strays: number[] = []
 
-afterEach(() => {
+afterEach(async () => {
   for (const pid of strays.splice(0)) {
     try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
   }
-  try { void registry?.killAll() } catch { /* already gone */ }
+  // `killAll` is async and sweeps the ledger: await it, or the rmSync below can
+  // delete a directory a still-running sweep is writing to.
+  try { await registry?.killAll() } catch { /* already gone */ }
   rmSync(TEST_DIR, { recursive: true, force: true })
 })
 

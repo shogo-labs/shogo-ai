@@ -157,6 +157,25 @@ describe.skipIf(IS_WINDOWS)('containChild on POSIX', () => {
     }
   })
 
+  test('killTree returns as soon as the tree is gone instead of serving out the grace period', async () => {
+    const child = spawn('bash', ['-c', 'sleep 600 & sleep 600'], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    children.push(child)
+    const containment = contain(child)
+    await waitFor(() => containment.members().length > 0, 5_000, 'a child of the shell')
+
+    // `sleep` takes SIGTERM, so the tree is empty well inside the 2 s grace; a
+    // cancel must not pay the whole budget for that (Planner review, SHO-144).
+    const startedAt = Date.now()
+    const { survivors } = await containment.killTree({ graceMs: 2_000 })
+    const elapsed = Date.now() - startedAt
+
+    expect(survivors).toEqual([])
+    expect(elapsed).toBeLessThan(1_000)
+  })
+
   test('the group is recorded in the workspace ledger and removed after a clean exit', async () => {
     const workspaceDir = tempDir()
     mkdirSync(workspaceDir, { recursive: true })

@@ -21,7 +21,17 @@
  *
  * Entries are advisory: a stale one is dropped, never signalled.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import * as childProcess from './child-process'
 import { dirname, join } from 'node:path'
 
@@ -29,6 +39,12 @@ const LEDGER_NAME = join('.shogo', 'run', 'children.json')
 
 /** How much of the leader's command line is kept as its identity. */
 const FINGERPRINT_MAX = 160
+
+/** A lock older than this was left behind by a process that died holding it. */
+const LOCK_STALE_MS = 5_000
+/** ~100 ms of contention at most, then we write unlocked rather than block. */
+const LOCK_ATTEMPTS = 20
+const LOCK_RETRY_MS = 5
 
 export interface ChildLedgerEntry {
   /** Process-group id of the group the child leads (`pid` on POSIX). */
@@ -111,21 +127,79 @@ function isAlive(pid: number): boolean {
   }
 }
 
+function sleepSync(ms: number): void {
+  if (ms <= 0) return
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch {
+    // No shared memory in this runtime: skip the back-off, keep the retry.
+  }
+}
+
+/**
+ * Run a read-modify-write of the ledger under a cross-process lock.
+ *
+ * The ledger is shared: the runtime appends an entry per spawn while the worker
+ * sweeps it on start and stop, and an unlocked overwrite from either side loses
+ * the other's entry — a group nobody then reaps. A lock we cannot take within
+ * ~100 ms degrades to the previous unlocked behaviour rather than blocking a
+ * spawn, because a lost entry is cheaper than a stalled runtime.
+ */
+function withLedgerLock<T>(workspaceDir: string, fn: () => T): T {
+  const lockPath = `${childLedgerPath(workspaceDir)}.lock`
+  let fd: number | null = null
+  try {
+    mkdirSync(dirname(lockPath), { recursive: true })
+  } catch {
+    // A directory we cannot make is a ledger we cannot write either.
+  }
+  for (let attempt = 0; attempt < LOCK_ATTEMPTS && fd === null; attempt++) {
+    try {
+      fd = openSync(lockPath, 'wx')
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') break
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
+          // Whoever held it is gone; take it over on the next attempt.
+          rmSync(lockPath, { force: true })
+          continue
+        }
+      } catch {
+        // Released between the open and the stat — retry immediately.
+        continue
+      }
+      sleepSync(LOCK_RETRY_MS)
+    }
+  }
+  try {
+    return fn()
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd) } catch { /* nothing to close */ }
+      try { rmSync(lockPath, { force: true }) } catch { /* already released */ }
+    }
+  }
+}
+
 /** Record a group we just started. Replaces any entry for the same pid. */
 export function addChildLedgerEntry(workspaceDir: string, entry: ChildLedgerEntry): void {
-  const existing = readChildLedger(workspaceDir).filter(
-    (candidate) => candidate.pid !== entry.pid && candidate.pgid !== entry.pgid && isAlive(candidate.pid),
-  )
-  writeAll(workspaceDir, [...existing, entry])
+  withLedgerLock(workspaceDir, () => {
+    const existing = readChildLedger(workspaceDir).filter(
+      (candidate) => candidate.pid !== entry.pid && candidate.pgid !== entry.pgid && isAlive(candidate.pid),
+    )
+    writeAll(workspaceDir, [...existing, entry])
+  })
 }
 
 /** Drop the entry for `pid` after a clean exit. */
 export function removeChildLedgerEntry(workspaceDir: string, pid: number): void {
-  const entries = readChildLedger(workspaceDir)
-  if (entries.length === 0) return
-  const kept = entries.filter((entry) => entry.pid !== pid)
-  if (kept.length === entries.length) return
-  writeAll(workspaceDir, kept)
+  withLedgerLock(workspaceDir, () => {
+    const entries = readChildLedger(workspaceDir)
+    if (entries.length === 0) return
+    const kept = entries.filter((entry) => entry.pid !== pid)
+    if (kept.length === entries.length) return
+    writeAll(workspaceDir, kept)
+  })
 }
 
 /** Collapse a command line to a stable, comparable fragment. */
@@ -140,8 +214,16 @@ export function normalizeCommand(command: string): string {
 
 /**
  * True when a live process's command line is still the one we recorded for
- * this entry. A truncated fingerprint matches as a prefix-substring, which is
- * how a long `bash -c …` line survives both the capture and the re-read.
+ * this entry.
+ *
+ * One direction only: the *live* line must contain the recorded fingerprint.
+ * The reverse comparison is what a recycled pid slips through — a reused pid now
+ * running `sh`, `bash`, `bun` or `node` is a substring of a recorded
+ * `/bin/sh -c bun run dev …`, so accepting it would SIGKILL an unrelated group
+ * (Planner review, SHO-144 AC 5). A live line that arrives shorter than the
+ * fingerprint (a `ps` that truncated) is therefore not a match: the entry is
+ * dropped, which is the safe direction because a dropped entry is never
+ * signalled.
  */
 export function matchesFingerprint(currentCommand: string | null, entry: ChildLedgerEntry): boolean {
   if (!currentCommand) return false
@@ -152,7 +234,7 @@ export function matchesFingerprint(currentCommand: string | null, entry: ChildLe
   // still cannot hit an unrelated process unless it reused the exact pid as a
   // group leader — and we never signal that case anyway.
   if (!fingerprint) return false
-  return current.includes(fingerprint) || fingerprint.includes(current)
+  return current.includes(fingerprint)
 }
 
 export interface ReapChildLedgerOptions {
@@ -215,7 +297,6 @@ export function reapChildLedger(
 
   const readCommand = opts.readProcessCommand ?? defaultReadProcessCommand
   const kill = opts.killGroup ?? defaultKillGroup
-  const survivors: ChildLedgerEntry[] = []
 
   for (const entry of entries) {
     // Our own group is never in the ledger; skip anything that resolved to us.
@@ -234,7 +315,6 @@ export function reapChildLedger(
       opts.logger?.warn(`[child-ledger] could not inspect pid ${entry.pid}: ${err?.message ?? err}`)
       // Unreadable process table: keep the entry for a later pass rather than
       // risk signalling a reused PID.
-      survivors.push(entry)
       continue
     }
     if (!matchesFingerprint(command, entry)) {
@@ -247,16 +327,20 @@ export function reapChildLedger(
       result.reaped.push(entry)
     } catch (err: any) {
       opts.logger?.warn(`[child-ledger] could not kill group ${entry.pgid}: ${err?.message ?? err}`)
+      // Not reaped: the entry stays so the next pass tries again. Dropping it
+      // here would strand the group with nothing left pointing at it.
     }
   }
 
-  if (result.reaped.length > 0 || result.dropped.length > 0) {
-    // Anything left in `survivors` is a group we could not inspect; keep it so
-    // the next sweep tries again. A reaped group's entry is gone.
-    const remaining = survivors.filter(
-      (entry) => !result.reaped.some((reaped) => reaped.pid === entry.pid),
-    )
-    writeAll(workspaceDir, remaining)
+  // Only the entries this pass finished are removed; re-reading under the lock
+  // keeps a group the runtime recorded while we were killing.
+  const handled = new Set([...result.reaped, ...result.dropped].map((entry) => entry.pid))
+  if (handled.size > 0) {
+    withLedgerLock(workspaceDir, () => {
+      const current = readChildLedger(workspaceDir)
+      const kept = current.filter((entry) => !handled.has(entry.pid))
+      if (kept.length !== current.length) writeAll(workspaceDir, kept)
+    })
   }
   return result
 }

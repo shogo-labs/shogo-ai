@@ -84,6 +84,9 @@ export interface ContainmentBackend {
 
 const IS_WINDOWS = process.platform === 'win32'
 
+/** How often the POSIX grace period re-checks whether the tree is gone. */
+const GRACE_POLL_MS = 50
+
 // ---------------------------------------------------------------------------
 // POSIX: process-group snapshot + ledger
 // ---------------------------------------------------------------------------
@@ -173,6 +176,19 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/**
+ * True while anything is still in group `pgid`. A `kill(2)` on the group, not a
+ * `ps` — which is what makes it cheap enough to poll during a grace period.
+ */
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch (err: any) {
+    return err?.code === 'EPERM'
+  }
+}
+
 /** A live process's command line, or `null` when it is gone. */
 function readProcessCommand(pid: number): string | null {
   try {
@@ -253,7 +269,10 @@ class PosixContainment implements ContainmentBackend {
 
     signalGroup(leader, 'SIGTERM')
     try { this.child.kill('SIGTERM') } catch { /* already gone */ }
-    if (graceMs > 0) await delay(graceMs)
+    // Wait only as long as the tree actually needs: the common case is a shell
+    // that exits immediately, and sleeping the whole grace period there made
+    // every cancel pay 2 s it did not owe (Planner review, SHO-144).
+    if (graceMs > 0 && !this.treeGone(leader)) await this.waitForTree(leader, graceMs)
     signalGroup(leader, 'SIGKILL')
     try { this.child.kill('SIGKILL') } catch { /* already gone */ }
     // Anything we saw before the kill that had left the group is signalled by
@@ -271,6 +290,21 @@ class PosixContainment implements ContainmentBackend {
       this.survivorsReported = true
     }
     return { survivors }
+  }
+
+  /** True when the shell has exited and nothing is left in its group. */
+  private treeGone(leader: number): boolean {
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return !groupAlive(leader)
+    return !isAlive(leader) && !groupAlive(leader)
+  }
+
+  /** Poll until the tree is gone, or the grace period runs out. */
+  private async waitForTree(leader: number, graceMs: number): Promise<void> {
+    const deadline = Date.now() + graceMs
+    while (Date.now() < deadline) {
+      if (this.treeGone(leader)) return
+      await delay(Math.min(GRACE_POLL_MS, Math.max(1, deadline - Date.now())))
+    }
   }
 
   private forget(leader: number): void {
@@ -629,6 +663,8 @@ class WindowsContainment implements ContainmentBackend {
   }
 }
 
+let runtimeJobHandle: number | null = null
+
 /**
  * Put the runtime itself in a kill-on-close job (Windows only).
  *
@@ -637,11 +673,15 @@ class WindowsContainment implements ContainmentBackend {
  * every descendant with it. Nested jobs are supported on Windows 8 and later;
  * the per-exec jobs above nest inside this one.
  *
+ * Idempotent: a second call is a no-op, because the handle already *is* the
+ * runtime's lifetime and creating another job would only add a second one.
+ *
  * Never throws: without job objects the worker's `taskkill /T` fallback stays in
  * charge, which is exactly today's behaviour.
  */
 export async function installRuntimeJobGuard(): Promise<boolean> {
   if (!IS_WINDOWS) return false
+  if (runtimeJobHandle) return true
   const k32 = await loadKernel32()
   if (!k32) return false
   try {
@@ -678,13 +718,6 @@ export async function installRuntimeJobGuard(): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-let runtimeJobHandle: number | null = null
-
-/** The runtime's own job handle, or `null` when job objects are unavailable. */
-export function runtimeJobGuardHandle(): number | null {
-  return runtimeJobHandle
 }
 
 // ---------------------------------------------------------------------------

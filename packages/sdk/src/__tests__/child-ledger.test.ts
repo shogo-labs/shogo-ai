@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -93,6 +93,22 @@ describe('child ledger storage', () => {
     expect(readChildLedger(workspace).map((e) => e.pid)).toEqual([second.pid])
   })
 
+  test('a lock left behind by a dead writer does not wedge the ledger', () => {
+    const workspace = tempWorkspace()
+    const lockPath = `${childLedgerPath(workspace)}.lock`
+    mkdirSync(dirname(lockPath), { recursive: true })
+    writeFileSync(lockPath, '', 'utf8')
+    const stale = new Date(Date.now() - 60_000)
+    utimesSync(lockPath, stale, stale)
+
+    const child = spawnSleeper()
+    addChildLedgerEntry(workspace, entryFor(child))
+
+    expect(readChildLedger(workspace).map((e) => e.pid)).toEqual([child.pid])
+    // Taken over, used, and released — the next writer must not find it.
+    expect(existsSync(lockPath)).toBe(false)
+  })
+
   test('a malformed ledger reads as empty instead of throwing', () => {
     const workspace = tempWorkspace()
     addChildLedgerEntry(workspace, entryFor(spawnSleeper()))
@@ -111,6 +127,24 @@ describe('child ledger storage', () => {
     // `ps` pads and folds whitespace; the comparison must not care.
     expect(matchesFingerprint(`  ${long.replace(/ && /g, '   &&   ')}  `, recorded)).toBe(true)
     expect(matchesFingerprint('bun run server.tsx', recorded)).toBe(false)
+  })
+
+  test('a recycled pid running a short command never matches a recorded shell', () => {
+    // The reverse comparison used to make every one of these a match, because
+    // "sh" and "bun" are substrings of `/bin/sh -c bun run dev`. A match here
+    // means `reapChildLedger` SIGKILLs an unrelated process's group.
+    const recorded: ChildLedgerEntry = {
+      pgid: 4242,
+      pid: 4242,
+      label: 'exec',
+      commandFingerprint: commandFingerprint('/bin/sh -c bun run dev --port 3001'),
+      startedAt: 0,
+    }
+    for (const current of ['sh', 'bash', '-bash', 'bun', 'node', '/bin/sh', 'dev']) {
+      expect(matchesFingerprint(current, recorded)).toBe(false)
+    }
+    // The same pid still running our command does match.
+    expect(matchesFingerprint('/bin/sh -c bun run dev --port 3001', recorded)).toBe(true)
   })
 })
 
@@ -170,6 +204,22 @@ describe('reapChildLedger', () => {
     expect(result.reaped.map((e) => e.pid)).toEqual([matching.pid as number])
     // A failed lookup is not evidence of a reused pid: keep it and retry.
     expect(readChildLedger(workspace).map((e) => e.pid)).toEqual([unreadable.pid as number])
+  })
+
+  test('an entry whose kill throws stays in the ledger for the next pass', () => {
+    const workspace = tempWorkspace()
+    const alive = spawnSleeper()
+    addChildLedgerEntry(workspace, entryFor(alive))
+
+    const result = reapChildLedger(workspace, {
+      readProcessCommand: () => `bash -c sleep 600 -- ${alive.pid}`,
+      killGroup: () => { throw new Error('EPERM') },
+    })
+
+    // Claiming a reap we did not do would strand the group with nothing left
+    // pointing at it; the entry has to survive so a later sweep retries.
+    expect(result.reaped).toEqual([])
+    expect(readChildLedger(workspace).map((e) => e.pid)).toEqual([alive.pid])
   })
 
   test('never signals our own group', () => {
