@@ -200,7 +200,7 @@ export async function slotSnapshot(workspaceId: string): Promise<SlotSnapshot> {
   const watching = [...(localRunIds.get(workspaceId) ?? [])]
   const [running, queued, positions] = await Promise.all([
     countKey(client, holdersKey(workspaceId)),
-    countKey(client, waitersKey(workspaceId)),
+    countWaiters(client, workspaceId),
     ranksOf(client, workspaceId, watching),
   ])
   return { limit, running, parked, queued, positions }
@@ -290,6 +290,34 @@ async function countKey(client: SlotRedis, key: string): Promise<number> {
   const n = await client
     .eval(`redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
 return redis.call('ZCARD', KEYS[1])`, 1, key, String(Date.now()))
+    .catch(() => 0)
+  return Number(n) || 0
+}
+
+/**
+ * Waiters whose pod is still alive. The waiters ZSET is scored by enqueue time
+ * (that is the FIFO order), so it cannot be pruned by score the way holders can:
+ * liveness lives in the parallel `alive` ZSET whose score *is* a lease. Counting
+ * the queue by score would delete the whole line every time someone looked at it.
+ */
+const COUNT_WAITERS = `
+local now = tonumber(ARGV[1])
+local n = 0
+local ids = redis.call('ZRANGE', KEYS[1], 0, -1)
+for i = 1, #ids do
+  local exp = redis.call('ZSCORE', KEYS[2], ids[i])
+  if exp and tonumber(exp) >= now then
+    n = n + 1
+  else
+    redis.call('ZREM', KEYS[1], ids[i])
+    redis.call('ZREM', KEYS[2], ids[i])
+  end
+end
+return n`
+
+async function countWaiters(client: SlotRedis, workspaceId: string): Promise<number> {
+  const n = await client
+    .eval(COUNT_WAITERS, 2, waitersKey(workspaceId), aliveKey(workspaceId), String(Date.now()))
     .catch(() => 0)
   return Number(n) || 0
 }
@@ -578,15 +606,20 @@ redis.call('ZREM', KEYS[3], ARGV[1])`,
     readyResolve()
   } else {
     signal?.addEventListener('abort', onAbort, { once: true })
-    // Join the queue, then ask to be admitted until a slot is free.
+    // Join the queue, then ask to be admitted until a slot is free. The waiter
+    // is scored by enqueue time (that is the FIFO order); its liveness entry is
+    // a lease, so it must be born in the future — an expired one would be swept
+    // by the very next tick, taking the run out of the line it just joined.
+    const joinedAt = Date.now()
     void client
       .eval(
-        `redis.call('ZADD', KEYS[1], 'NX', ARGV[1], ARGV[2])
-redis.call('ZADD', KEYS[2], 'NX', ARGV[1], ARGV[2])`,
-        1,
+        `redis.call('ZADD', KEYS[1], 'NX', ARGV[1], ARGV[3])
+redis.call('ZADD', KEYS[2], 'NX', ARGV[2], ARGV[3])`,
+        2,
         waitersKey(workspaceId),
         aliveKey(workspaceId),
-        String(Date.now()),
+        String(joinedAt),
+        String(joinedAt + HOLDER_LEASE_MS),
         runId,
       )
       .catch(() => {})

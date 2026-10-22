@@ -129,6 +129,31 @@ describe.skipIf(!url)('agent reply slots on Redis', () => {
     third.release()
   })
 
+  test('a queued run keeps its place across ticks and capacity reads', async () => {
+    // The waiter's score is its enqueue time, not a lease, so nothing may prune
+    // the line by score: a snapshot (which every capacity publish takes) must
+    // count live waiters, and the join must write a liveness lease that is still
+    // in the future when the next tick looks at it.
+    const ws = workspace()
+    const first = await enqueueAgentReplySlot({ workspaceId: ws, runId: 'run-a' })
+    const waiting = await enqueueAgentReplySlot({ workspaceId: ws, runId: 'run-b' })
+    expect(waiting.state()).toBe('queued')
+
+    expect((await slotSnapshot(ws)).queued).toBe(1)
+    expect((await slotSnapshot(ws)).queued).toBe(1)
+
+    // Longer than one admission poll: the waiter ticks, is swept by the cleanup,
+    // and would be gone if its lease had been written in the past.
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    expect(waiting.state()).toBe('queued')
+    expect(waiting.position()).toBe(1)
+    expect((await slotSnapshot(ws)).queued).toBe(1)
+
+    first.release()
+    await until(() => waiting.state() === 'running')
+    waiting.release()
+  })
+
   test('a dead pod frees its slot within one lease, and its waiter drops out', async () => {
     const ws = workspace()
     const now = Date.now()
