@@ -284,22 +284,62 @@ describe('tasks', () => {
       id: tasks.newTaskId(), chatSessionId, source: 'work_item', targetRef: 'card-loop', title: 'SHO-1 loop', until: 'agent (stopped|failed)',
     })
     const base = Date.now() - 60_000
-    // One row, re-armed and finished again each time: the wakes share a task id
-    // and a createdAt, so only `finishedAt` can tell them apart.
+    // One row re-armed for every milestone: the wakes share a task id and the
+    // row's own timestamps are cleared on re-arm, so the wake messages are the
+    // only place the repeat is visible.
     for (let i = 0; i < 3; i++) {
-      const at = new Date(base + i * 10_000)
-      await db.backgroundTask.update({ where: { id: watch.id }, data: { finishedAt: at } })
       await db.chatMessage.create({
         data: {
           sessionId: chatSessionId,
           role: 'user',
           content: `[Task update] ${watch.title} (${watch.id}) completed.`,
           parts: JSON.stringify([{ type: 'text', text: 'wake' }, { type: 'data-task-notification', data: { taskIds: [watch.id] } }]),
-          createdAt: new Date(at.getTime() + 1_000),
+          createdAt: new Date(base + i * 10_000),
         },
       })
     }
     expect(await tasks.consecutiveWakeWaits(chatSessionId, 40)).toBe(3)
+    // The same 45-milestone probe QA ran against the first attempt: past the cap.
+    for (let i = 3; i < 45; i++) {
+      await db.chatMessage.create({
+        data: {
+          sessionId: chatSessionId,
+          role: 'user',
+          content: '[Task update] milestone',
+          parts: JSON.stringify([{ type: 'data-task-notification', data: { taskIds: [watch.id] } }]),
+          createdAt: new Date(base + i * 10_000),
+        },
+      })
+    }
+    expect(await tasks.consecutiveWakeWaits(chatSessionId, 45)).toBeGreaterThan(tasks.MAX_CONSECUTIVE_CARD_WAKES)
+  })
+
+  test('tasks finishing one after another in one burst are still one wait', async () => {
+    const chatSessionId = await newSession()
+    // Three tasks that were already running when the burst started, finishing
+    // one at a time: no new work arrived, so the session must not pause.
+    const t0 = Date.now()
+    const ids = [tasks.newTaskId(), tasks.newTaskId(), tasks.newTaskId()]
+    for (const [i, id] of ids.entries()) {
+      await db.backgroundTask.create({
+        data: {
+          id, chatSessionId, source: 'agent_reply', targetRef: `req-${i}:ws`, title: `@Ops reply ${i}`,
+          status: 'completed', consumed: true, finishedAt: new Date(t0), expiresAt: new Date(t0 + 60_000),
+        },
+      })
+    }
+    for (const [i, id] of ids.entries()) {
+      await db.chatMessage.create({
+        data: {
+          sessionId: chatSessionId,
+          role: 'user',
+          content: '[Task update] reply',
+          parts: JSON.stringify([{ type: 'data-task-notification', data: { taskIds: [id] } }]),
+          createdAt: new Date(t0 + 1_000 + i * 1_000),
+        },
+      })
+    }
+    expect(await tasks.consecutiveWakeWaits(chatSessionId, tasks.MAX_CONSECUTIVE_WAKES)).toBe(1)
   })
 
   test('cancel stops tracking without waking anyone', async () => {

@@ -958,6 +958,12 @@ export function taskWakeBodyResetsRun(body: string | null | undefined): boolean 
  * it starts a new wait when it introduces a task created after it. A person
  * writing ends the run, and the oldest wake in it always counts as one.
  *
+ * A re-armed watch — one row per card, so it keeps its id and its `createdAt` —
+ * wakes on the same task again and again. That is a new wait each time, and it is
+ * read off the wake messages rather than the row, because re-arming clears the
+ * row (`finishedAt`, `notifiedAt`) before the cap is measured. Otherwise a card
+ * watch that keeps waking itself could never reach the cap (SHO-129).
+ *
  * A wake a person resumed from the composer (`wakeRunReset`) ends the run too:
  * that is the pause lifting, and the wake it delivers starts the count again.
  */
@@ -977,20 +983,19 @@ export async function consecutiveWakeWaits(chatSessionId: string, limit: number)
   if (taskWakeResetsRun(recent[0]!.parts)) return 1
 
   const ids = [...new Set(run.flatMap((wake) => wake.taskIds))]
-  const rows: Array<{ id: string; createdAt: Date; finishedAt: Date | null }> = ids.length
-    ? await db.backgroundTask.findMany({ where: { id: { in: ids } }, select: { id: true, createdAt: true, finishedAt: true } })
+  const rows: Array<{ id: string; createdAt: Date }> = ids.length
+    ? await db.backgroundTask.findMany({ where: { id: { in: ids } }, select: { id: true, createdAt: true } })
     : []
-  // A re-armed card watch keeps its id (one task per card), so `createdAt` says
-  // nothing about how many times it has woken its session. Its latest `finishedAt`
-  // does: a milestone that landed after the previous wake is a new wait, which is
-  // what stops a watch from waking on its own run forever (SHO-129).
-  const startedAt = new Map(rows.map((row) => [row.id, Math.max(row.createdAt.getTime(), row.finishedAt?.getTime() ?? 0)]))
+  const startedAt = new Map(rows.map((row) => [row.id, row.createdAt.getTime()]))
 
   let waits = 1
   for (let i = 0; i + 1 < run.length; i++) {
+    // The same task reporting twice in a row is a re-armed watch waking again.
+    const older = new Set(run[i + 1]!.taskIds)
+    const rearmed = run[i]!.taskIds.some((id) => older.has(id))
     let newestTaskAt = 0
     for (const id of run[i]!.taskIds) newestTaskAt = Math.max(newestTaskAt, startedAt.get(id) ?? 0)
-    if (newestTaskAt > run[i + 1]!.at.getTime()) waits++
+    if (rearmed || newestTaskAt > run[i + 1]!.at.getTime()) waits++
   }
   return waits
 }
