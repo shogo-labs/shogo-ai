@@ -6,15 +6,16 @@
  * replies (streaming text, the tool in use, Stop).
  */
 import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
+import { Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { createPortal } from 'react-dom'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
-import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, Headphones, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, NotebookPen, Pencil, Pin, SmilePlus, Trash2, UserPlus } from 'lucide-react-native'
+import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, ClipboardCopy, CornerDownRight, FileText, Headphones, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, NotebookPen, Pencil, Pin, SmilePlus, Trash2, UserPlus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import type { MentionTarget } from '../chat/file-links'
-import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
+import { SidebarContextMenu, type SidebarMenuEntry, type SidebarMenuItem } from '../layout/SidebarContextMenu'
+import { MessageActionSheet } from './MessageActionSheet'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl, type ReactionSummary } from '../../lib/team-chat-api'
 import { messageLink, openMessageLinkInApp } from '../../lib/team-chat-links'
 import { extractMessageQuotes } from '../../lib/message-quotes'
@@ -523,6 +524,21 @@ function MessageRowImpl(props: MessageRowProps) {
     const url = messageLink({ conversationId: message.conversationId, messageId: message.id, threadRootId: message.threadRootId })
     void Clipboard.setStringAsync(url).then(() => setCopied(true)).catch(() => {})
   }
+  const [copiedMessage, setCopiedMessage] = useState(false)
+  useEffect(() => {
+    if (!copiedMessage) return
+    const t = setTimeout(() => setCopiedMessage(false), 1500)
+    return () => clearTimeout(t)
+  }, [copiedMessage])
+  /**
+   * Copies what the message *reads as*, not what is stored. The stored form
+   * carries `<@u:id>` tokens, which would paste as UUIDs anywhere outside Shogo.
+   */
+  const copyMessage = () => {
+    const text = markdownToPlainText(renderMentions(message.text ?? '', names)).trim()
+    if (!text) return
+    void Clipboard.setStringAsync(text).then(() => setCopiedMessage(true)).catch(() => {})
+  }
   const markUnread = props.onMarkUnread && !inThread && !message.threadRootId ? () => props.onMarkUnread!(message) : null
   const pin = () => void api.pin(message.id, !message.pinned).catch(() => {})
   const save = () => void toggleSaved(message.id, !saved).catch(() => {})
@@ -548,59 +564,64 @@ function MessageRowImpl(props: MessageRowProps) {
     router.push({ pathname: '/(app)/work', params: { card: item.id } } as any)
   }
 
+  const [actionsOpen, setActionsOpen] = useState(false)
   const openActions = () => {
     if (deleted || message.pending) return
-    const options: Array<{ label: string; run: () => void; destructive?: boolean }> = [
-      ...QUICK_REACTIONS.slice(0, 4).map((emoji) => ({ label: emoji, run: () => toggleReact(emoji) })),
-      { label: 'Add reaction…', run: () => setPickerOpen(true) },
-    ]
-    if (props.onReply && !inThread) options.push({ label: 'Reply in thread', run: () => props.onReply!(message) })
-    options.push({ label: 'Copy link', run: copyLink })
-    if (markUnread) options.push({ label: 'Mark unread', run: markUnread })
-    options.push({ label: saved ? 'Remove from saved' : 'Save for later', run: save })
-    if (props.workspaceId) options.push({ label: 'Remind me in 1 hour', run: () => remind(REMIND_OPTIONS[1].at()) })
-    if (props.canPin) options.push({ label: message.pinned ? 'Unpin' : 'Pin to conversation', run: pin })
-    if (props.onMakeCard && canAct) options.push({ label: 'Make a card', run: () => props.onMakeCard!(message) })
-    if (mine && message.authorType === 'user') options.push({ label: 'Edit', run: () => { setDraft(message.text); setEditing(true) } })
-    if (mine || canManage) options.push({ label: 'Delete', run: () => props.onDelete(message), destructive: true })
-    if (Platform.OS === 'ios') {
-      const labels = [...options.map((o) => o.label), 'Cancel']
-      ActionSheetIOS.showActionSheetWithOptions(
-        { options: labels, cancelButtonIndex: labels.length - 1, destructiveButtonIndex: options.findIndex((o) => o.destructive) },
-        (i) => options[i]?.run(),
-      )
-    } else {
-      Alert.alert('Message', undefined, [
-        ...options.map((o) => ({ text: o.label, onPress: o.run, style: o.destructive ? ('destructive' as const) : ('default' as const) })),
-        { text: 'Cancel', style: 'cancel' as const },
-      ])
-    }
+    setActionsOpen(true)
   }
 
   const startEditing = () => { setDraft(message.text); setEditing(true) }
-  const menuItems = (): SidebarMenuEntry[] => {
+  /**
+   * The message menu, grouped the way Slack groups it. One model feeds both the
+   * web context menu and the native sheet, so the two can't drift apart.
+   *
+   * Reminders are a nested flyout rather than four flat rows: they are a family
+   * of the same action, not four separate ones.
+   */
+  const menuGroups = (): SidebarMenuItem[][] => {
     const icon = (Icon: typeof Link2, tone = 'text-muted-foreground') => <Icon size={14} className={tone} />
-    const items: SidebarMenuEntry[] = []
+    const groups: SidebarMenuItem[][] = []
     if (canAct) {
-      items.push({ label: copied ? 'Link copied' : 'Copy link', icon: icon(copied ? Check : Link2, copied ? 'text-primary' : undefined), onSelect: copyLink })
-      if (markUnread) items.push({ label: 'Mark unread', icon: icon(CircleDot), onSelect: markUnread })
-      items.push({ label: saved ? 'Remove from saved' : 'Save for later', icon: icon(Bookmark, saved ? 'text-primary' : undefined), onSelect: save })
+      const primary: SidebarMenuItem[] = []
+      if (props.onReply && !inThread) primary.push({ label: 'Reply in thread', icon: icon(MessageSquare), onSelect: () => props.onReply!(message) })
+      if (markUnread) primary.push({ label: 'Mark unread', icon: icon(CircleDot), onSelect: markUnread })
+      primary.push({ label: saved ? 'Remove from saved' : 'Save for later', icon: icon(Bookmark, saved ? 'text-primary' : undefined), onSelect: save })
       if (props.workspaceId) {
-        for (const o of REMIND_OPTIONS) {
-          items.push({ label: `Remind me: ${o.label.toLowerCase()}`, icon: icon(AlarmClock), onSelect: () => remind(o.at()) })
-        }
+        primary.push({
+          label: 'Add a reminder',
+          icon: icon(AlarmClock),
+          children: REMIND_OPTIONS.map((o) => ({ label: o.label, icon: icon(AlarmClock), onSelect: () => remind(o.at()) })),
+        })
       }
-      if (props.canPin) items.push({ label: message.pinned ? 'Unpin' : 'Pin to conversation', icon: icon(Pin, message.pinned ? 'text-amber-600' : undefined), onSelect: pin })
-      if (props.onMakeCard) items.push({ label: 'Make a card', icon: icon(KanbanSquare), onSelect: () => props.onMakeCard!(message) })
+      groups.push(primary)
+
+      groups.push([
+        { label: copied ? 'Link copied' : 'Copy link', icon: icon(copied ? Check : Link2, copied ? 'text-primary' : undefined), onSelect: copyLink },
+        { label: copiedMessage ? 'Message copied' : 'Copy message', icon: icon(copiedMessage ? Check : ClipboardCopy, copiedMessage ? 'text-primary' : undefined), onSelect: copyMessage },
+      ])
+
+      const organize: SidebarMenuItem[] = []
+      if (props.canPin) organize.push({ label: message.pinned ? 'Unpin' : 'Pin to conversation', icon: icon(Pin, message.pinned ? 'text-amber-600' : undefined), onSelect: pin })
+      if (props.onMakeCard) organize.push({ label: 'Make a card', icon: icon(KanbanSquare), onSelect: () => props.onMakeCard!(message) })
+      if (organize.length) groups.push(organize)
     }
-    if (mine && message.authorType === 'user') items.push({ label: 'Edit message', icon: icon(Pencil), onSelect: startEditing })
+    if (mine && message.authorType === 'user') {
+      groups.push([{ label: 'Edit message', icon: icon(Pencil), onSelect: startEditing }])
+    }
     if (mine || canManage) {
+      groups.push([{ label: 'Delete message', icon: icon(Trash2, 'text-destructive'), danger: true, onSelect: () => props.onDelete(message) }])
+    }
+    return groups.filter((group) => group.length > 0)
+  }
+  const menuItems = (): SidebarMenuEntry[] => {
+    const items: SidebarMenuEntry[] = []
+    for (const group of menuGroups()) {
       if (items.length) items.push({ separator: true })
-      items.push({ label: 'Delete message', icon: icon(Trash2, 'text-destructive'), danger: true, onSelect: () => props.onDelete(message) })
+      items.push(...group)
     }
     return items
   }
-  const hasMenu = !deleted && !message.pending && menuItems().length > 0
+  const hasMenu = !deleted && !message.pending && menuGroups().length > 0
   const closeMenu = useCallback(() => setMenu(null), [])
   const openMenuFromButton = (e: any) => {
     const rect = e?.currentTarget?.getBoundingClientRect?.()
@@ -1126,6 +1147,19 @@ function MessageRowImpl(props: MessageRowProps) {
         </View>
       )}
       {menu && <SidebarContextMenu x={menu.x} y={menu.y} items={menuItems()} onClose={closeMenu} />}
+      {actionsOpen && (
+        <MessageActionSheet
+          open={actionsOpen}
+          onClose={() => setActionsOpen(false)}
+          groups={menuGroups()}
+          reactions={QUICK_REACTIONS.slice(0, 5).map((emoji) => ({
+            emoji,
+            active: hasReacted(message.reactions, emoji, props.me),
+            onPress: () => toggleReact(emoji),
+          }))}
+          onAddReaction={() => setPickerOpen(true)}
+        />
+      )}
       {profileOpen && message.authorAgent && (
         <AgentProfileCard
           workspaceId={message.workspaceId}
