@@ -445,6 +445,24 @@ test.describe("Workspace switching (local mode)", () => {
       await tab1.waitForTimeout(2_000)
 
       await switchInPlace(tab1, WORKSPACE_B, { expectShell: false, label: "tab1" })
+      // Sample both tabs: a single poll cannot tell "the switch never landed"
+      // apart from "it landed and was dragged back", and the two-tab case is
+      // exactly the one the card's second criterion is about.
+      const timeline: string[] = []
+      for (let i = 0; i < 40; i++) {
+        const [name1, name2] = await Promise.all([
+          activeWorkspaceName(tab1).catch((error) => `err:${String(error).slice(0, 40)}`),
+          activeWorkspaceName(tab2).catch((error) => `err:${String(error).slice(0, 40)}`),
+        ])
+        const state = await pageState(tab1)
+        timeline.push(
+          `+${i * 500}ms tab1=${name1 ?? "?"} tab2=${name2 ?? "?"} ` +
+            `url=${"url" in state ? state.url : "?"} triggers=${"accountTriggers" in state ? state.accountTriggers : "?"}`,
+        )
+        if (name1 === WORKSPACE_B && i > 6) break
+        await tab1.waitForTimeout(500)
+      }
+      console.log(`[workspace-switch] two-tab timeline:\n${timeline.join("\n")}`)
       await expect.poll(() => activeWorkspaceName(tab1), { timeout: 30_000 }).toBe(WORKSPACE_B)
 
       // The other tab reacted to the storage change; if it wrote the old id
