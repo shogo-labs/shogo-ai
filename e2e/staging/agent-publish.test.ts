@@ -83,6 +83,35 @@ async function waitForSubdomainGone(
   return last
 }
 
+/**
+ * Does the published site actually serve right now?
+ *
+ * The delete→404 assertion below is only meaningful if the site was serving
+ * BEFORE the delete. On an environment whose published bucket does not feed the
+ * edge (staging has this today: every published project answers 404), a bare
+ * "is it 404 after deleting" check passes without proving anything — QA caught
+ * exactly that on round 1. So probe first, and skip with a reason when the
+ * environment cannot serve.
+ */
+async function probeServing(
+  page: Page,
+  subdomain: string,
+): Promise<{ serving: boolean; status: number | null }> {
+  const res = await page.request
+    .get(`https://${subdomain}.shogo.one/`, {
+      timeout: 20_000,
+      failOnStatusCode: false,
+    })
+    .catch(() => null)
+  const status = res ? res.status() : null
+  return {
+    // A gated site answers 401/403 and is still live; 404/410 means the edge
+    // has nothing for this host, and 5xx means it is broken, not published.
+    serving: status !== null && status < 500 && status !== 404 && status !== 410,
+    status,
+  }
+}
+
 test.describe("Agent publish (Pro)", () => {
   test.describe.configure({ mode: "serial" })
 
@@ -98,6 +127,14 @@ test.describe("Agent publish (Pro)", () => {
     test.setTimeout(300_000)
     const failures: string[] = []
     const origin = new URL(page.url()).origin
+
+    // Probe BEFORE deleting: a site that already answers 404 cannot prove the
+    // delete took it down, so that check is reported as skipped, not passed.
+    const wasServing = new Map<string, { serving: boolean; status: number | null }>()
+    for (const project of createdProjects) {
+      if (!project.subdomain) continue
+      wasServing.set(project.subdomain, await probeServing(page, project.subdomain))
+    }
 
     // Delete through the normal API: the project-delete hook is exactly what
     // SHO-138 fixed, and this doubles as the e2e for it.
@@ -124,9 +161,21 @@ test.describe("Agent publish (Pro)", () => {
       })),
     )
     for (const { subdomain, status } of gone) {
+      const before = wasServing.get(subdomain)
+      if (!before?.serving) {
+        console.warn(
+          `[publish-e2e] SKIPPED the delete-takes-the-site-down check for ` +
+            `${subdomain}.shogo.one: it answered ${before?.status ?? "nothing"} ` +
+            `BEFORE the delete, so a 404 now proves nothing. This environment ` +
+            `does not serve published sites (staging bucket/edge mismatch) — the ` +
+            `check only means something where a publish actually goes live.`,
+        )
+        continue
+      }
       if (status !== 404 && status !== 410) {
         failures.push(
-          `${subdomain}.shogo.one still served ${status} after its project was deleted`,
+          `${subdomain}.shogo.one served ${before.status} before its project was ` +
+            `deleted and still served ${status} after`,
         )
       }
     }
