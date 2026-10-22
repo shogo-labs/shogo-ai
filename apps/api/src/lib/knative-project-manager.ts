@@ -2023,6 +2023,51 @@ export class KnativeProjectManager {
   }
 
   /**
+   * Every published DomainMapping in the namespace — the `{subdomain}.shogo.one
+   * -> published-{id}` edge routes. Used by the orphaned-published-site reconcile
+   * sweep: a published ksvc's subdomain isn't derivable from the service, and the
+   * teardown needs the subdomain to purge the right S3 prefix / KV entries.
+   */
+  async listPublishedDomainMappings(): Promise<Array<{
+    projectId: string
+    subdomain: string
+    hostname: string
+    createdAtMs: number | null
+  }>> {
+    const publishDomain = process.env.PUBLISH_DOMAIN || 'shogo.one'
+    const api = getCustomApi()
+    try {
+      const response = await api.listNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: 'v1beta1',
+        namespace: this.namespace,
+        plural: 'domainmappings',
+        labelSelector: 'shogo.io/component=published-domain',
+      })
+      const items = ((response as any).items ?? []) as any[]
+      return items
+        .map((item) => {
+          const hostname: string = item.metadata?.name ?? ''
+          const projectId: string = item.metadata?.labels?.['shogo.io/project'] ?? ''
+          const suffix = `.${publishDomain}`
+          const subdomain = hostname.endsWith(suffix) ? hostname.slice(0, -suffix.length) : hostname
+          const created = item.metadata?.creationTimestamp
+          const createdAtMs = created ? Date.parse(created) : NaN
+          return {
+            projectId,
+            subdomain,
+            hostname,
+            createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : null,
+          }
+        })
+        .filter((d) => !!d.projectId && !!d.subdomain)
+    } catch (error: any) {
+      console.error('[KnativeProjectManager] Failed to list published DomainMappings:', error)
+      throw error
+    }
+  }
+
+  /**
    * Delete a published app's DomainMapping.
    */
   async deletePublishedDomainMapping(subdomain: string): Promise<void> {

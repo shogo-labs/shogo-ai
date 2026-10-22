@@ -143,6 +143,7 @@ import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
 import { localLogsRoutes } from './routes/local-logs'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
+import { publishedSiteSweepRoutes } from './routes/internal-published-sites'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
 import { DOCKER_CLASS_SETTING_KEY, setDockerClassOverride, loadDockerClassOverride } from './lib/runtime-class-setting'
@@ -158,7 +159,7 @@ import { historyRoutes } from './routes/history'
 import { voiceMediaRoutes } from './routes/voice-media'
 import { chatMentionRoutes } from './routes/chat-mentions'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
-import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
+import { createRuntimeManager, resolveRuntimeMaxCount, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
@@ -358,15 +359,17 @@ async function verifyProjectAccess(
  * Get or create the RuntimeManager singleton.
  *
  * Configurable via environment variables:
- * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: 10)
+ * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: preview + background pools + headroom,
+ *   see resolveRuntimeMaxCount)
  * - RUNTIME_DOMAIN_SUFFIX: Domain suffix for URLs (default: localhost)
  * - WORKSPACES_DIR: Directory containing project workspaces (default: PROJECT_ROOT/workspaces)
  */
 function getRuntimeManager(): IRuntimeManager {
   if (!runtimeManager) {
     const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    const maxRuntimes = resolveRuntimeMaxCount()
     runtimeManager = createRuntimeManager({
-      maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
+      maxRuntimes,
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
       templateDir: '_template',
@@ -382,7 +385,7 @@ function getRuntimeManager(): IRuntimeManager {
     setRuntimeManager(runtimeManager as ReturnType<typeof createRuntimeManager>)
     console.log('[Runtime] RuntimeManager initialized:', {
       portRange: '37100-37900 (random)',
-      maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
+      maxRuntimes,
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
     })
@@ -8805,6 +8808,13 @@ app.route('/api/internal/e2e', metalE2eRoutes())
 // bearer-token auth (METAL_REGISTER_TOKEN / SHOGO_INTERNAL_SECRET). See
 // apps/api/src/routes/metal.ts and lib/metal-warm-pool-controller.ts.
 app.route('/api/internal/metal', metalRoutes())
+
+// Orphaned published-site reconcile sweep (SHO-138). Mounted under
+// /api/internal/published-sites so it inherits the /api/internal/* auth-skip;
+// every handler requires the PUBLISHED_SITE_SWEEP_SECRET shared secret and is a
+// dry run unless it is explicitly asked to apply. See
+// apps/api/src/routes/internal-published-sites.ts.
+app.route('/api/internal/published-sites', publishedSiteSweepRoutes())
 
 // User/profile routes are shared by the local and cloud composers.
 app.route('/api', userProfileRoutes())
