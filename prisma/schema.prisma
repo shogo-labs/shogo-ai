@@ -1625,6 +1625,11 @@ model UsageEvent {
   @@index([projectId])
   @@index([memberId])
   @@index([createdAt])
+  // The Analytics reads are always "one workspace (or project) over a date
+  // window". Without the combination Postgres bitmap-ANDs the two single-column
+  // indexes and then disk-sorts the whole workspace (SHO-140).
+  @@index([workspaceId, createdAt])
+  @@index([projectId, createdAt])
   @@map("usage_events")
 }
 

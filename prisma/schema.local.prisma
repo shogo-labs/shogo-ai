@@ -1350,6 +1350,11 @@ model UsageEvent {
   @@index([projectId])
   @@index([memberId])
   @@index([createdAt])
+  // Mirrors prisma/schema.prisma: the Analytics reads are "one workspace over
+  // a date window", and the single-column indexes make SQLite re-check every
+  // row of the workspace (SHO-140).
+  @@index([workspaceId, createdAt])
+  @@index([projectId, createdAt])
   @@map("usage_events")
 }
 

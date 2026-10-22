@@ -97,9 +97,17 @@ test.describe("User Analytics", () => {
 
   const TEST_USER = makeTestUser()
   let page: Page
+  let workspaceId = ""
+  const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:8002"
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
+    // Remember the active workspace so the dashboard contract can be checked
+    // against the per-endpoint routes on the same rows.
+    page.on("request", (request) => {
+      const match = request.url().match(/\/api\/workspaces\/([^/]+)\//)
+      if (match && !workspaceId) workspaceId = match[1]
+    })
     await signUpAndOnboard(page, TEST_USER)
   })
 
@@ -220,5 +228,66 @@ test.describe("User Analytics", () => {
     expect(response.ok).toBe(true)
     expect(response.data).toHaveProperty("summaries")
     expect(response.data).toHaveProperty("totals")
+  })
+
+  // ── API: /workspaces/:id/analytics/dashboard (SHO-140) ─────────────────
+
+  // The Usage tab's request count is pinned in
+  // `apps/mobile/components/analytics/__tests__/WorkspaceUsagePanel.dashboard.rtl.test.tsx`
+  // (this suite signs up a free-plan workspace, where the panel is behind the
+  // Business gate). What is checked here is that the one endpoint the tab now
+  // calls answers, is authorised, and agrees with the endpoints it replaced.
+  test("API analytics dashboard agrees with the per-endpoint routes", async () => {
+    expect(workspaceId).not.toBe("")
+
+    const result = await page.evaluate(
+      async ({ apiUrl, ws }) => {
+        const get = async (endpoint: string, query: string) => {
+          const r = await fetch(`${apiUrl}/api/workspaces/${ws}/analytics/${endpoint}${query}`, {
+            credentials: "include",
+          })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const [dashboard, summary, log, spend] = await Promise.all([
+          get("dashboard", "?period=30d&limit=50"),
+          get("usage-summary", "?period=30d&page=1&limit=50"),
+          get("usage-log", "?period=30d&page=1&limit=50"),
+          get("spend-timeseries", "?period=30d&groupBy=model&metric=spend"),
+        ])
+        return { dashboard, summary, log, spend }
+      },
+      { apiUrl: API_URL, ws: workspaceId }
+    )
+
+    expect(result.dashboard.status).toBe(200)
+    const data = result.dashboard.body?.data
+    expect(data).toHaveProperty("summary")
+    expect(data).toHaveProperty("timeseries")
+    expect(data).toHaveProperty("usage")
+    expect(data).toHaveProperty("logCount")
+    expect(data.summary.totals).toHaveProperty("totalRequests")
+
+    // Same numbers as the routes it replaced, read from the same rows.
+    expect(data.summary.totals.totalRequests).toBe(
+      result.summary.body?.data?.totals?.totalRequests
+    )
+    expect(data.summary.total).toBe(result.summary.body?.data?.total)
+    expect(data.logCount).toBe(result.log.body?.data?.total)
+    expect(data.timeseries.models).toEqual(result.spend.body?.data?.models)
+    expect(data.timeseries.days.length).toBe(result.spend.body?.data?.days?.length)
+  })
+
+  test("API analytics dashboard refuses another workspace", async () => {
+    const status = await page.evaluate(
+      async (apiUrl) => {
+        const r = await fetch(
+          `${apiUrl}/api/workspaces/ws_not_mine/analytics/dashboard?period=30d`,
+          { credentials: "include" }
+        )
+        return r.status
+      },
+      API_URL
+    )
+    expect([403, 404]).toContain(status)
   })
 })
