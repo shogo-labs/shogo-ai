@@ -5,12 +5,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   memoryKillNote,
   sampleOnce,
+  sampleTreeRssKb,
   trackExecProcess,
   trackedExecPids,
 } from '../exec-memory-guard'
@@ -50,6 +51,32 @@ const readPids = () => JSON.parse(readFileSync(process.env.SHOGO_EXEC_PIDS_FILE!
 
 const fakeSample = (sizesMB: Record<number, number>) => async (roots: number[]) =>
   new Map(roots.filter((r) => r in sizesMB).map((r) => [r, sizesMB[r]! * 1024] as [number, number]))
+
+/** Bytes the over-budget test's child really holds: 192 MB, above the ceiling. */
+const MEMORY_HOG_MB = 192
+
+/**
+ * Ceiling for the integration test. A command budget, not a rounding test: far
+ * above a `sleep` (~2 MB) or a bare runtime's footprint, so only the memory the
+ * command really holds can breach it.
+ */
+const OVER_BUDGET_MB = 64
+
+/**
+ * Source of the child the over-budget test runs: hold the 192 MB above and
+ * write every page so the resident set is real rather than reserved, then idle
+ * long enough for the guard to sample it.
+ */
+const MEMORY_HOG_SCRIPT =
+  `const bytes = ${MEMORY_HOG_MB} * 1024 * 1024\n` +
+  `const hog = Buffer.alloc(bytes, 1)\n` +
+  `if (hog[0] !== 1 || hog[hog.length - 1] !== 1) process.exit(2)\n` +
+  `setTimeout(() => process.exit(0), 60000)\n`
+
+/** Quote a path for the shell `sandboxExecAsync` will run the command under. */
+function quotePath(value: string): string {
+  return process.platform === 'win32' ? `"${value}"` : `'${value.replace(/'/g, `'\\''`)}'`
+}
 
 describe('exec PID publishing', () => {
   test('writes live exec PIDs for the runtime watchdog and removes them on untrack', () => {
@@ -114,29 +141,61 @@ describe('memory budget for exec commands', () => {
 
 describe('sandboxExecAsync integration', () => {
   test('a command over budget is stopped and the reason lands in its output', async () => {
-    process.env.SHOGO_EXEC_MEMORY_MB = '1'
+    // What the command *is* has to matter: `sleep 30` is ~1.5 MB on
+    // ubuntu-24.04 and ~2 MB on macOS, so a 1 MB ceiling struck here and never
+    // on CI, no matter how many samples were taken. Run a child that really
+    // holds 192 MB instead, under a ceiling a plain process stays well below —
+    // so only the allocation can breach it.
+    process.env.SHOGO_EXEC_MEMORY_MB = String(OVER_BUDGET_MB)
     process.env.SHOGO_EXEC_MEMORY_STRIKES = '1'
-    const handle = sandboxExecAsync({ command: 'sleep 30', workspaceDir: dir })
+    const hogScript = join(dir, 'memory-hog.js')
+    writeFileSync(hogScript, MEMORY_HOG_SCRIPT)
+    const handle = sandboxExecAsync({
+      command: `${quotePath(process.execPath)} ${quotePath(hogScript)}`,
+      workspaceDir: dir,
+    })
     expect(trackedExecPids()).toContain(handle.pid!)
 
-    // One `ps` read is a snapshot of an instant: a process group that has just
-    // been forked can still read as empty (or under budget) on a loaded runner,
-    // and a single missed sample means the guard never strikes and `done` never
-    // resolves — which surfaces here as the 20 s timeout, not as a guard
-    // failure. Sample the way the real timer does, repeatedly, until the breach
-    // lands.
-    for (let i = 0; i < 40 && !handle.exited(); i++) {
-      await sampleOnce()
+    // Two things make a single reading unreliable on a loaded runner. The child
+    // is not holding its memory the moment it is spawned — it still has a
+    // runtime to start and 192 MB to touch — and a `ps` read can be slow enough
+    // that one sample lands before that. So keep sampling while the OS reports
+    // the group over the ceiling, and stop as soon as the guard has killed it.
+    // Sampling once and hoping is what turned "the guard never struck" into a
+    // 20 s test timeout with no guard output at all.
+    const ceilingKb = OVER_BUDGET_MB * 1024
+    const deadline = Date.now() + 20_000
+    let measuredKb = 0
+    while (Date.now() < deadline && !handle.exited()) {
+      const sizes = await sampleTreeRssKb([handle.pid!])
+      measuredKb = Math.max(measuredKb, sizes.get(handle.pid!) ?? 0)
+      if (measuredKb > ceilingKb) await sampleOnce()
       if (handle.exited()) break
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
-    const result = await handle.done
+    expect(measuredKb).toBeGreaterThan(ceilingKb)
+
+    const result = await Promise.race([
+      handle.done,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+    ])
+    if (!result) {
+      handle.kill('SIGKILL')
+      throw new Error(
+        `the guard did not stop a command the OS reports at ${Math.floor(measuredKb / 1024)} MB, ` +
+          `over the ${OVER_BUDGET_MB} MB ceiling`,
+      )
+    }
 
     expect(result.killed).toBe(true)
     expect(result.killReason).toContain('out of memory')
     expect(result.stderr).toContain('out of memory')
+    // The note reports what the guard measured, and that reading has to clear
+    // the ceiling — not merely be a command that looks big.
+    const reported = /using (\d+) MB/.exec(result.killReason ?? '')
+    expect(Number(reported?.[1])).toBeGreaterThan(OVER_BUDGET_MB)
     expect(trackedExecPids()).not.toContain(handle.pid!)
-  }, 20_000)
+  }, 60_000)
 
   test('a command that exits on its own is untracked', async () => {
     const handle = sandboxExecAsync({ command: 'echo hi', workspaceDir: dir })

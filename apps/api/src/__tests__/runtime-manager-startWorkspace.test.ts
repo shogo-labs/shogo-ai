@@ -140,6 +140,7 @@ function makeManager(opts: { agentStatus?: any; agentThrows?: Error; projectInfo
     stop: mock(async () => {}),
     status: mock(() => ({ status: 'running', agentPort: 38100 })),
     touch: mock(() => {}),
+    refreshActivity: mock(async () => {}),
   }
   return { rm, workspacesDir }
 }

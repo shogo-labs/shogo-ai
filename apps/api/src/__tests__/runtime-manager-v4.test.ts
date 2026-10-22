@@ -36,6 +36,7 @@ const {
   selectOrphanedRuntimePids,
   selectOrphanedViteWatcherPgids,
   __resetRuntimeManagerInternalsForTests,
+  resolveRuntimeMaxCount,
 } = await import('../lib/runtime/manager')
 
 const originalPlatform = process.platform
@@ -293,7 +294,11 @@ describe('createRuntimeManager / getRuntimeManager / setRuntimeManager', () => {
     delete process.env.WORKSPACES_DIR
     try {
       const rm = createRuntimeManager() as unknown as { config: { maxRuntimes: number; healthCheckInterval: number; domainSuffix: string; workspacesDir: string } }
-      expect(rm.config.maxRuntimes).toBe(10)
+      // The ceiling is derived, not a magic number: it must leave room for the
+      // warm preview pool, the background pool and a workspace session, or the
+      // global LRU starts evicting runtimes the pools deliberately kept (SHO-143).
+      expect(rm.config.maxRuntimes).toBe(resolveRuntimeMaxCount())
+      expect(rm.config.maxRuntimes).toBeGreaterThan(10)
       expect(rm.config.healthCheckInterval).toBe(30000)
       expect(rm.config.domainSuffix).toBe('localhost')
       expect(rm.config.workspacesDir).toContain('workspaces')

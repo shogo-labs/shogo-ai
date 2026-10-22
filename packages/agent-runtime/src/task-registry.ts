@@ -1155,6 +1155,30 @@ export class TaskRegistry {
     return n
   }
 
+  /**
+   * Counts for "is this runtime busy?", which is a different question from
+   * "will anything wake the agent?".
+   *
+   * `pendingNotifyCount()` only counts backgrounded, notify-enabled, non-stale
+   * tasks — so a foreground `exec` still running, a task the agent was told it
+   * would `wait` on, or a restored row whose process may still be alive all
+   * read as idle, and the host would kill the runtime out from under them
+   * (SHO-143). Here every running task counts, and so does every live child
+   * process, whether or not its row is fresh.
+   */
+  activeWorkCounts(): { tasks: number; children: number } {
+    let tasks = 0
+    let children = 0
+    for (const e of this.entries.values()) {
+      if (e.dormant) continue
+      if (this.isRunning(e)) tasks++
+      // A live handle is a live child process even when its row was marked
+      // stale by a gateway restart — the work is really still running.
+      if (e.handle && !e.handle.exited()) children++
+    }
+    return { tasks, children }
+  }
+
   // ---------------------------------------------------------------------------
   // Listing / UI
   // ---------------------------------------------------------------------------
