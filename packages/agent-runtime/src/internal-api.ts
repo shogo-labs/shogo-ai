@@ -2302,6 +2302,8 @@ export interface AgentCallResult {
   sessionId?: string
   /** The project chat (API ChatSession id) that records this call, when persisted. */
   chatSessionId?: string
+  /** Present when the callee reports why it could not run or reply. */
+  error?: { code?: string; message: string }
 }
 
 interface TrackedAgentCall {
@@ -2379,7 +2381,23 @@ export async function callProjectAgent(
   })
   if (!started.ok || !started.data) return started
   // An API without tracking already started the turn untracked; its reply lands in the project chat.
-  if (started.data.tracked !== true) return { ...started, data: { ...started.data, runId } }
+  if (started.data.tracked !== true) {
+    // `202 accepted` means the request was taken for processing, not that a turn
+    // ran (RFC 9110 §15.3.3) — and with no tracking we cannot poll for a reply,
+    // so reporting this as success hands the caller an empty answer.
+    if (!started.data.reply) {
+      const chat = started.data.chatSessionId ? ` in project chat ${started.data.chatSessionId}` : ''
+      return {
+        ok: false,
+        status: 502,
+        code: 'call_not_followed',
+        error:
+          'The call was accepted but not followed (this API cannot track calls), so its reply cannot be read ' +
+          `here. Read it${chat}, or call again without \`wait\` once the target API supports tracked calls.`,
+      }
+    }
+    return { ...started, data: { ...started.data, runId } }
+  }
 
   const deadline = Date.now() + timeoutMs
   let failures = 0

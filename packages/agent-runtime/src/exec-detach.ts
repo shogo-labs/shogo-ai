@@ -14,7 +14,7 @@
  * `cmd1 & cmd2 & wait` is allowed, since the shell waits for its jobs.
  */
 
-interface Segment {
+export interface Segment {
   words: string[]
   /** Operator that ended the segment (`&`, `&&`, `||`, `;`, `|`, `\n`), or '' at the end. */
   terminator: string
@@ -55,7 +55,7 @@ function readHeredocDelimiter(command: string, index: number): { delimiter: stri
 }
 
 /** Splits a command into simple commands at top-level operators, skipping quotes, comments and heredoc bodies. */
-function segmentsOf(command: string): Segment[] {
+export function segmentsOf(command: string): Segment[] {
   const segments: Segment[] = []
   let words: string[] = []
   let word = ''
@@ -158,7 +158,7 @@ function segmentsOf(command: string): Segment[] {
 }
 
 /** The command name of a simple command, past `VAR=value` assignments. */
-function commandName(words: string[]): string | undefined {
+export function commandName(words: string[]): string | undefined {
   return words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))
 }
 

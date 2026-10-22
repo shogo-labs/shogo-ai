@@ -46,13 +46,14 @@ function makeAgentManager(opts: {
   spawnError?: string
   instanceId?: string
   instanceResult?: any
+  instanceStatus?: string
   noInstance?: boolean
   getConfig?: (type: string) => any
   history?: any
 } = {}): any {
   const instanceId = opts.instanceId ?? 'inst-1'
   const instance = opts.noInstance ? null : {
-    status: 'completed',
+    status: opts.instanceStatus ?? 'completed',
     model: 'claude-sonnet-4-5',
     promise: Promise.resolve(opts.instanceResult ?? {
       toolCalls: 2,
@@ -479,5 +480,39 @@ describe('agent_spawn: what the parent model sees', () => {
     })
     const { modelText } = await runRaw(makeCtx({ agentManager: am }), { type: 'explore', prompt: 'find callers' })
     expect(JSON.parse(modelText).response).toBe('Found 3 call sites in src/api.')
+  })
+
+  test('a failed run sends the real error, not a placeholder', async () => {
+    const am = makeAgentManager({
+      instanceStatus: 'failed',
+      instanceResult: {
+        toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+        agentId: 'a', effectiveModelId: 'claude-sonnet-4-5',
+        responseText: '', responseEmpty: true,
+        error: { code: 'provider_error', message: 'provider 400: bad tool schema' },
+      },
+    })
+    const { details, modelText } = await runRaw(makeCtx({ agentManager: am }), { type: 'browser_qa', prompt: 'check it' })
+
+    const seen = JSON.parse(modelText)
+    expect(details.status).toBe('failed')
+    expect(details.error).toMatchObject({ message: 'provider 400: bad tool schema' })
+    expect(seen.error).toMatchObject({ message: 'provider 400: bad tool schema' })
+    expect(seen.reason).toBe('provider_error')
+    expect(seen.response).toContain('provider 400: bad tool schema')
+    expect(seen.response).not.toContain('returned no output')
+  })
+
+  test('a completed run with genuinely empty text still says so', async () => {
+    const am = makeAgentManager({
+      instanceResult: {
+        toolCalls: 1, iterations: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0,
+        agentId: 'a', effectiveModelId: 'claude-sonnet-4-5', responseText: '',
+      },
+    })
+    const { details, modelText } = await runRaw(makeCtx({ agentManager: am }), { type: 'explore', prompt: 'p' })
+    expect(details.status).toBe('completed')
+    expect(details.error).toBeUndefined()
+    expect(JSON.parse(modelText).response).toContain('returned no output')
   })
 })

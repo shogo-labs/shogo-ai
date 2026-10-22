@@ -2584,10 +2584,14 @@ export class AgentGateway {
   private getOrCreateCommandRegistry(sessionId: string): TaskRegistry {
     let reg = this.commandRegistries.get(sessionId)
     if (!reg) {
+      const outputDir = taskOutputDir(this.workspaceDir, sessionId)
       const registry = new TaskRegistry({
-        outputDir: taskOutputDir(this.workspaceDir, sessionId),
+        outputDir,
         workspaceDir: this.workspaceDir,
         remote: hasInternalApiCredentials() ? createApiTaskClient() : undefined,
+        // A late `wait` on a task whose entry was evicted reads the result back
+        // from its log instead of reporting the task as unknown.
+        resolveOutputRow: (id) => listTaskOutputRows(outputDir).find((row) => row.taskId === id) ?? null,
       })
       reg = registry
 
