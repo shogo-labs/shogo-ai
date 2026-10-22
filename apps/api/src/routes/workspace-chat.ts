@@ -79,6 +79,7 @@ import {
   startTurnHeartbeat,
 } from '../services/chat-turn-state.service'
 import { dispatchNext } from '../services/chat-queue-dispatcher.service'
+import { historySeedForTurn, lastUserPromptText } from '../services/chat-history-seed.service'
 import { trackUsageFromStream } from './project-chat'
 
 // Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
@@ -712,6 +713,18 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       runtimeExtra = args.extra
     } catch (err) {
       return mapSessionError(c, err)
+    }
+
+    // A typed turn carries no history of its own beyond the client's page of
+    // messages, so a cold or evicted runtime used to answer with no context at
+    // all (SHO-137 round 3, R4). Attach the durable seed; the runtime only
+    // applies it when its own session is empty.
+    if (!parsedBody.historySeed) {
+      const seed = await historySeedForTurn(sessionId, lastUserPromptText(parsedBody)).catch(() => null)
+      if (seed) {
+        parsedBody.historySeed = seed
+        body = JSON.stringify(parsedBody)
+      }
     }
 
     // A focused project is a per-turn hint, never a scope expansion, so it may

@@ -51,6 +51,12 @@ export interface FakeTurn {
   toolResults?: string
   userText: string
   /**
+   * The whole request body as sent. `userText` is only the last user message,
+   * so a spec that has to prove what *history* reached the model (a restored
+   * session, a summary block) reads `messages` from here.
+   */
+  body?: any
+  /**
    * The request body's `messages`, digested: role, tool names and content
    * length per message. A spec uses it to assert what the model was actually
    * shown — e.g. that turn 2 carried turn 1's tool calls and results verbatim
@@ -337,6 +343,7 @@ export class FakeLlmServer {
       startedAt: Date.now(),
       sentAt: [],
       userText,
+      body,
       messages: digestMessages(messages),
       ...(toolResults ? { toolResults } : {}),
     }

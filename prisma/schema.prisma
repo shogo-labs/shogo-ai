@@ -1784,6 +1784,16 @@ model ChatSession {
   cachedMessageCount    Int         @default(0)
   contextUsageTokens    Int         @default(0)
   contextWindowTokens   Int         @default(0)
+  // Durable summary of this chat's conversation up to
+  // `contextSummaryThroughCount` messages, written when a turn's transcript
+  // no longer fits its budget. It lives here — not in the runtime's
+  // `sessions.db` — so it outlives an evicted session, a pod restart and a
+  // machine that went to sleep: a prompt built after any of those still opens
+  // with what the conversation was about instead of a one-line wake note
+  // (SHO-137). Stable bytes until it is regenerated, so the prompt prefix
+  // stays cacheable.
+  contextSummary                  String? @db.Text
+  contextSummaryThroughCount      Int     @default(0)
   isPrimary             Boolean     @default(false)
   isPinned              Boolean     @default(false)
   isArchived            Boolean     @default(false)

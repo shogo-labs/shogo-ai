@@ -176,9 +176,20 @@ async function dispatchRow(row: QueueRow): Promise<void> {
     { type: 'text', text: row.content },
   ])
   const clientTurnId = `queue-${row.id}-${randomUUID()}`
+  // A queued turn (a wake, a message typed while the agent was busy) is a
+  // single message. If the runtime no longer holds this session — idle
+  // eviction, pod restart — the model would see one line and nothing else, so
+  // the stored conversation rides along (SHO-137).
+  const historySeed = await import('./chat-history-seed.service')
+    .then((m) => m.historySeedFor(row.sessionId, { excludeNewestUserMessage: true }))
+    .catch((err: Error) => {
+      console.warn(`[chat-queue] history seed for ${row.sessionId} failed:`, err.message)
+      return null
+    })
   const requestBody = {
     ...body,
     messages: [{ role: 'user', parts }],
+    ...(historySeed ? { historySeed } : {}),
     chatSessionId: row.sessionId,
     userId: row.userId,
     clientTurnId,

@@ -1990,6 +1990,55 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
   })
 
+  /**
+   * POST /api/internal/chat-sessions/:chatSessionId/context-summary
+   *   body: { summary }
+   *
+   * Called by the agent-runtime after it compacts a session, so the durable
+   * block on `ChatSession` keeps the runtime's own summary (SHO-137 round 3,
+   * R4). Losing `sessions.db` must never lose a summary, and the runtime's
+   * compaction sees tool steps the API's rows do not.
+   *
+   * The watermark is deliberately not written here: it counts the session's
+   * `ChatMessage` rows, and only `ensureDurableSummary` may move it. The
+   * summary text is adopted as-is; the next fold appends whatever it does not
+   * yet cover.
+   *
+   * Auth: K8s SA token (cluster) OR `x-runtime-token` (local desktop).
+   */
+  app.post('/chat-sessions/:chatSessionId/context-summary', async (c) => {
+    const chatSessionId = c.req.param('chatSessionId')
+    if (!chatSessionId) return c.json({ error: 'Missing chatSessionId' }, 400)
+
+    const { prisma } = await import('../lib/prisma')
+    const session = await prisma.chatSession.findUnique({
+      where: { id: chatSessionId },
+      select: { id: true, contextId: true, contextType: true },
+    })
+    if (!session) return c.json({ error: 'Chat session not found' }, 404)
+
+    const projectId = session.contextType === 'project' ? session.contextId ?? undefined : undefined
+    if (!(await validateAuth(c, projectId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    if (!body || typeof body !== 'object') return c.json({ error: 'Invalid JSON body' }, 400)
+    const summary = typeof body.summary === 'string' ? body.summary.trim() : ''
+    if (!summary) return c.json({ error: 'summary is required' }, 400)
+
+    try {
+      await prisma.chatSession.update({
+        where: { id: chatSessionId },
+        data: { contextSummary: summary.slice(0, 6000) },
+      })
+      return c.json({ ok: true })
+    } catch (err: any) {
+      console.error(`[Internal] Failed to store context summary for ${chatSessionId}:`, err.message)
+      return c.json({ error: 'Failed to store context summary' }, 500)
+    }
+  })
+
   // ---------------------------------------------------------------------------
   // Project lifecycle — create / attach / configure / call
   //

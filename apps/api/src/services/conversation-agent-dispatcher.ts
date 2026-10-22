@@ -60,6 +60,12 @@ import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conv
 import { publishReplyMedia } from './agent-reply-media'
 import { resolveAgentRunModel } from './agent-run-model.service'
 import {
+  fitThreadBudget,
+  historySeedFor,
+  newSinceLastAgentReply,
+  noteCarriedContext,
+} from './chat-history-seed.service'
+import {
   DEFAULT_STALE_AFTER_MS,
   markTurnEnded,
   markTurnStarted,
@@ -75,7 +81,8 @@ const DEFAULT_START_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 15_000]
 const DEFAULT_START_RETRY_BUDGET_MS = 3 * 60_000
 /** Safety cap so a zero delay cannot spin for the whole budget. */
 const MAX_START_RETRIES = 20
-const CONTEXT_MESSAGES = 20
+/** How many thread messages to scan when fitting the prompt budget. */
+const THREAD_CONTEXT_SCAN = 400
 /** Each streamed-reply update is a database write plus a broadcast; once a second reads as live. */
 const DELTA_THROTTLE_MS = 1_000
 /** A workspace file read for a reply's media; a slow runtime must not hold the reply. */
@@ -256,6 +263,8 @@ export interface InvokeArgs {
   userId: string
   prompt: string
   signal: AbortSignal
+  /** The conversation this one-message turn must carry (see chat-history-seed). */
+  historySeed?: { summary: string | null; messages: Array<{ role: 'user' | 'assistant'; text: string }> } | null
 }
 
 const running = new Map<string, AbortController>()
@@ -1084,41 +1093,69 @@ async function buildPrompt(args: {
   workspaceName: string
   chain: AgentChain
   contextMode?: string
+  /** The ChatSession this reply runs in — where the durable summary lives. */
+  chatSessionId?: string | null
 }): Promise<string> {
-  const { conversation, trigger, threadRootId, reusedSession, name, workspaceName, chain } = args
+  const { conversation, trigger, threadRootId, name, workspaceName, chain } = args
   if (args.contextMode === 'isolated') {
     return buildIsolatedPrompt({ conversation, trigger, threadRootId, name, workspaceName, chain })
   }
+  // The prompt carries only what is new since this agent's last reply (R3).
+  // Everything older is covered by `historySeed` — the durable summary plus the
+  // verbatim tail — and in a cold runtime that seed is what rebuilds the
+  // session. Sending the whole thread instead made every turn re-send the
+  // channel, and since each `ChatMessage` row *is* a full prompt, tokens grew
+  // quadratically in a long thread and the seed then restored those duplicates
+  // (SHO-137 round 3).
   let history: any[]
   if (threadRootId) {
     history = await db.conversationMessage.findMany({
       where: { conversationId: conversation.id, OR: [{ id: threadRootId }, { threadRootId }], deletedAt: null },
       orderBy: { seq: 'desc' },
-      take: CONTEXT_MESSAGES,
+      take: THREAD_CONTEXT_SCAN,
       include: TRANSCRIPT_INCLUDE,
     })
   } else {
     history = await db.conversationMessage.findMany({
       where: { conversationId: conversation.id, threadRootId: null, deletedAt: null, seq: { lte: trigger.seq } },
       orderBy: { seq: 'desc' },
-      take: reusedSession ? 6 : CONTEXT_MESSAGES,
+      take: THREAD_CONTEXT_SCAN,
       include: TRANSCRIPT_INCLUDE,
     })
   }
   history = history.reverse().filter((m) =>
     (m.text?.trim() || m.attachments?.length) && !(m.authorType === 'agent' && m.agentStatus === 'running'))
 
-  if (reusedSession) {
-    const lastAgentIdx = history.map((m) => m.authorType).lastIndexOf('agent')
-    const triggerIdx = history.findIndex((m) => m.id === trigger.id)
-    // Normally the wake is the newest thing here, so drop what the session already
-    // has. A wake queued behind a live reply can predate it (a settled reply moves
-    // to the end of the thread), and then its own tail is what it needs to see —
-    // never an empty prompt.
-    if (lastAgentIdx >= 0 && triggerIdx >= 0) {
-      history = triggerIdx > lastAgentIdx ? history.slice(lastAgentIdx + 1) : history.slice(triggerIdx)
-    }
-  }
+  // Only what is new since the last agent reply in this scope. When nothing has
+  // been answered yet (or the trigger predates that reply) the cut is the
+  // trigger itself, exactly as before SHO-137.
+  //
+  // Only when this agent already has a session for the thread: that is the case
+  // R3 optimises for (the older thread is in its context, and `historySeed`
+  // rebuilds it if the runtime lost it). On a thread this agent has no session
+  // for yet — its first turn — there is nothing to rebuild from, so cutting the
+  // discussion out of the prompt is how a shared agent asked to review a
+  // thread stopped seeing it (SHO-137 round 4).
+  if (args.reusedSession) history = newSinceLastAgentReply(history, trigger?.id ?? null)
+
+  const budgeted = fitThreadBudget(history)
+  history = budgeted.kept
+  // The durable summary is the one that ships: stored on the ChatSession, over
+  // this session's own messages, written by exactly one path (`ensureDurableSummary`).
+  const seed = args.chatSessionId
+    ? await historySeedFor(args.chatSessionId).catch((err: Error) => {
+        console.warn(`[ChannelAgent] history seed for ${args.chatSessionId} failed:`, err.message)
+        return null
+      })
+    : null
+  const summary = seed?.summary ?? null
+  // A prompt that suddenly carries less of the conversation than the last one
+  // is the failure this card exists for. Say so in the turn log — a confused
+  // reply is not a diagnosis (SHO-137).
+  noteCarriedContext(args.chatSessionId ?? null, history.length, {
+    elided: budgeted.elided,
+    summarised: !!summary,
+  })
 
   const transcript = await renderTranscript(conversation.workspaceId, history, trigger.id)
 
@@ -1128,16 +1165,21 @@ async function buildPrompt(args: {
       ? 'a direct message between teammates'
       : `the #${conversation.name ?? 'channel'} channel`
   const surface = PROVIDER_SURFACE[conversation.provider] ?? 'Shogo'
+  const channelDocContextLines = await channelDocContext(conversation)
   const lines = [
     `You are ${name}, a teammate in ${where} of the "${workspaceName}" workspace's team chat in ${surface}.`,
     threadRootId ? 'You are replying inside a thread; the thread so far is below.' : 'Recent messages are below.',
+    ...(summary
+      ? ['Older messages are condensed into a summary below; the most recent ones are verbatim after it.']
+      : []),
     'Reply to the latest message addressed to you. Write concise Markdown suitable for a chat message.',
     'Do real work with your tools when asked. The team sees only your final reply here; your full session is linked from it.',
     ...chainContext(conversation, trigger, threadRootId, chain),
     ...(history.some((m) => m.attachments?.length)
       ? ['Files attached below can be read or searched with fetch_chat_files (pass the file id); download one only when you need the raw file.']
       : []),
-    ...(await channelDocContext(conversation)),
+    ...channelDocContextLines,
+    ...(summary ? ['', '[Earlier in this conversation]', summary] : []),
     '',
     transcript,
   ]
@@ -1226,9 +1268,21 @@ export async function agentModeFor(projectId: string | null, workspaceId?: strin
 }
 
 async function invokeChat(args: InvokeArgs): Promise<Response> {
-  if (config.invoke) return config.invoke(args)
+  // Every turn this module starts carries exactly one message, so the runtime
+  // has nothing to rebuild an evicted session from. Attach the conversation
+  // the API already stores, with the durable summary for anything older than
+  // the tail (SHO-137).
+  const historySeed = args.historySeed !== undefined
+    ? args.historySeed
+    : await historySeedFor(args.sessionId, { excludeNewestUserMessage: true }).catch((err: Error) => {
+        console.warn(`[ChannelAgent] history seed for ${args.sessionId} failed:`, err.message)
+        return null
+      })
+  const call = { ...args, historySeed }
+  if (config.invoke) return config.invoke(call)
   const body = JSON.stringify({
     messages: [{ role: 'user', parts: [{ type: 'text', text: args.prompt }] }],
+    ...(historySeed ? { historySeed } : {}),
     chatSessionId: args.sessionId,
     userId: args.userId,
     agentMode: await agentModeFor(args.projectId, args.workspaceId),
@@ -1732,6 +1786,7 @@ async function runReservedReply(
     // or still waking already shows what was asked.
     const prompt = await buildPrompt({
       conversation, trigger, threadRootId, reusedSession: !!reused, name, workspaceName: workspace?.name ?? 'workspace', chain, contextMode,
+      chatSessionId: sessionId,
     })
     const dispatch = await channelDispatchFor({ conversation, trigger, threadRootId, name, contextMode })
     await db.chatMessage.create({

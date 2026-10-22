@@ -23,7 +23,12 @@ const service = await import('../services/conversation.service')
 const db = prisma as any
 let seed: SeededWorkspace
 let agentAuth: { projectId: string | null | undefined } = { projectId: null }
-let invocations: Array<{ projectId: string | null; sessionId: string; prompt: string }> = []
+let invocations: Array<{
+  projectId: string | null
+  sessionId: string
+  prompt: string
+  historySeed?: { summary: string | null; messages: Array<{ role: string; text: string }> } | null
+}> = []
 let replyText = 'Here is the summary.'
 
 const app = new Hono()
@@ -53,7 +58,12 @@ beforeEach(() => {
   dispatcher._resetDispatcherForTests()
   dispatcher.configureConversationAgentDispatcher({
     invoke: async (args) => {
-      invocations.push({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.prompt })
+      invocations.push({
+        projectId: args.projectId,
+        sessionId: args.sessionId,
+        prompt: args.prompt,
+        historySeed: args.historySeed ?? null,
+      })
       return sseResponse([
         { type: 'start' },
         { type: 'text-start', id: 't1' },
@@ -459,7 +469,14 @@ describe('@agent threads', () => {
     expect(invocations).toHaveLength(2)
     expect(invocations[1].sessionId).toBe(invocations[0].sessionId)
     expect(invocations[1].prompt).toContain('and last month?')
+    // R3 (SHO-137): a warm turn carries only the traffic since this agent's last
+    // reply — re-sending the whole thread every turn made tokens grow
+    // quadratically, since every stored row is a full prompt. The earlier turn
+    // is not lost: it rides along in the durable seed, which the runtime uses
+    // whenever it has no session of its own.
     expect(invocations[1].prompt).not.toContain('summarize the invoices')
+    const seeded = (invocations[1].historySeed?.messages ?? []).map((m) => m.text).join('\n')
+    expect(seeded).toContain('summarize the invoices')
   })
 
   test('the workspace agent gets a workspace session; agent DMs reply without an @mention', async () => {
