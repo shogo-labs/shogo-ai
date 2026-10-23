@@ -18,6 +18,7 @@
 import { useCallback, useState } from 'react'
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -27,13 +28,16 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useFocusEffect } from 'expo-router'
+import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import {
   CalendarDays,
   CheckCheck,
   Instagram,
   MessageCircle,
+  Music2,
   Pause,
   Play,
+  RefreshCw,
   Send,
   Trash2,
   Workflow,
@@ -58,6 +62,16 @@ function errorMessage(cause: unknown, fallback: string): string {
   return fallback
 }
 
+/**
+ * Platforms that can be connected from this screen. Zernio accepts any platform
+ * slug, but these are the two Russell asked for and the two whose sign-in we can
+ * describe accurately ("professional account", "creator inbox").
+ */
+const CONNECTABLE: Array<{ platform: string; label: string; icon: typeof Instagram }> = [
+  { platform: 'instagram', label: 'Instagram', icon: Instagram },
+  { platform: 'tiktok', label: 'TikTok', icon: Music2 },
+]
+
 export default function SocialScreen() {
   const http = useDomainHttp()
   const workspace = useActiveWorkspace()
@@ -75,6 +89,8 @@ export default function SocialScreen() {
   const [conversations, setConversations] = useState<any[]>([])
   const [comments, setComments] = useState<any[]>([])
   const [thread, setThread] = useState<{ id: string; messages: any[] } | null>(null)
+  const [connecting, setConnecting] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const base = `/api/workspaces/${workspaceId}/social`
 
@@ -89,6 +105,27 @@ export default function SocialScreen() {
     [base, http],
   )
 
+  /**
+   * Ask the provider what this workspace now has connected, then fall back to
+   * the rows we already hold. A connect that finished in the browser writes
+   * nothing locally until something syncs, so the sync is what makes a
+   * just-connected account appear; when the sync itself cannot run (no Shogo
+   * Cloud on desktop) its plain-language reason is worth showing.
+   */
+  const syncAccounts = useCallback(async (): Promise<any[] | null> => {
+    try {
+      const res = await call('/accounts/sync', { method: 'POST' })
+      if (Array.isArray(res?.accounts)) return res.accounts
+    } catch (cause) {
+      setNotice(errorMessage(cause, 'Could not refresh your connected accounts'))
+    }
+    try {
+      const res = await call('/accounts')
+      if (Array.isArray(res?.accounts)) return res.accounts
+    } catch {}
+    return null
+  }, [call])
+
   const load = useCallback(
     async (refresh = false) => {
       if (!workspaceId) return
@@ -96,12 +133,12 @@ export default function SocialScreen() {
       else setLoading(true)
       try {
         setError(null)
-        const [accountRes, automationRes, analyticsRes] = await Promise.all([
-          call('/accounts').catch(() => null),
+        const [synced, automationRes, analyticsRes] = await Promise.all([
+          syncAccounts(),
           call('/automations?limit=50').catch(() => null),
           call('/analytics').catch(() => null),
         ])
-        setAccounts(Array.isArray(accountRes?.accounts) ? accountRes.accounts : [])
+        if (synced) setAccounts(synced)
         setAutomations(Array.isArray(automationRes?.automations) ? automationRes.automations : [])
         setAnalytics(analyticsRes ?? null)
       } catch (cause) {
@@ -111,7 +148,54 @@ export default function SocialScreen() {
         setRefreshing(false)
       }
     },
-    [call, workspaceId],
+    [call, syncAccounts, workspaceId],
+  )
+
+  /**
+   * Mint a sign-in link and hand it to the user's browser. The link is the only
+   * thing that crosses this boundary — the person signs in on the platform's own
+   * page, and their password never reaches Shogo.
+   *
+   * The tab is created before the API call (see `preCreateAuthWindow`) so a
+   * mobile browser's popup blocker does not eat it, and the account list is
+   * reconciled once the sign-in window goes away.
+   *
+   * `reconnectAccountId` is set when the row already exists but its token died,
+   * so the platform re-authorises that account instead of adding a second one.
+   */
+  const connectAccount = useCallback(
+    async (platform: string, reconnectAccountId?: string) => {
+      if (connecting) return
+      setConnecting(reconnectAccountId ?? platform)
+      setNotice(null)
+      const preWindow = Platform.OS === 'web' ? preCreateAuthWindow() : null
+      try {
+        const res = await call('/connect', {
+          method: 'POST',
+          body: { platform, ...(reconnectAccountId ? { reconnectAccountId } : {}) },
+        })
+        const url = typeof res?.url === 'string' ? res.url.trim() : ''
+        if (!url) throw new Error('The platform did not return a sign-in link. Try again in a moment.')
+        await openAuthFlow(url, { preCreatedWindow: preWindow })
+        // The sign-in happens in another window, so whatever came back is
+        // already stale — reconcile before showing the list again.
+        const synced = await syncAccounts()
+        if (synced) setAccounts(synced)
+      } catch (cause) {
+        setNotice(errorMessage(cause, `Could not start the ${platform} sign-in`))
+      } finally {
+        setConnecting(null)
+        try {
+          if (preWindow && !preWindow.closed) {
+            const location = preWindow.location.href
+            if (location === 'about:blank' || location === '') preWindow.close()
+          }
+        } catch {
+          /* COOP severs the reference — nothing to clean up */
+        }
+      }
+    },
+    [call, connecting, syncAccounts],
   )
 
   const loadTab = useCallback(
@@ -174,6 +258,9 @@ export default function SocialScreen() {
       {error ? (
         <Text className="px-4 pb-2 text-xs text-red-600">{error}</Text>
       ) : null}
+      {notice ? (
+        <Text className="px-4 pb-2 text-xs text-amber-600">{notice}</Text>
+      ) : null}
 
       {loading ? (
         <View className="flex-1 items-center justify-center">
@@ -194,7 +281,12 @@ export default function SocialScreen() {
           }
         >
           {tab === 'accounts' ? (
-            <AccountsTab accounts={accounts} analytics={analytics} />
+            <AccountsTab
+              accounts={accounts}
+              analytics={analytics}
+              connecting={connecting}
+              onConnect={connectAccount}
+            />
           ) : null}
           {tab === 'compose' ? <ComposeTab accounts={accounts} call={call} onSent={() => void load(true)} /> : null}
           {tab === 'calendar' ? <CalendarTab posts={calendar} /> : null}
@@ -251,31 +343,98 @@ function Card({ children }: { children: React.ReactNode }) {
   return <View className="rounded-xl border border-border p-3 gap-1">{children}</View>
 }
 
-function AccountsTab({ accounts, analytics }: { accounts: any[]; analytics: any | null }) {
+function AccountsTab({
+  accounts,
+  analytics,
+  connecting,
+  onConnect,
+}: {
+  accounts: any[]
+  analytics: any | null
+  /** The platform or account id whose sign-in is currently being opened. */
+  connecting: string | null
+  onConnect: (platform: string, reconnectAccountId?: string) => void
+}) {
   return (
     <>
+      <Card>
+        <Text className="text-foreground font-medium">Connect an account</Text>
+        <View className="flex-row flex-wrap gap-2 mt-1">
+          {CONNECTABLE.map((entry) => {
+            const Icon = entry.icon
+            const busy = connecting === entry.platform
+            return (
+              <Pressable
+                key={entry.platform}
+                disabled={!!connecting}
+                onPress={() => onConnect(entry.platform)}
+                className={`flex-row items-center gap-1.5 px-3 py-2 rounded-lg border ${
+                  connecting ? 'border-border opacity-60' : 'border-border'
+                }`}
+              >
+                {busy ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <Icon size={14} className="text-foreground" />
+                )}
+                <Text className="text-xs font-medium text-foreground">
+                  Connect {entry.label}
+                </Text>
+              </Pressable>
+            )
+          })}
+        </View>
+        <Text className="text-[11px] text-muted-foreground mt-1">
+          You sign in on the platform's own page — Shogo never sees your password.
+          Instagram needs a professional (Business or Creator) account, and it
+          switches your account over during that sign-in.
+        </Text>
+      </Card>
+
       {accounts.length === 0 ? (
         <Card>
-          <Text className="text-foreground font-medium">No accounts connected</Text>
+          <Text className="text-foreground font-medium">No accounts connected yet</Text>
           <Text className="text-xs text-muted-foreground">
-            Connect an account from the desktop app or with the agent, then pull to refresh.
+            Use one of the buttons above, then pull to refresh once you are back.
+            On desktop, Shogo Cloud has to be connected first — social accounts go
+            through it.
           </Text>
         </Card>
       ) : (
-        accounts.map((account) => (
-          <Card key={account.id}>
-            <View className="flex-row items-center gap-2">
-              <Instagram size={16} className="text-muted-foreground" />
-              <Text className="text-foreground font-medium">
-                {account.platform} @{account.username}
+        accounts.map((account) => {
+          const needsAttention = !account.isActive || account.needsReconnect
+          const busy = connecting === account.id || connecting === account.platform
+          const Icon =
+            CONNECTABLE.find((entry) => entry.platform === account.platform)?.icon ?? Instagram
+          return (
+            <Card key={account.id}>
+              <View className="flex-row items-center gap-2">
+                <Icon size={16} className="text-muted-foreground" />
+                <Text className="text-foreground font-medium flex-1">
+                  {account.platform} @{account.username}
+                </Text>
+              </View>
+              <Text className="text-xs text-muted-foreground">
+                {account.isActive ? 'Connected' : 'Needs reconnecting'}
+                {account.needsReconnect ? ' — token expired' : ''}
               </Text>
-            </View>
-            <Text className="text-xs text-muted-foreground">
-              {account.isActive ? 'Connected' : 'Needs reconnecting'}
-              {account.needsReconnect ? ' — token expired' : ''}
-            </Text>
-          </Card>
-        ))
+              {needsAttention ? (
+                <Pressable
+                  disabled={!!connecting}
+                  onPress={() => onConnect(account.platform, account.id)}
+                  className="flex-row items-center gap-1.5 self-start px-2.5 py-1.5 mt-1 rounded-lg border border-border"
+                >
+                  {busy ? (
+                    <ActivityIndicator size="small" />
+                  ) : (
+                    <RefreshCw size={12} className="text-foreground" />
+                  )}
+                  <Text className="text-xs font-medium text-foreground">Reconnect</Text>
+                </Pressable>
+              ) : null}
+            </Card>
+          )
+        })
       )}
 
       {analytics?.engagement ? (

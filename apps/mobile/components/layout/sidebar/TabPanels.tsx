@@ -75,8 +75,11 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
   const workspace = useActiveWorkspace()
   const [social, setSocial] = useState(false)
 
-  // The link follows the accounts, not a flag: `/social/accounts` is a 403 on a
-  // workspace whose social management is off, and any failure simply hides it.
+  // Social management is a capability, not a consequence of having connected an
+  // account: a 200 from `/social/status` means this workspace may manage social
+  // accounts — even with none connected, and even on desktop without Shogo Cloud
+  // (`mode: 'unavailable'` still answers 200, and that screen is where the relay
+  // requirement gets explained). Anything that fails to answer hides the link.
   useEffect(() => {
     const workspaceId = workspace?.id
     if (!workspaceId) {
@@ -85,9 +88,9 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
     }
     let cancelled = false
     http
-      .get<{ accounts?: unknown[] }>(`/api/workspaces/${workspaceId}/social/accounts`)
-      .then((res: any) => {
-        if (!cancelled) setSocial(Array.isArray(res?.data?.accounts) && res.data.accounts.length > 0)
+      .get(`/api/workspaces/${workspaceId}/social/status`)
+      .then(() => {
+        if (!cancelled) setSocial(true)
       })
       .catch(() => {
         if (!cancelled) setSocial(false)
