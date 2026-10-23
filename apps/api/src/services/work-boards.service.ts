@@ -947,6 +947,11 @@ export async function nudgeAgentOnMove(itemId: string, agentRef: string, actor: 
       attempts: 0,
       claimedAt: null,
       lastError: null,
+      // A hint has no note and no send-now: clear anything the row picked up
+      // while it was a real wake for this trigger.
+      chatSessionId: null,
+      noteMessageId: null,
+      sendNowAt: null,
     },
   })
   if (!rearmed.count) {

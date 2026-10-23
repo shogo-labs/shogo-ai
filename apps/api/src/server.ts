@@ -87,6 +87,7 @@ import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from './routes/chat-message-feedback'
 import { createChatSessionForkRoutes } from './routes/chat-session-fork'
 import { chatQueuedMessageActionsRoutes } from './routes/chat-queued-message-actions'
+import { agentWakeRoutes } from './routes/agent-wakes'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { socialRelayRoutes, socialRoutes, socialWebhookRoutes } from './routes/social'
 import {
@@ -9073,6 +9074,9 @@ app.route('/api/invitations', invitationInfoRoutes())
 // to the generated `/:id` PATCH/DELETE handlers in chat-message.routes.ts.
 app.route('/api/chat-messages', createChatMessageEditRoutes())
 app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
+// The queue of team-chat wakes waiting behind a live reply: send one now, or
+// take it off the queue (SHO-167). No generated router claims `/agent-wakes`.
+app.route('/api', agentWakeRoutes({ resolveUserId: getAuthUserId }))
 
 // Turn feedback (thumbs up/down) — PUT/DELETE /:id/feedback on a message,
 // GET /:id/feedback on a session (the caller's own reactions, keyed by

@@ -19,6 +19,7 @@ import {
   Trash2,
   WifiOff,
   AlertTriangle,
+  AlarmClock,
   Image as ImageIcon,
   ListOrdered,
   PauseCircle,
@@ -39,6 +40,9 @@ export interface QueueDockPanelProps {
   onEditQueuedMessage?: (messageId: string) => void
   onSendQueuedMessageNow?: (messageId: string) => void
   onResumeTaskWakes?: (messageId: string) => void
+  /** Team-chat wakes: their own queue, so their own routes. */
+  onSendAgentWakeNow?: (wakeId: string) => void
+  onRemoveAgentWake?: (wakeId: string) => void
 }
 
 /** The agent's own updates, held back by a wake pause. Never a queued message. */
@@ -48,7 +52,16 @@ export function waitingTaskWakes(queuedMessages: QueuedMessage[]): QueuedMessage
 
 /** The messages a person actually typed and is still waiting on. */
 export function chatQueuedMessages(queuedMessages: QueuedMessage[]): QueuedMessage[] {
-  return queuedMessages.filter((msg) => msg.kind !== "task_wake")
+  return queuedMessages.filter(
+    (msg) => msg.kind !== "task_wake" && msg.kind !== "agent_wake",
+  )
+}
+
+/** Team-chat messages waiting behind a reply: one `AgentWake` row each. */
+export function agentWakeMessages(
+  queuedMessages: QueuedMessage[],
+): QueuedMessage[] {
+  return queuedMessages.filter((msg) => msg.kind === "agent_wake")
 }
 
 /**
@@ -152,12 +165,67 @@ function QueueBody({
   onEditQueuedMessage,
   onSendQueuedMessageNow,
   onResumeTaskWakes,
+  onSendAgentWakeNow,
+  onRemoveAgentWake,
 }: QueueDockPanelProps) {
   const wakes = waitingTaskWakes(queuedMessages)
   const messages = chatQueuedMessages(queuedMessages)
+  const agentWakes = agentWakeMessages(queuedMessages)
   return (
     <View>
       <WaitingWakes wakes={wakes} onResume={onResumeTaskWakes} />
+      {agentWakes.map((msg) => (
+        <View
+          key={msg.id}
+          testID={`agent-wake-${msg.id}`}
+          accessibilityLabel="Queued team-chat message"
+          className={cn(
+            "group flex-row items-center gap-2 px-3 py-0.5 border-b border-border/40 last:border-b-0",
+            Platform.OS === "web" && "hover:bg-muted/40",
+          )}
+        >
+          <AlarmClock
+            size={11}
+            className="text-amber-600 dark:text-amber-400 flex-shrink-0"
+          />
+          <View className="flex-1 min-w-0 py-1">
+            {msg.source ? (
+              <Text
+                className="text-[10px] text-muted-foreground"
+                numberOfLines={1}
+              >
+                {msg.source}
+              </Text>
+            ) : null}
+            <Text className="text-xs text-foreground" numberOfLines={1}>
+              {msg.content}
+            </Text>
+          </View>
+          <View className="flex-row items-center gap-0.5">
+            {onSendAgentWakeNow && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Send queued message now"
+                onPress={() => onSendAgentWakeNow(msg.id)}
+                className="flex-row items-center gap-1 rounded border border-border px-2 py-0.5 active:opacity-60"
+              >
+                <SendHorizontal size={10} className="text-foreground" />
+                <Text className="text-[10px] font-medium text-foreground">
+                  Send now
+                </Text>
+              </Pressable>
+            )}
+            {onRemoveAgentWake && (
+              <QueueAction
+                label="Delete queued message"
+                icon={Trash2}
+                destructive
+                onPress={() => onRemoveAgentWake(msg.id)}
+              />
+            )}
+          </View>
+        </View>
+      ))}
       {messages.map((msg, index) => {
         const files = msg.files ?? []
         const imageFiles = files.filter((f) => f.type?.startsWith("image/"))
@@ -300,10 +368,12 @@ export function QueueDockPanel(props: QueueDockPanelProps) {
   const { queuedMessages } = props
   const messages = chatQueuedMessages(queuedMessages)
   const wakeCount = waitingTaskWakes(queuedMessages).length
+  const agentWakeCount = agentWakeMessages(queuedMessages).length
   const offlineCount = messages.filter((m) => m.offline).length
+  const queuedCount = messages.length + agentWakeCount
   const parts = [
     offlineCount > 0 ? `${offlineCount} waiting` : null,
-    messages.length > offlineCount ? `${messages.length - offlineCount} queued` : null,
+    queuedCount > offlineCount ? `${queuedCount - offlineCount} queued` : null,
     wakeCount > 0 ? `${wakeCount} update${wakeCount === 1 ? "" : "s"} paused` : null,
   ].filter(Boolean)
 
