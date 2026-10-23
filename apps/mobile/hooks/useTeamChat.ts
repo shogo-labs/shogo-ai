@@ -168,6 +168,54 @@ export function useConversationList(workspaceId: string | null | undefined) {
   return { list, groups, loading, error, refresh }
 }
 
+// ─── Channel directory (for `#` references) ──────────────────────────────────
+
+const directoryInflight = new Map<string, Promise<ConversationSummary[]>>()
+
+/**
+ * The conversations this viewer can see, for naming `#channel` references in
+ * message text. The list endpoint is already viewer-scoped — every public
+ * channel plus whatever this user is a member of — so a private channel they
+ * are not in simply isn't here, and a message naming it renders as
+ * `#privatechannel` instead of leaking the name.
+ *
+ * Deliberately lighter than `useConversationList`: no live-event subscription
+ * and a workspace-wide in-flight dedupe, so opening a channel doesn't fire a
+ * second copy of that heavier query just to resolve names.
+ */
+export function useChannelDirectory(workspaceId: string | null | undefined): ConversationSummary[] {
+  const [list, setList] = useState<ConversationSummary[]>(() =>
+    workspaceId ? listCache.get(workspaceId) ?? [] : [],
+  )
+  useEffect(() => {
+    if (!workspaceId) {
+      setList([])
+      return
+    }
+    const warm = listCache.get(workspaceId)
+    if (warm) {
+      setList(warm)
+      return
+    }
+    let cancelled = false
+    const running = directoryInflight.get(workspaceId) ?? api.list(workspaceId)
+    directoryInflight.set(workspaceId, running)
+    running
+      .then((next) => {
+        listCache.set(workspaceId, next)
+        if (!cancelled) setList(next)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (directoryInflight.get(workspaceId) === running) directoryInflight.delete(workspaceId)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
+  return list
+}
+
 // ─── Mentionables ────────────────────────────────────────────────────────────
 
 const mentionablesCache = new Map<string, { at: number; data: Mentionables }>()

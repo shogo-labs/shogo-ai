@@ -302,7 +302,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 onPress={() => { setShowLibrary(!showLibrary); setSearchQuery('') }}
                 role="button"
                 accessibilityLabel={showLibrary ? 'Close skill library' : 'Open skill library'}
-                accessibilityState={{ expanded: showLibrary }}
+                aria-expanded={showLibrary}
                 className={cn(
                   'flex-row items-center gap-1 px-2 py-1 rounded-md',
                   showLibrary ? 'bg-primary' : 'active:bg-muted',
@@ -334,7 +334,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 onPress={() => { setShowLibrary(!showLibrary); setSearchQuery('') }}
                 role="button"
                 accessibilityLabel={showLibrary ? 'Close skill library' : 'Open skill library'}
-                accessibilityState={{ expanded: showLibrary }}
+                aria-expanded={showLibrary}
                 style={[nativeChrome.libraryButton, { width: actionWidths.library }]}
                 className={showLibrary ? 'bg-primary' : 'bg-muted active:opacity-80'}
               >
@@ -389,7 +389,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 onPress={() => { setLibraryTab('community'); setSearchQuery('') }}
                 role="tab"
                 accessibilityLabel={`Community skills, ${registrySkills.length} available`}
-                accessibilityState={{ selected: libraryTab === 'community' }}
+                aria-selected={libraryTab === 'community'}
                 className={cn(
                   'flex-1 flex-row items-center justify-center gap-1.5 rounded-md',
                   comfortable ? 'min-h-11' : 'py-1.5',
@@ -406,7 +406,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 onPress={() => { setLibraryTab('bundled'); setSearchQuery('') }}
                 role="tab"
                 accessibilityLabel={`Built-in skills, ${bundledSkills.length} available`}
-                accessibilityState={{ selected: libraryTab === 'bundled' }}
+                aria-selected={libraryTab === 'bundled'}
                 className={cn(
                   'flex-1 flex-row items-center justify-center gap-1.5 rounded-md',
                   comfortable ? 'min-h-11' : 'py-1.5',
@@ -486,7 +486,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                             disabled={installing === key}
                             role="button"
                             accessibilityLabel={`Install ${skill.name} skill`}
-                            accessibilityState={{ busy: installing === key }}
+                            aria-busy={installing === key}
                             className={cn(
                               'flex-row items-center gap-1 px-2 py-1 rounded-md',
                               installing === key ? 'bg-muted' : 'bg-primary active:bg-primary/80',
@@ -547,7 +547,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                           }
                           role="button"
                           accessibilityLabel={`${skill.name} skill details`}
-                          accessibilityState={{ expanded: isExpanded }}
+                          aria-expanded={isExpanded}
                           className="p-3 active:bg-muted/50"
                         >
                           <View className="flex-row items-start justify-between gap-2">
@@ -574,7 +574,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                               disabled={installing === skill.name}
                               role="button"
                               accessibilityLabel={`Install ${skill.name} skill`}
-                              accessibilityState={{ busy: installing === skill.name }}
+                              aria-busy={installing === skill.name}
                               className={cn(
                                 'flex-row items-center gap-1 px-2 py-1 rounded-md',
                                 installing === skill.name ? 'bg-muted' : 'bg-primary active:bg-primary/80',
@@ -687,7 +687,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                     onPress={() => toggleSkillDetail(skill.name)}
                     role="button"
                     accessibilityLabel={`${skill.name} skill details`}
-                    accessibilityState={{ expanded: isExpanded }}
+                    aria-expanded={isExpanded}
                     className="p-3 active:bg-muted/50"
                   >
                     <View className="flex-row items-start justify-between gap-2">
@@ -714,7 +714,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                         disabled={removing === skill.name}
                         role="button"
                         accessibilityLabel={`Remove ${skill.name} skill`}
-                        accessibilityState={{ busy: removing === skill.name }}
+                        aria-busy={removing === skill.name}
                         className="p-1 rounded-md active:bg-destructive/10"
                         style={removing === skill.name ? { opacity: 0.5 } : undefined}
                       >

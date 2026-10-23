@@ -315,9 +315,9 @@ describe('AC4 — "N of M on <tag>" follows the deployed release', () => {
 describe('AC5 — adoption history is captured at one insert point', () => {
   test('a version change appends exactly one row; repeats only bump lastSeenAt', async () => {
     const deviceId = 'hist-1'
-    const t0 = new Date('2026-10-01T08:00:00Z')
-    const t1 = new Date('2026-10-05T08:00:00Z')
-    const t2 = new Date('2026-10-10T08:00:00Z')
+    const t0 = ago(9 * DAY)
+    const t1 = ago(5 * DAY)
+    const t2 = ago(1 * DAY)
 
     await deviceVersionEvents.recordDeviceVersionEvent({ deviceId, version: '2.2.27', platform: 'darwin-arm64', seenAt: t0 })
     await deviceVersionEvents.recordDeviceVersionEvent({ deviceId, version: '2.2.27', platform: 'darwin-arm64', seenAt: t1 })
@@ -338,13 +338,13 @@ describe('AC5 — adoption history is captured at one insert point', () => {
       deviceId: 'hist-cli',
       version: 'shogo-cli/unknown',
       platform: 'linux-x64',
-      seenAt: new Date('2026-10-02T08:00:00Z'),
+      seenAt: ago(8 * DAY),
     })
     await deviceVersionEvents.recordDeviceVersionEvent({
       deviceId: 'hist-beta',
       version: '2.3.6-beta.20261020t083308',
       platform: 'win32',
-      seenAt: new Date('2026-10-03T08:00:00Z'),
+      seenAt: ago(7 * DAY),
     })
 
     const cli = await db.deviceVersionEvent.findFirst({ where: { deviceId: 'hist-cli' } })
@@ -405,7 +405,30 @@ describe('AC5 — the backfill does not invent history it never observed', () =>
       },
     })
 
+    // The adoption series is a per-day union across every device, so a bare
+    // count of 2.3.6 points mixes the in-place key with the fixture's own 2.3.6
+    // rows — and those sit at clock-relative offsets (`ago(30 * 60 * 1000)` is
+    // today, `ago(3 * HOUR)` is yesterday before 03:00Z). Counting them made it
+    // depend on what time of day CI ran. Measure the dates the backfill actually
+    // ADDS instead, and hold those to what the in-place key could have observed.
+    const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+    const versionDays = async () =>
+      new Set(
+        (await analytics.getAppVersions({ days: 30 })).adoption
+          .filter((point) => point.version === '2.3.6')
+          .map((point) => point.date),
+      )
+    // The dates the fixture's own 2.3.6 keys account for: the backfill copies
+    // lastSeenAt, so each of them covers exactly one day.
+    const fixtureDays = new Set(
+      FIXTURE.filter((row) => row.version === '2.3.6' && !row.revoked).map((row) => utcDay(row.seenAt!.getTime())),
+    )
+    // ...and the in-place key may not reach further back than two days before
+    // its own last sighting, however old its createdAt is.
+    const inplaceFloor = utcDay(NOW - 2 * HOUR - 2 * DAY)
+
     try {
+      const before = await versionDays()
       await db.$executeRawUnsafe(backfill)
 
       const rows = await db.deviceVersionEvent.findMany({ where: { deviceId: 'backfill-inplace' } })
@@ -413,10 +436,13 @@ describe('AC5 — the backfill does not invent history it never observed', () =>
       const first = new Date(rows[0].firstSeenAt).getTime()
       const last = new Date(rows[0].lastSeenAt).getTime()
       expect(last - first).toBeLessThan(2 * DAY)
+      // firstSeenAt comes from the last sighting, not from the key's birthday.
+      expect(first - ago(200 * DAY).getTime()).toBeGreaterThan(190 * DAY)
 
-      const data = await analytics.getAppVersions({ days: 30 })
-      const days = data.adoption.filter((point) => point.version === '2.3.6').length
-      expect(days).toBeLessThan(5)
+      const added = [...(await versionDays())].filter((date) => !before.has(date))
+      const unexplained = added.filter((date) => !fixtureDays.has(date))
+      expect(unexplained.length).toBeLessThanOrEqual(2)
+      for (const date of unexplained) expect(date >= inplaceFloor).toBe(true)
     } finally {
       // The backfill reads every live device, so undo both the extra key and
       // the rows it wrote before the later tests measure the fixture.

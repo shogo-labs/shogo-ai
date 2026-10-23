@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { age, applyAgentMessage, applyMove, assigneeName, assigneeOptionId, assigneeOptions, columnBadges, issuesByItem, itemsByColumn, workingLabel } from '../board-layout'
+import { age, applyAgentMessage, applyMove, assigneeName, assigneeOptionId, assigneeOptions, columnBadges, issuesByItem, itemsByColumn, orderedItems, sortCards, workingLabel } from '../board-layout'
 import type { AgentStatus, ChatMessage, Mentionables } from '../team-chat-api'
 import type { BoardColumn, BoardView, WorkItem } from '../work-boards-api'
 
@@ -22,10 +22,61 @@ const board = { id: 'b', columns: [column('todo'), column('doing')] } as any
 const items = [card('a', 'todo', 1), card('b', 'todo', 2), card('c', 'todo', 3), card('d', 'doing', 1)]
 
 describe('itemsByColumn', () => {
-  test('groups by column in position order and skips archived cards', () => {
-    const grouped = itemsByColumn({ board, items: [card('z', 'todo', 0.5, { archivedAt: 'x' }), ...items.slice().reverse()] })
+  test('groups by column and skips archived cards', () => {
+    const grouped = itemsByColumn({ board, items: [card('z', 'todo', 0.5, { archivedAt: 'x' }), ...items.slice().reverse()] }, 'manual')
     expect(grouped.get('todo')!.map((i) => i.id)).toEqual(['a', 'b', 'c'])
     expect(grouped.get('doing')!.map((i) => i.id)).toEqual(['d'])
+  })
+
+  const dated = [
+    card('old', 'todo', 1, { createdAt: '2026-01-01T00:00:00Z', number: 1 }),
+    card('mid', 'todo', 2, { createdAt: '2026-02-01T00:00:00Z', number: 2 }),
+    card('new', 'todo', 3, { createdAt: '2026-03-01T00:00:00Z', number: 3 }),
+    card('mid-late', 'todo', 4, { createdAt: '2026-02-01T00:00:00Z', number: 4 }),
+  ]
+  const ids = (sort: 'newest' | 'oldest' | 'manual') => itemsByColumn({ board, items: dated }, sort).get('todo')!.map((i) => i.id)
+
+  test('Newest puts the highest createdAt first and defaults to Newest', () => {
+    expect(ids('newest')).toEqual(['new', 'mid-late', 'mid', 'old'])
+    expect(itemsByColumn({ board, items: dated }).get('todo')!.map((i) => i.id)).toEqual(['new', 'mid-late', 'mid', 'old'])
+  })
+
+  test('the createdAt tie is broken by the higher card number', () => {
+    expect(ids('newest')).toEqual(['new', 'mid-late', 'mid', 'old'])
+    expect(ids('oldest')).toEqual(['old', 'mid', 'mid-late', 'new'])
+  })
+
+  test('Oldest is the reverse of Newest', () => {
+    expect(ids('oldest')).toEqual(['old', 'mid', 'mid-late', 'new'])
+  })
+
+  test('Manual keeps the stored drag order', () => {
+    expect(ids('manual')).toEqual(['old', 'mid', 'new', 'mid-late'])
+    expect(sortCards(dated, 'manual').map((i) => i.id)).toEqual(['old', 'mid', 'new', 'mid-late'])
+  })
+})
+
+describe('orderedItems', () => {
+  const view = { board, items: [card('a', 'todo', 1, { createdAt: '2026-01-01T00:00:00Z' }), card('b', 'doing', 1, { createdAt: '2026-03-01T00:00:00Z' }), card('c', 'todo', 2, { createdAt: '2026-02-01T00:00:00Z' })] }
+
+  test('Newest and Oldest are one flat list across columns', () => {
+    expect(orderedItems(view, 'newest').map((i) => i.id)).toEqual(['b', 'c', 'a'])
+    expect(orderedItems(view, 'oldest').map((i) => i.id)).toEqual(['a', 'c', 'b'])
+  })
+
+  test('Manual keeps column grouping, then position', () => {
+    expect(orderedItems(view, 'manual').map((i) => i.id)).toEqual(['a', 'c', 'b'])
+  })
+
+  test('Manual orders by column before position, unlike Newest', () => {
+    const second = { board, items: [card('x', 'todo', 9, { createdAt: '2026-01-01T00:00:00Z' }), card('y', 'doing', 0, { createdAt: '2026-05-01T00:00:00Z' })] }
+    expect(orderedItems(second, 'manual').map((i) => i.id)).toEqual(['x', 'y'])
+    expect(orderedItems(second, 'newest').map((i) => i.id)).toEqual(['y', 'x'])
+  })
+
+  test('archived cards are left out', () => {
+    const withArchived = { board, items: [...view.items, card('gone', 'todo', 3, { archivedAt: 'x' })] }
+    expect(orderedItems(withArchived, 'newest').map((i) => i.id)).toEqual(['b', 'c', 'a'])
   })
 })
 
@@ -33,18 +84,18 @@ describe('applyMove', () => {
   test('dropping on another column without an anchor goes to the bottom', () => {
     const result = applyMove(items, { itemId: 'a', columnId: 'doing', beforeId: null })!
     expect(result.request).toEqual({ column: 'doing' })
-    expect(itemsByColumn({ board, items: result.items }).get('doing')!.map((i) => i.id)).toEqual(['d', 'a'])
+    expect(itemsByColumn({ board, items: result.items }, 'manual').get('doing')!.map((i) => i.id)).toEqual(['d', 'a'])
   })
 
   test('dropping above a card lands between it and the one before', () => {
     const result = applyMove(items, { itemId: 'c', columnId: 'todo', beforeId: 'b' })!
     expect(result.request).toEqual({ column: 'todo', before: 'b' })
-    expect(itemsByColumn({ board, items: result.items }).get('todo')!.map((i) => i.id)).toEqual(['a', 'c', 'b'])
+    expect(itemsByColumn({ board, items: result.items }, 'manual').get('todo')!.map((i) => i.id)).toEqual(['a', 'c', 'b'])
   })
 
   test('dropping above the first card goes to the top', () => {
     const result = applyMove(items, { itemId: 'd', columnId: 'todo', beforeId: 'a' })!
-    expect(itemsByColumn({ board, items: result.items }).get('todo')!.map((i) => i.id)).toEqual(['d', 'a', 'b', 'c'])
+    expect(itemsByColumn({ board, items: result.items }, 'manual').get('todo')!.map((i) => i.id)).toEqual(['d', 'a', 'b', 'c'])
   })
 
   test('a drop that keeps the order is a no-op', () => {

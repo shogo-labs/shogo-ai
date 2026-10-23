@@ -929,10 +929,17 @@ jobs:
     concurrency:
       group: deploy-v2-staging-rollout
       cancel-in-progress: false
+    # A called workflow's jobs may only request scopes this job grants. The
+    # e2e-critical / e2e-critical-retry jobs in deploy-staging.yml (and the
+    # `classify` job they nest from e2e-hosted.yml) open a platform issue when a
+    # red run is an environment defect (SHO-136), so without `issues: write`
+    # here GitHub rejects the whole call and the deploy run dies at startup
+    # with zero jobs.
     permissions:
       contents: read
       actions: read
       statuses: write
+      issues: write
     uses: ./.github/workflows/deploy-staging.yml
     with:
       environment: ${{ needs.resolve-config.outputs.environment }}
@@ -955,6 +962,9 @@ jobs:
   # critical-path e2e) may still be running, so wait for it. Fail fast if
   # no main deploy for this SHA exists (e.g. it was superseded in the deploy
   # queue): deploy that commit to staging first or tag a commit that was.
+  # A tag whose staging run died (red, cancelled, or left its status `pending`)
+  # cannot fix itself: run `gh run rerun <staging run id> --failed`, then
+  # re-run this tag's run. Waiting on a dead run only burns the gate timeout.
   staging-e2e-gate:
     name: Staging e2e gate
     runs-on: ubuntu-latest

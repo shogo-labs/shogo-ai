@@ -104,6 +104,12 @@ export function useChatSettings(workspaceId: string | null | undefined) {
     return () => { settingsListeners.delete(sync) }
   }, [workspaceId])
 
+  // A change saved in another tab or on another device arrives as an event, so this
+  // client doesn't keep playing a stale message tone until it reloads.
+  useTeamChatEvents(workspaceId, (event) => {
+    if (event.type === 'settings.changed' && workspaceId) publishSettings(workspaceId, event.settings)
+  })
+
   useEffect(() => {
     if (!workspaceId) return
     let cancelled = false

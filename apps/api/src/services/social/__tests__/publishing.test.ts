@@ -151,6 +151,12 @@ function useFakeClient() {
   })
 }
 
+/**
+ * Instagram and TikTok refuse a text-only post, so every test that targets one
+ * of them carries media. A single public URL is enough — nothing is fetched.
+ */
+const IMAGE = 'https://cdn.example.com/launch.jpg'
+
 function seedAccounts() {
   store.posts.length = 0
   store.targets.length = 0
@@ -201,6 +207,7 @@ describe('publishing fan-out', () => {
     const post = await createPost('ws_1', 'Acme', {
       content: 'Launch day',
       accountIds: ['acct_ig', 'acct_tt'],
+      mediaUrls: [IMAGE],
       publishNow: true,
     })
 
@@ -224,6 +231,7 @@ describe('publishing fan-out', () => {
     const post = await createPost('ws_1', 'Acme', {
       content: 'Tomorrow',
       accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
       scheduledFor: when.toISOString(),
     })
 
@@ -237,6 +245,7 @@ describe('publishing fan-out', () => {
     const post = await createPost('ws_1', 'Acme', {
       content: 'Hello',
       accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
       publishNow: true,
     })
     expect(post.status).toBe('published')
@@ -256,6 +265,7 @@ describe('publishing fan-out', () => {
     const error = await createPost('ws_1', 'Acme', {
       content: 'Hello',
       accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
       publishNow: true,
     }).catch((err) => err)
 
@@ -268,7 +278,12 @@ describe('publishing fan-out', () => {
   test('a rescheduled submission reuses the first post', async () => {
     providerReply = { id: 'zernio_post_4', status: 'scheduled' }
     const when = new Date(Date.now() + 7_200_000).toISOString()
-    const input = { content: 'Same text', accountIds: ['acct_ig'], scheduledFor: when }
+    const input = {
+      content: 'Same text',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      scheduledFor: when,
+    }
 
     const first = await createPost('ws_1', 'Acme', input)
     const second = await createPost('ws_1', 'Acme', input)
@@ -301,6 +316,7 @@ describe('publishing fan-out', () => {
     const post = await createPost('ws_1', 'Acme', {
       content: 'Later',
       accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
       scheduledFor: new Date(Date.now() + 3_600_000).toISOString(),
     })
     calls.length = 0
@@ -319,6 +335,7 @@ describe('publishing fan-out', () => {
     const post = await createPost('ws_1', 'Acme', {
       content: 'Cancel me',
       accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
       scheduledFor: new Date(Date.now() + 3_600_000).toISOString(),
     })
     calls.length = 0
@@ -334,6 +351,7 @@ describe('publishing fan-out', () => {
     const post = await createPost('ws_1', 'Acme', {
       content: 'Keep me',
       accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
       scheduledFor: new Date(Date.now() + 3_600_000).toISOString(),
     })
     setSocialClient({
@@ -354,11 +372,113 @@ describe('publishing fan-out', () => {
   test('calendar returns only scheduled or published posts in the window', async () => {
     providerReply = { id: 'zernio_post_5', status: 'scheduled' }
     const when = new Date(Date.now() + 86_400_000)
-    await createPost('ws_1', 'Acme', { content: 'Later', accountIds: ['acct_ig'], scheduledFor: when.toISOString() })
+    await createPost('ws_1', 'Acme', {
+      content: 'Later',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      scheduledFor: when.toISOString(),
+    })
     store.posts.push({ id: 'post_draft', workspaceId: 'ws_1', status: 'draft', content: 'Draft', createdAt: new Date() })
 
     const rows = await calendar('ws_1', new Date(Date.now() - 86_400_000), new Date(Date.now() + 7 * 86_400_000))
     expect(rows).toHaveLength(1)
     expect(rows[0].content).toBe('Later')
+  })
+})
+
+describe('the body Zernio actually reads', () => {
+  test('media goes out as mediaItems and customMedia, never mediaUrls', async () => {
+    providerReply = { id: 'zernio_post_20' }
+    const clip = 'https://cdn.example.com/reel.mp4'
+
+    await createPost('ws_1', 'Acme', {
+      content: 'Launch day',
+      accountIds: ['acct_ig', 'acct_tt'],
+      mediaUrls: [IMAGE, clip],
+      variants: { acct_tt: { mediaUrls: [clip] } },
+      publishNow: true,
+    })
+
+    const sent = calls.find((call) => call.path === '/posts')
+    expect(sent.body.mediaItems).toEqual([
+      { url: IMAGE, type: 'image' },
+      { url: clip, type: 'video' },
+    ])
+    expect(sent.body.mediaUrls).toBeUndefined()
+
+    const tiktok = sent.body.platforms.find((platform: any) => platform.accountId === 'zernio_tt')
+    expect(tiktok.customMedia).toEqual([{ url: clip, type: 'video' }])
+    const instagram = sent.body.platforms.find((platform: any) => platform.accountId === 'zernio_ig')
+    expect(instagram.customMedia).toBeUndefined()
+  })
+
+  test('an unknown extension is left for Zernio to infer rather than guessed at', async () => {
+    providerReply = { id: 'zernio_post_21' }
+    await createPost('ws_1', 'Acme', {
+      content: 'Odd file',
+      accountIds: ['acct_ig'],
+      mediaUrls: ['https://cdn.example.com/asset'],
+      publishNow: true,
+    })
+
+    expect(calls.find((call) => call.path === '/posts').body.mediaItems).toEqual([
+      { url: 'https://cdn.example.com/asset' },
+    ])
+  })
+
+  test('a TikTok target defaults to the creator inbox, not a direct publish', async () => {
+    providerReply = { id: 'zernio_post_22' }
+    await createPost('ws_1', 'Acme', {
+      content: 'Draft on TikTok',
+      accountIds: ['acct_tt'],
+      mediaUrls: ['https://cdn.example.com/reel.mp4'],
+      publishNow: true,
+    })
+
+    const tiktok = calls
+      .find((call) => call.path === '/posts')
+      .body.platforms.find((platform: any) => platform.accountId === 'zernio_tt')
+    expect(tiktok.platformSpecificData).toEqual({ tiktokSettings: { draft: true } })
+  })
+
+  test('a caller that supplies a privacy level gets a direct publish', async () => {
+    providerReply = { id: 'zernio_post_23' }
+    await createPost('ws_1', 'Acme', {
+      content: 'Straight to TikTok',
+      accountIds: ['acct_tt'],
+      mediaUrls: ['https://cdn.example.com/reel.mp4'],
+      variants: {
+        acct_tt: { platformSpecificData: { tiktokSettings: { privacyLevel: 'PUBLIC_TO_EVERYONE' } } },
+      },
+      publishNow: true,
+    })
+
+    const tiktok = calls
+      .find((call) => call.path === '/posts')
+      .body.platforms.find((platform: any) => platform.accountId === 'zernio_tt')
+    expect(tiktok.platformSpecificData.tiktokSettings).toEqual({ privacyLevel: 'PUBLIC_TO_EVERYONE' })
+  })
+
+  test('a text-only post to Instagram is refused before Zernio is called', async () => {
+    const error = await createPost('ws_1', 'Acme', {
+      content: 'No picture',
+      accountIds: ['acct_ig'],
+      publishNow: true,
+    }).catch((err) => err)
+
+    expect(error.code).toBe('media_required')
+    expect(error.message).toContain('instagram @brand.ig')
+    expect(calls.filter((call) => call.path === '/posts')).toHaveLength(0)
+  })
+
+  test('a variant that carries its own media satisfies the rule', async () => {
+    providerReply = { id: 'zernio_post_24' }
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Per-account picture',
+      accountIds: ['acct_ig'],
+      variants: { acct_ig: { mediaUrls: [IMAGE] } },
+      publishNow: true,
+    })
+    expect(post.status).toBe('published')
   })
 })

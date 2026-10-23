@@ -228,7 +228,7 @@ function AnswerInput({
                   else void onSend({ answer: o.label })
                 }}
                 accessibilityRole="button"
-                accessibilityState={{ selected: on }}
+                aria-selected={on}
                 accessibilityLabel={o.label}
                 accessibilityHint={o.description}
                 className={cn(

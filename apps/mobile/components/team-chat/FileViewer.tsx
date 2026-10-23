@@ -21,27 +21,18 @@ import { AlertCircle, ClipboardCopy, Download, ExternalLink } from 'lucide-react
 import { attachmentDownloadUrl, downloadAttachment } from '../../lib/attachment-download'
 import { formatFileSize } from '../../lib/composer-attachments'
 import { fileTypeMeta } from '../../lib/file-type'
-import { isExtractedPreview, viewerModeFor } from '../../lib/file-viewer-mode'
 import {
   absoluteApiUrl,
   teamChatApi,
   type ConversationFileMeta,
   type ConversationFileText,
 } from '../../lib/team-chat-api'
+import { useResolvedTheme } from '../../contexts/theme'
+import { FileContentView, viewerPathKey } from '../files/FileContentView'
+import { fileViewKind } from '../files/file-view-kind'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
 
 const api = teamChatApi()
-
-interface WebFrameProps {
-  src: string
-  title: string
-  style?: Record<string, unknown>
-  'data-testid'?: string
-}
-
-/** React Native Web passes unknown host component names straight to the DOM. */
-const WebFrame = 'iframe' as unknown as (props: WebFrameProps) => any
-const WebVideo = 'video' as unknown as (props: Record<string, unknown>) => any
 
 export interface FileViewerProps {
   attachmentId: string
@@ -50,6 +41,7 @@ export interface FileViewerProps {
 }
 
 export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
+  const isDark = useResolvedTheme() === 'dark'
   const [state, setState] = useState<
     | { status: 'loading' }
     | { status: 'ready'; file: ConversationFileMeta }
@@ -101,84 +93,77 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
   }
 
   const { file } = state
-  const mode = viewerModeFor(file.mimeType, file.name, file.hasText)
   const meta = fileTypeMeta(file.name, file.mimeType)
+  const kind = fileViewKind(file.name, file.mimeType)
+  // An office document has no renderer, but the server already extracted its
+  // text: show that rather than an opaque chip that only offers a download.
+  const shown = kind === 'binary' && file.hasText ? 'text' : kind
+  const url = absoluteApiUrl(file.url)
+
+  const nativeImage = (
+    <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 16 }}>
+      <Image
+        source={{ uri: url }}
+        resizeMode="contain"
+        accessibilityLabel={file.name}
+        style={{ width: '100%', height: '100%', minHeight: 240 }}
+      />
+    </ScrollView>
+  )
 
   return (
     <View className="flex-1 bg-background" testID="file-viewer">
       <View className="min-h-0 flex-1">
-        {mode === 'image' ? (
-          <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 16 }}>
-            <Image
-              source={{ uri: absoluteApiUrl(file.url) }}
-              resizeMode="contain"
-              accessibilityLabel={file.name}
-              style={{ width: '100%', height: '100%', minHeight: 240 }}
-            />
-          </ScrollView>
-        ) : mode === 'video' ? (
-          <View className="flex-1 items-center justify-center p-4">
-            {Platform.OS === 'web' ? (
-              <WebVideo
-                src={absoluteApiUrl(file.url)}
-                controls
-                preload="metadata"
-                title={file.name}
-                data-testid="file-viewer-video"
-                style={{ width: '100%', maxWidth: 960, aspectRatio: 16 / 9, background: '#000' }}
-              />
-            ) : (
-              <VideoFallback url={absoluteApiUrl(file.url)} name={file.name} />
-            )}
-          </View>
-        ) : mode === 'audio' ? (
+        {shown === 'audio' ? (
           <View className="flex-1 items-center justify-center p-6">
             <VoiceNotePlayer
               attachmentId={file.id}
-              url={absoluteApiUrl(file.url)}
+              url={url}
               durationMs={file.durationMs}
               peaks={file.peaks}
               name={file.name}
             />
           </View>
-        ) : mode === 'pdf' ? (
-          <PdfView file={file} />
-        ) : mode === 'text' ? (
-          <TextView file={file} />
-        ) : (
+        ) : shown === 'text' || shown === 'markdown' ? (
+          <TextView
+            file={file}
+            kind={shown}
+            themeMode={isDark ? 'dark' : 'light'}
+            extracted={kind === 'binary'}
+          />
+        ) : shown === 'binary' ? (
           <DownloadView file={file} label={meta.label} />
+        ) : (
+          <FileContentView
+            kind={shown}
+            name={file.name}
+            path={file.name}
+            url={url}
+            readOnly
+            themeMode={isDark ? 'dark' : 'light'}
+            pathKey={viewerPathKey(`attachment:${file.id}`)}
+            nativeImage={nativeImage}
+            download={<DownloadButton url={url} name={file.name} />}
+            testID="file-viewer-content"
+          />
         )}
       </View>
     </View>
   )
 }
 
-function PdfView({ file }: { file: ConversationFileMeta }) {
-  const url = absoluteApiUrl(file.url)
-  if (Platform.OS === 'web') {
-    return (
-      <WebFrame
-        src={url}
-        title={file.name}
-        data-testid="file-viewer-pdf"
-        style={{ flex: 1, width: '100%', border: 'none' }}
-      />
-    )
-  }
-  const WebView = require('react-native-webview').default
-  return <WebView source={{ uri: url }} style={{ flex: 1 }} testID="file-viewer-pdf" />
-}
-
-function VideoFallback({ url, name }: { url: string; name: string }) {
-  return (
-    <View className="items-center gap-3">
-      <Text className="text-sm text-muted-foreground">{name}</Text>
-      <DownloadButton url={url} name={name} />
-    </View>
-  )
-}
-
-function TextView({ file }: { file: ConversationFileMeta }) {
+function TextView({
+  file,
+  kind,
+  themeMode,
+  extracted,
+}: {
+  file: ConversationFileMeta
+  kind: 'text' | 'markdown'
+  themeMode: 'dark' | 'light'
+  /** The text came out of an office document, not the file itself. */
+  extracted: boolean
+}) {
   const [text, setText] = useState<ConversationFileText | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -233,9 +218,7 @@ function TextView({ file }: { file: ConversationFileMeta }) {
     <View className="min-h-0 flex-1" testID="file-viewer-text">
       <View className="flex-row items-center gap-2 border-b border-border px-3 py-1.5">
         <Text className="min-w-0 flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
-          {isExtractedPreview(file.mimeType, file.name)
-            ? 'Text extracted from this file'
-            : `${text.totalChars.toLocaleString()} characters`}
+          {extracted ? 'Text extracted from this file' : `${text.totalChars.toLocaleString()} characters`}
         </Text>
         <Pressable
           onPress={() => {
@@ -254,20 +237,23 @@ function TextView({ file }: { file: ConversationFileMeta }) {
           <Text className="text-[11px] text-muted-foreground">{copied ? 'Copied' : 'Copy'}</Text>
         </Pressable>
       </View>
-      <ScrollView className="flex-1" contentContainerStyle={{ padding: 12 }}>
-        <Text
-          selectable
-          className="text-xs text-foreground"
-          style={{ fontFamily: Platform.OS === 'web' ? 'ui-monospace, SFMono-Regular, Menlo, monospace' : 'monospace' }}
-        >
-          {text.text}
-        </Text>
-        {text.nextOffset ? (
-          <Pressable onPress={() => void loadMore()} accessibilityRole="button" className="mt-3 self-start rounded-md border border-border px-3 py-1.5 active:bg-muted">
-            <Text className="text-xs font-medium text-primary">Load more</Text>
-          </Pressable>
-        ) : null}
-      </ScrollView>
+      <View className="min-h-0 flex-1">
+        <FileContentView
+          kind={kind}
+          text={text.text}
+          name={file.name}
+          path={file.name}
+          readOnly
+          themeMode={themeMode}
+          pathKey={viewerPathKey(`attachment:${file.id}`)}
+          testID="file-viewer-text-body"
+        />
+      </View>
+      {text.nextOffset ? (
+        <Pressable onPress={() => void loadMore()} accessibilityRole="button" className="m-3 self-start rounded-md border border-border px-3 py-1.5 active:bg-muted">
+          <Text className="text-xs font-medium text-primary">Load more</Text>
+        </Pressable>
+      ) : null}
     </View>
   )
 }

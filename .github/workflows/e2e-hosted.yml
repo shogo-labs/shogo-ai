@@ -14,6 +14,25 @@
 # The suite signs up real accounts (`e2e-<prefix>-<ts>@mailnull.com`) in
 # the target environment's database. The companion `e2e-cleanup.yml`
 # workflow drains those nightly.
+#
+# CAPACITY ATTRIBUTION (SHO-136). A red run must say whether the CLUSTER or the
+# CODE failed:
+#   preflight  — probes the cluster before the suite (node disk, warm pool,
+#                studio revisions, api health) and records it
+#   postrun    — the same probe with `if: always()`, so a suite that fell over
+#                mid-run is distinguishable from one that started on a bad node
+#   classify   — attributes the run (`environment:` vs `product:` vs `unknown:`),
+#                annotates the run, opens/refreshes a platform issue for a
+#                defect, and publishes the commit status
+#   diagnostics— on failure, dumps nodes/pods/events/logs/images into one
+#                artifact
+# An `environment:` or `unknown:` classification is a platform defect, never a
+# pass. The worker cap that keeps the critical suite inside what three nodes can
+# absorb lives in e2e/playwright.config.ts (resolveWorkers).
+#
+# Every artifact name ends with $ARTIFACT_SUFFIX (`<attempt>-<run_attempt>`)
+# because deploy-staging.yml calls this workflow twice in one run — a fixed name
+# would fail the retry's own preflight upload and skip the suite entirely.
 # =============================================================================
 
 name: E2E Hosted
@@ -39,6 +58,11 @@ on:
         options:
           - full
           - critical
+      workers:
+        description: 'Optional worker override (critical is capped at 4 regardless)'
+        type: string
+        required: false
+        default: ''
   workflow_call:
     inputs:
       target:
@@ -51,6 +75,25 @@ on:
         description: 'Publish the e2e/staging-critical commit status for github.sha'
         type: boolean
         default: false
+      workers:
+        description: 'Optional worker override (critical is capped at 4)'
+        type: string
+        default: ''
+      previous_classification:
+        description: 'Classification of the attempt this run retries (degraded runs are never a clean green)'
+        type: string
+        default: ''
+      attempt:
+        description: 'Which attempt this is (first | retry). Scopes artifact names so two calls in one run cannot collide'
+        type: string
+        default: 'first'
+    outputs:
+      classification:
+        description: 'environment | product | unknown | clean'
+        value: ${{ jobs.classify.outputs.classification }}
+      annotation:
+        description: 'environment: <reason> | product: <n> specs'
+        value: ${{ jobs.classify.outputs.annotation }}
 
 permissions: {}
 
@@ -60,19 +103,35 @@ concurrency:
   group: e2e-hosted-${{ inputs.target || 'staging' }}-${{ inputs.report_status && github.run_id || 'standalone' }}
   cancel-in-progress: false
 
+env:
+  TARGET: ${{ inputs.target || 'staging' }}
+  IS_STAGING: ${{ (inputs.target || 'staging') == 'staging' }}
+  NS_SYSTEM: shogo-staging-system
+  NS_WORKSPACES: shogo-staging-workspaces
+  # Artifact names are scoped to the *workflow run*, not to a job, and
+  # actions/upload-artifact@v4 fails the step (not just warns) when a name
+  # already exists in the run. deploy-staging.yml calls this workflow twice —
+  # `first`, then `retry` — so a fixed name makes the retry's preflight upload
+  # die, which skips `playwright: needs: [preflight]` and means the retry never
+  # reaches the suite at all. Every artifact name therefore carries this
+  # suffix: one namespace per attempt (inputs.attempt) and per re-run
+  # (github.run_attempt), so a rerun of the whole workflow cannot collide with
+  # the previous attempt's artifacts either. Upload and download both use it.
+  ARTIFACT_SUFFIX: ${{ inputs.attempt || 'first' }}-${{ github.run_attempt }}
+
 jobs:
-  playwright:
-    name: Playwright (${{ inputs.target || 'staging' }}, ${{ inputs.suite || 'full' }})
+  preflight:
+    name: Preflight (${{ inputs.target || 'staging' }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
+    # The staging environment is where vars.OKE_CLUSTER_OCID and the OCI
+    # credentials live; same binding deploy-staging.yml's deploy job uses.
+    environment: staging
     permissions:
       contents: read
       statuses: write
 
     env:
-      E2E_TARGET_URL: ${{ inputs.target == 'production' && 'https://studio.shogo.ai' || 'https://studio.staging.shogo.ai' }}
-      E2E_STRIPE_MODE: ${{ inputs.target == 'production' && 'live' || 'test' }}
-      E2E_SUITE: ${{ inputs.suite || 'full' }}
       REPORT_STATUS: ${{ inputs.report_status && inputs.suite == 'critical' && (inputs.target || 'staging') == 'staging' }}
       STATUS_CONTEXT: e2e/staging-critical
 
@@ -87,6 +146,64 @@ jobs:
             -f description="Critical-path e2e running against staging" \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # The probe is staging-only: it needs cluster credentials, and handing
+      # those to the Playwright job (which runs spec code) is exactly what this
+      # separate job exists to avoid.
+      - name: Install OCI CLI
+        if: env.IS_STAGING == 'true'
+        run: pip install oci-cli --quiet
+
+      - name: Configure kubectl for OKE (staging)
+        if: env.IS_STAGING == 'true'
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+          OKE_CLUSTER_OCID: ${{ vars.OKE_CLUSTER_OCID }}
+        run: |
+          mkdir -p ~/.kube
+          oci ce cluster create-kubeconfig \
+            --cluster-id "$OKE_CLUSTER_OCID" \
+            --region "$OCI_CLI_REGION" \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          kubectl get nodes
+
+      - name: Probe cluster capacity before the suite
+        if: env.IS_STAGING == 'true'
+        run: .github/scripts/probe-staging-capacity.sh --out .tmp/probe-before.json --label before
+
+      - name: Upload preflight probe
+        if: always() && env.IS_STAGING == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: capacity-probe-before-${{ env.ARTIFACT_SUFFIX }}
+          path: .tmp/probe-before.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  playwright:
+    name: Playwright (${{ inputs.target || 'staging' }}, ${{ inputs.suite || 'full' }})
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      statuses: write
+
+    env:
+      E2E_TARGET_URL: ${{ inputs.target == 'production' && 'https://studio.shogo.ai' || 'https://studio.staging.shogo.ai' }}
+      E2E_STRIPE_MODE: ${{ inputs.target == 'production' && 'live' || 'test' }}
+      E2E_SUITE: ${{ inputs.suite || 'full' }}
+      E2E_WORKERS: ${{ inputs.workers }}
+      REPORT_STATUS: ${{ inputs.report_status && inputs.suite == 'critical' && (inputs.target || 'staging') == 'staging' }}
+      STATUS_CONTEXT: e2e/staging-critical
+
+    steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - id: setup-bun
@@ -154,10 +271,23 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report-${{ inputs.target || 'staging' }}-${{ inputs.suite || 'full' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: playwright-report-${{ inputs.target || 'staging' }}-${{ inputs.suite || 'full' }}-${{ env.ARTIFACT_SUFFIX }}
           path: test-results/
           retention-days: 7
 
+      # Small, machine-readable copy the classify job consumes.
+      - name: Upload Playwright JSON report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-json-${{ env.ARTIFACT_SUFFIX }}
+          path: test-results/e2e-report.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      # Publish a result immediately so the staging-e2e-gate is never left
+      # pending; `classify` republishes the same context with the attribution
+      # appended once it knows what the failure was.
       - name: Publish e2e/staging-critical result
         if: always() && env.REPORT_STATUS == 'true'
         env:
@@ -172,3 +302,252 @@ jobs:
           gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
             -f state="$state" -f context="$STATUS_CONTEXT" -f description="$desc" \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  postrun:
+    name: Post-run probe (${{ inputs.target || 'staging' }})
+    needs: [playwright]
+    if: always() && (inputs.target || 'staging') == 'staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
+      - name: Configure kubectl for OKE (staging)
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+          OKE_CLUSTER_OCID: ${{ vars.OKE_CLUSTER_OCID }}
+        run: |
+          mkdir -p ~/.kube
+          oci ce cluster create-kubeconfig \
+            --cluster-id "$OKE_CLUSTER_OCID" \
+            --region "$OCI_CLI_REGION" \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          kubectl get nodes
+
+      - name: Probe cluster capacity after the suite
+        run: .github/scripts/probe-staging-capacity.sh --out .tmp/probe-after.json --label after
+
+      - name: Upload post-run probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capacity-probe-after-${{ env.ARTIFACT_SUFFIX }}
+          path: .tmp/probe-after.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  classify:
+    name: E2E attribution
+    needs: [preflight, playwright, postrun]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: write
+      issues: write
+
+    env:
+      REPORT_STATUS: ${{ inputs.report_status && inputs.suite == 'critical' && (inputs.target || 'staging') == 'staging' }}
+      STATUS_CONTEXT: e2e/staging-critical
+
+    outputs:
+      classification: ${{ steps.classify.outputs.classification }}
+      annotation: ${{ steps.classify.outputs.annotation }}
+      platform: ${{ steps.classify.outputs.platform }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.3'
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: capacity-probe-before-${{ env.ARTIFACT_SUFFIX }}
+          path: .tmp
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: capacity-probe-after-${{ env.ARTIFACT_SUFFIX }}
+          path: .tmp
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: playwright-json-${{ env.ARTIFACT_SUFFIX }}
+          path: test-results
+
+      - name: Classify the run
+        id: classify
+        env:
+          PREVIOUS: ${{ inputs.previous_classification }}
+          OUTCOME: ${{ needs.playwright.result }}
+        run: |
+          bun scripts/e2e-classify.ts \
+            --report test-results/e2e-report.json \
+            --before .tmp/probe-before.json \
+            --after .tmp/probe-after.json \
+            --previous "$PREVIOUS" \
+            --outcome "$OUTCOME"
+
+      # An environment- or unknown-classified run is a platform defect: it opens
+      # (or refreshes) one durable, linkable record so "green after a retry" cannot
+      # become the steady state. The workspace can turn this issue into a board
+      # card with a GitHub trigger; this workflow only has to file it.
+      - name: File or refresh the platform issue
+        if: steps.classify.outputs.platform == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANNOTATION: ${{ steps.classify.outputs.annotation }}
+        run: |
+          set -euo pipefail
+          TITLE="Platform: staging e2e environment fault (capacity guard)"
+          BODY=$(cat <<EOF
+          A critical-path e2e run failed with a platform classification, not a product one.
+
+          \`\`\`
+          ${ANNOTATION}
+          \`\`\`
+
+          - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          - Commit: ${{ github.sha }}
+          - Diagnostics artifact: \`staging-e2e-diagnostics-${{ github.sha }}-${{ env.ARTIFACT_SUFFIX }}\`
+
+          The guard for this is SHO-136: kubelet image GC at 70/60, the critical
+          suite capped at 4 workers, and a staging pool floor of 3. If this keeps
+          firing, the cluster is still the bottleneck — do not retry it green.
+          EOF
+          )
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search "in:title \"$TITLE\"" --json number --jq '.[0].number // empty')
+          if [[ -n "$EXISTING" ]]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "$BODY"
+            echo "Refreshed platform issue #$EXISTING"
+            echo "- Platform issue: #$EXISTING (refreshed)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            URL=$(printf '%s' "$BODY" | gh issue create --repo "${{ github.repository }}" \
+              --title "$TITLE" --body-file -)
+            echo "::warning::environment-classified e2e run filed as platform issue: $URL"
+            echo "- Platform issue: $URL (opened)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publish the attributed commit status
+        if: env.REPORT_STATUS == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ needs.playwright.result }}
+          CLASSIFICATION: ${{ steps.classify.outputs.classification }}
+          ANNOTATION: ${{ steps.classify.outputs.annotation }}
+          DEGRADED: ${{ steps.classify.outputs.degraded }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "$OUTCOME" == "success" ]]; then
+            if [[ -n "${DEGRADED:-}" ]]; then
+              # A green retry is never a clean green.
+              state=success; desc="Critical-path e2e passed on retry — ${DEGRADED}"
+            else
+              state=success; desc="Critical-path e2e passed on staging"
+            fi
+          else
+            state=failure
+            if [[ -n "${ANNOTATION:-}" ]]; then
+              desc="Critical-path e2e ${OUTCOME} on staging — ${ANNOTATION}"
+            else
+              desc="Critical-path e2e ${OUTCOME} on staging"
+            fi
+          fi
+          # GitHub truncates descriptions at 140 chars.
+          desc="${desc:0:140}"
+          gh api "repos/${REPO}/statuses/${SHA}" \
+            -f state="$state" -f context="$STATUS_CONTEXT" -f description="$desc" \
+            -f target_url="$RUN_URL"
+
+  diagnostics:
+    name: Diagnostics
+    needs: [playwright]
+    if: failure() || cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install OCI CLI
+        if: env.IS_STAGING == 'true'
+        run: pip install oci-cli --quiet
+
+      - name: Configure kubectl for OKE (staging)
+        if: env.IS_STAGING == 'true'
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+          OKE_CLUSTER_OCID: ${{ vars.OKE_CLUSTER_OCID }}
+        run: |
+          mkdir -p ~/.kube .tmp/diagnostics
+          oci ce cluster create-kubeconfig \
+            --cluster-id "$OKE_CLUSTER_OCID" \
+            --region "$OCI_CLI_REGION" \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+
+      # One artifact with everything needed to answer "was the cluster able to
+      # carry this run?" without a kubectl session afterwards.
+      - name: Collect cluster diagnostics
+        if: env.IS_STAGING == 'true'
+        run: |
+          set -uo pipefail
+          OUT=.tmp/diagnostics
+          kubectl get pods -o wide --all-namespaces > "$OUT/pods.txt" 2>&1 || true
+          kubectl describe nodes > "$OUT/nodes.txt" 2>&1 || true
+          kubectl get events -A --sort-by=.lastTimestamp 2>/dev/null | tail -200 > "$OUT/events.txt" || true
+          kubectl get pods -A -o json \
+            | jq '[.items[] | select((.status.containerStatuses // []) | map(.restartCount) | add // 0 > 0)
+                   | {ns: .metadata.namespace, name: .metadata.name, restarts: [(.status.containerStatuses // [])[] | {c: .name, n: .restartCount}]}]' \
+            > "$OUT/pod-restarts.json" 2>&1 || true
+          kubectl logs --tail=300 -n "${{ env.NS_SYSTEM }}" -l serving.knative.dev/service=api --all-containers > "$OUT/api.log" 2>&1 || true
+          kubectl logs --tail=300 -n "${{ env.NS_SYSTEM }}" -l serving.knative.dev/service=studio --all-containers > "$OUT/studio.log" 2>&1 || true
+          kubectl get nodes -o json | jq -r '
+            .items[] | .metadata.name as $n
+            | "node \($n)",
+              ([.status.images[]? | select((.names // []) | length > 0)] as $i
+               | "  total=\(($i | map(.sizeBytes // 0) | add // 0) / 1e9 | floor)GB count=\($i | length)"),
+              (.status.images[]? | select((.names // []) | length > 0)
+               | "  \(.sizeBytes / 1e9 | floor)GB \(.names[0])")
+          ' > "$OUT/node-images.txt" 2>&1 || true
+          ls -la test-results/ > "$OUT/test-results-listing.txt" 2>&1 || true
+          wc -l "$OUT"/* 2>/dev/null || true
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-e2e-diagnostics-${{ github.sha }}-${{ env.ARTIFACT_SUFFIX }}
+          path: .tmp/diagnostics
+          retention-days: 14
+          if-no-files-found: warn

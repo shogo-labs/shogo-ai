@@ -26,7 +26,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { ProxyTokenPayload } from '../lib/ai-proxy-token'
-import { resolveApiKey } from './api-keys'
+import { resolveApiKeyForRequest } from '../lib/api-key-request'
 import * as billingService from '../services/billing.service'
 import {
   getPublicModelsSync,
@@ -65,7 +65,8 @@ async function authenticate(c: Context): Promise<ProxyTokenPayload | null> {
   if (!token.startsWith('shogo_sk_')) return null
 
   const deviceAppVersion = c.req.header('X-Shogo-Device-App-Version')
-  const resolved = await resolveApiKey(
+  const resolved = await resolveApiKeyForRequest(
+    c,
     token,
     deviceAppVersion ? { deviceAppVersion } : undefined,
   )

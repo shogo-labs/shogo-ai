@@ -376,7 +376,7 @@ export function buildUsageLimitNotice(toolCallCount: number, info: UsageLimitInf
   const progress = toolCallCount > 0
     ? `I completed ${toolCallCount} step${toolCallCount === 1 ? '' : 's'} before stopping, and that work is saved.`
     : 'Nothing from this step was lost.'
-  let when = 'once your usage resets or you upgrade'
+  let when = ''
   const resetsAt = info.resetsAt ? new Date(info.resetsAt) : null
   if (resetsAt && !Number.isNaN(resetsAt.getTime()) && resetsAt.getTime() > now.getTime()) {
     const minutes = Math.ceil((resetsAt.getTime() - now.getTime()) / 60_000)
@@ -385,11 +385,14 @@ export function buildUsageLimitNotice(toolCallCount: number, info: UsageLimitInf
       : minutes < 48 * 60
         ? `about ${Math.round(minutes / 60)} hour${Math.round(minutes / 60) === 1 ? '' : 's'}`
         : `about ${Math.round(minutes / (24 * 60))} days`
-    when = `when your usage resets (in ${inText}), or sooner if you upgrade or turn on usage-based pricing in Settings > Billing`
+    when = ` Upgrade in **Settings > Billing** to keep going now, or wait until your usage resets (in ${inText}).`
   } else {
-    when += ' or turn on usage-based pricing in Settings > Billing'
+    when = ' Upgrade in **Settings > Billing** to keep going now, or wait until your usage resets.'
   }
-  return `**You've reached your usage limit, so I had to stop partway through this task.** ${progress} Send "continue" ${when} and I'll pick up exactly where I left off.`
+  // The billing action is the way out. Telling the user to send "continue" made
+  // a hard limit look like a stalled turn, and they answered it over and over
+  // instead of upgrading (SHO-121).
+  return `**You've reached your usage limit, so I had to stop partway through this task.** ${progress}${when} Your work is saved and picks up exactly where it stopped.`
 }
 
 export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoopResult> {

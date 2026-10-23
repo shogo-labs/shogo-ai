@@ -45,7 +45,7 @@ function Choice({ label, selected, disabled, onPress }: { label: string; selecte
     <Pressable
       accessibilityRole="radio"
       accessibilityLabel={label}
-      accessibilityState={{ selected, disabled }}
+      aria-checked={selected} aria-disabled={disabled}
       disabled={disabled}
       onPress={onPress}
       className={`rounded-lg border px-3 py-1.5 disabled:opacity-50 ${selected ? "border-primary bg-primary" : "border-border"}`}
@@ -169,7 +169,7 @@ export function MyAccountAccessCard({ workspaceId, provider = "github" }: { work
                   key={agent.projectId}
                   accessibilityRole="checkbox"
                   accessibilityLabel={`${agent.name} acts as me`}
-                  accessibilityState={{ checked: agent.allowed, disabled: busy }}
+                  aria-checked={agent.allowed} aria-disabled={busy}
                   disabled={busy}
                   onPress={() =>
                     void send(`${base}/agents/${encodeURIComponent(agent.projectId)}`, "PUT", {

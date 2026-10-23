@@ -168,6 +168,7 @@ mock.module('../../../hooks/useTeamChat', () => ({
   TIMELINE_SOFT_LIMIT: 600,
   useAgentLook: (_workspaceId: string | null | undefined, projectId: string | null) => resolveAgentLook(null, projectId),
   useConversationList: () => ({ list: activityTimeline.channels, loading: false, error: null, refresh: async () => {} }),
+  useChannelDirectory: () => activityTimeline.channels,
   useConversationTimeline: () => ({
     state: { messages: activityTimeline.messages, hasMoreOlder: false, streaming: {} },
     loading: false,
@@ -1940,5 +1941,86 @@ describe('opening a person’s profile from a message', () => {
     renderChannel()
     expect(mentions()).toHaveLength(1)
     expect(onOpenProfile).not.toHaveBeenCalled()
+  })
+})
+
+describe('Composer channel references', () => {
+  const channels = [
+    { id: 'c-ops', kind: 'public', name: 'ops', slug: 'ops' },
+    { id: 'c-itau', kind: 'private', name: 'client-itau', slug: 'client-itau' },
+  ]
+
+  afterEach(() => cleanup())
+
+  test('# lists the channels the reader can see and sends a channel token', async () => {
+    const onSend = mock(async () => {})
+    render(
+      <Composer workspaceId="ws" conversationId="c1" placeholder="Message" mentionables={mentionables} me="u-me" channels={channels} onSend={onSend} />,
+    )
+    const input = composerInput()
+    type(input, 'ask in #cli')
+    expect(screen.getByText('client-itau')).toBeTruthy()
+    expect(screen.queryByText('ops')).toBeNull()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+    })
+    const sent = (onSend.mock.calls[0] as any[])[0]
+    expect(sent.text).toContain('<#c:c-itau>')
+  })
+
+  test('the channel being read is not offered as a reference', () => {
+    render(
+      <Composer workspaceId="ws" conversationId="c-ops" placeholder="Message" mentionables={mentionables} me="u-me" channels={channels} onSend={async () => {}} />,
+    )
+    type(composerInput(), '#')
+    expect(screen.getByText('client-itau')).toBeTruthy()
+    expect(screen.queryByText('ops')).toBeNull()
+  })
+})
+
+describe('channel mentions in a message', () => {
+  const conversation = {
+    id: 'c-eng', workspaceId: 'ws', kind: 'public', name: 'eng', slug: 'eng',
+    topic: null, lastSeq: 2, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
+    joined: true, starred: false, muted: false, notifyLevel: 'all', lastReadSeq: 2,
+    canPost: true, canReply: true, canManage: false, members: [],
+  }
+  const renderPane = () =>
+    render(
+      <TimelinePane
+        workspaceId="ws"
+        conversation={conversation as any}
+        me="u-me"
+        mentionables={{ ...mentionables, agents: [] }}
+        visible
+      />,
+    )
+  const mentions = () => document.querySelectorAll('[data-testid="chat-mention"]')
+
+  afterEach(() => {
+    cleanup()
+    routed.length = 0
+    activityTimeline.messages = []
+    activityTimeline.channels = []
+  })
+
+  test('a channel the reader can see opens from the message', () => {
+    activityTimeline.channels = [{ id: 'c-ops', kind: 'public', name: 'ops', slug: 'ops' }]
+    activityTimeline.messages = [message({ text: 'ask in <#c:c-ops>' })]
+    renderPane()
+    expect(mentions()).toHaveLength(1)
+    fireEvent.click(mentions()[0]!)
+    expect(routed).toEqual([{ pathname: '/(app)/c/[conversationId]', params: { conversationId: 'c-ops' } }])
+  })
+
+  test('a private channel the reader is not in shows no name and is not tappable', () => {
+    activityTimeline.channels = []
+    activityTimeline.messages = [message({ text: 'in <#c:secret-plans>' })]
+    const { container } = renderPane()
+    expect(mentions()).toHaveLength(0)
+    expect(container.textContent).toContain('#privatechannel')
+    expect(container.textContent).not.toContain('secret-plans')
+    expect(routed).toEqual([])
   })
 })

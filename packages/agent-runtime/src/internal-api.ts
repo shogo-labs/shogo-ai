@@ -1454,6 +1454,14 @@ export interface RunningAgent {
   startedAt: string
   preview: string
   canStop: boolean
+  /**
+   * `running` = working now, `waiting` = parked on a tool (a `wait`, a `exec_wait`,
+   * a subagent), holding no slot, `queued` = in line for a slot and not started.
+   */
+  state?: 'queued' | 'running' | 'waiting'
+  /** Place in line, for a queued run. */
+  position?: number | null
+  queuedAt?: string | null
 }
 
 /** A workspace-wide pause, as `agent_run_stop`/`agent_runs_list` report it. */
@@ -2563,6 +2571,24 @@ export async function notifyTaskCompletions(
   return lifecycleFetch(`${tasksPath}/notify`, {
     method: 'POST',
     body: JSON.stringify({ chatSessionId, tasks }),
+    timeoutMs: 10_000,
+  })
+}
+
+/**
+ * Tell the API a turn was interrupted mid-work, so it can say so in the
+ * transcript and (first attempt only) queue the resumed turn (SHO-121).
+ *
+ * The note and the resume prompt are built API-side from `toolName`, so the
+ * cloud and desktop paths cannot drift apart.
+ */
+export async function postInterruptedResume(
+  chatSessionId: string,
+  input: { toolName?: string | null; resume?: boolean },
+): Promise<CheckpointCallResult<{ noted: boolean; queued: boolean }>> {
+  return lifecycleFetch(`/api/internal/chat/${encodeURIComponent(chatSessionId)}/resume`, {
+    method: 'POST',
+    body: JSON.stringify(input),
     timeoutMs: 10_000,
   })
 }

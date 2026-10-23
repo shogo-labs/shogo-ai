@@ -59,6 +59,7 @@ const switchModule = await import("../../../lib/switch-workspace")
 store.get = storeModule.getActiveWorkspaceId
 store.set = storeModule.setActiveWorkspaceId
 const getActiveWorkspaceId = storeModule.getActiveWorkspaceId
+const clearActiveWorkspaceId = storeModule.clearActiveWorkspaceId
 const setActiveWorkspaceId = storeModule.setActiveWorkspaceId
 const shouldRestoreChatWorkspace = switchModule.shouldRestoreChatWorkspace
 const adoptChatWorkspace = switchModule.adoptChatWorkspace
@@ -71,6 +72,10 @@ const { chatMentionMetaFor } = await import("../../../lib/chat-mention-meta")
 const realFetch = globalThis.fetch
 
 beforeEach(() => {
+  // Each test starts from a clean store: the active id and any switch intent
+  // outlive a test otherwise, and the intent would make the next test look
+  // like a stale writer for a workspace an earlier test switched away from.
+  clearActiveWorkspaceId()
   setActiveWorkspaceId("ws-a")
   push.mockClear()
   projectCollection.clear.mockClear()

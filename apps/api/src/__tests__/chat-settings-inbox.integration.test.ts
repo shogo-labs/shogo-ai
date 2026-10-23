@@ -67,7 +67,7 @@ describe('settings', () => {
   test('defaults, validation, and status expiry', async () => {
     expect(await settings.getChatSettings(seed.workspaceId, seed.member)).toMatchObject({
       notifyDefault: 'mentions', keywords: [], emailDigest: 'off', statusText: null,
-      messageSound: 'default', huddleSound: 'ring',
+      messageSound: 'default', messageTone: 'knock', huddleSound: 'ring',
     })
     await expect(settings.updateChatSettings(seed.workspaceId, seed.member, { quietHours: '25:00-08:00' }))
       .rejects.toThrow('quietHours')
@@ -94,6 +94,16 @@ describe('settings', () => {
     expect(saved).toMatchObject({ messageSound: 'subtle', huddleSound: 'chime' })
     expect(await settings.getChatSettings(seed.workspaceId, seed.member)).toMatchObject({ messageSound: 'subtle', huddleSound: 'chime' })
     expect(await settings.getChatSettings(seed.workspaceId, seed.viewer)).toMatchObject({ messageSound: 'default', huddleSound: 'ring' })
+  })
+
+  test('message tone is validated and saved per person, defaulting to Soft Knock', async () => {
+    await expect(settings.updateChatSettings(seed.workspaceId, seed.member, { messageTone: 'airhorn' }))
+      .rejects.toThrow('messageTone')
+
+    const saved = await settings.updateChatSettings(seed.workspaceId, seed.member, { messageTone: 'glass' })
+    expect(saved.messageTone).toBe('glass')
+    expect((await settings.getChatSettings(seed.workspaceId, seed.member)).messageTone).toBe('glass')
+    expect((await settings.getChatSettings(seed.workspaceId, seed.viewer)).messageTone).toBe('knock')
   })
 
   test('quiet hours handle windows that cross midnight', () => {

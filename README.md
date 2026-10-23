@@ -112,7 +112,13 @@ bun run docker:infra
 bun run db:migrate:deploy
 ```
 
-5. Start the app.
+5. Build the workspace packages (first run / fresh checkout only).
+
+```bash
+bun run build:packages
+```
+
+6. Start the app.
 
 ```bash
 bun run dev:all

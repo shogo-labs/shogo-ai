@@ -3891,7 +3891,7 @@ export default observer(function ProjectLayout() {
                         ? "Hide chat history"
                         : "Show chat history"
                     }
-                    accessibilityState={{ expanded: ideChatHistoryOpen }}
+                    aria-expanded={ideChatHistoryOpen}
                   >
                     <History size={18} className="text-muted-foreground" />
                   </Pressable>

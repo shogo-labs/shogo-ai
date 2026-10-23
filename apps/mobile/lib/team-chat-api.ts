@@ -28,6 +28,32 @@ export interface WorkspaceChatMode {
   installations: Array<{ provider: ExternalChatProvider; tenantName: string | null; createdAt: string }>
 }
 
+/** How many agent replies may work at once, and how busy the queue is now. */
+export interface AgentCapacity {
+  /** Slots a new run is admitted against right now. */
+  limit: number
+  /** The most this workspace may be configured to. */
+  max: number
+  /** What a workspace with no explicit setting gets. */
+  defaultLimit: number
+  /** The workspace's own setting, or null when it uses the default. */
+  configured: number | null
+  source: 'plan' | 'local'
+  planId: string
+  running: number
+  parked: number
+  queued: number
+  canManage: boolean
+}
+
+/** Where a queued reply stands: 1 is next in line. */
+export interface QueuePosition {
+  position: number
+  ahead: number
+  running: number
+  limit: number
+}
+
 /** Whether the Shogo chat UI (sidebar, channels, DMs) is available in this mode. */
 export function nativeChatVisible(mode: ChatModeValue | null | undefined): boolean {
   return mode === 'native' || mode === 'bridged'
@@ -348,6 +374,8 @@ export interface ChatSettings {
   keywords: string[]
   emailDigest: 'off' | 'daily'
   messageSound: MessageSound
+  /** Which sound a chat message plays on web and desktop. */
+  messageTone: MessageTone
   huddleSound: HuddleSound
   /** Direct messages also appear in the Activity inbox. */
   dmInActivity: boolean
@@ -360,6 +388,7 @@ export interface ChatSettings {
 export type MobilePushDelay = 'immediate' | 'inactive' | 'inactive_5m' | 'inactive_10m'
 
 export type MessageSound = 'default' | 'subtle' | 'off'
+export type MessageTone = 'knock' | 'chirp' | 'pristine' | 'definite' | 'juntos' | 'confirmation' | 'question' | 'glass'
 export type HuddleSound = 'ring' | 'chime' | 'off'
 
 export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message' | 'question'
@@ -489,7 +518,8 @@ export type TeamChatEvent =
   | { type: 'message.created'; conversationId: string; message: ChatMessage; moved?: boolean }
   | { type: 'message.updated'; conversationId: string; message: ChatMessage }
   | { type: 'reaction.changed'; conversationId: string; messageId: string; reactions: ReactionSummary[] }
-  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> }
+  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }>; queue?: QueuePosition | null; waiting?: { tool: string | null } | null }
+  | { type: 'agent.capacity'; workspaceId: string; limit: number; running: number; parked: number; queued: number }
   | { type: 'conversation.created'; conversationId: string; conversation: ConversationSummary }
   | { type: 'conversation.updated'; conversationId: string; conversation: ConversationSummary }
   | { type: 'conversation.deleted'; conversationId: string }
@@ -507,6 +537,7 @@ export type TeamChatEvent =
       title: string
       body: string
     }
+  | { type: 'settings.changed'; settings: ChatSettings }
   | { type: 'status.changed'; userId: string; status: UserStatus | null }
   | { type: 'inbox.created'; item: InboxItem }
   | { type: 'inbox.read'; unread: number; unreadThreads?: number }
@@ -736,6 +767,13 @@ export function teamChatApi() {
     },
     async setChatMode(workspaceId: string, input: { mode: ChatModeValue; provider?: ExternalChatProvider | null }): Promise<WorkspaceChatMode> {
       return (await http.patch<WorkspaceChatMode>(`${ws(workspaceId)}/chat-mode`, input)).data
+    },
+    /** How many agents may work at once here, and how many are running or queued. */
+    async agentCapacity(workspaceId: string): Promise<AgentCapacity> {
+      return (await http.get<AgentCapacity>(`${ws(workspaceId)}/agent-capacity`)).data
+    },
+    async setAgentCapacity(workspaceId: string, agentReplyConcurrency: number | null): Promise<AgentCapacity> {
+      return (await http.put<AgentCapacity>(`${ws(workspaceId)}/agent-capacity`, { agentReplyConcurrency })).data
     },
     async chatConnectCode(workspaceId: string, provider: ExternalChatProvider): Promise<{ code: string; command: string; expiresAt: string }> {
       return (await http.post<{ code: string; command: string; expiresAt: string }>(

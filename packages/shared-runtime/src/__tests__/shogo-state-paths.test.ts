@@ -56,6 +56,8 @@ describe('isShogoRuntimeState', () => {
       '.shogo/logs/console.log',
       '.shogo/tasks/t_abc.log',
       '.shogo/plans/a.plan.md',
+      // SHO-139: exec's cwd markers live here now.
+      '.shogo/exec-cwd/.shogo-cwd-1234-abc',
       '.shogo-cwd-1234',
       '.tmp/screenshot.png',
       'prisma/dev.db',

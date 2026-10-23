@@ -17,6 +17,9 @@ export type NotifyLevel = (typeof NOTIFY_LEVELS)[number]
 export const DIGEST_MODES = ['off', 'daily'] as const
 export const MESSAGE_SOUNDS = ['default', 'subtle', 'off'] as const
 export type MessageSound = (typeof MESSAGE_SOUNDS)[number]
+/** Which sound a chat message plays on web and desktop. */
+export const MESSAGE_TONES = ['knock', 'chirp', 'pristine', 'definite', 'juntos', 'confirmation', 'question', 'glass'] as const
+export type MessageTone = (typeof MESSAGE_TONES)[number]
 export const HUDDLE_SOUNDS = ['ring', 'chime', 'off'] as const
 export type HuddleSound = (typeof HUDDLE_SOUNDS)[number]
 /** When a phone push goes out: right away, or only after the person stays away. */
@@ -37,6 +40,7 @@ export interface ChatSettings {
   keywords: string[]
   emailDigest: 'off' | 'daily'
   messageSound: MessageSound
+  messageTone: MessageTone
   huddleSound: HuddleSound
   dmInActivity: boolean
   threadRepliesInBadge: boolean
@@ -61,6 +65,7 @@ const DEFAULTS: ChatSettings = {
   keywords: [],
   emailDigest: 'off',
   messageSound: 'default',
+  messageTone: 'knock',
   huddleSound: 'ring',
   dmInActivity: false,
   threadRepliesInBadge: true,
@@ -97,6 +102,7 @@ export function serializeSettings(row: any, now = new Date()): ChatSettings {
     keywords: parseKeywords(row.keywords),
     emailDigest: row.emailDigest === 'daily' ? 'daily' : 'off',
     messageSound: (MESSAGE_SOUNDS as readonly string[]).includes(row.messageSound) ? row.messageSound : 'default',
+    messageTone: (MESSAGE_TONES as readonly string[]).includes(row.messageTone) ? row.messageTone : 'knock',
     huddleSound: (HUDDLE_SOUNDS as readonly string[]).includes(row.huddleSound) ? row.huddleSound : 'ring',
     dmInActivity: row.dmInActivity === true,
     threadRepliesInBadge: row.threadRepliesInBadge !== false,
@@ -252,6 +258,12 @@ export async function updateChatSettings(
       throw new ConversationError(400, 'invalid_settings', 'messageSound must be default, subtle, or off')
     }
     data.messageSound = patch.messageSound
+  }
+  if ('messageTone' in patch) {
+    if (!(MESSAGE_TONES as readonly unknown[]).includes(patch.messageTone)) {
+      throw new ConversationError(400, 'invalid_settings', `messageTone must be one of ${MESSAGE_TONES.join(', ')}`)
+    }
+    data.messageTone = patch.messageTone
   }
   if ('huddleSound' in patch) {
     if (!(HUDDLE_SOUNDS as readonly unknown[]).includes(patch.huddleSound)) {

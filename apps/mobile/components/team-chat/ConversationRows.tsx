@@ -12,6 +12,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { densityFor } from '../../lib/phone-density'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
 import { conversationTitle, isSelfDm, type ConversationSummary } from '../../lib/team-chat-api'
+import { isConversationUnread } from '../../lib/team-chat-counts'
 import { useHasDraft } from '../../hooks/useChatItems'
 import { PresenceDot } from './PresenceDot'
 import { InlineMarkdown } from './InlineMarkdown'
@@ -71,7 +72,7 @@ export function ConversationRow({ conversation: c, workspaceId, active = false, 
   const comfortable = usePhoneLayout()
   const density = densityFor(comfortable)
   const Icon = iconFor(c)
-  const unread = !active && c.unreadCount > 0 && !c.muted && c.joined
+  const unread = !active && isConversationUnread(c)
   const title = rowTitle(c)
   const peers = c.kind === 'dm' ? c.participants ?? [] : []
   // A direct message names the other person and says whether they are around.

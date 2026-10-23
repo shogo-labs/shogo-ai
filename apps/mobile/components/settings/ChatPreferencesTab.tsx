@@ -28,7 +28,8 @@ import { useChatSettings } from '../../hooks/useChatPrefs'
 import { useMentionables } from '../../hooks/useTeamChat'
 import { useCustomEmojiFeed } from '../../hooks/useCustomEmoji'
 import { CustomEmojiCard, UserGroupsCard } from '../team-chat/WorkspaceChatAdmin'
-import type { HuddleSound, MessageSound, MobilePushDelay, NotifyLevel } from '../../lib/team-chat-api'
+import { AgentCapacityCard } from '../team-chat/AgentCapacityCard'
+import type { HuddleSound, MessageSound, MessageTone, MobilePushDelay, NotifyLevel } from '../../lib/team-chat-api'
 import { previewMessageSound } from '../../lib/notification-sound'
 import { previewHuddleSound } from '../../lib/huddle-ringtone'
 import {
@@ -77,6 +78,17 @@ const MESSAGE_SOUNDS: Array<{ value: MessageSound; label: string }> = [
   { value: 'default', label: 'Default' },
   { value: 'subtle', label: 'Subtle' },
   { value: 'off', label: 'Off' },
+]
+
+const MESSAGE_TONES: Array<{ value: MessageTone; label: string }> = [
+  { value: 'knock', label: 'Soft Knock' },
+  { value: 'chirp', label: 'Chirp' },
+  { value: 'pristine', label: 'Pristine' },
+  { value: 'definite', label: 'Definite' },
+  { value: 'juntos', label: 'Juntos' },
+  { value: 'confirmation', label: 'Confirmation' },
+  { value: 'question', label: 'Question' },
+  { value: 'glass', label: 'Glass' },
 ]
 
 const HUDDLE_SOUNDS: Array<{ value: HuddleSound; label: string }> = [
@@ -175,7 +187,7 @@ function ChoiceRow({
       testID={testID}
       accessibilityRole="radio"
       accessibilityLabel={label}
-      accessibilityState={{ checked }}
+      aria-checked={checked}
       onPress={onPress}
       className={cn(
         'flex-row items-center gap-3 rounded-lg border px-3 py-2',
@@ -250,7 +262,7 @@ function useDesktopPermission(): [string, () => void] {
   return [perm, request]
 }
 
-export function ChatPreferencesTab() {
+export function ChatPreferencesTab({ highlightSection }: { highlightSection?: string } = {}) {
   const workspace = useActiveWorkspace()
   const experience = useWorkspaceExperience()
   const workspaceId: string | null = experience.kind === 'team' ? workspace?.id ?? null : null
@@ -278,6 +290,17 @@ export function ChatPreferencesTab() {
       setQuietEnd(b)
     }
   }, [settings?.statusEmoji, settings?.statusText, settings?.keywords.join(','), settings?.quietHours])
+
+  // `?section=agent-concurrency` (the limit banner's "Change" link) lands on the
+  // Chat tab and needs the stepper in view, not just the top of the page.
+  const highlight = highlightSection === 'agent-concurrency'
+  useEffect(() => {
+    if (!highlight || Platform.OS !== 'web' || typeof document === 'undefined') return
+    const timer = setTimeout(() => {
+      document.getElementById('agent-concurrency')?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [highlight])
 
   if (experience.resolved && experience.kind !== 'team') {
     return (
@@ -310,6 +333,7 @@ export function ChatPreferencesTab() {
   })
   const quietValid = /^([01]\d|2[0-3]):[0-5]\d$/.test(quietStart) && /^([01]\d|2[0-3]):[0-5]\d$/.test(quietEnd)
   const messageSound = settings?.messageSound ?? 'default'
+  const messageTone = settings?.messageTone ?? 'knock'
   const huddleSound = settings?.huddleSound ?? 'ring'
 
   return (
@@ -481,7 +505,7 @@ export function ChatPreferencesTab() {
             variant="outline"
             disabled={messageSound === 'off'}
             accessibilityLabel="Preview message sound"
-            onPress={() => previewMessageSound(messageSound)}
+            onPress={() => previewMessageSound(messageSound, messageTone)}
           >
             Preview
           </Button>
@@ -490,6 +514,24 @@ export function ChatPreferencesTab() {
             banners are off. Phones use their system sound.
           </Text>
         </View>
+
+        {Platform.OS === 'web' ? (
+          <>
+            <GroupLabel>Message tone</GroupLabel>
+            {MESSAGE_TONES.map((t) => (
+              <ChoiceRow
+                key={t.value}
+                label={t.label}
+                checked={messageTone === t.value}
+                onPress={() => {
+                  void update({ messageTone: t.value })
+                  previewMessageSound(messageSound === 'subtle' ? 'subtle' : 'default', t.value)
+                }}
+                testID={`chat-message-tone-${t.value}`}
+              />
+            ))}
+          </>
+        ) : null}
 
         <GroupLabel>Huddle sound</GroupLabel>
         {HUDDLE_SOUNDS.map((s) => (
@@ -570,6 +612,14 @@ export function ChatPreferencesTab() {
           <Text className="mb-2 text-xs text-muted-foreground">
             Shared with everyone in {workspace?.name ?? 'this workspace'}.
           </Text>
+          <Section title="Agent replies">
+            <View
+              nativeID="agent-concurrency"
+              className={highlight ? '-m-2 rounded-lg border border-primary/50 p-2' : ''}
+            >
+              <AgentCapacityCard workspaceId={workspaceId} />
+            </View>
+          </Section>
           <Section title="User groups">
             <UserGroupsCard workspaceId={workspaceId} mentionables={mentionables} />
           </Section>

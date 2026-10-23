@@ -99,5 +99,8 @@ describe('gateway: usage limit reaches the client as data-usage-limit', () => {
     expect(limit?.data).toMatchObject({ resetsAt: '2099-01-01T00:00:00.000Z', window: '5h', toolCallCount: 0 })
     const text = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta).join('')
     expect(text).toContain("You've reached your usage limit")
+    // The limit notice offers billing, never a typed "continue" (SHO-121).
+    expect(text).toContain('Settings > Billing')
+    expect(text.toLowerCase()).not.toContain('continue')
   })
 })

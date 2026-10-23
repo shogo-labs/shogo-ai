@@ -5,6 +5,8 @@ import {
   REGISTRATION_GRACE_MS,
   STATUS_CONTEXT,
   decide,
+  recoveryLine,
+  runIdFromUrl,
   type WorkflowRun,
 } from '../ci/wait-for-staging-e2e'
 
@@ -48,10 +50,60 @@ describe('staging e2e gate decide()', () => {
   it('fails when the staging deploy finished without publishing the status', () => {
     const d = decide({
       statuses: [],
-      mainDeployRuns: [run({ status: 'completed', conclusion: 'failure' })],
+      mainDeployRuns: [run({ status: 'completed', conclusion: 'failure', html_url: 'https://github.com/o/r/actions/runs/42' })],
       elapsedMs: later,
     })
     expect(d.kind).toBe('fail')
     expect(d.message).toContain('without publishing')
+    expect(d.message).toContain('gh run rerun 1 --failed')
+    expect(d.message).toContain("then re-run this release's tag run")
+  })
+
+  it('fails immediately on a finished staging run instead of spending the registration grace', () => {
+    const d = decide({
+      statuses: [],
+      mainDeployRuns: [run({ status: 'completed', conclusion: 'failure' })],
+      elapsedMs: 0,
+    })
+    expect(d.kind).toBe('fail')
+    expect(d.message).toContain('without publishing')
+  })
+
+  it('names the staging run id and the recovery in the pending-but-dead branch', () => {
+    const d = decide({
+      statuses: [{ context: STATUS_CONTEXT, state: 'pending', target_url: 'https://github.com/o/r/actions/runs/777' }],
+      mainDeployRuns: [run({ id: 777, status: 'completed', conclusion: 'cancelled' })],
+      statusRun: run({ id: 777, status: 'completed', conclusion: 'cancelled' }),
+      elapsedMs: later,
+    })
+    expect(d.kind).toBe('fail')
+    expect(d.message).toContain('still pending')
+    expect(d.message).toContain('777')
+    expect(d.message).toContain('gh run rerun 777 --failed')
+  })
+
+  it('keeps waiting on a pending status whose run is still going or unreadable', () => {
+    const pendingStatus = { context: STATUS_CONTEXT, state: 'pending', target_url: 'https://github.com/o/r/actions/runs/9' }
+    expect(
+      decide({
+        statuses: [pendingStatus],
+        mainDeployRuns: [],
+        statusRun: run({ id: 9, status: 'in_progress' }),
+        elapsedMs: later,
+      }).kind,
+    ).toBe('wait')
+    expect(decide({ statuses: [pendingStatus], mainDeployRuns: [], statusRun: null, elapsedMs: later }).kind).toBe(
+      'wait',
+    )
+  })
+
+  it('reads the run id out of a status target_url and builds the same recovery line', () => {
+    expect(runIdFromUrl('https://github.com/shogo-labs/shogo-ai/actions/runs/39573508746')).toBe(39573508746)
+    expect(runIdFromUrl('https://github.com/shogo-labs/shogo-ai/actions/runs/39573508746/job/119135044418')).toBe(
+      39573508746,
+    )
+    expect(runIdFromUrl(undefined)).toBeNull()
+    expect(runIdFromUrl('https://example.test/no-run')).toBeNull()
+    expect(recoveryLine(42)).toBe("Recovery: run `gh run rerun 42 --failed` to re-run the staging run, then re-run this release's tag run.")
   })
 })

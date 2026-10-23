@@ -205,6 +205,12 @@
       "import": "./dist/vite-watch.js",
       "require": "./dist/vite-watch.cjs"
     },
+    "./child-ledger": {
+      "types": "./dist/child-ledger.d.ts",
+      "development": "./src/child-ledger.ts",
+      "import": "./dist/child-ledger.js",
+      "require": "./dist/child-ledger.cjs"
+    },
     "./file-types": {
       "types": "./dist/file-types.d.ts",
       "development": "./src/file-types.ts",

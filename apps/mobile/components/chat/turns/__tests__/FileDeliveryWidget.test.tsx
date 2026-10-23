@@ -4,6 +4,7 @@
 import { expect, mock, test } from "bun:test";
 import React from "react";
 import { createReactNativeMock } from "../../../../test/react-native-mock";
+import * as lucideStub from "../../../../test/stubs/lucide-react-native";
 import type { ToolCallData } from "../../tools/types";
 
 mock.module("react-native", () => createReactNativeMock());
@@ -11,14 +12,10 @@ mock.module("@shogo/shared-ui/primitives", () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
 }));
 const Icon = () => null;
-mock.module("lucide-react-native", () => ({
-  Check: Icon,
-  Copy: Icon,
-  Download: Icon,
-  // Reached through the in-app file viewer the widget opens on web (SHO-80).
-  RotateCcw: Icon,
-  X: Icon,
-}));
+// The shared stub, not a hand-picked subset: the viewer the widget opens on
+// web now renders through the app's one file body, which draws the IDE's
+// media previews too (SHO-165).
+mock.module("lucide-react-native", () => lucideStub);
 mock.module("../../FileTypeIcon", () => ({ FileTypeIcon: Icon }));
 
 const { render, screen } = await import("@testing-library/react");

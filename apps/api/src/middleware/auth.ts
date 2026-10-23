@@ -190,7 +190,10 @@ export async function authMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header("authorization")
   if (authHeader?.startsWith("Bearer shogo_sk_")) {
     try {
-      const result = await resolveApiKey(authHeader.slice(7))
+      const key = authHeader.slice(7)
+      const deviceAppVersion = c.req.header("X-Shogo-Device-App-Version")
+      const result = await resolveApiKey(key, deviceAppVersion ? { deviceAppVersion } : undefined)
+      c.set("apiKeyResolution", { key, result })
       if (result) {
         c.set("auth", {
           userId: result.userId,
@@ -372,6 +375,12 @@ export const PUBLIC_PATTERNS: RegExp[] = [
   // `./routes/invitation-info.ts`. Matching the exact subpath keeps the rest of
   // the generated `/api/invitations` CRUD surface behind `requireAuth`.
   /^\/api\/invitations\/[^/]+\/info$/,
+  // Zernio redirects the browser here straight from the OAuth consent screen,
+  // so there is no Shogo session on the request. The page only reads the
+  // `connected`/`error` query params and renders copy — it never touches
+  // tenant data. Matching the exact path keeps the rest of `/api/social/*`
+  // (accounts, posts, inbox) behind `requireAuth`.
+  /^\/api\/social\/connect\/return$/,
 ]
 
 /** True when `path` is public for `requireAuth` (prefix or pattern list). */

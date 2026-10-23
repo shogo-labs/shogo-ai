@@ -285,6 +285,10 @@ describe('deletion preview + delete (local)', () => {
   let managedDir: string
   let mergedRoot: string
   let userRepo: string
+  // A state dir belonging to a project of some OTHER workspace: deleting this
+  // one must never take it.
+  const otherStateProjectId = 'proj-other-workspace-state'
+  const stateDirOf = (id: string) => join(workspacesDir, '.shogo-state', id)
 
   beforeAll(async () => {
     const res = await request('/api/workspaces', owner, {
@@ -314,6 +318,16 @@ describe('deletion preview + delete (local)', () => {
     mkdirSync(mergedRoot, { recursive: true })
     symlinkSync(userRepo, join(mergedRoot, 'linked'))
     writeFileSync(join(mergedRoot, '.shogo-marker'), '')
+
+    // SHO-151: the runtime keeps task logs outside the project tree, at
+    // `<workspacesDir>/.shogo-state/<projectId>/tasks`. Both projects have some
+    // (a folder-linked project's logs are app-owned too), and a project from
+    // another workspace has some that must survive.
+    for (const id of [managedProjectId, linkedProjectId]) {
+      mkdirSync(join(workspacesDir, '.shogo-state', id, 'tasks'), { recursive: true })
+      writeFileSync(join(workspacesDir, '.shogo-state', id, 'tasks', 'build.log'), 'x'.repeat(64))
+    }
+    mkdirSync(join(workspacesDir, '.shogo-state', otherStateProjectId, 'tasks'), { recursive: true })
   })
 
   test('the preview lists the app-owned dirs and keeps folder-linked paths out', async () => {
@@ -323,7 +337,11 @@ describe('deletion preview + delete (local)', () => {
     expect(preview.removedDirs).toContain(managedDir)
     expect(preview.removedDirs).toContain(mergedRoot)
     expect(preview.removedDirs).not.toContain(userRepo)
-    expect(preview.totalBytes).toBeGreaterThanOrEqual(2048)
+    // Task logs are swept for every project the workspace owned, folder-linked
+    // ones included, and the size shown covers them (SHO-151).
+    expect(preview.removedDirs).toContain(stateDirOf(managedProjectId))
+    expect(preview.removedDirs).toContain(stateDirOf(linkedProjectId))
+    expect(preview.totalBytes).toBeGreaterThanOrEqual(2048 + 128)
     const linkedProject = preview.projects.find((p: any) => p.id === linkedProjectId)
     expect(linkedProject.folderLinked).toBe(true)
     expect(linkedProject.folderPath).toBe(userRepo)
@@ -342,6 +360,8 @@ describe('deletion preview + delete (local)', () => {
     expect(body.ok).toBe(true)
     expect(body.removedDirs).toContain(managedDir)
     expect(body.removedDirs).toContain(mergedRoot)
+    expect(body.removedDirs).toContain(stateDirOf(managedProjectId))
+    expect(body.removedDirs).toContain(stateDirOf(linkedProjectId))
     expect(body.warnings).toEqual([])
 
     expect(await db.workspace.findUnique({ where: { id: workspaceId } })).toBeNull()
@@ -350,6 +370,12 @@ describe('deletion preview + delete (local)', () => {
 
     expect(existsSync(managedDir)).toBe(false)
     expect(existsSync(mergedRoot)).toBe(false)
+    // SHO-151: the task logs are gone with the workspace...
+    expect(existsSync(stateDirOf(managedProjectId))).toBe(false)
+    expect(existsSync(stateDirOf(linkedProjectId))).toBe(false)
+    // ...but nothing else under `.shogo-state` is, and the parent stays.
+    expect(existsSync(join(stateDirOf(otherStateProjectId), 'tasks'))).toBe(true)
+    expect(existsSync(join(workspacesDir, '.shogo-state'))).toBe(true)
     // The folder-linked project's real folder is untouched.
     expect(existsSync(join(userRepo, 'package.json'))).toBe(true)
     expect(statSync(userRepo).isDirectory()).toBe(true)

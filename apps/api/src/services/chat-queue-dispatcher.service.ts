@@ -328,6 +328,32 @@ async function clearPausedWakeRows(chatSessionId: string, keepId?: string): Prom
 }
 
 /**
+ * How many times this `kind: 'resume'` row has already failed to start. Kept on
+ * the row's body so a resume run by another API instance — or by the instance
+ * that replaced the one that noticed the death — still counts the same attempts.
+ */
+function resumeAttempts(body: string | null | undefined): number {
+  const value = parseJson<Record<string, unknown>>(body, {}).resumeAttempts
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+}
+
+function withResumeAttempts(body: string | null | undefined, attempts: number): string {
+  return JSON.stringify({ ...parseJson<Record<string, unknown>>(body, {}), resumeAttempts: attempts })
+}
+
+/** The tool the resume was queued for, so the stopped-resume note names it too. */
+function resumeToolName(parts: string | null | undefined): string | null {
+  const list = parseJson<Array<Record<string, any>>>(parts, [])
+  if (!Array.isArray(list)) return null
+  for (const part of list) {
+    if (!part || part.type !== 'data-resume') continue
+    const name = part.data && typeof part.data.toolName === 'string' ? part.data.toolName.trim() : ''
+    if (name) return name
+  }
+  return null
+}
+
+/**
  * Hand a dropped wake's tasks back to the sweep, which queues the message
  * again once the session can take it. A message persisted for a dispatch that
  * never started a turn is removed with it, so the retry is not a second copy.
@@ -449,6 +475,33 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
           where: { id: row.id, status: 'failed' },
           data: { error: `Could not deliver this update after ${MAX_WAKE_ATTEMPTS} attempts: ${message}`.slice(0, 4_000) },
         }).catch(() => {})
+      }
+    }
+    // A resume nobody dropped is a promise the transcript already made: the note
+    // above the row says the turn is picking itself back up. Dropping it where a
+    // wake gets retried left that promise standing with nothing behind it, so it
+    // is retried the same way — and at the cap the last note is replaced with the
+    // one that says the turn is stopped.
+    if (row.kind === 'resume') {
+      const attempts = resumeAttempts(row.body) + 1
+      if (attempts < MAX_WAKE_ATTEMPTS) {
+        await (prisma as any).chatQueuedMessage.updateMany({
+          where: { id: row.id, status: 'failed' },
+          data: {
+            status: 'pending',
+            error: message.slice(0, 4_000),
+            body: withResumeAttempts(row.body, attempts),
+          },
+        }).catch(() => {})
+      } else {
+        await (prisma as any).chatQueuedMessage.updateMany({
+          where: { id: row.id, status: 'failed' },
+          data: { error: `Could not resume this turn after ${MAX_WAKE_ATTEMPTS} attempts: ${message}`.slice(0, 4_000) },
+        }).catch(() => {})
+        const { postInterruptedResume } = await import('./chat-resume.service')
+        await postInterruptedResume(chatSessionId, { resume: false, toolName: resumeToolName(row.parts) }).catch((err: any) =>
+          console.warn(`[ChatQueue] Stopped-resume note for ${chatSessionId} failed:`, err?.message ?? err),
+        )
       }
     }
     console.error(`[ChatQueue] Failed to dispatch ${row.id}:`, error)

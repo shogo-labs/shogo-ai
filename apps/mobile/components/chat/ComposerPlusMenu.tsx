@@ -48,7 +48,7 @@ export function ComposerPlusSection({
         className="min-h-12 flex-row items-center gap-3 px-3 py-3 active:bg-muted/50"
         accessibilityRole="button"
         accessibilityLabel={label}
-        accessibilityState={{ expanded }}
+        aria-expanded={expanded}
       >
         <View className="h-10 w-10 items-center justify-center rounded-lg bg-muted/40">
           <Icon size={PHONE_DENSITY.icon.sm} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />

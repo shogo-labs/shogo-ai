@@ -10,6 +10,11 @@ import {
   generateApiKey,
   mintDeviceApiKey,
 } from '../api-keys-mint'
+import { resolveWritingRegion } from '../device-version-events'
+import { RAW_REGION_ID } from '../region'
+
+/** Whatever this process resolved at load — `local` when REGION_ID is unset. */
+const REGION = resolveWritingRegion(RAW_REGION_ID)
 
 describe('constants', () => {
   it('SHOGO_API_KEY_PREFIX is "shogo_sk_"', () => {
@@ -106,7 +111,7 @@ describe('mintDeviceApiKey', () => {
     return { stub, updateManyCalls, createCalls, txCalls, versionEventCalls, get rows() { return existing } }
   }
 
-  it('seeds the (device, version) install history at mint time', async () => {
+  it('seeds the (region, device, version) install history at mint time', async () => {
     const { stub, versionEventCalls } = makePrismaStub()
     await mintDeviceApiKey({
       prisma: stub,
@@ -119,9 +124,10 @@ describe('mintDeviceApiKey', () => {
 
     expect(versionEventCalls).toHaveLength(1)
     expect(versionEventCalls[0].where).toEqual({
-      deviceId_version: { deviceId: 'd1', version: '2.3.6' },
+      region_deviceId_version: { region: REGION, deviceId: 'd1', version: '2.3.6' },
     })
     expect(versionEventCalls[0].create).toMatchObject({
+      region: REGION,
       deviceId: 'd1',
       version: '2.3.6',
       os: 'macos',

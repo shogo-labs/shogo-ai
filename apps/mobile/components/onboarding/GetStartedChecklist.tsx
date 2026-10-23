@@ -252,7 +252,7 @@ export function GetStartedChecklist({ state, className, compact = false }: GetSt
           className="min-w-0 flex-1"
           onPress={() => setExpanded((e) => !e)}
           accessibilityRole="button"
-          accessibilityState={{ expanded }}
+          aria-expanded={expanded}
           accessibilityLabel="Get started checklist"
         >
           <View className="flex-row items-center gap-2">
@@ -290,7 +290,7 @@ export function GetStartedChecklist({ state, className, compact = false }: GetSt
               onPress={item.done ? undefined : item.onPress}
               disabled={item.done || !item.onPress}
               accessibilityRole={item.onPress && !item.done ? 'button' : undefined}
-              accessibilityState={{ checked: item.done }}
+              aria-checked={item.done}
               className={cn(
                 'flex-row items-center',
                 compact ? 'gap-2 px-3 py-2' : 'gap-3 px-4 py-3',

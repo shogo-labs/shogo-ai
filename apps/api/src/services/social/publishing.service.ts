@@ -33,6 +33,11 @@ export type PostStatus = (typeof POST_STATUSES)[number]
 export interface PostVariant {
   content?: string
   mediaUrls?: string[]
+  /**
+   * Zernio's per-target settings, passed through as `platformSpecificData`:
+   * a YouTube title, a TikTok privacy level, a LinkedIn reshare and so on.
+   */
+  platformSpecificData?: Record<string, unknown>
 }
 
 export interface CreatePostInput {
@@ -44,7 +49,80 @@ export interface CreatePostInput {
   publishNow?: boolean
   draft?: boolean
   tags?: unknown
+  /** TikTok settings applied to every TikTok target (`tiktokSettings`). */
+  tiktok?: unknown
   createdByUserId?: string | null
+}
+
+/** What Zernio calls a media entry: a public URL plus what kind of file it is. */
+export interface ZernioMediaItem {
+  url: string
+  type?: string
+}
+
+const MEDIA_TYPE_BY_EXTENSION: Record<string, string> = {
+  gif: 'gif',
+  png: 'image',
+  jpg: 'image',
+  jpeg: 'image',
+  webp: 'image',
+  heic: 'image',
+  mp4: 'video',
+  mov: 'video',
+  m4v: 'video',
+  webm: 'video',
+  avi: 'video',
+  mpeg: 'video',
+  mpg: 'video',
+  pdf: 'document',
+}
+
+/**
+ * `type` for a media URL, from its extension. Zernio infers it when absent but
+ * rejects a type that contradicts the extension, so an unknown extension is left
+ * for the provider to decide rather than guessed at.
+ */
+export function mediaTypeFor(url: string): string | undefined {
+  let path = url
+  try {
+    path = new URL(url).pathname
+  } catch {}
+  const match = /\.([A-Za-z0-9]+)$/.exec(path.split('?')[0] ?? path)
+  return match ? MEDIA_TYPE_BY_EXTENSION[match[1]!.toLowerCase()] : undefined
+}
+
+/** One media URL in the shape Zernio reads. */
+function mediaItem(url: string): ZernioMediaItem {
+  const type = mediaTypeFor(url)
+  return type ? { url, type } : { url }
+}
+
+/**
+ * The `platformSpecificData` one target is dispatched with.
+ *
+ * TikTok is the reason this exists: a TikTok target with no direct-publish
+ * settings goes to the creator's inbox as a draft, which is the safe default —
+ * direct publish would need `privacyLevel` and the two consent flags, so only a
+ * caller that supplied a privacy level gets it.
+ */
+export function platformDataFor(
+  platform: string,
+  variant: Record<string, unknown> | undefined,
+  tiktok: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const data: Record<string, unknown> = { ...(variant ?? {}) }
+  if (platform !== 'tiktok') return Object.keys(data).length ? data : undefined
+
+  const variantSettings =
+    data.tiktokSettings && typeof data.tiktokSettings === 'object'
+      ? (data.tiktokSettings as Record<string, unknown>)
+      : {}
+  const settings: Record<string, unknown> = { ...(tiktok ?? {}), ...variantSettings }
+  if (typeof settings.privacyLevel !== 'string' || !settings.privacyLevel) {
+    settings.draft = true
+  }
+  data.tiktokSettings = settings
+  return data
 }
 
 function stringList(raw: unknown, field: string): string[] {
@@ -112,6 +190,36 @@ async function loadAccounts(workspaceId: string, accountIds: string[]) {
   return accounts
 }
 
+/** Platforms that refuse a post with no image or video. */
+const MEDIA_ONLY_PLATFORMS = new Set(['instagram', 'tiktok'])
+
+/**
+ * Refuse a text-only post aimed at a platform that cannot publish one.
+ *
+ * Media can be supplied two ways — on the post (`mediaUrls`) for every target,
+ * or on a variant (`variants[accountId].mediaUrls`) for one — so a target counts
+ * as having media if either is non-empty.
+ */
+function requireMedia(
+  accounts: any[],
+  variants: Record<string, any>,
+  mediaUrls: string[],
+): void {
+  const missing = accounts
+    .filter((account) => MEDIA_ONLY_PLATFORMS.has(account.platform))
+    .filter((account) => {
+      const variantMedia = variants[account.id]?.mediaUrls
+      return mediaUrls.length === 0 && !(Array.isArray(variantMedia) && variantMedia.length > 0)
+    })
+    .map((account) => `${account.platform} @${account.username}`)
+  if (missing.length === 0) return
+  throw new SocialError(
+    400,
+    'media_required',
+    `${missing.join(', ')} needs a photo or video — Instagram and TikTok do not publish text-only posts.`,
+  )
+}
+
 export async function createPost(workspaceId: string, workspaceName: string, input: CreatePostInput) {
   const content = typeof input.content === 'string' ? input.content.trim() : ''
   const mediaUrls = stringList(input.mediaUrls, 'mediaUrls')
@@ -135,6 +243,13 @@ export async function createPost(workspaceId: string, workspaceName: string, inp
 
   const variants = input.variants && typeof input.variants === 'object' ? input.variants : {}
   const accounts = accountIds.length ? await loadAccounts(workspaceId, accountIds) : []
+
+  // Instagram and TikTok have no text-only post. Refusing here costs nothing;
+  // finding out from the provider costs a publish attempt that fails per target
+  // and leaves the person with a post full of red rows.
+  if (!isDraft) {
+    requireMedia(accounts, variants, mediaUrls)
+  }
 
   const status: PostStatus = isDraft ? 'draft' : publishNow ? 'publishing' : 'scheduled'
   const idempotencyKey = postIdempotencyKey(workspaceId, { content, accountIds, scheduledFor, mediaUrls })
@@ -169,8 +284,23 @@ export async function createPost(workspaceId: string, workspaceName: string, inp
 
   if (isDraft) return getPost(workspaceId, post.id)
 
+  const platformData = new Map<string, Record<string, unknown>>()
+  const tiktok =
+    input.tiktok && typeof input.tiktok === 'object' ? (input.tiktok as Record<string, unknown>) : undefined
+  for (const account of accounts) {
+    const variant = variants[account.id] as Record<string, unknown> | undefined
+    const data = platformDataFor(
+      account.platform,
+      variant?.platformSpecificData && typeof variant.platformSpecificData === 'object'
+        ? (variant.platformSpecificData as Record<string, unknown>)
+        : undefined,
+      tiktok,
+    )
+    if (data) platformData.set(account.id, data)
+  }
+
   try {
-    await dispatchPost(workspaceId, workspaceName, post.id, { publishNow })
+    await dispatchPost(workspaceId, workspaceName, post.id, { publishNow, platformSpecificData: platformData })
   } catch (err) {
     await markPostFailed(post.id, err)
     throw err
@@ -203,7 +333,11 @@ export async function dispatchPost(
   workspaceId: string,
   workspaceName: string,
   postId: string,
-  opts: { publishNow?: boolean } = {},
+  opts: {
+    publishNow?: boolean
+    /** Per-account-row platform settings, resolved by `createPost`. */
+    platformSpecificData?: Map<string, Record<string, unknown>>
+  } = {},
 ) {
   const post = await db.socialPost.findFirst({
     where: { id: postId, workspaceId },
@@ -220,11 +354,17 @@ export async function dispatchPost(
 
   const platforms = post.targets.map((target: any) => {
     const targetMedia = Array.isArray(target.mediaJson) ? (target.mediaJson as string[]) : null
+    const platformData = opts.platformSpecificData?.get(target.accountId)
     return {
       accountId: target.account.zernioAccountId,
       platform: target.platform,
       ...(target.customContent ? { customContent: target.customContent } : {}),
-      ...(targetMedia && targetMedia.length ? { mediaUrls: targetMedia } : {}),
+      // Zernio takes `customMedia` per target; `mediaUrls` is not a field it
+      // reads, so a per-account override sent that way was silently dropped.
+      ...(targetMedia && targetMedia.length
+        ? { customMedia: targetMedia.map((url) => mediaItem(url)) }
+        : {}),
+      ...(platformData ? { platformSpecificData: platformData } : {}),
     }
   })
 
@@ -232,7 +372,7 @@ export async function dispatchPost(
     profileId: profile.zernioProfileId,
     content: post.content,
     platforms,
-    ...(media.length ? { mediaUrls: media } : {}),
+    ...(media.length ? { mediaItems: media.map((url) => mediaItem(url)) } : {}),
   }
   if (publishNow) body.publishNow = true
   else if (post.scheduledFor) body.scheduledFor = post.scheduledFor.toISOString()

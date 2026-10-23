@@ -142,7 +142,7 @@ function GroupEditor({
             <Pressable
               key={p.id}
               accessibilityRole="checkbox"
-              accessibilityState={{ checked: on }}
+              aria-checked={on}
               onPress={() => setMembers((set) => {
                 const next = new Set(set)
                 if (on) next.delete(p.id)

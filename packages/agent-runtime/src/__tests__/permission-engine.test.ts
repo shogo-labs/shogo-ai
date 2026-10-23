@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, test, expect, beforeEach, mock } from 'bun:test'
-import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SYMLINKS_SUPPORTED } from './helpers/symlink-support'
@@ -177,6 +177,44 @@ describe('PermissionEngine.check — balanced mode', () => {
   test('auto-allows writes within workspace', () => {
     const eng = newEngine({ preference: { mode: 'balanced' } })
     expect(eng.check('file_write', 'write_file', { path: 'src/main.ts' }).action).toBe('allow')
+  })
+
+  test('auto-allows writes within a symlinked workspace on an existing file', () => {
+    // A project runtime's WORKSPACE_DIR is a symlink. The canonical compare
+    // must not read that as "outside the project" and prompt (SHO-125).
+    if (!SYMLINKS_SUPPORTED) return
+    const real = realpathSync(mkdtempSync(join(tmpdir(), 'shogo-perm-real-')))
+    const linkParent = realpathSync(mkdtempSync(join(tmpdir(), 'shogo-perm-link-')))
+    const link = join(linkParent, 'workspace')
+    symlinkSync(real, link)
+    try {
+      writeFileSync(join(real, 'MEMORY.md'), '# memory\n')
+      const eng = new PermissionEngine({
+        preference: { mode: 'balanced' },
+        workspaceDir: link,
+      })
+      expect(eng.check('file_write', 'write_file', { path: 'MEMORY.md' }).action).toBe('allow')
+    } finally {
+      rmSync(linkParent, { recursive: true, force: true })
+      rmSync(real, { recursive: true, force: true })
+    }
+  })
+
+  test('still asks before writing into a linked folder', () => {
+    // A linked folder is a separate grant: the guard allows it, but balanced
+    // mode keeps its approval prompt (SHO-125 review).
+    const linked = realpathSync(mkdtempSync(join(tmpdir(), 'shogo-perm-linked-')))
+    const prev = process.env.LINKED_FOLDERS
+    process.env.LINKED_FOLDERS = JSON.stringify([linked])
+    try {
+      writeFileSync(join(linked, 'notes.md'), 'hi\n')
+      const eng = newEngine({ preference: { mode: 'balanced' } })
+      expect(eng.check('file_write', 'write_file', { path: join(linked, 'notes.md') }).action).toBe('ask')
+    } finally {
+      if (prev === undefined) delete process.env.LINKED_FOLDERS
+      else process.env.LINKED_FOLDERS = prev
+      rmSync(linked, { recursive: true, force: true })
+    }
   })
 
   test('asks for file_delete outside an allowlist', () => {

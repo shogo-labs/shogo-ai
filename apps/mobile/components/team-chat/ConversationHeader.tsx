@@ -661,7 +661,7 @@ function NotifyModal({
             <Pressable
               key={c.value}
               accessibilityRole="radio"
-              accessibilityState={{ checked: current === c.value }}
+              aria-checked={current === c.value}
               onPress={async () => {
                 await onPick({ notifyLevel: c.value })
                 onClose()
@@ -677,7 +677,7 @@ function NotifyModal({
           ))}
           <Pressable
             accessibilityRole="switch"
-            accessibilityState={{ checked: !!conversation.muted }}
+            aria-checked={!!conversation.muted}
             onPress={async () => {
               await onPick({ muted: !conversation.muted })
               onClose()
@@ -909,7 +909,7 @@ function DeleteChannelModal({
                 onPress={() => void act('delete')}
                 disabled={!confirmed || !!busy}
                 accessibilityLabel="Delete permanently"
-                accessibilityState={{ disabled: !confirmed || !!busy }}
+                aria-disabled={!confirmed || !!busy}
                 className={cn('rounded-md bg-destructive px-3 py-1.5', (!confirmed || busy) && 'opacity-50')}
               >
                 <Text className="text-sm font-medium text-destructive-foreground">{busy === 'delete' ? 'Deleting…' : 'Delete permanently'}</Text>

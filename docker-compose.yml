@@ -79,7 +79,12 @@ services:
   # API: http://localhost:${MINIO_API_PORT:-9000}
   # ---------------------------------------------------------------------------
   minio:
-    image: minio/minio:latest
+    # minio/minio was pulled from Docker Hub (and the quay.io mirror has since
+    # also gone unauthorized) after MinIO discontinued free community images
+    # in late 2025 (https://github.com/minio/minio/issues/21647). Using a
+    # maintained community rebuild until we settle on a longer-term S3-compatible
+    # storage choice for local dev.
+    image: ghcr.io/coollabsio/minio:latest
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -103,7 +108,10 @@ services:
   # Creates buckets and seeds schemas + workspaces from local directories
   # ---------------------------------------------------------------------------
   minio-init:
-    image: minio/mc:latest
+    # minio/mc is gone from Docker Hub too (see note on the `minio` service
+    # above). ghcr.io/coollabsio/minio bundles a current `mc` binary, so we
+    # reuse it here as the client image instead of a separate minio/mc tag.
+    image: ghcr.io/coollabsio/minio:latest
     depends_on:
       minio:
         condition: service_healthy

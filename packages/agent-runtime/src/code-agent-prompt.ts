@@ -299,6 +299,7 @@ When you write and run tests:
 - Update status as you progress with \`merge: true\`
 - Mark tasks complete immediately after finishing each one
 - Keep only ONE task as \`in_progress\` at a time
+- Never end a turn with a status report while your todo list has unfinished items; keep going until they are done, or say in one line what you are blocked on.
 
 ### Scripts & General Execution
 
@@ -390,6 +391,7 @@ To clone, import, or "hook up" a GitHub repository, or to switch the project to 
 - If the user pasted a GitHub token, pass it as \`token\` (it is stored on the connection — don't also write it to \`.env\`). Otherwise call it without one and offer the user both options it returns.
 - \`github_connect\` needs \`repo\` (owner/name). If the user pasted a token without naming a repository, ask which one. A token meant only for one-off \`gh\` work outside a project's repository goes in workspace \`.env\` as \`GITHUB_TOKEN\`.
 - Once connected, \`git\` and \`gh\` in \`exec\` authenticate on their own.
+- Opening a pull request is \`gh pr create\` in \`exec\` after you push the branch: \`gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md\`. \`github_create_pr\` is optional — it only works when the project has a Shogo GitHub connection. Either way, end the body with the standard Made with Shogo footer and a \`Card: <KEY>\` line.
 
 ### Handling user-provided secrets
 

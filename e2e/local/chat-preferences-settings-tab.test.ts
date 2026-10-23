@@ -22,16 +22,18 @@ const soundOff = (page: Page) => page.getByTestId("chat-message-sound-off")
 const soundDefault = (page: Page) => page.getByTestId("chat-message-sound-default")
 
 /**
- * A selected `ChoiceRow` is the one with the primary border and the tick.
+ * A selected `ChoiceRow` is the one the screen reader is told is checked, and
+ * the one with the primary border and the tick.
  *
- * Not `aria-checked`: react-native-web 0.21 dropped `accessibilityState`, so
- * every settings radio in the app (`AgentDefaultModelCard`,
- * `IntegrationActsAsSection`, …) renders `role="radio"` with no checked state
- * on web. That is pre-existing and out of this card's scope — the selection is
- * still the visible one, so assert that.
+ * `aria-checked` is asserted as well as the class because it is the part that
+ * was silently missing: react-native-web 0.21 drops `accessibilityState`, so
+ * every settings radio rendered `role="radio"` with no state on web until
+ * SHO-111 moved these rows onto `aria-checked`.
  */
 const selected = (locator: ReturnType<typeof soundOff>) =>
   expect(locator).toHaveClass(/border-primary/)
+const checkedState = (locator: ReturnType<typeof soundOff>, value: boolean) =>
+  expect(locator).toHaveAttribute("aria-checked", String(value))
 
 /**
  * Local mode opens the Personal workspace, where chat preferences do not
@@ -73,9 +75,13 @@ test.describe("Chat preferences are Settings → Chat", () => {
     await expect(soundDefault(page)).toBeVisible({ timeout: 60_000 })
     await expect(page).toHaveURL(/\/settings\?.*tab=chat/)
     await selected(soundDefault(page))
+    await checkedState(soundDefault(page), true)
+    await checkedState(soundOff(page), false)
 
     await soundOff(page).click()
     await selected(soundOff(page))
+    await checkedState(soundOff(page), true)
+    await checkedState(soundDefault(page), false)
     await expect(soundDefault(page)).not.toHaveClass(/border-primary/)
     await expect.poll(() => messageSound(page, workspaceId), { timeout: 30_000 }).toBe("off")
 
@@ -84,6 +90,7 @@ test.describe("Chat preferences are Settings → Chat", () => {
     await page.goto("/c/settings")
     await expect(soundOff(page)).toBeVisible({ timeout: 60_000 })
     await selected(soundOff(page))
+    await checkedState(soundOff(page), true)
     await expect(soundDefault(page)).not.toHaveClass(/border-primary/)
 
     const reset = await api(page, "PATCH", `/api/workspaces/${workspaceId}/chat-settings`, {

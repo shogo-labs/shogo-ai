@@ -3,8 +3,11 @@
 import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import { ensureWorkspacesNoIndex, type WorkspacesDirDecision } from './spotlight-exclusion'
 
 const IS_DEV = !app.isPackaged
+
+let workspacesDirDecision: WorkspacesDirDecision | null = null
 
 export function getDataDir(): string {
   const dir = path.join(app.getPath('userData'), 'data')
@@ -16,8 +19,28 @@ export function getDbPath(): string {
   return path.join(getDataDir(), 'shogo.db')
 }
 
+/**
+ * Whether the workspaces dir could be excluded from Spotlight indexing, and
+ * where it ended up. Decided once per process (the on-disk migration is
+ * idempotent, but every caller must agree on one path string) — see
+ * `spotlight-exclusion.ts` for the why and the state machine.
+ */
+export function getWorkspacesDirDecision(): WorkspacesDirDecision {
+  if (!workspacesDirDecision) {
+    workspacesDirDecision = ensureWorkspacesNoIndex(getDataDir())
+  }
+  return workspacesDirDecision
+}
+
+/**
+ * The real workspaces directory: `data/workspaces.noindex` on macOS after the
+ * Spotlight migration, `data/workspaces` everywhere else. Old absolute paths
+ * (`data/workspaces/<id>`) still resolve through the back-compat symlink, but
+ * never hand this path out through the symlink — a symlinked string compared
+ * against a `realpath`'d one is how containment checks break.
+ */
 export function getWorkspacesDir(): string {
-  const dir = path.join(getDataDir(), 'workspaces')
+  const dir = getWorkspacesDirDecision().workspacesDir
   fs.mkdirSync(dir, { recursive: true })
   return dir
 }
