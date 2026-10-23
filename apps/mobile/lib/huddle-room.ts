@@ -78,7 +78,7 @@ export interface HuddleWakeNotice {
   by: string
   /** The wake note in the chat, when there is one. */
   messageId: string | null
-  status: 'running' | 'replied' | 'failed'
+  status: 'running' | 'replied' | 'failed' | 'limit'
   reason?: string
 }
 
@@ -247,7 +247,7 @@ export function parseHuddleWake(payload: Uint8Array): HuddleWakeNotice | null {
     const value = JSON.parse(new TextDecoder().decode(payload))
     if (value?.type !== 'wake') return null
     const status = value.status
-    if (status !== 'running' && status !== 'replied' && status !== 'failed') return null
+    if (status !== 'running' && status !== 'replied' && status !== 'failed' && status !== 'limit') return null
     return {
       by: typeof value.by === 'string' ? value.by : 'Someone',
       messageId: typeof value.messageId === 'string' ? value.messageId : null,

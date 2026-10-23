@@ -393,11 +393,12 @@ function clearWakeNoticeTimer(): void {
   wakeNoticeTimer = null
 }
 
-/** The server said what the agent is doing: running, answered, or couldn't. */
+/** The server said what the agent is doing: running, answered, couldn't — or the call is out of wakes. */
 function applyHuddleWake(notice: HuddleWakeNotice): void {
   clearWakeNoticeTimer()
   set({ wake: notice })
-  if (notice.status === 'running') return
+  // Hitting the cap is a fact about the rest of the call, not a passing status, so it stays.
+  if (notice.status === 'running' || notice.status === 'limit') return
   wakeNoticeTimer = setTimeout(() => {
     wakeNoticeTimer = null
     set({ wake: null })

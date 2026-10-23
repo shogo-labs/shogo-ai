@@ -884,5 +884,14 @@ describe('saying "hey Shogo" in a huddle', () => {
     expect(await wakesOf(huddleId)).toHaveLength(20)
     expect(replies).toHaveLength(0)
     expect(await db.conversationMessage.count({})).toBe(before)
+
+    // The call is told the cap was reached, so "hey Shogo" going quiet does not
+    // look like a broken agent — and it says nothing it cannot back up: no note,
+    // no run, just the one notice.
+    const notices = roomData.filter((entry) => entry.payload?.type === 'wake')
+    expect(notices.map((entry) => entry.payload.status)).toEqual(['limit'])
+    expect(notices[0].topic).toBe('shogo.huddle')
+    expect(notices[0].payload.by).toBe('owner')
+    expect(notices[0].payload.messageId).toBeUndefined()
   })
 })

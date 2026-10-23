@@ -1504,15 +1504,6 @@ async function speakerName(row: any, id: string): Promise<string> {
   return user?.name || user?.email || 'Someone'
 }
 
-/**
- * The same label for a caller that only has the huddle id — the notes worker
- * and the internal finals route, which must write a name into the transcript
- * rather than a raw user id.
- */
-export async function huddleSpeakerName(huddleId: string, id: string): Promise<string> {
-  return speakerName({ id: huddleId }, id)
-}
-
 /** 502/409 with the reason when streaming transcription can't run here. */
 async function streamAvailabilityOrThrow(): Promise<{ backend: 'openai' | 'sherpa' }> {
   const availability = await describeStreamAvailability()
@@ -1814,7 +1805,9 @@ async function postNotesChunk(
     speaker: await speakerName(row, target),
     speakerId: target,
     // Seqs collide between people sharing the draft, so huddle chunks dedupe by speaker too.
-    itemKey: `${target}:chunk-${input.seq}`,
+    // The `c:` prefix marks it as a client-transcribed line, so a fallback worker's
+    // `lk:` copy of the same utterance is recognisable as a duplicate at handover.
+    itemKey: `c:${target}:chunk-${input.seq}`,
   })
   if (!result.ok) {
     throw result.reason === 'not_recording'

@@ -85,8 +85,11 @@ export function captionWindow(width: number): number {
 }
 
 /** What the strip says while the workspace agent works, answers, or gives up. */
-export function captionsNotice(wake: { by: string; status: 'running' | 'replied' | 'failed'; reason?: string } | null): string | null {
+export function captionsNotice(
+  wake: { by: string; status: 'running' | 'replied' | 'failed' | 'limit'; reason?: string } | null,
+): string | null {
   if (!wake) return null
+  if (wake.status === 'limit') return 'Wake limit reached for this call'
   if (wake.status === 'running') return `⚡ Shogo is on it (${wake.by})`
   if (wake.status === 'replied') return 'Shogo replied in chat'
   const reason = wake.reason?.trim()

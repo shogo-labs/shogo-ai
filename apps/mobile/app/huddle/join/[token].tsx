@@ -274,9 +274,10 @@ export default function HuddleJoinScreen() {
         <Text className="text-center text-sm text-muted-foreground">{who(info)}</Text>
       </View>
       {error || call.error ? <Text className="text-center text-sm text-destructive">{error ?? call.error}</Text> : null}
-      {/* Nobody joins this call without knowing it is written down. */}
+      {/* Nobody joins this call without knowing it is written down. A guest gets
+          the same notice minus the wake, which AC7 never gives them. */}
       <View className="w-full">
-        <HuddleNotesNotice />
+        <HuddleNotesNotice guest={!member} />
       </View>
       {member ? (
         <Button label="Join huddle" onPress={() => void goIn(info)} disabled={busy} />

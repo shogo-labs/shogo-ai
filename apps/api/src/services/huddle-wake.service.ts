@@ -284,6 +284,11 @@ async function wake(input: { final: StoredFinal; speakerId: string; request: str
   })
   if (!decision.wake) {
     console.log(`[HuddleWake] wake_ignored reason=${decision.reason} huddle=${final.huddleId}`)
+    // The phrase that reaches the cap is the one that tells the call, so "hey
+    // Shogo" going quiet does not look like a broken agent. Later ones say nothing.
+    if (decision.reason === 'limit' && wakes.length === WAKE_MAX_PER_HUDDLE) {
+      void sendWakeStatus(row, { by: String(final.speaker ?? '').trim() || 'someone', status: 'limit' })
+    }
     return
   }
 
@@ -420,7 +425,10 @@ async function personNames(workspaceId: string, ids: string[]): Promise<string[]
 }
 
 /** Tell the call what the agent is doing; guests and phones get this without the chat bus. */
-async function sendWakeStatus(row: any, payload: { by: string; messageId: string; status: 'running' | 'replied' | 'failed'; reason?: string }): Promise<void> {
+async function sendWakeStatus(
+  row: any,
+  payload: { by: string; status: 'running' | 'replied' | 'failed' | 'limit'; messageId?: string; reason?: string },
+): Promise<void> {
   const config = liveKitConfig()
   if (!config || !row?.roomName) return
   await sendRoomData(config, row.roomName, HUDDLE_WAKE_TOPIC, { type: 'wake', ...payload })

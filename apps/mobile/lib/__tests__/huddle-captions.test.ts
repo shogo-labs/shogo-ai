@@ -168,6 +168,10 @@ describe('what the strip says', () => {
     expect(captionsNotice({ by: 'Ada', status: 'replied' })).toContain('replied')
     expect(captionsNotice({ by: 'Ada', status: 'failed', reason: 'no model' })).toContain('no model')
   })
+
+  test('says so when the call has used its last wake', () => {
+    expect(captionsNotice({ by: 'Ada', status: 'limit' })).toBe('Wake limit reached for this call')
+  })
 })
 
 describe('textSimilarity', () => {
