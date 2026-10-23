@@ -1653,6 +1653,18 @@ app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', slackAgentRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
 startTunnelHeartbeat()
 
+// A blocked event loop here is invisible from the outside except as a tunnel
+// dropping with 1006 and `/health` missing its probes — which is how the SHO-185
+// incident looked. Log it at the moment the stall ends, with the size of the
+// stall, so the next one is diagnosable. `SHOGO_EVENT_LOOP_LAG_MS=0` disables it.
+if (process.env.SHOGO_EVENT_LOOP_LAG_MS !== '0') {
+  void import('./lib/event-loop-lag').then(({ startEventLoopLagMonitor }) => {
+    startEventLoopLagMonitor({
+      thresholdMs: Number(process.env.SHOGO_EVENT_LOOP_LAG_THRESHOLD_MS) || undefined,
+    })
+  }).catch(() => {})
+}
+
 // SHO-105 / #1597: checkpoint repos seeded before this build still carry
 // `.shogo/sessions.db` (+ its live WAL) in their history and in `.git/lfs`.
 // `repairCheckpointRepo` rewrites the refs without touching a file on disk and

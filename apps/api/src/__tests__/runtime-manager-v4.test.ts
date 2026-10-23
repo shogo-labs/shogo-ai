@@ -15,7 +15,15 @@ mock.module('child_process', () => ({
   },
   execFile: () => {},
   execFileSync: () => '',
-  exec: () => {},
+  // Async form used by the process-table scans and Windows kills. It must call
+  // back, or the awaited scan hangs the test (SHO-185 moved these off execSync).
+  exec: (cmd: string, optsOrCb: any, maybeCb?: any) => {
+    execCalls.push(cmd)
+    const cb = typeof optsOrCb === 'function' ? optsOrCb : maybeCb
+    const next = execPlan.shift()
+    if (next instanceof Error) cb(next, '', '')
+    else cb(null, String(next ?? ''), '')
+  },
   spawnSync: () => ({ status: 0, stdout: "", stderr: "", error: null }),
   spawn: mock(() => ({
     stdout: { on: () => {} },
@@ -50,25 +58,30 @@ beforeEach(() => {
   execCalls.length = 0
   execPlan = []
   __resetRuntimeManagerInternalsForTests()
+  // The constructor's orphan sweep is async and shells out; leave it out of the
+  // unit tests that drive `execPlan` themselves. The cleanup describe opts back
+  // in (SHO-185 moved the sweep off execSync so it no longer blocks boot).
+  process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP = '1'
   globalThis.fetch = originalFetch
 })
 
 afterEach(() => {
+  delete process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP
   setPlatform(originalPlatform)
   __resetRuntimeManagerInternalsForTests()
   globalThis.fetch = originalFetch
 })
 
 describe('RuntimeManager findStalePidsPosix (private)', () => {
-  test('parses lsof PIDs, drops self/parent/init/non-numeric tokens, dedupes', () => {
+  test('parses lsof PIDs, drops self/parent/init/non-numeric tokens, dedupes', async () => {
     setPlatform('linux')
     const rm = new RuntimeManager() as unknown as {
-      findStalePidsPosix: (s: number, e: number, sp: string, pp: string) => string[]
+      findStalePidsPosix: (s: number, e: number, sp: string, pp: string) => Promise<string[]>
     }
     execPlan = [
       `${process.pid}\n9999\n9999\n${process.ppid}\n1\nlsof(blah)\n12345\n`,
     ]
-    const pids = rm.findStalePidsPosix(
+    const pids = await rm.findStalePidsPosix(
       37100,
       37900,
       String(process.pid),
@@ -78,27 +91,27 @@ describe('RuntimeManager findStalePidsPosix (private)', () => {
     expect(execCalls[execCalls.length - 1]).toContain('lsof -iTCP:37100-37900')
   })
 
-  test('returns empty array when lsof throws', () => {
+  test('returns empty array when lsof throws', async () => {
     setPlatform('linux')
     execPlan = [new Error('lsof not installed')]
     const rm = new RuntimeManager() as unknown as {
-      findStalePidsPosix: (s: number, e: number, sp: string, pp: string) => string[]
+      findStalePidsPosix: (s: number, e: number, sp: string, pp: string) => Promise<string[]>
     }
-    expect(rm.findStalePidsPosix(37100, 37900, '1', '1')).toEqual([])
+    expect(await rm.findStalePidsPosix(37100, 37900, '1', '1')).toEqual([])
   })
 
-  test('returns empty array when lsof returns empty string', () => {
+  test('returns empty array when lsof returns empty string', async () => {
     setPlatform('linux')
     execPlan = ['']
     const rm = new RuntimeManager() as unknown as {
-      findStalePidsPosix: (s: number, e: number, sp: string, pp: string) => string[]
+      findStalePidsPosix: (s: number, e: number, sp: string, pp: string) => Promise<string[]>
     }
-    expect(rm.findStalePidsPosix(37100, 37900, '111', '222')).toEqual([])
+    expect(await rm.findStalePidsPosix(37100, 37900, '111', '222')).toEqual([])
   })
 })
 
 describe('RuntimeManager findStalePidsWindows (private)', () => {
-  test('parses netstat tabular output, filters by port range and PID, dedupes', () => {
+  test('parses netstat tabular output, filters by port range and PID, dedupes', async () => {
     setPlatform('win32')
     const netstat = [
       '  Proto  Local Address          Foreign Address        State           PID',
@@ -115,21 +128,21 @@ describe('RuntimeManager findStalePidsWindows (private)', () => {
       '',
     ].join('\n')
     const rm = new RuntimeManager() as unknown as {
-      findStalePidsWindows: (s: number, e: number, sp: string, pp: string) => string[]
+      findStalePidsWindows: (s: number, e: number, sp: string, pp: string) => Promise<string[]>
     }
     execPlan = [netstat]
-    const pids = rm.findStalePidsWindows(37100, 37900, '222', '333')
+    const pids = await rm.findStalePidsWindows(37100, 37900, '222', '333')
     expect(pids.sort()).toEqual(['9000', '9001'])
     expect(execCalls[execCalls.length - 1]).toContain('netstat -ano')
   })
 
-  test('returns empty when netstat errors (findstr no-match)', () => {
+  test('returns empty when netstat errors (findstr no-match)', async () => {
     setPlatform('win32')
     execPlan = [new Error('exit 1')]
     const rm = new RuntimeManager() as unknown as {
-      findStalePidsWindows: (s: number, e: number, sp: string, pp: string) => string[]
+      findStalePidsWindows: (s: number, e: number, sp: string, pp: string) => Promise<string[]>
     }
-    expect(rm.findStalePidsWindows(37100, 37900, '1', '2')).toEqual([])
+    expect(await rm.findStalePidsWindows(37100, 37900, '1', '2')).toEqual([])
   })
 })
 
@@ -210,46 +223,91 @@ describe('selectOrphanedViteWatcherPgids', () => {
 })
 
 describe('RuntimeManager.cleanupStaleProcesses (constructor)', () => {
-  test('POSIX: kill -9 only orphaned listeners', () => {
+  /** The sweep is fire-and-forget now, so give its await chain a few turns. */
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0))
+  }
+
+  function spyKills() {
+    const killed: number[] = []
+    const original = process.kill
+    process.kill = ((pid: any, signal?: any) => {
+      if (typeof pid === 'number') {
+        killed.push(pid)
+        return true
+      }
+      return original(pid, signal)
+    }) as typeof process.kill
+    return { killed, restore: () => { process.kill = original } }
+  }
+
+  test('POSIX: signals only orphaned listeners, without spawning a shell', async () => {
+    delete process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP
     setPlatform('linux')
-    // lsof range A, lsof range B, ps table, then one kill per orphan.
+    // lsof range A, lsof range B, ps table, then one signal per orphan.
     // 11111 is orphaned; 22222 belongs to live API 4242 (e.g. the desktop app).
     execPlan = ['11111\n22222\n', '', '11111 1\n22222 4242\n4242 1\n', '', '']
-    new RuntimeManager()
-    const killCmds = execCalls.filter((c) => c.startsWith('kill -9'))
-    expect(killCmds).toEqual(['kill -9 11111 2>/dev/null || true'])
+    const spy = spyKills()
+    try {
+      new RuntimeManager()
+      await flush()
+      expect(spy.killed).toEqual([11111])
+    } finally {
+      spy.restore()
+    }
+    // `process.kill` replaced `execSync('kill -9 …')`: no shell, no blocked loop.
+    expect(execCalls.filter((c) => c.startsWith('kill -9'))).toEqual([])
   })
 
-  test('POSIX: kills nothing when the process table cannot be read', () => {
+  test('POSIX: kills nothing when the process table cannot be read', async () => {
+    delete process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP
     setPlatform('linux')
     execPlan = ['11111\n', '', new Error('ps: not found')]
-    new RuntimeManager()
-    expect(execCalls.some((c) => c.startsWith('kill -9'))).toBe(false)
+    const spy = spyKills()
+    try {
+      new RuntimeManager()
+      await flush()
+      expect(spy.killed).toEqual([])
+    } finally {
+      spy.restore()
+    }
   })
 
-  test('Windows: taskkill /F /PID only for listeners whose parent is gone', () => {
+  test('Windows: taskkill /F /PID only for listeners whose parent is gone', async () => {
+    delete process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP
     setPlatform('win32')
     const netstat =
       '  TCP    127.0.0.1:37150        0.0.0.0:0              LISTENING       4444\n' +
       '  TCP    127.0.0.1:37160        0.0.0.0:0              LISTENING       5555\n'
     execPlan = [netstat, '', '4444 900\n5555 700\n700 4\n', '', '']
     new RuntimeManager()
+    await flush()
     const taskkill = execCalls.filter((c) => c.startsWith('taskkill'))
     expect(taskkill).toEqual(['taskkill /F /PID 4444'])
   })
 
-  test('kill failure is swallowed (process already exited)', () => {
+  test('a kill failure is swallowed (process already exited)', async () => {
+    delete process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP
     setPlatform('linux')
     execPlan = ['12345\n', '', '12345 1\n', new Error('No such process')]
-    expect(() => new RuntimeManager()).not.toThrow()
+    const spy = spyKills()
+    try {
+      expect(() => new RuntimeManager()).not.toThrow()
+      await flush()
+    } finally {
+      spy.restore()
+    }
   })
 
-  test('cleanupStaleProcesses runs only ONCE per process (module guard)', () => {
+  test('cleanupStaleProcesses runs only ONCE per process (module guard)', async () => {
+    delete process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP
     setPlatform('linux')
     execPlan = ['11111\n', '', '11111 1\n', '']
     new RuntimeManager()
+    await flush()
     const callsAfterFirst = execCalls.length
     new RuntimeManager()
+    await flush()
     expect(execCalls.length).toBe(callsAfterFirst) // guard prevents re-entry
   })
 })
@@ -529,21 +587,27 @@ describe('RuntimeManager.getHealth (uncov branches)', () => {
 })
 
 describe('__resetRuntimeManagerInternalsForTests', () => {
-  test('clears module-scope singleton AND re-arms cleanup guard', () => {
+  test('clears module-scope singleton AND re-arms cleanup guard', async () => {
+    delete process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP
     setPlatform('linux')
+    const flush = async () => {
+      for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0))
+    }
     execPlan = ['', '']
     const first = getRuntimeManager()
     expect(first).toBeTruthy()
+    await flush()
 
     const callsBefore = execCalls.length
     __resetRuntimeManagerInternalsForTests()
 
     // After reset, getRuntimeManager() returns a NEW instance and the
-    // new constructor re-runs cleanupStaleProcesses (which re-executes
-    // execSync calls), proving the guard was re-armed.
+    // new constructor re-runs cleanupStaleProcesses (which re-runs the
+    // process-table scans), proving the guard was re-armed.
     execPlan = ['', '']
     const second = getRuntimeManager()
     expect(second).not.toBe(first)
+    await flush()
     expect(execCalls.length).toBeGreaterThan(callsBefore)
   })
 })

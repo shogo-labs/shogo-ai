@@ -459,7 +459,7 @@ export async function verifyPodAlive(podId: string, timeoutMs = 3000): Promise<b
       replyPod: POD_ID,
       request: { type: 'request', requestId: probeId, method: 'GET', path: '/__probe__' },
     }
-    r.publish(`tunnel:pod:${podId}:request`, JSON.stringify(msg)).catch(() => {
+    publishFrame(`tunnel:pod:${podId}:request`, msg).catch(() => {
       clearTimeout(timer)
       pendingRelayResponses.delete(probeId)
       resolve(false)
@@ -552,8 +552,116 @@ const pendingStreamRelays = new Map<string, {
   timeout: ReturnType<typeof setTimeout>
 }>()
 
+// ─── Chunked publish ────────────────────────────────────────────────────────
+
+/**
+ * A relayed request/response body larger than this is published in parts.
+ *
+ * One multi-megabyte PUBLISH on the connection that also carries liveness probes
+ * and every other relay delays all of them: Redis writes the frame before it will
+ * read the next command, so a PING queued behind a 4 MB body is what made
+ * `/api/health` time out under load (SHO-185). Size is the message body, not the
+ * number of messages, so a big payload waits behind small ones.
+ */
+let relayChunkBytes = Number(process.env.TUNNEL_RELAY_CHUNK_BYTES) || 256 * 1024
+
+/** Test hook: shrink the chunk size instead of building megabyte bodies. */
+export function __setRelayChunkBytesForTests(bytes: number): void {
+  relayChunkBytes = bytes
+}
+
+/** Frames waiting for their remaining parts, keyed by channel + chunk id. */
+const pendingRelayChunks = new Map<
+  string,
+  { parts: string[]; received: number; total: number; bytes: number; startedAt: number }
+>()
+
+/** A partial payload never worth reassembling — drop it rather than grow. */
+const RELAY_CHUNK_TTL_MS = 60_000
+const RELAY_CHUNK_MAX_BYTES = 64 * 1024 * 1024
+
+interface RelayChunkFrame {
+  relayChunk: { id: string; seq: number; total: number; data: string }
+}
+
+function pruneRelayChunks(now: number) {
+  for (const [key, entry] of pendingRelayChunks) {
+    if (now - entry.startedAt > RELAY_CHUNK_TTL_MS) pendingRelayChunks.delete(key)
+  }
+}
+
+/**
+ * Publish one logical frame, splitting it when it is large. The receiver joins
+ * the parts and handles the original JSON, so no caller or handler changes shape.
+ */
+async function publishFrame(channel: string, payload: unknown): Promise<void> {
+  const r = getPublisher()
+  if (!r) throw new Error('Redis publisher not initialized')
+  const json = JSON.stringify(payload)
+  if (json.length <= relayChunkBytes) {
+    await r.publish(channel, json)
+    return
+  }
+
+  const id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  const parts: string[] = []
+  for (let offset = 0; offset < json.length; offset += relayChunkBytes) {
+    parts.push(json.slice(offset, offset + relayChunkBytes))
+  }
+  for (let seq = 0; seq < parts.length; seq++) {
+    const frame: RelayChunkFrame = { relayChunk: { id, seq, total: parts.length, data: parts[seq] } }
+    await r.publish(channel, JSON.stringify(frame))
+  }
+}
+
+/**
+ * Join an incoming chunk frame, or return `undefined` while parts are missing.
+ * Returns `null` when the frame was rejected (too large, or inconsistent).
+ */
+function acceptRelayChunk(channel: string, frame: RelayChunkFrame): string | undefined | null {
+  const { id, seq, total, data } = frame.relayChunk
+  if (!Number.isInteger(total) || total <= 0 || !Number.isInteger(seq) || seq < 0 || seq >= total) return null
+  if (typeof data !== 'string') return null
+
+  const key = `${channel}\u0000${id}`
+  const now = Date.now()
+  pruneRelayChunks(now)
+
+  let entry = pendingRelayChunks.get(key)
+  if (!entry) {
+    if (total > 4096) return null
+    entry = { parts: new Array(total).fill(undefined as unknown as string), received: 0, total, bytes: 0, startedAt: now }
+    pendingRelayChunks.set(key, entry)
+  }
+  if (entry.total !== total) {
+    pendingRelayChunks.delete(key)
+    return null
+  }
+  if (entry.parts[seq] === undefined) {
+    entry.parts[seq] = data
+    entry.received++
+    entry.bytes += data.length
+  }
+  if (entry.bytes > RELAY_CHUNK_MAX_BYTES) {
+    pendingRelayChunks.delete(key)
+    console.warn(`[TunnelRedis] Dropping relay payload over ${RELAY_CHUNK_MAX_BYTES} bytes on ${channel}`)
+    return null
+  }
+  if (entry.received < entry.total) return undefined
+  pendingRelayChunks.delete(key)
+  return entry.parts.join('')
+}
+
 function handleSubMessage(channel: string, message: string) {
   try {
+    // A large frame arrives in parts; reassemble before dispatching so the rest
+    // of this function (and every handler) sees exactly one logical message.
+    if (message.startsWith('{"relayChunk":')) {
+      const joined = acceptRelayChunk(channel, JSON.parse(message) as RelayChunkFrame)
+      if (joined === undefined || joined === null) return
+      return handleSubMessage(channel, joined)
+    }
+
     if (channel === `tunnel:pod:${POD_ID}:request`) {
       const msg = JSON.parse(message) as RelayRequest | RelayResponse
 
@@ -582,7 +690,7 @@ async function handleIncomingRelayRequest(msg: RelayRequest) {
     const r = getPublisher()
     if (r) {
       const reply: RelayResponse = { relayId: msg.relayId, response: { type: 'response', requestId: msg.request.requestId, status: 200 } }
-      await r.publish(`tunnel:pod:${msg.replyPod}:request`, JSON.stringify(reply))
+      await publishFrame(`tunnel:pod:${msg.replyPod}:request`, reply)
     }
     return
   }
@@ -594,13 +702,13 @@ async function handleIncomingRelayRequest(msg: RelayRequest) {
     const reply: RelayResponse = { relayId: msg.relayId, response: response ?? undefined }
     const r = getPublisher()
     if (r) {
-      await r.publish(`tunnel:pod:${msg.replyPod}:request`, JSON.stringify(reply))
+      await publishFrame(`tunnel:pod:${msg.replyPod}:request`, reply)
     }
   } catch (err) {
     const reply: RelayResponse = { relayId: msg.relayId, error: (err as Error).message }
     const r = getPublisher()
     if (r) {
-      await r.publish(`tunnel:pod:${msg.replyPod}:request`, JSON.stringify(reply))
+      await publishFrame(`tunnel:pod:${msg.replyPod}:request`, reply)
     }
   }
 }
@@ -626,7 +734,7 @@ async function handleIncomingStreamRelayRequest(msg: StreamRelayRequest) {
     const reply: StreamRelayChunk = { relayId: msg.relayId, chunk }
     const r = getPublisher()
     if (r) {
-      r.publish(`tunnel:pod:${msg.replyPod}:stream-request`, JSON.stringify(reply)).catch(() => {})
+      publishFrame(`tunnel:pod:${msg.replyPod}:stream-request`, reply).catch(() => {})
     }
   })
 }
@@ -663,7 +771,7 @@ export async function relayTunnelRequest(
     pendingRelayResponses.set(relayId, { resolve, reject, timeout })
 
     const msg: RelayRequest = { relayId, instanceId, replyPod: POD_ID, request }
-    r.publish(`tunnel:pod:${ownerPod}:request`, JSON.stringify(msg)).catch((err) => {
+    publishFrame(`tunnel:pod:${ownerPod}:request`, msg).catch((err) => {
       clearTimeout(timeout)
       pendingRelayResponses.delete(relayId)
       reject(err)
@@ -698,7 +806,7 @@ export function relayTunnelStreamRequest(
     }, STREAM_RELAY_TIMEOUT_MS)
     pendingStreamRelays.set(activeRelayId, { onChunk, timeout: activeTimeout })
     const msg: StreamRelayRequest = { relayId: activeRelayId, instanceId, replyPod: POD_ID, request }
-    r.publish(`tunnel:pod:${ownerPod}:stream-request`, JSON.stringify(msg)).catch(() => {
+    publishFrame(`tunnel:pod:${ownerPod}:stream-request`, msg).catch(() => {
       if (activeTimeout) clearTimeout(activeTimeout)
       if (activeRelayId) pendingStreamRelays.delete(activeRelayId)
       onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Failed to publish relay request' })

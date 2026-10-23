@@ -35,11 +35,44 @@ function functionBody(name: string): string {
   throw new Error(`${name} body did not close`)
 }
 
+/**
+ * Everything below runs on the runtime manager's start path — from the
+ * constructor, from `start()`, or per port allocation — so each one blocked the
+ * local API's event loop (and therefore its tunnel and `/health`) when it was
+ * `execSync`. They are async now; this pins it.
+ */
+const HOT_PATHS = [
+  'isPortListening',
+  'findStalePidsPosix',
+  'findStalePidsWindows',
+  'readParentPidsPosix',
+  'readParentPidsWindows',
+  'cleanupOrphanedViteWatchers',
+  'cleanupOrphanedRuntimeListeners',
+]
+
 describe('runtime manager hot paths', () => {
-  test('isPortListening never shells out', () => {
-    const body = functionBody('isPortListening')
-    expect(body).not.toMatch(/execSync|spawnSync|execFileSync/)
-    // It probes the socket directly instead.
-    expect(body).toMatch(/connect\(/)
+  for (const name of HOT_PATHS) {
+    test(`${name} never shells out synchronously`, () => {
+      const async_ = new RegExp(`(?:async\\s+)?${name}\\s*\\(`)
+      expect(MANAGER_SOURCE).toMatch(async_)
+      expect(functionBody(name)).not.toMatch(/execSync|spawnSync|execFileSync/)
+    })
+  }
+
+  test('isPortListening probes the socket directly', () => {
+    expect(functionBody('isPortListening')).toMatch(/connect\(/)
+  })
+
+  test('the orphan sweep is started without awaiting it in the constructor', () => {
+    // `void this.cleanupStaleProcesses()` — fire and forget. Awaiting it (or
+    // calling the sync version) blocks boot for the whole lsof/ps scan.
+    expect(MANAGER_SOURCE).toMatch(/void this\.cleanupStaleProcesses\(\)/)
+  })
+
+  test('orphan kills use process.kill on POSIX instead of spawning a shell', () => {
+    const body = functionBody('cleanupOrphanedRuntimeListeners')
+    expect(body).toMatch(/process\.kill\(/)
+    expect(body).not.toMatch(/kill -9/)
   })
 })
