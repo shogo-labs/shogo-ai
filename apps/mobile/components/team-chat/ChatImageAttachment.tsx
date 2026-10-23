@@ -10,9 +10,9 @@
  * is taken from the image once it loads and the box is fitted again.
  */
 
-import { useState } from 'react'
 import { Image } from 'react-native'
 import { fitChatImage } from '../chat/turns/image-sizing'
+import { useNaturalImageSize } from '../chat/turns/image-natural-size'
 
 export interface ChatImageAttachmentProps {
   /** Absolute URL of the stored image. */
@@ -33,14 +33,12 @@ export function ChatImageAttachment({
   naturalHeight,
   containerWidth,
 }: ChatImageAttachmentProps) {
-  const [loaded, setLoaded] = useState<{ width: number; height: number } | null>(null)
+  const natural = useNaturalImageSize(url, naturalWidth, naturalHeight)
   const box = fitChatImage({
-    naturalWidth: naturalWidth ?? loaded?.width,
-    naturalHeight: naturalHeight ?? loaded?.height,
+    naturalWidth: natural.size?.width,
+    naturalHeight: natural.size?.height,
     containerWidth,
   })
-  // Stored dimensions win; the image's own only fill the gap they leave.
-  const needsNaturalSize = !(naturalWidth && naturalHeight)
 
   return (
     <Image
@@ -50,13 +48,7 @@ export function ChatImageAttachment({
       // The box matches the image's aspect unless the min width had to widen a
       // very tall one, which is the only case that crops.
       resizeMode={box.cropped ? 'cover' : 'contain'}
-      onLoad={(event) => {
-        if (!needsNaturalSize) return
-        const source = event.nativeEvent?.source
-        if (source?.width && source?.height) {
-          setLoaded({ width: source.width, height: source.height })
-        }
-      }}
+      onLoad={natural.onLoad}
       accessibilityLabel={name}
     />
   )

@@ -100,10 +100,23 @@ function reportColumnWidth(img: Element, width: number) {
 const previewBox = (img: Element) => img.parentElement as HTMLElement
 
 /** An image reports its natural size once it loads; attachments carry none. */
-function reportImageSize(img: Element, width: number, height: number) {
+function reportImageSize(
+  img: Element,
+  width: number,
+  height: number,
+  shape: 'native' | 'web' = 'native',
+) {
   const handler = imageLoadHandlers.get(img)
   if (!handler) throw new Error('the image registered no onLoad')
-  act(() => handler({ nativeEvent: { source: { width, height, uri: '' } } }))
+  // Native hands the size over in `nativeEvent.source`; react-native-web forwards
+  // the DOM load event, whose target carries the natural pixels instead.
+  act(() =>
+    handler(
+      shape === 'web'
+        ? { nativeEvent: { type: 'load', target: { naturalWidth: width, naturalHeight: height } } }
+        : { nativeEvent: { source: { width, height, uri: '' } } },
+    ),
+  )
 }
 
 describe('agent chat image attachments', () => {
@@ -139,5 +152,14 @@ describe('agent chat image attachments', () => {
 
     expect(previewBox(img).style.width).toBe('220px')
     expect(previewBox(img).style.height).toBe('165px')
+  })
+
+  test('web reports the size on the load event target, and is still fitted', () => {
+    const img = renderImage()
+    reportColumnWidth(img, 900)
+    reportImageSize(img, 1600, 900, 'web')
+
+    expect(previewBox(img).style.width).toBe('462px')
+    expect(previewBox(img).style.height).toBe('260px')
   })
 })

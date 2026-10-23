@@ -24,6 +24,7 @@ import { TodoRow } from "./TodoRow"
 import { ToolCallGroup } from "./ToolCallGroup"
 import { WorkGroup } from "./WorkGroup"
 import { fitChatImage } from "./image-sizing"
+import { useNaturalImageSize } from "./image-natural-size"
 import { useMeasuredWidth } from "./use-measured-width"
 import { WorkedForGroup } from "./WorkedForGroup"
 import { ContextCompactionDivider } from "./ContextCompactionDivider"
@@ -270,14 +271,12 @@ function ImageThumbnail({
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
-  const [natural, setNatural] = useState<{ width: number; height: number } | null>(
-    null,
-  )
+  const naturalSize = useNaturalImageSize(url)
   // The message column's width, not the window's: a side pane is narrower.
   const column = useMeasuredWidth()
   const box = fitChatImage({
-    naturalWidth: natural?.width,
-    naturalHeight: natural?.height,
+    naturalWidth: naturalSize.size?.width,
+    naturalHeight: naturalSize.size?.height,
     containerWidth: column.width,
   })
   const imageSource = useAgentImageSource(url)
@@ -341,12 +340,7 @@ function ImageThumbnail({
               resizeMode={box.cropped ? "cover" : "contain"}
               accessibilityLabel={`Image attachment ${index + 1}`}
               onError={() => setHasError(true)}
-              onLoad={(event) => {
-                const source = event.nativeEvent?.source
-                if (source?.width && source?.height) {
-                  setNatural({ width: source.width, height: source.height })
-                }
-              }}
+              onLoad={naturalSize.onLoad}
               style={{ width: box.width, height: box.height }}
             />
           ) : null}

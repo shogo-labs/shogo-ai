@@ -37,6 +37,7 @@ import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeCont
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
 import { fitChatImage } from "./image-sizing"
+import { useNaturalImageSize } from "./image-natural-size"
 import { useMeasuredWidth } from "./use-measured-width"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
 import { stripBuildBriefMarker } from "./buildBrief"
@@ -150,12 +151,10 @@ function ImageThumbnail({
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
-  const [natural, setNatural] = useState<{ width: number; height: number } | null>(
-    null,
-  )
+  const naturalSize = useNaturalImageSize(url)
   const box = fitChatImage({
-    naturalWidth: natural?.width,
-    naturalHeight: natural?.height,
+    naturalWidth: naturalSize.size?.width,
+    naturalHeight: naturalSize.size?.height,
     containerWidth,
   })
   const imageSource = useAgentImageSource(url)
@@ -221,12 +220,7 @@ function ImageThumbnail({
               resizeMode={box.cropped ? "cover" : "contain"}
               accessibilityLabel={`Image attachment ${index + 1}`}
               onError={() => setHasError(true)}
-              onLoad={(event) => {
-                const source = event.nativeEvent?.source
-                if (source?.width && source?.height) {
-                  setNatural({ width: source.width, height: source.height })
-                }
-              }}
+              onLoad={naturalSize.onLoad}
               style={{ width: "100%", height: "100%" }}
             />
           ) : null}

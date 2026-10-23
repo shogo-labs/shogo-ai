@@ -1878,11 +1878,24 @@ describe('MessageRow image attachments', () => {
     }
 
     /** What an image reports once it has loaded, for attachments with no stored size. */
-    const reportImageSize = (name: string, width: number, height: number) => {
+    const reportImageSize = (
+      name: string,
+      width: number,
+      height: number,
+      shape: 'native' | 'web' = 'native',
+    ) => {
       const img = document.querySelector(`img[accessibilitylabel="${name}"]`) as Element
       const handler = imageLoadHandlers.get(img)
       if (!handler) throw new Error('the image registered no onLoad')
-      act(() => handler({ nativeEvent: { source: { width, height, uri: '' } } }))
+      // Native puts the size in `nativeEvent.source`; react-native-web forwards
+      // the DOM load event, so the size is on its target instead.
+      act(() =>
+        handler(
+          shape === 'web'
+            ? { nativeEvent: { type: 'load', target: { naturalWidth: width, naturalHeight: height } } }
+            : { nativeEvent: { source: { width, height, uri: '' } } },
+        ),
+      )
     }
 
     const imageEl = (name: string) =>
@@ -1944,6 +1957,27 @@ describe('MessageRow image attachments', () => {
 
       expect(imageEl('old.png').style.width).toBe('462px')
       expect(imageEl('old.png').style.height).toBe('260px')
+    })
+
+    test('web reports the size on the load event target, and is still fitted', () => {
+      renderRow([sized('a1', 'old.png', null, null)])
+      reportRowWidth(900)
+
+      reportImageSize('old.png', 1600, 900, 'web')
+
+      expect(imageEl('old.png').style.width).toBe('462px')
+      expect(imageEl('old.png').style.height).toBe('260px')
+      expect(imageEl('old.png').getAttribute('resizemode')).toBe('contain')
+    })
+
+    test('a stored smaller size is not overridden by what the image loads as', () => {
+      renderRow([sized('a1', 'small.png', 200, 100)])
+      reportRowWidth(900)
+
+      reportImageSize('small.png', 1600, 900, 'web')
+
+      expect(imageEl('small.png').style.width).toBe('200px')
+      expect(imageEl('small.png').style.height).toBe('100px')
     })
 
     test('before the row is measured the preview keeps the old 220px width', () => {
