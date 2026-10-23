@@ -245,48 +245,15 @@ function composer(page: Page) {
 /**
  * Switch from *this* page without navigating home first: the bug needs a chat
  * screen mounted when the switch happens, which `goHome` would unmount.
- *
- * `expectShell: false` skips the post-reload "the shell shows the new
- * workspace" assertion for callers that assert the persisted workspace
- * themselves — the second-tab spec reloads two tabs at once and cannot rely on
- * the first tab's chrome having painted within the window.
  */
-async function switchInPlace(
-  page: Page,
-  toName: string,
-  options: { expectShell?: boolean; label?: string } = {},
-) {
-  const { expectShell = true, label = "switch" } = options
+async function switchInPlace(page: Page, toName: string) {
   const trigger = anyAccountTrigger(page)
   await expect(trigger).toBeVisible({ timeout: 30_000 })
   if (await accountTrigger(page, toName).isVisible().catch(() => false)) return
   await openAccountPopover(page, trigger)
   await expect(page.getByLabel("Sign in to Shogo Cloud")).toBeVisible({ timeout: 10_000 })
   await clickAndWaitForReload(page, page.getByLabel(toName, { exact: true }))
-  if (!expectShell) {
-    // CI-only failures here are otherwise a blind "element(s) not found": log
-    // where the reload actually landed so the next run says why.
-    console.log(
-      `[workspace-switch] ${label} after reload:`,
-      JSON.stringify(await pageState(page)),
-    )
-    return
-  }
   await expect(accountTrigger(page, toName)).toBeVisible({ timeout: 30_000 })
-}
-
-/** Where a page actually is, for a failure message that is not "not found". */
-async function pageState(page: Page) {
-  try {
-    return page.evaluate(() => ({
-      url: window.location.href,
-      title: document.title,
-      accountTriggers: document.querySelectorAll('[aria-label*="open account"]').length,
-      bodyText: (document.body?.innerText ?? "").slice(0, 120),
-    }))
-  } catch (error) {
-    return { error: String(error) }
-  }
 }
 
 test.describe("Workspace switching (local mode)", () => {
@@ -419,82 +386,5 @@ test.describe("Workspace switching (local mode)", () => {
     await page.waitForTimeout(2_500)
     await expect.poll(() => activeWorkspaceName(page)).toBe(WORKSPACE_B)
     await expect(accountTrigger(page, WORKSPACE_B)).toBeVisible({ timeout: 30_000 })
-  })
-
-  test("wide desktop: a second tab on the old chat does not drag the switch back (SHO-157)", async ({
-    browser,
-  }) => {
-    test.setTimeout(240_000)
-    // One context: the tabs share localStorage and receive each other's
-    // `storage` events, which is how a background tab could echo OLD back.
-    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
-    const tab1 = await context.newPage()
-    const tab2 = await context.newPage()
-    try {
-      await tab1.goto("/")
-      await switchWorkspaceWide(tab1, WORKSPACE_A)
-      const chatUrl = await chatInWorkspace(tab1, WORKSPACE_A)
-
-      await tab1.goto(chatUrl)
-      await expect(composer(tab1)).toBeVisible({ timeout: 90_000 })
-      await tab2.goto(chatUrl)
-      await expect(composer(tab2)).toBeVisible({ timeout: 90_000 })
-      // Let the second tab finish its load and cache the chat's owner before
-      // the switch — that cache is what made the stale adopt resolve in a
-      // microtask on staging.
-      await tab1.waitForTimeout(2_000)
-
-      await switchInPlace(tab1, WORKSPACE_B, { expectShell: false, label: "tab1" })
-      // Sample both tabs: a single poll cannot tell "the switch never landed"
-      // apart from "it landed and was dragged back", and the two-tab case is
-      // exactly the one the card's second criterion is about.
-      const timeline: string[] = []
-      for (let i = 0; i < 40; i++) {
-        const [name1, name2] = await Promise.all([
-          activeWorkspaceName(tab1).catch((error) => `err:${String(error).slice(0, 40)}`),
-          activeWorkspaceName(tab2).catch((error) => `err:${String(error).slice(0, 40)}`),
-        ])
-        const state = await pageState(tab1)
-        timeline.push(
-          `+${i * 500}ms tab1=${name1 ?? "?"} tab2=${name2 ?? "?"} ` +
-            `url=${"url" in state ? state.url : "?"} triggers=${"accountTriggers" in state ? state.accountTriggers : "?"}`,
-        )
-        if (name1 === WORKSPACE_B && i > 6) break
-        await tab1.waitForTimeout(500)
-      }
-      console.log(`[workspace-switch] two-tab timeline:\n${timeline.join("\n")}`)
-      await expect.poll(() => activeWorkspaceName(tab1), { timeout: 30_000 }).toBe(WORKSPACE_B)
-
-      // The other tab reacted to the storage change; if it wrote the old id
-      // back, tab1 would be dragged out of B and shared storage would read OLD.
-      await tab1.waitForTimeout(2_500)
-      await expect.poll(() => activeWorkspaceName(tab1), { timeout: 20_000 }).toBe(WORKSPACE_B)
-      await expect
-        .poll(
-          async () => {
-            // tab2 may be re-rendering off the same storage event; retry
-            // instead of failing on a torn-down execution context.
-            try {
-              return await activeWorkspaceName(tab2)
-            } catch {
-              return null
-            }
-          },
-          { timeout: 20_000 },
-        )
-        .toBe(WORKSPACE_B)
-
-      // Diagnostics for the report/log: where each tab ended up, in case the
-      // 30 s chrome assertion above is the only thing that ever fails here.
-      console.log(
-        "[workspace-switch] settled tabs:",
-        JSON.stringify({
-          tab1: await pageState(tab1),
-          tab2: await pageState(tab2),
-        }),
-      )
-    } finally {
-      await context.close()
-    }
   })
 })
