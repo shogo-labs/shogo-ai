@@ -490,3 +490,52 @@ describe("team-chat wakes waiting behind this session", () => {
     expect(queueApi!.queuedMessages).toEqual([])
   })
 })
+
+/**
+ * QA round 1: the wake poll used to run on every open session, forever, with
+ * nothing queued — ~40 GETs a minute and a DB query each. A wake only exists
+ * while a reply is running in the thread, so the poll now runs only while the
+ * session is streaming or a wake is actually waiting.
+ */
+describe("the wake poll idles", () => {
+  const wakeCallCount = () =>
+    wakeCalls.filter((url) => url.startsWith("/api/agent-wakes?")).length
+
+  test("an idle session asks once on mount and then not again", async () => {
+    reset()
+    render(<Probe isStreaming={false} />)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(wakeCallCount()).toBe(1)
+
+    // Two poll intervals go by with nothing queued and nothing streaming.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 3200)) })
+    expect(wakeCallCount()).toBe(1)
+  })
+
+  test("it polls while the session is streaming", async () => {
+    reset()
+    render(<Probe isStreaming />)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const afterMount = wakeCallCount()
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    expect(wakeCallCount()).toBeGreaterThan(afterMount)
+  })
+
+  test("it polls while a wake is waiting, and stops once the list is empty", async () => {
+    reset()
+    wakeList = [{ id: "w1", status: "pending", sendNowAt: null, createdAt: new Date().toISOString(), conversationId: "c-eng", threadRootId: null, channelName: "eng", author: { name: "Ana Lopez" }, text: "look at this" }]
+    render(<Probe isStreaming={false} />)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const withWake = wakeCallCount()
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    expect(wakeCallCount()).toBeGreaterThan(withWake)
+
+    wakeList = []
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    const afterDrain = wakeCallCount()
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    expect(wakeCallCount()).toBe(afterDrain)
+  }, 15_000)
+})

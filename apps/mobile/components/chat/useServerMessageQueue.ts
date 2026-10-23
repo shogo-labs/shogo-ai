@@ -388,14 +388,18 @@ export function useServerMessageQueue({
 
   // A team-chat wake can arrive, and drain, while this session's own turn is
   // streaming — the one case the queue poll below deliberately skips — so it
-  // has a poll of its own.
+  // has a poll of its own. It only runs while there is something to watch: a
+  // wake exists only while a reply is running in the thread and is gone when
+  // that reply ends, so an idle session must not ask at all. The mount load
+  // above still runs once, which is how a dock opened mid-run finds its rows.
   useEffect(() => {
     if (!enabled || !sessionId) return
+    if (!isStreaming && wakes.length === 0) return
     const timer = setInterval(() => {
       void loadWakes().catch(() => {})
     }, WAKE_POLL_MS)
     return () => clearInterval(timer)
-  }, [enabled, sessionId, loadWakes])
+  }, [enabled, sessionId, isStreaming, wakes.length, loadWakes])
 
   useEffect(() => {
     if (!enabled || !sessionId || rows.length === 0 || isStreaming) return

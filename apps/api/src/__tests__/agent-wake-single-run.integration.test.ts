@@ -361,6 +361,26 @@ describe('a queued wake a person can act on', () => {
     calls[0]!.release('First done.')
   })
 
+  test('a wake whose run failed says so on its note, never Done', async () => {
+    const id = await channel('wake-failed')
+    const root = await post(seed.member, id, `${tag(builder)} first job`)
+    await waitFor(() => calls.length === 1)
+    await post(seed.member, id, `${tag(builder)} this one breaks`, root)
+    const [wake] = await waitFor(async () => {
+      const rows = await pendingWakes(id)
+      return rows.length === 1 ? rows : null
+    })
+
+    // The drain records the run's failure before it rewrites the note; until
+    // SHO-167 a failed wake left a note that claimed the reply had happened.
+    await dispatcher.syncWakeNote(wake.id, 'failed', { error: 'runtime exploded' })
+    const note = (await thread(root)).find((m) => m.blocks?.wakeQueued?.wakeId === wake.id)
+    expect(note.blocks.wakeQueued.status).toBe('failed')
+    expect(note.blocks.wakeQueued.error).toBe('runtime exploded')
+
+    calls[0]!.release('First done.')
+  })
+
   test('the session lists the wakes waiting behind it, for its queue dock', async () => {
     const id = await channel('dock-list')
     const root = await post(seed.member, id, `${tag(builder)} list me`)

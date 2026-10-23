@@ -16,6 +16,7 @@ import { Pressable, Text, View } from 'react-native'
 import { AlarmClock, Loader2, SendHorizontal, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { teamChatApi, type ChatMessage } from '../../lib/team-chat-api'
+import { wakeRefusalMessage } from '../../lib/wake-refusal'
 import { formatTime } from '../../lib/team-chat-time'
 
 /** What a queued note's `blocks.wakeQueued` carries. */
@@ -24,8 +25,10 @@ export type WakeQueuedBlock = {
   /** `project:<id>` or `workspace`. */
   agentRef?: string
   agentName?: string
-  /** pending | sending | running | done | removed */
+  /** pending | sending | running | done | failed | removed */
   status?: string
+  /** Why the run failed, when it did. */
+  error?: string
   sentNowBy?: { id?: string; name?: string | null } | null
   triggerMessageId?: string
   runningMessageId?: string | null
@@ -34,13 +37,6 @@ export type WakeQueuedBlock = {
 export function wakeQueuedOf(message: ChatMessage): WakeQueuedBlock | null {
   const block = (message.blocks as { wakeQueued?: WakeQueuedBlock } | null | undefined)?.wakeQueued
   return block && typeof block === 'object' ? block : null
-}
-
-/** The server's own words for a refused click (409 not_pending, 403 viewer). */
-function refusalMessage(error: unknown): string {
-  const fromBody = (error as { response?: { data?: { error?: { message?: unknown } } } } | null)?.response?.data?.error?.message
-  if (typeof fromBody === 'string' && fromBody.trim()) return fromBody
-  return error instanceof Error && error.message ? error.message : 'That message is not waiting any more'
 }
 
 /** How the row reads once there is nothing left to press. */
@@ -54,6 +50,9 @@ function labelFor(wake: WakeQueuedBlock): string {
       return sender ? `Sent now by ${sender} · running` : 'Running'
     case 'done':
       return sender ? `Sent now by ${sender}` : 'Done'
+    case 'failed':
+      // The run threw: the note must not claim a reply that never happened.
+      return sender ? `Sent now by ${sender} · failed` : 'Failed to run'
     case 'removed':
       return 'Removed'
     default:
@@ -78,7 +77,7 @@ export function QueuedWakeRow({ message, wake }: { message: ChatMessage; wake: W
     setBusy(true)
     void run()
       .then(() => setActed(kind))
-      .catch((err: unknown) => setError(refusalMessage(err)))
+      .catch((err: unknown) => setError(wakeRefusalMessage(err)))
       .finally(() => setBusy(false))
   }
   const sendNow = () => act("send", () => teamChatApi().sendWakeNow(wake.wakeId!))
@@ -101,6 +100,10 @@ export function QueuedWakeRow({ message, wake }: { message: ChatMessage; wake: W
         {error ? (
           <Text className="text-[11px] text-destructive" numberOfLines={2}>
             {error}
+          </Text>
+        ) : wake.status === "failed" && wake.error ? (
+          <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
+            {wake.error}
           </Text>
         ) : null}
       </View>

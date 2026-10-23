@@ -519,10 +519,11 @@ export interface ChatInputProps {
   ) => void;
   onEditQueuedMessage?: (messageId: string) => void;
   onSendQueuedMessageNow?: (messageId: string) => void;
-  /** Send a team-chat wake now (its own queue, its own route). */
-  onSendAgentWakeNow?: (wakeId: string) => void;
+  /** Send a team-chat wake now (its own queue, its own route). The dock's row
+   *  awaits this so the server's refusal is shown on the row itself. */
+  onSendAgentWakeNow?: (wakeId: string) => void | Promise<void>;
   /** Take a team-chat wake off the queue. */
-  onRemoveAgentWake?: (wakeId: string) => void;
+  onRemoveAgentWake?: (wakeId: string) => void | Promise<void>;
   /** Deliver the updates a paused session is holding (the waiting chip's Resume). */
   onResumeTaskWakes?: (messageId: string) => void;
   interactionMode?: InteractionMode;

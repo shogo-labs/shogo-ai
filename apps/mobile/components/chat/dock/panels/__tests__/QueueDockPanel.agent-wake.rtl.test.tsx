@@ -10,7 +10,7 @@
 
 import { resolve } from "node:path"
 import { describe, expect, mock, test } from "bun:test"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { createElement } from "react"
 import type { DockPanelDescriptor } from "../../../../../lib/chat-dock-store"
 import { createReactNativeMock } from "../../../../../test/react-native-mock"
@@ -73,7 +73,7 @@ describe("QueueDockPanel team-chat wakes", () => {
     expect(view.getByText("please rebase the branch")).toBeInTheDocument()
   })
 
-  test("its buttons press the wake routes with the wake id", () => {
+  test("its buttons press the wake routes with the wake id", async () => {
     const sentNow: string[] = []
     const removed: string[] = []
     panel({
@@ -83,11 +83,28 @@ describe("QueueDockPanel team-chat wakes", () => {
     })
 
     const view = body()
-    fireEvent.click(screen.getByRole("button", { name: "Send queued message now" }))
+    fireEvent.click(view.getByRole("button", { name: "Send queued message now" }))
+    await waitFor(() => expect(sentNow).toEqual(["w1"]))
+    // Both buttons go quiet while the first press is in flight, so ✕ is a
+    // separate press — the row never fires two wake actions at once.
     fireEvent.click(view.getByRole("button", { name: "Delete queued message" }))
+    await waitFor(() => expect(removed).toEqual(["w1"]))
+  })
 
-    expect(sentNow).toEqual(["w1"])
-    expect(removed).toEqual(["w1"])
+  test("a refused Send now shows the server's reason on the row", async () => {
+    const refused = Object.assign(new Error("Request failed with status code 409"), {
+      response: { data: { error: { message: "That message is not waiting any more" } } },
+    })
+    panel({
+      queuedMessages: [wake("w1", "can you look at this?")],
+      onSendAgentWakeNow: async () => { throw refused },
+    })
+
+    const view = body()
+    fireEvent.click(screen.getByRole("button", { name: "Send queued message now" }))
+    await waitFor(() => expect(view.getByText("That message is not waiting any more")).toBeInTheDocument())
+    // Still there to press: the wake was not started, so the row cannot hide.
+    expect(view.getByText("can you look at this?")).toBeInTheDocument()
   })
 
   test("a wake with no actions wired renders its text and nothing to press", () => {

@@ -6626,20 +6626,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   // A team-chat message queued behind this session's turn is its own queue row:
   // Send now and ✕ reach the agent-wake routes, never the session's own queue.
+  // The promise goes back to the row so a refusal (409 not_pending, 403 viewer)
+  // is shown where the person pressed, not just logged.
   const handleSendAgentWakeNow = useCallback(
-    (wakeId: string) => {
-      void serverQueue.sendWakeNow(wakeId).catch((error) => {
-        console.warn("[ChatPanel] Failed to send the queued channel message now:", error)
-      })
-    },
+    (wakeId: string) => serverQueue.sendWakeNow(wakeId),
     [serverQueue],
   )
   const handleRemoveAgentWake = useCallback(
-    (wakeId: string) => {
-      void serverQueue.removeWake(wakeId).catch((error) => {
-        console.warn("[ChatPanel] Failed to remove the queued channel message:", error)
-      })
-    },
+    (wakeId: string) => serverQueue.removeWake(wakeId),
     [serverQueue],
   )
 

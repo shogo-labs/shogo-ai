@@ -775,22 +775,25 @@ async function drainWakes(conversationId: string, threadRootId: string | null, a
     const wake = await db.agentWake.findUnique({ where: { id: next.id } })
     if (!wake) return ran
     await syncWakeNote(wake.id, 'running')
+    let failure: string | null = null
     try {
       await runWake(wake)
       await db.agentWake.updateMany({ where: { id: wake.id, status: 'claimed' }, data: { status: 'done', lastError: null } })
     } catch (err: any) {
-      const lastError = String(err?.message ?? err).slice(0, 1000)
-      await db.agentWake.updateMany({ where: { id: wake.id, status: 'claimed' }, data: { status: 'failed', lastError } })
+      failure = String(err?.message ?? err).slice(0, 1000)
+      await db.agentWake.updateMany({ where: { id: wake.id, status: 'claimed' }, data: { status: 'failed', lastError: failure } })
         .catch(() => {})
-      console.warn(`[ChannelAgent] queued wake ${wake.id} failed:`, lastError)
+      console.warn(`[ChannelAgent] queued wake ${wake.id} failed:`, failure)
     }
-    await syncWakeNote(wake.id, 'done')
+    // A wake that threw is not done: the note has to say so, or the thread
+    // claims a reply that never happened.
+    await syncWakeNote(wake.id, failure ? 'failed' : 'done', failure ? { error: failure } : undefined)
     ran++
   }
 }
 
 /** How the note beside a queued message reads its row's state. */
-export type WakeNoteStatus = 'pending' | 'sending' | 'running' | 'done' | 'removed'
+export type WakeNoteStatus = 'pending' | 'sending' | 'running' | 'done' | 'failed' | 'removed'
 
 /**
  * Keep the thread's queued note in step with its wake. One helper for every

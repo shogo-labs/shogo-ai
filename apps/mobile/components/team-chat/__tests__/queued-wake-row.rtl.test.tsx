@@ -158,6 +158,15 @@ describe('a queued team-chat message', () => {
     expect(screen.queryByRole('button', { name: 'Send queued message now' })).toBeNull()
   })
 
+  test('a wake whose run failed says Failed, never Done, and shows why', () => {
+    renderRow({ status: 'failed', error: 'runtime exploded' })
+
+    expect(screen.getByText('Failed to run')).toBeInTheDocument()
+    expect(screen.getByText('runtime exploded')).toBeInTheDocument()
+    expect(screen.queryByText('Done')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Send queued message now' })).toBeNull()
+  })
+
   test('a running wake nobody started by hand just reads Running', () => {
     renderRow({ status: 'running' })
     expect(screen.getByText('Running')).toBeInTheDocument()
