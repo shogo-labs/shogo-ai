@@ -389,6 +389,74 @@ describeIfInfra('a real desktop and two real cloud pods', () => {
     expect(body.error.code).toBe('machine_offline_readonly')
   }, 180_000)
 
+  test('a read of the companion profile creates no row, so the desktop can still push its own', async () => {
+    const topology = await startTopology('profile')
+    const suffix = 'profile'
+    const workspaceId = `ws-local-${suffix}`
+
+    const copied = await waitUntil(async () => db.workspace.findFirst({ where: { id: workspaceId } }))
+    const membership = await db.member.findFirst({
+      where: { workspaceId, projectId: null },
+    })
+
+    // The panel the studio opens first. `getOrCreateAgentProfile` upserts on a
+    // cloud workspace — on a copy that would mint a row with a cloud id for a
+    // `workspaceId` the desktop also pushes, and the desktop's own row would
+    // then fail the unique `workspaceId` and wedge the whole ingest batch.
+    const first = await fetch(`${podB(topology)}/api/workspaces/${workspaceId}/agent-profile`, {
+      headers: authHeaders(membership.userId),
+    })
+    expect(first.status).toBe(200)
+    const profile = ((await first.json()) as any).profile
+    expect(profile.name).toBeString()
+    expect(profile.workspaceId).toBe(workspaceId)
+
+    // Nothing was written. The read is a read.
+    expect(await db.workspaceAgentProfile.count({ where: { workspaceId } })).toBe(0)
+
+    // The desktop writes its own profile, in its own Settings, and pushes it.
+    const created = await fetch(`${topology.desktopUrl}/api/test/agent-profile`, { method: 'POST' })
+    expect(created.status).toBe(200)
+    const desktopRow = (await created.json()) as any
+
+    await waitUntil(async () =>
+      (await db.workspaceAgentProfile.findUnique({ where: { workspaceId } }))?.id === desktopRow.id,
+    ).catch((err: unknown) => {
+      dumpLogs(topology)
+      throw err
+    })
+
+    // One row, the desktop's id — the copy carries what the writer made, not a
+    // cloud stand-in that would have collided with it.
+    const rows = await db.workspaceAgentProfile.findMany({ where: { workspaceId } })
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe(desktopRow.id)
+    expect(rows[0].name).toBe('Shogo on the desktop')
+
+    // And the next read shows it, instead of the defaults.
+    const second = await fetch(`${podB(topology)}/api/workspaces/${workspaceId}/agent-profile`, {
+      headers: authHeaders(membership.userId),
+    })
+    const after = ((await second.json()) as any).profile
+    expect(after.id).toBe(desktopRow.id)
+    expect(after.name).toBe('Shogo on the desktop')
+
+    // Ingest kept working after it: a second desktop write still lands.
+    const renamed = await fetch(`${topology.desktopUrl}/api/projects/p-local-${suffix}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Still ingesting' }),
+    })
+    expect(renamed.status).toBe(200)
+    await waitUntil(async () =>
+      (await db.project.findUnique({ where: { id: `p-local-${suffix}` } }))?.name === 'Still ingesting',
+    ).catch((err: unknown) => {
+      dumpLogs(topology)
+      throw err
+    })
+    expect(copied.machineInstanceId).toBeString()
+  }, 180_000)
+
   test('switching sync off deletes the copy, and a live desktop cannot put it back', async () => {
     const topology = await startTopology('off')
     const suffix = 'off'

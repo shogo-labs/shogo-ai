@@ -34,6 +34,7 @@ if (role === 'cloud') {
   const { instanceRoutes } = await import('../../routes/instances')
   const { createGeneratedRoutes } = await import('../../generated/routes')
   const { resolveApiKey } = await import('../../routes/api-keys')
+  const { workspaceAgentRoutes, sessionAuthorize } = await import('../../routes/workspace-agent')
   const { prisma } = await import('../../lib/prisma')
 
   const app = new Hono()
@@ -83,6 +84,14 @@ if (role === 'cloud') {
   // Pairing's own routes: `DELETE /instances/:id` is the unpair path, which has
   // to take the copy with it (SHO-185, AC8).
   app.route('/api', instanceRoutes())
+  // The workspace companion profile's own route: its GET creates a row on a
+  // cloud workspace, which is exactly what must not happen on a machine copy.
+  app.route(
+    '/api',
+    workspaceAgentRoutes({
+      authorize: sessionAuthorize(async (c: any) => c.get('auth')?.userId ?? null),
+    }),
+  )
 
   Bun.serve({ port, fetch: app.fetch, idleTimeout: 0 })
   console.log(`READY ${port}`)
@@ -146,6 +155,13 @@ if (role === 'desktop') {
     })
     await pusher.syncNow()
     c.header('x-shogo-sync-seq', String(await currentSyncSeq()))
+    return c.json(row)
+  })
+  app.post('/api/test/agent-profile', async (c) => {
+    const row = await prisma.workspaceAgentProfile.create({
+      data: { workspaceId: localWorkspaceId, name: 'Shogo on the desktop', tagline: 'Local' },
+    })
+    await pusher.syncNow()
     return c.json(row)
   })
   app.get('/health', (c) => c.json({ ok: true, instanceId }))

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { prisma } from '../lib/prisma'
+import { MACHINE_WORKSPACE_ONLY } from '../lib/machine-workspace'
 import { listActiveChatTurns } from './chat-turn-state.service'
 
 export const GOAL_STATUSES = ['active', 'paused', 'done'] as const
@@ -18,16 +19,53 @@ export function isGoalEventKind(value: unknown): value is GoalEventKind {
   return typeof value === 'string' && (GOAL_EVENT_KINDS as readonly string[]).includes(value)
 }
 
+/** The profile a workspace starts with, whether or not a row exists yet. */
+const DEFAULT_AGENT_PROFILE = {
+  name: 'Shogo',
+  tagline: 'Your personal AI companion',
+} as const
+
+/**
+ * A workspace's companion profile, created on first read.
+ *
+ * On a machine workspace the read must not create: the cloud's copy is
+ * written only by ingest, and a row minted here would carry a *cloud* id for a
+ * `workspaceId` the desktop also pushes (`WorkspaceAgentProfile.workspaceId` is
+ * unique), so the desktop's own row would hit P2002 and the whole ingest batch
+ * would fail. The desktop owns that row; a read that finds none is answered with
+ * the defaults and changes nothing.
+ */
 export async function getOrCreateAgentProfile(workspaceId: string) {
+  const machine = await prisma.workspace.findFirst({
+    where: { id: workspaceId, ...MACHINE_WORKSPACE_ONLY },
+    select: { id: true },
+  })
+  if (machine) {
+    const existing = await prisma.workspaceAgentProfile.findUnique({ where: { workspaceId } })
+    return existing ?? unpersistedAgentProfile(workspaceId)
+  }
+
   return prisma.workspaceAgentProfile.upsert({
     where: { workspaceId },
-    create: {
-      workspaceId,
-      name: 'Shogo',
-      tagline: 'Your personal AI companion',
-    },
+    create: { workspaceId, ...DEFAULT_AGENT_PROFILE },
     update: {},
   })
+}
+
+/** Shaped like the row a cloud workspace would get, so a client cannot tell. */
+function unpersistedAgentProfile(workspaceId: string) {
+  return {
+    id: `machine-copy-${workspaceId}`,
+    workspaceId,
+    name: DEFAULT_AGENT_PROFILE.name,
+    avatarUrl: null,
+    tagline: DEFAULT_AGENT_PROFILE.tagline,
+    personality: null,
+    statusText: null,
+    statusUpdatedAt: null,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  }
 }
 
 export async function updateAgentProfile(
