@@ -6,6 +6,7 @@ import { ArrowDown, ArrowUp, X } from 'lucide-react-native'
 import type { ChatMessage } from '../../lib/team-chat-api'
 import { firstUnreadIndex, startsGroup, type MentionNames, type TimelineState } from '../../lib/team-chat-state'
 import { dayKey, formatDayDivider } from '../../lib/team-chat-time'
+import { attachNestedWheelPassthrough } from '../../lib/nested-wheel-passthrough'
 import { foldStatusRuns, type TimelineItem } from '../../lib/team-chat-kinds'
 import { MessageRow, type MessageRowProps } from './MessageRow'
 import { StatusRunRow } from './AgentStatus'
@@ -87,6 +88,30 @@ export function MessageList({
     : 0
 
   const listRef = useRef<FlatList<Row>>(null)
+  const rootRef = useRef<View | null>(null)
+  const detachWheel = useRef<(() => void) | null>(null)
+
+  /**
+   * RN-web's inverted list answers every wheel event inside it and only ever
+   * moves itself, so a markdown table or a capped code block can never be
+   * scrolled — sideways or down. Hand those gestures to the element that can
+   * take them; see the helper for the mechanism.
+   */
+  useEffect(() => {
+    detachWheel.current?.()
+    detachWheel.current = null
+    const root = rootRef.current as unknown as Element | null
+    if (Platform.OS !== 'web' || !root?.addEventListener) return
+    detachWheel.current = attachNestedWheelPassthrough(root, () => {
+      const node = listRef.current?.getScrollableNode?.() as unknown
+      return node instanceof Element ? node : null
+    })
+    return () => {
+      detachWheel.current?.()
+      detachWheel.current = null
+    }
+  }, [loading])
+
   const scrollToRow = useCallback((index: number, viewPosition: number) => {
     listRef.current?.scrollToIndex({ index, viewPosition, animated: false })
   }, [])
@@ -193,7 +218,7 @@ export function MessageList({
   }
 
   return (
-    <View className="flex-1">
+    <View className="flex-1" ref={rootRef}>
       <FlatList
         ref={listRef}
         inverted

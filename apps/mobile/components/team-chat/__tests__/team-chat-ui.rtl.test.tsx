@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { Fragment, createElement, createRef, forwardRef, useImperativeHandle } from 'react'
+import { Fragment, createElement, createRef, forwardRef, useImperativeHandle, useRef } from 'react'
 import { Linking } from 'react-native'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 
@@ -54,10 +54,17 @@ mock.module('react-native', () =>
       })
     }),
     FlatList: forwardRef(function List({ data, renderItem, keyExtractor, ListEmptyComponent, ListFooterComponent }: any, ref: any) {
-      useImperativeHandle(ref, () => ({ scrollToIndex() {}, scrollToOffset() {} }))
+      // The list's own scroll node, as react-native-web reports it — where its
+      // native `wheel` listener lives.
+      const scroller = useRef<HTMLDivElement | null>(null)
+      useImperativeHandle(ref, () => ({
+        scrollToIndex() {},
+        scrollToOffset() {},
+        getScrollableNode: () => scroller.current,
+      }))
       return createElement(
         'div',
-        null,
+        { ref: scroller, 'data-scroll-node': 'true' },
         data.length
           ? data.map((item: any, index: number) => createElement(Fragment, { key: keyExtractor ? keyExtractor(item, index) : index }, renderItem({ item, index })))
           : ListEmptyComponent,
@@ -2022,5 +2029,108 @@ describe('channel mentions in a message', () => {
     expect(container.textContent).toContain('#privatechannel')
     expect(container.textContent).not.toContain('secret-plans')
     expect(routed).toEqual([])
+  })
+})
+
+describe('MessageList wheel passthrough', () => {
+  /**
+   * A markdown table inside the inverted timeline is wider than the pane, and
+   * react-native-web's inverted wheel handler answers every gesture itself —
+   * it prevents the default and only ever moves the list. A nested scroller
+   * therefore has to be handed back to the browser from a capture-phase
+   * listener on the list (SHO-162).
+   */
+  const timeline = (messages: any[]) => ({ messages, streaming: {}, hasMoreOlder: false }) as any
+  const table = ['| a | b | c |', '| - | - | - |', '| 1 | 2 | 3 |'].join('\n')
+  const list = () => (
+    <MessageList
+      state={timeline([message({ id: 'a', seq: 1, text: 'before' }), message({ id: 'b', seq: 2, text: table })])}
+      loading={false}
+      me="u-me"
+      names={names}
+      canManage={false}
+      {...handlers()}
+    />
+  )
+  /** jsdom has no layout, so give the table wrapper the scroll box a browser would. */
+  const scrollBox = (element: HTMLElement, width: number, scrollWidth: number) => {
+    element.style.overflowX = 'auto'
+    element.style.overflowY = 'auto'
+    for (const [key, value] of Object.entries({ clientWidth: width, scrollWidth, clientHeight: 200, scrollHeight: 200, scrollLeft: 0, scrollTop: 0 })) {
+      Object.defineProperty(element, key, { value, configurable: true, writable: true })
+    }
+  }
+  /**
+   * A real WheelEvent carrying its modifiers. jsdom reports `shiftKey` as
+   * undefined (it has no KeyboardEvent base), and RTL's synthetic wheel drops
+   * `deltaY`, so neither stands in for the browser here.
+   */
+  const wheel = (target: Element, init: WheelEventInit) => {
+    const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, ...init })
+    if (init.shiftKey) Object.defineProperty(event, 'shiftKey', { value: true })
+    target.dispatchEvent(event)
+    return event
+  }
+  /** Stands in for RN-web's own listener on the list's scroll node. */
+  const countListWheel = () => {
+    const scrollNode = document.querySelector('[data-scroll-node]') as HTMLElement
+    const seen: WheelEvent[] = []
+    scrollNode.addEventListener('wheel', (event) => seen.push(event as WheelEvent))
+    return seen
+  }
+  const tableParts = () => {
+    const cell = document.querySelector('[data-streamdown="table"] td') as HTMLElement | null
+    const wrapper = cell?.closest('table')?.parentElement as HTMLElement | undefined
+    return { cell, wrapper }
+  }
+
+  beforeEach(() => render(list()))
+  afterEach(() => cleanup())
+
+  test('a sideways swipe over a wide table scrolls it and never reaches the list', () => {
+    const { cell, wrapper } = tableParts()
+    expect(cell).toBeTruthy()
+    scrollBox(wrapper!, 300, 700)
+    const seen = countListWheel()
+
+    expect(wheel(cell!, { deltaX: 120, deltaY: 0 }).defaultPrevented).toBe(true)
+    expect(wrapper!.scrollLeft).toBe(120)
+
+    expect(wheel(cell!, { deltaX: 0, deltaY: 120, shiftKey: true }).defaultPrevented).toBe(true)
+    expect(wrapper!.scrollLeft).toBe(240)
+
+    expect(seen).toHaveLength(0)
+  })
+
+  test('a vertical wheel over a table wrapper that only scrolls sideways is the list\'s', () => {
+    const { cell, wrapper } = tableParts()
+    scrollBox(wrapper!, 300, 700)
+    const seen = countListWheel()
+
+    wheel(cell!, { deltaX: 0, deltaY: -120 })
+    expect(seen).toHaveLength(1)
+  })
+
+  test('a wheel over the table still reaches the list once the table is at its edge', () => {
+    const { cell, wrapper } = tableParts()
+    scrollBox(wrapper!, 300, 700)
+    Object.defineProperty(wrapper!, 'scrollLeft', { value: 400, configurable: true, writable: true })
+    const seen = countListWheel()
+
+    wheel(cell!, { deltaX: 120, deltaY: 0 })
+    expect(seen).toHaveLength(1)
+    expect(wrapper!.scrollLeft).toBe(400)
+  })
+
+  test('a wheel over plain text still reaches the list', () => {
+    const seen = countListWheel()
+    wheel(screen.getByText('before'), { deltaX: 0, deltaY: 120 })
+    expect(seen).toHaveLength(1)
+  })
+
+  test('a sideways swipe over plain text stays with the list', () => {
+    const seen = countListWheel()
+    wheel(screen.getByText('before'), { deltaX: 120, deltaY: 0 })
+    expect(seen).toHaveLength(1)
   })
 })
