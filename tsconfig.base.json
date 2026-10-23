@@ -61,6 +61,7 @@
       "@shogo-ai/sdk/voice/route/op": ["packages/sdk/src/voice/route/op.ts"],
       "@shogo-ai/sdk/cli/deploy": ["packages/sdk/src/cli/deploy.ts"],
       "@shogo-ai/sdk/cli/pkg": ["packages/sdk/src/cli/pkg.ts"],
+      "@shogo-ai/sdk/child-ledger": ["packages/sdk/src/child-ledger.ts"],
       "@shogo-ai/sdk/logger": ["packages/sdk/src/logger.ts"],
       "@shogo-ai/sdk/instrumentation": ["packages/sdk/src/instrumentation.ts"],
       "@shogo-ai/sdk/stream-buffer": ["packages/sdk/src/stream-buffer.ts"],

@@ -202,6 +202,13 @@ function metalMountingRemoved(): boolean {
   return process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalEnabled()
 }
 
+/**
+ * How long the internal preview route waits for a project runtime to start its
+ * build before it answers `building`. Bounded well under Cloudflare's ~100s
+ * silence limit, and the URL it returns is already valid.
+ */
+const PREVIEW_START_TIMEOUT_MS = 75_000
+
 function mountingRemovedResponse(c: Context, extra: Record<string, unknown> = {}) {
   return c.json(
     {
@@ -1136,6 +1143,140 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   // GET /projects/:projectId/trust — see ./internal-project-trust.ts
   app.route('/', projectTrustRoutes({ authorize: validateAuth }))
+
+  /**
+   * POST /api/internal/workspaces/:workspaceId/sessions/:sessionId/projects/:projectId/preview
+   *   body: { userId? }
+   *
+   * Internal twin of the user-auth
+   * `.../projects/:projectId/preview-url` route, for a workspace runtime that
+   * has to hand out a member project's app. On metal each project is served by
+   * its OWN runtime, and other projects are never mounted here, so the
+   * runtime's local `/p/<id>/preview/start` answers 410 and `preview_project`
+   * used to have no successful path at all (SHO-125).
+   *
+   * Resolves the project's runtime, kicks its own `/preview/start` so the app
+   * is actually built, and returns `<podUrl>/p/<projectId>/` — the same URL the
+   * app's canvas uses. Everything else is an error the agent can act on:
+   * 404 `project_not_attached`, 502 `target_unavailable`, 503
+   * `target_not_ready`, 409 `use_local_runtime` for the anchor (whose app this
+   * runtime already serves itself).
+   */
+  app.post('/workspaces/:workspaceId/sessions/:sessionId/projects/:projectId/preview', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const sessionId = c.req.param('sessionId')
+    const projectId = c.req.param('projectId')
+    const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await c.req.json().catch(() => ({}))
+    const visible = await readableProjectFilter(c, identity, workspaceId, body?.userId)
+    if (visible instanceof Response) return visible
+    const projects = await accessibleWorkspaceProjects(workspaceId, visible)
+    if (!projects.some((row) => row.id === projectId)) {
+      return c.json(
+        {
+          error: {
+            code: 'project_not_attached',
+            message: `Project ${projectId} is not part of workspace ${workspaceId}.`,
+          },
+        },
+        404,
+      )
+    }
+
+    if (!metalMountingRemoved() || projectId === process.env.WORKSPACE_ANCHOR_PROJECT_ID) {
+      // Non-metal: this runtime multiplexes the projects it has mounted on its
+      // own port. Anchor on metal: its app is this runtime's own app. Either
+      // way the caller's local `/p/<id>/preview/start` is the right path.
+      return c.json(
+        {
+          error: {
+            code: 'use_local_runtime',
+            message: 'This project is served by the calling runtime; start its preview there.',
+          },
+        },
+        409,
+      )
+    }
+
+    const agentCallSvc = await loadAgentCall?.()
+    let runtimeUrl: string
+    if (agentCallSvc) {
+      // Same resolver (and wake) every remote tool call uses, so the preview
+      // and a `project:` read land on the same pod.
+      const resolved = await agentCallSvc.resolveRemoteProjectUrl(projectId, 'WorkspacePreview')
+      if ('status' in resolved) return c.json(resolved.body, resolved.status as any)
+      runtimeUrl = resolved.url
+    } else {
+      try {
+        const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
+        runtimeUrl = (await resolveProjectPodUrl(projectId, { logTag: 'WorkspacePreview' })).url
+      } catch (err: any) {
+        return c.json(
+          {
+            error: {
+              code: 'target_unavailable',
+              message: `Project ${projectId}'s runtime is unavailable: ${err?.message ?? err}`,
+            },
+          },
+          502,
+        )
+      }
+    }
+
+    const previewUrl = `${runtimeUrl}/p/${projectId}/`
+    if (!agentCallSvc) {
+      // Capability not wired on this API (slim desktop composer): the URL is
+      // still correct — the app builds on first request — so say so, don't
+      // pretend the start ran.
+      return c.json({ projectId, sessionId, mode: 'metal', url: previewUrl, status: 'unstarted' })
+    }
+
+    const outcome = await agentCallSvc.forwardToProjectRuntime(
+      c,
+      projectId,
+      workspaceId,
+      '/preview/start',
+      '{}',
+      {
+        runtimeUrl,
+        timeoutMs: PREVIEW_START_TIMEOUT_MS,
+        // `/preview/start` is idempotent: it either starts a build or reports
+        // the one already running.
+        retryOnTransportError: true,
+        reportUndelivered: true,
+      },
+    )
+    if (outcome.status === 503) {
+      for (const [key, value] of Object.entries(outcome.headers ?? {})) c.header(key, value)
+      return c.json(outcome.body, 503)
+    }
+    if (outcome.status >= 500 && outcome.status !== 504) {
+      return c.json(
+        {
+          error: {
+            code: 'target_unavailable',
+            message:
+              `Project ${projectId}'s runtime refused to start the preview: ` +
+              `${outcome.body?.error?.message ?? `HTTP ${outcome.status}`}`,
+          },
+        },
+        502,
+      )
+    }
+
+    // A 504 here means the build is still running (the tool's budget is the
+    // build's, not the caller's). The URL is live either way — the project pod
+    // serves it as soon as `dist/` exists.
+    return c.json({
+      projectId,
+      sessionId,
+      mode: 'metal',
+      url: previewUrl,
+      status: outcome.status === 504 ? 'building' : outcome.status < 400 ? 'ready' : 'error',
+    })
+  })
 
   /**
    * POST /api/internal/projects/:projectId/shared-files
@@ -2609,6 +2750,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     })
     if (wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
     const outcome = await work
+    if (outcome.headers) for (const [key, value] of Object.entries(outcome.headers)) c.header(key, value)
     return c.json(outcome.body, outcome.status as any)
   })
 

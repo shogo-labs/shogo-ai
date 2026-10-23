@@ -5,7 +5,7 @@
  * the conversation list's unread badges, and mention encoding for the
  * composer / display.
  */
-import type { ChatMessage, ConversationSummary, Mentionables, TeamChatEvent } from './team-chat-api'
+import type { ChatMessage, ConversationSummary, Mentionables, QueuePosition, TeamChatEvent } from './team-chat-api'
 import { normalizeRichTextPaste } from './rich-text-paste'
 import { voiceNotePreview } from './voice-note'
 import { MENTION_HREF_PREFIX, mentionHref } from '../components/chat/file-links'
@@ -21,8 +21,18 @@ export interface TimelineScope {
 export interface TimelineState {
   messages: ChatMessage[]
   hasMoreOlder: boolean
-  /** Live text for agent replies that are still running, by message id. */
-  streaming: Record<string, { text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> }>
+  /**
+   * Live state for agent replies that are still running, by message id: the
+   * streamed text, the open tool, the reply's place in the agent queue while it
+   * waits for a slot, and whether it parked on a tool (which frees its slot).
+   */
+  streaming: Record<string, {
+    text: string
+    tool: string | null
+    tools?: Array<{ name: string; done: boolean }>
+    queue?: QueuePosition | null
+    waiting?: { tool: string | null } | null
+  }>
 }
 
 export const emptyTimeline: TimelineState = { messages: [], hasMoreOlder: false, streaming: {} }
@@ -124,7 +134,17 @@ export function applyTimelineEvent(state: TimelineState, event: TeamChatEvent, s
     }
     case 'agent.delta': {
       if (!state.messages.some((m) => m.id === event.messageId)) return state
-      return { ...state, streaming: { ...state.streaming, [event.messageId]: { text: event.text, tool: event.tool, tools: event.tools } } }
+      const prev = state.streaming[event.messageId]
+      // A queue or waiting notice carries no text: keep what the run already said.
+      const notice = event.queue !== undefined || event.waiting !== undefined
+      const next = notice
+        ? {
+            ...(prev ?? { text: '', tool: null }),
+            ...(event.queue !== undefined ? { queue: event.queue } : {}),
+            ...(event.waiting !== undefined ? { waiting: event.waiting } : {}),
+          }
+        : { ...(prev ?? {}), text: event.text, tool: event.tool, tools: event.tools }
+      return { ...state, streaming: { ...state.streaming, [event.messageId]: next } }
     }
     default:
       return state
@@ -300,7 +320,7 @@ export function stepConversation(
 // ─── Mentions ────────────────────────────────────────────────────────────────
 
 export interface MentionCandidate {
-  kind: 'user' | 'agent' | 'group' | 'special'
+  kind: 'user' | 'agent' | 'group' | 'special' | 'channel'
   display: string
   token: string
   subtitle?: string | null
@@ -309,6 +329,8 @@ export interface MentionCandidate {
   projectId?: string | null
   /** For a user candidate, when the open conversation's membership is known: false if they are not in it. */
   inChannel?: boolean
+  /** For a channel candidate: the conversation a `#` reference points at. */
+  conversationId?: string
 }
 
 /**
@@ -360,7 +382,46 @@ export function activeMentionQuery(text: string, cursor: number): { start: numbe
   return { start: before.length - match[2].length - 1, query: match[2] }
 }
 
-/** Primary sort: people first, then groups, then @here/@channel, then agents and bots. */
+/** The `#query` being typed at the cursor, if any. */
+export function activeChannelQuery(text: string, cursor: number): { start: number; query: string } | null {
+  const before = text.slice(0, cursor)
+  const match = /(^|\s)#([^\s#]{0,40})$/.exec(before)
+  if (!match) return null
+  return { start: before.length - match[2].length - 1, query: match[2] }
+}
+
+/** The slice of a conversation a `#` candidate needs. */
+export interface ChannelCandidateSource {
+  id: string
+  kind: string
+  name: string | null
+  slug: string | null
+  archivedAt?: string | null
+}
+
+/**
+ * Channels a `#` reference can point at: the ones this reader can see. The
+ * conversation list is already scoped that way — public channels of the
+ * workspace plus whatever this viewer is a member of — so a private channel
+ * they are not in never reaches the picker, and a message naming it renders
+ * as an unclickable `#privatechannel` instead.
+ */
+export function channelCandidates(
+  conversations: ChannelCandidateSource[] | null | undefined,
+  currentId?: string | null,
+): MentionCandidate[] {
+  return (conversations ?? [])
+    .filter((c) => (c.kind === 'public' || c.kind === 'private') && !c.archivedAt && c.id !== currentId)
+    .map<MentionCandidate>((c) => ({
+      kind: 'channel',
+      display: c.slug ?? c.name ?? 'channel',
+      token: `<#c:${c.id}>`,
+      subtitle: c.kind === 'private' ? 'Private channel' : 'Channel',
+      conversationId: c.id,
+    }))
+}
+
+/** Primary sort: people first, then groups, then @here/@channel, then agents and bots, then channels. */
 function kindRank(c: MentionCandidate): number {
   switch (c.kind) {
     case 'user':
@@ -371,6 +432,8 @@ function kindRank(c: MentionCandidate): number {
       return 2
     case 'agent':
       return 3
+    case 'channel':
+      return 4
   }
 }
 
@@ -407,15 +470,19 @@ export function insertMention(text: string, at: { start: number; query: string }
   return { text: next, cursor: at.start + insert.length }
 }
 
-/** Turn the `@Display` names the user picked back into wire tokens. */
+/** Turn the `@Display` / `#name` text the user picked back into wire tokens. */
 export function encodeMentions(text: string, picked: MentionCandidate[]): string {
-  const unique = Array.from(new Map(picked.map((p) => [p.display, p])).values()).sort(
+  const unique = Array.from(new Map(picked.map((p) => [p.token, p])).values()).sort(
     (a, b) => b.display.length - a.display.length,
   )
   let out = text
   for (const p of unique) {
+    const sigil = p.kind === 'channel' ? '#' : '@'
     const escaped = p.display.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    out = out.replace(new RegExp(`(^|[\\s(])@${escaped}(?=$|[\\s.,!?:;)])`, 'g'), `$1${p.token}`)
+    out = out.replace(
+      new RegExp(`(^|[\\s(])${sigil}${escaped}(?=$|[\\s.,!?:;)])`, 'g'),
+      `$1${p.token}`,
+    )
   }
   return out
 }
@@ -427,11 +494,18 @@ export interface MentionNames {
   groups?: Map<string, string>
 }
 
-export function mentionNames(mentionables: Mentionables | null): MentionNames {
+/** What a `#` reference shows when the reader cannot see that channel. */
+export const UNRESOLVED_CHANNEL_LABEL = '#privatechannel'
+
+export function mentionNames(
+  mentionables: Mentionables | null,
+  conversations?: Map<string, string>,
+): MentionNames {
   return {
     users: new Map((mentionables?.people ?? []).map((p) => [p.id, p.name])),
     agents: new Map((mentionables?.agents ?? []).map((a) => [a.key, a.name])),
     groups: new Map((mentionables?.groups ?? []).map((g) => [g.id, g.handle])),
+    ...(conversations ? { conversations } : {}),
   }
 }
 
@@ -441,7 +515,12 @@ export function renderMentions(text: string, names: MentionNames): string {
     .replace(/<@u:([^>]+)>/g, (_m, id) => `**@${names.users.get(id) ?? 'someone'}**`)
     .replace(/<@a:(ws|p:[^>]+)>/g, (_m, key) => `**@${names.agents.get(key) ?? 'agent'}**`)
     .replace(/<!(here|channel)>/g, (_m, which) => `**@${which}**`)
-    .replace(/<#c:([^>]+)>/g, (_m, id) => `**#${names.conversations?.get(id) ?? 'channel'}**`)
+    .replace(/<#c:([^>]+)>/g, (_m, id) => {
+      const map = names.conversations
+      if (!map) return '**#channel**'
+      const name = map.get(id)
+      return name ? `**#${name}**` : UNRESOLVED_CHANNEL_LABEL
+    })
     .replace(/<@g:([^>]+)>/g, (_m, id) => `**@${names.groups?.get(id) ?? 'group'}**`)
 }
 
@@ -453,16 +532,24 @@ function mentionLink(label: string, href: string): string {
  * Render wire tokens as mention links that `MarkdownText` draws as highlighted
  * tags. Only for markdown renderers; plain-text callers use `renderMentions`.
  *
- * A person or agent mention carries its target in the href so a tap can open
- * that profile. `@here` / `@channel` / `#channel` / user groups have no
- * profile to open and keep the bare prefix.
+ * A person, agent or channel mention carries its target in the href so a tap
+ * can open that profile or channel. `@here` / `@channel` / user groups have no
+ * target to open and keep the bare prefix. A `#` reference the reader cannot
+ * resolve — a private channel they are not in — is not a link at all: it stays
+ * plain `#privatechannel`, so nothing about that channel leaks and there is
+ * nothing to tap.
  */
 export function renderMentionsMarkdown(text: string, names: MentionNames): string {
   return text
     .replace(/<@u:([^>]+)>/g, (_m, id) => mentionLink(`@${names.users.get(id) ?? 'someone'}`, mentionHref('u', id)))
     .replace(/<@a:(ws|p:[^>]+)>/g, (_m, key) => mentionLink(`@${names.agents.get(key) ?? 'agent'}`, mentionHref('a', key)))
     .replace(/<!(here|channel)>/g, (_m, which) => mentionLink(`@${which}`, MENTION_HREF_PREFIX))
-    .replace(/<#c:([^>]+)>/g, (_m, id) => mentionLink(`#${names.conversations?.get(id) ?? 'channel'}`, MENTION_HREF_PREFIX))
+    .replace(/<#c:([^>]+)>/g, (_m, id) => {
+      const map = names.conversations
+      if (!map) return mentionLink('#channel', MENTION_HREF_PREFIX)
+      const name = map.get(id)
+      return name ? mentionLink(`#${name}`, mentionHref('c', id)) : UNRESOLVED_CHANNEL_LABEL
+    })
     .replace(/<@g:([^>]+)>/g, (_m, id) => mentionLink(`@${names.groups?.get(id) ?? 'group'}`, MENTION_HREF_PREFIX))
 }
 
@@ -472,7 +559,12 @@ function renderMentionLabels(text: string, names: MentionNames): string {
     .replace(/<@u:([^>]+)>/g, (_m, id) => `@${names.users.get(id) ?? 'someone'}`)
     .replace(/<@a:(ws|p:[^>]+)>/g, (_m, key) => `@${names.agents.get(key) ?? 'agent'}`)
     .replace(/<!(here|channel)>/g, (_m, which) => `@${which}`)
-    .replace(/<#c:([^>]+)>/g, (_m, id) => `#${names.conversations?.get(id) ?? 'channel'}`)
+    .replace(/<#c:([^>]+)>/g, (_m, id) => {
+      const map = names.conversations
+      if (!map) return '#channel'
+      const name = map.get(id)
+      return name ? `#${name}` : UNRESOLVED_CHANNEL_LABEL
+    })
     .replace(/<@g:([^>]+)>/g, (_m, id) => `@${names.groups?.get(id) ?? 'group'}`)
 }
 
@@ -772,15 +864,15 @@ export function expiryFrom(choice: ClearAfter, now = new Date()): string | null 
   return new Date(now.getTime() + choice * 60_000).toISOString()
 }
 
-/** Turn a stored draft's mention tokens back into `@Name` text plus the picks that re-encode it. */
+/** Turn a stored draft's mention tokens back into `@Name` / `#name` text plus the picks that re-encode it. */
 export function decodeMentions(wire: string, candidates: MentionCandidate[]): { text: string; picked: MentionCandidate[] } {
   const byToken = new Map(candidates.map((c) => [c.token, c]))
   const picked: MentionCandidate[] = []
-  const text = wire.replace(/<[@!][^>]+>/g, (token) => {
+  const text = wire.replace(/<[@!#][^>]+>/g, (token) => {
     const c = byToken.get(token)
     if (!c) return token
     picked.push(c)
-    return `@${c.display}`
+    return c.kind === 'channel' ? `#${c.display}` : `@${c.display}`
   })
   return { text, picked }
 }

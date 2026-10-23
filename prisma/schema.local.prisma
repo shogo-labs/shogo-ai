@@ -154,6 +154,10 @@ model Workspace {
   chatMode          String?
   // External chat provider for "external" / "bridged": "slack" | "teams" | "google_chat".
   chatProvider      String?
+  // How many agent replies may be *working at once* in this workspace, or null
+  // for the maximum the plan (or local mode) allows. An admin can lower it; the
+  // plan value is the ceiling in the cloud (see `agent-reply-capacity.ts`).
+  agentReplyConcurrency Int?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -2346,6 +2350,11 @@ model AppInstall {
 /// (`lib/device-platform.ts`) so legacy platform spellings stay collapsed.
 model DeviceVersionEvent {
   id          String   @id @default(cuid())
+  /// Region that wrote the row (`REGION_ID`, or `local` in single-region and
+  /// desktop mode). NULL means the row predates region tagging; the app never
+  /// writes NULL. Part of the unique key so two regions cannot conflict on one
+  /// (device, version) — see the 2026-10-22 replication incident (SHO-142).
+  region      String?
   deviceId    String
   /// macos | windows | linux | unknown
   os          String   @default("unknown")
@@ -2358,7 +2367,7 @@ model DeviceVersionEvent {
   firstSeenAt DateTime @default(now())
   lastSeenAt  DateTime
 
-  @@unique([deviceId, version])
+  @@unique([region, deviceId, version])
   @@index([lastSeenAt])
   @@index([version])
   @@map("device_version_events")

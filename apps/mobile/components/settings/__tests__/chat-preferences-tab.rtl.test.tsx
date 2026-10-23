@@ -9,13 +9,13 @@ import { createReactNativeMock } from '../../../test/react-native-mock'
 mock.module('react-native', () =>
   createReactNativeMock({
     Platform: { OS: 'web', select: (s: any) => s.web ?? s.default },
-    Pressable: ({ accessibilityRole, accessibilityLabel, accessibilityState, testID, children, disabled, onPress }: any) =>
+    Pressable: ({ accessibilityRole, accessibilityLabel, 'aria-checked': ariaChecked, testID, children, disabled, onPress }: any) =>
       createElement(
         'div',
         {
           role: accessibilityRole ?? 'button',
           'aria-label': accessibilityLabel,
-          'aria-checked': accessibilityState?.checked,
+          'aria-checked': ariaChecked,
           'data-testid': testID,
           'aria-disabled': disabled ? 'true' : undefined,
           onClick: disabled ? undefined : onPress,

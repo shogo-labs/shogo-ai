@@ -130,7 +130,7 @@ export function AgentDefaultModelCard({ workspaceId, className }: { workspaceId:
                   key={m.id}
                   onPress={() => void choose(m.id)}
                   accessibilityRole="radio"
-                  accessibilityState={{ checked }}
+                  aria-checked={checked}
                   className={cn('px-3 py-2 flex-row items-center gap-2 active:bg-muted', checked && 'bg-primary/5')}
                 >
                   <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>{m.displayName}</Text>

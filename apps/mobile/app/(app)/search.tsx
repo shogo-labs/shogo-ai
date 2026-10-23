@@ -320,7 +320,7 @@ export default observer(function SearchPage() {
                 key={item.id}
                 onPress={() => setTab(item.id)}
                 accessibilityRole="tab"
-                accessibilityState={{ selected: active }}
+                aria-selected={active}
                 style={{
                   height: SEARCH_PILL_HEIGHT,
                   marginRight: SEARCH_PILL_GAP,

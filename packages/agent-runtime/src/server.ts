@@ -140,11 +140,13 @@ import {
   SQLITE_SIDECAR_ENTRY,
 } from './writable-state'
 import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
+import { sweepExecCwdMarkers } from './exec-cwd'
 import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { handleExportHome, handleHydrateHome } from './home-state-routes'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
+import { ensureDurableTaskLogs } from './task-log-durability'
 import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
@@ -794,6 +796,8 @@ const { app, state, logTiming } = await createRuntimeApp({
       const localShogoDir = join(POOL_STATE_ROOT, projectId, '.shogo')
       mkdirSync(localShogoDir, { recursive: true })
       const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+      /** `.shogo` dirs moved aside here; their `tasks/` is carried to host storage. */
+      const adoptedShogoDirs: string[] = []
 
       let existingStat: ReturnType<typeof lstatSync> | null = null
       try { existingStat = lstatSync(workspaceShogoDir) } catch { /* doesn't exist — easy path */ }
@@ -815,6 +819,7 @@ const { app, state, logTiming } = await createRuntimeApp({
         try {
           renameSync(workspaceShogoDir, asidePath)
           cleared = true
+          adoptedShogoDirs.push(asidePath)
         } catch (err: any) {
           renameErrMsg = err?.message ?? String(err)
         }
@@ -837,6 +842,17 @@ const { app, state, logTiming } = await createRuntimeApp({
       if (!alreadyCorrect) {
         symlinkSync(localShogoDir, workspaceShogoDir)
       }
+
+      // Task logs must outlive this VM (SHO-141). `.shogo` is on the overlay so
+      // SQLite works; `tasks/` is a symlink out to host-backed storage, which
+      // keeps `<workspace>/.shogo/tasks/<session>/<task>.log` the same path
+      // every caller already uses while the bytes survive a re-assign.
+      ensureDurableTaskLogs({
+        localShogoDir,
+        hostWorkspacesRoot,
+        projectId,
+        adoptFrom: adoptedShogoDirs,
+      })
 
       // Suppress .virtfs_metadata in git (created by 9p security_model=mapped-file)
       try {
@@ -891,13 +907,14 @@ const { app, state, logTiming } = await createRuntimeApp({
       (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
-    const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0 }
+    const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0, children: 0 }
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
       activeStreams,
       activeTurns: work.turns,
       activeTasks: work.tasks,
+      activeChildren: work.children ?? 0,
       repoHeadSha: cachedRepoHeadSha,
       previewHealth: safePreviewHealth(),
     }
@@ -2023,6 +2040,11 @@ app.post('/agent/chat', async (c) => {
   // provider's native endpoint instead of inferring `custom` from the id.
   // Optional — absent requests fall back to id-based inference.
   const modelProvider = (body.modelProvider as string | undefined) || undefined
+  // Product name of the model `agentMode` resolves to (e.g. "Hoshi 2.0"),
+  // stamped by the API alongside `modelProvider`. The gateway pairs it with the
+  // session override so the Account prompt line names the model this turn
+  // actually sends (SHO-145).
+  const modelDisplayName = (body.modelDisplayName as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
@@ -2062,6 +2084,7 @@ app.post('/agent/chat', async (c) => {
     await agentGateway!.processChatMessageStream(userText || '', writer, {
       modelOverride,
       modelProvider,
+      modelDisplayName,
       fileParts: userFileParts.length > 0 ? userFileParts : undefined,
       userId: chatUserId,
       requesterTicket,
@@ -2610,6 +2633,7 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
+import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
@@ -6457,6 +6481,18 @@ async function initializeEssentials(): Promise<void> {
     const localShogoDir = join(POOL_STATE_ROOT, projectId, '.shogo')
     mkdirSync(localShogoDir, { recursive: true })
     const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+    // A real `.shogo` here is HOST-mode state that is about to be replaced by
+    // the overlay symlink. Carry its task logs to host storage first, so the
+    // cold-start path loses nothing that the assign path keeps (SHO-141).
+    let adoptWorkspaceShogo: string[] = []
+    try {
+      if (!lstatSync(workspaceShogoDir).isSymbolicLink()) adoptWorkspaceShogo = [workspaceShogoDir]
+    } catch { /* nothing there yet */ }
+    const hostRoot = process.env.SHOGO_HOST_WORKSPACES_ROOT || '/host-workspaces'
+    const hostWorkspacesRoot = existsSync(hostRoot) ? hostRoot : undefined
+    if (adoptWorkspaceShogo.length > 0) {
+      ensureDurableTaskLogs({ localShogoDir, projectId, hostWorkspacesRoot, adoptFrom: adoptWorkspaceShogo })
+    }
     try {
       const st = lstatSync(workspaceShogoDir)
       if (!st.isSymbolicLink()) {
@@ -6466,6 +6502,13 @@ async function initializeEssentials(): Promise<void> {
     } catch {
       try { symlinkSync(localShogoDir, workspaceShogoDir) } catch {}
     }
+    // Same durability rule as onAssign: the logs go to host-backed storage even
+    // though `.shogo` itself has to stay on the overlay (SHO-141).
+    ensureDurableTaskLogs({
+      localShogoDir,
+      projectId,
+      hostWorkspacesRoot,
+    })
     logTiming('.shogo symlinked to local overlay (9p mount)')
   }
 
@@ -7077,6 +7120,10 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
   gatewayStarting = true
   logTiming('Starting agent gateway...')
 
+  // Clear cwd markers a previous process (or a crash) left behind, including
+  // the `.shogo-cwd-*` files older builds wrote into the workspace root.
+  sweepExecCwdMarkers(WORKSPACE_DIR)
+
   gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
 
   // Previously we awaited the S3 deps restore + `ensureWorkspaceDeps` here
@@ -7433,6 +7480,17 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
+// Windows has no SIGTERM: `TerminateProcess` ends this process without running
+// a single line of the shutdown above, which is why every runtime stop there
+// stranded its execs, the API sidecar and vite. Putting the runtime in a
+// kill-on-close job makes their death the kernel's job instead of ours — and
+// because we are the only holder of the handle, no crash can dodge it (SHO-144).
+// No-op on POSIX and on a Windows without job objects, where the worker's
+// `taskkill /T` and the POSIX ledger remain the fallback.
+void installRuntimeJobGuard().then((armed) => {
+  if (armed) console.log('[agent-runtime] Arming runtime job object (kill-on-close) for its process tree')
+})
 
 // =============================================================================
 // Start Server

@@ -43,7 +43,7 @@ export function SegmentedFilter<T extends string>({
             key={option.value}
             onPress={() => onChange(option.value)}
             accessibilityRole="tab"
-            accessibilityState={{ selected: active }}
+            aria-selected={active}
             className={cn(
               'items-center rounded-md py-1.5',
               equalWidth && 'flex-1',

@@ -12,7 +12,7 @@
 
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
-import { finishAgentReply, startAgentReply, streamAgentReply } from './chat-providers/outbound'
+import { finishAgentReply, queueAgentReplyNotice, startAgentReply, streamAgentReply } from './chat-providers/outbound'
 import {
   agentKey,
   loadNamesForTexts,
@@ -30,10 +30,13 @@ import {
   replaceMentions,
   setAgentMuted,
   serializeMessage,
+  updateMessageInternal,
   type PostMessageResult,
 } from './conversation.service'
 import type { IRuntimeManager } from '../lib/runtime'
-import { tryAcquireSharedSlot } from '../lib/chat-limits'
+import { publishConversationEvent } from '../lib/conversation-bus'
+import { enqueueAgentReplySlot, agentReplySlotState, type AgentReplySlot, type QueuedPosition } from './agent-reply-slots'
+import { resolveAgentReplyCapacity } from './agent-reply-capacity'
 import {
   agentTurnsSinceHuman,
   chainLimitHit,
@@ -75,7 +78,6 @@ import {
 const db = prisma as any
 
 export const MAX_AGENTS_PER_MESSAGE = 3
-export const MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE = envInt('SHOGO_CHANNEL_AGENT_CONCURRENCY', 6)
 /** Backoff for a runtime that is still waking. The last delay repeats until the budget is spent. */
 const DEFAULT_START_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 15_000]
 const DEFAULT_START_RETRY_BUDGET_MS = 3 * 60_000
@@ -268,43 +270,44 @@ export interface InvokeArgs {
 }
 
 const running = new Map<string, AbortController>()
-const activeByWorkspace = new Map<string, number>()
-const waiters = new Map<string, Array<() => void>>()
 
-// A lease outlives the longest run so a crashed pod's slots free themselves.
-const SLOT_LEASE_MS = AGENT_REPLY_TIMEOUT_MS + 60_000
-const SLOT_POLL_MS = 1_000
+/**
+ * How long an open tool may hold a slot before the run parks. A run blocked in
+ * `wait`, `exec_wait`, `agent_result`, a subagent or a slow `exec` is not
+ * working, so it gives the slot back and the next tagged message starts.
+ */
+const PARK_AFTER_MS = Math.max(1_000, envInt('SHOGO_CHANNEL_AGENT_PARK_AFTER_MS', 30_000))
+/** No content frame (text, reasoning, a tool input/output) for this long and no open tool: parked too. */
+const STUCK_AFTER_MS = Math.max(1_000, envInt('SHOGO_CHANNEL_AGENT_STUCK_AFTER_MS', 5 * 60_000))
+/** How often a working run re-checks whether it is only waiting. */
+const SLOT_WATCH_MS = 5_000
+/** Frames the runtime sends on a timer rather than because the agent did something. */
+const TRANSIENT_FRAMES = new Set(['data-turn-seq', 'data-connectivity-wait', 'data-heartbeat'])
 
-async function acquireLocalSlot(workspaceId: string): Promise<() => void> {
-  const active = activeByWorkspace.get(workspaceId) ?? 0
-  if (active >= MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE) {
-    await new Promise<void>((resolve) => {
-      const queue = waiters.get(workspaceId) ?? []
-      queue.push(resolve)
-      waiters.set(workspaceId, queue)
-    })
-  }
-  activeByWorkspace.set(workspaceId, (activeByWorkspace.get(workspaceId) ?? 0) + 1)
-  let released = false
-  return () => {
-    if (released) return
-    released = true
-    activeByWorkspace.set(workspaceId, Math.max(0, (activeByWorkspace.get(workspaceId) ?? 1) - 1))
-    const next = waiters.get(workspaceId)?.shift()
-    if (next) next()
-  }
+/** Mark a reply as waiting for a slot, so the thread can say "Queued" after a reload. */
+async function setQueuedBlock(messageId: string): Promise<void> {
+  await updateMessageInternal(messageId, { blocks: { queued: { since: new Date().toISOString() } } })
 }
 
-/** One of the workspace's agent-reply slots, shared across pods when Redis is up. */
-async function acquireSlot(workspaceId: string, signal?: AbortSignal): Promise<() => void> {
-  for (;;) {
-    signal?.throwIfAborted()
-    const shared = await tryAcquireSharedSlot(`agent-replies:${workspaceId}`, MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE, SLOT_LEASE_MS)
-    if (shared) return shared
-    if (shared === null) return acquireLocalSlot(workspaceId)
-    await new Promise((resolve) => setTimeout(resolve, SLOT_POLL_MS + Math.random() * 250))
-  }
+/**
+ * A live status change for a reply that is not text: its place in the queue, or
+ * that it parked on a tool. `text` stays empty so the client keeps what it has.
+ */
+function publishReplyStatus(
+  conversation: { id: string; workspaceId: string },
+  messageId: string,
+  patch: { queue?: QueuedPosition | null; waiting?: { tool: string | null } | null },
+): void {
+  publishConversationEvent(conversation.workspaceId, {
+    type: 'agent.delta',
+    conversationId: conversation.id,
+    messageId,
+    text: '',
+    tool: null,
+    ...patch,
+  })
 }
+
 
 // ─── Target selection ────────────────────────────────────────────────────────
 
@@ -1394,13 +1397,15 @@ export interface StreamSummary {
 /**
  * Read an AI SDK UI-message SSE stream, reporting text and tool progress.
  * `onActivity` fires for every frame, including the runtime's turn heartbeat,
- * so a caller can tell a turn that is still alive from one that went silent.
+ * so a caller can tell a turn that is still alive from one that went silent,
+ * and tell a *working* run (content frames) from one that is only waiting on an
+ * open tool (`kind: 'content'` with `tool` set).
  */
 export async function readAgentStream(
   response: Response,
   onProgress: (state: StreamProgress) => void,
   onPermission?: (request: ApprovalRequest) => void,
-  onActivity?: () => void,
+  onActivity?: (frame: { kind: 'content' | 'heartbeat'; tool: string | null }) => void,
 ): Promise<StreamSummary> {
   if (!response.ok) {
     const raw = await response.text().catch(() => '')
@@ -1429,8 +1434,15 @@ export async function readAgentStream(
     if (!raw || raw === '[DONE]') return
     let chunk: any
     try { chunk = JSON.parse(raw) } catch { return }
-    onActivity?.()
+    // `tool` is the tool still open (null between calls): a frame that arrives
+    // with one open is progress, but the run is waiting on it, not working.
+    // A frame that *opens* a tool already carries the wait, so report the tool
+    // it opens — otherwise a stream that goes straight to a 60 s `wait` after
+    // `tool-input-start` reports "no tool open" for that frame.
     const type = chunk?.type
+    const opens = type === 'tool-input-start' || type === 'tool-call-start'
+    const frameTool = opens ? String(chunk.toolName || chunk.name || 'a tool') : tool
+    onActivity?.({ kind: TRANSIENT_FRAMES.has(String(type)) ? 'heartbeat' : 'content', tool: frameTool })
     if (type === 'text-start') {
       segments++
       if (segments > 1 && text) text += '\n\n'
@@ -1528,9 +1540,10 @@ export async function runWorkspaceAgentPrompt(args: {
   const timeout = setTimeout(() => controller.abort(new Error('timed out')), args.timeoutMs ?? 5 * 60_000)
   ;(timeout as any).unref?.()
   const startedAt = new Date()
-  let release: (() => void) | null = null
+  let slot: AgentReplySlot | null = null
   try {
-    release = await acquireSlot(args.workspaceId, controller.signal)
+    slot = await enqueueAgentReplySlot({ workspaceId: args.workspaceId, runId: sessionId, signal: controller.signal })
+    await slot.acquired
     const response = await invokeUntilReady({
       workspaceId: args.workspaceId,
       projectId: null,
@@ -1546,7 +1559,7 @@ export async function runWorkspaceAgentPrompt(args: {
     return { text: '', failed: true, error: err?.message ?? 'The agent run failed', sessionId }
   } finally {
     clearTimeout(timeout)
-    release?.()
+    slot?.release()
   }
 }
 
@@ -1753,8 +1766,8 @@ async function runReservedReply(
   running.set(messageId, controller)
   const capMs = config.replyTimeoutMs ?? AGENT_REPLY_TIMEOUT_MS
   const idleMs = config.idleTimeoutMs ?? AGENT_REPLY_IDLE_TIMEOUT_MS
-  const timeout = setTimeout(() => controller.abort(new ReplyTimeout('cap', capMs)), capMs)
-  ;(timeout as any).unref?.()
+  // Armed when the slot is taken, not before: queueing is not part of the run.
+  let timeout: ReturnType<typeof setTimeout> | null = null
   let idle: ReturnType<typeof setTimeout> | null = null
   const armIdle = () => {
     if (idle) clearTimeout(idle)
@@ -1779,8 +1792,74 @@ async function runReservedReply(
     void streamAgentReply(reply, latest)
   }
 
+  // ── Slot parking ──
+  // The slot means "actively working". A run that is only blocked on a tool gives
+  // it back so the next tagged message starts, then takes it again (ahead of the
+  // queue) on its next content frame. Parking never stops the run.
+  let slot: AgentReplySlot | null = null
+  let watch: ReturnType<typeof setInterval> | null = null
+  let queued = false
+  let parked = false
+  let openTool: string | null = null
+  let toolOpenedAt = 0
+  let lastContentAt = Date.now()
+  let stuckLogged = false
+
+  const clearQueuedBlock = async () => {
+    if (!queued) return
+    queued = false
+    await updateMessageInternal(messageId, { blocks: null }).catch((err: Error) => {
+      console.warn('[ChannelAgent] clearing the queued marker failed:', err.message)
+    })
+    publishReplyStatus(conversation, messageId, { queue: null })
+    // External channels go back to "Working on it…" now that the run has a slot.
+    void queueAgentReplyNotice(reply, null).catch(() => {})
+  }
+
+  const takeSlot = () => {
+    parked = false
+    publishReplyStatus(conversation, messageId, { waiting: null })
+  }
+
+  const park = (waitingOn: string | null) => {
+    if (!slot || parked) return
+    parked = true
+    slot.park()
+    publishReplyStatus(conversation, messageId, { waiting: { tool: waitingOn } })
+  }
+
+  const onFrame = (frame: { kind: 'content' | 'heartbeat'; tool: string | null }) => {
+    armIdle()
+    if (frame.kind === 'heartbeat') return
+    lastContentAt = Date.now()
+    // A tool that is still open does not keep the run "working": only its output does.
+    if (frame.tool !== openTool) {
+      openTool = frame.tool
+      toolOpenedAt = Date.now()
+    }
+    if (parked) {
+      slot?.unpark()
+      takeSlot()
+    }
+  }
+
+  const checkSlot = () => {
+    if (!slot || controller.signal.aborted) return
+    if (openTool) {
+      if (Date.now() - toolOpenedAt >= PARK_AFTER_MS) park(openTool)
+      return
+    }
+    if (parked) return
+    if (Date.now() - lastContentAt >= STUCK_AFTER_MS) {
+      if (!stuckLogged) {
+        stuckLogged = true
+        console.log(`[ChannelAgent] run ${messageId} idle ${Math.round(STUCK_AFTER_MS / 60_000)}m — slot released`)
+      }
+      park(null)
+    }
+  }
+
   const startedAt = new Date()
-  let release: (() => void) | null = null
   try {
     // Saved before the slot, so opening the session while the runtime is busy
     // or still waking already shows what was asked.
@@ -1809,7 +1888,27 @@ async function runReservedReply(
       where: { id: sessionId },
       data: { lastActiveAt: now, updatedAt: now },
     }).catch(() => {})
-    release = await acquireSlot(conversation.workspaceId, controller.signal)
+    slot = await enqueueAgentReplySlot({
+      workspaceId: conversation.workspaceId,
+      runId: messageId,
+      conversationId: conversation.id,
+      signal: controller.signal,
+    })
+    if (slot.state() === 'queued') {
+      queued = true
+      await setQueuedBlock(messageId).catch((err: Error) => {
+        console.warn('[ChannelAgent] marking the reply queued failed:', err.message)
+      })
+      // Slack/Teams say "Queued (#n)" instead of claiming the agent is working.
+      void queueAgentReplyNotice(reply, { position: slot.position() }).catch(() => {})
+    }
+    await slot.acquired
+    timeout = setTimeout(() => controller.abort(new ReplyTimeout('cap', capMs)), capMs)
+    ;(timeout as any).unref?.()
+    await clearQueuedBlock()
+    lastContentAt = Date.now()
+    watch = setInterval(checkSlot, SLOT_WATCH_MS)
+    ;(watch as any).unref?.()
     const response = await invokeUntilReady({
       workspaceId: conversation.workspaceId,
       projectId: target.projectId,
@@ -1840,7 +1939,7 @@ async function runReservedReply(
       })
         .then((cardId) => { if (cardId) approvalCards.push(cardId) })
         .catch((err) => console.error('[ChannelAgent] approval card failed:', err))
-    }, armIdle)
+    }, onFrame)
     if (idle) clearTimeout(idle)
     if (pending) {
       clearTimeout(pending)
@@ -1882,9 +1981,12 @@ async function runReservedReply(
   } finally {
     if (pending) clearTimeout(pending)
     if (idle) clearTimeout(idle)
-    clearTimeout(timeout)
+    if (timeout) clearTimeout(timeout)
+    if (watch) clearInterval(watch)
     running.delete(messageId)
-    release?.()
+    slot?.release()
+    if (queued) await clearQueuedBlock()
+    if (parked) publishReplyStatus(conversation, messageId, { waiting: null })
     // Once the run ends nothing is waiting on an approval card any more.
     if (approvalCards.length) await expirePendingApprovals(approvalCards)
     await noteRunEnded()
@@ -2023,8 +2125,6 @@ export async function respondToPermission(input: { projectId: string; requestId:
 
 export function _resetDispatcherForTests(): void {
   running.clear()
-  activeByWorkspace.clear()
-  waiters.clear()
   liveRuns.clear()
   draining.clear()
   config = {}

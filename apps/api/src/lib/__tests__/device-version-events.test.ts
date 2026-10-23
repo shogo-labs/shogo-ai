@@ -3,12 +3,19 @@
 /**
  * The single insert point for `device_version_events`.
  *
- * A version change must append exactly one row per (device, version); the same
- * version seen again only bumps `lastSeenAt`. Everything is normalised here, so
- * a new caller cannot reintroduce the 8 platform spellings.
+ * A version change must append exactly one row per (region, device, version);
+ * the same version seen again only bumps `lastSeenAt`. Everything is normalised
+ * here, so a new caller cannot reintroduce the 8 platform spellings.
+ *
+ * `region` is part of the key (SHO-142): two regions must be able to hold their
+ * own tag for one (device, version) without the peer's apply colliding, and the
+ * row must never carry an id derived from its content.
  */
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
+
+// Set before the module graph loads `./region`, which snapshots REGION_ID.
+process.env.REGION_ID = 'us-ashburn-1'
 
 const store: { upserts: any[] } = { upserts: [] }
 let shouldThrow = false
@@ -25,8 +32,12 @@ mock.module('../prisma', () => ({
   },
 }))
 
-const { recordDeviceVersionEvent, normalizeDeviceVersion, MAX_DEVICE_VERSION_LENGTH } =
+const { recordDeviceVersionEvent, normalizeDeviceVersion, resolveWritingRegion, MAX_DEVICE_VERSION_LENGTH } =
   await import('../device-version-events')
+const { RAW_REGION_ID } = await import('../region')
+
+/** Whatever this process resolved at load — `local` when REGION_ID is unset. */
+const REGION = resolveWritingRegion(RAW_REGION_ID)
 
 beforeEach(() => {
   store.upserts.length = 0
@@ -34,7 +45,7 @@ beforeEach(() => {
 })
 
 describe('recordDeviceVersionEvent', () => {
-  test('appends one row per (device, version) with normalised OS/arch/client/channel', async () => {
+  test('appends one row per (region, device, version) with normalised OS/arch/client/channel', async () => {
     const seenAt = new Date('2026-10-21T07:00:00.000Z')
 
     await recordDeviceVersionEvent({
@@ -46,9 +57,10 @@ describe('recordDeviceVersionEvent', () => {
 
     expect(store.upserts).toHaveLength(1)
     expect(store.upserts[0].where).toEqual({
-      deviceId_version: { deviceId: 'device-1', version: '2.3.6-beta.20261020t083308' },
+      region_deviceId_version: { region: REGION, deviceId: 'device-1', version: '2.3.6-beta.20261020t083308' },
     })
     expect(store.upserts[0].create).toMatchObject({
+      region: REGION,
       deviceId: 'device-1',
       version: '2.3.6-beta.20261020t083308',
       os: 'macos',
@@ -60,6 +72,31 @@ describe('recordDeviceVersionEvent', () => {
     })
   })
 
+  test('writes the region from REGION_ID, and `local` when there is none', () => {
+    expect(resolveWritingRegion('us-ashburn-1')).toBe('us-ashburn-1')
+    expect(resolveWritingRegion('eu-frankfurt-1')).toBe('eu-frankfurt-1')
+    // Single-region and desktop mode: a real value, never NULL (NULL is the
+    // pre-region marker and would make the row invisible to the upsert key).
+    expect(resolveWritingRegion(null)).toBe('local')
+  })
+
+  test('never passes an id — the column default owns it', async () => {
+    await recordDeviceVersionEvent({ deviceId: 'device-1', version: '2.3.6' })
+    const args = store.upserts[0]
+    expect(args.create.id).toBeUndefined()
+    expect(args.update.id).toBeUndefined()
+    expect(Object.keys(args.create)).not.toContain('id')
+    expect(Object.keys(args.update)).not.toContain('id')
+  })
+
+  test('region is part of the lookup key and never rewritten by the update half', async () => {
+    await recordDeviceVersionEvent({ deviceId: 'device-1', version: '2.3.6' })
+    const args = store.upserts[0]
+    expect(Object.keys(args.where)).toEqual(['region_deviceId_version'])
+    expect(args.where.region_deviceId_version.region).toBe(REGION)
+    expect(args.update.region).toBeUndefined()
+  })
+
   test('a version change appends a new row, a re-sighting only bumps lastSeenAt', async () => {
     const first = new Date('2026-10-19T00:00:00.000Z')
     const second = new Date('2026-10-21T00:00:00.000Z')
@@ -69,7 +106,7 @@ describe('recordDeviceVersionEvent', () => {
     await recordDeviceVersionEvent({ deviceId: 'device-1', version: '2.3.6', platform: 'darwin', seenAt: second })
 
     expect(store.upserts).toHaveLength(3)
-    expect(store.upserts.map((args) => args.where.deviceId_version.version)).toEqual([
+    expect(store.upserts.map((args) => args.where.region_deviceId_version.version)).toEqual([
       '2.3.5',
       '2.3.6',
       '2.3.6',

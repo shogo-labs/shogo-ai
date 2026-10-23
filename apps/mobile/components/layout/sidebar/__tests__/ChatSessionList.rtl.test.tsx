@@ -15,7 +15,6 @@ const Icon = ({ accessibilityLabel }: { accessibilityLabel?: string }) =>
 const Pressable = ({
   accessibilityLabel,
   accessibilityRole,
-  accessibilityState,
   children,
   onPress,
   testID,
@@ -27,7 +26,6 @@ const Pressable = ({
       ...props,
       role: accessibilityRole ?? "button",
       "aria-label": accessibilityLabel,
-      "aria-expanded": accessibilityState?.expanded,
       "data-rn-shim": testID,
       onClick: onPress,
     },

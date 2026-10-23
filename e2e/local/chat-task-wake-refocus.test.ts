@@ -208,6 +208,37 @@ function watchHistoryRequests(page: Page): string[] {
   return seen
 }
 
+/** Requests the panel makes on its own after a turn, plus the refocus probes. */
+const CHAT_TRAFFIC = /\/api\/chat-messages|\/(tasks|processes|turn)(\?|$)/
+
+/**
+ * Wait until the window stops talking to the chat endpoints on its own.
+ *
+ * A finished turn keeps the panel busy for a while — four `/turn` probes, then
+ * a history refresh of its own. The gaps between those requests are fixed but
+ * their latencies are the runner's, so "sleep 13s and count from there" is a
+ * wall-clock guess: on a loaded runner the last of them lands inside the
+ * counted window and the refocus gets blamed for a fetch it did not make
+ * (SHO-134 — `chat-task-wake-refocus:305 (c)` red on a run where it is green
+ * on the next). Measure the settle instead of assuming it.
+ *
+ * `quietMs` must outlast the widest gap in that schedule (~4s between the
+ * third and fourth probe), or the wait settles inside it and the next probe
+ * lands in the window anyway.
+ */
+async function waitForChatQuiet(page: Page, quietMs = 6_000, deadlineMs = 120_000): Promise<boolean> {
+  let lastAt = Date.now()
+  page.on("request", (request) => {
+    if (CHAT_TRAFFIC.test(request.url())) lastAt = Date.now()
+  })
+  const started = Date.now()
+  while (Date.now() - started < deadlineMs) {
+    if (Date.now() - lastAt >= quietMs) return true
+    await page.waitForTimeout(100)
+  }
+  return false
+}
+
 /**
  * Bring the window back to the person. `bringToFront` is a real activation,
  * but a headless runner has no window manager to hand the page the events the
@@ -312,10 +343,15 @@ test.describe("a chat that was in the background when its wake ran", () => {
     await waitForIdle(page)
     soft(await countOnScreen(page, prompt), "the chat has an answered turn").toBe(1)
 
-    // Past the refocus throttle and past the follow-up window a finished turn
-    // gets (four `/turn` probes over ~10.5s, then a history refresh of its
-    // own), so what is counted below is the refocus and nothing else.
-    await page.waitForTimeout(13_000)
+    // A finished turn keeps the panel busy on its own: four `/turn` probes over
+    // ~10.5s, then a history refresh. Wait for that traffic to stop rather than
+    // guessing how long the runner needs for it, so what is counted below is
+    // the refocus and nothing else. A panel that never stops asking is itself
+    // the bug this spec guards, so that fails here by name.
+    expect(
+      await waitForChatQuiet(page),
+      "the chat stops its own post-turn traffic on its own",
+    ).toBe(true)
     const asked = watchWakeRequests(page)
     const history = watchHistoryRequests(page)
     await refocus(page)
@@ -329,9 +365,10 @@ test.describe("a chat that was in the background when its wake ran", () => {
       asked.filter((url) => /\/(tasks|processes)(\?|$)/.test(url)).length,
       "(c) a settled chat issues no task-list requests on refocus",
     ).toBe(0)
+    const refetched = history.filter((url) => !url.includes("limit=1"))
     soft(
-      history.filter((url) => !url.includes("limit=1")).length,
-      "(c) a settled chat does not refetch the transcript on refocus",
+      refetched.length,
+      `(c) a settled chat does not refetch the transcript on refocus (saw ${refetched.join(" ") || "none"})`,
     ).toBe(0)
     soft(await countOnScreen(page, prompt), "the transcript is untouched").toBe(1)
   })

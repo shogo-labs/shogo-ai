@@ -54,6 +54,9 @@ const localEnv = {
   SHOGO_CHANNEL_AGENT_SCRIPT: resolve(repoRoot, "test-results/team-chat-agents.script.json"),
   // Trigger (event subscription) agents run from a script that automations-agent.test.ts writes.
   SHOGO_EVENT_AGENT_SCRIPT: resolve(repoRoot, "test-results/event-agents.script.json"),
+  // chat-task-interrupted-restart.test.ts restarts the host runtime through
+  // POST /api/local/system/restart-runtime, which needs this secret.
+  SHOGO_E2E_BOOTSTRAP_SECRET: "e2e-local-restart",
   BROWSER: "none",
   // desktop-cloud-workspaces.test.ts: a cloud-mode API for the desktop to sign in to.
   ...(process.env.E2E_CLOUD_URL ? { SHOGO_CLOUD_URL: process.env.E2E_CLOUD_URL } : {}),
@@ -113,7 +116,12 @@ export default defineConfig({
     screenshot: "on",
     video: "retain-on-failure",
     actionTimeout: 15_000,
-    navigationTimeout: 30_000,
+    // A cold `/projects/:id` is a Metro on-demand compile plus a project
+    // runtime spawn, which on a loaded runner outruns the 30s default and reds
+    // a spec at `page.goto` before it asserts anything (SHO-134). Behaviour is
+    // still asserted on its own budgets; this only stops the harness failing
+    // on cold-start latency.
+    navigationTimeout: 120_000,
   },
 
   projects: [

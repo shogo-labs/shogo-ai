@@ -1454,6 +1454,14 @@ export interface RunningAgent {
   startedAt: string
   preview: string
   canStop: boolean
+  /**
+   * `running` = working now, `waiting` = parked on a tool (a `wait`, a `exec_wait`,
+   * a subagent), holding no slot, `queued` = in line for a slot and not started.
+   */
+  state?: 'queued' | 'running' | 'waiting'
+  /** Place in line, for a queued run. */
+  position?: number | null
+  queuedAt?: string | null
 }
 
 /** A workspace-wide pause, as `agent_run_stop`/`agent_runs_list` report it. */

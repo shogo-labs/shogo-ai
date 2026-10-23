@@ -127,6 +127,26 @@ describe('readSessionTaskOutput', () => {
     })
   })
 
+  test('an interrupted task states its verdict first, and never an exit code', async () => {
+    const gw = new AgentGateway(DIR, 'p-link-6')
+    const reg = (gw as any).getOrCreateCommandRegistry('s-link-6')
+    // A log with a footer and no body — what `sleep 900` killed by a restart
+    // leaves. The viewer strips the front matter, so without this the reader
+    // opened a dead task's log and saw nothing about why it died (SHO-141).
+    const task = reg.registerTask({ source: 'shell', title: 'sleep 900', backgrounded: true })
+    mkdirSync(join(DIR, '.shogo', 'tasks', 's-link-6'), { recursive: true })
+    writeFileSync(
+      join(DIR, '.shogo', 'tasks', 's-link-6', `${task.entry.id}.log`),
+      '---\nstatus: interrupted\n---\n',
+    )
+    ;(reg.get(task.entry.id) as any).status = 'interrupted'
+    ;(reg.get(task.entry.id) as any).result = { summary: 'interrupted by the restart' }
+
+    const out = await gw.readSessionTaskOutput('s-link-6', task.entry.id)
+    expect(out!.output.split('\n')[0]).toBe('status: interrupted')
+    expect(out!.output).not.toContain('exit_code:')
+  })
+
   test('an unknown task id is a null answer, not an empty view', async () => {
     const gw = new AgentGateway(DIR, 'p-link-5')
     expect(await gw.readSessionTaskOutput('s-link-5', 't_missing1')).toBeNull()

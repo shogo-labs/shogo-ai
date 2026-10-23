@@ -12,7 +12,7 @@
 import { resolve, join, dirname } from 'path'
 import { existsSync, lstatSync, statSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
-import { dedupeRoots, isWithinAnyRoot, isWithinRoot } from './path-boundary'
+import { dedupeRoots, isWithinAnyCanonicalRoot, isWithinAnyRoot, isWithinRoot, canonicalPathSync } from './path-boundary'
 import {
   checkComputerUse,
   checkFileAccess,
@@ -765,13 +765,11 @@ export class PermissionEngine {
   private checkWithinWorkspace(params: Record<string, any>): boolean {
     const filePath = (params.path as string) || ''
     try {
-      const resolved = resolve(this.workspaceDir, filePath)
-      if (!resolved.startsWith(this.workspaceDir)) return false
-      if (existsSync(resolved)) {
-        const real = realpathSync(resolved)
-        if (!real.startsWith(this.workspaceDir)) return false
-      }
-      return true
+      // Canonical on both sides — a project runtime's WORKSPACE_DIR is a
+      // symlink, so a raw compare prompted for its own files. Linked folders
+      // are deliberately *not* a root here: they are a separate grant and keep
+      // their approval prompt in balanced mode (SHO-125 review).
+      return isWithinAnyCanonicalRoot([this.workspaceDir], resolve(this.workspaceDir, filePath))
     } catch {
       return false
     }
@@ -1039,7 +1037,7 @@ export function scratchPathForWrite(
   const rewritten = rewriteScratchPath(filePath)
   if (!rewritten.remappedFrom) return rewritten
   const roots = dedupeRoots([workspaceDir, ...linkedFolderRoots()].map((r) => resolve(r)))
-  if (isWithinAnyRoot(roots, resolve(filePath))) return { path: filePath }
+  if (isWithinAnyCanonicalRoot(roots, filePath)) return { path: filePath }
   return rewritten
 }
 
@@ -1062,34 +1060,23 @@ export function assertWithinWorkspace(workspaceDir: string, filePath: string): s
       /* fall through */
     }
     const roots = dedupeRoots([workspaceDir, ...linkedFolders].map((r) => resolve(r)))
-    const realRoots = dedupeRoots(
-      roots.map((r) => {
-        try {
-          return realpathSync(r)
-        } catch {
-          return r
-        }
-      }),
-    )
-    const ok = isWithinAnyRoot(realRoots, resolved)
-    if (!ok) {
+    const realRoots = dedupeRoots(roots.map((r) => canonicalPathSync(r)))
+    // Canonical-on-both-sides is the whole point: a project runtime's
+    // WORKSPACE_DIR is a symlink into <ws>/workspaces/<id>, so a raw
+    // `resolve()` of a relative path never compares equal to the realpath'd
+    // root and every relative path was rejected (SHO-125).
+    const canonical = canonicalPathSync(resolved)
+    if (!isWithinAnyRoot(realRoots, canonical)) {
+      // Lexically in-root but canonically out-of-root means a symlink inside
+      // an allowed folder points outside it — refused, with its own message so
+      // the denial stays diagnosable.
+      if (isWithinAnyRoot(roots, resolved)) {
+        throw new Error(`Symlink target outside allowed roots: ${filePath}`)
+      }
       throw new Error(
         `Path is outside the project's allowed folders: ${filePath}\n` +
           `Allowed roots:\n  - ${roots.join('\n  - ')}`,
       )
-    }
-    // Symlink-escape defense for files that already exist.
-    if (existsSync(resolved)) {
-      let real: string
-      try {
-        real = realpathSync(resolved)
-      } catch {
-        return resolved
-      }
-      const realOk = isWithinAnyRoot(realRoots, real)
-      if (!realOk) {
-        throw new Error(`Symlink target outside allowed roots: ${filePath}`)
-      }
     }
     return resolved
   }

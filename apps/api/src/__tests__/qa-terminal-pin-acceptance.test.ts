@@ -129,7 +129,11 @@ function newLowTierManager(): PrivateRM {
   process.env.SHOGO_HOST_TIER = 'low'
   try {
     const rm = new RuntimeManager({ healthCheckInterval: 50 }) as PrivateRM
-    rm.agentManager = { touch: mock(() => {}), stop: mock(async () => {}) }
+    rm.agentManager = {
+      touch: mock(() => {}),
+      stop: mock(async () => {}),
+      refreshActivity: mock(async () => {}),
+    }
     return rm
   } finally {
     if (prevTier === undefined) delete process.env.SHOGO_HOST_TIER

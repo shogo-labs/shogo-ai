@@ -174,7 +174,7 @@ export default function TeamChatSearch() {
             <Pressable
               key={m.id}
               accessibilityRole="tab"
-              accessibilityState={{ selected: mode === m.id }}
+              aria-selected={mode === m.id}
               onPress={() => {
                 requestId.current++
                 setLoading(false)
@@ -195,7 +195,7 @@ export default function TeamChatSearch() {
               <Pressable
                 key={s}
                 accessibilityRole="button"
-                accessibilityState={{ selected: sort === s }}
+                aria-selected={sort === s}
                 onPress={() => setSort(s)}
                 className={cn('rounded-full border px-3 py-1', sort === s ? 'border-primary bg-primary/10' : 'border-border')}
               >

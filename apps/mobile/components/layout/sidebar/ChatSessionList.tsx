@@ -59,7 +59,7 @@ function ChatListRow({
   accessibilityLabel,
   icon,
   onPress,
-  accessibilityState,
+  ariaExpanded,
   trailingText,
   indent,
 }: {
@@ -67,7 +67,7 @@ function ChatListRow({
   accessibilityLabel: string;
   icon: ReactNode;
   onPress: () => void;
-  accessibilityState?: { expanded?: boolean };
+  ariaExpanded?: boolean;
   trailingText?: string | number;
   indent?: boolean;
 }) {
@@ -77,7 +77,7 @@ function ChatListRow({
       accessibilityRole="button"
       role="button"
       accessibilityLabel={accessibilityLabel}
-      accessibilityState={accessibilityState}
+      aria-expanded={ariaExpanded}
       className={cn(
         "flex-row items-center gap-1 pt-2 pb-0.5 active:opacity-70",
         indent ? "pl-12 pr-1" : "px-1",
@@ -429,7 +429,7 @@ export function ChatSessionList({
         key={row.id}
         label="Archived"
         accessibilityLabel={`${archivedExpanded ? "Collapse" : "Expand"} archived chats`}
-        accessibilityState={{ expanded: archivedExpanded }}
+        aria-expanded={archivedExpanded}
         trailingText={archived.length}
         indent={mobileProjectDetail}
         icon={

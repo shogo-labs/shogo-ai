@@ -260,7 +260,7 @@ export function SecuritySettingsPanel() {
                     onPress={() => setToolRule(tool, rule)}
                     accessibilityRole="button"
                     accessibilityLabel={`${toolLabel(tool)}: ${RULE_LABEL[rule]}`}
-                    accessibilityState={{ selected: current === rule }}
+                    aria-selected={current === rule}
                     className={cn('px-2.5 py-1.5', current === rule ? (rule === 'block' ? 'bg-destructive/15' : 'bg-primary/15') : 'bg-background')}
                   >
                     <Text className={cn('text-xs', current === rule ? 'font-medium text-foreground' : 'text-muted-foreground')}>{RULE_LABEL[rule]}</Text>

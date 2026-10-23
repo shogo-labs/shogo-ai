@@ -40,7 +40,7 @@ export function WorkItemRow({ item, mentionables, showBoard, selected, cursor, o
         <Pressable
           onPress={onToggle}
           accessibilityRole="checkbox"
-          accessibilityState={{ checked: !!selected }}
+          aria-checked={!!selected}
           accessibilityLabel={`Select ${item.key}`}
           hitSlop={8}
           className={cn('h-4 w-4 items-center justify-center rounded border', selected ? 'border-primary bg-primary' : 'border-border')}

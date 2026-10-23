@@ -54,7 +54,10 @@ function insertSlot(mgr: WorkerRuntimeManager, projectId: string, extra: Record<
     status: 'running',
     proc: fakeProc(),
     pid: null,
-    startedAt: Date.now(),
+    // Ten minutes up, i.e. past the 2-minute startup grace: a runtime that just
+    // started is never an eviction victim (SHO-143), and these tests are about
+    // what happens once it is settled.
+    startedAt: Date.now() - 10 * 60_000,
     lastUsedAt: Date.now(),
     restarts: 0,
     consecutiveFailures: 0,
@@ -125,14 +128,23 @@ describe('WorkerRuntimeManager active-work gating', () => {
     expect(slot.status).toBe('running');
     expect(slot.idleTimer).not.toBeNull();
 
-    activity = {};
+    // A current runtime always reports its counts; zeros are what "idle" means.
+    activity = { activeTurns: 0, activeTasks: 0, activeStreams: 0 };
+    // The reaper decides from the cached sample and only re-asks once that
+    // sample has aged out (SHO-143: never probe because we just decided to
+    // kill). Age it the way the sampler would on its next tick.
+    ;(slot as unknown as { activity?: { at: number } }).activity = {
+      counts: { turns: 1, tasks: 0, streams: 0, children: 0 },
+      at: Date.now() - 60_000,
+      ok: true,
+    };
     await sleep(200);
     expect(gone).toEqual(['busy']);
   });
 
   it('LRU cap skips busy runtimes and evicts the idle one', async () => {
     const busy = activityServer(() => ({ activeTasks: 1 }));
-    const idle = activityServer(() => ({}));
+    const idle = activityServer(() => ({ activeTurns: 0, activeTasks: 0, activeStreams: 0 }));
     const gone: string[] = [];
     const mgr = new WorkerRuntimeManager({
       logger: SILENT,

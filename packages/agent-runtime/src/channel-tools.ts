@@ -728,9 +728,11 @@ export function createAgentRunsListTool(ctx: ToolContext): AgentTool {
     name: 'agent_runs_list',
     label: 'List Running Agents',
     description:
-      'List the agents working right now in team chat: replying in a channel or thread, or working a card. Only runs ' +
-      'in channels the person who asked can see are listed. Each run has a message_id to pass to agent_run_stop, and ' +
-      'can_stop says whether that person may stop it.',
+      'List the agents in team chat that have a run in flight: replying in a channel or thread, or working a card. ' +
+      'Only runs in channels the person who asked can see are listed. Each run has a message_id to pass to ' +
+      'agent_run_stop, state (running = working now, waiting = parked on a tool and holding no slot, queued = in ' +
+      'line for a slot, with position telling how many runs are ahead of it), and can_stop says whether that ' +
+      'person may stop it.',
     parameters: Type.Object({
       channel: Type.Optional(Type.String({ description: 'Only runs in this channel (name without # or conversation id).' })),
       thread: Type.Optional(Type.String({ description: 'Only runs in this thread (its root message id).' })),
@@ -753,6 +755,9 @@ export function createAgentRunsListTool(ctx: ToolContext): AgentTool {
           channel: r.channel.name ?? r.channel.id,
           thread_id: r.threadRootId,
           started_at: r.startedAt,
+          state: r.state ?? 'running',
+          position: r.position ?? null,
+          queued_at: r.queuedAt ?? null,
           preview: r.preview,
           can_stop: r.canStop,
         })),

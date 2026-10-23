@@ -109,6 +109,18 @@ variable "system_node_boot_volume_gb" {
   default     = 200
 }
 
+variable "kubelet_extra_args" {
+  # Passed straight to the oke module's `oke-init.sh --kubelet-extra-args`.
+  # Empty means "keep the OKE/default kubelet configuration", which is what
+  # every environment ran until SHO-136. Production regions set only the image
+  # GC thresholds here: the staging pool's memory-pressure flags
+  # (--eviction-hard/--kube-reserved) are a separate, deliberate decision and
+  # must not ride along with a disk change on a live production cluster.
+  description = "Extra kubelet flags for the system node pool (e.g. --image-gc-high-threshold)."
+  type        = string
+  default     = ""
+}
+
 variable "system_pool_size" {
   description = "Desired system node count"
   type        = number

@@ -7,6 +7,8 @@ import {
   cleanupTestRows,
   closeAllPools,
   getSubscriptionStatus,
+  getEnabledSubCount,
+  getConflictStats,
   sleep,
   type TestEnv,
 } from "./helpers"
@@ -24,6 +26,7 @@ afterAll(async () => {
   await cleanupTestRows(env, "sessions", '"userId"', TEST_MARKER)
   await cleanupTestRows(env, "platform_settings", "key", TEST_MARKER)
   await cleanupTestRows(env, "users", "email", TEST_MARKER)
+  await cleanupTestRows(env, "device_version_events", '"deviceId"', TEST_MARKER)
   await closeAllPools(env)
 })
 
@@ -230,6 +233,106 @@ describe("api_keys replication", () => {
     })
 
     expect(euRow.keyHash).toBe(keyHash)
+  })
+})
+
+describe("device_version_events replication", () => {
+  // SHO-142, the 2026-10-22 outage. The table rejoins `shogo_all_pub` because
+  // its ids are random and its unique key is region-scoped. These two tests are
+  // the RUNBOOK Step 13 command: run them against staging before/after a deploy
+  // that publishes the table again.
+  test("both regions tag one (device, version) and converge without an apply error", async () => {
+    const deviceId = `dve_dev_${TEST_MARKER}`
+    const version = "9.9.9-both"
+    const usId = generateCuid()
+    const euId = generateCuid()
+    const usRegion = "us-ashburn-1"
+    const euRegion = "eu-frankfurt-1"
+
+    const euSubsBefore = await getEnabledSubCount(pool(env, "eu"))
+    const errorsBefore = await getConflictStats(pool(env, "eu"))
+
+    await pool(env, "us").query(
+      `INSERT INTO device_version_events (id, region, "deviceId", version, "lastSeenAt")
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [usId, usRegion, deviceId, version]
+    )
+    await pool(env, "eu").query(
+      `INSERT INTO device_version_events (id, region, "deviceId", version, "lastSeenAt")
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [euId, euRegion, deviceId, version]
+    )
+
+    // Each region must receive the peer's tag.
+    await waitForReplication<{ id: string; region: string }>({
+      sourcePool: pool(env, "us"),
+      targetPool: pool(env, "eu"),
+      query: 'SELECT id, region FROM device_version_events WHERE id = $1',
+      params: [usId],
+      timeoutMs: 10_000,
+    })
+    await waitForReplication<{ id: string; region: string }>({
+      sourcePool: pool(env, "eu"),
+      targetPool: pool(env, "us"),
+      query: 'SELECT id, region FROM device_version_events WHERE id = $1',
+      params: [euId],
+      timeoutMs: 10_000,
+    })
+
+    for (const region of ["us", "eu"] as const) {
+      const rows = await pool(env, region).query(
+        'SELECT id, region FROM device_version_events WHERE "deviceId" = $1 AND version = $2 ORDER BY region',
+        [deviceId, version]
+      )
+      // Two rows, two regions, two distinct ids — not one row and not a lost tag.
+      expect(rows.rowCount).toBe(2)
+      expect(new Set(rows.rows.map((r: any) => r.id)).size).toBe(2)
+      expect(new Set(rows.rows.map((r: any) => r.region))).toEqual(new Set([usRegion, euRegion]))
+    }
+
+    // The whole point: the subscription is still enabled and no new apply/sync
+    // error was recorded (an abort here is what disabled `sub_from_us`).
+    expect(await getEnabledSubCount(pool(env, "eu"))).toEqual(euSubsBefore)
+    expect(await getConflictStats(pool(env, "eu"))).toEqual(errorsBefore)
+  })
+
+  test("two NULL-region rows for one (device, version) replicate without a unique violation", async () => {
+    // Pre-region rows carry NULL, and NULLs are distinct in a Postgres unique
+    // index — so the legacy rows of both regions can meet during a tablesync.
+    // A NOT NULL DEFAULT 'legacy' backfill would instead hand both regions the
+    // same key and re-run the outage.
+    const deviceId = `dve_null_${TEST_MARKER}`
+    const version = "9.9.9-legacy"
+    const usId = generateCuid()
+    const euId = generateCuid()
+
+    await pool(env, "us").query(
+      `INSERT INTO device_version_events (id, "deviceId", version, "lastSeenAt")
+       VALUES ($1, $2, $3, NOW())`,
+      [usId, deviceId, version]
+    )
+    await pool(env, "eu").query(
+      `INSERT INTO device_version_events (id, "deviceId", version, "lastSeenAt")
+       VALUES ($1, $2, $3, NOW())`,
+      [euId, deviceId, version]
+    )
+
+    await waitForReplication<{ id: string }>({
+      sourcePool: pool(env, "us"),
+      targetPool: pool(env, "eu"),
+      query: "SELECT id FROM device_version_events WHERE id = $1",
+      params: [usId],
+      timeoutMs: 10_000,
+    })
+
+    for (const region of ["us", "eu"] as const) {
+      const rows = await pool(env, region).query(
+        'SELECT id, region FROM device_version_events WHERE "deviceId" = $1 AND version = $2',
+        [deviceId, version]
+      )
+      expect(rows.rowCount).toBe(2)
+      expect(rows.rows.every((r: any) => r.region === null)).toBe(true)
+    }
   })
 })
 

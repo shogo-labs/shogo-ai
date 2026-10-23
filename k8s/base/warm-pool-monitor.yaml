@@ -221,6 +221,35 @@ spec:
                     EXIT_RC=1
                   fi
 
+                  # 4b) Node disk approaching the reclaim line.
+                  # DiskPressure is a LATCHED signal: by the time it flips, the
+                  # kubelet is already evicting and the kubelet clears it only
+                  # after 5m of sustained good state. On 2026-10-21 staging had
+                  # one node at 69% with 7 `shogo-runtime` (9.95 GB) + 13
+                  # `shogo-api` (5.11 GB) digests, and the ONLY thing that ever
+                  # reclaimed any of it was the eviction itself. The kubelet now
+                  # reclaims at 70% (--image-gc-high-threshold, SHO-136), so 70%
+                  # is where the approach has to be narrated, not the arrival.
+                  # Warning only: this must not page, or a healthy node doing
+                  # exactly what it was configured to do becomes an incident.
+                  echo "--- node disk headroom (warn at ${DISK_WARN_PCT:-70}%) ---"
+                  DISK_LINES=""
+                  for node in $(kubectl get nodes -o json | jq -r '.items[] | .metadata.name'); do
+                    pct=$(kubectl get --raw "/api/v1/nodes/${node}/proxy/stats/summary" 2>/dev/null | jq -r '
+                      def used($fs): ($fs.usedBytes // 0) as $u | ($fs.capacityBytes // 0) as $c
+                        | if $c > 0 then (($u / $c) * 100) else 0 end;
+                      [(used(.node.fs) | floor), (used(.node.runtime.imageFs // {}) | floor)] | max
+                    ')
+                    if [ -n "$pct" ] && [ "$pct" != "null" ]; then
+                      echo "  $node ${pct}% used"
+                      DISK_LINES=$(printf '%s\n%s %s' "$DISK_LINES" "$node" "$pct")
+                    fi
+                  done
+                  NEAR=$(echo "$DISK_LINES" | awk -v t="${DISK_WARN_PCT:-70}" '$2 >= t {printf "%s (%s%%), ", $1, $2}')
+                  if [ -n "$NEAR" ]; then
+                    echo "WARNING: node(s) at/above ${DISK_WARN_PCT:-70}% disk — kubelet image GC is reclaiming: ${NEAR%, }"
+                  fi
+
                   # 5) Studio single-revision invariant.
                   # The `studio-direct` Service (see
                   # k8s/overlays/*/studio-ws-ingress.yaml) selects EVERY studio

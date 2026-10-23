@@ -111,7 +111,7 @@ export function resolveSocialClientConfig(env: NodeJS.ProcessEnv = process.env):
       throw new SocialError(
         412,
         'social_relay_unavailable',
-        'Social management needs Shogo Cloud connected (or your own Zernio key) on this device.',
+        'Social accounts on desktop go through Shogo Cloud. Connect Shogo Cloud in Settings first.',
       )
     }
     return {
