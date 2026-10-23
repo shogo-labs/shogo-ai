@@ -47,7 +47,39 @@ export interface FakeTurn {
   finishedAt?: number
   /** Name of the tool called at the end of this request, if any. */
   toolCalled?: string
+  /** The tool-result text this request carried (round > 0), as the agent sent it. */
+  toolResults?: string
   userText: string
+  /**
+   * The whole request body as sent. `userText` is only the last user message,
+   * so a spec that has to prove what *history* reached the model (a restored
+   * session, a summary block) reads `messages` from here.
+   */
+  body?: any
+  /**
+   * The request body's `messages`, digested: role, tool names and content
+   * length per message. A spec uses it to assert what the model was actually
+   * shown — e.g. that turn 2 carried turn 1's tool calls and results verbatim
+   * instead of `[Tool output processed — N chars]` (SHO-122).
+   */
+  messages: RequestMessageDigest[]
+}
+
+export interface RequestMessageDigest {
+  role: string
+  /** Tool names on an assistant message's tool calls, in order. */
+  toolNames: string[]
+  /** Characters of text content in this message. */
+  chars: number
+  /** First 200 characters of that text, for shape assertions. */
+  preview: string
+  /**
+   * Last 200 characters of that text. The runtime wraps a user message in a
+   * preamble ("[Chat — User Message] …"), so the user's own words can sit past
+   * `preview` — a spec that wants to identify a message by what the person
+   * typed has to look at both ends.
+   */
+  tail: string
 }
 
 interface Marker {
@@ -60,9 +92,13 @@ interface Marker {
   gap: number
   /** `bg`: the shell command, `_` standing in for a space. */
   cmd?: string
+  /** `tool`: the file the fake model reads (a path the agent can resolve). */
+  path?: string
 }
 
-const MARKER = /\[\[e2e:(long|hold|tool|bg)((?::[a-zA-Z]+=[\w-]+)*)\]\]/
+// Values may contain `|` so a `bg` marker can script a real pipeline
+// (`cmd=false_|_cat`), which is the shape SHO-141 has to judge.
+const MARKER = /\[\[e2e:(long|hold|tool|bg)((?::[a-zA-Z]+=[\w./|-]+)*)\]\]/
 
 /** Tool the fake model calls. `read_file` works on a missing path too: an error result still continues the turn. */
 const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
@@ -71,19 +107,24 @@ const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
  * detection), or after several failing calls in a row. So every round reads a longer
  * slice of a file that exists: distinct input, always a success.
  */
-const toolArgs = (_tag: string, round: number): Record<string, unknown> => ({ path: 'AGENTS.md', offset: 1, limit: round + 1 })
+const toolArgs = (_tag: string, round: number, path = 'AGENTS.md'): Record<string, unknown> => ({
+  path,
+  offset: 1,
+  limit: round + 1,
+})
 
 export function marker(
   script: 'long' | 'hold' | 'tool' | 'bg',
   tag: string,
   n: number,
-  options: { ms?: number; rounds?: number; holdAt?: number; gap?: number; cmd?: string } = {},
+  options: { ms?: number; rounds?: number; holdAt?: number; gap?: number; cmd?: string; path?: string } = {},
 ): string {
   const parts = [`tag=${tag}`, `n=${n}`, `ms=${options.ms ?? 10}`]
   if (options.rounds !== undefined) parts.push(`rounds=${options.rounds}`)
   if (options.holdAt !== undefined) parts.push(`holdAt=${options.holdAt}`)
   if (options.gap !== undefined) parts.push(`gap=${options.gap}`)
   if (options.cmd !== undefined) parts.push(`cmd=${options.cmd.replace(/ /g, '_')}`)
+  if (options.path !== undefined) parts.push(`path=${options.path}`)
   return `[[e2e:${script}:${parts.join(':')}]]`
 }
 
@@ -114,6 +155,7 @@ function parseMarker(text: string): Marker | null {
     holdAt: script === 'hold' ? 0 : params.holdAt !== undefined ? Number(params.holdAt) : null,
     gap: Number(params.gap ?? 0),
     ...(script === 'bg' ? { cmd: (params.cmd ?? 'sleep_2').replace(/_/g, ' ') } : {}),
+    ...(params.path ? { path: params.path } : {}),
   }
 }
 
@@ -125,6 +167,27 @@ function contentText(content: unknown): string {
       .join('\n')
   }
   return ''
+}
+
+/** `messages` as role + tool names + content size — what the model was shown. */
+export function digestMessages(messages: any[]): RequestMessageDigest[] {
+  return messages.map((message) => {
+    const parts: any[] = Array.isArray(message?.content) ? message.content : []
+    const text = [contentText(message?.content), ...parts.map((p) => (typeof p?.text === 'string' ? p.text : ''))].join('\n')
+    const toolNames = parts
+      .filter((p) => p?.type === 'tool_use' || p?.type === 'tool_call' || p?.type === 'toolCall')
+      .map((p) => String(p?.name ?? ''))
+    for (const call of Array.isArray(message?.tool_calls) ? message.tool_calls : []) {
+      toolNames.push(String(call?.function?.name ?? call?.name ?? ''))
+    }
+    return {
+      role: String(message?.role ?? ''),
+      toolNames: toolNames.filter(Boolean),
+      chars: text.length,
+      preview: text.slice(0, 200),
+      tail: text.slice(-200),
+    }
+  })
 }
 
 /** The last user message, and how many tool results follow it (the tool round). */
@@ -251,7 +314,14 @@ export class FakeLlmServer {
       /* fall through with an empty body */
     }
 
-    const { userText, round } = conversationState(Array.isArray(body.messages) ? body.messages : [])
+    const messages: any[] = Array.isArray(body.messages) ? body.messages : []
+    const { userText, round } = conversationState(messages)
+    // What the runtime sent back after running the tool — the evidence that the
+    // agent read something, and what it read.
+    const toolResults = messages
+      .filter((m) => m?.role === 'tool')
+      .map((m) => contentText(m.content))
+      .join('\n')
     const toolNames: string[] = (Array.isArray(body.tools) ? body.tools : []).map((t: any) => t?.function?.name).filter(Boolean)
     // Only agent turns carry tools. Title generation and other side calls may
     // quote the user's text, marker included, and must stay plain.
@@ -275,6 +345,9 @@ export class FakeLlmServer {
       startedAt: Date.now(),
       sentAt: [],
       userText,
+      body,
+      messages: digestMessages(messages),
+      ...(toolResults ? { toolResults } : {}),
     }
     this.turns.push(turn)
 
@@ -366,7 +439,7 @@ export class FakeLlmServer {
         : TOOL_PREFERENCE.find((n) => toolNames.includes(n))
       if (name) {
         const args = JSON.stringify(
-          background ? { command: parsed.cmd, background: true } : toolArgs(parsed.tag, round),
+          background ? { command: parsed.cmd, background: true } : toolArgs(parsed.tag, round, parsed.path),
         )
         const id = `call_${parsed.tag}_${round}`
         res.write(chunk({ tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: '' } }] }))

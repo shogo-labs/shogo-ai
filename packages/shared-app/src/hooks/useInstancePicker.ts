@@ -37,10 +37,23 @@ export interface Instance {
    * cloud upstream is configured.
    */
   origin?: string
+  /**
+   * Name of the cloud workspace this machine's key was issued in. Returned by
+   * `GET /api/instances?scope=owner`, which is the only list that can hold
+   * machines from several workspaces at once.
+   */
+  workspaceName?: string | null
 }
 
 export interface UseInstancePickerOptions {
   workspaceId: string | undefined
+  /**
+   * `'workspace'` (default) lists the machines filed under the workspace the
+   * picker is choosing a runtime for. `'owner'` lists every machine the signed-in
+   * user registered, whichever cloud workspace is open — the Settings → Remote
+   * control list, which must agree with the workspace switcher's.
+   */
+  scope?: 'workspace' | 'owner'
   apiUrl: string
   activeInstance: ActiveInstance | null
   setInstance: (inst: ActiveInstance) => void
@@ -73,6 +86,7 @@ export interface UseInstancePickerResult {
 
 export function useInstancePicker({
   workspaceId,
+  scope = 'workspace',
   apiUrl,
   activeInstance,
   setInstance,
@@ -108,14 +122,15 @@ export function useInstancePicker({
   }, [activeInstance, workspaceId, clearInstance])
 
   const loadInstances = useCallback(async () => {
-    if (!workspaceId) return
+    if (scope === 'workspace' && !workspaceId) return
     setLoading(true)
     setConnectError(null)
     try {
-      const res = await fetchFn(
-        `${apiUrl}/api/instances?workspaceId=${encodeURIComponent(workspaceId)}`,
-        { ...fetchOptions },
-      )
+      const query =
+        scope === 'owner'
+          ? 'scope=owner'
+          : `workspaceId=${encodeURIComponent(workspaceId as string)}`
+      const res = await fetchFn(`${apiUrl}/api/instances?${query}`, { ...fetchOptions })
       if (!res.ok) {
         setInstances([])
         return
@@ -127,7 +142,7 @@ export function useInstancePicker({
     } finally {
       setLoading(false)
     }
-  }, [workspaceId, apiUrl, fetchFn, fetchOptions])
+  }, [workspaceId, scope, apiUrl, fetchFn, fetchOptions])
 
   // Refresh when popover opens
   useEffect(() => {

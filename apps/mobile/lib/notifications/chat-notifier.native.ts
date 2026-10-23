@@ -275,7 +275,7 @@ export async function notifyChatFinished(p: ChatNotificationPayload): Promise<vo
   }
 }
 
-function parseClickData(raw: unknown): ChatNotificationClickData | null {
+export function parseClickData(raw: unknown): ChatNotificationClickData | null {
   const data = (raw ?? {}) as Record<string, unknown>
   const agentKey = typeof data.url === 'string' ? parseAgentDeepLink(data.url) : null
   if (agentKey) return { agentKey }
@@ -288,6 +288,12 @@ function parseClickData(raw: unknown): ChatNotificationClickData | null {
   }
   if (typeof data.sessionId === 'string' && typeof data.projectId === 'string') {
     return { sessionId: data.sessionId, projectId: data.projectId }
+  }
+  // Any other notification with an in-app destination (an invitation, a due
+  // reminder) carries it as an app-relative path. Absolute URLs are not
+  // followed here: only the agent deep link above is a known destination.
+  if (typeof data.actionUrl === 'string' && data.actionUrl.startsWith('/')) {
+    return { actionUrl: data.actionUrl }
   }
   return null
 }

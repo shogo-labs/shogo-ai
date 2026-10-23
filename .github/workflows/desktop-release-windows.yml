@@ -242,6 +242,7 @@ jobs:
         with:
           name: web-dist-windows
           path: apps/mobile/dist/
+          retention-days: 7
 
   build-desktop:
     name: Build Desktop (Windows x64)
@@ -508,6 +509,9 @@ jobs:
           name: desktop-win32-x64
           path: apps/desktop/out/make/**/*
           if-no-files-found: error
+          # Intermediate: the installers are already on the GitHub Release from
+          # this same run. Their 90-day default was 558 GB of live storage.
+          retention-days: 7
 
   boot-smoke-windows:
     # The Windows build was never executed before release. Boot the packaged

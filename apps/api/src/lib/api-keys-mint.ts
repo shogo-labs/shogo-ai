@@ -28,6 +28,7 @@
 
 import crypto from 'crypto'
 import type { PrismaClient } from '@prisma/client'
+import { recordDeviceVersionEvent, type DeviceVersionEventClient } from './device-version-events'
 
 /** Public prefix on every minted key. Matched against incoming Bearer
  * tokens to short-circuit obvious non-API-key inputs. */
@@ -167,6 +168,19 @@ export async function mintDeviceApiKey(
       },
     })
   })
+
+  // Seed the per-(device, version) history at mint time so a fresh install is
+  // counted before its first heartbeat. Same helper as the heartbeat and the
+  // proxy touch — one insert point for every surface that reports a version.
+  await recordDeviceVersionEvent(
+    {
+      deviceId: apiKey.deviceId,
+      version: deviceAppVersion,
+      platform: devicePlatform,
+      seenAt: apiKey.createdAt ?? new Date(),
+    },
+    args.prisma as unknown as DeviceVersionEventClient,
+  )
 
   return { fullKey, apiKey, keyPrefix }
 }

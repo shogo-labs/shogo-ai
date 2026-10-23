@@ -245,7 +245,7 @@ function Column(props: ColumnProps) {
           {/* Cards here may have their PR armed and merged by an agent. */}
           <Pressable
             accessibilityRole="switch"
-            accessibilityState={{ checked: arming }}
+            aria-checked={arming}
             accessibilityLabel={`${column.name}: ${arming ? 'auto-merge allowed' : 'auto-merge not allowed'}`}
             onPress={props.onToggleArming}
             testID={`board-column-arm-${column.name}`}

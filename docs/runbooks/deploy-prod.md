@@ -59,18 +59,24 @@ Production never rebuilds images. A `v*` tag promotes the exact digests
 staging built for that commit and ran `e2e/staging-critical` against:
 
 1. Every staging deploy (push to `main`) leaves a complete `staging-<sha>`
-   tag set for `shogo-api`, `shogo-web`, `shogo-docs` and `shogo-runtime`.
-   Images the run built get the tag directly; unchanged ones are re-tagged
-   from what staging already runs ("Complete staging release tag set").
-2. On the tag push, `promote-images` re-tags `staging-<sha>` as
-   `production-<sha>` and `production-latest` (manifest-only, seconds).
-   `replicate-images` copies them to EU, and `deploy-us` / `deploy-eu` roll
-   out once `staging-e2e-gate` is green. The runtime only re-rolls when its
-   digest differs from what the region already pins.
-3. The tagged commit must have deployed to staging after this flow landed.
-   Otherwise `promote-images` fails with "No staging-<sha> image". Deploy
-   that commit to staging first, or (escape hatch) dispatch `deploy.yml`
-   with `environment=production` and `force_rebuild_production=true`.
+   tag set for `shogo-api`, `shogo-web`, `shogo-docs` and `shogo-runtime` —
+   but only **when its rollout finishes**. Images the run built get the tag
+   directly; unchanged ones are re-tagged from what staging already runs
+   ("Complete staging release tag set"), minutes later. A tag pushed while
+   that rollout is still running is not a broken release (v2.3.7).
+2. On the tag push, `promote-images` **waits for that tag set**
+   (`scripts/ci/wait-for-staging-images.ts`, up to 60 min, one progress line
+   per 30 s poll) and then re-tags it as `production-<sha>` and
+   `production-latest` (manifest-only, seconds). `replicate-images` copies
+   them to EU, and `deploy-us` / `deploy-eu` roll out once
+   `staging-e2e-gate` is green. The runtime only re-rolls when its digest
+   differs from what the region already pins.
+3. It stops waiting early only when this commit's rollout already finished
+   without the tags, or no main-branch rollout for it ever started: then
+   `promote-images` fails with "No staging-<sha> image …", naming the run,
+   its conclusion and the repos. Re-run that commit's main-branch staging
+   deploy, or (escape hatch) dispatch `deploy.yml` with
+   `environment=production` and `force_rebuild_production=true`.
 
 The metal fleet's guest image follows the same rule. After both regions
 deploy, `metal-runtime-image` asks the rootfs gate (`scripts/ci/metal-rootfs-gate.sh`)

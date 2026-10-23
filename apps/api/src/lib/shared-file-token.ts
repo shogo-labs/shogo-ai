@@ -93,16 +93,53 @@ export function signSharedFileToken(input: {
   return `${encodedPayload}.${signatureFor(encodedPayload)}`
 }
 
-export function verifySharedFileToken(token: string): SharedFileTokenPayload | null {
+/**
+ * Why a token was refused. The download routes answer a different `code` for
+ * `expired` and `invalid_link`, which is the difference between "ask for a new
+ * link" and "the link was mangled" — the two reports that used to look alike.
+ */
+export type SharedFileTokenFailure =
+  | 'not_a_string'
+  | 'malformed'
+  | 'signature_mismatch'
+  | 'payload_unreadable'
+  | 'wrong_type'
+  | 'bad_claims'
+  | 'expired'
+  | 'not_yet_valid'
+  | 'invalid_expiry_window'
+
+export type SharedFileTokenDiagnosis =
+  | { ok: true; claims: SharedFileTokenPayload }
+  | {
+      ok: false
+      reason: SharedFileTokenFailure
+      /** Decoded claims, present whenever the payload could be read at all. */
+      claims?: Partial<SharedFileTokenPayload>
+    }
+
+/**
+ * Check a token, and say what failed when it does. `verifySharedFileToken` is
+ * the same check without the reason; a 404 should use this one so the log
+ * names the failing check instead of leaving the next report to guess.
+ *
+ * Callers may log the claim fields — they are what the token grants. The
+ * signature is never returned and never logged.
+ */
+export function diagnoseSharedFileToken(token: string): SharedFileTokenDiagnosis {
   try {
-    if (typeof token !== 'string') return null
+    if (typeof token !== 'string') return { ok: false, reason: 'not_a_string' }
     const [encodedPayload, signature, extra] = token.split('.')
-    if (!encodedPayload || !signature || extra) return null
+    if (!encodedPayload || !signature || extra) return { ok: false, reason: 'malformed' }
 
     const expected = signatureFor(encodedPayload)
-    if (!safeTokenEqual(signature, expected)) return null
+    if (!safeTokenEqual(signature, expected)) {
+      return { ok: false, reason: 'signature_mismatch', claims: readClaims(encodedPayload) }
+    }
 
-    const payload = JSON.parse(decode(encodedPayload)) as Partial<SharedFileTokenPayload>
+    const payload = readClaims(encodedPayload)
+    if (!payload) return { ok: false, reason: 'payload_unreadable' }
+
     if (
       payload.typ !== TOKEN_TYPE ||
       (payload.projectId !== undefined && !validId(payload.projectId)) ||
@@ -111,18 +148,57 @@ export function verifySharedFileToken(token: string): SharedFileTokenPayload | n
       !Number.isSafeInteger(payload.iat) ||
       !Number.isSafeInteger(payload.exp)
     ) {
-      return null
+      return { ok: false, reason: payload.typ === TOKEN_TYPE ? 'bad_claims' : 'wrong_type', claims: payload }
     }
 
     const now = Math.floor(Date.now() / 1000)
     const exp = payload.exp as number
     const iat = payload.iat as number
-    if (exp <= now || iat > now + 60 || exp <= iat) {
-      return null
-    }
+    if (exp <= now) return { ok: false, reason: 'expired', claims: payload }
+    if (iat > now + 60) return { ok: false, reason: 'not_yet_valid', claims: payload }
+    if (exp <= iat) return { ok: false, reason: 'invalid_expiry_window', claims: payload }
 
-    return payload as SharedFileTokenPayload
+    return { ok: true, claims: payload as SharedFileTokenPayload }
   } catch {
-    return null
+    return { ok: false, reason: 'payload_unreadable' }
   }
+}
+
+function readClaims(encodedPayload: string): Partial<SharedFileTokenPayload> | undefined {
+  try {
+    const parsed = JSON.parse(decode(encodedPayload))
+    return parsed && typeof parsed === 'object' ? (parsed as Partial<SharedFileTokenPayload>) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The log line a refused download link leaves: reason plus claim fields. */
+export function describeSharedFileToken(diagnosis: SharedFileTokenDiagnosis): string {
+  if (diagnosis.ok) return 'ok'
+  const claims = diagnosis.claims
+  const fields = claims
+    ? `typ=${claims.typ ?? '?'} projectId=${claims.projectId ?? '-'} workspaceId=${claims.workspaceId ?? '-'} path=${claims.path ?? '-'} exp=${claims.exp ?? '-'} iat=${claims.iat ?? '-'}`
+    : 'claims=unreadable'
+  return `reason=${diagnosis.reason} ${fields}`
+}
+
+/**
+ * The refusal to send back. An expired link and a mangled one read differently
+ * to the user, and neither is the same thing as a token whose file has gone.
+ */
+export function sharedFileLinkError(reason: SharedFileTokenFailure | undefined): {
+  status: 404
+  code: 'expired' | 'invalid_link'
+  message: string
+} {
+  if (reason === 'expired') {
+    return { status: 404, code: 'expired', message: 'This download link has expired' }
+  }
+  return { status: 404, code: 'invalid_link', message: 'This download link is invalid' }
+}
+
+export function verifySharedFileToken(token: string): SharedFileTokenPayload | null {
+  const diagnosis = diagnoseSharedFileToken(token)
+  return diagnosis.ok ? diagnosis.claims : null
 }

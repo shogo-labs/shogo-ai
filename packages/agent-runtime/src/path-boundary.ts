@@ -19,7 +19,8 @@
  * Linux is left alone (folding there would *widen* the guard and let
  * `/Workspace` match `/workspace`).
  */
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 /** True on filesystems that treat `Foo` and `foo` as the same path. */
 export const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin'
@@ -54,6 +55,50 @@ export function isWithinRoot(root: string, candidate: string): boolean {
 /** True when `candidate` is inside (or equal to) at least one of `roots`. */
 export function isWithinAnyRoot(roots: readonly string[], candidate: string): boolean {
   return roots.some((root) => isWithinRoot(root, candidate))
+}
+
+/**
+ * Canonicalize a path so two paths that mean the same file compare equal.
+ *
+ * `realpathSync` alone throws for a path that does not exist yet, which is the
+ * common case for `write_file` to a new file, so we walk up to the nearest
+ * existing ancestor, realpath *that*, and re-append the remainder.
+ *
+ * A containment check MUST canonicalize BOTH sides. A project runtime's
+ * `WORKSPACE_DIR` is `<ws>/.workspace-roots/proj-<id>/<projectId>`, a symlink
+ * to `<ws>/workspaces/<projectId>`, while `LINKED_FOLDERS` carries the real
+ * path — comparing a raw `resolve()` of the input against a realpath'd root
+ * rejects every relative path in that layout (SHO-125).
+ */
+export function canonicalPathSync(p: string, realpath: (target: string) => string = realpathSync): string {
+  const absolute = resolve(p)
+  try {
+    return realpath(absolute)
+  } catch {
+    let cur = absolute
+    let tail = ''
+    while (cur !== dirname(cur) && !existsSync(cur)) {
+      const next = dirname(cur)
+      tail = cur.slice(next.length) + tail
+      cur = next
+    }
+    try {
+      return realpath(cur) + tail
+    } catch {
+      return absolute
+    }
+  }
+}
+
+/**
+ * Canonical containment: `candidate` is inside at least one of `roots` once
+ * both sides are resolved through every symlink. Roots may be passed
+ * raw or already canonicalized — canonicalizing an already-real path is a
+ * no-op — so no caller can get this the wrong way round.
+ */
+export function isWithinAnyCanonicalRoot(roots: readonly string[], candidate: string): boolean {
+  const canonicalCandidate = canonicalPathSync(candidate)
+  return roots.some((root) => isWithinRoot(canonicalPathSync(root), canonicalCandidate))
 }
 
 /**

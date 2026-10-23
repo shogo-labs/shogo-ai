@@ -89,7 +89,10 @@ test.describe("dark mode surfaces", () => {
     await page.goto("/")
     const sidebar = page.getByRole("navigation", { name: "App sidebar" })
     await sidebar.waitFor({ state: "visible", timeout: 30_000 })
-    const heading = sidebar.getByText("Workspace agent", { exact: true })
+    // Home's flat chat list sits on the sidebar surface (SHO-119 removed the
+    // "Workspace agent" heading, so anchor on its New chat row instead).
+    const heading = sidebar.getByTestId("workspace-chats-panel").getByText("New chat")
+    await expect(heading).toBeVisible()
     expectDarkReadable("sidebar", await surfaceOf(heading), { opaque: false })
     await attach(page, "sidebar", sidebar)
   })

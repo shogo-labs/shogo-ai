@@ -27,6 +27,17 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * The identity every Shogo commit is authored and committed as, and the one
+ * co-author trailer it carries. Never built from a caller-supplied identity:
+ * `dev2@shogo.local` produced commits whose author *and* co-author were gray on
+ * GitHub (no account behind either address). Kept as literals because this
+ * package is standalone MIT and cannot import `@shogo/shared-runtime` (AGPL).
+ */
+const SHOGO_AGENT_NAME = 'Shogo Agent';
+const SHOGO_AGENT_EMAIL = 'agent@shogo.ai';
+const SHOGO_CO_AUTHOR_TRAILER = `Co-authored-by: ${SHOGO_AGENT_NAME} <${SHOGO_AGENT_EMAIL}>`;
+
 // ---------------------------------------------------------------------------
 // Availability probe
 // ---------------------------------------------------------------------------
@@ -286,10 +297,6 @@ export interface CommitAndPushOptions {
   message: string;
   /** Branch to push to. Defaults to `HEAD` (current branch). */
   branch?: string;
-  /** Author email used for commit metadata. Falls back to GIT_AUTHOR_EMAIL. */
-  authorEmail?: string;
-  /** Author name. Falls back to GIT_AUTHOR_NAME. */
-  authorName?: string;
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
   timeoutMs?: number;
 }
@@ -307,18 +314,18 @@ export interface CommitAndPushResult {
  * watcher doesn't claim a push for an empty edit batch.
  */
 export async function commitAndPush(opts: CommitAndPushOptions): Promise<CommitAndPushResult> {
-  const { apiUrl, apiKey, projectId, localDir, message, branch = 'HEAD', authorEmail, authorName, logger, timeoutMs } = opts;
+  const { apiUrl, apiKey, projectId, localDir, message, branch = 'HEAD', logger, timeoutMs } = opts;
 
   const url = buildGitUrl(apiUrl, projectId);
-  const env: NodeJS.ProcessEnv = {};
-  if (authorEmail) {
-    env.GIT_AUTHOR_EMAIL = authorEmail;
-    env.GIT_COMMITTER_EMAIL = authorEmail;
-  }
-  if (authorName) {
-    env.GIT_AUTHOR_NAME = authorName;
-    env.GIT_COMMITTER_NAME = authorName;
-  }
+  // Fixed here rather than taken from the caller or inherited from this
+  // process: a `GIT_AUTHOR_*` in the worker's environment would otherwise
+  // author the commit gray while its co-author line was already canonical.
+  const env: NodeJS.ProcessEnv = {
+    GIT_AUTHOR_NAME: SHOGO_AGENT_NAME,
+    GIT_AUTHOR_EMAIL: SHOGO_AGENT_EMAIL,
+    GIT_COMMITTER_NAME: SHOGO_AGENT_NAME,
+    GIT_COMMITTER_EMAIL: SHOGO_AGENT_EMAIL,
+  };
 
   await runGit(['add', '-A'], { cwd: localDir, env, logger, timeoutMs });
 
@@ -338,7 +345,7 @@ export async function commitAndPush(opts: CommitAndPushOptions): Promise<CommitA
       message,
       '--no-verify',
       '--trailer',
-      `Co-authored-by: ${authorName || process.env.SHOGO_AGENT_GIT_NAME || 'Shogo Agent'} <${authorEmail || process.env.SHOGO_AGENT_GIT_EMAIL || 'agent@shogo.ai'}>`,
+      SHOGO_CO_AUTHOR_TRAILER,
     ],
     { cwd: localDir, env, logger, timeoutMs },
   );

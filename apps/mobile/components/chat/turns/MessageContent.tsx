@@ -8,7 +8,7 @@
  * Displays image attachments via RN Image component.
  */
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useMemo } from "react"
 import {
   View,
   Text,
@@ -29,6 +29,8 @@ import { ChatMentionText, chatMentionSince } from "../ChatMentionChip"
 import { FileViewerModal } from "../FileViewerModal"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { VideoPreviewModal } from "../VideoPreviewModal"
+import { useShareFileOpener } from "../share-file-context"
+import { parseInAppFileHref } from "../../../lib/share-file-links"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
 import { usePhoneLayout, usePhoneLayoutOverride } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
@@ -270,13 +272,22 @@ function DocumentThumbnail({
     mediaType.includes("javascript") ||
     mediaType.includes("yaml")
 
+  // A stored attachment is a file the app already serves: open it in the app's
+  // own viewer rather than a browser tab (SHO-80).
+  const openShareFile = useShareFileOpener()
+  const servedFile = useMemo(() => parseInAppFileHref(url), [url])
+  const openFile = useCallback(() => {
+    if (servedFile && openShareFile) openShareFile(servedFile)
+    else Linking.openURL(url)
+  }, [openShareFile, servedFile, url])
+
   const handlePress = useCallback(async () => {
     if (isVideo) {
       setShowVideoModal(true)
       return
     }
     if (!isTextLike) {
-      Linking.openURL(url)
+      openFile()
       return
     }
     if (fileContent !== null) {
@@ -293,7 +304,7 @@ function DocumentThumbnail({
         10,
       )
       if (contentLength > MAX_FILE_BYTES) {
-        Linking.openURL(url)
+        openFile()
         return
       }
       const text = await res.text()
@@ -305,11 +316,11 @@ function DocumentThumbnail({
       )
       setShowModal(true)
     } catch {
-      Linking.openURL(url)
+      openFile()
     } finally {
       setLoading(false)
     }
-  }, [url, isTextLike, fileContent])
+  }, [url, isTextLike, fileContent, openFile])
 
   return (
     <>

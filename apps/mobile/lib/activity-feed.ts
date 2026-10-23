@@ -10,9 +10,9 @@
 import type { ActiveChatTurn, AgentTask } from './api'
 import { readableAgentTaskError, taskStatusLabel } from './agent-task-ui'
 import { conversationLabel } from './team-chat-nav'
-import type { InboxItem } from './team-chat-api'
+import type { InboxItem, SentMessage } from './team-chat-api'
 
-export type ActivityFilter = 'all' | 'dms' | 'mentions' | 'threads' | 'agents' | 'questions'
+export type ActivityFilter = 'all' | 'dms' | 'mentions' | 'threads' | 'agents' | 'questions' | 'sent'
 
 export const ACTIVITY_FILTERS: Array<{ id: ActivityFilter; label: string }> = [
   { id: 'all', label: 'All' },
@@ -21,15 +21,18 @@ export const ACTIVITY_FILTERS: Array<{ id: ActivityFilter; label: string }> = [
   { id: 'dms', label: 'DMs' },
   { id: 'mentions', label: 'Mentions' },
   { id: 'threads', label: 'Threads' },
+  // Sent is a view of its own, not a slice of the inbound feed: everything in
+  // it is outbound, so no other chip may show it and it shows nothing else.
+  { id: 'sent', label: 'Sent' },
 ]
 
 export type AgentRunState = 'running' | 'queued' | 'done' | 'failed'
 
 export interface ActivityEntry {
   id: string
-  source: 'inbox' | 'agent'
-  /** The inbox kind, or `task` / `chat` for agent work. */
-  kind: InboxItem['kind'] | 'task' | 'chat'
+  source: 'inbox' | 'agent' | 'sent'
+  /** The inbox kind, `message` for a sent message, or `task` / `chat` for agent work. */
+  kind: InboxItem['kind'] | 'task' | 'chat' | 'message'
   title: string
   /** "Direct Message", "Thread in #eng", "Agent task in Billing". */
   context: string
@@ -38,6 +41,7 @@ export interface ActivityEntry {
   unread: boolean
   private?: boolean
   inbox?: InboxItem
+  sent?: SentMessage
   agent?: { state: AgentRunState; task?: AgentTask; chat?: ActiveChatTurn }
 }
 
@@ -76,6 +80,32 @@ export function inboxEntry(item: InboxItem): ActivityEntry {
     unread: !item.readAt,
     private: isPrivate,
     inbox: item,
+  }
+}
+
+/**
+ * One message the viewer sent. The title is the conversation it went to, so a
+ * run of replies in the same channel reads as one place, and the context says
+ * whether it was a thread reply.
+ */
+export function sentEntry(message: SentMessage): ActivityEntry {
+  const c = message.conversation
+  const where = c && c.kind !== 'dm' && c.kind !== 'group_dm'
+    ? conversationLabel({ kind: 'channel', label: c.name ?? c.slug ?? 'channel' })
+    : null
+  const context = where ? (message.threadRootId ? `Thread in ${where}` : where) : 'Direct Message'
+  return {
+    id: `sent:${message.id}`,
+    source: 'sent',
+    kind: 'message',
+    title: where ?? 'Direct Message',
+    context,
+    preview: message.text,
+    at: time(message.createdAt),
+    // Nothing outbound is unread, and nothing outbound counts toward the badge.
+    unread: false,
+    private: c?.kind === 'private',
+    sent: message,
   }
 }
 
@@ -122,11 +152,14 @@ export function chatEntry(chat: ActiveChatTurn): ActivityEntry {
   }
 }
 
-/** Whether an entry belongs under a filter chip. "All" shows everything. */
+/**
+ * Whether an entry belongs under a filter chip. "All" means what happened to
+ * you, so the messages you sent stay out of it; "Sent" is the mirror image.
+ */
 export function matchesFilter(entry: ActivityEntry, filter: ActivityFilter): boolean {
   switch (filter) {
     case 'all':
-      return true
+      return entry.source !== 'sent'
     case 'dms':
       return entry.kind === 'dm'
     case 'mentions':
@@ -137,6 +170,8 @@ export function matchesFilter(entry: ActivityEntry, filter: ActivityFilter): boo
       return entry.source === 'agent'
     case 'questions':
       return entry.kind === 'question'
+    case 'sent':
+      return entry.source === 'sent'
   }
 }
 
@@ -144,6 +179,8 @@ export interface FeedInput {
   inbox: InboxItem[]
   tasks: AgentTask[]
   activeChats: ActiveChatTurn[]
+  /** Your own messages, loaded only while the Sent view is open. */
+  sent?: SentMessage[]
   filter?: ActivityFilter
   unreadOnly?: boolean
   now?: number
@@ -156,15 +193,21 @@ export interface Feed {
   entries: ActivityEntry[]
 }
 
-export function buildFeed({ inbox, tasks, activeChats, filter = 'all', unreadOnly = false, now = Date.now() }: FeedInput): Feed {
-  const all = [...inbox.map(inboxEntry), ...tasks.map((t) => taskEntry(t, now)), ...activeChats.map(chatEntry)]
+export function buildFeed({ inbox, tasks, activeChats, sent = [], filter = 'all', unreadOnly = false, now = Date.now() }: FeedInput): Feed {
+  const all = [
+    ...inbox.map(inboxEntry),
+    ...tasks.map((t) => taskEntry(t, now)),
+    ...activeChats.map(chatEntry),
+    ...sent.map(sentEntry),
+  ]
   const shown = all.filter((e) => matchesFilter(e, filter) && (!unreadOnly || e.unread))
   const isRunning = (e: ActivityEntry) => e.agent?.state === 'running' || e.agent?.state === 'queued'
   const byTime = (a: ActivityEntry, b: ActivityEntry) => b.at - a.at
   return {
     // Work in progress is a status, not an event, so it never sits among the
-    // history. Unread-only hides it too: running work has nothing to read.
-    running: unreadOnly ? [] : shown.filter(isRunning).sort(byTime),
+    // history. Unread-only hides it too: running work has nothing to read. Sent
+    // is not mail either — what you sent is the whole list.
+    running: unreadOnly || filter === 'sent' ? [] : shown.filter(isRunning).sort(byTime),
     entries: shown.filter((e) => !isRunning(e)).sort(byTime),
   }
 }

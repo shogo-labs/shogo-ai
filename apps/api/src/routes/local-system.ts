@@ -27,12 +27,17 @@ const LOCAL_ACCESS_KEY = 'LOCAL_ACCESS_PREFS'
 import { clearCloudWorkspaces, setCloudWorkspaces } from '../services/cloud-workspaces'
 
 function restartInstanceTunnel(): void {
+  // A silent failure here strands the machine "disconnected" with no clue why;
+  // the import is lazy only to keep the runtime/tunnel graph out of this
+  // router's mount, not because it is allowed to fail.
   void import('../lib/instance-tunnel')
     .then(({ stopInstanceTunnel, startInstanceTunnel }) => {
       stopInstanceTunnel()
       startInstanceTunnel()
     })
-    .catch(() => {})
+    .catch((err) => {
+      console.warn('[LocalSystem] restartInstanceTunnel failed:', (err as Error)?.message ?? err)
+    })
 }
 
 const PROVIDER_KEYS = [
@@ -40,7 +45,6 @@ const PROVIDER_KEYS = [
   { id: 'openai', envKey: 'OPENAI_API_KEY' },
   { id: 'google', envKey: 'GOOGLE_API_KEY' },
   { id: 'openrouter', envKey: 'OPENROUTER_API_KEY' },
-  { id: 'fal', envKey: 'FAL_KEY' },
   { id: 'tripo', envKey: 'TRIPO_API_KEY' },
   { id: 'higgsfield', envKey: 'HIGGSFIELD_API_KEY' },
 ] as const
@@ -68,6 +72,38 @@ const LLM_CONFIG_KEYS = [
 export function localSystemRoutes(): Hono {
   const router = new Hono()
   const localDb = prisma as any
+
+  /**
+   * POST /local/system/restart-runtime
+   *
+   * Stop every host runtime this API supervises, so the next request
+   * cold-starts one. This is the deterministic "the runtime went away under a
+   * running background task" that `e2e/local/chat-task-interrupted-restart`
+   * needs (SHO-141): killing the child by hand races the supervisor, and a page
+   * reload re-attaches to the still-warm runtime.
+   *
+   * Desktop/local only, and refused unless `SHOGO_E2E_BOOTSTRAP_SECRET` is set
+   * and the header matches it — the same secret the `/api/internal/e2e` backdoors
+   * use, which no normal run sets.
+   */
+  router.post('/local/system/restart-runtime', async (c) => {
+    const expected = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+    if (!expected || c.req.header('x-e2e-bootstrap-secret') !== expected) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    try {
+      const { getRuntimeManager } = await import('../lib/runtime')
+      const manager: any = getRuntimeManager()
+      const stopped: string[] =
+        typeof manager?.getActiveProjects === 'function' ? manager.getActiveProjects() : []
+      await manager.stopAll()
+      console.info('[local-system] restarted host runtimes', JSON.stringify({ stopped }))
+      return c.json({ ok: true, stopped })
+    } catch (err: any) {
+      console.error('[local-system] restart-runtime failed', err)
+      return c.json({ ok: false, error: 'restart_failed', message: err?.message ?? err }, 500)
+    }
+  })
 
   router.post('/local/auto-sign-in', async (c) => {
     try {
@@ -269,7 +305,9 @@ export function localSystemRoutes(): Hono {
       // router otherwise doesn't need (and which tests of its other routes mock around).
       void import('../lib/runtime')
         .then(({ getRuntimeManager }) => getRuntimeManager().pushLocalAccessPolicy(toLocalAccessPolicy(merged)))
-        .catch(() => {})
+        .catch((err) => {
+          console.warn('[LocalSystem] pushLocalAccessPolicy failed:', (err as Error)?.message ?? err)
+        })
       return c.json({ ok: true, configured: true, prefs: merged })
     } catch (err: any) {
       return c.json({ error: err?.message ?? String(err) }, 500)
@@ -345,7 +383,11 @@ export function localSystemRoutes(): Hono {
     delete process.env.SHOGO_API_KEY
     _resetUpstreamCredentialCache()
     _resetAgentModelDefaultsCache()
-    void import('../lib/instance-tunnel').then(({ stopInstanceTunnel }) => stopInstanceTunnel()).catch(() => {})
+    void import('../lib/instance-tunnel')
+      .then(({ stopInstanceTunnel }) => stopInstanceTunnel())
+      .catch((err) => {
+        console.warn('[LocalSystem] stopInstanceTunnel failed:', (err as Error)?.message ?? err)
+      })
     return c.json({ ok: true })
   })
 
@@ -369,7 +411,50 @@ export function localSystemRoutes(): Hono {
     try {
       const { isTunnelConnected } = await import('../lib/instance-tunnel')
       tunnelConnected = isTunnelConnected()
-    } catch {}
+    } catch (err) {
+      console.warn('[LocalSystem] instance-info: tunnel status unavailable:', (err as Error)?.message ?? err)
+    }
+    // Which cloud workspaces this machine is registered in, and how each
+    // tunnel is doing. A desktop signed into several workspaces registers in
+    // every one of them (one device key each), and Settings has to say so.
+    let workspaceName: string | null = null
+    let keyWorkspaceId: string | null = null
+    try {
+      const infoRow = await localDb.localConfig
+        .findUnique({ where: { key: 'SHOGO_KEY_INFO' } })
+        .catch(() => null)
+      const info = infoRow?.value ? JSON.parse(infoRow.value) : null
+      const name = info?.workspace?.name
+      workspaceName = typeof name === 'string' && name ? name : null
+      const id = info?.workspace?.id
+      keyWorkspaceId = typeof id === 'string' && id ? id : null
+    } catch { /* no key yet, or malformed info: leave it unnamed */ }
+
+    let tunnels: Array<{ id: string; name: string; state: 'connected' | 'connecting' }> = []
+    try {
+      const { getInstanceTunnelStatus } = await import('../lib/instance-tunnel')
+      tunnels = getInstanceTunnelStatus()
+    } catch (err) {
+      console.warn('[LocalSystem] instance-info: tunnel status unavailable:', (err as Error)?.message ?? err)
+    }
+    // `workspaceName` stays the key's workspace (what the SDK type already had);
+    // `workspaces` lists every workspace this machine is registered in.
+    const workspaces = tunnels.length
+      ? tunnels.map((tunnel) => ({
+          // The primary tunnel is keyed before its workspace id is read; report
+          // the real id so Settings can match a row to a workspace.
+          id: tunnel.id === 'primary' ? (keyWorkspaceId ?? 'primary') : tunnel.id,
+          name: tunnel.name,
+          state: tunnel.state,
+        }))
+      : workspaceName
+        ? [{
+            id: keyWorkspaceId ?? 'primary',
+            name: workspaceName,
+            state: tunnelConnected ? ('connected' as const) : ('connecting' as const),
+          }]
+        : []
+
     return Response.json({
       name,
       hostname: os.hostname(),
@@ -377,6 +462,8 @@ export function localSystemRoutes(): Hono {
       arch: os.arch(),
       tunnelConnected,
       cloudUrl: getShogoCloudUrl(),
+      workspaceName,
+      workspaces,
     })
   })
 

@@ -54,6 +54,7 @@ import {
 
 import { spawn } from './child-process'
 import { excludePathspecs } from './git-pathspec'
+import { isRepairInProgress, prepareCheckpointRepo } from './shogo-state-paths'
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -404,6 +405,23 @@ export class GitWorkspaceSync {
     }
 
     try {
+      // A history rewrite is running in this repo: staging now would race the
+      // rewrite's ref move. Skip the turn; the next one commits everything.
+      if (isRepairInProgress(workspaceDir)) {
+        logger.log('[GitWorkspaceSync] checkpoint repo is being repaired — skipping this turn')
+        return
+      }
+
+      // Shogo's own runtime state (`.shogo/sessions.db`, `-wal`, logs, `.tmp/`,
+      // `.shogo-cwd-*`) is never source. Ignore rules do not apply to a path that
+      // is already tracked, so this pass is what stops a repo seeded before
+      // SHO-105 from re-staging its live databases forever — and it clears a
+      // stale `.git/index.lock` that would otherwise fail every subsequent stage.
+      const untrackedState = await prepareCheckpointRepo(workspaceDir, { logger })
+      if (untrackedState > 0) {
+        logger.log(`[GitWorkspaceSync] untracked ${untrackedState} Shogo runtime-state path(s)`)
+      }
+
       // LFS hook: track newly-introduced large files before staging so the
       // clean filter writes pointers, not raw bytes. Best-effort — never let
       // it block the commit/push.

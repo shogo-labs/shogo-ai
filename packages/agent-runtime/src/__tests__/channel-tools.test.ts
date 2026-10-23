@@ -109,11 +109,26 @@ describe('running agents', () => {
     reply = { runs: [run] }
     const result = payload(await runTool('agent_runs_list').execute('t', { channel: '#eng', thread: 'root-1' }))
     expect(result.runs).toEqual([{
-      message_id: 'm-run', agent: 'Builder', channel: 'eng', thread_id: 'root-1', started_at: run.startedAt, preview: 'working', can_stop: true,
+      message_id: 'm-run', agent: 'Builder', channel: 'eng', thread_id: 'root-1', started_at: run.startedAt,
+      state: 'running', position: null, queued_at: null, preview: 'working', can_stop: true,
     }])
     const url = new URL(calls[0].url)
     expect(url.pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/running-agents')
     expect(Object.fromEntries(url.searchParams)).toEqual({ channel: 'eng', threadRootId: 'root-1', sessionId: 'sess-ws' })
+  })
+
+  test('agent_runs_list says where a queued run stands, and that a parked one holds no slot', async () => {
+    reply = {
+      runs: [
+        { ...run, state: 'queued', position: 2, queuedAt: '2026-10-16T20:00:05Z' },
+        { ...run, messageId: 'm-parked', state: 'waiting' },
+      ],
+    }
+    const result = payload(await runTool('agent_runs_list').execute('t', { channel: 'eng' }))
+    expect(result.runs.map((r: any) => [r.message_id, r.state, r.position, r.queued_at])).toEqual([
+      ['m-run', 'queued', 2, '2026-10-16T20:00:05Z'],
+      ['m-parked', 'waiting', null, null],
+    ])
   })
 
   test('agent_run_stop stops one run, or a whole thread, and sends its session so it never stops itself', async () => {
@@ -584,5 +599,15 @@ describe('team chat prompt section', () => {
     for (const kind of ['status', 'result', 'decision', 'alert']) expect(TEAM_CHAT_GUIDE).toContain(`\`${kind}\``)
     expect(TEAM_CHAT_GUIDE).toContain('team_chat_update')
     expect(TEAM_CHAT_GUIDE).toContain('Do not post a new message for each step')
+  })
+
+  test('tells agents to read the channel doc, not to write into it', () => {
+    expect(TEAM_CHAT_GUIDE).not.toContain('record settled decisions')
+    expect(TEAM_CHAT_GUIDE).not.toContain('long content there')
+    expect(TEAM_CHAT_GUIDE).not.toContain('prefer `patch_section` or `append`')
+    expect(TEAM_CHAT_GUIDE).not.toContain('then mention the change briefly')
+    expect(TEAM_CHAT_GUIDE).toContain('kept by the people in it')
+    expect(TEAM_CHAT_GUIDE).toContain('Do not add to it or edit it on your own initiative')
+    expect(TEAM_CHAT_GUIDE).toContain('change it only when someone asks you to')
   })
 })

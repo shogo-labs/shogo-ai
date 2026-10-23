@@ -599,19 +599,15 @@ describe('waking the agent that owns a card', () => {
   afterAll(() => { dispatcher._resetDispatcherForTests() })
 
   /**
-   * A card created with an owner is itself a wake ("assigned"), so settle that
-   * run before a test starts counting: `calls` is empty on return and the card's
-   * thread has no live reply.
+   * A card owned by the agent, with nothing running on it. The ownership is
+   * written straight to the row: creating the card with an assignee wakes the
+   * agent, and a run that ends without moving its card is now re-handed, which
+   * would put a run of its own in this file's counts.
    */
   async function cardOwnedByAgent(board: any, title: string): Promise<any> {
-    const card = (await call(seed.member, 'POST', `/boards/${board.id}/items`, { title, assigneeAgentRef: seed.projectId })).json.item
-    await waitFor(() => runsOf(card.key).length === 1, 5000)
-    runsOf(card.key)[0]!.release('Assigned to me.')
-    await waitFor(async () => {
-      const rows = await db.conversationMessage.findMany({ where: { threadRootId: card.threadRootMessageId } })
-      return rows.some((r: any) => r.authorType === 'agent' && r.agentStatus === 'done') ? true : null
-    }, 5000)
-    calls = []
+    const card = (await call(seed.member, 'POST', `/boards/${board.id}/items`, { title })).json.item
+    await db.workItem.update({ where: { id: card.id }, data: { assigneeAgentRef: `project:${seed.projectId}` } })
+    expect(runsOf(card.key)).toHaveLength(0)
     return card
   }
 
@@ -698,7 +694,7 @@ describe('waking the agent that owns a card', () => {
     const tagged = () => calls.filter((c) => c.prompt.includes('citation on line 586'))
     await waitFor(() => tagged().length === 1, 5000)
 
-    const nudge = await db.agentWake.findFirst({ where: { threadRootId: card.threadRootMessageId, agentRef: `project:${seed.projectId}` } })
+    const nudge = await db.agentWake.findFirst({ where: { threadRootId: card.threadRootMessageId, agentRef: `project:${seed.projectId}`, reason: 'move_nudge' } })
     expect(nudge.reason).toBe('move_nudge')
     expect(nudge.status).toBe('superseded')
 

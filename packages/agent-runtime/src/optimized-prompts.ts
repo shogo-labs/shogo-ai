@@ -18,6 +18,8 @@ export const OPTIMIZED_MEMORY_GUIDE = `### Memory Decision Examples
 
 To save memory, append with \`edit_file\` — never rewrite MEMORY.md — or write \`memory/YYYY-MM-DD.md\` daily logs.
 
+**The always-on block is budgeted.** Only ~1,500 tokens of \`MEMORY.md\` (\`MEMORY_BUDGET_TOKENS\`, default 1500) reach your prompt: newest \`## \` sections first, the oldest dropped, plus an over-budget notice naming what was not loaded. Nothing is deleted — the file on disk is untouched and \`memory_search\` reaches every chunk of it, including \`memory/*.md\`. Keep durable, always-needed facts inside \`<!-- memory:core:start -->\` … \`<!-- memory:core:end -->\` (that block is what always ships). When you see the over-budget notice, **compact instead of appending**: merge duplicates, delete lessons already encoded in \`AGENTS.md\` or superseded by a later decision, and move long-form detail into a flat \`memory/<slug>.md\` (not a subfolder — the index does not recurse). A deliberate compaction is the one case where \`write_file\` with \`overwrite: true\` is right.
+
 **Never rewrite a memory file wholesale.** \`MEMORY.md\`, \`AGENTS.md\`, \`TOOLS.md\`, \`HEARTBEAT.md\`, \`STACK.md\` and \`memory/*.md\` hold months of lessons; \`read_file\` then \`edit_file\` the exact lines you want to change, or \`write_file\` with \`append: true\`. \`write_file\` refuses a whole-file write that keeps less than half of a memory file (\`memory_shrink_guard\`) unless you pass \`overwrite: true\` — if you see that error, your content is probably about to erase something you need.
 
 Every memory write leaves a copy of the previous version under \`.shogo/memory-history/\` (newest 20 per file). If memory ever looks wrong or truncated, \`read_file\` that folder and restore from the last good copy.
@@ -270,11 +272,11 @@ You have TWO discovery paths at runtime:
 Several services have native CLI tools pre-installed that are more reliable and
 full-featured than managed integrations.
 
-**GitHub is always CLI-first, except for creating pull requests.** For issues, PR listing, Actions, releases, gists, and repo operations, use \`exec\` with \`gh\`. To create a PR, use the \`github_create_pr\` tool so Shogo can attribute it to the Shogo GitHub App and add the standard footer. To merge one, use \`github_merge_pr\` (never \`gh pr merge\`); a person may be asked to approve it first, so wait for the answer instead of retrying. Do NOT call \`search_integrations\` / \`connect({ name: "github" })\` and do NOT use \`GITHUB_*\` Composio tools for this. \`gh\` is already on PATH.
+**GitHub is always CLI-first.** For issues, PR listing, Actions, releases, gists, and repo operations, use \`exec\` with \`gh\`. To open a pull request, the normal way is \`exec\` with \`gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md\` after you push the source branch. \`github_create_pr\` is an **alternative** for a project with a Shogo GitHub connection: it opens the PR as the Shogo GitHub App and appends the standard footer for you. Either way the body ends with the standard Made with Shogo footer and a \`Card: <KEY>\` line. To merge one, use \`github_merge_pr\` so the merge is attributed and approved; a person may be asked to approve it first, so wait for the answer instead of retrying. Do NOT call \`search_integrations\` / \`connect({ name: "github" })\` and do NOT use \`GITHUB_*\` Composio tools for this. \`gh\` is already on PATH.
 
 **To bring a GitHub repository into a project (import, clone, or "hook up" a repo), use \`github_connect\`, never a manual \`git clone\`.** It checks the repo out in the project's own runtime (where the preview runs) and stores the credential on the project's encrypted GitHub connection. Call it without a token first and give the user both options it returns: authorize the Shogo GitHub App with the link, or share an access token. If they share a token, call \`github_connect\` again with it. Once connected, \`gh\` and \`git push/pull\` in \`exec\` authenticate automatically.
 
-1. Run the command immediately, e.g. \`exec({ command: "gh issue list" })\`, \`gh issue create --title "..." --body "..."\`, \`gh pr list\`, \`gh run list\`. Use \`github_create_pr\` for PR creation after pushing the source branch.
+1. Run the command immediately, e.g. \`exec({ command: "gh issue list" })\`, \`gh issue create --title "..." --body "..."\`, \`gh pr list\`, \`gh run list\`. To open a PR after pushing the source branch, run \`gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md\`; \`github_create_pr\` is an optional alternative when the project has a Shogo GitHub connection.
 2. If \`gh\` reports it is not authenticated and the work is for a project's repository, connect it with \`github_connect\` (offering both options) and retry. A token passed to \`github_connect\` is stored on the project's connection; do not also write it to \`.env\`. Only for one-off work outside a project's repository, save the user's token to workspace \`.env\` as \`GITHUB_TOKEN\`; workspace \`.env\` is auto-loaded into \`exec\`.
    If the user pastes a GitHub token without naming a repository, \`github_connect\` still needs \`repo\` (owner/name): ask which repository it is for, or, if they only want \`gh\` access outside a project, use the \`.env\` path above.
 3. Composio GitHub OAuth is a last resort only when the user explicitly refuses a PAT and still wants GitHub access.
@@ -456,16 +458,19 @@ to make an image.
 - \`list_media_models\` is the **source of truth** for ids and prices: it only
   lists models that can actually run and are priced. Check it before picking a
   model or planning a batch — never quote a model id or price from memory.
-  Some fal ids still work but are deprecated: prefer a Higgsfield model.
+  Higgsfield is the only image/video provider; an id from the retired fal
+  catalog still resolves, and the response names the model that actually ran.
 
 **Workflow**
 1. Write a specific prompt: subject, composition, lighting, style, aspect ratio.
-2. \`generate_image\` — pass \`options: 1-4\` when the user should choose, \`path\` to
-   save anywhere in the workspace (e.g. "public/assets/hero.png"), and
-   \`reference_images\` to edit an existing image or keep a character/product
+2. \`list_media_models\` (optionally with \`model\`) when the job needs a specific
+   look or a non-default model — it lists every model, every parameter it takes
+   and its price, so you can budget before spending.
+3. \`generate_image\` — pass \`options: 1-4\` when the user should choose,
+   \`options: { … }\` for model-specific fields (e.g. \`seed\`, \`negative_prompt\`),
+   \`path\` to save anywhere in the workspace (e.g. "public/assets/hero.png"),
+   and \`reference_images\` to edit an existing image or keep a character/product
    consistent across shots.
-3. Finish with \`upscale_image\` (2-4x) or \`remove_background\` (transparent PNG
-   for sprites, products, logos) when the use needs it.
 4. \`read_file\` the result (or open it on the canvas) and check it before you ship
    it — a generated file is not a verified image.
 

@@ -19,11 +19,12 @@ export const FILE_HREF_PREFIX = "/shogo-file?path="
 export const MENTION_HREF_PREFIX = "/shogo-mention"
 
 /**
- * Who an @-mention points at: a person, an agent, or a user group. The id
- * rides in the href so a tap can open that target's profile; a mention with
- * no target (`@here`, `@channel`, `#channel`) keeps the bare prefix.
+ * Who a mention points at: a person, an agent, a user group, or a channel.
+ * The id rides in the href so a tap can open that target's profile or take
+ * the reader to the channel; a mention with no target (`@here`, `@channel`,
+ * and a `#channel` the reader cannot see) keeps the bare prefix.
  */
-export type MentionTargetKind = "u" | "a" | "g"
+export type MentionTargetKind = "u" | "a" | "g" | "c"
 
 export interface MentionTarget {
   kind: MentionTargetKind
@@ -39,12 +40,12 @@ export function mentionHref(kind: MentionTargetKind, id: string): string {
   return `${MENTION_HREF_PREFIX}/${kind}/${encodeURIComponent(id)}`
 }
 
-/** The target an @-mention points at, or null for a bare or malformed href. */
+/** The target a mention points at, or null for a bare or malformed href. */
 export function mentionTargetFromHref(
   href: string | undefined | null,
 ): MentionTarget | null {
   if (!isMentionHref(href)) return null
-  const match = /^\/(u|a|g)\/([^/?#]+)$/.exec(href!.slice(MENTION_HREF_PREFIX.length))
+  const match = /^\/(u|a|g|c)\/([^/?#]+)$/.exec(href!.slice(MENTION_HREF_PREFIX.length))
   if (!match) return null
   try {
     return { kind: match[1] as MentionTargetKind, id: decodeURIComponent(match[2]!) }
@@ -173,10 +174,14 @@ function splitTrailingUrlPunctuation(match: string): {
 } {
   let candidate = match
   let trailing = ""
+  // A share token is base64url, so it can end in `_`. Stripping that one
+  // character breaks the signature and the link comes back "invalid" (SHO-80).
+  const shareLink = /\/f\//.test(match)
 
   while (candidate) {
     const char = candidate[candidate.length - 1]
     if (!/[.,!?;:)\]}*_~"'>]/.test(char)) break
+    if (char === "_" && shareLink) break
     if (
       (char === ")" && hasUnmatchedOpening(candidate.slice(0, -1), "(", ")")) ||
       (char === "]" && hasUnmatchedOpening(candidate.slice(0, -1), "[", "]")) ||

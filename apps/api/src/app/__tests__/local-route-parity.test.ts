@@ -111,12 +111,22 @@ const REQUIRED_LOCAL_ROUTES = [
   // `createLocalApp()`. `music` comes along with it (voiceRoutes delegates).
   'POST /api/voice/tts',
   'POST /api/voice/music',
+  // The file viewer (SHO-70): a shared file opens in the app, so the metadata
+  // and text routes it renders from must answer on desktop too — otherwise the
+  // viewer is a blank screen on exactly the surface that has no browser tab.
+  'GET /api/conversation-files/:attachmentId/meta',
+  'GET /api/conversation-files/:attachmentId/text',
 ] as const
 
 /** Runtime → API paths that intentionally only exist in the cloud API. */
 const CLOUD_ONLY_RUNTIME_PATHS = new Set([
   // Publishing deploys to `*.shogo.one`; desktop has no publish pipeline.
   '/api/internal/projects/:param/publish',
+  // Cross-project previews (SHO-125): another project is served by its own pod
+  // on metal, and desktop has no metal substrate — `isMetalRuntime()` is false
+  // there, so `preview_project` takes the local `/p/<id>/preview/start` path
+  // and never builds this URL.
+  '/api/internal/workspaces/:param/sessions/:param/projects/:param/preview',
 ])
 
 const AGENT_RUNTIME_SRC = resolve(import.meta.dir, '../../../../../packages/agent-runtime/src')

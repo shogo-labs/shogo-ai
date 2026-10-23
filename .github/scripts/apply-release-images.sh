@@ -21,9 +21,9 @@
 # Env:
 #   NS_SYSTEM, RUNTIME_TAG, RUNTIME_IMAGE        (required)
 #   API_IMAGE, WEB_IMAGE, DOCS_IMAGE             (empty = leave that ksvc alone)
-#   APP_VERSION        (optional) re-pin the studio's SHOGO_APP_VERSION in the
-#                      same patch as its image, so a rollback also reports the
-#                      release it rolled back to
+#   APP_VERSION        (optional) re-pin the studio's SHOGO_APP_VERSION and the
+#                      api's APP_VERSION in the same patch as the image, so a
+#                      rollback also reports the release it rolled back to
 #   RETIRE_STALE_STUDIO  true to run step 4 (default: true when WEB_IMAGE set)
 
 set -euo pipefail
@@ -54,7 +54,7 @@ echo "::endgroup::"
 "$SCRIPTS/wait-runtime-prepulled.sh" "$NS_SYSTEM"
 
 patch_ksvc() {
-  local name=$1 image=$2 version=${3:-}
+  local name=$1 image=$2 version=${3:-} env_name=${4:-SHOGO_APP_VERSION}
   if [ -z "$image" ]; then
     echo "$name: no image given; leaving as is"
     return
@@ -69,19 +69,19 @@ patch_ksvc() {
     '[{op: "replace", path: "/spec/template/spec/containers/0/image", value: $image}]')
   if [ -n "$version" ]; then
     local idx
-    idx=$(jq -r '(.spec.template.spec.containers[0].env // []) | map(.name) | index("SHOGO_APP_VERSION") // -1' <<<"$spec")
+    idx=$(jq -r --arg name "$env_name" '(.spec.template.spec.containers[0].env // []) | map(.name) | index($name) // -1' <<<"$spec")
     if [ "$idx" = "-1" ]; then
-      ops=$(jq --arg v "$version" '. + [{op: "add", path: "/spec/template/spec/containers/0/env/-", value: {name: "SHOGO_APP_VERSION", value: $v}}]' <<<"$ops")
+      ops=$(jq --arg n "$env_name" --arg v "$version" '. + [{op: "add", path: "/spec/template/spec/containers/0/env/-", value: {name: $n, value: $v}}]' <<<"$ops")
     else
       ops=$(jq --arg v "$version" --argjson i "$idx" '. + [{op: "replace", path: "/spec/template/spec/containers/0/env/\($i)/value", value: $v}]' <<<"$ops")
     fi
   fi
-  echo "$name -> $image${version:+ (SHOGO_APP_VERSION=$version)}"
+  echo "$name -> $image${version:+ ($env_name=$version)}"
   kubectl patch ksvc "$name" -n "$NS_SYSTEM" --type=json -p="$ops"
 }
 
-patch_ksvc studio "$WEB_IMAGE" "$APP_VERSION"
-patch_ksvc api "$API_IMAGE"
+patch_ksvc studio "$WEB_IMAGE" "$APP_VERSION" SHOGO_APP_VERSION
+patch_ksvc api "$API_IMAGE" "$APP_VERSION" APP_VERSION
 patch_ksvc docs "$DOCS_IMAGE"
 
 if [ "$RETIRE_STALE_STUDIO" = "true" ]; then
@@ -104,3 +104,9 @@ if [ "$RETIRE_STALE_STUDIO" = "true" ]; then
 fi
 
 "$SCRIPTS/sync-api-env.sh" "$NS_SYSTEM" RUNTIME_IMAGE "$RUNTIME_IMAGE"
+# Verify the release tag actually landed on ksvc/api (same post-patch check the
+# RUNTIME_IMAGE pin gets). /health and /api/version report it, and admin
+# analytics compares installs against it — a pod that reads 0.0.0 is invisible.
+if [ -n "$APP_VERSION" ]; then
+  "$SCRIPTS/sync-api-env.sh" "$NS_SYSTEM" APP_VERSION "$APP_VERSION"
+fi

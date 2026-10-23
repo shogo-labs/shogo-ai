@@ -7,7 +7,7 @@
  * project-filter state. Leaf UI and tree components live alongside it.
  */
 
-import { useState, useCallback, useEffect, useRef, type ReactNode } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   View,
   Text,
@@ -58,8 +58,14 @@ import { cn } from "@shogo/shared-ui/primitives";
 import type { PrimaryNavId, SidebarTabId } from "@shogo/shared-app";
 import { CommandPalette, useCommandPalette } from "../CommandPalette";
 import { useActiveInstance } from "../../../contexts/active-instance";
+import { useWorkspaceInView } from "../../../hooks/useWorkspaceInView";
 import { useMachineWorkspaces } from "../../../hooks/useMachineWorkspaces";
-import type { MachineGroupData, MachineWorkspaceRow } from "./MachineWorkspacesGroup";
+import {
+  buildWorkspaceEntries,
+  currentWorkspaceKey,
+  machineInstanceForEntry,
+  type WorkspaceEntry,
+} from "../../../lib/workspace-entries";
 import { ShogoWordmark } from "../../branding/ShogoWordmark";
 import { useAuth } from "../../../contexts/auth";
 import {
@@ -615,8 +621,13 @@ export const AppSidebar = observer(function AppSidebar({
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
   const { open: commandPaletteOpen, setOpen: setCommandPaletteOpen } =
     useCommandPalette();
-  const { instance: activeRemoteInstance, setInstance: setActiveInstance } = useActiveInstance();
-  // A paired desktop's own workspaces, listed under "This Mac" (SHO-54).
+  const {
+    instance: activeRemoteInstance,
+    setInstance: setActiveInstance,
+    clearInstance,
+  } = useActiveInstance();
+  // The workspaces of every paired computer, listed with the cloud's own rows —
+  // one list, no group (SHO-108).
   const { machines: machineWorkspaces } = useMachineWorkspaces();
   // The machine workspace in view, if any — its name and live presence feed
   // the "Connected to …" strip below. Undefined for a legacy remote-control
@@ -625,6 +636,7 @@ export const AppSidebar = observer(function AppSidebar({
     activeRemoteInstance?.source === "machine"
       ? machineWorkspaces.find((m) => m.id === activeRemoteInstance.instanceId)
       : undefined;
+  const workspaceInView = useWorkspaceInView()
   const activeMachineWorkspace = activeMachine?.workspaces.find(
     (w) => w.id === activeRemoteInstance?.localWorkspaceId,
   );
@@ -707,6 +719,23 @@ export const AppSidebar = observer(function AppSidebar({
     if (isNativeDrawer) closeNativeDrawer();
   }, [closeNativeDrawer, isNativeDrawer]);
 
+  /**
+   * Every workspace the switcher lists, whoever hosts it (SHO-108): the cloud's
+   * rows in the server's order, then each paired computer's own rows. Built
+   * once here so the rail tile, the panel header, the account popover and the
+   * phone sheet all read the same list and agree on which row is checked.
+   */
+  const workspaceEntries = useMemo(
+    () => buildWorkspaceEntries({ workspaces: allWorkspaces, machines: machineWorkspaces }),
+    [allWorkspaces, machineWorkspaces],
+  );
+  const activeWorkspaceKey = currentWorkspaceKey({
+    entries: workspaceEntries,
+    currentWorkspaceId: currentWorkspace?.id,
+    activeInstance: activeRemoteInstance,
+  });
+
+  /** Joining a workspace from a pending invitation. */
   const handleSwitchWorkspace = useCallback(
     (workspaceId: string) => {
       trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED);
@@ -717,29 +746,44 @@ export const AppSidebar = observer(function AppSidebar({
   );
 
   /**
-   * Enter one of this machine's own workspaces: the desktop is the source of
-   * truth for its projects, chats and tool-call logs, so selecting a row
-   * points the domain store at that machine's relay and drops the user on the
-   * projects view. Nothing is scoped to the cloud workspace that happens to be
-   * selected — a machine row survives a cloud workspace switch.
+   * One switch path for both hosts.
+   *
+   * A cloud row switches the selected workspace. A machine row makes that
+   * computer's own workspace the one in view: the desktop is the source of
+   * truth for its projects, chats and tool-call logs, so the domain store is
+   * pointed at that machine's relay. Both then take the *same* landing path a
+   * workspace switch always takes — `reloadAfterWorkspaceSwitch` resets the
+   * route to the workspace agent and refreshes the collections — so a machine
+   * workspace lands exactly where a cloud one does instead of being special-
+   * cased into the projects view.
    */
-  const handleOpenMachineWorkspace = useCallback(
-    (machine: MachineGroupData, workspace: MachineWorkspaceRow) => {
-      setActiveInstance({
-        instanceId: machine.id,
-        name: machine.name,
-        hostname: machine.name,
-        workspaceId: currentWorkspace?.id ?? "",
-        kind: "desktop",
-        source: "machine",
-        localWorkspaceId: workspace.id,
-      });
-      if (activeRemoteInstance?.source === "machine" && activeRemoteInstance.localWorkspaceId === workspace.id) {
+  const handleSelectWorkspaceEntry = useCallback(
+    (entry: WorkspaceEntry) => {
+      const machine = machineInstanceForEntry(entry, currentWorkspace?.id);
+      if (machine) {
+        setActiveInstance(machine);
+        trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED);
+        reloadAfterWorkspaceSwitch();
         return;
       }
-      router.push("/(app)" as any);
+
+      // Back to a cloud workspace: drop the machine overlay first, so the store
+      // is not left pointing at a host the user just left.
+      if (activeRemoteInstance?.source === "machine") clearInstance();
+      if (entry.id === currentWorkspace?.id) {
+        reloadAfterWorkspaceSwitch();
+        return;
+      }
+      handleSwitchWorkspace(entry.id);
     },
-    [activeRemoteInstance, currentWorkspace?.id, router, setActiveInstance],
+    [
+      activeRemoteInstance,
+      clearInstance,
+      currentWorkspace?.id,
+      handleSwitchWorkspace,
+      posthog,
+      setActiveInstance,
+    ],
   );
 
   const handleCreateWorkspace = useCallback(() => {
@@ -963,7 +1007,7 @@ export const AppSidebar = observer(function AppSidebar({
                     ? "Collapse pinned projects"
                     : "Expand pinned projects"
                 }
-                accessibilityState={{ expanded: pinnedExpanded }}
+                aria-expanded={pinnedExpanded}
                 className={cn(
                   "flex-row items-center rounded-lg px-1",
                   isNativeDrawer
@@ -1018,7 +1062,7 @@ export const AppSidebar = observer(function AppSidebar({
                   accessibilityLabel={
                     projectsExpanded ? "Collapse projects" : "Expand projects"
                   }
-                  accessibilityState={{ expanded: projectsExpanded }}
+                  aria-expanded={projectsExpanded}
                   className={cn(
                     "min-w-0 flex-1 flex-row items-center rounded-lg",
                     isNativeDrawer
@@ -1049,7 +1093,7 @@ export const AppSidebar = observer(function AppSidebar({
                       {...triggerProps}
                       role="button"
                       accessibilityLabel="Filter and sort projects"
-                      accessibilityState={{ expanded: filterMenuOpen }}
+                      aria-expanded={filterMenuOpen}
                       className="h-6 w-6 items-center justify-center rounded-md active:bg-muted"
                     >
                       <SlidersHorizontal
@@ -1079,9 +1123,7 @@ export const AppSidebar = observer(function AppSidebar({
                               updateProjectFilter({ sort: opt.value })
                             }
                             role={MENU_ITEM_RADIO_ROLE}
-                            accessibilityState={{
-                              checked: projectFilter.sort === opt.value,
-                            }}
+                            aria-checked={projectFilter.sort === opt.value}
                             className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                           >
                             <Text
@@ -1116,9 +1158,7 @@ export const AppSidebar = observer(function AppSidebar({
                               updateProjectFilter({ scope: opt.value })
                             }
                             role={MENU_ITEM_RADIO_ROLE}
-                            accessibilityState={{
-                              checked: projectFilter.scope === opt.value,
-                            }}
+                            aria-checked={projectFilter.scope === opt.value}
                             className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                           >
                             <Text
@@ -1270,8 +1310,11 @@ export const AppSidebar = observer(function AppSidebar({
     isSuperAdmin={hasAdminAccess}
     isWide={isWide}
     collapsed={collapsed}
-    workspaces={allWorkspaces}
+    entries={workspaceEntries}
+    currentKey={activeWorkspaceKey}
+    onSelectEntry={handleSelectWorkspaceEntry}
     currentWorkspace={currentWorkspace}
+    identityWorkspace={workspaceInView ?? currentWorkspace}
     billingData={billingData}
     workspacePlan={workspacePlan}
     allPlans={allPlans}
@@ -1281,8 +1324,6 @@ export const AppSidebar = observer(function AppSidebar({
     hasPersonalWorkspace={hasPersonalWorkspace}
     onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
     localMode={localMode}
-    machineWorkspaces={machineWorkspaces}
-    onOpenMachineWorkspace={handleOpenMachineWorkspace}
     {...extra}
   />
   );
@@ -1324,8 +1365,11 @@ export const AppSidebar = observer(function AppSidebar({
             }}
             isSuperAdmin={hasAdminAccess}
             isWide={isWide}
-            workspaces={allWorkspaces}
+            entries={workspaceEntries}
+            currentKey={activeWorkspaceKey}
+            onSelectEntry={handleSelectWorkspaceEntry}
             currentWorkspace={currentWorkspace}
+            identityWorkspace={workspaceInView ?? currentWorkspace}
             billingData={billingData}
             workspacePlan={workspacePlan}
             allPlans={allPlans}
@@ -1335,8 +1379,6 @@ export const AppSidebar = observer(function AppSidebar({
             hasPersonalWorkspace={hasPersonalWorkspace}
             onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
             localMode={localMode}
-            machineWorkspaces={machineWorkspaces}
-            onOpenMachineWorkspace={handleOpenMachineWorkspace}
           />
           <View className="flex-row items-center gap-1">
             {tab === "projects" && (

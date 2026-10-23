@@ -215,7 +215,7 @@ export function StatusRunRow({ latest, folded, onOpenThread }: { latest: ChatMes
       <Pressable
         onPress={() => setOpen((v) => !v)}
         accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
+        aria-expanded={open}
         accessibilityLabel={`${name}: ${all.length} updates`}
         className="flex-row items-center gap-2 rounded-md py-1 active:bg-muted"
       >

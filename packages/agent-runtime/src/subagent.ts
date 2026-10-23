@@ -19,7 +19,7 @@ import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './a
 import { isSearchEnabled } from './search-flag'
 import { MEDIA_TOOL_NAMES } from './media-tool-names'
 import type { ToolContext } from './gateway-tools'
-import { createBrowserTool, disposeBrowserTool, textResult } from './gateway-tools'
+import { createBrowserTool, createReadGuideTool, disposeBrowserTool, textResult } from './gateway-tools'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed
@@ -101,6 +101,12 @@ export interface SubagentResult {
   escalated?: boolean
   /** True when the final response is empty or a "Subagent failed: ..." marker. */
   responseEmpty?: boolean
+  /**
+   * Why the run failed, when it did. `responseText` is what the subagent said;
+   * this is what stopped it (a provider 4xx, a missing tool, an empty loop), and
+   * without it a failed spawn reaches the parent as a placeholder string.
+   */
+  error?: { code?: string; message: string }
 }
 
 export interface SubagentStreamCallbacks {
@@ -376,14 +382,13 @@ export const MEDIA_SUBAGENT_PROMPT = `You are a media processing subagent. Gener
 ## Available Tools
 list_media_models — every image and video model with capabilities and Shogo price; check it before picking a model or a batch size
 generate_image — create images from text, or edit / keep a character consistent by passing reference_images
-upscale_image, remove_background — post-process an existing workspace image
 generate_video — text-to-video, or animate a still with start_image (only present when video generation is enabled)
 transcribe_audio — convert audio files to text
 read_file, write_file — read inputs and save results to the workspace
 
 ## Guidelines
 - For image generation: provide detailed, specific descriptions for best results
-- Higgsfield is the default provider (hf-soul-v2 for images, hf-hailuo-2.3 for video). hf-soul-v2 is text-only; for reference images use hf-ideogram-4 (one style reference) or, for many references, a fal model flagged in the catalog
+- Higgsfield is the only media provider (hf-soul-v2 for images, hf-hailuo-2.3 for video). hf-soul-v2 is text-only; for reference images use hf-ideogram-4 (one style reference) or, for several, hf-marketing-studio-flare / hf-qwen-image-3. list_media_models shows every model option
 - Save files where the parent asked (the path parameter accepts any workspace path, e.g. public/assets/hero.png); otherwise images/ and videos/ are the defaults
 - For video, generate a still with generate_image first, then animate it with generate_video using start_image. It is cheaper, the result matches the approved look, and the frame (and so the aspect ratio) follows that still
 - Video is billed per clip on Higgsfield: the submit response carries estimated_usd, so check it before rendering a long batch and do not regenerate without a reason
@@ -611,6 +616,8 @@ import {
 } from './model-router'
 import { AUTO_MODEL_ID, inferProviderFromModel, isAutoModel } from '@shogo/model-catalog'
 import { createStableLoopTransform } from './stable-compaction'
+import { createToolProfile, deferredToolsEnabled, resolveLearnedToolOrder, withActivationOnCall } from './tool-profile'
+import { getProjectToolUsage, projectScopedId } from './internal-api'
 import { SUBAGENT_REPORT_INSTRUCTION } from './subagent-prompts'
 import { resolveAutoTierModelId } from './available-models'
 
@@ -884,6 +891,9 @@ export async function runSubagent(
     renderedSystemPrompt: undefined,
     sessionMessages: undefined,
     subagentInstanceId: options?.instanceId,
+    // A subagent gets its OWN advertised tool set (SHO-97), filled in below —
+    // never the parent's, so a tool the parent activated is not inherited.
+    toolProfileRef: undefined,
   }
 
   // Ensure working directory exists
@@ -959,6 +969,37 @@ export async function runSubagent(
     if (config.readonly) {
       tools = tools.filter(t => READONLY_TOOLS.has(t.name))
     }
+  }
+
+  // Deferred tool definitions (SHO-97): a subagent advertises its own core +
+  // learned set. Only when it can actually discover the rest — a subagent whose
+  // tool list has no read_guide keeps every schema, so nothing becomes
+  // unreachable. Fork mode inherits the parent's prompt and tools, so it keeps
+  // the parent's set and does not re-defer.
+  let isAdvertisedTool: ((tool: AgentTool) => boolean) | undefined
+  if (!isFork && deferredToolsEnabled(parentCtx.config) && tools.some(t => t.name === 'read_guide')) {
+    const learned = await resolveLearnedToolOrder({
+      projectId: projectScopedId(parentCtx.projectId),
+      load: async (id) => {
+        const usage = await getProjectToolUsage(id)
+        return usage ? { order: usage.order, totalCalls: usage.totalCalls } : null
+      },
+    })
+    const profile = createToolProfile(tools, { learned })
+    subCtx.toolProfileRef = { current: profile }
+    tools = tools.map(tool => (profile.isDeferred(tool.name) ? withActivationOnCall(tool, profile) : tool))
+    isAdvertisedTool = tool => profile.isAdvertised(tool.name)
+    if (profile.catalog) systemPrompt = `${systemPrompt}\n\n---\n\n${profile.catalog}`
+  }
+
+  // Rebind `read_guide` to subCtx (SHO-97): the parent's instance closed over
+  // parentCtx, so a subagent's read_guide({ tool }) would load the parent's
+  // profile — activating in the parent's advertised set (changing the parent's
+  // cache prefix mid-turn) while never advertising in the child's. Fork keeps
+  // the parent's tools and prompt on purpose, so it keeps the parent's instance.
+  if (!isFork && tools.some(t => t.name === 'read_guide')) {
+    tools = tools.filter(t => t.name !== 'read_guide')
+    tools.push(createReadGuideTool(subCtx))
   }
 
   // Apply eval mock interceptors so subagent tool calls hit the same mocks
@@ -1095,6 +1136,7 @@ export async function runSubagent(
       history,
       prompt,
       tools,
+      isAdvertisedTool,
       maxIterations,
       maxTokens: config.maxTokens,
       thinkingLevel,
@@ -1132,6 +1174,7 @@ export async function runSubagent(
     const responseEmpty =
       !result.text || result.text.trim().length === 0
       || result.text.startsWith('Subagent failed:')
+      || !!result.error
 
     return {
       toolCalls: result.toolCalls.length,
@@ -1148,6 +1191,9 @@ export async function runSubagent(
       loopDetected: !!result.loopBreak,
       escalated: false,
       responseEmpty,
+      // The loop's own cause (`promptError || implicitError`) is the only thing
+      // that explains an empty run — a provider 4xx, a tool schema rejection.
+      ...(result.error ? { error: { message: result.error.message } } : {}),
     }
   }
 
@@ -1207,6 +1253,7 @@ export async function runSubagent(
       loopDetected: false,
       escalated: false,
       responseEmpty: true,
+      error: { message: err.message },
     }
   } finally {
     if (parentCtx.fileStateCache && subCtx.fileStateCache) {

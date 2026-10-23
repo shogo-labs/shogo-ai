@@ -26,6 +26,7 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from 'hono'
 import { PROJECT_CALL_MESSAGE_AGENT, runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 import { linkAgentCallSession, putAgentCall, startAgentCallHeartbeat, type AgentCallSessionLink } from '../lib/agent-call-store'
+import { noteInflightCall } from '../lib/runtime/inflight-calls'
 import type { TrackedStreamResult } from '../routes/project-chat'
 
 export { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
@@ -50,6 +51,8 @@ export interface AgentCallRequest {
 export interface AgentCallOutcome {
   status: number
   body: any
+  /** Response headers the caller should copy through (e.g. `Retry-After`). */
+  headers?: Record<string, string>
 }
 
 /**
@@ -438,6 +441,24 @@ async function startTrackedCall(
 /** Error code for a call whose callee turn ended without a reply this side saw. */
 export const CALLEE_TURN_LOST = 'callee_turn_lost'
 
+/**
+ * Error code for a call whose callee turn never started at all. Distinct from
+ * `callee_turn_lost`: nothing ran, so there is no partial reply to read and no
+ * point polling — the caller should know immediately instead of waiting 15
+ * minutes on a record that says `accepted`.
+ */
+export const CALLEE_TURN_NEVER_STARTED = 'callee_turn_never_started'
+
+/**
+ * How long the callee may show no sign of this call before the follower
+ * declares it lost. A call that is queued behind the chat's own turn keeps
+ * pushing this window out (the runtime reports it as `queued`), so the budget
+ * only runs out when nothing is waiting for the call any more — the runtime
+ * restarted, or the queued item vanished. It does not cap how long a chat may
+ * be busy: a message for a busy chat is queued, never dropped.
+ */
+export const CALLEE_TURN_START_TIMEOUT_MS = 90_000
+
 /** The runtime's clock and ours can disagree by this much. */
 const TURN_CLOCK_SKEW_MS = 30_000
 
@@ -469,7 +490,7 @@ async function callTurnDeps(): Promise<CallTurnDeps> {
     markTurnEnded: o.markTurnEnded ?? turnState!.markTurnEnded,
     startTurnHeartbeat: o.startTurnHeartbeat ?? ((id, turnId) => turnState!.startTurnHeartbeat(id, turnId)),
     turnPollIntervalMs: o.turnPollIntervalMs ?? 1_000,
-    turnStartTimeoutMs: o.turnStartTimeoutMs ?? 15 * 60_000,
+    turnStartTimeoutMs: o.turnStartTimeoutMs ?? CALLEE_TURN_START_TIMEOUT_MS,
   }
 }
 
@@ -536,7 +557,16 @@ async function startBackgroundCall(
     projectId,
     workspaceId,
     '/agent/pipeline/call',
-    JSON.stringify({ message: call.message, runId: call.runId, sessionId: chatSessionId, wait: false, callerProjectId: call.callerProjectId }),
+    JSON.stringify({
+      message: call.message,
+      runId: call.runId,
+      // The callee answers for this name on its turn probe, so the follower
+      // never has to infer "is the chat's live turn our call?" from timestamps.
+      callId: call.runId,
+      sessionId: chatSessionId,
+      wait: false,
+      callerProjectId: call.callerProjectId,
+    }),
     {
       runtimeUrl: target.url,
       timeoutMs: 15_000,
@@ -546,25 +576,85 @@ async function startBackgroundCall(
   if (ack.status < 200 || ack.status >= 300) return ack
 
   if (link) await linkAgentCallSession(chatSessionId, link).catch(() => {})
-  void followCallTurn(projectId, workspaceId, chatSessionId, startedAt, link).catch((err) =>
+  void followCallTurn(projectId, workspaceId, chatSessionId, call.runId, startedAt, link).catch((err) =>
     console.warn(`[AgentCall] following call ${call.runId} failed:`, err?.message ?? err),
   )
   return ack
 }
 
-async function waitForCalleeTurn(projectId: string, chatSessionId: string, startedAt: number, deps: CallTurnDeps): Promise<boolean> {
-  const deadline = Date.now() + deps.turnStartTimeoutMs
+/**
+ * Wait until the callee reports a turn for **this call**. A call queued behind
+ * the chat's own live turn is not a failure — the runtime answers `queued` for
+ * the call by name (`?callId=`) and each such answer restarts the budget, so a
+ * chat that is busy for ten minutes still runs the call. Only silence for the
+ * whole budget, or an explicit `lost`, means the call was dropped.
+ *
+ * The call's own name is what makes this exact: the chat's live turn carries a
+ * `createdAt` of its own, so "a turn exists and it is recent enough" used to
+ * mistake a busy chat's turn for ours and settle the caller with its reply.
+ * `queued` therefore wins over any `createdAt`; a turn answers for the call only
+ * when the runtime echoes our `callId` (or, from a runtime that predates it,
+ * when it started after we asked).
+ */
+async function waitForCalleeTurn(
+  projectId: string,
+  chatSessionId: string,
+  callId: string,
+  startedAt: number,
+  deps: CallTurnDeps,
+): Promise<CalleeTurn> {
+  let deadline = Date.now() + deps.turnStartTimeoutMs
   for (;;) {
-    const res = await fetchCalleeRuntime(projectId, `/agent/chat/${encodeURIComponent(chatSessionId)}/turn`).catch(() => null)
+    const path = `/agent/chat/${encodeURIComponent(chatSessionId)}/turn?callId=${encodeURIComponent(callId)}`
+    const res = await fetchCalleeRuntime(projectId, path).catch(() => null)
     if (res?.ok) {
-      const turn = (await res.json().catch(() => null)) as { createdAt?: number } | null
-      if (typeof turn?.createdAt === 'number' && turn.createdAt >= startedAt - TURN_CLOCK_SKEW_MS) return true
+      const probe = (await res.json().catch(() => null)) as CalleeTurnProbe | null
+      const answer = readCalleeTurn(probe, startedAt)
+      if (answer.kind === 'queued') deadline = Date.now() + deps.turnStartTimeoutMs
+      else if (answer.kind !== 'waiting') return answer
     } else {
       await res?.body?.cancel().catch(() => {})
     }
-    if (Date.now() >= deadline) return false
+    if (Date.now() >= deadline) return { kind: 'lost' }
     await new Promise((resolve) => setTimeout(resolve, deps.turnPollIntervalMs))
   }
+}
+
+/**
+ * What the callee said about our call, decided by the call's name when the
+ * runtime knows it and by the turn's age only for a runtime that does not.
+ */
+export type CalleeTurn =
+  | { kind: 'started'; turnId?: string }
+  | { kind: 'queued' }
+  | { kind: 'waiting' }
+  | { kind: 'lost'; reason?: 'stopped' | 'unknown' }
+
+type CalleeTurnProbe = {
+  status?: string
+  callId?: string
+  turnId?: string
+  createdAt?: number
+  queuedSince?: number
+  reason?: string
+  reply?: string | null
+}
+
+export function readCalleeTurn(probe: CalleeTurnProbe | null, startedAt: number): CalleeTurn {
+  if (!probe) return { kind: 'waiting' }
+  if (probe.status === 'lost') return { kind: 'lost', reason: probe.reason === 'stopped' ? 'stopped' : 'unknown' }
+  // Queued is the answer for the call, and it beats any timestamps: while a call
+  // is queued the only turn in the chat is the one it is waiting behind.
+  if (probe.status === 'queued' || typeof probe.queuedSince === 'number') return { kind: 'queued' }
+  const answeredForCall = typeof probe.callId === 'string' && probe.callId.length > 0
+  const hasTurn = probe.status === 'started' || typeof probe.createdAt === 'number'
+  if (answeredForCall) return hasTurn ? { kind: 'started', turnId: probe.turnId } : { kind: 'waiting' }
+  // Runtime without per-call identity: fall back to the turn's start time.
+  if (typeof probe.createdAt === 'number' && probe.createdAt >= startedAt - TURN_CLOCK_SKEW_MS) {
+    return { kind: 'started', turnId: probe.turnId }
+  }
+  if (probe.status === 'active') return { kind: 'queued' }
+  return { kind: 'waiting' }
 }
 
 /**
@@ -575,6 +665,7 @@ async function followCallTurn(
   projectId: string,
   workspaceId: string,
   chatSessionId: string,
+  callId: string,
   startedAt: number,
   link: AgentCallSessionLink | null,
 ): Promise<void> {
@@ -589,16 +680,25 @@ async function followCallTurn(
   // whose follower died.
   const stopCallHeartbeat = link ? startAgentCallHeartbeat(link.projectId, link.runId) : () => {}
   let result: TrackedStreamResult | null = null
+  let neverStarted = false
   try {
-    if (await waitForCalleeTurn(projectId, chatSessionId, startedAt, deps)) {
-      result = await trackCallTurn(projectId, workspaceId, chatSessionId, startedAt, deps)
+    const turn = await waitForCalleeTurn(projectId, chatSessionId, callId, startedAt, deps)
+    if (turn.kind === 'started') {
+      result = await trackCallTurn(projectId, workspaceId, chatSessionId, startedAt, deps, turn.turnId)
     } else {
-      console.warn(`[AgentCall] callee turn for ${chatSessionId} never started`)
+      // Nothing in the queue and no turn for the whole budget, or the runtime
+      // said the call is gone: the queued item vanished or the chat was
+      // stopped. That is a different failure from a lost reply.
+      neverStarted = true
+      console.warn(
+        `[AgentCall] call ${link?.runId ?? chatSessionId} never started: ` +
+          (turn.kind === 'lost' ? `lost (${turn.reason ?? 'unknown'})` : 'no turn and no queued call'),
+      )
     }
   } finally {
     stopCallHeartbeat()
     stopHeartbeat()
-    if (link) await settleAgentCallFromTurn(link, chatSessionId, result).catch(() => {})
+    if (link) await settleAgentCallFromTurn(link, chatSessionId, result, { neverStarted }).catch(() => {})
     if (turnId) await deps.markTurnEnded(chatSessionId, turnId).catch(() => {})
   }
 }
@@ -610,6 +710,7 @@ async function trackCallTurn(
   chatSessionId: string,
   startedAt: number,
   deps: CallTurnDeps,
+  turnId?: string,
 ): Promise<TrackedStreamResult | null> {
   const streamPath = (fromSeq: number) => `/agent/chat/${encodeURIComponent(chatSessionId)}/stream?fromSeq=${fromSeq}`
   const res = await fetchCalleeRuntime(projectId, streamPath(0)).catch(() => null)
@@ -621,6 +722,10 @@ async function trackCallTurn(
     chatSessionId,
     suppressCompletionPush: true,
     expectedTurnStartedAt: startedAt,
+    // The buffer is keyed by chat, so a turn that started after ours replaces
+    // it. The callee told us which turn is ours; anything else is not persisted
+    // as this call's reply.
+    expectedTurnId: turnId,
     resume: async (fromSeq) => {
       try {
         return await fetchCalleeRuntime(projectId, streamPath(fromSeq))
@@ -643,6 +748,7 @@ export async function settleAgentCallFromTurn(
   link: AgentCallSessionLink,
   chatSessionId: string,
   result: TrackedStreamResult | null,
+  opts: { neverStarted?: boolean } = {},
 ): Promise<void> {
   const base = { runId: link.runId, sessionId: chatSessionId, chatSessionId, startedAt: link.startedAt, updatedAt: Date.now() }
   // The tracker owns the assistant row when it persisted one.
@@ -662,13 +768,21 @@ export async function settleAgentCallFromTurn(
     if (!replyRowWritten) await ensureCallReplyRow(link.projectId, chatSessionId, result.text || null, 'agent_turn_failed')
     return
   }
+  const lost = opts.neverStarted
+    ? {
+        code: CALLEE_TURN_NEVER_STARTED,
+        message:
+          'The target agent never started this run — the runtime lost the call before it began (it restarted, or the ' +
+          'queued call was dropped). Nothing ran; retry it.',
+      }
+    : { code: CALLEE_TURN_LOST, message: 'The target agent turn ended before its reply could be read.' }
   await putAgentCall(link.projectId, {
     ...base,
     status: 'failed',
     reply: result?.text || null,
-    error: { code: CALLEE_TURN_LOST, message: 'The target agent turn ended before its reply could be read.' },
+    error: lost,
   })
-  if (!replyRowWritten) await ensureCallReplyRow(link.projectId, chatSessionId, result?.text || null, CALLEE_TURN_LOST)
+  if (!replyRowWritten) await ensureCallReplyRow(link.projectId, chatSessionId, result?.text || null, lost.code)
 }
 
 export interface RemoteToolRequest {
@@ -704,6 +818,10 @@ export async function callProjectRemoteTool(
     {
       runtimeUrl: resolved.url,
       timeoutMs,
+      // Reads and polls are safe to replay once against a runtime that is still
+      // warming up; writes and shell commands are not (SHO-125).
+      retryOnTransportError: isRemoteIdempotentTool(req.tool),
+      reportUndelivered: true,
       ...(req.requesterTicket ? { headers: { 'X-Requester-Ticket': req.requesterTicket } } : {}),
       timeoutMessage: `The target project did not finish ${req.tool} within ${Math.round(timeoutMs / 1000)}s.`,
     },
@@ -749,6 +867,7 @@ export async function callProjectRemoteImport(
       runtimeUrl: resolved.url,
       timeoutMs,
       ...(req.requesterTicket ? { headers: { 'X-Requester-Ticket': req.requesterTicket } } : {}),
+      reportUndelivered: true,
       timeoutMessage: `The target project did not finish importing files within ${Math.round(timeoutMs / 1000)}s.`,
     },
   )
@@ -794,6 +913,56 @@ export function setProjectRuntimeUrlResolver(
 }
 
 /**
+ * Resolve a project's runtime URL the way every remote call does — including
+ * the wake that opening its app requires — so a preview and a remote tool land
+ * on the same pod. Returns the outcome to hand back instead when it cannot be
+ * resolved (502 `target_unavailable`, 409 `workspace_capacity`).
+ */
+export async function resolveRemoteProjectUrl(
+  projectId: string,
+  logTag: string,
+): Promise<{ url: string } | AgentCallOutcome> {
+  return wakeRemoteTarget(projectId, logTag)
+}
+
+/**
+ * Tools whose remote call is safe to repeat: reading and polling cannot
+ * double-apply anything. Used to decide whether a transport failure may be
+ * retried once against a runtime that was still warming up (SHO-125).
+ * Mirrors `REMOTE_READONLY_TOOLS` in packages/agent-runtime/src/remote-tools.ts
+ * — the API cannot import the runtime package, so they are listed here too and
+ * a test asserts the two lists agree.
+ */
+export const REMOTE_IDEMPOTENT_TOOLS: readonly string[] = ['read_file', 'search', 'exec_list', 'exec_wait']
+
+/** One retry is enough to cover a guest that resolved but is not listening yet. */
+const REMOTE_TRANSPORT_RETRY_DELAY_MS = 250
+
+export function isRemoteIdempotentTool(tool: string): boolean {
+  return REMOTE_IDEMPOTENT_TOOLS.includes(tool)
+}
+
+export interface ForwardOptions {
+  timeoutMs: number
+  timeoutMessage?: string
+  headers?: Record<string, string>
+  /** Already-resolved runtime URL; skips the resolver below. */
+  runtimeUrl?: string
+  /**
+   * Retry once after a short delay when the fetch fails at the transport
+   * level. Only for idempotent tools — a write must never be replayed.
+   */
+  retryOnTransportError?: boolean
+  /**
+   * This hop delivers a tool (or starts a build) on the target project. A
+   * transport failure then means the work may not have run, which callers must
+   * see as 503 `target_not_ready` with a retry hint. Chat and pipeline hops
+   * leave it unset and keep their 502 `agent_call_failed`.
+   */
+  reportUndelivered?: boolean
+}
+
+/**
  * POST `body` to a runtime-token-guarded path on the project's runtime
  * (pinned Instance tunnel first, then cloud pod / host runtime).
  */
@@ -803,15 +972,13 @@ export async function forwardToProjectRuntime(
   workspaceId: string,
   agentPath: string,
   forwardBody: string,
-  opts: {
-    timeoutMs: number
-    timeoutMessage?: string
-    headers?: Record<string, string>
-    /** Already-resolved runtime URL; skips the resolver below. */
-    runtimeUrl?: string
-  },
+  opts: ForwardOptions,
 ): Promise<AgentCallOutcome> {
   const extraHeaders = opts.headers ?? {}
+  // This request exists to make the target runtime work. Until its turn lock
+  // shows up there it looks idle to a probe, and the background pool can be
+  // evicting it in exactly that gap (SHO-143). Count it as work while it flies.
+  noteInflightCall(projectId, 1)
   try {
     const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
     const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId })
@@ -849,26 +1016,73 @@ export async function forwardToProjectRuntime(
       runtimeUrl = resolution.url
     }
 
-    const res = await fetch(`${runtimeUrl}${agentPath}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken, ...extraHeaders },
-      body: forwardBody,
-      signal: AbortSignal.timeout(opts.timeoutMs),
-    })
+    const post = () =>
+      fetch(`${runtimeUrl}${agentPath}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken, ...extraHeaders },
+        body: forwardBody,
+        signal: AbortSignal.timeout(opts.timeoutMs),
+      })
+
+    // `wakeRemoteTarget` returns as soon as it has a URL, which on metal can be
+    // before the guest accepts connections. One retry turns that instant into a
+    // normal call instead of a hard failure (SHO-125).
+    //
+    // A timeout is not that: it already spent the whole budget, so retrying
+    // doubles the wait on a hung target for no new information.
+    const isTimeout = (err: any) => err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    let res: Response
+    try {
+      res = await post()
+    } catch (err) {
+      if (!opts.retryOnTransportError || isTimeout(err)) throw err
+      await new Promise((resolve) => setTimeout(resolve, REMOTE_TRANSPORT_RETRY_DELAY_MS))
+      res = await post()
+    }
     const json = await res.json().catch(() => ({}))
     return { status: res.status, body: json }
   } catch (err: any) {
     const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    if (!timedOut) {
+      if (!opts.reportUndelivered) {
+        // A chat/pipeline hop keeps its old contract: the runtime was reachable
+        // but the call failed. Only a tool delivery (below) reports "not
+        // delivered".
+        return {
+          status: 502,
+          body: { error: { code: 'agent_call_failed', message: err?.message ?? 'Failed to reach the target runtime' } },
+        }
+      }
+      // A transport failure means we could not deliver, not that a gateway
+      // returned a bad response. MDN's 502 is the latter; the target simply
+      // was not ready, and that is a 503 with a retry hint (SHO-125).
+      return {
+        status: 503,
+        body: {
+          error: {
+            code: 'target_not_ready',
+            message:
+              opts.retryOnTransportError
+                ? `Project ${projectId}'s runtime is not accepting requests yet (${err?.message ?? err}). Retry shortly.`
+                : `Project ${projectId}'s runtime did not accept the request (${err?.message ?? err}), so it may not have run. Check the project's files before retrying.`,
+            retryAfterSeconds: 2,
+          },
+        },
+        // Also in the body: a keepalive response has already sent its status
+        // line, so `Retry-After` can only travel in the body for those callers.
+        headers: { 'Retry-After': '2' },
+      }
+    }
     return {
-      status: timedOut ? 504 : 502,
+      status: 504,
       body: {
         error: {
-          code: timedOut ? 'agent_call_timeout' : 'agent_call_failed',
-          message: timedOut
-            ? (opts.timeoutMessage ?? `The target runtime did not reply within ${Math.round(opts.timeoutMs / 1000)}s.`)
-            : (err?.message ?? 'Failed to reach the target runtime'),
+          code: 'agent_call_timeout',
+          message: opts.timeoutMessage ?? `The target runtime did not reply within ${Math.round(opts.timeoutMs / 1000)}s.`,
         },
       },
     }
+  } finally {
+    noteInflightCall(projectId, -1)
   }
 }

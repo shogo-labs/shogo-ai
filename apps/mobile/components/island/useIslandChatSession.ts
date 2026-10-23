@@ -23,7 +23,8 @@ import {
   useChatMessageCollectionForSession,
   useDomainActions,
 } from "@shogo/shared-app/domain"
-import { API_URL, api, createHttpClient } from "../../lib/api"
+import { API_URL, api } from "../../lib/api"
+import { workspaceHttp } from "../../lib/workspace-http"
 import { buildChatSendBody, generateClientTurnId, type ChatSendInteractionMode } from "../../lib/chat-send-body"
 import { buildStopRequest } from "../../lib/chat-stop"
 import { resolveChatScope } from "../../lib/chat-scope"
@@ -473,7 +474,7 @@ export function useOwnedIslandSession(
       const id = permission.id
       setPermission(null)
       try {
-        await api.sendPermissionResponse(createHttpClient(), chatProjectId, {
+        await api.sendPermissionResponse(workspaceHttp(), chatProjectId, {
           id,
           decision,
           ...(pattern ? { pattern } : {}),

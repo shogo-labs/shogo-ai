@@ -9,10 +9,12 @@ import {
   teamChatApi,
   type ChatSettings,
   type InboxItem,
+  type SentMessage,
   type UserStatus,
 } from '../lib/team-chat-api'
 import { useTeamChatEvents } from '../lib/team-chat-connection'
 import { useMentionables } from './useTeamChat'
+import { useWorkspaceUser } from './useWorkspaceUser'
 
 const api = teamChatApi()
 
@@ -196,13 +198,16 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
   const [items, setItems] = useState<InboxItem[]>([])
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const req = useRef(0)
+  const appending = useRef(false)
 
   const load = useCallback(async (before?: string) => {
     if (!workspaceId) return
     const id = ++req.current
-    setLoading(true)
+    if (before) setLoadingMore(true)
+    else setLoading(true)
     try {
       const page = await api.inbox(workspaceId, { unreadOnly, before })
       if (id !== req.current) return
@@ -213,7 +218,39 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
     } catch (err) {
       if (id === req.current) setError(err instanceof Error ? err.message : 'Could not load inbox')
     } finally {
-      if (id === req.current) setLoading(false)
+      if (id === req.current) {
+        setLoading(false)
+        setLoadingMore(false)
+      }
+    }
+  }, [workspaceId, unreadOnly])
+
+  /**
+   * Refresh the newest page in place, keeping the pages already loaded.
+   *
+   * `inbox.read` and `ready` are frequent — every mark-read, every SSE
+   * reconnect — so a plain reload here (`load()` with no cursor) would replace
+   * the whole list with page one. Paging down and then clicking a row, or
+   * simply losing the socket for a second, would throw away everything loaded
+   * below the first page and drop the reader back to the top.
+   */
+  const syncHead = useCallback(async () => {
+    if (!workspaceId) return
+    const id = ++req.current
+    try {
+      const page = await api.inbox(workspaceId, { unreadOnly })
+      if (id !== req.current) return
+      setItems((prev) => {
+        if (!prev.length) return page.items
+        const headIds = new Set(page.items.map((i) => i.id))
+        const older = prev.filter((i) => !headIds.has(i.id))
+        return older.length ? [...page.items, ...older] : page.items
+      })
+      setHasMore(page.hasMore)
+      setUnread(workspaceId, { unread: page.unread, unreadThreads: page.unreadThreads ?? 0 })
+      setError(null)
+    } catch {
+      // Keep the list we have; the next ready or pull-to-refresh retries.
     }
   }, [workspaceId, unreadOnly])
 
@@ -221,7 +258,7 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
 
   useTeamChatEvents(workspaceId, (event) => {
     if (event.type === 'inbox.created') setItems((prev) => (prev.some((i) => i.id === event.item.id) ? prev : [event.item, ...prev]))
-    else if (event.type === 'inbox.read' || event.type === 'ready') void load()
+    else if (event.type === 'inbox.read' || event.type === 'ready') void syncHead()
   })
 
   const markRead = useCallback(async (ids: string[] | 'all', unread = false) => {
@@ -233,8 +270,88 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
 
   const loadMore = useCallback(() => {
     const last = items[items.length - 1]
-    if (hasMore && !loading && last) void load(last.createdAt)
+    // A virtualized list fires onEndReached again while the previous page is
+    // still in flight; the ref keeps those from stacking up identical requests.
+    if (!hasMore || !last || appending.current) return
+    appending.current = true
+    void load(last.createdAt).finally(() => { appending.current = false })
+  }, [items, hasMore, load])
+
+  return { items, hasMore, loading, loadingMore, error, markRead, loadMore, refresh: load }
+}
+
+/**
+ * The messages the viewer sent, for the Activity panel's Sent view. Nothing is
+ * fetched until the view is opened (`enabled`), so people who never look at it
+ * pay for nothing.
+ *
+ * The server stays the truth: a send from another window triggers a refetch
+ * rather than splicing a row into the list here.
+ */
+export function useSentMessages(workspaceId: string | null | undefined, enabled: boolean) {
+  const viewer = useWorkspaceUser(workspaceId)
+  const [items, setItems] = useState<SentMessage[]>([])
+  const [hasMore, setHasMore] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const req = useRef(0)
+  const lastRefetch = useRef(0)
+
+  const load = useCallback(async (
+    cursor?: { before: string; beforeId: string },
+    opts: { manual?: boolean } = {},
+  ) => {
+    if (!workspaceId || !enabled) return
+    const id = ++req.current
+    if (opts.manual) setRefreshing(true)
+    else setLoading(true)
+    try {
+      const page = await api.sentMessages(workspaceId, cursor ?? {})
+      if (id !== req.current) return
+      setItems((prev) => (cursor ? [...prev, ...page.items] : page.items))
+      setHasMore(page.hasMore)
+      setError(null)
+    } catch (err) {
+      if (id === req.current) setError(err instanceof Error ? err.message : 'Could not load sent messages')
+    } finally {
+      if (id === req.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
+    }
+  }, [workspaceId, enabled])
+
+  useEffect(() => {
+    if (enabled) void load()
+  }, [enabled, load])
+
+  useTeamChatEvents(workspaceId, (event) => {
+    if (!enabled || !workspaceId) return
+    if (event.type === 'ready') {
+      void load()
+      return
+    }
+    if (event.type !== 'message.created') return
+    // Only our own sends, and at most one refetch a second, so a burst of
+    // messages cannot turn into a burst of list requests.
+    if (event.message.authorType !== 'user') return
+    if (viewer && event.message.authorUserId && event.message.authorUserId !== viewer.id) return
+    const now = Date.now()
+    if (now - lastRefetch.current < 1000) return
+    lastRefetch.current = now
+    void load()
+  })
+
+  const loadMore = useCallback(() => {
+    const last = items[items.length - 1]
+    if (!hasMore || loading || !last) return
+    void load({ before: last.createdAt, beforeId: last.id })
   }, [items, hasMore, loading, load])
 
-  return { items, hasMore, loading, error, markRead, loadMore, refresh: load }
+  const refresh = useCallback(() => {
+    void load(undefined, { manual: true })
+  }, [load])
+
+  return { items, hasMore, loading, refreshing, error, loadMore, refresh }
 }

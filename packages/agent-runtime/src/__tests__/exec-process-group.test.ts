@@ -104,4 +104,43 @@ describe.skipIf(IS_WINDOWS)('agent exec process group isolation', () => {
     expect(() => process.kill(process.pid, 0)).not.toThrow()
     expect(isAlive(process.pid)).toBe(true)
   })
+
+  /**
+   * SHO-144: leading its own group is what keeps the runtime safe (above), and
+   * it is also why `cancel` has to check the group by hand. `killTree` is that
+   * check — it reports what is still alive instead of assuming the signal won.
+   */
+  test('killTree empties the group and reports no survivors', async () => {
+    const handle = sandboxExecAsync({
+      command: 'sleep 30 & echo "child $!"; wait',
+      workspaceDir: workDir,
+      sandboxConfig: { enabled: false },
+    })
+
+    await waitFor(() => /child \d+/.test(handle.recentOutput()), 10_000, 'the child pid line')
+    const grandchild = Number(handle.recentOutput().match(/child (\d+)/)![1])
+    expect(isAlive(grandchild)).toBe(true)
+
+    expect(typeof handle.killTree).toBe('function')
+    const { survivors } = await handle.killTree!({ graceMs: 0 })
+
+    expect(survivors).toEqual([])
+    await waitFor(() => !isAlive(grandchild), 10_000, 'the grandchild to die')
+    await handle.done
+  })
+
+  test('killTree after a plain kill still verifies, and a dead tree costs no second scan', async () => {
+    const handle = sandboxExecAsync({
+      command: 'sleep 30',
+      workspaceDir: workDir,
+      sandboxConfig: { enabled: false },
+    })
+    await waitFor(() => handle.stdout().length === 0 && !!handle.pid, 5_000, 'the spawn')
+
+    handle.kill('SIGKILL')
+    const { survivors } = await handle.killTree!({ graceMs: 0 })
+
+    expect(survivors).toEqual([])
+    await handle.done
+  })
 })

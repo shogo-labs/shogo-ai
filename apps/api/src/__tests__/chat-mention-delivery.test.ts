@@ -21,7 +21,8 @@ interface Row {
   workspaceId: string | null
   isArchived: boolean
   lastActiveAt: Date
-  createdByUserId: string
+  /** Null on every chat the local/desktop path creates (SHO-118). */
+  createdByUserId: string | null
   activeTurnId?: string | null
   project?: { id: string; name: string; workspaceId: string; workspace: { name: string } } | null
   workspace?: { id: string; name: string } | null
@@ -91,11 +92,104 @@ const chats = new Map<string, Row>([
       workspace: { id: 'ws-1', name: 'Acme' },
     },
   ],
+  // The shape `createWorkspaceSession({ anchorProjectId })` writes: anchored on
+  // a project, no owner at all.
+  [
+    'chat-anchored',
+    {
+      id: 'chat-anchored',
+      name: 'Anchored on Web app',
+      inferredName: '',
+      contextType: 'workspace',
+      contextId: 'proj-2',
+      workspaceId: null,
+      isArchived: false,
+      lastActiveAt: new Date('2026-10-19T10:30:00Z'),
+      createdByUserId: null,
+      workspace: { id: 'ws-1', name: 'Acme' },
+    },
+  ],
+  // Unowned, unanchored, in a workspace the person belongs to.
+  [
+    'chat-unowned',
+    {
+      id: 'chat-unowned',
+      name: 'Workspace chat',
+      inferredName: '',
+      contextType: 'workspace',
+      contextId: null,
+      workspaceId: 'ws-1',
+      isArchived: false,
+      lastActiveAt: new Date('2026-10-19T10:00:00Z'),
+      createdByUserId: null,
+      workspace: { id: 'ws-1', name: 'Acme' },
+    },
+  ],
+  // Unowned, and in a workspace the person is NOT a member of: stays closed.
+  [
+    'chat-foreign',
+    {
+      id: 'chat-foreign',
+      name: 'Someone else\'s chat',
+      inferredName: '',
+      contextType: 'workspace',
+      contextId: null,
+      workspaceId: 'ws-3',
+      isArchived: false,
+      lastActiveAt: new Date('2026-10-19T09:00:00Z'),
+      createdByUserId: null,
+      workspace: { id: 'ws-3', name: 'Elsewhere' },
+    },
+  ],
 ])
 
 const queued: any[] = []
 const persisted: any[] = []
 const dispatched: string[] = []
+
+/**
+ * Evaluate the slices of Prisma `where` these queries actually use — including
+ * the access `OR` — so a chat is filtered by the rule under test rather than by
+ * whatever the test happens to list.
+ */
+async function matchesWhere(row: Row, where: any, projectIds?: string[], workspaceIds?: string[]): Promise<boolean> {
+  if (!where || typeof where !== 'object') return true
+  if (Array.isArray(where.AND)) {
+    for (const clause of where.AND) {
+      if (!(await matchesWhere(row, clause))) return false
+    }
+  }
+  if (Array.isArray(where.OR)) {
+    let any = false
+    for (const clause of where.OR) {
+      if (await matchesWhere(row, clause)) {
+        any = true
+        break
+      }
+    }
+    if (!any) return false
+  }
+  if (where.id !== undefined) {
+    const wanted = where.id
+    if (typeof wanted === 'string' && row.id !== wanted) return false
+    if (wanted && typeof wanted === 'object') {
+      if (Array.isArray(wanted.in) && !wanted.in.includes(row.id)) return false
+      if (typeof wanted.not === 'string' && row.id === wanted.not) return false
+    }
+  }
+  if (typeof where.isArchived === 'boolean' && row.isArchived !== where.isArchived) return false
+  if (where.contextType !== undefined && row.contextType !== where.contextType) return false
+  if (where.createdByUserId !== undefined && row.createdByUserId !== where.createdByUserId) return false
+  if (where.workspaceId !== undefined) {
+    const wanted = where.workspaceId
+    if (typeof wanted === 'string' ? row.workspaceId !== wanted : !wanted?.in?.includes(row.workspaceId)) return false
+  }
+  if (where.contextId !== undefined) {
+    const wanted = where.contextId
+    if (wanted === null ? row.contextId !== null : !wanted?.in?.includes(row.contextId)) return false
+  }
+  return true
+}
 
 mock.module('../lib/prisma', () => ({
   prisma: {
@@ -112,23 +206,15 @@ mock.module('../lib/prisma', () => ({
     chatSession: {
       findFirst: async (args: any) => {
         const id = args?.where?.AND?.[0]?.id
-        return typeof id === 'string' ? chats.get(id) ?? null : null
+        const chat = typeof id === 'string' ? chats.get(id) ?? null : null
+        return chat && (await matchesWhere(chat, args?.where)) ? chat : null
       },
       findMany: async (args: any) => {
-        // Honour the two clauses the picker relies on so an archived or
-        // excluded chat is genuinely absent, not just filtered downstream.
-        const and = Array.isArray(args?.where?.AND) ? args?.where.AND : []
-        const allow = and.find((clause: any) => clause?.id?.in)?.id.in as string[] | undefined
-        const deny = and.find((clause: any) => clause?.id?.not)?.id.not as string | undefined
-        const archivedFilter = and.find(
-          (clause: any) => typeof clause?.isArchived === 'boolean',
-        )?.isArchived as boolean | undefined
-        return [...chats.values()].filter((chat) => {
-          if (allow && !allow.includes(chat.id)) return false
-          if (deny && chat.id === deny) return false
-          if (archivedFilter !== undefined && chat.isArchived !== archivedFilter) return false
-          return true
-        })
+        const rows: Row[] = []
+        for (const chat of chats.values()) {
+          if (await matchesWhere(chat, args?.where)) rows.push(chat)
+        }
+        return rows.sort((a, b) => b.lastActiveAt.getTime() - a.lastActiveAt.getTime())
       },
     },
     chatQueuedMessage: {
@@ -186,8 +272,42 @@ describe('chat mention tokens', () => {
 describe('chat mention access', () => {
   test('offers the person their own chats and readable project chats, across workspaces', async () => {
     const chats = await listChatMentionables({ userId: 'user-1' })
-    expect(chats.map((chat) => chat.id)).toEqual(['chat-source', 'chat-target', 'chat-busy'])
+    expect(chats.map((chat) => chat.id)).toEqual([
+      'chat-source',
+      'chat-busy',
+      'chat-target',
+      'chat-anchored',
+      'chat-unowned',
+    ])
     expect(chats.find((chat) => chat.id === 'chat-target')?.workspaceName).toBe('Other team')
+  })
+
+  // SHO-118: the three ids from the issue are the ordinary shapes the product
+  // writes, and every one of them 404'd before this clause existed.
+  test('opens a workspace chat anchored on a readable project, with no owner', async () => {
+    expect(await resolveChatForUser('user-1', 'chat-anchored')).not.toBeNull()
+    expect((await listChatMentionables({ userId: 'user-1' })).map((chat) => chat.id)).toContain('chat-anchored')
+  })
+
+  test('opens an unowned workspace chat in a workspace the person belongs to', async () => {
+    expect(await resolveChatForUser('user-1', 'chat-unowned')).not.toBeNull()
+  })
+
+  test('still refuses an unowned chat in a workspace the person is not a member of', async () => {
+    expect(await resolveChatForUser('user-1', 'chat-foreign')).toBeNull()
+    expect((await listChatMentionables({ userId: 'user-1' })).map((chat) => chat.id)).not.toContain('chat-foreign')
+  })
+
+  test('a handoff into an anchored chat delivers like any other', async () => {
+    const delivered = await handOffToChat({
+      targetChatId: 'chat-anchored',
+      text: 'read the plan',
+      actingUserId: 'user-1',
+      sourceSessionId: 'chat-source',
+    })
+    expect(delivered?.started).toBe(true)
+    expect(queued[0].sessionId).toBe('chat-anchored')
+    expect(dispatched).toEqual(['chat-anchored'])
   })
 
   test('never offers an archived chat', async () => {

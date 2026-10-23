@@ -12,6 +12,9 @@ export {
   getRuntimeManager,
   setRuntimeManager,
   __resetRuntimeManagerInternalsForTests,
+  resolveRuntimeMaxCount,
+  resolveWorkspaceBackgroundMax,
+  resolveWorkspacePreviewMax,
 } from './manager'
 export type {
   IRuntimeManager,

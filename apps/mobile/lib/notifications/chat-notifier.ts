@@ -26,6 +26,12 @@ export type ChatNotificationClickData =
   | { conversationId: string; threadRootId?: string | null; taskId?: undefined }
   /** A tap on the agents notification: open that agent (`shogo://agents/<key>`). */
   | { agentKey: string; conversationId?: undefined; taskId?: undefined }
+  /**
+   * A tap on any other notification that carries an in-app destination (e.g.
+   * `invitation_pending` → the invitation accept page). Always an app-relative
+   * path (`/...`).
+   */
+  | { actionUrl: string; conversationId?: undefined; taskId?: undefined }
 
 export interface ChannelNotificationPayload {
   conversationId: string

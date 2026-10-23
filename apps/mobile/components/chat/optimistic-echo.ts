@@ -30,6 +30,12 @@ export type OptimisticEchoInput = {
    * While that message is still the newest, nothing new has landed yet.
    */
   baselineUserId?: string | null
+  /**
+   * When the person pressed send. Captured once, at the send site: the bubble
+   * is rebuilt on every render, so `Date.now()` here would drift forward and
+   * move the chat tag's delivery window (`since`) out from under the tag.
+   */
+  sentAt?: number
 }
 
 export const OPTIMISTIC_ECHO_ID = "optimistic-user-pending"
@@ -61,7 +67,7 @@ export function buildOptimisticUserMessage(
     // The send time, so time-windowed reads anchored on this bubble have
     // something to anchor to before the server's row arrives — the chat tag's
     // delivery state (`since`) is the one that goes blank without it.
-    createdAt: Date.now(),
+    createdAt: input.sentAt ?? Date.now(),
   } as unknown as UIMessage
 }
 
@@ -104,4 +110,42 @@ export function appendOptimisticEcho<T extends UIMessage>(
   if (!input.content.trim() && (input.files?.length ?? 0) === 0) return messages
   if (hasMatchingUserMessage(messages, input)) return messages
   return [...messages, buildOptimisticUserMessage(input) as T]
+}
+
+/**
+ * The send time has to outlive the bubble it was painted for.
+ *
+ * The echo is dropped the moment the SDK's own user message shows the same
+ * text, and that message carries no `createdAt` — so a chat tag read its
+ * delivery window from `undefined` and never asked for a state at all. The
+ * transcript's own rows already have a timestamp (the server's); only the
+ * freshly sent one needs it, keyed on the text that was sent so a conversation
+ * with repeats can't inherit an older send.
+ */
+export function stampSendTime<T extends UIMessage>(
+  messages: T[],
+  sent: { content?: string; sentAt?: number | null } | null | undefined,
+): T[] {
+  const sentAt = sent?.sentAt
+  const content = sent?.content?.trim()
+  if (!sentAt || !content) return messages
+
+  let index = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      index = i
+      break
+    }
+  }
+  if (index === -1) return messages
+
+  const message = messages[index] as unknown as {
+    createdAt?: string | number | Date | null
+  }
+  if (message.createdAt) return messages
+  if (extractTextContent(messages[index]).trim() !== content) return messages
+
+  const next = messages.slice()
+  next[index] = { ...messages[index], createdAt: sentAt } as T
+  return next
 }

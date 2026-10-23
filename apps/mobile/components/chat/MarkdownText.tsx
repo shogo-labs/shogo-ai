@@ -26,6 +26,8 @@ import {
   type MentionTarget,
 } from "./file-links";
 import { MarkdownMediaNative } from "./MarkdownMediaNative";
+import { useShareFileOpener, type ShareFileTarget } from "./share-file-context";
+import { parseInAppFileHref } from "../../lib/share-file-links";
 import { withHardBreaks } from "../../lib/markdown-breaks";
 import { normalizeRichTextPaste } from "../../lib/rich-text-paste";
 import { usePhoneLayout } from "../../lib/native-phone-layout";
@@ -50,7 +52,7 @@ interface ThemeColors {
   mentionText: ColorValue;
 }
 
-export type MarkdownVariant = "default" | "thinking";
+export type MarkdownVariant = "default" | "thinking" | "card";
 
 export interface MarkdownTextProps {
   children: string;
@@ -65,6 +67,8 @@ export interface MarkdownTextProps {
   onLinkPress?: (href: string) => boolean;
   /** Opens a person's or agent's profile when their @-mention is tapped. */
   onMentionPress?: (target: MentionTarget) => void;
+  /** Opens a file the API serves in the app's own viewer. */
+  onShareFilePress?: (target: ShareFileTarget) => void;
 }
 
 const baseStyles: MarkedStyles = {
@@ -130,6 +134,25 @@ const thinkingStyles: MarkedStyles = {
   strikethrough: { fontSize: 14, lineHeight: 21 },
   hr: { height: 1, marginVertical: 6 },
   image: { borderRadius: 6 },
+};
+
+/**
+ * Compact body copy for markdown inside a tool card (a `project_call` request
+ * or reply). The chat sizes — 16/24 on a phone — are wrong for a three-line
+ * card, so headings, code padding and rules shrink to card scale while the
+ * 12/18 body copy stays as it is.
+ */
+const cardStyles: MarkedStyles = {
+  ...baseStyles,
+  code: {
+    borderRadius: 6,
+    padding: 8,
+  },
+  h1: { fontSize: 16, lineHeight: 22, fontWeight: "bold", marginBottom: 4 },
+  h2: { fontSize: 15, lineHeight: 21, fontWeight: "bold", marginBottom: 4 },
+  h3: { fontSize: 14, lineHeight: 20, fontWeight: "600", marginBottom: 3 },
+  h4: { fontSize: 13, lineHeight: 19, fontWeight: "500" },
+  hr: { height: 1, marginVertical: 6 },
 };
 
 const lightColors: ThemeColors = {
@@ -240,6 +263,7 @@ class NativePhoneMarkdownRenderer extends Renderer {
     private readonly onLinkPress?: (href: string) => boolean,
     private readonly fileExists?: (path: string) => boolean,
     private readonly onMentionPress?: (target: MentionTarget) => void,
+    private readonly onShareFilePress?: (target: ShareFileTarget) => void,
   ) {
     super();
   }
@@ -281,6 +305,33 @@ class NativePhoneMarkdownRenderer extends Renderer {
           style={mentionStyle}
         >
           {children}
+        </Text>
+      );
+    }
+    const servedFile = parseInAppFileHref(href);
+    if (servedFile && this.onShareFilePress) {
+      const open = this.onShareFilePress;
+      const { bg, text } = this.chipColors;
+      return (
+        <Text
+          accessibilityRole="link"
+          accessibilityLabel={servedFile.name}
+          testID="chat-file-chip"
+          key={this.getKey()}
+          onPress={() => open(servedFile)}
+          style={[
+            styles,
+            {
+              textDecorationLine: "none",
+              fontWeight: "500",
+              color: text,
+              backgroundColor: bg,
+              borderRadius: 6,
+            },
+          ]}
+        >
+          <FileTypeIcon path={servedFile.name} size={14} />
+          {` ${servedFile.name} `}
         </Text>
       );
     }
@@ -434,6 +485,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.onFilePress !== next.onFilePress) return false;
   if (prev.fileExists !== next.fileExists) return false;
   if (prev.onLinkPress !== next.onLinkPress) return false;
+  if (prev.onShareFilePress !== next.onShareFilePress) return false;
   if (prev.onMentionPress !== next.onMentionPress) return false;
   const a = prev.children || "";
   const b = next.children || "";
@@ -447,13 +499,17 @@ export const MarkdownText = memo(function MarkdownText({
   fileExists,
   onLinkPress,
   onMentionPress,
+  onShareFilePress,
 }: MarkdownTextProps) {
+  const contextOpener = useShareFileOpener();
+  const shareFileOpener = onShareFilePress ?? contextOpener ?? undefined;
   const { colorScheme } = useColorScheme();
   const { width } = useWindowDimensions();
   const isPhoneLayout = usePhoneLayout();
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
 
   const isThinking = variant === "thinking";
+  const isCard = variant === "card";
   const colors =
     colorScheme === "dark"
       ? isThinking
@@ -462,7 +518,9 @@ export const MarkdownText = memo(function MarkdownText({
       : isThinking
       ? lightThinkingColors
       : lightColors;
-  const sizeStyles = isThinking
+  const sizeStyles = isCard
+    ? cardStyles
+    : isThinking
     ? thinkingStyles
     : isPhoneLayout || usesMobileWorkspaceChrome
     ? phoneChatStyles
@@ -508,6 +566,7 @@ export const MarkdownText = memo(function MarkdownText({
         onLinkPress,
         fileExists,
         onMentionPress,
+        shareFileOpener,
       ),
     [
       width,
@@ -518,6 +577,7 @@ export const MarkdownText = memo(function MarkdownText({
       onLinkPress,
       fileExists,
       onMentionPress,
+      shareFileOpener,
     ],
   );
 

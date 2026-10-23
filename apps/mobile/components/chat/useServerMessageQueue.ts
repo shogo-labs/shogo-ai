@@ -31,6 +31,14 @@ type UseServerMessageQueueOptions = {
  */
 const OPTIMISTIC_ID_PREFIX = "temp-"
 
+/**
+ * How long a "send now" row stays hidden from the dock while the server has
+ * not taken it. The dispatch normally lands in well under a second; the bound
+ * is there so a dispatch that gives up silently cannot leave the message
+ * hidden with no turn to show for it — the row comes back and can be retried.
+ */
+const SENT_NOW_HIDE_TIMEOUT_MS = 30_000
+
 function parseJson<T>(value: string | undefined, fallback: T): T {
   if (!value) return fallback
   try {
@@ -56,8 +64,22 @@ function filesFromParts(parts: string | undefined): FileAttachment[] | undefined
   return files.length > 0 ? files : undefined
 }
 
+/**
+ * A queued task wake: the agent's own background update, not a message a person
+ * typed. It is never painted as a queued user message.
+ */
+function taskNotificationOf(row: IChatQueuedMessage): { paused?: boolean } | undefined {
+  const body = parseJson<QueueBody & { taskNotification?: { paused?: boolean } }>(row.body, {})
+  return body.taskNotification
+}
+
+function isTaskWakeRow(row: IChatQueuedMessage | undefined): boolean {
+  return !!row && !!taskNotificationOf(row)
+}
+
 function toQueuedMessage(row: IChatQueuedMessage): QueuedMessage {
-  const body = parseJson<QueueBody>(row.body, {})
+  const body = parseJson<QueueBody & { taskNotification?: { paused?: boolean } }>(row.body, {})
+  const taskWake = body.taskNotification
   return {
     id: row.id,
     content: row.content,
@@ -68,6 +90,9 @@ function toQueuedMessage(row: IChatQueuedMessage): QueuedMessage {
       : undefined,
     status: row.status,
     error: row.error || undefined,
+    // A task wake is never a queued chat message: it is the agent's own update,
+    // and while a pause holds it back it is shown as one waiting chip instead.
+    ...(taskWake ? { kind: "task_wake" as const, paused: taskWake.paused === true } : {}),
   }
 }
 
@@ -110,6 +135,22 @@ export function useServerMessageQueue({
   const [pendingUserMessage, setPendingUserMessage] = useState<
     UIMessage | undefined
   >(undefined)
+  /**
+   * Rows a person clicked "Send now" on. The POST stops the turn and kicks off
+   * the dispatch without awaiting it, so it returns the row still `pending`:
+   * the reload that follows the click still reads it on the queue and the dock
+   * keeps it until the next poll — and that poll stops as soon as the new turn
+   * streams. Hiding the id here takes the row out of the dock on the click.
+   * It ends when the server's delete or a failure is seen; the only other way
+   * out is the safety timeout in `hideSent`, for a dispatch that never happens.
+   */
+  const [sentIds, setSentIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  )
+  const sentIdsRef = useRef<ReadonlySet<string>>(sentIds)
+  const sentTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  )
   const rowsRef = useRef<IChatQueuedMessage[]>([])
   const isStreamingRef = useRef(isStreaming)
   const onTurnAvailableRef = useRef(onTurnAvailable)
@@ -127,7 +168,10 @@ export function useServerMessageQueue({
     .join("\n")
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const rows = useMemo(() => liveRows, [rowsSignature])
-  const queuedMessages = useMemo(() => rows.map(toQueuedMessage), [rows])
+  const queuedMessages = useMemo(
+    () => rows.filter((row) => !sentIds.has(row.id)).map(toQueuedMessage),
+    [rows, sentIds],
+  )
   /**
    * What the transcript should paint that the server has not saved as a
    * message yet — only the dispatched head that this window has not attached
@@ -149,15 +193,62 @@ export function useServerMessageQueue({
   rowsRef.current = rows
   isStreamingRef.current = isStreaming
   onTurnAvailableRef.current = onTurnAvailable
+  sentIdsRef.current = sentIds
+
+  const hideSent = useCallback((id: string) => {
+    setSentIds((current) =>
+      current.has(id) ? current : new Set(current).add(id),
+    )
+    const existing = sentTimersRef.current.get(id)
+    if (existing !== undefined) clearTimeout(existing)
+    sentTimersRef.current.set(
+      id,
+      setTimeout(() => {
+        sentTimersRef.current.delete(id)
+        setSentIds((current) => {
+          if (!current.has(id)) return current
+          const next = new Set(current)
+          next.delete(id)
+          return next
+        })
+      }, SENT_NOW_HIDE_TIMEOUT_MS),
+    )
+  }, [])
+
+  const showAgain = useCallback((id: string) => {
+    const timer = sentTimersRef.current.get(id)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      sentTimersRef.current.delete(id)
+    }
+    setSentIds((current) => {
+      if (!current.has(id)) return current
+      const next = new Set(current)
+      next.delete(id)
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     previousIdsRef.current = []
     previousRowsRef.current = new Map()
     pendingTurnRef.current = null
     enqueuedRef.current.clear()
+    for (const timer of sentTimersRef.current.values()) clearTimeout(timer)
+    sentTimersRef.current.clear()
+    setSentIds(new Set())
     setTrackedCount(0)
     setPendingUserMessage(undefined)
   }, [sessionId, enabled])
+
+  /** Stop chasing a row this window was waiting on; returns its user message. */
+  const untrack = useCallback((id: string): UIMessage | undefined => {
+    const userMessage = enqueuedRef.current.get(id)
+    if (userMessage === undefined || !enqueuedRef.current.delete(id))
+      return undefined
+    setTrackedCount((count) => Math.max(0, count - 1))
+    return userMessage
+  }, [])
 
   const load = useCallback(async () => {
     if (!enabled || !sessionId) return
@@ -244,6 +335,9 @@ export function useServerMessageQueue({
         userRemovedIdsRef.current.delete(id)
         continue
       }
+      // A task wake leaving the queue is the agent being handed its own update,
+      // not a message a person sent: it must not be painted as a user bubble.
+      if (isTaskWakeRow(previousRows.get(id))) continue
       dispatchedId ??= id
     }
     if (dispatchedId && !pendingTurnRef.current) {
@@ -261,6 +355,20 @@ export function useServerMessageQueue({
   useEffect(() => {
     if (!isStreaming) flushPendingTurn()
   }, [isStreaming, flushPendingTurn])
+
+  // A row hidden by "send now" stays hidden only while the server has not
+  // taken it: the delete means its turn started, and a `failed` row is back on
+  // the queue with its error for a retry. Both end the hide, so a later
+  // incarnation of the id (a retry, a reload) can never inherit it.
+  useEffect(() => {
+    const sent = sentIdsRef.current
+    if (sent.size === 0) return
+    const byId = new Map(rows.map((row) => [row.id, row]))
+    for (const id of sent) {
+      const row = byId.get(id)
+      if (!row || row.status === "failed") showAgain(id)
+    }
+  }, [rows, showAgain])
 
   const enqueue = useCallback(
     async (input: ServerQueueEnqueueInput) => {
@@ -304,10 +412,7 @@ export function useServerMessageQueue({
       // it must stop being tracked here: `drainEnqueued` reads a gone row as the
       // server having started its turn, and deleting a queued message is not
       // that.
-      const tracked = enqueuedRef.current.get(id)
-      if (tracked && enqueuedRef.current.delete(id)) {
-        setTrackedCount((count) => Math.max(0, count - 1))
-      }
+      const tracked = untrack(id)
       try {
         await collection.delete(id)
       } catch (error) {
@@ -321,7 +426,7 @@ export function useServerMessageQueue({
         setTimeout(() => userRemovedIdsRef.current.delete(id), 0)
       }
     },
-    [collection],
+    [collection, untrack],
   )
 
   const update = useCallback(
@@ -332,7 +437,7 @@ export function useServerMessageQueue({
   )
 
   const action = useCallback(
-    async (id: string, actionName: "reorder" | "send-now", body?: Record<string, unknown>) => {
+    async (id: string, actionName: "reorder" | "send-now" | "resume", body?: Record<string, unknown>) => {
       const env = getEnv<{ http: { post: (url: string, body?: unknown) => Promise<{ data?: any }> } }>(collection)
       const response = await env.http.post(
         `/api/chat-queued-messages/${encodeURIComponent(id)}/${actionName}`,
@@ -356,7 +461,39 @@ export function useServerMessageQueue({
 
   const sendNow = useCallback(
     async (id: string) => {
-      await action(id, "send-now")
+      const row = rowsRef.current.find((candidate) => candidate.id === id)
+      // Register the row before the POST, the way `enqueue` does for a row it
+      // creates: the server dispatches and deletes it while this window is
+      // still reading the queue, and the saved user message has to reach the
+      // transcript from the row either way. Tracking it also keeps the poll
+      // running while the new turn streams — the rows poll stops there, and
+      // the delete is what the dock has to see.
+      if (row && !isTaskWakeRow(row) && !enqueuedRef.current.has(id)) {
+        enqueuedRef.current.set(id, queuedRowToUserMessage(row))
+        setTrackedCount((count) => count + 1)
+      }
+      hideSent(id)
+      try {
+        await action(id, "send-now")
+      } catch (error) {
+        // Nothing was sent: the row is still the person's queued message, so
+        // put it back rather than chase a turn that will never start.
+        untrack(id)
+        showAgain(id)
+        throw error
+      }
+    },
+    [action, hideSent, showAgain, untrack],
+  )
+
+  /**
+   * Deliver the updates a paused session is holding. The server flips the
+   * paused wake back to pending and marks it as the start of a new run, so the
+   * cap lifts without the person typing a message.
+   */
+  const resumeTaskWake = useCallback(
+    async (id: string) => {
+      await action(id, "resume")
     },
     [action],
   )
@@ -374,6 +511,7 @@ export function useServerMessageQueue({
     update,
     reorder,
     sendNow,
+    resumeTaskWake,
     isServerQueued,
     reload: load,
   }

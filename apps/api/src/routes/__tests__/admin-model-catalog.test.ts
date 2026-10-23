@@ -455,7 +455,7 @@ describe('admin provider keys (native, incl. tripo)', () => {
   test('GET lists a tripo entry next to the LLM + image providers', async () => {
     const data = await (await get('/provider-keys')).json() as any
     expect(Object.keys(data.keys)).toEqual(
-      expect.arrayContaining(['anthropic', 'openai', 'google', 'openrouter', 'fal', 'tripo']),
+      expect.arrayContaining(['anthropic', 'openai', 'google', 'openrouter', 'tripo', 'higgsfield']),
     )
     expect(data.keys.tripo).toEqual({ configured: false, mask: '', source: null })
   })

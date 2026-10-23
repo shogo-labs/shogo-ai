@@ -15,9 +15,9 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
-import { getFrontendUrl } from '../lib/cloud-urls'
 import { getWorkspaceRole } from '../services/conversation.service'
 import { relayOperation } from '../services/social/relay.service'
+import { connectReturnPage } from '../services/social/connect-page'
 import {
   ackRelayedEvents,
   failRelayedEvents,
@@ -66,6 +66,7 @@ import {
   getProfile,
   listAccounts,
   listPosts,
+  presignMedia,
   socialMode,
   syncAccounts,
   updatePost,
@@ -134,9 +135,17 @@ function conversationWindow(c: any): { messageLimit?: number; before?: string | 
 /**
  * Default landing place for the OAuth redirect when the caller does not name
  * one (the agent tool never has a mobile deep link to hand).
+ *
+ * It has to be a page that exists and is reachable from the browser that just
+ * did the sign-in: this API's own return page, addressed by the origin the
+ * request arrived on. On the desktop that is the local API on localhost, which
+ * is fine because the browser runs on the same machine. `SOCIAL_CONNECT_REDIRECT_URL`
+ * still wins where a deployment wants a different landing place.
  */
-function defaultRedirectUrl(): string {
-  return process.env.SOCIAL_CONNECT_REDIRECT_URL || `${getFrontendUrl()}/settings/social`
+function defaultRedirectUrl(c: any): string {
+  const override = process.env.SOCIAL_CONNECT_REDIRECT_URL
+  if (override) return override
+  return `${new URL(c.req.url).origin}/api/social/connect/return`
 }
 
 /**
@@ -171,6 +180,16 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
     }
     return userId
   }
+
+  /**
+   * Where the browser lands after a platform's sign-in. Unauthenticated by
+   * necessity — the caller is a fresh browser tab coming back from Instagram or
+   * TikTok — and read-only: it says what happened and writes nothing.
+   */
+  router.get('/social/connect/return', (c) => {
+    const result = connectReturnPage(new URL(c.req.url).searchParams)
+    return c.html(result.html, result.status as any)
+  })
 
   router.get('/workspaces/:workspaceId/social/status', async (c) => {
     const workspaceId = c.req.param('workspaceId')
@@ -227,9 +246,34 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
         platform: body.platform,
         redirectUrl: typeof body.redirectUrl === 'string' && body.redirectUrl.trim()
           ? body.redirectUrl.trim()
-          : defaultRedirectUrl(),
+          : defaultRedirectUrl(c),
+        forceReauth: body.forceReauth,
+        expectedUsername: body.expectedUsername,
+        reconnectAccountId: body.reconnectAccountId,
       })
       return c.json(result)
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * Mint an upload slot for media a post will reference. The caller PUTs the
+   * bytes to `uploadUrl` itself and posts `publicUrl`, so a large video never
+   * travels through this API.
+   */
+  router.post('/workspaces/:workspaceId/social/media/presign', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const userId = await requireMember(c, workspaceId)
+    if (userId instanceof Response) return userId
+    const body = await readJson(c)
+    try {
+      const upload = await presignMedia(workspaceId, {
+        filename: body.filename,
+        contentType: body.contentType,
+        size: body.size,
+      })
+      return c.json(upload)
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -294,6 +338,7 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
         publishNow: body.publishNow === true,
         draft: body.draft === true,
         tags: body.tags,
+        tiktok: body.tiktok,
         createdByUserId: userId,
       })
       return c.json({ post }, 201)
@@ -590,6 +635,21 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
     return c.json({ accounts: await listAccounts(auth.workspaceId) })
   })
 
+  /**
+   * Reconcile with the provider. The agent runs this before listing accounts
+   * because a connect that finished in a browser writes nothing locally until
+   * something syncs — without it a just-connected account looks absent.
+   */
+  router.post('/workspaces/:workspaceId/social/accounts/sync', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    try {
+      return c.json({ accounts: await syncAccounts(auth.workspaceId, await workspaceName(auth.workspaceId)) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
   router.post('/workspaces/:workspaceId/social/connect', async (c) => {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
@@ -602,7 +662,30 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
           platform: body.platform,
           redirectUrl: typeof body.redirectUrl === 'string' && body.redirectUrl.trim()
             ? body.redirectUrl.trim()
-            : defaultRedirectUrl(),
+            : defaultRedirectUrl(c),
+          forceReauth: body.forceReauth,
+          expectedUsername: body.expectedUsername,
+          reconnectAccountId: body.reconnectAccountId,
+        }),
+      )
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  // Media a post names has to be a public URL, so a workspace file goes through
+  // the provider's presign flow first. The runtime PUTs the bytes; only the slot
+  // is minted here.
+  router.post('/workspaces/:workspaceId/social/media/presign', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    try {
+      return c.json(
+        await presignMedia(auth.workspaceId, {
+          filename: body.filename,
+          contentType: body.contentType,
+          size: body.size,
         }),
       )
     } catch (err) {
@@ -635,6 +718,7 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
         publishNow: body.publishNow === true,
         draft: body.draft === true,
         tags: body.tags,
+        tiktok: body.tiktok,
       })
       return c.json({ post }, 201)
     } catch (err) {

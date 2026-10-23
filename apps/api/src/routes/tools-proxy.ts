@@ -25,6 +25,7 @@ import { normalizeCapabilitySettings } from '@shogo/shared-runtime/capability-se
 import { verifyProxyToken } from '../lib/ai-proxy-token'
 import { resolveApiKey } from './api-keys'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
+import { isShogoCloudAuthed } from '../lib/cloud-forwarding'
 import { parseProjectSettings } from '../lib/project-settings'
 import { prisma } from '../lib/prisma'
 import {
@@ -93,10 +94,11 @@ function extractToken(req: Request): string | null {
 // =============================================================================
 // Cloud forwarding helpers
 // =============================================================================
-
-function isShogoCloudForwarding(): boolean {
-  return !!process.env.SHOGO_API_KEY
-}
+//
+// Tool and integration calls always relay through Shogo Cloud on a cloud-authed
+// desktop, whatever `AI_MODE` says: the relay is the only place a Composio,
+// Serper or social-provider key exists, so a BYOK install that skipped it would
+// answer 503 rather than fall back to anything local.
 
 async function forwardToCloud(
   req: Request,
@@ -148,7 +150,7 @@ async function forwardRequest(
   serviceName: string,
   upstreamPath: string,
 ): Promise<Response> {
-  if (isShogoCloudForwarding()) {
+  if (isShogoCloudAuthed()) {
     return forwardToCloud(req, serviceName, upstreamPath)
   }
 
@@ -499,7 +501,7 @@ export function toolsProxyRoutes() {
 
     // Desktop forwards to cloud, which is the server that calls EnsembleData
     // and the one that charges. Do not bill (or balance-check) twice.
-    if (isShogoCloudForwarding()) {
+    if (isShogoCloudAuthed()) {
       const headers = new Headers(c.req.raw.headers)
       headers.delete('content-length')
       headers.set('content-type', 'application/json')

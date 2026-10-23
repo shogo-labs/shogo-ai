@@ -168,6 +168,7 @@ mock.module('../../../hooks/useTeamChat', () => ({
   TIMELINE_SOFT_LIMIT: 600,
   useAgentLook: (_workspaceId: string | null | undefined, projectId: string | null) => resolveAgentLook(null, projectId),
   useConversationList: () => ({ list: activityTimeline.channels, loading: false, error: null, refresh: async () => {} }),
+  useChannelDirectory: () => activityTimeline.channels,
   useConversationTimeline: () => ({
     state: { messages: activityTimeline.messages, hasMoreOlder: false, streaming: {} },
     loading: false,
@@ -812,18 +813,48 @@ describe('MessageRow', () => {
     expect(h.onReact).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), '👍', true)
   })
 
-  test('the reaction chip names who reacted on hover, in the viewer\u2019s terms', () => {
-    const reactions = [{ emoji: '👍', count: 3, userIds: ['u-me', 'u-ana', 'u-gone'] }]
+  test('hovering a reaction chip shows a card naming who reacted, and leaving hides it', async () => {
+    const reactions = [{ emoji: '❤️', count: 3, userIds: ['u-me', 'u-ana', 'u-gone'] }]
     render(<MessageRow message={message({ reactions })} grouped={false} me="u-me" names={reactors} canManage={false} />)
-    const label = 'You, Ana Lopez and Someone reacted with 👍'
-    expect(screen.getByLabelText(label).querySelector('[title]')?.getAttribute('title')).toBe(label)
+    const chip = screen.getByLabelText('You, Ana Lopez and Someone reacted with ❤️')
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')).toBeNull()
+    fireEvent.mouseEnter(chip.parentElement!)
+    await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
+    const card = document.querySelector('[data-testid="reaction-tooltip"]')!
+    expect(card.textContent).toContain('Ana Lopez, Someone and You')
+    expect(card.textContent).toContain('reacted with :heart:')
+    fireEvent.mouseLeave(chip.parentElement!)
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')).toBeNull()
   })
 
-  test('a crowded reaction collapses the tail instead of listing everyone', () => {
+  test('a crowded reaction collapses the tail in the hover card', async () => {
     const reactions = [{ emoji: '🎉', count: 5, userIds: ['u-ana', 'u-bob', 'u-cid', 'u-dee', 'u-me'] }]
     render(<MessageRow message={message({ reactions })} grouped={false} me="u-me" names={reactors} canManage={false} />)
-    const label = 'Ana Lopez, Bob Chen and 3 others reacted with 🎉'
-    expect(screen.getByLabelText(label).querySelector('[title]')?.getAttribute('title')).toBe(label)
+    const chip = screen.getByLabelText('Ana Lopez, Bob Chen and 3 others reacted with 🎉')
+    fireEvent.mouseEnter(chip.parentElement!)
+    await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent).toContain('Ana Lopez, Bob Chen, Cid Rao, Dee Park and You reacted with :tada:')
+  })
+
+  test('a pasted markdown attachment renders as a markdown card, not a file tile', () => {
+    const attachment = {
+      id: 'att-md', name: 'Pasted markdown.md', mimeType: 'text/markdown', size: 2100,
+      url: '/api/conversation-files/att-md?t=x', width: null, height: null,
+    }
+    render(<MessageRow message={message({ attachments: [attachment] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+    // Views carry their testID as the shared RN shim, not as `data-testid`.
+    expect(shim('pasted-markdown-card')).toBeTruthy()
+    expect(shim('attachment-card-Pasted markdown.md')).toBeNull()
+  })
+
+  test('any other pasted file stays the plain file card', () => {
+    const attachment = {
+      id: 'att-code', name: 'Pasted code.txt', mimeType: 'text/plain', size: 2100,
+      url: '/api/conversation-files/att-code?t=x', width: null, height: null,
+    }
+    render(<MessageRow message={message({ attachments: [attachment] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+    expect(shim('attachment-card-Pasted code.txt')).toBeTruthy()
+    expect(shim('pasted-markdown-card')).toBeNull()
   })
 })
 
@@ -1426,6 +1457,19 @@ describe('Shogo on its own messages', () => {
   })
 })
 
+describe('what a screen reader hears', () => {
+  test('a mention is announced as the name, not the token in the stored source', () => {
+    const { container } = render(
+      <MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+
+    // The fixture's text is `hi <@a:p:proj-1>`. Spoken verbatim that is a UUID.
+    expect(screen.getByLabelText('Ana Lopez: hi @Billing Bot')).toBeTruthy()
+    const labels = Array.from(container.querySelectorAll('[aria-label]')).map((el) => el.getAttribute('aria-label')!)
+    expect(labels.some((label) => label.includes('<@a:'))).toBe(false)
+  })
+})
+
 describe('agent profile links', () => {
   const tap = async (projectId: string | null, onOpenProjectPane?: any) => {
     const h = handlers()
@@ -1739,13 +1783,17 @@ describe('MessageRow image attachments', () => {
     expect(screen.getByTestId('image-lightbox').getAttribute('data-count')).toBe('1')
   })
 
-  test('non-image attachments still open their URL in the browser', () => {
+  test('a shared file opens the app’s own viewer, never a browser tab', () => {
+    const before = routed.length
     renderRow([file('f1', 'notes.pdf')])
 
     fireEvent.click(screen.getByText('notes.pdf'))
 
-    expect(openURL).toHaveBeenCalledWith('/api/uploads/f1')
+    expect(openURL).not.toHaveBeenCalled()
     expect(screen.queryByTestId('image-lightbox')).toBeNull()
+    expect(routed.slice(before)).toEqual([
+      { pathname: '/(app)/f/[attachmentId]', params: { attachmentId: 'f1', name: 'notes.pdf' } },
+    ])
   })
 
   test('a voice note renders a player, not a file row that opens a URL', () => {
@@ -1893,5 +1941,86 @@ describe('opening a person’s profile from a message', () => {
     renderChannel()
     expect(mentions()).toHaveLength(1)
     expect(onOpenProfile).not.toHaveBeenCalled()
+  })
+})
+
+describe('Composer channel references', () => {
+  const channels = [
+    { id: 'c-ops', kind: 'public', name: 'ops', slug: 'ops' },
+    { id: 'c-itau', kind: 'private', name: 'client-itau', slug: 'client-itau' },
+  ]
+
+  afterEach(() => cleanup())
+
+  test('# lists the channels the reader can see and sends a channel token', async () => {
+    const onSend = mock(async () => {})
+    render(
+      <Composer workspaceId="ws" conversationId="c1" placeholder="Message" mentionables={mentionables} me="u-me" channels={channels} onSend={onSend} />,
+    )
+    const input = composerInput()
+    type(input, 'ask in #cli')
+    expect(screen.getByText('client-itau')).toBeTruthy()
+    expect(screen.queryByText('ops')).toBeNull()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+    })
+    const sent = (onSend.mock.calls[0] as any[])[0]
+    expect(sent.text).toContain('<#c:c-itau>')
+  })
+
+  test('the channel being read is not offered as a reference', () => {
+    render(
+      <Composer workspaceId="ws" conversationId="c-ops" placeholder="Message" mentionables={mentionables} me="u-me" channels={channels} onSend={async () => {}} />,
+    )
+    type(composerInput(), '#')
+    expect(screen.getByText('client-itau')).toBeTruthy()
+    expect(screen.queryByText('ops')).toBeNull()
+  })
+})
+
+describe('channel mentions in a message', () => {
+  const conversation = {
+    id: 'c-eng', workspaceId: 'ws', kind: 'public', name: 'eng', slug: 'eng',
+    topic: null, lastSeq: 2, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
+    joined: true, starred: false, muted: false, notifyLevel: 'all', lastReadSeq: 2,
+    canPost: true, canReply: true, canManage: false, members: [],
+  }
+  const renderPane = () =>
+    render(
+      <TimelinePane
+        workspaceId="ws"
+        conversation={conversation as any}
+        me="u-me"
+        mentionables={{ ...mentionables, agents: [] }}
+        visible
+      />,
+    )
+  const mentions = () => document.querySelectorAll('[data-testid="chat-mention"]')
+
+  afterEach(() => {
+    cleanup()
+    routed.length = 0
+    activityTimeline.messages = []
+    activityTimeline.channels = []
+  })
+
+  test('a channel the reader can see opens from the message', () => {
+    activityTimeline.channels = [{ id: 'c-ops', kind: 'public', name: 'ops', slug: 'ops' }]
+    activityTimeline.messages = [message({ text: 'ask in <#c:c-ops>' })]
+    renderPane()
+    expect(mentions()).toHaveLength(1)
+    fireEvent.click(mentions()[0]!)
+    expect(routed).toEqual([{ pathname: '/(app)/c/[conversationId]', params: { conversationId: 'c-ops' } }])
+  })
+
+  test('a private channel the reader is not in shows no name and is not tappable', () => {
+    activityTimeline.channels = []
+    activityTimeline.messages = [message({ text: 'in <#c:secret-plans>' })]
+    const { container } = renderPane()
+    expect(mentions()).toHaveLength(0)
+    expect(container.textContent).toContain('#privatechannel')
+    expect(container.textContent).not.toContain('secret-plans')
+    expect(routed).toEqual([])
   })
 })

@@ -716,7 +716,7 @@ export function ProjectTopBar({
                 onPress={() => overlayState.setChatMoreOpen((o) => !o)}
                 className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
                 accessibilityLabel="More options"
-                accessibilityState={{ expanded: overlayState.chatMoreOpen }}
+                aria-expanded={overlayState.chatMoreOpen}
               >
                 <MoreHorizontal size={14} className="text-muted-foreground" />
               </Pressable>

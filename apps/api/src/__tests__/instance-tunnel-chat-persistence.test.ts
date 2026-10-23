@@ -369,4 +369,45 @@ describe('Tunneled chat through /api/instances/:id/p/.../agent-proxy/agent/chat'
     expect(args.data.role).toBe('assistant')
     expect(args.data.content).toBe('partial answer')
   })
+
+  // SHO-120: a `shogo worker` VM is a *project runtime*, not a machine. Its
+  // chat turn keeps going through this transparent proxy, which normalizes the
+  // gateway path down to `/agent/*` — the one path family the worker serves.
+  // Pinned so a future machine-workspace change cannot capture it.
+  test('a cli-worker still streams a chat turn through /instances/:id/p', async () => {
+    const instance = mockInstance as any
+    const originalKind = instance.kind
+    instance.kind = 'cli_worker'
+    try {
+      let seenPath: string | undefined
+      setupMockTunnel(INSTANCE_ID, (msg, ws) => {
+        seenPath = msg.path
+        if (msg.stream) emitStreamChunks(ws, msg.requestId, ASSISTANT_SSE_CHUNKS)
+      })
+
+      const app = createTestApp()
+      const res = await app.request(
+        `/api/instances/${INSTANCE_ID}/p/api/projects/${PROJECT_ID}/agent-proxy/agent/chat`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Chat-Session-Id': CHAT_SESSION_ID,
+          },
+          body: JSON.stringify({
+            chatSessionId: CHAT_SESSION_ID,
+            messages: [{ role: 'user', content: 'hi' }],
+          }),
+        },
+      )
+
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toBe('text/event-stream')
+      expect(await drain(res)).toContain('hello from tunneled ')
+      // The worker only answers `/agent/*`; anything else is its 502.
+      expect(seenPath).toBe('/agent/chat')
+    } finally {
+      instance.kind = originalKind
+    }
+  })
 })

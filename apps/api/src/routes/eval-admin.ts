@@ -38,7 +38,7 @@ const VALID_TRACKS = [
   'nonprofit', 'adversarial', 'cross-cutting', 'workspace-attachments',
   'preview-url', 'truncation', 'codegen-safety', 'verification', 'loops',
   'long-task', 'test-hygiene', 'agent-hardening', 'tool-discipline',
-  'typed-build', 'reliability-regression', 'secret-hygiene',
+  'typed-build', 'reliability-regression', 'secret-hygiene', 'cache-efficiency',
 ]
 
 const VALID_MODELS = new Set([
@@ -59,6 +59,13 @@ const VALID_MODELS = new Set([
  */
 const RELEASE_GATE_TRACK = 'reliability-regression'
 const RELEASE_GATE_DEFAULT_MODEL = 'hoshi-2-0'
+/**
+ * Tracks whose baseline lives on hoshi rather than a Claude model. The
+ * cache-efficiency suite measures DeepSeek's implicit prefix cache — the model
+ * that drives most production traffic — so it must run on the same model the
+ * baseline was recorded with.
+ */
+const HOSHI_TRACKS = new Set([RELEASE_GATE_TRACK, 'cache-efficiency'])
 
 /**
  * DB-model existence check used as a fallback when `model` isn't one of the
@@ -774,7 +781,7 @@ export function evalAdminRoutes(): Hono {
     }
 
     const track = body.track ?? 'agentic'
-    const model = body.model ?? (track === RELEASE_GATE_TRACK ? RELEASE_GATE_DEFAULT_MODEL : 'sonnet')
+    const model = body.model ?? (HOSHI_TRACKS.has(track) ? RELEASE_GATE_DEFAULT_MODEL : 'sonnet')
     const workers = Math.min(Math.max(body.workers ?? 1, 1), 8)
     const local = body.local ?? false
     const vm = body.vm ?? false
@@ -1007,7 +1014,7 @@ export function evalInternalRoutes(): Hono {
       commitSha?: string | null
     }
     const track = body.track ?? 'agentic'
-    const model = body.model ?? (track === RELEASE_GATE_TRACK ? RELEASE_GATE_DEFAULT_MODEL : 'sonnet')
+    const model = body.model ?? (HOSHI_TRACKS.has(track) ? RELEASE_GATE_DEFAULT_MODEL : 'sonnet')
     const workers = Math.min(Math.max(body.workers ?? 1, 1), 8)
 
     if (!VALID_TRACKS.includes(track)) {

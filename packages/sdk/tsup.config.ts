@@ -27,6 +27,7 @@ export default defineConfig({
     'src/voice/route/music.ts',
     'src/voice/route/agent.ts',
     'src/voice/route/audio-tags.ts',
+    'src/voice/route/op.ts',
     'src/cli/deploy.ts',
     'src/cli/pkg.ts',
     // Narrow entry consumed by `packages/shogo-worker` (MIT). Keeping it
@@ -36,6 +37,7 @@ export default defineConfig({
     // present in CI / minimal install envs).
     'src/projects/cloud-file-transport.ts',
     'src/vite-watch.ts',
+    'src/child-ledger.ts',
     // Back-compat shims for symbols that moved to @shogo-ai/{core,agent}.
     // Each compiles to a tiny re-export chunk; the actual implementation
     // lives in the published per-package dist.
@@ -51,6 +53,7 @@ export default defineConfig({
     'src/model-catalog/index.ts',
     'src/loop-detector.ts',
     'src/microcompact.ts',
+    'src/turn-boundary.ts',
     'src/prefix-fingerprint.ts',
     'src/tool-orchestration.ts',
     'src/hooks/index.ts',
@@ -116,6 +119,7 @@ export default defineConfig({
     '@shogo-ai/agent/tool-orchestration',
     '@shogo-ai/agent/loop-detector',
     '@shogo-ai/agent/microcompact',
+    '@shogo-ai/agent/turn-boundary',
     '@shogo-ai/agent/prefix-fingerprint',
     '@shogo-ai/agent/hooks',
     '@shogo-ai/agent/events',
@@ -134,6 +138,7 @@ export default defineConfig({
     '@shogo-ai/voice/route/music',
     '@shogo-ai/voice/route/agent',
     '@shogo-ai/voice/route/audio-tags',
+    '@shogo-ai/voice/route/op',
     '@shogo-ai/cli',
     '@shogo-ai/cli/deploy',
     '@shogo-ai/cli/pkg',

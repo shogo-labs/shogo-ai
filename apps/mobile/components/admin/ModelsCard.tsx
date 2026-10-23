@@ -61,7 +61,6 @@ const KEY_PROVIDERS = [
   { id: 'anthropic', name: 'Anthropic', placeholder: 'sk-ant-…' },
   { id: 'openai', name: 'OpenAI', placeholder: 'sk-…' },
   { id: 'openrouter', name: 'OpenRouter', placeholder: 'sk-or-…' },
-  { id: 'fal', name: 'fal.ai (images and video)', placeholder: 'key-id:key-secret' },
   { id: 'tripo', name: 'Tripo (3D)', placeholder: 'tsk_…' },
   { id: 'higgsfield', name: 'Higgsfield (video, images, Genjutsu)', placeholder: 'key_id:key_secret' },
 ] as const

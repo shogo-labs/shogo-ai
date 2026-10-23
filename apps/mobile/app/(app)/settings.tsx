@@ -21,7 +21,7 @@ import {
   StyleSheet,
   useWindowDimensions,
 } from "react-native";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { Redirect, useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { observer } from "mobx-react-lite";
 import {
@@ -60,6 +60,7 @@ import {
   useAccountSheetIcons,
 } from "../../components/settings/account-sheet-chrome";
 import { AppearanceTab } from "../../components/settings/AppearanceTab";
+import { ChatPreferencesTab } from "../../components/settings/ChatPreferencesTab";
 import { CreateWorkspaceModal } from "../../components/layout/sidebar/CreateWorkspaceModal";
 import { useAuth } from "../../contexts/auth";
 import {
@@ -73,21 +74,19 @@ import {
 } from "../../contexts/domain";
 import { useDomainActions } from "@shogo/shared-app/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation";
 import { usePermissions } from "../../hooks/usePermissions";
-import {
-  resolveActiveWorkspaceId,
-  setActiveWorkspaceId,
-} from "../../lib/workspace-store";
+import { setActiveWorkspaceId } from "../../lib/workspace-store";
 import {
   api,
   API_URL,
-  isInvitationExpired,
   type WorkspaceChildrenResponse,
   type WorkspaceDeletionPreview,
   type MemberInsight,
   type MemberInsightsData,
 } from "../../lib/api";
+import { useUsageLogCsvUrl } from "../../lib/usage-log-csv";
 import {
   workspaceDeleteErrorMessage,
   workspaceErrorMessage,
@@ -138,6 +137,12 @@ import {
   type SettingsTabId,
 } from "../../lib/settings-tabs";
 import { leaveSettings } from "../../lib/settings-back";
+import {
+  isDesktopShell,
+  isPhoneSettingsSurface,
+  phoneSettingsTarget,
+  resolveRequestedWorkspaceId,
+} from "../../lib/phone-settings-route";
 import {
   useToast,
   Toast,
@@ -197,6 +202,7 @@ function useSettingsIcons() {
 const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   workspace: "Building2",
   people: "Users",
+  chat: "MessageSquare",
   models: "Boxes",
   integrations: "Plug",
   automations: "Zap",
@@ -224,10 +230,7 @@ const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === "ios";
 // Cloud), while a cloud-connected desktop install still needs the Updates
 // tab since it's the Electron auto-updater's home regardless of which
 // backend the app talks to. See `desktopOnly` in lib/settings-tabs.ts.
-const IS_DESKTOP_CLIENT =
-  Platform.OS === "web" &&
-  typeof window !== "undefined" &&
-  !!(window as any).shogoDesktop?.isDesktop;
+const IS_DESKTOP_CLIENT = isDesktopShell();
 
 interface NavItem {
   id: TabId;
@@ -238,6 +241,7 @@ interface NavItem {
 const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "people",
+  "chat",
   "models",
   "integrations",
   "automations",
@@ -251,6 +255,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
 
 const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
+  "chat",
   "models",
   "integrations",
   "automations",
@@ -268,17 +273,23 @@ function TabBar({
   onTabChange,
   showBilling = true,
   localMode = false,
+  teamChat = false,
 }: {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
   showBilling?: boolean;
   localMode?: boolean;
+  /** Chat preferences only exist in a team workspace. */
+  teamChat?: boolean;
 }) {
   const icons = useSettingsIcons();
-  const items = showBilling && !localMode ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS;
+  const items = (showBilling && !localMode ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS).filter(
+    (item) => item.id !== "chat" || teamChat,
+  );
   return (
     <ScrollView
       horizontal
+      testID="settings-legacy-tab-bar"
       showsHorizontalScrollIndicator={false}
       className="border-b border-border/70 bg-card"
       contentContainerClassName="gap-1 px-4 py-1"
@@ -334,6 +345,7 @@ function SettingsSidebar({
   onExit,
   showBilling = true,
   localMode = false,
+  teamChat = false,
 }: {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
@@ -342,6 +354,8 @@ function SettingsSidebar({
   onExit?: () => void;
   showBilling?: boolean;
   localMode?: boolean;
+  /** Chat preferences only exist in a team workspace. */
+  teamChat?: boolean;
 }) {
   const { ArrowLeft } = useSettingsIcons();
   const tabItem = (id: TabId): SidebarItem => ({
@@ -351,6 +365,7 @@ function SettingsSidebar({
 
   const workspaceItems: SidebarItem[] = [
     ...(!(localMode || !showBilling) ? [tabItem("people")] : []),
+    ...(teamChat ? [tabItem("chat")] : []),
     tabItem("models"),
     tabItem("integrations"),
     tabItem("automations"),
@@ -1577,11 +1592,6 @@ const PeopleTab = observer(function PeopleTab() {
   const [userMap, setUserMap] = useState<
     Record<string, { name: string; email: string }>
   >({});
-  const [receivedInvites, setReceivedInvites] = useState<any[]>([]);
-  const [processingInvite, setProcessingInvite] = useState<{
-    id: string;
-    action: "accept" | "decline";
-  } | null>(null);
 
   const [resolvedWs, setResolvedWs] = useState<{
     id: string;
@@ -1654,16 +1664,6 @@ const PeopleTab = observer(function PeopleTab() {
         } catch {
           setMemberInsights({ rows: [], total: 0 });
         }
-
-        if (user?.email) {
-          try {
-            const rawPending = await api.getReceivedInvitations(
-              http,
-              user.email
-            );
-            setReceivedInvites(Array.isArray(rawPending) ? rawPending : []);
-          } catch {}
-        }
       }
     } catch {}
     setIsLoading(false);
@@ -1673,7 +1673,6 @@ const PeopleTab = observer(function PeopleTab() {
     invitations,
     http,
     currentWorkspace?.id,
-    user?.email,
     memberUsagePeriod,
   ]);
 
@@ -2391,9 +2390,12 @@ const PeopleTab = observer(function PeopleTab() {
     (m: any) => m.role !== "viewer"
   ).length;
 
+  // Same host as the usage numbers on screen, machine included (SHO-108/SHO-91).
+  const exportCsvUrl = useUsageLogCsvUrl(currentWorkspace?.id, { period: "30d" });
+
   const handleExportMembersCsv = () => {
     if (!currentWorkspace?.id) return;
-    const url = api.getUsageLogCsvUrl(currentWorkspace.id, { period: "30d" });
+    const url = exportCsvUrl;
     if (typeof window !== "undefined") {
       window.open(url, "_blank", "noopener");
     } else {
@@ -2681,147 +2683,6 @@ const PeopleTab = observer(function PeopleTab() {
 
       {subTab === "invitations" && (
         <View className="gap-4">
-          {/* Received invitations */}
-          <View>
-            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">
-              Received
-            </Text>
-            {receivedInvites.length === 0 ? (
-              <Card>
-                <CardContent className="py-6 items-center">
-                  <Text className="text-sm text-muted-foreground">
-                    No invitations
-                  </Text>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card>
-                <CardContent className="p-0">
-                  {receivedInvites.map((inv: any) => {
-                    const expired = isInvitationExpired(inv);
-                    const isAccepting =
-                      processingInvite?.id === inv.id &&
-                      processingInvite?.action === "accept";
-                    const isDeclining =
-                      processingInvite?.id === inv.id &&
-                      processingInvite?.action === "decline";
-                    return (
-                      <View key={inv.id} className="p-4 border-b border-border">
-                        <View className="flex-row items-center justify-between mb-1">
-                          <Text className="text-base font-semibold text-foreground">
-                            {inv.workspace?.name ||
-                              inv.workspaceName ||
-                              "Workspace"}
-                          </Text>
-                          <View className="flex-row items-center gap-2">
-                            {expired && (
-                              <View className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/40">
-                                <Text className="text-xs text-amber-700 dark:text-amber-300">
-                                  Expired
-                                </Text>
-                              </View>
-                            )}
-                            <View className="px-2 py-0.5 rounded bg-muted">
-                              <Text className="text-xs text-muted-foreground capitalize">
-                                {ROLE_DISPLAY[inv.role] || inv.role}
-                              </Text>
-                            </View>
-                          </View>
-                        </View>
-                        <Text className="text-sm text-muted-foreground mb-3">
-                          {expired
-                            ? "This invitation has expired. You can dismiss it or ask for a new invite."
-                            : "You've been invited to join this workspace"}
-                        </Text>
-                        <View className="flex-row gap-2">
-                          <Pressable
-                            disabled={
-                              expired || processingInvite?.id === inv.id
-                            }
-                            onPress={async () => {
-                              setProcessingInvite({
-                                id: inv.id,
-                                action: "accept",
-                              });
-                              try {
-                                await actions.acceptInvitation(
-                                  inv.id,
-                                  user?.id || "",
-                                  {
-                                    workspaceId: inv.workspaceId,
-                                    role: inv.role,
-                                    projectId: inv.projectId,
-                                  }
-                                );
-                                setReceivedInvites((prev) =>
-                                  prev.filter((i: any) => i.id !== inv.id)
-                                );
-                              } catch {}
-                              loadPeopleData();
-                              invitationEvents.emit();
-                              setProcessingInvite(null);
-                            }}
-                            className={cn(
-                              "flex-1 h-10 rounded-lg items-center justify-center",
-                              expired ? "bg-muted" : "bg-primary",
-                              (expired || processingInvite?.id === inv.id) &&
-                                "opacity-50"
-                            )}
-                          >
-                            {isAccepting ? (
-                              <ActivityIndicator size="small" color="white" />
-                            ) : (
-                              <Text
-                                className={cn(
-                                  "text-sm font-medium",
-                                  expired
-                                    ? "text-muted-foreground"
-                                    : "text-primary-foreground"
-                                )}
-                              >
-                                {expired ? "Expired" : "Accept"}
-                              </Text>
-                            )}
-                          </Pressable>
-                          <Pressable
-                            disabled={processingInvite?.id === inv.id}
-                            onPress={async () => {
-                              setProcessingInvite({
-                                id: inv.id,
-                                action: "decline",
-                              });
-                              try {
-                                await actions.declineInvitation(inv.id);
-                                setReceivedInvites((prev) =>
-                                  prev.filter((i: any) => i.id !== inv.id)
-                                );
-                              } catch {}
-                              loadPeopleData();
-                              invitationEvents.emit();
-                              setProcessingInvite(null);
-                            }}
-                            className={cn(
-                              "flex-1 h-10 border border-border rounded-lg items-center justify-center",
-                              processingInvite?.id === inv.id && "opacity-50"
-                            )}
-                          >
-                            {isDeclining ? (
-                              <ActivityIndicator size="small" />
-                            ) : (
-                              <Text className="text-sm font-medium text-foreground">
-                                {expired ? "Dismiss" : "Decline"}
-                              </Text>
-                            )}
-                          </Pressable>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </CardContent>
-              </Card>
-            )}
-          </View>
-
           {/* Sent invitations */}
           <View>
             <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">
@@ -4112,7 +3973,7 @@ export function WorkspaceAccountActions({
                 <Pressable
                   key={workspace.id}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: isCurrent }}
+                  aria-selected={isCurrent}
                   accessibilityLabel={`Switch to ${
                     workspace.name || "workspace"
                   }`}
@@ -4323,18 +4184,22 @@ export const SettingsContent = observer(function SettingsContent({
   localMode = false,
   onSelectTab,
   onClose,
+  section,
 }: {
   activeTab: TabId;
   localMode?: boolean;
   onSelectTab?: (tab: TabId) => void;
   /** Set when Settings is shown in a sheet that must close before navigating away. */
   onClose?: () => void;
+  /** `?section=` deep link inside a tab, e.g. `agent-concurrency` on Chat. */
+  section?: string;
 }) {
   const isLocal = localMode;
   return (
     <>
       {activeTab === "workspace" && <WorkspaceSettingsTab />}
       {activeTab === "people" && !isLocal && <PeopleTab />}
+      {activeTab === "chat" && <ChatPreferencesTab highlightSection={section} />}
       {activeTab === "models" && <WorkspaceModelsTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
       {activeTab === "automations" && (
@@ -4368,10 +4233,15 @@ export default observer(function SettingsPage({
 }) {
   const { ExternalLink, ArrowLeft } = useSettingsIcons();
   const router = useRouter();
-  const params = useLocalSearchParams<{ tab?: string; workspace?: string }>();
+  const params = useLocalSearchParams<{ tab?: string; workspace?: string; section?: string }>();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const isWide = width >= SETTINGS_WIDE_BREAKPOINT;
+  // Phone (native handset or web ≤767px) has its own Settings surface: the
+  // Account screen with `NativeAccountSettingsSheet`. This page stays the
+  // wide/tablet one and redirects below — the single insert point for every
+  // `/settings?tab=…` deep link, so no caller changes.
+  const isPhoneSurface = isPhoneSettingsSurface(width, height);
   // Mirrors `showSidebar` in `(app)/_layout.tsx`: wide web renders the app
   // sidebar beside this page, so the page drops its own exit and switcher.
   const inAppShell = !onClose && Platform.OS === "web" && isWide;
@@ -4379,6 +4249,17 @@ export default observer(function SettingsPage({
   const { user } = useAuth();
   const workspaces = useWorkspaceCollection();
   const { features, localMode } = usePlatformConfig();
+  const teamChat = useWorkspaceExperience().kind === "team";
+  const phoneTarget = phoneSettingsTarget(
+    params as Record<string, string | string[] | undefined>,
+    {
+      localMode: localMode || !features.billing,
+      showBilling: features.billing,
+      platform: Platform.OS,
+      isDesktop: IS_DESKTOP_CLIENT,
+      teamChat,
+    },
+  );
 
   const [activeTab, setActiveTab] = useState<TabId>(() => {
     const requested = params.tab as TabId;
@@ -4387,37 +4268,39 @@ export default observer(function SettingsPage({
 
   // Usage and Cost Optimizer now live on the Analytics screen; keep old links working.
   useEffect(() => {
+    // The phone redirect already targets Analytics — never navigate twice.
+    if (isPhoneSurface) return;
     if (params.tab === "analytics" || params.tab === "costs") {
       router.replace({
         pathname: "/(app)/analytics",
         params: { view: params.tab === "costs" ? "costs" : "usage" },
       } as any);
     }
-  }, [params.tab, router]);
+  }, [isPhoneSurface, params.tab, router]);
 
   useEffect(() => {
-    const requestedWorkspace = params.workspace;
+    if (isPhoneSurface) return;
     const ownWorkspaceIds =
       workspaces?.all?.map((workspace: any) => workspace.id) ?? [];
-    if (!requestedWorkspace || ownWorkspaceIds.length === 0) return;
-    const resolvedWorkspace = resolveActiveWorkspaceId(
+    const resolvedWorkspace = resolveRequestedWorkspaceId(
+      params.workspace,
       ownWorkspaceIds,
-      requestedWorkspace,
-      { listLoaded: true },
     );
     if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace);
-  }, [params.workspace, workspaces?.all, workspaces?.isLoading]);
+  }, [isPhoneSurface, params.workspace, workspaces?.all, workspaces?.isLoading]);
 
   useEffect(() => {
+    if (isPhoneSurface) return;
     const isLocal = localMode || !features.billing;
     if (activeTab === "people" && isLocal) setActiveTab("workspace");
+    if (activeTab === "chat" && !teamChat) setActiveTab("workspace");
     if (activeTab === "compute" && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS))
       setActiveTab("workspace");
     if (activeTab === "updates" && !IS_DESKTOP_CLIENT)
       setActiveTab("workspace");
     if (activeTab === "computer-files" && (!IS_DESKTOP_CLIENT || !isLocal))
       setActiveTab("workspace");
-  }, [activeTab, features.billing, localMode]);
+  }, [activeTab, features.billing, localMode, teamChat]);
 
   const userName = user?.name || "";
   const activeTabLabel = settingsTab(activeTab).label;
@@ -4428,6 +4311,12 @@ export default observer(function SettingsPage({
     }
     leaveSettings(router, isNativePhone);
   };
+
+  // Phone lands on the Account screen with the mapped tab's sheet open. The
+  // wide branch below (and the tablet page) is unchanged.
+  if (isPhoneSurface) {
+    return <Redirect href={phoneTarget as any} />;
+  }
 
   if (isWide) {
     return (
@@ -4443,6 +4332,7 @@ export default observer(function SettingsPage({
             onExit={inAppShell ? undefined : exitSettings}
             showBilling={features.billing}
             localMode={localMode}
+            teamChat={teamChat}
           />
         </View>
         <ScrollView
@@ -4475,6 +4365,7 @@ export default observer(function SettingsPage({
               activeTab={activeTab}
               localMode={localMode || !features.billing}
               onSelectTab={setActiveTab}
+              section={typeof params.section === "string" ? params.section : undefined}
             />
           </View>
         </ScrollView>
@@ -4483,7 +4374,11 @@ export default observer(function SettingsPage({
   }
 
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
+    <View
+      testID="settings-legacy-page"
+      className="flex-1 bg-background"
+      style={{ paddingTop: insets.top }}
+    >
       <View className="flex-row items-center gap-3 border-b border-border/70 bg-card px-4 py-3">
         <Pressable
           accessibilityRole="button"
@@ -4509,6 +4404,7 @@ export default observer(function SettingsPage({
           onTabChange={setActiveTab}
           showBilling={features.billing}
           localMode={localMode || !features.billing}
+          teamChat={teamChat}
         />
       </View>
 
@@ -4525,6 +4421,7 @@ export default observer(function SettingsPage({
             activeTab={activeTab}
             localMode={localMode || !features.billing}
             onSelectTab={setActiveTab}
+            section={typeof params.section === "string" ? params.section : undefined}
           />
         </View>
       </ScrollView>

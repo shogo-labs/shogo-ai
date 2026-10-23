@@ -8,6 +8,21 @@
 remote="$1"
 url="$2"
 
+# Agent identity guard. `git commit --no-verify` (and a script that passes it)
+# skips pre-commit and commit-msg, so this is the last place an identity that is
+# not Shogo Agent <agent@shogo.ai> can be stopped before it leaves the box: the
+# push is refused while any commit it would send is authored or committed by
+# someone else. Armed only in an agent checkout (local `user.email` is a Shogo
+# agent address); a human's checkout is never refused.
+push_stdin=$(cat)
+if command -v bun >/dev/null 2>&1; then
+  hook_dir="$(cd "$(dirname "$0")" && pwd)"
+  if ! printf '%s\n' "$push_stdin" | bun "$(dirname "$hook_dir")/scripts/git-attribution-hook.ts" verify-push; then
+    echo "[pre-push] Push aborted."
+    exit 1
+  fi
+fi
+
 PROTECTED_BRANCHES="main staging"
 
 while read local_ref local_oid remote_ref remote_oid; do
@@ -38,6 +53,6 @@ while read local_ref local_oid remote_ref remote_oid; do
       break
     fi
   done
-done
+done <<< "$push_stdin"
 
 exit 0

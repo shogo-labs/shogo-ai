@@ -21,11 +21,21 @@ import {
 } from "../../contexts/domain"
 import { openInWorkspace, adoptChatWorkspace } from "../../lib/switch-workspace"
 import { pickTeamWorkspace } from "../../lib/team-workspace"
-import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
+import { useWorkspaceInView } from "../../hooks/useWorkspaceInView"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
+import { useWorkspaceAgentBase } from "../../hooks/useWorkspaceAgentBase"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
-import { chatSessionEvents } from "../../lib/chat-session-events"
+import {
+  chatActivityEvents,
+  chatSessionEvents,
+} from "../../lib/chat-session-events"
+import {
+  emptyWorkspaceChatActivity,
+  nextWorkspaceChatActivity,
+  workspaceChatActivityEvent,
+  type WorkspaceChatActivityState,
+} from "../../lib/workspace-chat-activity"
 import { chatMentionMetaFor } from "../../lib/chat-mention-meta"
 import { agentSessionSource } from "../../lib/root-destination"
 import { ensureLandingSession, LANDING_SESSION_NAME } from "../../lib/landing-session"
@@ -99,9 +109,17 @@ export const WorkspaceAgentChatScreen = observer(
     const router = useRouter()
     const { user } = useAuth()
     const http = useDomainHttp()
-    const workspace = useActiveWorkspace()
+    // The workspace in view: a paired computer's own workspace while it is
+    // open, so its id and kind — not the cloud workspace that happens to be
+    // selected — decide this chat's sessions, its scope and its chrome
+    // (SHO-130).
+    const workspace = useWorkspaceInView()
     const projects = useProjectCollection()
     const experience = useWorkspaceExperience()
+    // Set only while a paired desktop's own workspace is open: its agent,
+    // sessions and team chat live on that machine, not in the cloud workspace
+    // that happens to be selected.
+    const machineRoute = useWorkspaceAgentBase()
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
     const insets = useSafeAreaInsets()
     const { width, height } = useWindowDimensions()
@@ -146,6 +164,11 @@ export const WorkspaceAgentChatScreen = observer(
     const reloadAttachments = useRef<(() => void) | null>(null)
     const avatarFinishedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
     const avatarStreaming = useRef(false)
+    // What the sidebar paints: the spinner on this chat's row while its turn
+    // runs, then the new-activity dot if the turn lands out of view.
+    const [chatActivity, setChatActivity] = useState<WorkspaceChatActivityState>(
+      emptyWorkspaceChatActivity,
+    )
     const crossTabPrefill = useChatPrefill()
     const { showWelcome, dismissWelcome } = useWelcomeMessage(workspace?.id)
     const isPersonalWorkspace = experience.kind === "personal"
@@ -354,37 +377,81 @@ export const WorkspaceAgentChatScreen = observer(
         current?.nonce === nonce ? null : current,
       )
     }, [])
-    const handleStreamingChange = useCallback((isStreaming: boolean) => {
-      if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
-      if (isStreaming) {
-        avatarStreaming.current = true
-        setAvatarState("working")
-        return
-      }
-      if (!avatarStreaming.current) {
-        setAvatarState("idle")
-        return
-      }
-      if (workspace?.id && sessionId) {
-        chatSessionEvents.emit({
-          workspaceId: workspace.id,
-          activeSessionId: sessionId,
-          refresh: true,
-        })
-      }
-      avatarStreaming.current = false
-      setAvatarState("finished")
-      avatarFinishedTimer.current = setTimeout(() => {
-        avatarFinishedTimer.current = null
-        setAvatarState("idle")
-      }, 1800)
-    }, [sessionId, workspace?.id])
+    const handleStreamingChange = useCallback(
+      (isStreaming: boolean) => {
+        if (avatarFinishedTimer.current)
+          clearTimeout(avatarFinishedTimer.current)
+        // Mirror the turn into the sidebar rows, the same way the project
+        // workspace publishes its per-tab streaming state.
+        if (sessionId) {
+          setChatActivity((current) =>
+            nextWorkspaceChatActivity(current, {
+              sessionId,
+              isStreaming,
+              activeSessionId: sessionId,
+            }),
+          )
+        }
+        if (isStreaming) {
+          avatarStreaming.current = true
+          setAvatarState("working")
+          return
+        }
+        if (!avatarStreaming.current) {
+          setAvatarState("idle")
+          return
+        }
+        if (workspace?.id && sessionId) {
+          chatSessionEvents.emit({
+            workspaceId: workspace.id,
+            activeSessionId: sessionId,
+            refresh: true,
+          })
+        }
+        avatarStreaming.current = false
+        setAvatarState("finished")
+        avatarFinishedTimer.current = setTimeout(() => {
+          avatarFinishedTimer.current = null
+          setAvatarState("idle")
+        }, 1800)
+      },
+      [sessionId, workspace?.id],
+    )
     useEffect(
       () => () => {
-        if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
+        if (avatarFinishedTimer.current)
+          clearTimeout(avatarFinishedTimer.current)
       },
       [],
     )
+
+    // Publish this chat's activity so the Home panel and the phone drawer can
+    // paint the spinner + new-activity dot. Kept off `chatSessionEvents` so a
+    // stream tick never triggers a chat-list re-fetch.
+    useEffect(() => {
+      if (!workspace?.id) return
+      chatActivityEvents.emit(
+        workspaceChatActivityEvent(workspace.id, chatActivity),
+      )
+    }, [chatActivity, workspace?.id])
+
+    // A turn belongs to the chat that is on screen: switching chats (or leaving
+    // the screen) drops the old state so a stale row cannot spin forever.
+    useEffect(() => {
+      setChatActivity(emptyWorkspaceChatActivity)
+    }, [sessionId])
+
+    useEffect(() => {
+      if (!workspace?.id) return
+      const workspaceId = workspace.id
+      return () => {
+        chatActivityEvents.emit({
+          workspaceId,
+          streamingSessionIds: [],
+          completedSessionIds: [],
+        })
+      }
+    }, [workspace?.id])
 
     if (!workspace?.id || !sessionId || !profile) {
       return (
@@ -554,7 +621,8 @@ export const WorkspaceAgentChatScreen = observer(
     }
 
     const activePane = hasSidePane ? projectPane : null
-    const workspaceAgentUrl = `${API_URL}/api/workspaces/${workspace.id}/agent-proxy`
+    const workspaceAgentUrl =
+      machineRoute?.agentBase ?? `${API_URL}/api/workspaces/${workspace.id}/agent-proxy`
     const plansPanel = planPane ? (
       <PlansPanel
         visible
@@ -684,6 +752,7 @@ export const WorkspaceAgentChatScreen = observer(
             featureName={profile.name}
             phase={null}
             workspaceId={workspace.id}
+            localAgentUrl={machineRoute?.agentBase ?? null}
             userId={user?.id}
             focusedProjectId={focusedProjectId}
             chatScope="workspace"

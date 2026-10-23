@@ -56,6 +56,7 @@
 import type { Message, ToolResultMessage, TextContent } from '@mariozechner/pi-ai'
 import { applyToolResultBudget, snipConsumedResults } from './session-manager.js'
 import { microcompact } from './microcompact.js'
+import { protectedStart } from './turn-boundary.js'
 import { scrubOversizedImages } from './image-size-guard.js'
 import { getDynamicModel } from '@shogo/model-catalog'
 
@@ -199,11 +200,10 @@ function estimateMessageTokens(msg: Message): number {
 
 /** Index of the first message inside the last `PROTECTED_TURNS` assistant turns. */
 function protectedWindowStart(messages: Message[]): number {
-  let seen = 0
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant' && ++seen === PROTECTED_TURNS) return i
-  }
-  return 0
+  // Turn-anchored (SHO-122): the previous turn is one unit. The checkpoint
+  // below must never clear a result from it — that left the model holding
+  // `[Earlier exec result cleared…]` for the work it had just finished.
+  return protectedStart(messages, PROTECTED_TURNS)
 }
 
 /**

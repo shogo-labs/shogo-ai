@@ -23,6 +23,7 @@ import {
   isLocalPtyBridgeData,
   upgradeLocalPtySocket,
 } from './routes/local-terminal'
+import { countTerminalSession } from './lib/terminal-session-pin'
 import { createLocalApp } from './app/create-local-app'
 import { stopAllPrismaStudios } from './routes/database'
 import { startLocalBackgroundWorkers, stopLocalBackgroundWorkers } from './lib/local-background-workers'
@@ -82,7 +83,10 @@ const server = Bun.serve({
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
       else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.open(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamOpen(ws)
-      else if (isLocalPtyBridgeData(ws.data)) ptyBridge.open(ws)
+      else if (isLocalPtyBridgeData(ws.data)) {
+        countTerminalSession(runtimeManager, ws.data, 1)
+        ptyBridge.open(ws)
+      }
     },
     message(ws: any, message: any) {
       if (isConversationSocketData(ws.data)) void conversationSocketHandlers.message(ws, message)
@@ -94,7 +98,10 @@ const server = Bun.serve({
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
       else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.close(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamClose(ws)
-      else if (isLocalPtyBridgeData(ws.data)) ptyBridge.close(ws, code, reason)
+      else if (isLocalPtyBridgeData(ws.data)) {
+        countTerminalSession(runtimeManager, ws.data, -1)
+        ptyBridge.close(ws, code, reason)
+      }
     },
   },
   idleTimeout: 255,

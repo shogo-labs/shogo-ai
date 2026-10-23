@@ -343,6 +343,25 @@ describe('createVoiceHandlers — runtime-token proxy mode', () => {
     expect(calls).toHaveLength(0)
   })
 
+  test('tts builds the audioTags preview line before forwarding', async () => {
+    const { fetch: fetchImpl, calls } = makeMockFetch(() => ({ status: 200, body: {} }))
+    const handlers = createVoiceHandlers({
+      proxy: { runtimeToken: 'rt', projectId: 'p', apiUrl: 'http://api', fetch: fetchImpl },
+    })
+    const res = await handlers.tts(
+      new Request('http://pod/api/voice/tts', {
+        method: 'POST',
+        body: JSON.stringify({ audioTags: ['laughs'], characterName: 'Ada' }),
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(calls).toHaveLength(1)
+    const forwarded = JSON.parse(calls[0]!.init.body as string)
+    expect(String(forwarded.text)).toContain('Ada')
+    expect(forwarded.audioTags).toBeUndefined()
+  })
+
   test('elevenLabs.textToSpeech goes through the proxy; agent provisioning throws', async () => {
     const { fetch: fetchImpl, calls } = makeMockFetch(() => ({ status: 200 }))
     const proxied = (async (input: any, init: any = {}) => {

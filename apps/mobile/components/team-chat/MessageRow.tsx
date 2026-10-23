@@ -5,8 +5,9 @@
  * body with mentions, attachments, reactions, thread summary, and live agent
  * replies (streaming text, the tool in use, Stop).
  */
-import { createElement, memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
+import { createPortal } from 'react-dom'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
 import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, ExternalLink, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2, UserPlus } from 'lucide-react-native'
@@ -14,8 +15,11 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import type { MentionTarget } from '../chat/file-links'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
-import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
-import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
+import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl, type ReactionSummary } from '../../lib/team-chat-api'
+import { messageLink, openMessageLinkInApp } from '../../lib/team-chat-links'
+import { extractMessageQuotes } from '../../lib/message-quotes'
+import { previewOptOutMatcher } from '../../lib/link-preview-consent'
+import { MessageQuoteCards } from './MessageQuoteCard'
 import { activityTarget } from '../../lib/activity-target'
 import { formatFullTime, formatShortTime, formatTime } from '../../lib/team-chat-time'
 import { EmojiPicker } from './EmojiPicker'
@@ -29,14 +33,15 @@ import { approvalOf, connectRequestsOf, isAskedOf, messageKind, questionRefsOf, 
 import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { ImagePreviewModal } from '../chat/ImagePreviewModal'
-import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
-import { renderMentions, renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
+import { AgentWorkedFor, AgentWorkingStatus, AgentQueueStatus } from './AgentWork'
+import { markdownToPlainText, renderMentions, renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
 import { isVoiceNote } from '../../lib/voice-note'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
 import { DownloadBadge, FileAttachmentCard } from './FileAttachmentCard'
+import { PastedMarkdownCard } from './MarkdownAttachmentBody'
+import { isPastedMarkdownAttachment } from '../chat/long-text-utils'
 import { VideoAttachment } from './VideoAttachment'
-import { hasReacted, reactionTooltip } from '../../lib/team-chat-reactions'
-import { WebTooltip } from '../chat/WebTooltip'
+import { hasReacted, reactionDetail, reactionTooltip } from '../../lib/team-chat-reactions'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { PresenceDot } from './PresenceDot'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
@@ -72,7 +77,13 @@ export interface MessageRowProps {
   grouped: boolean
   me: string | null
   names: MentionNames
-  streaming?: { text: string; tool: string | null }
+  streaming?: {
+    text: string
+    tool: string | null
+    tools?: Array<{ name: string; done: boolean }>
+    queue?: { position: number; ahead: number; running: number; limit: number } | null
+    waiting?: { tool: string | null } | null
+  }
   canManage: boolean
   /** Can pin (anyone who can post or reply here). */
   canPin?: boolean
@@ -101,18 +112,11 @@ export interface MessageRowProps {
   highlighted?: boolean
 }
 
-/** Message links open in place; everything else goes to the browser. */
-export function openMessageLinkInApp(href: string): boolean {
-  const target = parseMessageLink(href)
-  if (!target) return false
-  void import('expo-router').then(({ router }) =>
-    router.push({
-      pathname: '/(app)/c/[conversationId]',
-      params: { conversationId: target.conversationId, msg: target.messageId, ...(target.threadRootId ? { thread: target.threadRootId } : {}) },
-    } as any),
-  )
-  return true
-}
+/**
+ * Links this app can open in place — see `team-chat-links`; re-exported here
+ * because the row is where a message's links are handled.
+ */
+export { openMessageLinkInApp } from '../../lib/team-chat-links'
 
 /**
  * Wraps a message time so hovering it underlines the time and shows the full
@@ -258,6 +262,122 @@ function ReactionGlyph({ emoji, size = 12 }: { emoji: string; size?: number }) {
   return <Text style={{ fontSize: size }}>{emoji}</Text>
 }
 
+/** The text of a "who reacted" card: a large emoji, then bold names and what they did. */
+function ReactionDetailCard({ emoji, userIds, me, names }: { emoji: string; userIds: string[]; me: string | null; names: MentionNames }) {
+  const { who, verb } = reactionDetail(emoji, userIds, me, names)
+  return (
+    <View className="items-center" style={{ alignItems: 'center' }}>
+      <View
+        className="rounded-lg border border-transparent bg-zinc-900 px-3 py-3 shadow-lg dark:border-white/20 dark:bg-zinc-600"
+        style={{ width: 240, flexDirection: 'column', alignItems: 'center', gap: 8 }}
+      >
+        <View className="rounded-md bg-white" style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}>
+          <ReactionGlyph emoji={emoji} size={28} />
+        </View>
+        <Text className="text-sm text-white" style={{ textAlign: 'center' }} testID="reaction-tooltip-text">
+          <Text className="font-bold text-white">{who}</Text>
+          <Text className="text-zinc-300"> {verb}</Text>
+        </Text>
+      </View>
+      <View className="-mt-1 h-2 w-2 rotate-45 bg-zinc-900 dark:bg-zinc-600" />
+    </View>
+  )
+}
+
+/** Hover delay before the card appears, so a pointer passing over a chip doesn't flash it. */
+const REACTION_TOOLTIP_DELAY_MS = 150
+
+/**
+ * Shows who reacted in a card above the chip on hover (web). Positioned like
+ * `TimeTooltip`; `align="start"` anchors it to the chip's left edge when the
+ * chip sits near the window edge.
+ */
+function ReactionTooltip({ emoji, userIds, me, names, children }: { emoji: string; userIds: string[]; me: string | null; names: MentionNames; children: ReactNode }) {
+  // The anchor is the chip's viewport rect; the card is portaled to <body> (like
+  // SidebarContextMenu) so the message row's own stacking contexts can't paint over it.
+  const [anchor, setAnchor] = useState<{ left: number; right: number; top: number } | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clear = () => {
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = null
+  }
+  useEffect(() => clear, [])
+  if (Platform.OS !== 'web') return <>{children}</>
+  const align = anchor && anchor.left < 140 ? 'start' : 'center'
+  return createElement(
+    'div',
+    {
+      onMouseEnter: (e: { currentTarget: HTMLElement }) => {
+        clear()
+        const rect = e.currentTarget?.getBoundingClientRect?.()
+        timer.current = setTimeout(() => {
+          setAnchor(rect ? { left: rect.left, right: rect.right, top: rect.top } : { left: 0, right: 0, top: 0 })
+        }, REACTION_TOOLTIP_DELAY_MS)
+      },
+      onMouseLeave: () => {
+        clear()
+        setAnchor(null)
+      },
+      style: { display: 'inline-flex' },
+    },
+    children,
+    anchor && typeof document !== 'undefined'
+      ? createPortal(
+          createElement(
+            'div',
+            {
+              role: 'tooltip',
+              'data-testid': 'reaction-tooltip',
+              style: {
+                position: 'fixed',
+                top: anchor.top - 6,
+                ...(align === 'start'
+                  ? { left: anchor.left, transform: 'translateY(-100%)' }
+                  : { left: (anchor.left + anchor.right) / 2, transform: 'translate(-50%, -100%)' }),
+                zIndex: 9999,
+                pointerEvents: 'none',
+              },
+            },
+            <View className={align === 'start' ? 'items-start' : 'items-center'} style={{ alignItems: align === 'start' ? 'flex-start' : 'center' }}>
+              <ReactionDetailCard emoji={emoji} userIds={userIds} me={me} names={names} />
+            </View>,
+          ),
+          document.body,
+        )
+      : null,
+  )
+}
+
+/** One reaction chip: tap toggles; hover (web) or long press (native) shows who reacted. */
+function ReactionChip({ reaction, reacted, label, me, names, onToggle }: { reaction: ReactionSummary; reacted: boolean; label: string; me: string | null; names: MentionNames; onToggle: () => void }) {
+  const [sheet, setSheet] = useState(false)
+  return (
+    <>
+      <ReactionTooltip emoji={reaction.emoji} userIds={reaction.userIds} me={me} names={names}>
+        <Pressable
+          onPress={onToggle}
+          onLongPress={Platform.OS === 'web' ? undefined : () => setSheet(true)}
+          accessibilityLabel={label}
+          className={cn(
+            'flex-row items-center gap-1 rounded-full border px-2 py-0.5',
+            reacted ? 'border-primary/50 bg-primary/10' : 'border-border bg-card',
+          )}
+        >
+          <ReactionGlyph emoji={reaction.emoji} />
+          <Text className={cn('text-[11px]', reacted ? 'text-primary' : 'text-muted-foreground')}>{reaction.count}</Text>
+        </Pressable>
+      </ReactionTooltip>
+      {sheet && Platform.OS !== 'web' && (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setSheet(false)}>
+          <Pressable className="flex-1 items-center justify-center bg-black/40" onPress={() => setSheet(false)}>
+            <ReactionDetailCard emoji={reaction.emoji} userIds={reaction.userIds} me={me} names={names} />
+          </Pressable>
+        </Modal>
+      )}
+    </>
+  )
+}
+
 /**
  * A message that is nothing but emoji renders large, as in Slack and Discord.
  * The body is 16px everywhere except desktop web's 12px (`text-xs` on the
@@ -343,7 +463,19 @@ function MessageRowImpl(props: MessageRowProps) {
     setProfileOpen(true)
   }, [message.authorType, message.authorUserId, props.onOpenProfile])
   const running = message.authorType === 'agent' && message.agentStatus === 'running'
-  const body = running ? streaming?.text ?? '' : message.text
+  // A reply created while there was no free slot carries `blocks.queued` until it
+  // starts, so its place in line survives a reload.
+  const queuedSince = !!(message.blocks as { queued?: { since?: string } } | null | undefined)?.queued
+  const rawBody = running ? streaming?.text ?? '' : message.text
+  // A link to another message renders as a quote of it and is taken out of the
+  // text; the quote itself is fetched per viewer and never stored on the row.
+  // A link whose author declined a preview is the one exception: it stays in the
+  // text, so the link is still there for anyone who can open it.
+  const optOut = useMemo(() => previewOptOutMatcher(message.blocks), [message.blocks])
+  const { body, quotes } = useMemo(
+    () => extractMessageQuotes(rawBody ?? '', undefined, { skip: optOut }),
+    [rawBody, optOut],
+  )
   const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
   // Board cards are posted by the system, so this is deliberately author-agnostic.
   const workItem = running || deleted ? null : workItemOf(message)
@@ -592,7 +724,7 @@ function MessageRowImpl(props: MessageRowProps) {
         props.highlighted && 'bg-amber-400/20',
       )}
       testID={props.highlighted ? 'message-highlighted' : undefined}
-      accessibilityLabel={`${authorName(message)}: ${message.text}`}
+      accessibilityLabel={`${authorName(message)}: ${markdownToPlainText(renderMentions(message.text, names))}`}
     >
       <View className="w-8">
         {grouped ? (
@@ -765,11 +897,18 @@ function MessageRowImpl(props: MessageRowProps) {
                 </View>
               )
             })()}
+            {!deleted && <MessageQuoteCards quotes={quotes} names={names} />}
             {!running && <UnfurlCards message={message} />}
             {running && (
               // Display only: navigation is the header's Open session button, so the status takes no hover or press.
               <View className="mt-1" pointerEvents="none" testID="agent-working-status">
-                <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} />
+                {streaming?.waiting ? (
+                  <AgentQueueStatus waiting={streaming.waiting} />
+                ) : streaming?.queue || queuedSince ? (
+                  <AgentQueueStatus position={streaming?.queue?.position ?? null} />
+                ) : (
+                  <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} />
+                )}
               </View>
             )}
             {message.authorType === 'agent' && message.agentStatus === 'error' && (
@@ -822,6 +961,22 @@ function MessageRowImpl(props: MessageRowProps) {
                   <VideoAttachment url={absoluteApiUrl(a.url)} name={a.name} width={a.width} height={a.height} />
                   <DownloadBadge url={absoluteApiUrl(a.url)} name={a.name} />
                 </View>
+              ) : isPastedMarkdownAttachment(a.name, a.mimeType) ? (
+                <PastedMarkdownCard
+                  key={a.id}
+                  attachmentId={a.id}
+                  name={a.name}
+                  mimeType={a.mimeType}
+                  size={a.size}
+                  url={absoluteApiUrl(a.url)}
+                  preview={a.preview}
+                  onOpen={() =>
+                    router.push({
+                      pathname: '/(app)/f/[attachmentId]',
+                      params: { attachmentId: a.id, name: a.name },
+                    } as never)
+                  }
+                />
               ) : (
                 <FileAttachmentCard
                   key={a.id}
@@ -830,7 +985,12 @@ function MessageRowImpl(props: MessageRowProps) {
                   size={a.size}
                   url={absoluteApiUrl(a.url)}
                   preview={a.preview}
-                  onOpen={() => void Linking.openURL(absoluteApiUrl(a.url))}
+                  onOpen={() =>
+                    router.push({
+                      pathname: '/(app)/f/[attachmentId]',
+                      params: { attachmentId: a.id, name: a.name },
+                    } as never)
+                  }
                 />
               ),
             )}
@@ -855,20 +1015,15 @@ function MessageRowImpl(props: MessageRowProps) {
               const reacted = hasReacted(message.reactions, r.emoji, me)
               const who = reactionTooltip(r.emoji, r.userIds, me, names)
               return (
-                <Pressable
+                <ReactionChip
                   key={r.emoji}
-                  onPress={() => toggleReact(r.emoji)}
-                  accessibilityLabel={who}
-                  className={cn(
-                    'flex-row items-center gap-1 rounded-full border px-2 py-0.5',
-                    reacted ? 'border-primary/50 bg-primary/10' : 'border-border bg-card',
-                  )}
-                >
-                  <WebTooltip label={who}>
-                    <ReactionGlyph emoji={r.emoji} />
-                    <Text className={cn('text-[11px]', reacted ? 'text-primary' : 'text-muted-foreground')}>{r.count}</Text>
-                  </WebTooltip>
-                </Pressable>
+                  reaction={r}
+                  reacted={reacted}
+                  label={who}
+                  me={me}
+                  names={names}
+                  onToggle={() => toggleReact(r.emoji)}
+                />
               )
             })}
           </View>

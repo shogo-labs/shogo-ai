@@ -18,7 +18,7 @@
  * multi-provider LLMs (Anthropic, OpenAI, Google, xAI, Groq, etc.).
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import type { Message, ImageContent } from '@mariozechner/pi-ai'
@@ -29,10 +29,14 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
+import { sweepExecCwdMarkers } from './exec-cwd'
 import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
-import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig } from './agent-loop'
+import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig, type PerCallUsage, type AgentLoopResult } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
+import { recordCompaction, recordTurnBoundary, isPrefixOf } from './context-telemetry'
+import { summariseTurn, lastTurnStart } from './turn-boundary'
+import { renderTranscriptForSummary } from './compaction-transcript'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, subagentOrchestrationDisabled, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
@@ -48,8 +52,10 @@ import {
   resolveInLoopContextBudgetTokens,
   stableTransformContext,
 } from './stable-compaction'
+import { MIDTURN_KEEP_RECENT_MESSAGES, MidTurnAutocompactor } from './midturn-autocompact'
 import { scrubInvalidImages } from './image-size-guard'
 import {
+  CACHE_BOUNDARY,
   fingerprintMessages,
   fingerprintSystem,
   fingerprintTools,
@@ -58,17 +64,20 @@ import {
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
-import { buildCapabilityStatusSection, resolveRuntimeCapabilities } from './capability-status-prompt'
+import { buildCapabilityStatusSection, resolveCapabilitiesForScope, resolveRuntimeCapabilities } from './capability-status-prompt'
+import { buildWakeStatusSection } from './wake-status-prompt'
 import { BOARDS_GUIDE, COMPANY_OPS_GUIDE } from './board-tools'
 import { TASK_WAKE_RETRY_MS } from './remote-tasks'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
-import { buildAccountContextPrompt, type AccountContext } from './account-context'
+import { buildAccountContextPrompt, sanitizeModelDisplayName, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
 import { CanvasTypecheckGate } from './canvas-typecheck'
 import {
   inferProviderFromModel as catalogInferProvider,
   resolveModelId,
+  getContextWindowTokens,
+  getModelEntry,
   AGENT_MODE_DEFAULTS,
   setAgentModeOverrides,
   isAutoModel,
@@ -90,21 +99,31 @@ import { buildCodeAgentGeneralGuide, OUTPUT_CONTRACT_GUIDE } from './code-agent-
 import { isSearchEnabled } from './search-flag'
 import { smartTruncateJson } from './response-transforms'
 import { getShogoSdkGuide } from './shogo-sdk-prompt'
-import { refreshAvailableModels } from './available-models'
+import { refreshAvailableModels, getAvailableModels } from './available-models'
+import { mergeAgentModelIntoConfig, type AgentModelSnapshot } from './agent-model-config'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager, resolveBin, WorktreeManager } from '@shogo/shared-runtime'
 import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/shared-runtime'
 import {
+  isForeignWorkspaceDir,
   isWorkspaceRuntimeMode,
   workspaceAttachedProjectIds,
+  workspaceAvailableProjectsManifest,
   workspaceExternalProjectIds,
   workspaceProjectsManifest,
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId } from './internal-api'
-import { mergeCapabilitySettingsIntoConfig } from '@shogo/shared-runtime/capability-settings'
+import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
+import {
+  createToolProfile,
+  deferredToolsEnabled,
+  resolveLearnedToolOrder,
+  withActivationOnCall,
+  type ToolProfile,
+} from './tool-profile'
+import { mergeCapabilitySettingsIntoConfig, parseWorkspaceSettings } from '@shogo/shared-runtime/capability-settings'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
 import type { FilePart } from './file-attachment-utils'
@@ -114,9 +133,10 @@ import {
   BROWSER_TOOL_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
-import { defaultShellCwd, workspaceKind } from './workspace-runtime-mode'
+import { defaultShellCwd, resolveRuntimeIdentity, workspaceKind } from './workspace-runtime-mode'
 import { applyCapabilityProfile, CAPABILITY_PROFILES, type CapabilityProfileName } from './capability-profiles'
 import { FileStateCache } from './file-state-cache'
+import { buildMemorySection } from './memory-section'
 import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
 import { BACKGROUND_TASKS_GUIDE } from './background-tasks-guide'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
@@ -278,6 +298,8 @@ const AUTO_TIER_ORDER: AutoTierCeiling[] = ['economy', 'standard', 'premium']
 // transient cloud configuration error can recover without requiring a new
 // chat session.
 const AUTO_TIER_CEILING_TTL_MS = 5 * 60 * 1000
+/** How often a turn re-reads the DB-owned model into `config.json` (SHO-145). */
+const CONFIG_MODEL_SYNC_MS = 30_000
 /** Finished tasks arriving this close together wake an idle session once. */
 const TASK_WAKE_COALESCE_MS = 2_000
 /**
@@ -460,6 +482,78 @@ export function describeTurnFailure(
 
 export type VisualMode = 'canvas' | 'app' | 'none'
 
+/**
+ * Which surface a chat turn belongs to. A workspace runtime serves both: the
+ * workspace agent (meta-agent) gets `workspace`, a project's own chat gets
+ * `project`. Capability toggles, the prompt block and `capabilities_configure`
+ * all resolve against the surface, so a workspace toggle can never gate a
+ * project chat or vice versa.
+ */
+export type ChatContext = 'workspace' | 'project'
+/** Separator between two prompt sections in the system prompt. */
+const SECTION_SEPARATOR = '\n\n---\n\n'
+
+/**
+ * Append a section to the *stable* (cached) zone of an already-built system
+ * prompt, just before `<|CACHE_BOUNDARY|>`.
+ *
+ * Some prompt content can only be rendered after the tool set is assembled —
+ * the deferred-tools catalog (SHO-97) is the first of those — and the prompt is
+ * built before the tools are. Inserting before the boundary keeps that content
+ * in the cached prefix instead of re-billing it on every request.
+ */
+function insertStablePromptSection(prompt: string, section: string): string {
+  if (!section) return prompt
+  const idx = prompt.indexOf(CACHE_BOUNDARY)
+  if (idx === -1) return `${prompt}${SECTION_SEPARATOR}${section}`
+  return `${prompt.slice(0, idx)}${SECTION_SEPARATOR}${section}${prompt.slice(idx)}`
+}
+
+/**
+ * The prompt-cache prefix a turn was sent with, as short hashes.
+ *
+ * Cache layout is the only lever we have on providers that cache implicitly
+ * (DeepSeek behind `hoshi`) — there is no breakpoint to set. Comparing two
+ * turns: `stableHash` changing is pure waste (the cached prefix was thrown
+ * away); `dynamicHash` changing is expected; `toolsHash` changing invalidates
+ * everything on every provider; `historyHash` shows whether the message list
+ * grew from the front (a compaction) instead of from the end.
+ */
+export interface CachePrefix {
+  /** 1-based user turn on this session. */
+  turn: number
+  /** Hash of the system-prompt bytes before `<|CACHE_BOUNDARY|>` — the cached zone. */
+  stableHash: string
+  /** Hash of the per-turn zone after the boundary. Expected to change each turn. */
+  dynamicHash: string
+  /** Hash of the ordered tool definitions (name + description + JSON schema). */
+  toolsHash: string
+  /** Hash of the outgoing message list at turn start. */
+  historyHash: string
+  stableChars: number
+  dynamicChars: number
+  toolCount: number
+  messageCount: number
+}
+
+/** One probe of the prompt-cache prefix, taken without calling a model. */
+export interface CachePrefixProbe {
+  sessionId: string
+  /** True when two consecutive builds produced byte-identical stable zones. */
+  identical: boolean
+  /** The stable-zone section whose content drifted between the two builds, when it did. */
+  drift: { label: string; chars: number } | null
+  builds: Array<{
+    stableHash: string
+    dynamicHash: string
+    stableChars: number
+    dynamicChars: number
+    toolsHash: string
+    toolCount: number
+  }>
+  sections: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }>
+}
+
 /** What the dock's output route answers with: the text plus where the task lives. */
 export interface SessionTaskOutput {
   taskId: string
@@ -486,6 +580,12 @@ export interface GatewayConfig {
    * config.json is read as a fallback for projects that predate this field.
    */
   heartbeatToolsEnabled?: boolean
+  /**
+   * Advertise a core tool set plus this agent's most-used tools, and defer the
+   * rest behind the Deferred Tools catalog (SHO-97). Same default on both
+   * tracks: on, unless a config or `SHOGO_DEFERRED_TOOLS=0` turns it off.
+   */
+  deferredToolsEnabled?: boolean
   channels: Array<{ type: string; config: Record<string, string>; model?: string }>
   /** Model configuration: provider + name (e.g. { provider: 'anthropic', name: 'auto' }).
    *  `thinkingLevel` is the admin-configured reasoning effort for the selected
@@ -659,10 +759,24 @@ export class AgentGateway {
   private _onLog?: (line: string) => void
   /** Per-section prompt overrides set by DSPy optimization via POST /agent/prompt-override */
   private promptOverrides = new Map<string, string>()
+  /**
+   * This turn's API-side facts, read once before the prompt is built and dropped
+   * at the next turn: the chats the acting person can actually open, and the
+   * workspace agent pause in force (SHO-118). Absent means "render as before".
+   */
+  private turnReachable = new Map<string, string[]>()
+  private turnPause = new Map<string, WorkspaceAgentsPause | null>()
   /** Current guide registry built during loadBootstrapContext, consumed by tool context */
   private currentGuideRegistry?: Map<string, string>
   /** Per-section prompt breakdown from the last loadBootstrapContext() call */
   lastPromptBreakdown?: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }>
+  /**
+   * Advertised tool sets, one per session (SHO-97). Computed once and reused so
+   * the tools block stays byte-identical across the API calls of a turn; a
+   * changed registration (an MCP server connected mid-session) rebuilds it and
+   * re-applies whatever the model had activated.
+   */
+  private toolProfiles = new Map<string, { signature: string; toolCount: number; profile: ToolProfile; activated: Set<string> }>()
   /** Tool execute overrides for eval mocking (tool name -> mock fn) */
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
@@ -675,11 +789,25 @@ export class AgentGateway {
   private userTimezone: string | null = null
   /** Last Studio viewer (phone vs desktop) from the chat body. */
   private viewerContextPrompt: string | null = null
-  private accountContextPrompt: string | null = null
+  /**
+   * Request-scoped half of the Account prompt block: the workspace plan gates
+   * that come from the API. Deliberately does NOT hold a model name — one
+   * runtime serves several chats and a turn can start with no `/agent/chat`
+   * request at all, so the model line is resolved per turn instead (SHO-145).
+   */
+  private accountContext: AccountContext = {}
+  /** Last successful (or attempted) DB model pull into `config.json` (SHO-145). */
+  private lastConfigModelSyncAt = 0
   /** Permission engine for local-mode security guardrails */
   private permissionEngine: PermissionEngine | null = null
   /** Callback to push permission-related SSE events to the connected client */
   private _permissionSseCallback?: (event: Record<string, any>) => void
+  /**
+   * Sessions with a pending *manual* summarize request (the context dock's
+   * button) whose turn is still live. Consumed by the next `transformContext`
+   * call in that turn.
+   */
+  private manualCompactionRequests = new Set<string>()
   /** Usage from the most recent agentTurn (consumed by server.ts for the finish event) */
   private _lastTurnUsage: {
     inputTokens: number
@@ -698,6 +826,13 @@ export class AgentGateway {
     loopPattern?: string
     escalated: boolean
     responseEmpty: boolean
+    /**
+     * Per-model-call breakdown (one entry per tool-use iteration), so a cache
+     * rewrite inside a turn is visible instead of only the turn's totals.
+     */
+    perCallUsage: PerCallUsage[]
+    /** The prompt-cache prefix this turn was sent with (see `CachePrefix`). */
+    prefix: CachePrefix
     /**
      * True when the turn ended via a user-initiated stop (Stop button).
      * server.ts uses this to tag the trailing `data-turn-complete` frame
@@ -723,6 +858,14 @@ export class AgentGateway {
   /** Tracks files the agent has read across turns for cache-aware compaction */
   private fileStateCache = new FileStateCache()
   /**
+   * Snapshot of the built `## Memory` prompt section, keyed by `MEMORY.md`'s
+   * `mtimeMs:size` (SHO-78). The memory block now lives in the cached stable
+   * prefix, so rebuilding it on every turn would invalidate that prefix every
+   * turn. Rebuilding when the file actually changes is correct — and costs one
+   * cache write instead of one per turn.
+   */
+  private memorySectionCache: { key: string; content: string } | null = null
+  /**
    * Per-session compaction-decision state for the per-API-call transformContext.
    *
    * pi-agent-core's agent loop re-reads `agent.state.messages` before every LLM
@@ -741,12 +884,34 @@ export class AgentGateway {
    */
   private contentReplacementStates = new Map<string, ContentReplacementState>()
   /**
-   * Per-session user-turn counter used only by prefix-cache debug logging.
-   * Bumped once on entry to `runTurn`. Paired with a per-turn call counter
-   * (closure-scoped inside runTurn) so log lines read `turn=T call=N`.
+   * The workspace agent's own capability toggles (`Workspace.settings`), held
+   * separately from `this.config` (which caches the anchor project's
+   * `Project.settings`). A workspace runtime serves both surfaces, so one flat
+   * set of keys cannot answer for both. Mirrored into `config.json` under
+   * `workspaceCapabilities` as a last-known cache; the DB is the source of
+   * truth (see `syncCapabilitiesFromApi`).
+   */
+  private workspaceCapabilitySettings: Record<string, unknown> = {}
+  /**
+   * Surface each chat session belongs to. The message payload normally says
+   * (`chatContext`), but prompt builders and tools also ask per session, and
+   * a turn that did not say must not silently inherit the other surface.
+   */
+  private sessionChatContexts = new Map<string, ChatContext>()
+  /**
+   * Per-session user-turn counter, incremented once on entry to `runTurn` and
+   * reported as `prefix.turn` so a turn's cache numbers can be lined up with
+   * the `[cache-prefix]` log line and the previous turn's hashes.
    * Not consulted for correctness; safe to clear or leave stale.
    */
   private turnCounters = new Map<string, number>()
+  /**
+   * Per-position prefix tags of the last turn's starting history. The next
+   * turn's start should begin with them; when it does not, the compaction that
+   * ran between the turns rewrote bytes the provider had already cached
+   * (`context_turn_boundary.prefixStable`, SHO-122).
+   */
+  private turnPrefixes = new Map<string, string[]>()
   /** Shared index engine for workspace-wide search (code + files) */
   private indexEngine: import('./index-engine').IndexEngine | null = null
   /** Workspace knowledge graph for structural analysis */
@@ -790,6 +955,12 @@ export class AgentGateway {
   private teamManager?: TeamManager
   /** Per-session shell cwd tracking — persists cd across exec calls */
   private shellCwd = new Map<string, string>()
+  /**
+   * Per-session background-wake state, refreshed at turn start. The prompt is
+   * built synchronously, so the API's answer is cached here rather than fetched
+   * mid-build (see `wake-status-prompt.ts`).
+   */
+  private wakeStates = new Map<string, SessionWakeState | null>()
   /** Per-session backgrounded command registry — soft-timed-out exec runs */
   private commandRegistries = new Map<string, TaskRegistry>()
   /**
@@ -840,6 +1011,7 @@ export class AgentGateway {
     this.workspaceDir = workspaceDir
     this._constructedProjectId = projectId
     this.config = this.loadConfig()
+    this.workspaceCapabilitySettings = this.loadWorkspaceCapabilitySettings()
     this.sessionManager = new SessionManager(this.config.session)
     this.fileStateCache.setWorkspaceDir(workspaceDir)
     this.mcpClientManager.setWorkspaceDir(workspaceDir)
@@ -908,6 +1080,43 @@ export class AgentGateway {
     this._streamFn = fn
   }
 
+  /**
+   * This session's advertised tool set (SHO-97). Reused while the registration
+   * is unchanged — that is what keeps the tools block byte-identical across the
+   * API calls of a turn — and rebuilt (with the model's activations re-applied)
+   * when a tool is added or removed mid-session.
+   */
+  private toolProfileFor(sessionId: string, tools: AgentTool[], learned: readonly string[]): ToolProfile {
+    const signature = tools.map(t => t.name).sort().join(',')
+    const cached = this.toolProfiles.get(sessionId)
+    if (cached && cached.signature === signature) return cached.profile
+
+    const activated = cached?.activated ?? new Set<string>()
+    const base = createToolProfile(tools, { learned })
+    for (const name of activated) base.advertise(name)
+
+    const profile: ToolProfile = {
+      ...base,
+      advertise: (name: string) => {
+        const wasDeferred = base.advertise(name)
+        if (wasDeferred) activated.add(name)
+        return wasDeferred
+      },
+      isAdvertised: (name: string) => base.isAdvertised(name),
+      isDeferred: (name: string) => base.isDeferred(name),
+      describe: (name: string) => base.describe(name),
+      deferredNames: () => base.deferredNames(),
+      advertisedNames: () => base.advertisedNames(),
+    }
+
+    if (!this.toolProfiles.has(sessionId) && this.toolProfiles.size >= 200) {
+      const oldest = this.toolProfiles.keys().next().value
+      if (oldest !== undefined) this.toolProfiles.delete(oldest)
+    }
+    this.toolProfiles.set(sessionId, { signature, toolCount: tools.length, profile, activated })
+    return profile
+  }
+
   /** Set a log callback for forwarding gateway events to the UI Logs tab */
   setLogCallback(fn: (line: string) => void): void {
     this._onLog = fn
@@ -945,9 +1154,17 @@ export class AgentGateway {
     this.viewerContextPrompt = viewer ? buildViewerContextPrompt(viewer) : null
   }
 
-  /** Replaced on every chat request, like setViewerContext. */
+  /** Replaced on every chat request, like setViewerContext. Only the plan half
+   *  is kept: the model name a request carries describes THAT request, and a
+   *  heartbeat/schedule/pipeline turn has no request to read it from, so the
+   *  model line is rendered per turn (see `loadBootstrapContext`). */
   setAccountContext(ctx: AccountContext): void {
-    this.accountContextPrompt = buildAccountContextPrompt(ctx)
+    this.accountContext = {
+      ...(ctx.planId ? { planId: ctx.planId } : {}),
+      ...(typeof ctx.canPublishSubdomain === 'boolean'
+        ? { canPublishSubdomain: ctx.canPublishSubdomain }
+        : {}),
+    }
   }
 
   /** Set an eval label for log tracing (used by eval runner) */
@@ -1048,6 +1265,83 @@ export class AgentGateway {
     return usage
   }
 
+  /**
+   * Force one compaction pass on a session, the way autocompact/post-turn
+   * compaction would. Eval-harness hook only (`POST /agent/tool-mocks/compact`):
+   * it exists so the `cache-compaction-recovery` test can prove a rewritten
+   * prefix recovers its cache instead of resetting it for the rest of the chat.
+   */
+  async forceCompaction(sessionId: string): Promise<{ messagesBefore: number; messagesAfter: number } | null> {
+    // Keep only the last two messages so a short (3-turn) eval session still
+    // compacts; the default keep-window is far larger than any eval's history.
+    const result = await this.sessionManager.compact(sessionId, undefined, 2)
+    if (!result) return null
+    // Compaction rewrote the prefix — the same reset the autocompact paths do.
+    this.contentReplacementStates.delete(sessionId)
+    return { messagesBefore: result.messagesBefore, messagesAfter: result.messagesAfter }
+  }
+
+  /**
+   * Sample the prompt-cache prefix without calling a model.
+   *
+   * Builds the real system prompt twice with a tick between the builds (so any
+   * clock- or log-derived section moves, which is exactly what a per-turn
+   * builder would produce) and hashes both, plus a freshly assembled tool list.
+   * This is what makes the two structural `cache-efficiency` tests free: a
+   * volatile byte in the cached zone is a bug whether or not tokens were paid
+   * to discover it.
+   */
+  async sampleCachePrefix(sessionId = 'chat'): Promise<CachePrefixProbe> {
+    const build = () => {
+      const system = this.loadBootstrapContext(sessionId)
+      return { system, sections: this.lastPromptBreakdown ?? [] }
+    }
+    const first = build()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const second = build()
+    const toolsPrint = fingerprintTools(this.buildProbeTools())
+    const print = (system: string) => {
+      const p = fingerprintSystem(system)
+      return {
+        stableHash: p.stableHash,
+        dynamicHash: p.dynamicHash,
+        stableChars: p.stableChars,
+        dynamicChars: p.dynamicChars,
+        toolsHash: toolsPrint.hash,
+        toolCount: toolsPrint.count,
+      }
+    }
+    const builds = [print(first.system), print(second.system)]
+    const stableOf = (system: string) => {
+      const idx = system.indexOf(CACHE_BOUNDARY)
+      return idx >= 0 ? system.slice(0, idx) : system
+    }
+    const stableA = stableOf(first.system)
+    const stableB = stableOf(second.system)
+    let drift: CachePrefixProbe['drift'] = null
+    if (stableA !== stableB) {
+      let at = 0
+      while (at < stableA.length && at < stableB.length && stableA[at] === stableB[at]) at++
+      let offset = 0
+      for (const section of first.sections) {
+        if (section.zone !== 'stable') continue
+        if (at < offset + section.chars) {
+          drift = { label: section.label, chars: section.chars }
+          break
+        }
+        offset += section.chars + SECTION_SEPARATOR.length
+      }
+      drift ??= { label: 'unmapped', chars: Math.max(stableA.length, stableB.length) }
+    }
+    return {
+      sessionId,
+      identical: stableA === stableB,
+      drift,
+      builds,
+      sections: first.sections,
+    }
+  }
+
   /** Replace prompt sections at runtime (used by DSPy optimization pipeline) */
   setPromptOverrides(overrides: Record<string, string>): void {
     this.promptOverrides.clear()
@@ -1128,6 +1422,81 @@ export class AgentGateway {
   }
 
   /**
+   * Read the raw `config.json` object (empty when absent or unparseable).
+   * Shared by `loadConfig()` and the workspace-capabilities cache.
+   */
+  private readConfigFile(): Record<string, unknown> {
+    const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
+    if (!configPath) return {}
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+
+  /**
+   * Load the cached copy of the workspace agent's own settings. The DB
+   * (`Workspace.settings`) is the source of truth; this is the last-known
+   * cache, exactly like `config.json`'s capability keys for a project.
+   */
+  private loadWorkspaceCapabilitySettings(): Record<string, unknown> {
+    const raw = this.readConfigFile()
+    return parseWorkspaceSettings(raw.workspaceCapabilities)
+  }
+
+  /**
+   * Which surface this turn belongs to. Explicit `chatContext` wins; then the
+   * surface recorded for the session when it last ran; then the boot mode.
+   *
+   * Only a runtime with NO anchor project is unambiguously the workspace agent.
+   * A pinned runtime (`ws:proj:<anchor>`) serves both surfaces, so an
+   * unlabelled turn there (a channel message, a heartbeat) is treated as a
+   * project chat — the pre-split behaviour, and the safer default, because a
+   * project chat must never be gated by workspace toggles.
+   */
+  resolveChatContext(sessionId?: string, chatContext?: ChatContext): ChatContext {
+    const explicit = chatContext ?? (sessionId ? this.sessionChatContexts.get(sessionId) : undefined)
+    if (explicit) return explicit
+    return isWorkspaceRuntimeMode() && !process.env.WORKSPACE_ANCHOR_PROJECT_ID ? 'workspace' : 'project'
+  }
+
+  /** Record which surface a session runs in (the runtime told us per message). */
+  rememberChatContext(sessionId: string, chatContext: ChatContext): void {
+    if (sessionId) this.sessionChatContexts.set(sessionId, chatContext)
+  }
+
+  /**
+   * Capability config for a turn's surface. `project` uses `this.config`
+   * (cached from the anchor/own project's `Project.settings`); `workspace`
+   * overlays the workspace agent's own toggles, with the workspace-scope
+   * defaults applied for keys it has never stored.
+   *
+   * Everything else in the returned config is the runtime's: model, sandbox,
+   * mode. Only capability decisions differ per surface.
+   */
+  configForTurn(sessionId?: string, chatContext?: ChatContext): GatewayConfig {
+    if (this.resolveChatContext(sessionId, chatContext) !== 'workspace') return this.config
+    const caps = resolveCapabilitiesForScope(
+      {
+        ...this.workspaceCapabilitySettings,
+        capabilityProfile: this.config.capabilityProfile,
+        activeMode: this.config.activeMode,
+      },
+      'workspace',
+    )
+    return { ...this.config, ...caps }
+  }
+
+  /** Name of a project in this runtime's catalog, for prompt titles. */
+  private projectDisplayName(projectId: string | undefined): string | undefined {
+    if (!projectId) return undefined
+    const entry = [...workspaceProjectsManifest(), ...workspaceAvailableProjectsManifest()].find((p) => p.id === projectId)
+    return entry?.name
+  }
+
+  /**
    * Register `.shogo/agents/*.md` types from the workspace root and, in a
    * workspace runtime, from every attached project. Idempotent; cheap enough
    * to run per turn.
@@ -1169,10 +1538,11 @@ export class AgentGateway {
     console.log('[AgentGateway] Starting...')
     this.running = true
 
-    // Project.settings is the source of truth for capability toggles. Pull
-    // them before the first turn so a stale config.json cannot override the
-    // database. A failed pull keeps the last-known cache; opt-in tools stay
-    // off when there is no cache yet.
+    // The database is the source of truth for capability toggles — the
+    // project's `Project.settings`, and in a workspace runtime the workspace
+    // agent's `Workspace.settings` too. Pull them before the first turn so a
+    // stale config.json cannot override it. A failed pull keeps the last-known
+    // cache; opt-in tools stay off when there is no cache yet.
     try {
       await this.syncCapabilitiesFromApi()
     } catch (err: any) {
@@ -1308,35 +1678,49 @@ export class AgentGateway {
     // mismatched pair sends the model to the wrong upstream.
     const summarizerModel = resolveSummarizerModel(process.env.AGENT_SUMMARIZER_MODEL)
     console.log(`[AgentGateway] Summarizer model: ${summarizerModel.id} (provider=${summarizerModel.provider})`)
-    this.sessionManager.setSummarizeFn(async (messages) => {
+    this.sessionManager.setSummarizeFn(async (messages, previousSummary) => {
       const { resolveModel: rm, resolveApiKey: rak } = await import('./pi-adapter')
       const { runAgentLoop: summarizeLoop } = await import('./agent-loop')
       const provider = summarizerModel.provider
       const apiKey = rak(rm(provider, summarizerModel.id).provider)
       if (!apiKey) throw new Error('No API key for summarization')
 
-      const messageTexts = messages.map(m => {
-        if (m.role === 'user') {
-          const content = typeof m.content === 'string' ? m.content : (m.content as any[]).filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ')
-          return `User: ${content.substring(0, 500)}`
-        }
-        if (m.role === 'assistant') {
-          const text = m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
-          return `Assistant: ${text.substring(0, 500)}`
-        }
-        if (m.role === 'toolResult') {
-          const text = m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
-          return `Tool result: ${text.substring(0, 200)}`
-        }
-        return ''
-      }).filter(Boolean).join('\n')
+      // No truncation: the caller chunks the head at `summarizeChunkTokens`
+      // so each excerpt is already bounded. The old 500-char-per-message /
+      // 12k-char-prompt caps threw away ~99% of a long turn — including the
+      // decisions the summary exists to preserve (SHO-96).
+      //
+      // Every toolCall is rendered, with its arguments, as `→ tool: name(args)`
+      // (compaction-transcript.ts). Without that line the summarizer can only
+      // write narration, and a model acting on narration invents a tool name
+      // — `str_replace` was called eight times that way (SHO-122).
+      const messageTexts = renderTranscriptForSummary(messages)
+
+      // Fold: when this excerpt follows an earlier chunk, the model must carry
+      // the running summary forward instead of replacing it.
+      const contract =
+        'Output these sections, in this order, and nothing else:\n' +
+        '## Decisions\n' +
+        '## Files touched\n' +
+        '## Current state\n' +
+        '  (what is done, what is in progress, the next step)\n' +
+        '## Tools used\n' +
+        '  (exact names as `name` ×count)\n' +
+        'Use only tool names that appear in the transcript — never invent one.'
+      const system = previousSummary
+        ? `You maintain a running summary of a long agent turn. You receive the running summary so far and a new excerpt of the conversation. Merge the excerpt into the running summary. Preserve: key decisions, files edited, errors encountered, and current task state. Drop only redundant detail.\n\n${contract}`
+        : `Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific.\n\n${contract}`
+
+      const prompt = previousSummary
+        ? `Running summary so far:\n${previousSummary}\n\nNew excerpt:\n${messageTexts}`
+        : messageTexts
 
       const result = await summarizeLoop({
         provider,
         model: summarizerModel.id,
-        system: 'Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific. Output only the summary.',
+        system,
         history: [],
-        prompt: messageTexts.substring(0, 12000),
+        prompt,
         tools: [],
         maxIterations: 1,
         loopDetection: false,
@@ -1616,9 +2000,9 @@ export class AgentGateway {
     // longer has a hard-timeout SIGKILL ceiling, so this shutdown sweep is the
     // backstop that prevents long-running children from being orphaned when
     // the gateway goes away.
-    for (const reg of this.commandRegistries.values()) {
-      try { reg.killAll() } catch { /* already gone */ }
-    }
+    await Promise.all([...this.commandRegistries.values()].map(async (reg) => {
+      try { await reg.killAll() } catch { /* already gone */ }
+    }))
     this.commandRegistries.clear()
     for (const timer of this.taskWakeTimers.values()) clearTimeout(timer)
     this.taskWakeTimers.clear()
@@ -1822,7 +2206,9 @@ export class AgentGateway {
     this.emitLog(`Channel message from ${input.channelType || 'unknown'}: "${(input.text || '').substring(0, 100)}"`)
     const sessionId = input.channelId || 'default'
     const qs = this.getQueueState(sessionId)
-    this.sessionManager.getOrCreate(sessionId)
+    // Same load-on-miss rule as the chat path: a channel turn on a cold pod
+    // must read the stored conversation, not create an empty one (SHO-137).
+    await this.sessionManager.getOrCreateAsync(sessionId)
 
     await this.hookEmitter.emit(
       HookEmitter.createEvent('message', 'received', sessionId, {
@@ -1872,6 +2258,7 @@ export class AgentGateway {
         // Channel models carry no provider hint; clear any stale one so the
         // provider is inferred from this id.
         session.modelProvider = undefined
+        session.modelDisplayName = undefined
       }
 
       try {
@@ -2006,6 +2393,10 @@ export class AgentGateway {
        *  an opaque UUID route to its real provider (e.g. `anthropic`) instead
        *  of being inferred as `custom`. Absent → id-based inference. */
       modelProvider?: string
+      /** The product name of the model `modelOverride` names (e.g. "Hoshi
+       *  2.0"), stamped by the same request. Used for the per-turn Account
+       *  line so it never quotes a different turn's model (SHO-145). */
+      modelDisplayName?: string
       fileParts?: FilePart[]
       userId?: string
       /** API-signed proof of who sent this message (see integration-credentials.ts). */
@@ -2014,6 +2405,8 @@ export class AgentGateway {
       confirmedPlan?: { name: string; overview: string; plan: string; todos?: Array<{ id: string; content: string }>; filepath?: string }
       dualPlan?: boolean
       chatSessionId?: string
+      /** Surface this chat belongs to (workspace agent vs a project's own chat). */
+      chatContext?: ChatContext
     },
   ): Promise<void> {
     // chatSessionId is REQUIRED. The runtime's HTTP layer enforces this
@@ -2028,6 +2421,12 @@ export class AgentGateway {
       throw new Error('processChatMessageStream: chatSessionId is required')
     }
     const sessionId = options.chatSessionId
+    // A turn must never start from a fabricated empty session. In-process
+    // callers (channels, evals, project_call) reach the gateway directly, so
+    // the load-on-miss guarantee has to hold here too, not only at the HTTP
+    // edge: on a cold pod `getOrCreate` would create an empty session and the
+    // next persist would overwrite the conversation on disk (SHO-137).
+    await this.sessionManager.getOrCreateAsync(sessionId)
     if (options?.modelOverride) {
       const session = this.sessionManager.getOrCreate(sessionId)
       session.modelOverride = options.modelOverride
@@ -2035,6 +2434,10 @@ export class AgentGateway {
       // undefined so a previously-hinted model can't leave a stale provider
       // behind once the selection changes.
       session.modelProvider = options.modelProvider
+      // The display name is paired with the same override — it names the model
+      // that selection resolves to, so the Account line can quote it without
+      // trusting any other request's stamp (SHO-145).
+      session.modelDisplayName = options.modelDisplayName
       // Remember the hint beyond this session so subagents, forks and
       // channel turns that run the same model infer the same provider.
       rememberProviderHint(resolveModelId(options.modelOverride), options.modelProvider)
@@ -2115,7 +2518,7 @@ export class AgentGateway {
     const interactionMode = options?.confirmedPlan ? 'agent' : (options?.interactionMode || 'agent')
     const dualPlan = options?.dualPlan === true
     console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), dualPlan: ${dualPlan}, sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
-    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode, dualPlan, options?.requesterTicket)
+    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode, dualPlan, options?.requesterTicket, options?.chatContext)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -2199,6 +2602,7 @@ export class AgentGateway {
         // Slash-command/programmatic override carries no provider hint; clear
         // any stale one so the provider is inferred from this id.
         session.modelProvider = undefined
+        session.modelDisplayName = undefined
       },
       getStatus: () => this.getStatus(),
     }
@@ -2211,10 +2615,14 @@ export class AgentGateway {
   private getOrCreateCommandRegistry(sessionId: string): TaskRegistry {
     let reg = this.commandRegistries.get(sessionId)
     if (!reg) {
+      const outputDir = taskOutputDir(this.workspaceDir, sessionId)
       const registry = new TaskRegistry({
-        outputDir: taskOutputDir(this.workspaceDir, sessionId),
+        outputDir,
         workspaceDir: this.workspaceDir,
         remote: hasInternalApiCredentials() ? createApiTaskClient() : undefined,
+        // A late `wait` on a task whose entry was evicted reads the result back
+        // from its log instead of reporting the task as unknown.
+        resolveOutputRow: (id) => listTaskOutputRows(outputDir).find((row) => row.taskId === id) ?? null,
       })
       reg = registry
 
@@ -2380,6 +2788,28 @@ export class AgentGateway {
     if (reg && taskIds.length > 0) reg.markConsumed(taskIds)
   }
 
+  /**
+   * Read what the session is waiting to be told, so this turn's prompt can say
+   * so. Called at turn start (before the turn is buffered) because the prompt
+   * is assembled synchronously; a failure keeps the last known state.
+   */
+  async refreshWakeState(sessionId: string): Promise<void> {
+    if (!hasInternalApiCredentials()) return
+    // Bounded: a slow API must not hold the turn's first token back. A miss
+    // (null) keeps the last known state rather than claiming the pause is over.
+    const timeout = new Promise<null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), 1_500)
+      ;(timer as any).unref?.()
+    })
+    const state = await Promise.race([getSessionWakeState(sessionId).catch(() => null), timeout])
+    if (state) this.wakeStates.set(sessionId, state)
+  }
+
+  /** The cached wake state, for the prompt and for tests. */
+  wakeStateFor(sessionId: string): SessionWakeState | null {
+    return this.wakeStates.get(sessionId) ?? null
+  }
+
   /** List the tasks still running for a chat thread. */
   listSessionProcesses(sessionId: string): import('./command-registry').RunningProcess[] {
     return this.getOrCreateCommandRegistry(sessionId).listVisible()
@@ -2393,7 +2823,11 @@ export class AgentGateway {
     // empty first response would never be retried.
     await this.hydratingRegistries.get(sessionId)
     if (reg.hasRunningRemote()) await reg.refreshRemote()
-    return reg.listDock()
+    // A paused session's tasks are finished but not yet delivered: show them as
+    // waiting, so the dock does not read "completed" for something the agent was
+    // never told.
+    const waiting = new Set((this.wakeStates.get(sessionId)?.waiting ?? []).map((task) => task.taskId))
+    return reg.listDock().map((proc) => (waiting.has(proc.id) ? { ...proc, waiting: true } : proc))
   }
 
   /**
@@ -2415,7 +2849,15 @@ export class AgentGateway {
       await reg.refreshWhere((e) => e.id === entry!.id)
     }
     const local = taskOutputBody(reg.readOutput(entry)).trim()
-    const output = local || (entry.result?.summary ?? '').trim() || (entry.remoteNote ?? '').trim()
+    const body = local || (entry.result?.summary ?? '').trim() || (entry.remoteNote ?? '').trim()
+    // A task the runtime died under often produced no output at all, and the
+    // viewer strips the log's front matter — so opening its log showed an
+    // explanation of the *wake*, never the verdict the report was about. State
+    // it as the first line of what the reader sees: the same `status:` the log's
+    // footer carries, and no exit code, because the command never exited
+    // (SHO-141). Settled rows keep the body-only view.
+    const output =
+      entry.status === 'interrupted' ? [`status: interrupted`, body].filter(Boolean).join('\n\n') : body
     return {
       taskId: entry.id,
       source: entry.source,
@@ -2453,6 +2895,7 @@ export class AgentGateway {
     // so fresh decisions are taken against the new (empty) history.
     this.contentReplacementStates.delete(sessionId)
     this.turnCounters.delete(sessionId)
+    this.turnPrefixes.delete(sessionId)
     this.shellCwd.delete(sessionId)
     this.disposeSessionState(sessionId)
   }
@@ -2461,7 +2904,14 @@ export class AgentGateway {
   private disposeSessionState(sessionId: string): void {
     const reg = this.commandRegistries.get(sessionId)
     if (reg) {
-      reg.killAll()
+      // `clear`: the session is being wiped, so its rows go with it. Hydration
+      // falls back to the per-task logs when no snapshot survives, so those have
+      // to go too — a footer-less log now restores as `interrupted` (SHO-141),
+      // which would otherwise bring a cleared session's tasks back to life.
+      // Not awaited (SHO-144): the wipe itself is synchronous, and clearing a
+      // session must not wait on a tree.
+      void reg.killAll({ clear: true })
+      try { rmSync(taskOutputDir(this.workspaceDir, sessionId), { recursive: true, force: true }) } catch { /* best effort */ }
       this.commandRegistries.delete(sessionId)
     }
     const wake = this.taskWakeTimers.get(sessionId)
@@ -2489,6 +2939,8 @@ export class AgentGateway {
     dualPlan: boolean = false,
     /** Only chat turns a person started carry one; see integration-credentials.ts. */
     requesterTicket?: string,
+    /** Surface this turn belongs to (workspace agent vs a project's own chat). */
+    chatContext?: ChatContext,
   ): Promise<string> {
     // Wait for any in-flight turn on this session to finish so the new turn
     // reads a fully-updated session history (important for "continue" after a
@@ -2501,7 +2953,7 @@ export class AgentGateway {
     }
 
     this._currentTask = isHeartbeat ? 'heartbeat' : prompt.slice(0, 120)
-    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode, dualPlan, requesterTicket)
+    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode, dualPlan, requesterTicket, chatContext)
     this.turnLocks.set(sessionId, turnPromise)
     try {
       return await turnPromise
@@ -2525,7 +2977,15 @@ export class AgentGateway {
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
     dualPlan: boolean = false,
     requesterTicket?: string,
+    chatContext?: ChatContext,
   ): Promise<string> {
+    // Resolve the surface up front and remember it for the session, so every
+    // capability decision this turn makes — tools, prompt block, the
+    // capabilities_configure tool — reads the same config.
+    const resolvedChatContext = this.resolveChatContext(sessionId, chatContext)
+    this.rememberChatContext(sessionId, resolvedChatContext)
+    let turnConfig = this.configForTurn(sessionId, resolvedChatContext)
+
     // Reload skills and quick actions from disk so any files created/edited/deleted by file tools are picked up
     this.skills = loadAllSkills(this.workspaceDir)
     this.quickActions = loadQuickActions(this.workspaceDir)
@@ -2555,43 +3015,29 @@ export class AgentGateway {
       if (wt) sessionWorkspaceDir = wt
     }
 
-    let systemPrompt = this.loadBootstrapContext(sessionId)
+    await this.primeTurnFacts(sessionId)
+    // Clear exec cwd markers no exit path could collect (a runtime killed with
+    // a command in flight, a worktree pruned mid-run). Cheap: two readdirs.
+    sweepExecCwdMarkers(this.workspaceDir)
+    if (sessionWorkspaceDir !== this.workspaceDir) sweepExecCwdMarkers(sessionWorkspaceDir)
 
-    console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
-    // Interaction mode system prompt injection
-    if (interactionMode === 'plan') {
-      const planModePrompt = [
-        '## PLAN MODE ACTIVE',
-        '',
-        'Plan mode is active. You MUST NOT edit source files, run mutating commands, or otherwise change the workspace before the user clicks Build. This supersedes all other instructions.',
-        'Exception: you may create or update the plan artifact using create_plan/update_plan; those tools only write under .shogo/plans/ for user review.',
-        '',
-        'Your job:',
-        `1. Research the user's request using read-only tools (read_file, ${isSearchEnabled() ? 'search, ' : ''}web, etc.)`,
-        '2. If you need more information, ask clarifying questions using ask_user',
-        '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
-        '4. If there are multiple valid approaches, ask the user which they prefer',
-        '5. When you have enough context, call create_plan with a structured plan',
-        '6. If the user asks to modify, refine, or extend an existing plan, use update_plan with the plan\'s filepath instead of creating a new one',
-        '7. The plan should be concise, specific, and actionable — cite file paths and code snippets',
-        '8. Do NOT make any changes until the user confirms the plan',
-      ].join('\n')
-      systemPrompt = planModePrompt + '\n\n---\n\n' + systemPrompt
-    } else if (interactionMode === 'ask') {
-      const askModePrompt = [
-        '## ASK MODE ACTIVE',
-        '',
-        'Ask mode is active. You are in a read-only conversational mode. Answer the user\'s questions directly using your knowledge and conversation context. You have no tools available. Do not attempt to make changes, run commands, or take any actions. Just provide helpful, informative answers.',
-      ].join('\n')
-      systemPrompt = askModePrompt + '\n\n---\n\n' + systemPrompt
-    }
-
-    if (this.config.coordinatorMode) {
-      const { COORDINATOR_SYSTEM_PROMPT } = await import('./coordinator-prompt')
-      systemPrompt += '\n\n' + COORDINATOR_SYSTEM_PROMPT
-    }
-
+    // The model is resolved BEFORE the system prompt is built so the Account
+    // block can name the model this turn actually sends (SHO-145). Turns with
+    // no session override take their model from `config.json`, which only the
+    // API owns — refresh it here (throttled) so a change made from the project
+    // settings or another project's agent lands on this turn, not after a
+    // restart.
     const session = this.sessionManager.getOrCreate(sessionId)
+    if (!session.modelOverride && (await this.refreshConfigModelIfStale())) {
+      // The refresh replaced `this.config` with a freshly read object, so the
+      // surface config captured above is one revision behind — re-derive it so
+      // the rest of this turn reads the same values.
+      turnConfig = this.configForTurn(sessionId, resolvedChatContext)
+    }
+    // Tool descriptions and the Account line both quote the workspace's models,
+    // so load the list before either is built (cached for a few minutes; a
+    // no-op without AI_PROXY_URL).
+    await refreshAvailableModels()
     const modelAlias = session.modelOverride || this.config.model.name
     const autoRouting = isAutoModel(modelAlias)
 
@@ -2658,6 +3104,49 @@ export class AgentGateway {
       console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider}${session.modelProvider ? ' (hint)' : ''} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
     }
 
+    const turnModelDisplayName = this.turnModelDisplayName(modelId, session, autoRouting)
+
+    let systemPrompt = this.loadBootstrapContext(
+      sessionId,
+      turnConfig,
+      resolvedChatContext,
+      turnModelDisplayName,
+    )
+
+    console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
+    // Interaction mode system prompt injection
+    if (interactionMode === 'plan') {
+      const planModePrompt = [
+        '## PLAN MODE ACTIVE',
+        '',
+        'Plan mode is active. You MUST NOT edit source files, run mutating commands, or otherwise change the workspace before the user clicks Build. This supersedes all other instructions.',
+        'Exception: you may create or update the plan artifact using create_plan/update_plan; those tools only write under .shogo/plans/ for user review.',
+        '',
+        'Your job:',
+        `1. Research the user's request using read-only tools (read_file, ${isSearchEnabled() ? 'search, ' : ''}web, etc.)`,
+        '2. If you need more information, ask clarifying questions using ask_user',
+        '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
+        '4. If there are multiple valid approaches, ask the user which they prefer',
+        '5. When you have enough context, call create_plan with a structured plan',
+        '6. If the user asks to modify, refine, or extend an existing plan, use update_plan with the plan\'s filepath instead of creating a new one',
+        '7. The plan should be concise, specific, and actionable — cite file paths and code snippets',
+        '8. Do NOT make any changes until the user confirms the plan',
+      ].join('\n')
+      systemPrompt = planModePrompt + '\n\n---\n\n' + systemPrompt
+    } else if (interactionMode === 'ask') {
+      const askModePrompt = [
+        '## ASK MODE ACTIVE',
+        '',
+        'Ask mode is active. You are in a read-only conversational mode. Answer the user\'s questions directly using your knowledge and conversation context. You have no tools available. Do not attempt to make changes, run commands, or take any actions. Just provide helpful, informative answers.',
+      ].join('\n')
+      systemPrompt = askModePrompt + '\n\n---\n\n' + systemPrompt
+    }
+
+    if (this.config.coordinatorMode) {
+      const { COORDINATOR_SYSTEM_PROMPT } = await import('./coordinator-prompt')
+      systemPrompt += '\n\n' + COORDINATOR_SYSTEM_PROMPT
+    }
+
     // Reset per-turn state and wire/clear the SSE writer for permission requests.
     // When there's no uiWriter (heartbeat, channel, webhook turns),
     // clear the callback so "ask" decisions fail closed instead of writing
@@ -2680,7 +3169,15 @@ export class AgentGateway {
     const toolContext: ToolContext = {
       workspaceDir: sessionWorkspaceDir,
       channels: this.channels,
-      config: this.config,
+      // The surface's config: a workspace chat reads the workspace agent's own
+      // toggles, a project chat its project's. `capabilities_configure` writes
+      // to whichever scope this names.
+      config: turnConfig,
+      capabilityScope: resolvedChatContext === 'workspace' ? 'workspace' : 'project',
+      capabilityConfigs: {
+        workspace: this.configForTurn(sessionId, 'workspace'),
+        project: this.config,
+      },
       projectId: this.projectId,
       workspaceId: process.env.WORKSPACE_ID,
       sessionId,
@@ -2808,11 +3305,6 @@ export class AgentGateway {
         }
       }
     }
-
-
-    // Tool descriptions list the workspace's models, so refresh the list first
-    // (cached for a few minutes; a no-op without AI_PROXY_URL).
-    await refreshAvailableModels()
     const baseTools = createTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
@@ -2824,7 +3316,7 @@ export class AgentGateway {
     // Capability toggles (independent of mode). Shared with the subagent
     // parent-tool path (allToolsGetter) so disabling a capability removes its
     // tools everywhere, not just from the main agent.
-    assembledTools = filterDisabledCapabilityTools(assembledTools, this.config)
+    assembledTools = filterDisabledCapabilityTools(assembledTools, turnConfig)
     // Code analysis tools are only available via subagents (code-reviewer, explore)
     const CODE_REVIEW_ONLY_TOOLS = new Set(['detect_changes', 'review_context', 'impact_radius'])
     assembledTools = assembledTools.filter(t => !CODE_REVIEW_ONLY_TOOLS.has(t.name))
@@ -2837,7 +3329,7 @@ export class AgentGateway {
     // my email" or "set up a reminder" requests.
     // (Media tools are not delegated: the project's own agent calls them, gated
     // by imageGenEnabled / videoGenEnabled / threeDGenEnabled.)
-    assembledTools = filterSubagentOnlyTools(assembledTools, this.config)
+    assembledTools = filterSubagentOnlyTools(assembledTools, turnConfig)
 
     // Snapshot the full agent-mode tool set BEFORE any read-only mode
     // restriction. Used to (a) guarantee core tools survive in agent mode and
@@ -2872,7 +3364,7 @@ export class AgentGateway {
     // exec/edit_file/write_file, surfacing as "Tool not found" mid-session.
     if (!restrictedMode) {
       const present = new Set(assembledTools.map(t => t.name))
-      for (const name of expectedCoreToolsForAgentMode(this.config)) {
+      for (const name of expectedCoreToolsForAgentMode(turnConfig)) {
         if (present.has(name)) continue
         const recovered = baseTools.find(t => t.name === name)
         if (recovered) {
@@ -2891,6 +3383,44 @@ export class AgentGateway {
       const activeNames = new Set(assembledTools.map(t => t.name))
       for (const name of agentModeToolNames) {
         if (!activeNames.has(name)) modeFilteredStubs.push(createModeUnavailableTool(name, restrictedMode))
+      }
+    }
+
+    // Deferred tool definitions (SHO-97). Advertise a core set plus this
+    // agent's learned top tools; everything else keeps a one-line catalog entry
+    // in the system prompt and no schema in the request. Applied here — after
+    // capability, subagent-only, mode and permission filtering — so nothing a
+    // filter removed can sneak back in. Both the filter and this step read
+    // `turnConfig`, i.e. the capabilities RESOLVED for this turn's surface
+    // (workspace agent vs project, SHO-77), never the raw config: a deferred
+    // tool must not become reachable because the workspace scope defaults a
+    // toggle the project had explicitly off. Computed once per session: the
+    // tools block is the first segment of the provider cache prefix, so
+    // re-deriving it per turn would invalidate every cache hit.
+    let isAdvertisedTool: ((tool: AgentTool) => boolean) | undefined
+    if (deferredToolsEnabled(turnConfig) && assembledTools.some(t => t.name === 'read_guide')) {
+      const learned = await resolveLearnedToolOrder({
+        projectId: projectScopedId(this.projectId),
+        load: async (id) => {
+          const usage = await getProjectToolUsage(id)
+          return usage ? { order: usage.order, totalCalls: usage.totalCalls } : null
+        },
+      })
+      const profile = this.toolProfileFor(sessionId, assembledTools, learned)
+      // read_guide was created from this same object, so it sees the profile.
+      toolContext.toolProfileRef = { current: profile }
+      assembledTools = assembledTools.map(t =>
+        profile.isDeferred(t.name) ? withActivationOnCall(t, profile) : t,
+      )
+      isAdvertisedTool = (tool) => profile.isAdvertised(tool.name)
+      if (profile.catalog) {
+        systemPrompt = insertStablePromptSection(systemPrompt, profile.catalog)
+        this.lastPromptBreakdown?.push({
+          label: 'deferred-tools-catalog',
+          zone: 'stable',
+          chars: profile.catalog.length,
+          estTokens: Math.ceil(profile.catalog.length / 4),
+        })
       }
     }
 
@@ -3014,10 +3544,28 @@ export class AgentGateway {
     }) as AgentTool[]
 
     // Multi-layer context compaction pipeline (Layers 1-4)
-    const contextBudgetChars = (this.sessionManager.autocompactThreshold) * 4
-    const inLoopBudgetTokens = resolveInLoopContextBudgetTokens(this.sessionManager.autocompactThreshold)
+    //
+    // One cap, in one place: the resolved model's real window minus the
+    // output/buffer reserve, capped at AGENT_AUTOCOMPACT_TOKENS (200k). Until
+    // SHO-96 nothing ever set the window, so a 1M-window haiku/opus turn was
+    // budgeted at 200k while the provider accepted 400k, and summarization —
+    // which could only run at a turn boundary anyway — never fired mid-turn.
+    const modelContextWindow = getContextWindowTokens(modelId)
+    // The catalog is only the *default* source: a window the caller set
+    // explicitly (config, or a test pinning a 2k window to force compaction)
+    // always wins, and overriding it silently changed what the cap derived from.
+    if (!this.config.session?.contextWindowTokens) {
+      this.sessionManager.setContextWindowTokens(modelContextWindow)
+    }
+    const autoCompactTokens = this.sessionManager.autocompactThreshold
+    const contextBudgetChars = autoCompactTokens * 4
+    const inLoopBudgetTokens = resolveInLoopContextBudgetTokens(autoCompactTokens)
     let history = this.sessionManager.buildHistory(sessionId)
     history = applyToolResultBudget(history, contextBudgetChars)
+    // Turn-scoped telemetry state: the first call's usage, and whether a
+    // compaction ran at this boundary (SHO-122).
+    let turnFirstCallUsage: PerCallUsage | undefined
+    let turnCompaction: { before: number; after: number } | null = null
     const mc = microcompact(history)
     history = mc.messages
     history = snipConsumedResults(history)
@@ -3033,6 +3581,17 @@ export class AgentGateway {
         : undefined
       const preCompactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
       if (preCompactResult) {
+        turnCompaction = { before: preCompactResult.messagesBefore, after: preCompactResult.messagesAfter }
+        recordCompaction({
+          sessionId,
+          trigger: 'pre-turn',
+          messagesBefore: preCompactResult.messagesBefore,
+          messagesAfter: preCompactResult.messagesAfter,
+          summaryChars: preCompactResult.summary.length,
+          filesTouched: preCompactResult.filesTouched ?? [],
+          toolsUsed: preCompactResult.toolsUsed ?? [],
+          foldedRounds: preCompactResult.foldedRounds ?? 0,
+        })
         console.log(
           `${this.logPrefix} Pre-turn autocompact: ${preCompactResult.messagesBefore} -> ${preCompactResult.messagesAfter} messages`
         )
@@ -3281,7 +3840,11 @@ export class AgentGateway {
       // Prompt breakdown: compute tool schema size and emit per-section breakdown
       if (this.lastPromptBreakdown) {
         // ---- 1) Per-tool schema sizing ----
-        const toolSizes = tools.map(t => {
+        // Only the advertised set is sent (SHO-97). Deferred tools are counted,
+        // not sized: their cost per request is zero, which is the whole point.
+        const advertisedTools = isAdvertisedTool ? tools.filter(t => isAdvertisedTool(t)) : [...tools]
+        const deferredToolCount = tools.length - advertisedTools.length
+        const toolSizes = advertisedTools.map(t => {
           const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
           return { name: t.name, chars: schema.length }
         })
@@ -3417,7 +3980,8 @@ export class AgentGateway {
         const candidateLabels = [
           ...breakdown.map(s => s.label.length),
           'tool-schemas (XX)'.length,
-          `Tool schemas (${tools.length})`.length,
+          `Tool schemas (${advertisedTools.length})`.length,
+          `deferred (${deferredToolCount} tools, not sent)`.length + 2,
           `Chat context (${history.length} msgs)`.length,
           'assistant-tool-calls (XXX)'.length + 2, // children sit 2 chars deeper
           'compacted-summary'.length + 2,
@@ -3451,8 +4015,8 @@ export class AgentGateway {
         const fmtSubChild = (label: string, chars: number) =>
           `      ${label.padEnd(subChildLabelWidth)}    : ${chars.toLocaleString().padStart(7)} chars ~${Math.ceil(chars / 4).toLocaleString().padStart(6)} tok`
 
-        // Tool schemas: parent + per-tool top 10 + other
-        lines.push(fmtParent(`Tool schemas (${tools.length})`, toolSchemaChars, toolSchemaEstTokens))
+        // Tool schemas: parent (advertised) + per-tool top 10 + other + deferred
+        lines.push(fmtParent(`Tool schemas (${advertisedTools.length})`, toolSchemaChars, toolSchemaEstTokens))
         const TOP_SCHEMAS = 10
         const topSchemas = toolSchemasPerTool.slice(0, TOP_SCHEMAS)
         const restSchemas = toolSchemasPerTool.slice(TOP_SCHEMAS)
@@ -3462,6 +4026,9 @@ export class AgentGateway {
         if (restSchemas.length > 0) {
           const rChars = restSchemas.reduce((s, t) => s + t.chars, 0)
           lines.push(fmtChild(`other (${restSchemas.length} tools)`, rChars))
+        }
+        if (deferredToolCount > 0) {
+          lines.push(fmtChild(`deferred (${deferredToolCount} tools, not sent)`, 0))
         }
 
         // Chat context: parent + per-category children, with per-tool sub-children
@@ -3579,7 +4146,9 @@ export class AgentGateway {
           totalEstTokens,
           toolSchemaChars,
           toolSchemaEstTokens,
-          toolCount: tools.length,
+          toolCount: advertisedTools.length,
+          registeredToolCount: tools.length,
+          deferredToolCount,
           toolSchemasPerTool,
           chatContext: {
             totalChars: chatContextChars,
@@ -3609,14 +4178,48 @@ export class AgentGateway {
       const turnStartedAt = Date.now()
       const canQueueTaskWake = hasInternalApiCredentials()
 
-      // --- Prefix-cache debug: turn-start snapshot ---
-      // Emits short hashes of the three inputs Anthropic keys its prompt
-      // cache on: tools, system (split stable/dynamic), and history prefix.
-      // Compare across turns: anything that changes here is a cache-break
-      // cause. `stable` changing is the smoking gun for wasted cache.
+      // --- Prefix-cache snapshot ---------------------------------------------
+      // Everything a provider keys its prompt cache on, as short hashes:
+      // (tools, system split stable/dynamic, message list). Anthropic keys on
+      // those three exactly; DeepSeek (which backs `hoshi`) matches complete
+      // persisted prefix units of the same three and gives us no breakpoint to
+      // set, so layout stability is the only lever. One line per turn makes
+      // "did this turn waste the cache?" answerable, and the same object rides
+      // the `data-usage` frame so an eval can assert a ratio against the exact
+      // prefix it was measured on. Silenced with SHOGO_PREFIX_LOG=0.
       const turnNum = (this.turnCounters.get(sessionId) ?? 0) + 1
       this.turnCounters.set(sessionId, turnNum)
-      let apiCallNum = 0
+      const systemPrint = fingerprintSystem(systemPrompt)
+      const toolsPrint = fingerprintTools(tools)
+      const historyPrint = fingerprintMessages(history)
+      const prefix: CachePrefix = {
+        turn: turnNum,
+        stableHash: systemPrint.stableHash,
+        dynamicHash: systemPrint.dynamicHash,
+        toolsHash: toolsPrint.hash,
+        historyHash: historyPrint.aggregate,
+        stableChars: systemPrint.stableChars,
+        dynamicChars: systemPrint.dynamicChars,
+        toolCount: toolsPrint.count,
+        messageCount: historyPrint.count,
+      }
+      if (process.env.SHOGO_PREFIX_LOG !== '0') {
+        console.log(
+          `${this.logPrefix} [cache-prefix] turn=${turnNum} stable=${prefix.stableHash}(${prefix.stableChars}c) ` +
+          `dynamic=${prefix.dynamicHash}(${prefix.dynamicChars}c) tools=${prefix.toolsHash}(${prefix.toolCount}) ` +
+          `history=${prefix.historyHash}(${prefix.messageCount} msgs)`,
+        )
+      }
+
+      // --- Turn-boundary telemetry (SHO-122) ---------------------------------
+      // The previous turn, as the model will actually see it on this turn's
+      // first request: every message, every tool call by name, and how much of
+      // it is already a placeholder. `prefixStable` is the cache-relevant
+      // invariant — this turn's prefix still begins with the previous turn's.
+      const knownPrefix = this.turnPrefixes.get(sessionId)
+      const prefixStable = knownPrefix ? isPrefixOf(knownPrefix, historyPrint.positions) : null
+      this.turnPrefixes.set(sessionId, historyPrint.positions)
+      const previousTurn = summariseTurn(history, lastTurnStart(history))
 
       // Reset per-turn edit tracking so read_lints auto-scope starts clean.
       this.fileStateCache.resetTurn()
@@ -3635,6 +4238,52 @@ export class AgentGateway {
         ? { 'x-chat-session-id': sessionId }
         : undefined
 
+      // Mid-turn summarization (SHO-96). pi-agent-core drives the tool loop, so
+      // `transformContext` is the only point we control between tool calls —
+      // that is where this fires. One instance per turn: a new turn starts
+      // fresh, which is what makes "one summary per turn" and the mid-turn
+      // manual request both meaningful.
+      const promptOverheadTokens =
+        Math.ceil(systemPrompt.length / 4) +
+        tools.reduce((sum, t) => {
+          const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
+          return sum + Math.ceil(schema.length / 4)
+        }, 0)
+      // Per-call prefix fingerprints for this turn, paired with the provider's
+      // reported cache writes at turn end (`SHOGO_PREFIX_LOG=0` silences it).
+      const callFingerprints: Array<{
+        hash: string
+        msgs: number
+        chars: number
+        compacted: 'auto' | 'manual' | null
+      }> = []
+      const midTurnCompactor = new MidTurnAutocompactor({
+        autoCompactTokens,
+        // Aggressive tail: the head is what blew past the cap, and the split
+        // already lands on a `user` boundary, so the recent turn survives.
+        keepRecentMessages: MIDTURN_KEEP_RECENT_MESSAGES,
+        // A count of messages is not a size: production turns carry single tool
+        // results of hundreds of thousands of tokens, so the kept tail is
+        // bounded in tokens too and the post-compaction request lands at ~40%
+        // of the cap rather than back at it.
+        tailBudgetTokens: this.sessionManager.compactionTailBudgetTokens,
+        minKeepMessages: 1,
+        promptOverheadTokens,
+        summarize: (head, previousSummary) => this.sessionManager.summarizeHead(head, previousSummary),
+        apply: (summary, splitIndex, opts) => {
+          // Session-relative index: the loop's array may include a head that a
+          // previous compaction already folded away.
+          this.sessionManager.applyCompaction(sessionId, {
+            summary,
+            splitIndex,
+            replaceSummary: opts.replaceSummary,
+            extraContext: this.fileStateCache.size > 0
+              ? this.fileStateCache.getSummary(this.workspaceDir)
+              : undefined,
+          })
+        },
+      })
+
       const loopOptions: Parameters<typeof runAgentLoop>[0] = {
         provider,
         model: modelId,
@@ -3644,6 +4293,9 @@ export class AgentGateway {
         images,
         tools,
         maxIterations,
+        // Deferred tool schemas stay out of every provider request until the
+        // model asks for them by name (SHO-97). Read per API call by the loop.
+        isAdvertisedTool,
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
         thinkingLevel: resolveThinkingLevel(
@@ -3668,6 +4320,17 @@ export class AgentGateway {
             : undefined
           const r = await this.sessionManager.compact(sessionId, fileStateSummary, 4)
           if (!r) return null
+          turnCompaction = { before: r.messagesBefore, after: r.messagesAfter }
+          recordCompaction({
+            sessionId,
+            trigger: 'reactive',
+            messagesBefore: r.messagesBefore,
+            messagesAfter: r.messagesAfter,
+            summaryChars: r.summary.length,
+            filesTouched: r.filesTouched ?? [],
+            toolsUsed: r.toolsUsed ?? [],
+            foldedRounds: r.foldedRounds ?? 0,
+          })
           console.log(`${this.logPrefix} Reactive compaction: ${r.messagesBefore} -> ${r.messagesAfter} messages`)
           // LLM autocompact rewrites the prefix — drop per-session replacement
           // decisions so fresh ones are taken against the new history. Keeping
@@ -3685,7 +4348,13 @@ export class AgentGateway {
         // compaction decisions monotone and write-once per tool_call_id so
         // the prompt-cache prefix stays byte-identical across calls for any
         // id that's already been decided. See stable-compaction.ts.
-        transformContext: (messages) => {
+        //
+        // After the three cheap layers: if the request that is about to go on
+        // the wire is still over the cap, summarize between tool calls (SHO-96).
+        transformContext: async (messages) => {
+          if (this.manualCompactionRequests.delete(sessionId)) {
+            midTurnCompactor.requestManual()
+          }
           let state = this.contentReplacementStates.get(sessionId)
           if (!state) {
             state = createContentReplacementState()
@@ -3705,10 +4374,95 @@ export class AgentGateway {
           // oversized payload — before it reaches the wire. Deterministic, so it
           // does not disturb the stable-compaction byte-identical prefix
           // invariant.
-          return scrubInvalidImages(result.messages)
+          const wire = scrubInvalidImages(result.messages)
+          const compacted = await midTurnCompactor.transform(wire)
+          const event = compacted.event
+          if (event) {
+            // The prefix was rewritten: drop per-session replacement decisions so
+            // fresh ones are taken against the new history (same rule as the
+            // turn-boundary and reactive paths).
+            this.contentReplacementStates.delete(sessionId)
+            runningContextEstimate = event.tokensAfter
+            recordCompaction({
+              sessionId,
+              trigger: 'mid-turn',
+              messagesBefore: event.messagesBefore,
+              messagesAfter: event.messagesAfter,
+              summaryChars: event.summaryChars,
+              filesTouched: [],
+              toolsUsed: [],
+            })
+            console.log(
+              `${this.logPrefix} Mid-turn summarization (${event.trigger}): ` +
+              `${event.tokensBefore} -> ${event.tokensAfter} tokens, ` +
+              `${event.messagesBefore} -> ${event.messagesAfter} messages ` +
+              `(cap ${autoCompactTokens}, window ${contextWindowTokens}) for session ${sessionId}`,
+            )
+            // Cache-break attribution: the prefix fingerprint changes exactly
+            // once per compaction and is stable afterwards (prefix-fingerprint
+            // had no caller until SHO-96).
+            try {
+              const before = fingerprintMessages(wire)
+              const after = fingerprintMessages(compacted.messages)
+              console.log(
+                `${this.logPrefix} Prefix fingerprint: ${before.aggregate} (${before.totalChars} chars, ` +
+                `${before.count} msgs) -> ${after.aggregate} (${after.totalChars} chars, ${after.count} msgs)`,
+              )
+            } catch { /* diagnostics only */ }
+            // Not transient: this frame IS a transcript row. The AI SDK appends
+            // it to `parts` live, and the API persists the same shape, so the
+            // divider survives a reload (SHO-96 acceptance 4).
+            try {
+              uiWriter?.write({
+                type: 'data-context-summarized',
+                data: {
+                  trigger: event.trigger,
+                  tokensBefore: event.tokensBefore,
+                  tokensAfter: event.tokensAfter,
+                  messagesBefore: event.messagesBefore,
+                  messagesAfter: event.messagesAfter,
+                  summaryChars: event.summaryChars,
+                  contextWindowTokens,
+                },
+              })
+            } catch { /* client disconnected mid-turn — the row still persists API-side */ }
+            emitContextUsage()
+          }
+          if (process.env.SHOGO_PREFIX_LOG !== '0') {
+            // Per-call attribution (SHO-96 criterion 10): the fingerprint of the
+            // exact bytes about to be sent, paired at turn end with the cache
+            // writes the provider reports for that call. Without this pairing a
+            // cache write cannot be told apart from a genuine prefix rewrite —
+            // production shows 11.8k written tokens per opus call, more than the
+            // new content each call carries.
+            try {
+              const print = fingerprintMessages(compacted.messages)
+              callFingerprints.push({
+                hash: print.aggregate,
+                msgs: print.count,
+                chars: print.totalChars,
+                compacted: event ? event.trigger : null,
+              })
+            } catch { /* diagnostics only */ }
+          }
+          return compacted.messages
         },
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
+        },
+        // First call of the turn carries the cache numbers `context_turn_boundary`
+        // reports: input/cacheRead/cacheWrite as the provider billed them.
+        onIteration: (iteration, info) => {
+          if (iteration === 1 && info?.usage) {
+            const usage = info.usage
+            turnFirstCallUsage = {
+              iteration: 1,
+              input: usage.input ?? 0,
+              output: usage.output ?? 0,
+              cacheRead: usage.cacheRead ?? 0,
+              cacheWrite: usage.cacheWrite ?? 0,
+            }
+          }
         },
         takeInjectedMessages: () => {
           // One message per finished task: the agent acts on each result as its
@@ -4178,18 +4932,67 @@ export class AgentGateway {
       // stop always has the interrupted turn's context.
       this.sessionManager.addMessages(sessionId, ...result.newMessages)
 
+      // Turn-boundary telemetry (SHO-122): what this turn started with, what the
+      // previous turn actually contained at that moment, and the cache numbers
+      // of its first model call. Emitted before any post-turn compaction, so
+      // `compactedHere` describes the boundary itself.
+      recordTurnBoundary({
+        sessionId,
+        model: modelId,
+        boundaryIndex: turnNum,
+        messagesAtStart: historyPrint.count,
+        previousTurn,
+        compactedHere: turnCompaction !== null,
+        compactedBefore: turnCompaction?.before ?? null,
+        compactedAfter: turnCompaction?.after ?? null,
+        prefixStable,
+        inputTokens: turnFirstCallUsage?.input ?? null,
+        cacheReadTokens: turnFirstCallUsage?.cacheRead ?? null,
+        cacheWriteTokens: turnFirstCallUsage?.cacheWrite ?? null,
+      })
+
       if (this.sessionManager.needsCompaction(session)) {
         const fileStateSummary = this.fileStateCache.size > 0
           ? this.fileStateCache.getSummary(this.workspaceDir)
           : undefined
+        const tokensBeforePostTurn = this.sessionManager.estimateTokens(session)
         const compactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
         if (compactResult) {
+          recordCompaction({
+            sessionId,
+            trigger: 'post-turn',
+            messagesBefore: compactResult.messagesBefore,
+            messagesAfter: compactResult.messagesAfter,
+            summaryChars: compactResult.summary.length,
+            filesTouched: compactResult.filesTouched ?? [],
+            toolsUsed: compactResult.toolsUsed ?? [],
+            foldedRounds: compactResult.foldedRounds ?? 0,
+          })
           console.log(
             `${this.logPrefix} Post-turn compaction: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
           )
           // Prefix rewritten — drop stable-compaction state. Next turn's
           // transformContext takes fresh decisions against the new history.
           this.contentReplacementStates.delete(sessionId)
+          runningContextEstimate = this.sessionManager.estimateTokens(session)
+          // Same transcript row as a mid-turn summarization: every compaction
+          // shows up in history exactly once, whichever layer ran it (SHO-96).
+          if (uiWriter) {
+            try {
+              uiWriter.write({
+                type: 'data-context-summarized',
+                data: {
+                  trigger: 'auto',
+                  tokensBefore: tokensBeforePostTurn,
+                  tokensAfter: runningContextEstimate,
+                  messagesBefore: compactResult.messagesBefore,
+                  messagesAfter: compactResult.messagesAfter,
+                  summaryChars: compactResult.summary.length,
+                  contextWindowTokens,
+                },
+              } as any)
+            } catch { /* client gone — the row still persists via the API */ }
+          }
         }
       }
 
@@ -4225,7 +5028,26 @@ export class AgentGateway {
         ...(result.loopBreak?.pattern ? { loopPattern: result.loopBreak.pattern } : {}),
         escalated: false,
         responseEmpty,
+        perCallUsage: result.perCallUsage ?? [],
+        prefix,
         wasAborted: result.abortReason === 'external',
+      }
+
+      // One line per model call: the prefix fingerprint sent, and the cache
+      // read/write the provider reported for it. A call that writes while its
+      // hash is unchanged from the previous call is a genuine cache opportunity
+      // missed; a write whose hash did change is a real prefix change.
+      if (process.env.SHOGO_PREFIX_LOG !== '0' && callFingerprints.length > 0) {
+        const perCall = result.perCallUsage ?? []
+        const lines = callFingerprints.map((c, i) => {
+          const usage = perCall[i]
+          const mark = c.compacted ? ` compacted=${c.compacted}` : ''
+          return (
+            `  #${i + 1} ${c.hash} (${c.msgs} msgs, ${c.chars}c)${mark}` +
+            (usage ? ` read=${usage.cacheRead} write=${usage.cacheWrite} in=${usage.input} out=${usage.output}` : '')
+          )
+        })
+        console.log(`${this.logPrefix} [cache-attrib] turn=${prefix.turn} calls=${callFingerprints.length}\n${lines.join('\n')}`)
       }
 
       // UI notifications below may throw if the client disconnected (stop).
@@ -4398,7 +5220,13 @@ export class AgentGateway {
     ]
   }
 
-  private buildSWEPrompt(sessionId?: string): string {
+  private buildSWEPrompt(
+    sessionId?: string,
+    cfg: GatewayConfig = this.config,
+    // Production always passes the turn's surface; the default is `project` so
+    // a direct call cannot silently pick up a boot-env workspace mode.
+    chatContext: ChatContext = 'project',
+  ): string {
     const parts: string[] = []
     const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
 
@@ -4427,20 +5255,27 @@ export class AgentGateway {
     }
 
     parts.push(buildCodeAgentGeneralGuide())
-    if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
-    parts.push(buildCapabilityStatusSection(this.config))
+    if (cfg.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    parts.push(buildCapabilityStatusSection(cfg, {
+      scope: chatContext === 'workspace' ? 'workspace' : 'project',
+      projectName: chatContext === 'workspace' ? undefined : this.projectDisplayName(this.projectId),
+      anchorProjectName: chatContext === 'workspace' ? this.projectDisplayName(process.env.WORKSPACE_ANCHOR_PROJECT_ID) : undefined,
+    }))
     parts.push(OUTPUT_CONTRACT_GUIDE)
-    if (this.config.browserEnabled !== false) {
+    if (cfg.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
     parts.push(BACKGROUND_TASKS_GUIDE)
     if (!subagentOrchestrationDisabled(this.config)) parts.push(SUBAGENT_GUIDE)
-    if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
+    if (cfg.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
       if (teamCtx) parts.push(teamCtx)
     }
+
+    const workspacePaused = this.buildWorkspacePausedContext(sessionId)
+    if (workspacePaused) parts.push(workspacePaused)
 
     const concurrentChats = this.buildConcurrentChatsContext(sessionId)
     if (concurrentChats) parts.push(concurrentChats)
@@ -4453,7 +5288,11 @@ export class AgentGateway {
    * Includes workspace context, coding guide, and skills — but skips personality,
    * canvas, templates, memory, and other Shogo-specific sections.
    */
-  private buildGeneralPrompt(sessionId?: string): string {
+  private buildGeneralPrompt(
+    sessionId?: string,
+    cfg: GatewayConfig = this.config,
+    chatContext: ChatContext = 'project',
+  ): string {
     const parts: string[] = []
     const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
 
@@ -4474,9 +5313,13 @@ export class AgentGateway {
     }
 
     parts.push(buildCodeAgentGeneralGuide())
-    if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
-    parts.push(buildCapabilityStatusSection(this.config))
-    if (this.config.browserEnabled !== false) {
+    if (cfg.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    parts.push(buildCapabilityStatusSection(cfg, {
+      scope: chatContext === 'workspace' ? 'workspace' : 'project',
+      projectName: chatContext === 'workspace' ? undefined : this.projectDisplayName(this.projectId),
+      anchorProjectName: chatContext === 'workspace' ? this.projectDisplayName(process.env.WORKSPACE_ANCHOR_PROJECT_ID) : undefined,
+    }))
+    if (cfg.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
     parts.push(SELF_EVOLUTION_GUIDE)
@@ -4488,7 +5331,7 @@ export class AgentGateway {
       }
     }
 
-    if (this.config.quickActionsEnabled !== false) {
+    if (cfg.quickActionsEnabled !== false) {
       parts.push(QUICK_ACTION_GUIDE)
       if (this.quickActions.length > 0) {
         const qaSection = buildQuickActionsPromptSection(this.quickActions)
@@ -4498,12 +5341,15 @@ export class AgentGateway {
 
     parts.push(BACKGROUND_TASKS_GUIDE)
     if (!subagentOrchestrationDisabled(this.config)) parts.push(SUBAGENT_GUIDE)
-    if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
+    if (cfg.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
       if (teamCtx) parts.push(teamCtx)
     }
+
+    const workspacePaused = this.buildWorkspacePausedContext(sessionId)
+    if (workspacePaused) parts.push(workspacePaused)
 
     const concurrentChats = this.buildConcurrentChatsContext(sessionId)
     if (concurrentChats) parts.push(concurrentChats)
@@ -4511,12 +5357,49 @@ export class AgentGateway {
     return parts.join('\n\n---\n\n')
   }
 
-  private loadBootstrapContext(sessionId?: string): string {
-    if (this.config.promptProfile === 'swe') {
-      return this.buildSWEPrompt(sessionId)
+  /**
+   * The product name of the model this turn actually sends, for the Account
+   * line. Never a name from another turn: the session's stamped name is only
+   * used when this session's own override drove the turn, and everything else
+   * is looked up from the id that is about to be sent.
+   *
+   * Returns undefined when no name can be established — better to say nothing
+   * than to name the wrong model (SHO-145).
+   */
+  private turnModelDisplayName(
+    modelId: string,
+    session: { modelOverride?: string; modelDisplayName?: string },
+    autoRouting: boolean,
+  ): string | undefined {
+    // An Auto turn names the tier model it routed to, not "Auto".
+    if (!autoRouting && session.modelOverride && session.modelDisplayName) {
+      return sanitizeModelDisplayName(session.modelDisplayName)
     }
-    if (this.config.promptProfile === 'general') {
-      return this.buildGeneralPrompt(sessionId)
+    const listed = getAvailableModels().find((m) => m.id === modelId)?.displayName
+    if (listed) return sanitizeModelDisplayName(listed)
+    // `getModelDisplayName` falls back to the raw id, which is not a product
+    // name — only use it when the catalog actually knows the model.
+    const known = getModelEntry(modelId)?.displayName
+    return known ? sanitizeModelDisplayName(known) : undefined
+  }
+
+  /**
+   * Build the system prompt for one turn. `cfg` is the turn's surface config
+   * (`configForTurn`), so capability guidance and gates match the surface the
+   * turn runs in; it defaults to the runtime's project config for callers with
+   * no turn context.
+   */
+  private loadBootstrapContext(
+    sessionId?: string,
+    cfg: GatewayConfig = this.config,
+    chatContext: ChatContext = this.resolveChatContext(sessionId),
+    modelDisplayName?: string,
+  ): string {
+    if (cfg.promptProfile === 'swe') {
+      return this.buildSWEPrompt(sessionId, cfg, chatContext)
+    }
+    if (cfg.promptProfile === 'general') {
+      return this.buildGeneralPrompt(sessionId, cfg, chatContext)
     }
 
     // =========================================================================
@@ -4586,8 +5469,8 @@ export class AgentGateway {
     }
 
     // 1. Mode-specific canvas/tool guides (changes only on mode switch)
-    const activeMode = this.config.activeMode || 'canvas'
-    if (this.config.canvasEnabled !== false) {
+    const activeMode = cfg.activeMode || 'canvas'
+    if (cfg.canvasEnabled !== false) {
       for (const [id, text] of canvasModeStableGuides(activeMode)) {
         pushStable(id, text)
       }
@@ -4596,14 +5479,14 @@ export class AgentGateway {
     // 2. General coding guide (always the same)
     pushStable('code-agent-guide', buildCodeAgentGeneralGuide())
     pushStable('background-tasks-guide', BACKGROUND_TASKS_GUIDE)
-    if (this.config.capabilityProfile === 'personal') {
+    if (cfg.capabilityProfile === 'personal') {
       pushStable('personal-companion-mode', PERSONAL_COMPANION_GUIDE)
     }
 
     // 2b. Shogo SDK guide — when/how to reach for @shogo-ai/sdk in user apps.
     // Toggleable so projects that don't ship a Shogo app (pure-chat agents,
     // SWE benches, etc.) can drop ~2k tokens from the cached prefix.
-    if (this.config.sdkGuideEnabled !== false) {
+    if (cfg.sdkGuideEnabled !== false) {
       pushStable('shogo-sdk-guide', getShogoSdkGuide())
     }
 
@@ -4612,15 +5495,21 @@ export class AgentGateway {
     // saving ~4,600 tokens per turn compared to inlining all guides.
     // Shogo-platform surfaces — gated so code-only agents can drop messaging,
     // integration, and heartbeat guidance from the cached prefix.
-    const integrationsGuideOn = this.config.integrationsEnabled !== false
-    const channelsGuideOn = this.config.channelsEnabled !== false
-    const imageGuideOn = this.config.imageGenEnabled !== false
-    const videoGuideOn = this.config.videoGenEnabled === true
-    const threeDGuideOn = this.config.threeDGenEnabled === true
-    const devopsGuideOn = this.config.heartbeatToolsEnabled !== false
+    const integrationsGuideOn = cfg.integrationsEnabled !== false
+    const channelsGuideOn = cfg.channelsEnabled !== false
+    const imageGuideOn = cfg.imageGenEnabled !== false
+    const videoGuideOn = cfg.videoGenEnabled === true
+    const threeDGuideOn = cfg.threeDGenEnabled === true
+    const devopsGuideOn = cfg.heartbeatToolsEnabled !== false
 
     this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
-    pushStable('capability-status', buildCapabilityStatusSection(this.config))
+    pushStable('capability-status', buildCapabilityStatusSection(cfg, {
+      scope: chatContext === 'workspace' ? 'workspace' : 'project',
+      // Only the surface's own name: the anchor project's toggles are a
+      // separate, labelled pointer inside a workspace block, never the title.
+      projectName: chatContext === 'workspace' ? undefined : this.projectDisplayName(this.projectId),
+      anchorProjectName: chatContext === 'workspace' ? this.projectDisplayName(process.env.WORKSPACE_ANCHOR_PROJECT_ID) : undefined,
+    }))
     pushStable('capabilities-index', buildCapabilitiesIndex({
       integrations: integrationsGuideOn,
       channels: channelsGuideOn,
@@ -4684,12 +5573,12 @@ export class AgentGateway {
       ].join('\n'))
     }
 
-    if (this.config.quickActionsEnabled !== false) {
+    if (cfg.quickActionsEnabled !== false) {
       pushStable('quick-action-guide', QUICK_ACTION_GUIDE)
     }
 
-    const workCaps = resolveRuntimeCapabilities(this.config as unknown as Record<string, unknown>)
-    if (teamChatToolsAvailable(this.config.capabilityProfile)) {
+    const workCaps = resolveCapabilitiesForScope(cfg as unknown as Record<string, unknown>, chatContext === 'workspace' ? 'workspace' : 'project')
+    if (teamChatToolsAvailable(cfg.capabilityProfile)) {
       if (workCaps.teamChatEnabled) pushStable('team-chat-guide', TEAM_CHAT_GUIDE)
       if (workCaps.boardsEnabled) pushStable('boards-guide', BOARDS_GUIDE)
       if (workCaps.companyOpsEnabled && workCaps.boardsEnabled && workCaps.heartbeatToolsEnabled) {
@@ -4713,11 +5602,10 @@ export class AgentGateway {
       ].join('\n'))
     }
 
-    // Separator tells the AI proxy to split the system prompt into two Anthropic
-    // system blocks: the stable prefix gets cache_control, the dynamic suffix
-    // does not. Without this, the entire prompt is one block whose cache is
-    // invalidated every turn because the dynamic content changes.
-    const CACHE_BOUNDARY = '\n\n<|CACHE_BOUNDARY|>\n\n'
+    // The `<|CACHE_BOUNDARY|>` separator (imported from prefix-fingerprint so
+    // the builder, the fingerprint and `sampleCachePrefix` share one
+    // definition) tells the AI proxy to split the system prompt into two
+    // blocks: the stable prefix is the cached zone, the dynamic suffix is not.
 
     // ---- DYNAMIC ZONE: changes between turns or sessions ----
 
@@ -4778,12 +5666,18 @@ export class AgentGateway {
       }
     }
 
-    // 7. Memory (changes frequently)
+    // 7. Memory — budgeted, and deliberately in the STABLE zone (SHO-78).
+    // Unlike STACK.md above (a 200-word preview), MEMORY.md is capped by
+    // MEMORY_BUDGET_TOKENS — default 1,500 tokens, clamped to 400..8000 — and
+    // the block lands before CACHE_BOUNDARY so it joins the cached prefix
+    // instead of being re-billed on every request. Nothing is lost: the file on
+    // disk is untouched and the overflow notice points at memory_search for
+    // what is not loaded. See memory-section.ts.
     const memoryPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'MEMORY.md')
     if (memoryPath) {
-      const memory = readFileSync(memoryPath, 'utf-8').trim()
-      if (memory) {
-        pushDynamic('memory', `## Memory\n${memory}`)
+      const memorySection = this.buildMemoryPromptSection(memoryPath)
+      if (memorySection) {
+        pushStable('memory', memorySection)
       }
     }
 
@@ -4851,6 +5745,9 @@ export class AgentGateway {
       ...this.buildShellNavLines(),
     ].join('\n'))
 
+    const workspacePaused = this.buildWorkspacePausedContext(sessionId)
+    if (workspacePaused) pushDynamic('workspace-paused', workspacePaused)
+
     const concurrentChats = this.buildConcurrentChatsContext(sessionId)
     if (concurrentChats) pushDynamic('concurrent-chats', concurrentChats)
 
@@ -4859,8 +5756,15 @@ export class AgentGateway {
     if (this.viewerContextPrompt) {
       pushDynamic('viewer-context', this.viewerContextPrompt)
     }
-    if (this.accountContextPrompt) {
-      pushDynamic('account-context', this.accountContextPrompt)
+    // The model line comes from the turn (`modelDisplayName`), never from a
+    // process-wide value: this runtime serves several chats, and pipeline /
+    // heartbeat / schedule turns start without a chat request of their own.
+    const accountPrompt = buildAccountContextPrompt({
+      ...this.accountContext,
+      ...(modelDisplayName ? { modelDisplayName } : {}),
+    })
+    if (accountPrompt) {
+      pushDynamic('account-context', accountPrompt)
     }
 
     // 10. Dynamic workspace context (changes as files are added/removed)
@@ -4888,7 +5792,7 @@ export class AgentGateway {
     }
 
     // 11b. Quick actions (can change when agent registers new ones)
-    if (this.config.quickActionsEnabled !== false && this.quickActions.length > 0) {
+    if (cfg.quickActionsEnabled !== false && this.quickActions.length > 0) {
       const qaSection = buildQuickActionsPromptSection(this.quickActions)
       if (qaSection) {
         pushDynamic('quick-actions', qaSection)
@@ -4906,11 +5810,53 @@ export class AgentGateway {
       if (teamCtx) pushDynamic('team-context', teamCtx)
     }
 
+    // 12b. Background updates this session is holding. After the cache
+    // boundary on purpose: a pause comes and goes, and putting it in the cached
+    // prefix would invalidate the prompt every time it changed (SHO-82).
+    if (sessionId) {
+      const wake = buildWakeStatusSection(this.wakeStates.get(sessionId))
+      if (wake) pushDynamic('wake-status', wake)
+    }
+
     this.lastPromptBreakdown = sections
 
-    const stableText = stableParts.join('\n\n---\n\n')
-    const dynamicText = dynamicParts.join('\n\n---\n\n')
+    const stableText = stableParts.join(SECTION_SEPARATOR)
+    const dynamicText = dynamicParts.join(SECTION_SEPARATOR)
     return dynamicText ? stableText + CACHE_BOUNDARY + dynamicText : stableText
+  }
+
+  /**
+   * The budgeted `## Memory` prompt section for `MEMORY.md` (SHO-78), memoised
+   * on `mtimeMs:size`.
+   *
+   * Returns `null` when the file is missing, unreadable or empty, so the prompt
+   * simply has no memory block — same as before.
+   */
+  private buildMemoryPromptSection(memoryPath: string): string | null {
+    let key: string
+    try {
+      const stat = statSync(memoryPath)
+      key = `${stat.mtimeMs}:${stat.size}`
+    } catch {
+      this.memorySectionCache = null
+      return null
+    }
+
+    if (this.memorySectionCache?.key === key) {
+      return this.memorySectionCache.content || null
+    }
+
+    let markdown: string
+    try {
+      markdown = readFileSync(memoryPath, 'utf-8')
+    } catch {
+      this.memorySectionCache = null
+      return null
+    }
+
+    const content = buildMemorySection({ markdown }).content
+    this.memorySectionCache = content ? { key, content } : null
+    return content || null
   }
 
   /**
@@ -5078,26 +6024,89 @@ export class AgentGateway {
   }
 
   /**
-   * Build a system prompt section listing the other chats live in this
-   * workspace: several chats share one pod, so their turns overlap and their
-   * edits, builds and DB pushes land mid-turn. Excludes the calling session,
-   * and returns null when this chat has the workspace to itself.
+   * The other chats live in this workspace, as rows the prompt renders. Excludes
+   * the calling session; `[]` when this chat has the workspace to itself.
    */
-  private buildConcurrentChatsContext(sessionId?: string): string | null {
+  private concurrentChatsFor(sessionId?: string): ConcurrentChat[] {
     const others = this.sessionManager
       .listChatSessions(20 * 60_000)
       .filter((chat) => chat.id !== sessionId)
-    if (others.length === 0) return null
-
+    if (others.length === 0) return []
     const now = Date.now()
-    const chats: ConcurrentChat[] = others.map((chat) => ({
+    return others.map((chat) => ({
       id: chat.id,
       label: concurrentChatLabel({ id: chat.id, title: chat.title, firstUserText: chat.firstUserText }),
       running: this.turnLocks.has(chat.id),
       idleSeconds: Math.max(0, Math.floor((now - chat.lastActivityAt) / 1000)),
     }))
+  }
 
-    return buildConcurrentChatsPrompt(chats, { isolatedEdits: this.isWorktreesEnabled() })
+  /**
+   * Build a system prompt section listing the other chats live in this
+   * workspace: several chats share one pod, so their turns overlap and their
+   * edits, builds and DB pushes land mid-turn. Excludes the calling session,
+   * and returns null when this chat has the workspace to itself.
+   *
+   * `turnReachable` is this turn's `chat-reachable` answer (primed before the
+   * prompt is built). Without it the list renders unlabelled — the prompt never
+   * waits on the API.
+   */
+  private buildConcurrentChatsContext(sessionId?: string): string | null {
+    const chats = this.concurrentChatsFor(sessionId)
+    if (chats.length === 0) return null
+    const reachable = sessionId ? this.turnReachable.get(sessionId) : undefined
+    return buildConcurrentChatsPrompt(chats, {
+      isolatedEdits: this.isWorktreesEnabled(),
+      ...(reachable ? { reachable } : {}),
+    })
+  }
+
+  /**
+   * Tell a woken agent the workspace is paused, so it reports and stops instead
+   * of starting work. `agent_run_stop({ scope: "workspace" })` is what a person
+   * uses to set and lift it (SHO-118).
+   */
+  private buildWorkspacePausedContext(sessionId?: string): string | null {
+    const pause = sessionId ? this.turnPause.get(sessionId) : null
+    if (!pause) return null
+    const since = (() => {
+      const at = new Date(pause.at)
+      return Number.isNaN(at.getTime()) ? pause.at : at.toISOString()
+    })()
+    const lines = [
+      '## Workspace paused (agent lanes)',
+      `Every automatic agent start in this workspace is paused since ${since}${pause.by ? ` by ${pause.by}` : ''}.`,
+    ]
+    if (pause.reason) lines.push(`Reason: ${pause.reason}`)
+    lines.push(
+      '- Do not start new work, hand off cards, create cards or message other agents. Finish nothing that is not already in flight: report what you stopped and stop.',
+      '- A person\'s own message still runs; this pause holds automatic starts (task updates, schedules, triggers, card hand-offs, team-chat tags).',
+      '- The person lifts it with `agent_run_stop({ scope: "workspace", resume: true })` — do not lift it yourself unless that person asks you to.',
+    )
+    return lines.join('\n')
+  }
+
+  /**
+   * Read this turn's two API-side facts once, before the prompt is built: which
+   * of the listed chats the person can actually open, and whether the workspace
+   * is paused. Both fail open (an error, a missing API or a slow answer renders
+   * exactly what the prompt showed before), and both are skipped unless there is
+   * something worth asking: reachability only when another chat is listed, and
+   * the pause only in a workspace runtime.
+   */
+  private async primeTurnFacts(sessionId?: string): Promise<void> {
+    if (!sessionId) return
+    const workspaceId = resolveRuntimeIdentity().workspaceId || undefined
+    this.turnPause.delete(sessionId)
+    this.turnReachable.delete(sessionId)
+    if (!workspaceId || !hasInternalApiCredentials()) return
+    const chatIds = this.concurrentChatsFor(sessionId).map((chat) => chat.id)
+    const [reachable, pause] = await Promise.all([
+      chatIds.length ? fetchReachableChats(workspaceId, chatIds).catch(() => null) : null,
+      fetchWorkspacePause(workspaceId).catch(() => null),
+    ])
+    if (reachable?.ok && reachable.data) this.turnReachable.set(sessionId, reachable.data.reachable)
+    if (pause?.ok && pause.data) this.turnPause.set(sessionId, pause.data.paused)
   }
 
   /**
@@ -5579,18 +6588,13 @@ export class AgentGateway {
   private remoteTools: { config: GatewayConfig; tools: ReturnType<typeof createTools> } | null = null
   private remoteCommandRegistry = new TaskRegistry()
 
-  /**
-   * Tools for `/agent/remote/tool`: another project's runtime running one of
-   * this project's tools. Rooted at this project's own folder (the anchor in
-   * a workspace runtime), with no session, UI stream or file-read cache. One
-   * command registry spans all remote calls so exec_wait finds earlier runs.
-   */
-  getRemoteTools(): ReturnType<typeof createTools> {
-    if (this.remoteTools?.config === this.config) return this.remoteTools.tools
-    const ctx: ToolContext = {
+  /** Tool context for a session-less tool set (remote calls, cache probes). */
+  private sessionlessToolContext(): ToolContext {
+    return {
       workspaceDir: defaultShellCwd(this.workspaceDir),
       channels: this.channels,
       config: this.config,
+      capabilityScope: 'project',
       projectId: process.env.WORKSPACE_ANCHOR_PROJECT_ID || this.projectId,
       workspaceId: process.env.WORKSPACE_ID,
       sandbox: this.config.sandbox,
@@ -5599,9 +6603,28 @@ export class AgentGateway {
       indexEngine: this.indexEngine ?? undefined,
       commandRegistry: this.remoteCommandRegistry,
     }
-    const tools = filterDisabledCapabilityTools(createTools(ctx), this.config)
+  }
+
+  /**
+   * Tools for `/agent/remote/tool`: another project's runtime running one of
+   * this project's tools. Rooted at this project's own folder (the anchor in
+   * a workspace runtime), with no session, UI stream or file-read cache. One
+   * command registry spans all remote calls so exec_wait finds earlier runs.
+   */
+  getRemoteTools(): ReturnType<typeof createTools> {
+    if (this.remoteTools?.config === this.config) return this.remoteTools.tools
+    const tools = filterDisabledCapabilityTools(createTools(this.sessionlessToolContext()), this.config)
     this.remoteTools = { config: this.config, tools }
     return tools
+  }
+
+  /**
+   * Rebuild the tool list from scratch. `fingerprintTools` over this is the
+   * "did the tool block change?" signal for the cache-efficiency eval suite —
+   * a cached `getRemoteTools()` would make that comparison trivially true.
+   */
+  private buildProbeTools(): AgentTool[] {
+    return filterDisabledCapabilityTools(createTools(this.sessionlessToolContext()), this.config)
   }
 
   async disconnectChannel(type: string): Promise<void> {
@@ -5783,6 +6806,7 @@ export class AgentGateway {
 
   reloadConfig(): void {
     this.config = this.loadConfig()
+    this.workspaceCapabilitySettings = this.loadWorkspaceCapabilitySettings()
     this.skills = loadAllSkills(this.workspaceDir)
     this.quickActions = loadQuickActions(this.workspaceDir)
     setLoadedSkills(this.skills)
@@ -5791,57 +6815,147 @@ export class AgentGateway {
   }
 
   /**
-   * Pull capability toggles from `Project.settings` and write them into
-   * `config.json`. The database wins over a stale cache. When the API can't
-   * be reached, the file is left as-is.
+   * Pull the DB-owned model into `config.json` at most once every
+   * `CONFIG_MODEL_SYNC_MS`, for turns that take their model from `config.json`
+   * rather than from a session override: pipeline (`project_call`), heartbeat,
+   * schedule and webhook turns.
    *
-   * Workspace runtimes (no project id) and processes without internal-API
-   * credentials skip the pull. Tests pass `fetchConfig` to skip the
-   * credential check and the network.
+   * `PATCH /api/internal/projects/:id/config` writes the model to the database,
+   * and there is no API→runtime push for a change made from another project's
+   * agent, so without this a model change only landed after a restart. A failed
+   * sync keeps the last-known config: naming a stale model for one more turn is
+   * better than refusing to run.
    *
-   * Returns true when the database was applied.
+   * Returns true when the config was reloaded (the caller's surface config is
+   * then one revision behind and should be re-derived).
+   */
+  private async refreshConfigModelIfStale(): Promise<boolean> {
+    if (Date.now() - this.lastConfigModelSyncAt < CONFIG_MODEL_SYNC_MS) return false
+    this.lastConfigModelSyncAt = Date.now()
+    try {
+      return await this.syncCapabilitiesFromApi()
+    } catch (err: any) {
+      console.warn(`[AgentGateway] model sync failed; keeping the last-known config: ${err?.message ?? err}`)
+      return false
+    }
+  }
+
+  /**
+   * Pull capability toggles from the database into `config.json`: the
+   * project's `Project.settings` (flat, as before) and, in a workspace
+   * runtime, the workspace agent's own `Workspace.settings` (under
+   * `workspaceCapabilities`). The database wins over a stale cache; when the
+   * API can't be reached the file is left as-is.
+   *
+   * Both pulls are independent: a workspace runtime with no anchor project
+   * (`ws:<workspaceId>`, no `PROJECT_ID`) still syncs the workspace agent's
+   * toggles, which is the whole point — its capabilities are the workspace's,
+   * not a project's. Processes without internal-API credentials skip the pull.
+   * Tests pass `fetchConfig` / `fetchWorkspaceConfig` to skip the credential
+   * check and the network.
+   *
+   * Outside an explicit fetcher, each pull is also scoped to what this process
+   * actually serves: the project config only for the project this gateway was
+   * built for (`PROJECT_ID` / `WORKSPACE_ANCHOR_PROJECT_ID` must not name
+   * someone else), the workspace config only when `workspaceDir` is this
+   * runtime's own `WORKSPACE_DIR`. Otherwise a test fixture — or a gateway left
+   * over from another project — writes a stranger's settings into its
+   * `config.json` (SHO-102).
+   *
+   * Returns true when at least one database read was applied.
    */
   async syncCapabilitiesFromApi(
-    fetchConfig?: (projectId: string) => Promise<{ ok: boolean; data?: { settings?: unknown } | null }>,
+    fetchConfig?: (projectId: string) => Promise<{ ok: boolean; data?: { settings?: unknown; agent?: AgentModelSnapshot | null } | null }>,
+    fetchWorkspaceConfig?: (workspaceId: string) => Promise<{ ok: boolean; data?: { settings?: unknown } | null }>,
   ): Promise<boolean> {
-    const projectId = projectScopedId(this.projectId)
-    if (!projectId) return false
-    if (!fetchConfig && !hasInternalApiCredentials()) return false
+    if (!fetchConfig && !fetchWorkspaceConfig && !hasInternalApiCredentials()) return false
 
-    let result: { ok: boolean; data?: { settings?: unknown } | null }
-    try {
-      result = fetchConfig
-        ? await fetchConfig(projectId)
-        : await getProjectConfig(projectId, 3_000)
-    } catch (err: any) {
-      console.warn(`[AgentGateway] capability sync failed: ${err?.message ?? err}`)
-      return false
-    }
-    if (!result.ok || !result.data) {
-      console.warn('[AgentGateway] capability sync skipped; keeping the last-known config.json')
-      return false
-    }
+    const projectId = projectScopedId(this.projectId)
+    const workspaceId = isWorkspaceRuntimeMode() ? (process.env.WORKSPACE_ID || null) : null
+    if (!projectId && !workspaceId) return false
+
+    // `config.json` belongs to this gateway's workspaceDir, so the pull has to
+    // match the identity the gateway was built with, not just the live env id.
+    // The `projectId` getter prefers `process.env.PROJECT_ID` (pool
+    // re-assignment), which would otherwise fetch the env project's settings
+    // into any directory — including a test's scratch dir. A pool placeholder
+    // names no project, so it keeps following the live env id.
+    const ownedProjectId = projectScopedId(this._constructedProjectId) ?? projectId
+    const servesThisRuntime = runtimeServesProjectId(ownedProjectId)
+    const projectSyncAllowed = !!fetchConfig || servesThisRuntime
+    // The workspace overlay IS this runtime's own settings (it is read by
+    // `WORKSPACE_ID`), so only the directory it lands in can be foreign. A
+    // gateway serving one of this runtime's own projects belongs to the
+    // runtime, and keeps caching the overlay next to its project config.
+    const workspaceSyncAllowed = !!fetchWorkspaceConfig
+      || !isForeignWorkspaceDir(this.workspaceDir)
+      || servesThisRuntime
 
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
       ?? join(this.workspaceDir, 'config.json')
-    let fileConfig: Record<string, unknown> = {}
-    if (existsSync(configPath)) {
+    const fileConfig = this.readConfigFile()
+    let next: Record<string, unknown> = { ...fileConfig }
+    let applied = false
+
+    if (projectId && !projectSyncAllowed) {
+      const declared = [...new Set([process.env.PROJECT_ID, process.env.WORKSPACE_ANCHOR_PROJECT_ID])]
+        .filter(Boolean)
+        .join(', ')
+      console.warn(
+        `[AgentGateway] capability sync skipped: this runtime serves "${declared}", gateway project is "${ownedProjectId}"`,
+      )
+    }
+
+    if (projectId && projectSyncAllowed) {
+      let result: { ok: boolean; data?: { settings?: unknown; agent?: AgentModelSnapshot | null } | null } | undefined
       try {
-        const parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          fileConfig = parsed
-        }
-      } catch {
-        fileConfig = {}
+        result = fetchConfig ? await fetchConfig(projectId) : await getProjectConfig(projectId, 3_000)
+      } catch (err: any) {
+        console.warn(`[AgentGateway] capability sync failed: ${err?.message ?? err}`)
+      }
+      if (result?.ok && result.data) {
+        next = mergeCapabilitySettingsIntoConfig(next, result.data.settings).config
+        // The model is DB-owned exactly like the toggles: `PATCH …/config`
+        // writes `AgentConfig.modelName`, and the runtime caches it in
+        // `config.json` for the turns that don't go through the channel
+        // dispatcher. Merging it here is what makes a model change land on the
+        // next pipeline/heartbeat/schedule turn instead of after a restart
+        // (SHO-145).
+        next = mergeAgentModelIntoConfig(next, result.data.agent).config
+        applied = true
+      } else if (result) {
+        console.warn('[AgentGateway] capability sync skipped; keeping the last-known config.json')
       }
     }
 
-    const { config, changed } = mergeCapabilitySettingsIntoConfig(fileConfig, result.data.settings)
-    if (changed) {
-      writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    if (workspaceId && !workspaceSyncAllowed) {
+      console.warn(
+        `[AgentGateway] workspace capability sync skipped: workspaceDir "${this.workspaceDir}" is not this runtime's WORKSPACE_DIR "${process.env.WORKSPACE_DIR}"`,
+      )
     }
-    this.reloadConfig()
-    return true
+
+    if (workspaceId && workspaceSyncAllowed) {
+      let result: { ok: boolean; data?: { settings?: unknown } | null } | undefined
+      try {
+        result = fetchWorkspaceConfig
+          ? await fetchWorkspaceConfig(workspaceId)
+          : await getWorkspaceConfig(workspaceId, 3_000)
+      } catch (err: any) {
+        console.warn(`[AgentGateway] workspace capability sync failed: ${err?.message ?? err}`)
+      }
+      if (result?.ok && result.data) {
+        next = { ...next, workspaceCapabilities: parseWorkspaceSettings(result.data.settings) }
+        applied = true
+      } else if (result) {
+        console.warn('[AgentGateway] workspace capability sync skipped; keeping the last-known config.json')
+      }
+    }
+
+    if (applied && JSON.stringify(next) !== JSON.stringify(fileConfig)) {
+      writeFileSync(configPath, JSON.stringify(next, null, 2), 'utf-8')
+    }
+    if (applied) this.reloadConfig()
+    return applied
   }
 
   // ── BETA: per-chat git worktrees ──────────────────────────────────────────
@@ -6078,6 +7192,62 @@ export class AgentGateway {
     return this.sessionManager
   }
 
+  /**
+   * Manually summarize a session's context — the context-usage dock's button
+   * (SHO-96).
+   *
+   * - live turn: queue it; the next `transformContext` call (i.e. the next
+   *   tool step) consumes the flag and emits the transcript row.
+   * - idle session: summarize now and report the real before/after.
+   * - nothing foldable: say so instead of faking a success.
+   */
+  async compactSession(sessionId: string): Promise<{
+    status: 'compacted' | 'queued' | 'nothing-to-compact' | 'unknown-session'
+    reason?: string
+    tokensBefore?: number
+    tokensAfter?: number
+    messagesBefore?: number
+    messagesAfter?: number
+    summaryChars?: number
+  }> {
+    const detail = this.sessionManager.getDetail(sessionId)
+    if (!detail) return { status: 'unknown-session', reason: 'session not found' }
+
+    if (this.turnAbortControllers.has(sessionId)) {
+      this.manualCompactionRequests.add(sessionId)
+      return { status: 'queued', reason: 'will summarize at the next step' }
+    }
+
+    const tokensBefore = detail.estimatedTokens
+    const result = await this.sessionManager.compact(sessionId)
+    if (!result) {
+      return {
+        status: 'nothing-to-compact',
+        reason: 'nothing to compact',
+        tokensBefore,
+        tokensAfter: tokensBefore,
+      }
+    }
+    // The prefix was rewritten — drop stable-compaction decisions, exactly as
+    // every other compaction path does.
+    this.contentReplacementStates.delete(sessionId)
+    // Keep the durable copy: the API stores the summary on the ChatSession so
+    // losing sessions.db cannot lose it (SHO-137 round 3, R4). Best-effort.
+    if (result.summary) {
+      const { postContextSummary } = await import('./internal-api')
+      void postContextSummary(sessionId, result.summary).catch(() => {})
+    }
+    const after = this.sessionManager.getDetail(sessionId)
+    return {
+      status: 'compacted',
+      tokensBefore,
+      tokensAfter: after?.estimatedTokens ?? tokensBefore,
+      messagesBefore: result.messagesBefore,
+      messagesAfter: result.messagesAfter,
+      summaryChars: result.summary.length,
+    }
+  }
+
   getMCPClientManager(): MCPClientManager {
     return this.mcpClientManager
   }
@@ -6153,13 +7323,22 @@ export class AgentGateway {
 
   /**
    * Work that means this runtime is not idle: agent turns running now (chat,
-   * schedule, heartbeat, channel) and background tasks that will wake the
-   * agent when they finish. Hosts check this before evicting the runtime.
+   * schedule, heartbeat, channel), every task still running in a session's
+   * registry (not just the ones that will notify), and their live child
+   * processes. Hosts read this before evicting the runtime, so it must count
+   * work that does NOT wake the agent — a long foreground `exec` whose turn
+   * already returned, a `wait`-tracked task, a child process still running
+   * after a gateway restart — or the host kills that work (SHO-143).
    */
-  getActiveWork(): { turns: number; tasks: number } {
+  getActiveWork(): { turns: number; tasks: number; children: number } {
     let tasks = 0
-    for (const reg of this.commandRegistries.values()) tasks += reg.pendingNotifyCount()
-    return { turns: this.turnLocks.size, tasks }
+    let children = 0
+    for (const reg of this.commandRegistries.values()) {
+      const counts = reg.activeWorkCounts()
+      tasks += counts.tasks
+      children += counts.children
+    }
+    return { turns: this.turnLocks.size, tasks, children }
   }
 
   abortCurrentTurn(sessionId: string): boolean {

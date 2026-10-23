@@ -8,6 +8,7 @@
  */
 
 import type { Message, ToolResultMessage, TextContent, ToolCall } from '@mariozechner/pi-ai'
+import { protectedStart } from './turn-boundary'
 
 export interface MicrocompactConfig {
   /** Char threshold above which a tool result gets compressed (default: 2000) */
@@ -58,19 +59,16 @@ export function microcompact(
 ): { messages: Message[]; tokensSaved: number } {
   const cfg = { ...DEFAULT_CONFIG, ...config }
 
-  const turnBoundaries: number[] = []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') turnBoundaries.push(i)
-  }
-  const protectedStart = turnBoundaries.length >= cfg.keepRecentTurns
-    ? turnBoundaries[cfg.keepRecentTurns - 1]
-    : 0
+  // A turn is not an assistant message: `keepRecentTurns` counted tool rounds,
+  // so the window slid forward as a multi-round turn ran and its earlier
+  // results were compressed while they were still the turn in progress.
+  const protectedStartIndex = protectedStart(messages, cfg.keepRecentTurns)
 
   let tokensSaved = 0
 
   const result = messages.map((msg, idx) => {
     if (msg.role !== 'toolResult') return msg
-    if (idx >= protectedStart) return msg
+    if (idx >= protectedStartIndex) return msg
     if (cfg.frozenIds?.has((msg as ToolResultMessage).toolCallId)) return msg
 
     const trm = msg as ToolResultMessage

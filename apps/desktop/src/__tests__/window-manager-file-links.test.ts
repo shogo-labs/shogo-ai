@@ -19,7 +19,7 @@ mock.module('../local-server', () => ({
   getApiUrl: () => 'http://localhost:39100',
 }))
 
-const { isInAppFileUrl } = await import('../window-manager')
+const { installAppNavigationGuards, isInAppFileUrl } = await import('../window-manager')
 
 const API = 'http://localhost:39100'
 
@@ -60,5 +60,58 @@ describe('isInAppFileUrl', () => {
   it('returns false for a value that is not a URL', () => {
     expect(isInAppFileUrl('not a url', API)).toBe(false)
     expect(isInAppFileUrl(`${API}/api/conversation-files/att-1`, 'not a url')).toBe(false)
+  })
+
+  it('matches a share_file download link and its legacy shape', () => {
+    expect(isInAppFileUrl(`${API}/api/f/eyJ0eXA.abc_`, API)).toBe(true)
+    expect(isInAppFileUrl(`${API}/f/eyJ0eXA.abc`, API)).toBe(true)
+  })
+
+  it('rejects a share link on another host', () => {
+    expect(isInAppFileUrl('https://evil.example/api/f/eyJ0eXA.abc', API)).toBe(false)
+    expect(isInAppFileUrl('https://evil.example/f/eyJ0eXA.abc', API)).toBe(false)
+  })
+})
+
+/**
+ * A refused link is handed to the renderer, which shows it in the app's pane.
+ * Neither of the two ways a click can leave the window may reach the browser
+ * for a file the API serves (SHO-80).
+ */
+describe('the navigation guards', () => {
+  function fakeWebContents() {
+    const sent: Array<{ channel: string; payload: unknown }> = []
+    const state: {
+      windowOpen?: (details: { url: string }) => unknown
+      willNavigate?: (event: { preventDefault: () => void }, url: string) => void
+    } = {}
+    const webContents = {
+      setWindowOpenHandler: (handler: (details: { url: string }) => unknown) => {
+        state.windowOpen = handler
+      },
+      on: (event: string, handler: (...args: any[]) => void) => {
+        if (event === 'will-navigate') state.willNavigate = handler as never
+      },
+      send: (channel: string, payload: unknown) => sent.push({ channel, payload }),
+      isDestroyed: () => false,
+    }
+    installAppNavigationGuards(webContents as never)
+    return { state, sent }
+  }
+
+  it('denies a window for a served file and forwards it to the app', () => {
+    const { state, sent } = fakeWebContents()
+    const url = `${API}/api/f/eyJ0eXA.abc`
+    expect(state.windowOpen!({ url })).toEqual({ action: 'deny' })
+    expect(sent).toEqual([{ channel: 'shogo:open-file', payload: { href: url } }])
+  })
+
+  it('keeps the window where it is when a plain link would navigate to a file', () => {
+    const { state, sent } = fakeWebContents()
+    const url = `${API}/api/conversation-files/att-1?t=abc.def`
+    let prevented = false
+    state.willNavigate!({ preventDefault: () => (prevented = true) }, url)
+    expect(prevented).toBe(true)
+    expect(sent).toEqual([{ channel: 'shogo:open-file', payload: { href: url } }])
   })
 })

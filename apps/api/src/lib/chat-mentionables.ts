@@ -5,9 +5,19 @@
  * access check every other chat-tag path (context enrichment, delivery, the
  * agent's `chat_handoff` tool) reuses.
  *
- * A chat is openable when it is one of the person's own workspace-agent chats,
- * or a project chat in a project they can read. The check is server-side on
- * purpose: the picker is a convenience, never the authorization.
+ * A chat is openable when the requester created it, when its anchor project is
+ * readable, or when it has no owner and lives in a workspace the requester is a
+ * member of. Unowned chats in workspaces the person does not belong to stay
+ * unreachable — that is the security boundary, not an oversight.
+ *
+ * The third clause is what makes local mode work at all: nothing on the
+ * desktop/local path stamps an owner, and a project-anchored workspace chat is
+ * written as `contextType: 'workspace'`, `contextId: <projectId>`,
+ * `createdByUserId: null` — so without it `chat_handoff` 404s on every
+ * workspace chat (SHO-118).
+ *
+ * The check is server-side on purpose: the picker is a convenience, never the
+ * authorization.
  */
 
 import { prisma } from './prisma'
@@ -50,15 +60,38 @@ export async function readableProjectIds(userId: string): Promise<string[]> {
 }
 
 /**
+ * Workspace ids the person holds a workspace-level membership in (`projectId`
+ * null). Same source `authz` reads, so an unowned chat is never openable in a
+ * workspace the person cannot otherwise see.
+ */
+export async function memberWorkspaceIds(userId: string): Promise<string[]> {
+  const rows = (await prisma.member.findMany({
+    where: { userId, projectId: null },
+    select: { workspaceId: true },
+  })) as Array<{ workspaceId: string | null }>
+  return [...new Set(rows.map((row) => row.workspaceId).filter((id): id is string => !!id))]
+}
+
+/**
  * Prisma filter selecting the chats `userId` may open. Workspace-agent chats
- * are per-person (their creator); project chats follow `project:read`.
+ * are per-person (their creator); project chats follow `project:read`; an
+ * anchored or unowned workspace chat follows the shape the product creates.
  */
 export async function chatAccessWhere(userId: string): Promise<Record<string, unknown>> {
-  const projectIds = await readableProjectIds(userId)
+  const [projectIds, workspaceIds] = await Promise.all([readableProjectIds(userId), memberWorkspaceIds(userId)])
   return {
     OR: [
       { contextType: 'workspace', createdByUserId: userId },
-      ...(projectIds.length ? [{ contextType: 'project', contextId: { in: projectIds } }] : []),
+      ...(projectIds.length
+        ? [
+            // A project chat, and a workspace chat anchored on a project.
+            { contextType: 'project', contextId: { in: projectIds } },
+            { contextType: 'workspace', contextId: { in: projectIds } },
+          ]
+        : []),
+      ...(workspaceIds.length
+        ? [{ contextType: 'workspace', createdByUserId: null, workspaceId: { in: workspaceIds } }]
+        : []),
     ],
   }
 }

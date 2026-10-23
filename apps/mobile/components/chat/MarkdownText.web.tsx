@@ -20,7 +20,10 @@ import {
 } from "./file-links"
 import { MarkdownMedia } from "./MarkdownMedia.web"
 import { FileTypeIcon } from "./FileTypeIcon.web"
+import { useShareFileOpener } from "./share-file-context"
+import { parseInAppFileHref } from "../../lib/share-file-links"
 import { withHardBreaks } from "../../lib/markdown-breaks"
+import type { MarkdownVariant } from "./MarkdownText"
 
 export interface MarkdownTextProps {
   children: string
@@ -30,10 +33,17 @@ export interface MarkdownTextProps {
    * incomplete-markdown repair). Leave unset for text that may still grow.
    */
   isStreaming?: boolean
+  /**
+   * Type scale. `card` pins the compact 12/18 body copy a tool card needs
+   * regardless of the outer window width; the palette is unchanged.
+   */
+  variant?: MarkdownVariant
   /** Opens a workspace file when the text mentions its path. */
   onFilePress?: (path: string) => void
   /** Mentioned paths that pass this check render as file chips. */
   fileExists?: (path: string) => boolean
+  /** Return true to handle a link in the app instead of navigating to it. */
+  onLinkPress?: (href: string) => boolean
   /** Opens a person's or agent's profile when their @-mention is tapped. */
   onMentionPress?: (target: MentionTarget) => void
 }
@@ -49,9 +59,11 @@ const linkSafetyOff = { enabled: false as const }
 // previous equality fn ignored it).
 function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.isStreaming !== next.isStreaming) return false
+  if (prev.variant !== next.variant) return false
   if (prev.className !== next.className) return false
   if (prev.onFilePress !== next.onFilePress) return false
   if (prev.fileExists !== next.fileExists) return false
+  if (prev.onLinkPress !== next.onLinkPress) return false
   if (prev.onMentionPress !== next.onMentionPress) return false
   const a = prev.children || ""
   const b = next.children || ""
@@ -62,14 +74,39 @@ function FileAwareLink({
   href,
   onFilePress,
   fileExists,
+  onLinkPress,
   children,
   node: _node,
   ...rest
 }: AnchorHTMLAttributes<HTMLAnchorElement> & {
   onFilePress?: (path: string) => void
   fileExists?: (path: string) => boolean
+  onLinkPress?: (href: string) => boolean
   node?: unknown
 }) {
+  const openShareFile = useShareFileOpener()
+  // A link to a file the app serves is a chip, never an <a href> that leaves
+  // the app: clicking it opens the file in the side pane (or the modal).
+  const servedFile = typeof href === "string" ? parseInAppFileHref(href) : null
+  if (servedFile && openShareFile) {
+    const open = openShareFile
+    return (
+      <a
+        href={href}
+        title={servedFile.name}
+        className="chat-file-chip"
+        data-testid="chat-file-chip"
+        data-file-kind={servedFile.kind}
+        onClick={(event: MouseEvent<HTMLAnchorElement>) => {
+          event.preventDefault()
+          open(servedFile)
+        }}
+      >
+        <FileTypeIcon path={servedFile.name} size={14} />
+        <span>{servedFile.name}</span>
+      </a>
+    )
+  }
   const path = typeof href === "string" ? pathFromFileHref(href) : null
   if (path && onFilePress && fileExists?.(path)) {
     const open = onFilePress
@@ -99,6 +136,23 @@ function FileAwareLink({
         onClick={(event: MouseEvent<HTMLAnchorElement>) => {
           event.preventDefault()
           open(path)
+        }}
+      >
+        {children}
+      </a>
+    )
+  }
+  // Everything else the host wants to keep in the app — a link to a message,
+  // for one. The href stays on the anchor so copying or a middle-click still
+  // works; only a plain click is taken over.
+  if (onLinkPress && typeof href === "string") {
+    const handle = onLinkPress
+    return (
+      <a
+        {...rest}
+        href={href}
+        onClick={(event: MouseEvent<HTMLAnchorElement>) => {
+          if (handle(href)) event.preventDefault()
         }}
       >
         {children}
@@ -150,8 +204,10 @@ export const MarkdownText = memo(
     children,
     className,
     isStreaming,
+    variant = "default",
     onFilePress,
     fileExists,
+    onLinkPress,
     onMentionPress,
   }: MarkdownTextProps) {
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
@@ -160,11 +216,14 @@ export const MarkdownText = memo(
     const usesCompactChatTypography = phoneLayoutOverride === false
     const usesMobileChatTypography =
       usesMobileWorkspaceChrome || (phoneLayoutOverride === null && width < 640)
-    const baseClassName = usesCompactChatTypography
-      ? "chat-md chat-md-compact"
-      : usesMobileChatTypography
-      ? "chat-md chat-md-mobile"
-      : "chat-md"
+    // A tool card's body is card-sized wherever it renders; the 16px mobile
+    // chat scale would blow a three-line card open on a phone-width window.
+    const baseClassName =
+      variant === "card" || usesCompactChatTypography
+        ? "chat-md chat-md-compact"
+        : usesMobileChatTypography
+        ? "chat-md chat-md-mobile"
+        : "chat-md"
     const cls = className ? `${baseClassName} ${className}` : baseClassName
     const source = children || ""
     const body = useMemo(() => {
@@ -183,13 +242,13 @@ export const MarkdownText = memo(
               {props.children}
             </MentionHighlight>
           ) : (
-            <FileAwareLink {...props} onFilePress={onFilePress} fileExists={fileExists} />
+            <FileAwareLink {...props} onFilePress={onFilePress} fileExists={fileExists} onLinkPress={onLinkPress} />
           ),
         img: ({ src, alt }: { src?: string | Blob; alt?: string; node?: unknown }) => (
           <MarkdownMedia src={typeof src === "string" ? src : null} alt={alt} />
         ),
       }),
-      [onFilePress, fileExists, onMentionPress],
+      [onFilePress, fileExists, onLinkPress, onMentionPress],
     )
     return (
       <Streamdown

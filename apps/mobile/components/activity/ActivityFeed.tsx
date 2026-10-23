@@ -4,15 +4,18 @@
  * Everything that happened, by people and by agents, in one list: filter
  * chips, a strip of agents working right now, and a row per event. Used as
  * the Activity tab on mobile and the Activity panel on desktop.
+ *
+ * The `Sent` chip is the one view of what *you* did: it swaps the inbound feed
+ * for the team-chat messages you sent, newest first.
  */
 import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useAgentActivity } from '../../hooks/useAgentActivity'
-import { useInbox } from '../../hooks/useChatPrefs'
+import { useInbox, useSentMessages } from '../../hooks/useChatPrefs'
 import { useOpenQuestionCount } from '../../hooks/useOpenQuestions'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { openActiveChat } from '../../lib/open-active-chat'
@@ -58,18 +61,45 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
   const [filter, setFilter] = useState<ActivityFilter>('all')
   const [unreadOnly, setUnreadOnly] = useState(false)
   const inbox = useInbox(workspaceId, false)
+  const sent = useSentMessages(workspaceId, filter === 'sent')
   const agents = useAgentActivity({ polling: focused, light: true })
   const experience = useWorkspaceExperience()
   const waitingOnYou = useOpenQuestionCount(experience.kind === 'team' ? workspaceId : null)
 
   const feed = useMemo(
-    () => buildFeed({ inbox: inbox.items, tasks: agents.tasks, activeChats: agents.activeChats, filter, unreadOnly }),
-    [inbox.items, agents.tasks, agents.activeChats, filter, unreadOnly],
+    () => buildFeed({
+      inbox: inbox.items,
+      tasks: agents.tasks,
+      activeChats: agents.activeChats,
+      sent: filter === 'sent' ? sent.items : [],
+      filter,
+      unreadOnly,
+    }),
+    [inbox.items, agents.tasks, agents.activeChats, sent.items, filter, unreadOnly],
   )
-  const loading = (inbox.loading && inbox.items.length === 0) || (agents.loading && agents.tasks.length === 0)
+  const loading = filter === 'sent'
+    ? sent.loading && sent.items.length === 0
+    : (inbox.loading && inbox.items.length === 0) || (agents.loading && agents.tasks.length === 0)
   const empty = !loading && feed.running.length === 0 && feed.entries.length === 0
+  /**
+   * Both views page the same way: older items load as you reach the end, so the
+   * list is never silently capped at its first page.
+   */
+  const paging = filter === 'sent'
+    ? { hasMore: sent.hasMore, loadingMore: sent.loading, loadMore: sent.loadMore }
+    : { hasMore: inbox.hasMore, loadingMore: inbox.loadingMore, loadMore: inbox.loadMore }
 
   const open = (entry: ActivityEntry) => {
+    if (entry.sent) {
+      const message = entry.sent
+      router.push({
+        pathname: '/(app)/c/[conversationId]',
+        params: message.threadRootId
+          ? { conversationId: message.conversationId, thread: message.threadRootId }
+          : { conversationId: message.conversationId },
+      } as any)
+      return
+    }
     if (entry.inbox) {
       const item = entry.inbox
       if (!item.readAt) void inbox.markRead([item.id])
@@ -89,6 +119,13 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
     if (task) openTask(router, task)
   }
 
+  const pickFilter = (id: ActivityFilter) => {
+    setFilter(id)
+    // Sent has nothing unread, and the pill is hidden there — carrying the
+    // filter over would empty the view with no way to see why.
+    if (id === 'sent') setUnreadOnly(false)
+  }
+
   return (
     <View className="flex-1 bg-background">
       <ScrollView
@@ -102,7 +139,7 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
             key={id}
             accessibilityRole="button"
             aria-selected={filter === id}
-            onPress={() => setFilter(id)}
+            onPress={() => pickFilter(id)}
             className={cn('rounded-full border px-3 py-1', filter === id ? 'border-primary bg-primary/10' : 'border-border active:bg-accent/50')}
           >
             <Text className={cn('text-xs', filter === id ? 'font-medium text-primary' : 'text-muted-foreground')}>{label}</Text>
@@ -110,62 +147,97 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
         ))}
       </ScrollView>
 
-      <ScrollView
+      <FlatList
         className="flex-1"
+        data={feed.entries}
+        keyExtractor={(entry) => entry.id}
         contentContainerClassName="pb-28"
         refreshControl={
           <RefreshControl
-            refreshing={agents.refreshing}
+            refreshing={agents.refreshing || sent.refreshing}
             onRefresh={() => {
               void agents.refresh({ manual: true })
               void inbox.refresh()
+              if (filter === 'sent') sent.refresh()
             }}
           />
         }
-      >
-        {waitingOnYou > 0 ? (
-          <Pressable
-            onPress={() => router.push('/(app)/c/questions' as any)}
-            accessibilityRole="link"
-            accessibilityLabel={`${waitingOnYou} ${waitingOnYou === 1 ? 'question' : 'questions'} waiting on you`}
-            className={cn('flex-row items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 active:bg-amber-500/20', compact ? 'px-3 py-2' : 'px-4 py-2.5')}
-            testID="questions-waiting"
-          >
-            <MessageCircleQuestion size={14} className="text-amber-600" />
-            <Text className="flex-1 text-sm font-medium text-amber-800 dark:text-amber-300">
-              {`Waiting on you: ${waitingOnYou} ${waitingOnYou === 1 ? 'question' : 'questions'}`}
+        ListHeaderComponent={
+          <>
+            {waitingOnYou > 0 && filter !== 'sent' ? (
+              <Pressable
+                onPress={() => router.push('/(app)/c/questions' as any)}
+                accessibilityRole="link"
+                accessibilityLabel={`${waitingOnYou} ${waitingOnYou === 1 ? 'question' : 'questions'} waiting on you`}
+                className={cn('flex-row items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 active:bg-amber-500/20', compact ? 'px-3 py-2' : 'px-4 py-2.5')}
+                testID="questions-waiting"
+              >
+                <MessageCircleQuestion size={14} className="text-amber-600" />
+                <Text className="flex-1 text-sm font-medium text-amber-800 dark:text-amber-300">
+                  {`Waiting on you: ${waitingOnYou} ${waitingOnYou === 1 ? 'question' : 'questions'}`}
+                </Text>
+                <ChevronRight size={14} className="text-amber-700 dark:text-amber-400" />
+              </Pressable>
+            ) : null}
+            {feed.running.length > 0 && <RunningNow entries={feed.running} compact={compact} onOpen={open} />}
+            {loading ? <ActivityIndicator className="mt-8" /> : null}
+            {filter !== 'sent' && inbox.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{inbox.error}</Text> : null}
+            {filter !== 'sent' && agents.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{readableAgentTaskError(agents.error, 'We could not refresh agent activity.')}</Text> : null}
+            {filter === 'sent' && sent.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{sent.error}</Text> : null}
+          </>
+        }
+        renderItem={({ item }) => <ActivityRow entry={item} compact={compact} onPress={() => open(item)} />}
+        ListEmptyComponent={
+          empty ? (
+            <Text className="px-6 pt-10 text-center text-sm text-muted-foreground">
+              {unreadOnly
+                ? "You're all caught up."
+                : filter === 'agents'
+                  ? 'Agent work shows up here.'
+                  : filter === 'sent'
+                    ? 'Messages you send show up here.'
+                    : 'Messages, mentions, and agent work show up here.'}
             </Text>
-            <ChevronRight size={14} className="text-amber-700 dark:text-amber-400" />
-          </Pressable>
-        ) : null}
-        {feed.running.length > 0 && <RunningNow entries={feed.running} compact={compact} onOpen={open} />}
-        {loading ? <ActivityIndicator className="mt-8" /> : null}
-        {inbox.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{inbox.error}</Text> : null}
-        {agents.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{readableAgentTaskError(agents.error, 'We could not refresh agent activity.')}</Text> : null}
-        {feed.entries.map((entry) => (
-          <ActivityRow key={entry.id} entry={entry} compact={compact} onPress={() => open(entry)} />
-        ))}
-        {empty ? (
-          <Text className="px-6 pt-10 text-center text-sm text-muted-foreground">
-            {unreadOnly ? "You're all caught up." : filter === 'agents' ? 'Agent work shows up here.' : 'Messages, mentions, and agent work show up here.'}
-          </Text>
-        ) : null}
-      </ScrollView>
+          ) : null
+        }
+        ListFooterComponent={
+          paging.hasMore ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Show older activity"
+              disabled={paging.loadingMore}
+              onPress={() => paging.loadMore()}
+              className="items-center py-3 active:bg-accent/50"
+              testID="show-older"
+            >
+              {paging.loadingMore ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <Text className="text-xs font-medium text-muted-foreground">Show older</Text>
+              )}
+            </Pressable>
+          ) : null
+        }
+        onEndReached={() => { if (paging.hasMore && !paging.loadingMore) paging.loadMore() }}
+        onEndReachedThreshold={0.4}
+      />
 
-      <Pressable
-        accessibilityRole="button"
-        aria-selected={unreadOnly}
-        accessibilityLabel="Unreads only"
-        onPress={() => setUnreadOnly((v) => !v)}
-        className={cn(
-          // Phones keep the right corner for the floating "+".
-          compact ? 'absolute bottom-4 right-4' : 'absolute bottom-7 left-4',
-          'rounded-full border px-4 py-2 shadow-sm',
-          unreadOnly ? 'border-primary bg-primary' : 'border-border bg-card active:bg-accent/50',
-        )}
-      >
-        <Text className={cn('text-xs font-medium', unreadOnly ? 'text-primary-foreground' : 'text-foreground')}>Unreads</Text>
-      </Pressable>
+      {filter === 'sent' ? null : (
+        <Pressable
+          accessibilityRole="button"
+          aria-selected={unreadOnly}
+          accessibilityLabel="Unreads only"
+          onPress={() => setUnreadOnly((v) => !v)}
+          className={cn(
+            // Phones keep the right corner for the floating "+".
+            compact ? 'absolute bottom-4 right-4' : 'absolute bottom-7 left-4',
+            'rounded-full border px-4 py-2 shadow-sm',
+            unreadOnly ? 'border-primary bg-primary' : 'border-border bg-card active:bg-accent/50',
+          )}
+        >
+          <Text className={cn('text-xs font-medium', unreadOnly ? 'text-primary-foreground' : 'text-foreground')}>Unreads</Text>
+        </Pressable>
+      )}
     </View>
   )
 }

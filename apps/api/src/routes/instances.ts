@@ -22,6 +22,7 @@
 
 import { Hono } from 'hono'
 import { prisma, InstanceKind } from '../lib/prisma'
+import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 import { can } from '../lib/authz'
 import { resolveApiKey } from './api-keys'
 import { logRemoteAction, classifyAction } from './remote-audit'
@@ -90,6 +91,13 @@ const TUNNEL_WAIT_POLL_MS = 500
 const STREAMING_POST_PATTERNS = ['/agent/chat', '/agent/logs/stream']
 const STREAMING_GET_PATTERNS = ['/agent/canvas/stream', '/agent/logs/stream']
 const CHAT_RESUME_STREAM_RE = /^\/agent\/chat\/[^/]+\/stream$/
+/**
+ * A workspace's team-chat event stream (SSE). Long-lived by design: it carries
+ * new messages, typing and presence until the client disconnects, so it must go
+ * through the streaming pipeline — buffered, it would sit there until the 30 s
+ * proxy timeout and deliver nothing.
+ */
+const WORKSPACE_EVENT_STREAM_RE = /^\/api\/workspaces\/[^/]+\/conversations\/events$/
 
 // ─── Viewer tracking (Redis-primary, in-memory fallback) ────────────────────
 
@@ -225,19 +233,28 @@ function isWsRequested(wsRequestedAt: Date | null): boolean {
 }
 
 /**
- * Strip the /api/projects/:pid/agent-proxy wrapper from a tunneled path,
- * returning the clean agent path (e.g. "/agent/quick-actions").
+ * Strip the agent-proxy wrapper from a tunneled path, returning the clean agent
+ * path (e.g. "/agent/quick-actions").
+ *
+ * Two wrappers exist: `/api/projects/:pid/agent-proxy` for a project chat and
+ * `/api/workspaces/:wsId/agent-proxy` for a workspace chat (the personal
+ * companion, and a paired desktop's own workspace). A workspace agent turn is
+ * the same SSE stream as a project one, so both are unwrapped here — otherwise
+ * `isStreamingRequest` says "not streaming" and the relay buffers the whole
+ * turn instead of forwarding it.
  *
  * IMPORTANT: only strips query-free path segments. Callers must handle
  * query strings separately (append after normalization).
  */
 export function normalizeTransparentProxyPath(path: string): string {
   const pathWithoutQuery = path.split('?')[0] || path
-  const wrappedProjectPath = pathWithoutQuery.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/.*)?$/)
-  if (wrappedProjectPath) {
+  const wrapped = pathWithoutQuery.match(
+    /^\/api\/(?:projects|workspaces)\/[^/]+\/agent-proxy(\/.*)?$/,
+  )
+  if (wrapped) {
     // group 1 is undefined when the path ends exactly at /agent-proxy —
     // forward to /agent (the runtime's root) rather than "/" which 404s.
-    return wrappedProjectPath[1] || '/agent'
+    return wrapped[1] || '/agent'
   }
   return pathWithoutQuery
 }
@@ -262,7 +279,7 @@ export function isStreamingRequest(method: string, cleanPath: string): boolean {
   if (method === 'GET') {
     return STREAMING_GET_PATTERNS.some((pattern) =>
       pathOnly === pattern || pathOnly.startsWith(`${pattern}/`),
-    ) || CHAT_RESUME_STREAM_RE.test(pathOnly)
+    ) || CHAT_RESUME_STREAM_RE.test(pathOnly) || WORKSPACE_EVENT_STREAM_RE.test(pathOnly)
   }
 
   return false
@@ -805,37 +822,63 @@ export function instanceRoutes() {
     return c.json({ ok: true, status: 'requested' })
   })
 
-  // GET /instances — List all instances for the authenticated user's workspace
+  // GET /instances — List all instances for the authenticated user.
+  //
+  // `?workspaceId=` scopes to one cloud workspace (a project's runtime picker).
+  // `?scope=owner` is the Settings → Remote control list: every machine this
+  // user registered, whichever cloud workspace the app happens to be showing —
+  // the same owner-scoped list the workspace switcher reads from
+  // `GET /api/machines`. Each row carries the name of the workspace its key was
+  // issued in, which is information only (one tunnel serves all of them).
   router.get('/instances', async (c) => {
     const auth = c.get('auth') as any
     if (!auth?.userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
+    const ownerScoped = c.req.query('scope') === 'owner'
     const workspaceId = c.req.query('workspaceId')
-    if (!workspaceId) {
-      return c.json({ error: { code: 'invalid_request', message: 'workspaceId query param required' } }, 400)
-    }
 
-    if (!(await can(c, 'workspace:read', { workspaceId }))) {
-      return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    if (!ownerScoped) {
+      if (!workspaceId) {
+        return c.json({ error: { code: 'invalid_request', message: 'workspaceId query param required' } }, 400)
+      }
+
+      if (!(await can(c, 'workspace:read', { workspaceId }))) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
     }
 
     // Scope to the machines this user paired. Ownership is stamped from the
     // API key used to register/heartbeat the machine (see resolveApiKey), so
     // each member only sees their own machines, not everyone's in the workspace.
     const instances = await prisma.instance.findMany({
-      where: { workspaceId, userId: auth.userId },
+      where: ownerScoped ? { userId: auth.userId } : { workspaceId, userId: auth.userId },
       orderBy: { lastSeenAt: 'desc' },
     })
 
-    const withLiveStatus = await Promise.all(instances.map(async (inst) => ({
+    const workspaceNames = await workspaceNamesById(instances.map((inst) => inst.workspaceId))
+
+    // Owner scope is a machine list, so a machine registered in several
+    // workspaces appears once, carrying every workspace it is in — the same
+    // grouping `GET /api/machines` (the workspace switcher) applies. The
+    // workspace-scoped list asks for one workspace's row and stays 1:1.
+    const grouped = ownerScoped
+      ? groupMachinesByHostname(instances, {
+          preferWorkspaceId: workspaceId,
+          nameFor: (id) => workspaceNames.get(id),
+        })
+      : instances.map((inst) => ({ row: inst, workspaces: [], rows: [inst] }))
+
+    const withLiveStatus = await Promise.all(grouped.map(async ({ row: inst, workspaces, rows: machineRows }) => ({
       ...inst,
       kind: formatInstanceKind(inst.kind),
-      status: tunnels.has(inst.id) || await isTunnelConnectedAnywhere(inst.id)
-        ? 'online'
-        : (isRecentlySeenViaHeartbeat(inst.lastSeenAt) ? 'heartbeat' : 'offline'),
+      // Any live tunnel counts: with one row per workspace, the row picked as the
+      // representative is not necessarily the one that is connected.
+      status: await getMachineGroupStatus(machineRows),
       origin: 'local' as const,
+      workspaceName: workspaceNames.get(inst.workspaceId) ?? null,
+      workspaces,
     })))
 
     // Local mode: merge in any instances registered against the cloud
@@ -844,7 +887,9 @@ export function instanceRoutes() {
     // the UI can render a badge.
     let merged: Array<Record<string, unknown>> = withLiveStatus
     if (await isFederatedEnabled()) {
-      const cloud = await listCloudInstancesForWorkspace(workspaceId)
+      const cloud = ownerScoped
+        ? await listCloudInstancesForWorkspace(workspaceId ?? '', { ownerScope: true })
+        : await listCloudInstancesForWorkspace(workspaceId ?? '')
       if (cloud.length) {
         const origin = getUpstreamOrigin()
         const localIds = new Set(withLiveStatus.map((i) => i.id))
@@ -1644,12 +1689,32 @@ function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
  * recently (offline app, or a tunnel that has not been opened yet), `offline`
  * otherwise.
  */
-export async function getInstanceTunnelStatus(
+export async function getMachineLiveStatus(
   instanceId: string,
   lastSeenAt: Date | null,
 ): Promise<'online' | 'heartbeat' | 'offline'> {
   if (tunnels.has(instanceId) || (await isTunnelConnectedAnywhere(instanceId))) return 'online'
   return isRecentlySeenViaHeartbeat(lastSeenAt) ? 'heartbeat' : 'offline'
+}
+
+/**
+ * One status for a machine, across every row it has.
+ *
+ * A machine registered in three workspaces keeps three tunnels; the list shows
+ * one entry, so the entry is online when *any* of them is — reading only the
+ * representative row would call a live machine offline whenever the row that
+ * happened to be picked had not connected yet.
+ */
+export async function getMachineGroupStatus(
+  rows: Array<{ id: string; lastSeenAt: Date | null }>,
+): Promise<'online' | 'heartbeat' | 'offline'> {
+  let sawHeartbeat = false
+  for (const row of rows) {
+    const status = await getMachineLiveStatus(row.id, row.lastSeenAt)
+    if (status === 'online') return 'online'
+    if (status === 'heartbeat') sawHeartbeat = true
+  }
+  return sawHeartbeat ? 'heartbeat' : 'offline'
 }
 
 /**

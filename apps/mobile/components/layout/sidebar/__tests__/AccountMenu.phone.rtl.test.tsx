@@ -46,6 +46,7 @@ mock.module("lucide-react-native", () => {
     LogIn: Icon("LogIn"),
     LogOut: Icon("LogOut"),
     Mail: Icon("Mail"),
+    MessageSquare: Icon("MessageSquare"),
     Monitor: Icon("Monitor"),
     Moon: Icon("Moon"),
     Paintbrush: Icon("Paintbrush"),
@@ -87,6 +88,24 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/theme"), () => ({
 mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
   useDomainHttpOptional: () => null,
   getDomainHttpClient: () => null,
+  useDomainOptional: () => null,
+  getDomainStore: () => null,
+  useDomainActions: () => ({
+    acceptInvitation: async () => ({}),
+    declineInvitation: async () => ({}),
+  }),
+  useDomainActionsOptional: () => ({
+    acceptInvitation: async () => ({}),
+    declineInvitation: async () => ({}),
+  }),
+  getDomainActionsInstance: () => null,
+  useWorkspaceCollection: () => ({ all: [], loadAll: async () => {} }),
+  useWorkspaceCollectionOptional: () => null,
+}))
+mock.module(resolve(import.meta.dir, "../../../../contexts/auth"), () => ({
+  useAuth: () => ({ user: { id: "user-1", email: "user@example.com" } }),
+  useAuthOptional: () => ({ user: { id: "user-1", email: "user@example.com" } }),
+  getAuthUserSnapshot: () => ({ id: "user-1", email: "user@example.com" }),
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/platform-config"), () => ({
   isLocalMode: () => false,
@@ -108,17 +127,25 @@ mock.module(resolve(import.meta.dir, "../../../../lib/analytics"), () => ({
   EVENTS: { UPGRADE_CLICKED: "u" },
   trackEvent: () => {},
 }))
+mock.module(resolve(import.meta.dir, "../../../../lib/api"), () => ({
+  isInvitationExpired: () => false,
+  api: { getReceivedInvitations: async () => [] },
+}))
 mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({
   CompactUsageWindows: () => null,
 }))
 
 const { AccountMenu, AccountMenuBody, ACCOUNT_SCREEN_HREF } = await import("../AccountMenu")
+const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")
 
 const props = {
   user: { name: "Ashutosh" },
   onSignOut: () => {},
   isSuperAdmin: false,
-  workspaces: [{ id: "w1", name: "Ashutosh Personal" }],
+  // One list of entries (SHO-108): a cloud workspace here, no paired machine.
+  entries: buildWorkspaceEntries({ workspaces: [{ id: "w1", name: "Ashutosh Personal", kind: "personal" }] }),
+  currentKey: cloudWorkspaceKey("w1"),
+  onSelectEntry: () => {},
   currentWorkspace: { id: "w1", name: "Ashutosh Personal" },
   billingData: {},
   workspacePlan: null,

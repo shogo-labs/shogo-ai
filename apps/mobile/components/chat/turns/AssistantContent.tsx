@@ -26,6 +26,7 @@ import { WorkGroup } from "./WorkGroup"
 import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
 import { useChatImageWidth } from "./use-chat-image-width"
 import { WorkedForGroup } from "./WorkedForGroup"
+import { ContextCompactionDivider } from "./ContextCompactionDivider"
 import { PlanningStatusLine } from "./PlanningStatusLine"
 import { useDeferredBacklog } from "./use-deferred-backlog"
 import type { MessagePart, GroupedMessagePart } from "./types"
@@ -66,6 +67,8 @@ import {
 } from "../../../lib/file-change-store"
 import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
+import { useShareFileOpener } from "../share-file-context"
+import { parseInAppFileHref } from "../../../lib/share-file-links"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
@@ -194,7 +197,7 @@ function isItemActive(item: MessagePart): boolean {
 }
 
 /** Tools whose result card shows the produced image (same result shape as generate_image). */
-const IMAGE_RESULT_TOOL_NAMES = new Set(["generate_image", "upscale_image", "remove_background"])
+const IMAGE_RESULT_TOOL_NAMES = new Set(["generate_image"])
 
 function isGeneratedImagePart(part: GroupedMessagePart): boolean {
   return (
@@ -380,9 +383,18 @@ function FileThumbnail({
     mediaType.includes("javascript") ||
     mediaType.includes("yaml")
 
+  // A stored attachment is a file the app already serves: open it in the app's
+  // own viewer rather than a browser tab (SHO-80).
+  const openShareFile = useShareFileOpener()
+  const servedFile = useMemo(() => parseInAppFileHref(url), [url])
+  const openFile = useCallback(() => {
+    if (servedFile && openShareFile) openShareFile(servedFile)
+    else Linking.openURL(url)
+  }, [openShareFile, servedFile, url])
+
   const handlePress = useCallback(async () => {
     if (!isTextLike) {
-      Linking.openURL(url)
+      openFile()
       return
     }
     if (fileContent !== null) {
@@ -396,11 +408,11 @@ function FileThumbnail({
       setFileContent(text)
       setShowModal(true)
     } catch {
-      Linking.openURL(url)
+      openFile()
     } finally {
       setLoading(false)
     }
-  }, [url, isTextLike, fileContent])
+  }, [url, isTextLike, fileContent, openFile])
 
   return (
     <>
@@ -663,6 +675,10 @@ export const AssistantContent = memo(
 
       if (part.type === "image-gallery") {
         return <GeneratedImageGallery key={part.id} tools={part.tools} />
+      }
+
+      if (part.type === "compaction") {
+        return <ContextCompactionDivider key={part.id} part={part} />
       }
 
       if (part.type === "tool") {

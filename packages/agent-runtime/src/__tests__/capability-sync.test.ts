@@ -59,6 +59,68 @@ describe('syncCapabilitiesFromApi', () => {
     expect((gw as { config: { socialMediaEnabled?: boolean } }).config.socialMediaEnabled).toBe(true)
   })
 
+  // SHO-145: the model is DB-owned like the toggles. A change made with
+  // `PATCH /api/internal/projects/:id/config` has to reach `config.json`, or
+  // pipeline / heartbeat / schedule turns keep sending the old model until the
+  // runtime restarts.
+  test('the database model replaces a stale config.json model', async () => {
+    const dir = workspace()
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      model: { provider: 'anthropic', name: 'claude-haiku-4-5', thinkingLevel: 'high' },
+    }))
+    process.env.PROJECT_ID = 'proj-sync-model'
+    const gw = new AgentGateway(dir, 'proj-sync-model')
+
+    const applied = await gw.syncCapabilitiesFromApi(async () => ({
+      ok: true,
+      data: { settings: {}, agent: { modelName: 'claude-opus-5-5', modelProvider: 'anthropic' } },
+    }))
+
+    expect(applied).toBe(true)
+    const file = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8'))
+    expect(file.model.name).toBe('claude-opus-5-5')
+    expect(file.model.thinkingLevel).toBe('high')
+    expect((gw as { config: { model: { name: string } } }).config.model.name).toBe('claude-opus-5-5')
+  })
+
+  test('an agent block without a model leaves the cached model alone', async () => {
+    const dir = workspace()
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      model: { provider: 'anthropic', name: 'kept' },
+    }))
+    process.env.PROJECT_ID = 'proj-sync-model-2'
+    const gw = new AgentGateway(dir, 'proj-sync-model-2')
+
+    await gw.syncCapabilitiesFromApi(async () => ({ ok: true, data: { settings: { webEnabled: true } } }))
+
+    const file = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8'))
+    expect(file.model).toEqual({ provider: 'anthropic', name: 'kept' })
+  })
+
+  test('the per-turn model refresh is throttled and a failed sync keeps the last config', async () => {
+    const dir = workspace()
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ model: { provider: 'anthropic', name: 'kept' } }))
+    process.env.PROJECT_ID = 'proj-sync-throttle'
+    const gw = new AgentGateway(dir, 'proj-sync-throttle') as any
+
+    let calls = 0
+    gw.syncCapabilitiesFromApi = async () => {
+      calls += 1
+      throw new Error('API unreachable')
+    }
+
+    expect(await gw.refreshConfigModelIfStale()).toBe(false)
+    // Second call inside the window is skipped entirely.
+    expect(await gw.refreshConfigModelIfStale()).toBe(false)
+    expect(calls).toBe(1)
+    expect((gw as { config: { model: { name: string } } }).config.model.name).toBe('kept')
+
+    // Past the window it tries again.
+    gw.lastConfigModelSyncAt = 0
+    expect(await gw.refreshConfigModelIfStale()).toBe(false)
+    expect(calls).toBe(2)
+  })
+
   test('keeps the cache when the API cannot be reached', async () => {
     const dir = workspace()
     const original = {

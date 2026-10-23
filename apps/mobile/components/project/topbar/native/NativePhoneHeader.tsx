@@ -218,7 +218,7 @@ export function NativePhoneHeader({
                     active ? "bg-muted" : "active:bg-muted/60",
                   )}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
+                  aria-selected={active}
                   accessibilityLabel={tab.label}
                 >
                   <View

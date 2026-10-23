@@ -154,8 +154,14 @@ module "oke" {
   # Match production node specs (4 OCPUs / 24GB → 93 pods/node instead of 31)
   node_ocpus     = 4
   node_memory_gb = 24
-  node_pool_size = 2
-  node_pool_min  = 1
+  # Floor of 3 (SHO-136). A deploy plus one critical-path suite needs three
+  # nodes: the 3rd node on 2026-10-21 existed only because the autoscaler
+  # reacted to pending pods, and the autoscaler does not scale on disk. With a
+  # floor of 1 the pool oscillated 1 ↔ 3 during a suite, which put a cold-node
+  # ~10 GB runtime image pull on the critical path. Three nodes are already
+  # live under load, so this is not new peak spend.
+  node_pool_size = 3
+  node_pool_min  = 3
   node_pool_max  = 6
 
   # Staging was provisioned before the system-vs-workloads pool split landed.
@@ -180,12 +186,23 @@ module "oke" {
   #       co-tenant CNPG Postgres) down.
   # Disk thresholds mirror the current OKE defaults so DiskPressure protection
   # is preserved (a --eviction-hard flag REPLACES the whole map).
+  #
+  # Image GC at 70/60 (SHO-136). The kubelet defaults are 85/80, which on a
+  # 202 GB boot volume means reclaim starts at 172 GB and eviction at 90%
+  # (nodefs.available < 10%) — a ~10 GB window. If every image is held by a
+  # running pod, GC reclaims nothing, so a node goes healthy → evicting with no
+  # middle gear. Measured on 2026-10-21: the node that sat under DiskPressure
+  # held 7 `shogo-runtime` (9.95 GB each) + 13 `shogo-api` (5.11 GB) digests,
+  # and the ~100 GB it finally freed was freed BY the eviction. At 70%, reclaim
+  # happens at 141 GB — continuously, one image at a time, instead of emptying
+  # a node in a panic.
+  #
   # ROLLOUT (STAGING ONLY): node_metadata is in the pool's ignore_changes, so
   # applying this to the already-provisioned pool requires a one-time removal of
   # `node_metadata` from ignore_changes, then a canary-first node recycle —
   # verify one new node registers Ready + `configz` shows the new evictionHard
-  # before recycling the rest. See the incident runbook.
-  kubelet_extra_args = "--kube-reserved=cpu=100m,memory=3Gi --system-reserved=cpu=100m,memory=512Mi --eviction-hard=memory.available<1Gi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<15%,imagefs.inodesFree<5% --eviction-soft=memory.available<2Gi --eviction-soft-grace-period=memory.available=1m --eviction-max-pod-grace-period=60"
+  # AND imageGC thresholds before recycling the rest. See the incident runbook.
+  kubelet_extra_args = "--kube-reserved=cpu=100m,memory=3Gi --system-reserved=cpu=100m,memory=512Mi --eviction-hard=memory.available<1Gi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<15%,imagefs.inodesFree<5% --eviction-soft=memory.available<2Gi --eviction-soft-grace-period=memory.available=1m --eviction-max-pod-grace-period=60 --image-gc-high-threshold=70 --image-gc-low-threshold=60"
 
   tags = local.tags
 }

@@ -21,6 +21,8 @@ export interface ChatSessionType {
   cachedMessageCount: number
   contextUsageTokens: number
   contextWindowTokens: number
+  contextSummary?: string
+  contextSummaryThroughCount: number
   isPrimary: boolean
   isPinned: boolean
   isArchived: boolean
@@ -47,6 +49,8 @@ export interface ChatSessionCreateInput {
   cachedMessageCount?: number
   contextUsageTokens?: number
   contextWindowTokens?: number
+  contextSummary?: string
+  contextSummaryThroughCount?: number
   isPrimary?: boolean
   isPinned?: boolean
   isArchived?: boolean
@@ -71,6 +75,8 @@ export interface ChatSessionUpdateInput {
   cachedMessageCount?: number
   contextUsageTokens?: number
   contextWindowTokens?: number
+  contextSummary?: string
+  contextSummaryThroughCount?: number
   isPrimary?: boolean
   isPinned?: boolean
   isArchived?: boolean

@@ -177,7 +177,7 @@ function AppleContinueButton({
     <Pressable
       role="button"
       accessibilityLabel="Continue with Apple"
-      accessibilityState={{ disabled }}
+      aria-disabled={disabled}
       onPress={onPress}
       disabled={disabled}
       style={{
@@ -453,7 +453,7 @@ function SignInForm({
             disabled={!onForgotPassword || forgotSending || isLoading}
             role="link"
             accessibilityLabel="Forgot password"
-            accessibilityState={{ disabled: !onForgotPassword || forgotSending || isLoading }}
+            aria-disabled={!onForgotPassword || forgotSending || isLoading}
           >
             <Text
               className={cn(
@@ -1048,7 +1048,7 @@ function NativeMobileLoginPanel({
                 key={tab}
                 onPress={() => switchTab(tab)}
                 role="tab"
-                accessibilityState={{ selected: activeTab === tab }}
+                aria-selected={activeTab === tab}
                 accessibilityLabel={tab === 'signin' ? 'Log in' : 'Sign up'}
                 className={cn(
                   'flex-1 items-center rounded-lg py-3',
@@ -1160,7 +1160,7 @@ function CompactWebLoginPanel({
                     key={tab}
                     onPress={() => switchTab(tab)}
                     role="tab"
-                    accessibilityState={{ selected: activeTab === tab }}
+                    aria-selected={activeTab === tab}
                     accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
                     className={cn('flex-1 py-2 rounded-md items-center', activeTab === tab ? 'bg-card' : '')}
                     style={activeTab === tab ? {
@@ -1274,7 +1274,7 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, o
                 key={tab}
                 onPress={() => switchTab(tab)}
                 role="tab"
-                accessibilityState={{ selected: activeTab === tab }}
+                aria-selected={activeTab === tab}
                 accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
                 className={cn(
                   'flex-1 py-2 rounded-md items-center',

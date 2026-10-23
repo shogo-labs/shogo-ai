@@ -35,7 +35,7 @@ import { workBoardRoutes } from './routes/work-boards'
 // local mode too. Loading them via server-cloud-deps left local 404ing.
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { costAnalyticsRoutes } from './routes/cost-analytics'
-import { AGENT_REPLY_TIMEOUT_MS, configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
+import { configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
 import { registerBuiltInChatProviders } from './services/chat-providers'
 import { chatProviderRoutes } from './routes/chat-providers'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
@@ -46,6 +46,7 @@ import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-ev
 import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
 import { createInviteLinkAfterAccept } from './routes/invite-link-after-accept'
 import { inviteLinkRoutes } from './routes/invite-links'
+import { invitationInfoRoutes } from './routes/invitation-info'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
@@ -142,6 +143,7 @@ import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
 import { localLogsRoutes } from './routes/local-logs'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
+import { publishedSiteSweepRoutes } from './routes/internal-published-sites'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
 import { DOCKER_CLASS_SETTING_KEY, setDockerClassOverride, loadDockerClassOverride } from './lib/runtime-class-setting'
@@ -157,11 +159,12 @@ import { historyRoutes } from './routes/history'
 import { voiceMediaRoutes } from './routes/voice-media'
 import { chatMentionRoutes } from './routes/chat-mentions'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
-import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
+import { createRuntimeManager, resolveRuntimeMaxCount, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
+import { deployedAppVersionOrUnknown } from './lib/app-version'
 // Auth middleware for generated routes
 import {
   authMiddleware,
@@ -356,15 +359,17 @@ async function verifyProjectAccess(
  * Get or create the RuntimeManager singleton.
  *
  * Configurable via environment variables:
- * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: 10)
+ * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: preview + background pools + headroom,
+ *   see resolveRuntimeMaxCount)
  * - RUNTIME_DOMAIN_SUFFIX: Domain suffix for URLs (default: localhost)
  * - WORKSPACES_DIR: Directory containing project workspaces (default: PROJECT_ROOT/workspaces)
  */
 function getRuntimeManager(): IRuntimeManager {
   if (!runtimeManager) {
     const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    const maxRuntimes = resolveRuntimeMaxCount()
     runtimeManager = createRuntimeManager({
-      maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
+      maxRuntimes,
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
       templateDir: '_template',
@@ -380,7 +385,7 @@ function getRuntimeManager(): IRuntimeManager {
     setRuntimeManager(runtimeManager as ReturnType<typeof createRuntimeManager>)
     console.log('[Runtime] RuntimeManager initialized:', {
       portRange: '37100-37900 (random)',
-      maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
+      maxRuntimes,
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
     })
@@ -850,6 +855,9 @@ const healthHandler = async (c: any) => {
   const ok = !degraded && redis.healthy
   const body = {
     ok,
+    // The release this pod runs. Deploys fail their rollout gate on 0.0.0, so
+    // admin analytics can always compare installs against the deployed tag.
+    version: deployedAppVersionOrUnknown(),
     redis: { healthy: redis.healthy, latencyMs: redis.latencyMs, degraded },
   }
   return c.json(body, ok ? 200 : 503)
@@ -859,7 +867,7 @@ app.get('/health', healthHandler)
 
 // Version endpoint for frontend update detection
 app.get('/api/version', (c) => c.json({
-  version: process.env.APP_VERSION || '0.0.0',
+  version: deployedAppVersionOrUnknown(),
   buildHash: process.env.BUILD_HASH || 'dev',
 }))
 
@@ -1151,7 +1159,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     { id: 'openai',     envKey: 'OPENAI_API_KEY' },
     { id: 'google',     envKey: 'GOOGLE_API_KEY' },
     { id: 'openrouter', envKey: 'OPENROUTER_API_KEY' },
-    { id: 'fal',        envKey: 'FAL_KEY' },
     { id: 'tripo',      envKey: 'TRIPO_API_KEY' },
     { id: 'higgsfield', envKey: 'HIGGSFIELD_API_KEY' },
   ] as const
@@ -1618,8 +1625,9 @@ app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUs
 app.route('/api', sharedMeetingRoutes())
 // Workspace channels (team chat with @mentionable agents).
 configureConversationAgentDispatcher({ runtimeManager: getRuntimeManager() })
-// Other pods may still be writing replies; only settle those past the longest a run can take.
-void settleOrphanedAgentReplies(AGENT_REPLY_TIMEOUT_MS + 60_000).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
+// A reply another pod is still writing keeps its turn heartbeated, so the
+// heartbeat — not a fixed age — is what tells a dead run from a live one.
+void settleOrphanedAgentReplies(0).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
 registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
@@ -1643,6 +1651,15 @@ app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
 // stable API URL, then route each request to an enabled project runtime.
 app.route('/api', slackAgentRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
 startTunnelHeartbeat()
+
+// SHO-105 / #1597: checkpoint repos seeded before this build still carry
+// `.shogo/sessions.db` (+ its live WAL) in their history and in `.git/lfs`.
+// `repairCheckpointRepo` rewrites the refs without touching a file on disk and
+// prunes the orphaned LFS objects; the marker it writes makes every later boot a
+// no-op. Off the readiness path, and killable with SHOGO_SKIP_CHECKPOINT_REPAIR=1.
+void import('./services/checkpoint-repo-repair.service')
+  .then((m) => m.startCheckpointRepoRepair(WORKSPACES_DIR))
+  .catch((err) => console.warn('[checkpoint-repair] could not start:', err?.message ?? err))
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
 app.get('/api/warm-pool/status', async (c) => {
@@ -5850,6 +5867,30 @@ app.post('/api/projects/:projectId/chat/stop', async (c) => {
   return router.fetch(newReq)
 })
 
+// POST /api/projects/:projectId/chat/compact - Summarize this chat's context now
+// (the context-usage dock's "Summarize now"). The inner router under
+// `projectChatRoutes` is only reachable through explicit forwarders, so this
+// registration is what makes the route exist at all.
+app.post('/api/projects/:projectId/chat/compact', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  // Region-pin: the session's history lives in the runtime that owns the turn.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
+
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/compact`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
 // POST /api/projects/:projectId/chat/wake - Wake up a scaled-to-zero pod
 app.post('/api/projects/:projectId/chat/wake', async (c) => {
   const authResult = await requireProjectAuth(c)
@@ -8768,6 +8809,13 @@ app.route('/api/internal/e2e', metalE2eRoutes())
 // apps/api/src/routes/metal.ts and lib/metal-warm-pool-controller.ts.
 app.route('/api/internal/metal', metalRoutes())
 
+// Orphaned published-site reconcile sweep (SHO-138). Mounted under
+// /api/internal/published-sites so it inherits the /api/internal/* auth-skip;
+// every handler requires the PUBLISHED_SITE_SWEEP_SECRET shared secret and is a
+// dry run unless it is explicitly asked to apply. See
+// apps/api/src/routes/internal-published-sites.ts.
+app.route('/api/internal/published-sites', publishedSiteSweepRoutes())
+
 // User/profile routes are shared by the local and cloud composers.
 app.route('/api', userProfileRoutes())
 
@@ -9011,6 +9059,13 @@ app.get('/api/invite-links/:token/info', async (c) => {
     },
   })
 })
+
+// Get invitation info for the emailed accept link (`/invitations/<id>/accept`).
+// Public on purpose — the page renders before the invitee signs in — and the
+// payload carries no email address. Mounted BEFORE the generated routers so
+// `/:id/info` can't fall through to the generated `GET /:id` (which requires
+// an authenticated session and the invitation to belong to the caller).
+app.route('/api/invitations', invitationInfoRoutes())
 
 // Custom chat-message extension endpoints (truncate-from, etc.).
 // MUST be mounted BEFORE the generated routes so Hono matches the
@@ -9432,6 +9487,7 @@ import {
   isPtyPodBridgeData,
   type PtyPodBridgeData,
 } from './lib/pty-pod-bridge'
+import { countTerminalSession } from './lib/terminal-session-pin'
 const ptyPodBridge = createPtyPodBridgeHandlers()
 
 // Match a path like `/api/projects/<projectId>/ports/<port>/tunnel`.
@@ -9550,6 +9606,7 @@ export default {
           const podUrl = await resolveRuntimeBaseUrl(projectId)
           const data: PtyPodBridgeData = buildPtyPodBridgeData({
             podUrl,
+            projectId,
             sessionId,
             since,
             runtimeToken: await deriveProjectRuntimeToken(projectId),
@@ -9653,8 +9710,10 @@ export default {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
       else if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamOpen(ws)
-      else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
-      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
+      else if (isPtyPodBridgeData(ws.data)) {
+        countTerminalSession(getRuntimeManager(), ws.data, 1)
+        ptyPodBridge.open(ws)
+      } else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
       else handleInstanceWsOpen(ws)
     },
     message(ws: any, msg: any) {
@@ -9669,8 +9728,10 @@ export default {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
       else if (isLiveRelayData(ws.data)) liveRelayClose(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamClose(ws)
-      else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
-      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
+      else if (isPtyPodBridgeData(ws.data)) {
+        countTerminalSession(getRuntimeManager(), ws.data, -1)
+        ptyPodBridge.close(ws, code, reason)
+      } else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)
     },
   },
@@ -9784,8 +9845,14 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
   setTimeout(async () => {
     try {
       const { resolveWorkspaceRuntimeUrl } = await import('./lib/resolve-workspace-runtime-url')
-      const previewMax = parseInt(process.env.WORKSPACE_PREVIEW_MAX || '3', 10)
-      const take = Number.isFinite(previewMax) && previewMax > 0 ? previewMax : 3
+      const { resolveWorkspacePreviewMax } = await import('./lib/runtime/manager')
+      // The SAME cap the manager evicts down to. Reading
+      // `WORKSPACE_PREVIEW_MAX || '3'` here instead warmed more workspaces than
+      // the manager keeps on a `low`-tier host (cap 1), so boot guaranteed an
+      // eviction right after boot — and the eviction could land on the runtime
+      // hosting the user's terminal (SHO-107).
+      const previewMax = resolveWorkspacePreviewMax()
+      const take = previewMax
       const workspaces = await prisma.workspace.findMany({
         orderBy: { updatedAt: 'desc' },
         take,
@@ -9803,7 +9870,10 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
           )
       }
 
-      const projectCount = Math.max(0, parseInt(process.env.DESKTOP_STARTUP_PREWARM_PROJECTS || '1', 10))
+      const projectCount = Math.min(
+        Math.max(0, parseInt(process.env.DESKTOP_STARTUP_PREWARM_PROJECTS || '1', 10)),
+        previewMax,
+      )
       if (projectCount > 0) {
         const projects = await prisma.project.findMany({
           orderBy: { updatedAt: 'desc' },

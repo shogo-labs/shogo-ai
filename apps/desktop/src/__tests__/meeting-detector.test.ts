@@ -54,6 +54,117 @@ describe('Slack huddle detection', () => {
   })
 })
 
+describe('native app calls (Zoom / Teams / Webex)', () => {
+  const zoomApp = { pid: 51400, name: 'zoom.us', cmd: '/Applications/zoom.us.app/Contents/MacOS/zoom.us' }
+  const zoomCaptureHelper = {
+    pid: 51412,
+    name: 'caphost',
+    cmd: '/Applications/zoom.us.app/Contents/Frameworks/caphost.app/Contents/MacOS/caphost -pid 51400',
+  }
+  const teamsApp = { pid: 700, name: 'Microsoft Teams', cmd: '/Applications/Microsoft Teams.app/Contents/MacOS/MSTeams' }
+  const webexApp = {
+    pid: 800,
+    name: 'Webex',
+    cmd: '/Applications/Cisco Webex Meetings.app/Contents/MacOS/Cisco Webex Meetings',
+  }
+
+  function harness(
+    processes: Array<{ pid: number; name: string; cmd?: string }>,
+    mic: MicUser[] | null,
+    platform: NodeJS.Platform = 'darwin',
+  ) {
+    const state = { mic }
+    const detector = new MeetingDetector({
+      platform,
+      listProcesses: async () => processes,
+      listMicUsers: async () => state.mic,
+    })
+    const detected: string[] = []
+    const ended: string[] = []
+    detector.on('meeting-detected', (evt: { app: string }) => detected.push(evt.app))
+    detector.on('meeting-ended', (evt: { app: string }) => ended.push(evt.app))
+    const tick = () => (detector as unknown as { tickProcesses(): Promise<void> }).tickProcesses()
+    return { detected, ended, tick, setMic: (next: MicUser[] | null) => { state.mic = next } }
+  }
+
+  test('an app that is merely open is not a meeting', async () => {
+    const { detected, tick } = harness([zoomApp, zoomCaptureHelper], [])
+    await tick()
+    expect(detected).toEqual([])
+  })
+
+  test('a Zoom call is detected from the mic', async () => {
+    const { detected, tick } = harness([zoomApp, zoomCaptureHelper], [{ pid: 51400, bundleId: 'us.zoom.xos' }])
+    await tick()
+    expect(detected).toEqual(['Zoom'])
+  })
+
+  test('hanging up ends the Zoom call', async () => {
+    const { detected, ended, tick, setMic } = harness(
+      [zoomApp, zoomCaptureHelper],
+      [{ pid: 51400, bundleId: 'us.zoom.xos' }],
+    )
+    await tick()
+    setMic([])
+    await tick()
+    expect(detected).toEqual(['Zoom'])
+    expect(ended).toEqual(['Zoom'])
+  })
+
+  test('a Zoom capture helper holding the mic also counts', async () => {
+    const { detected, tick } = harness([zoomApp, zoomCaptureHelper], [{ pid: 51412, bundleId: 'us.zoom.caphost' }])
+    await tick()
+    expect(detected).toEqual(['Zoom'])
+  })
+
+  test('matches a Zoom process by pid when the bundle id is missing', async () => {
+    const { detected, tick } = harness([zoomApp, zoomCaptureHelper], [{ pid: 51400, bundleId: '' }])
+    await tick()
+    expect(detected).toEqual(['Zoom'])
+  })
+
+  test('a failed mic poll neither starts nor ends a Zoom call', async () => {
+    const { detected, ended, tick, setMic } = harness([zoomApp, zoomCaptureHelper], [{ pid: 51400, bundleId: 'us.zoom.xos' }])
+    await tick()
+    setMic(null)
+    await tick()
+    expect(ended).toEqual([])
+    expect(detected).toEqual(['Zoom'])
+
+    setMic([])
+    await tick()
+    expect(ended).toEqual(['Zoom'])
+  })
+
+  test('Teams and Webex are mic-gated the same way', async () => {
+    const teams = harness([teamsApp], [])
+    await teams.tick()
+    expect(teams.detected).toEqual([])
+    teams.setMic([{ pid: 700, bundleId: 'com.microsoft.teams2' }])
+    await teams.tick()
+    expect(teams.detected).toEqual(['Microsoft Teams'])
+    teams.setMic([])
+    await teams.tick()
+    expect(teams.ended).toEqual(['Microsoft Teams'])
+
+    const webex = harness([webexApp], [])
+    await webex.tick()
+    expect(webex.detected).toEqual([])
+    webex.setMic([{ pid: 800, bundleId: 'com.cisco.webexmeetingsapp' }])
+    await webex.tick()
+    expect(webex.detected).toEqual(['Webex'])
+    webex.setMic([])
+    await webex.tick()
+    expect(webex.ended).toEqual(['Webex'])
+  })
+
+  test('keeps the process heuristic off macOS', async () => {
+    const { detected, tick } = harness([zoomApp, zoomCaptureHelper], null, 'win32')
+    await tick()
+    expect(detected).toEqual(['Zoom'])
+  })
+})
+
 describe('browser call detection', () => {
   const chromeHelper = {
     pid: 20,

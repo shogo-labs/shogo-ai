@@ -29,7 +29,7 @@
  */
 
 import { existsSync } from 'fs'
-import { isAbsolute, join, relative, sep } from 'path'
+import { isAbsolute, join, relative, resolve, sep } from 'path'
 import { isMetalRuntime, remoteProjectsGuidance } from './remote-tools'
 
 export type WorkingMode = 'managed' | 'external'
@@ -370,15 +370,26 @@ export function renderWorkspaceManifestMarkdown(
       : 'Projects below are available but not necessarily mounted. Use the `list_projects` tool to refresh this catalog, and use `mount_project` only when you need to inspect or change a project.',
   )
   lines.push('')
-  lines.push(
-    '## Previewing a mounted project\'s app',
-    '',
-    'Never construct or hand out a `localhost`/bare-port link yourself (including this runtime\'s own ' +
-      'base URL or `PORT` env var — that only serves the chat/tool API, not any project\'s app). To share a ' +
-      'working preview link, call the `preview_project` tool with the mounted project\'s id and use ONLY the ' +
-      '`url` it returns. If it errors, tell the user honestly rather than guessing a link.',
-    '',
-  )
+  lines.push(metal ? "## Previewing a project's app" : "## Previewing a mounted project's app")
+  lines.push('')
+  if (metal) {
+    lines.push(
+      'Each project is served by its own runtime. To share a working preview link, call the ' +
+        '`preview_project` tool with that project id and use ONLY the `url` it returns — it starts that ' +
+        "project's build and answers with the one reachable address. Never construct or hand out a " +
+        '`localhost`/bare-port link yourself (including this runtime\'s own base URL or `PORT` env var — ' +
+        "that only serves the chat/tool API, not any project's app). If it errors, tell the user honestly " +
+        'rather than guessing a link.',
+    )
+  } else {
+    lines.push(
+      'Never construct or hand out a `localhost`/bare-port link yourself (including this runtime\'s own ' +
+        'base URL or `PORT` env var — that only serves the chat/tool API, not any project\'s app). To share a ' +
+        "working preview link, call the `preview_project` tool with the mounted project's id and use ONLY the " +
+        '`url` it returns. If it errors, tell the user honestly rather than guessing a link.',
+    )
+  }
+  lines.push('')
   lines.push(
     'All of these projects belong to the current user and are part of this',
     'workspace — you have been granted access to every folder above. They are',
@@ -563,6 +574,24 @@ export function shouldEnforceProjectIdSanity(opts: {
   isWorkspaceRuntime: boolean
 }): boolean {
   return opts.workingMode !== 'external' && !opts.isWorkspaceRuntime
+}
+
+/**
+ * Whether `dir` is positively NOT the workspace dir this process serves.
+ *
+ * `WORKSPACE_DIR` is the merged root the runtime was booted on; a gateway
+ * pointed anywhere else (a test's scratch dir, a leftover checkout) must not
+ * write this workspace's settings into its `config.json`. When `WORKSPACE_DIR`
+ * is unset there is nothing to compare against, so the answer is `false` and
+ * callers keep their previous behaviour.
+ */
+export function isForeignWorkspaceDir(
+  dir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const own = env.WORKSPACE_DIR
+  if (!own) return false
+  return resolve(own) !== resolve(dir)
 }
 
 /**

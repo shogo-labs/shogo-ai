@@ -25,6 +25,12 @@ import {
   getShogoAgentName,
   withShogoCommitTrailer,
 } from '@shogo/shared-runtime/agent-attribution';
+import {
+  ensureShogoExcludes,
+  evictStaleGitLock,
+  isRepairInProgress,
+  untrackShogoStatePaths,
+} from '@shogo/shared-runtime/shogo-state-paths';
 
 const execAsync = promisify(exec);
 
@@ -369,8 +375,6 @@ const UNTRACK_IF_TRACKED: readonly string[] = [
   'build',
   '.output',
   '.nitro',
-  '.shogo',
-  '.tmp',
 ];
 
 /**
@@ -584,28 +588,7 @@ const STALE_INDEX_LOCK_MS = 5_000;
  */
 function evictStaleIndexLock(workspacePath: string): void {
   if (!isGitRepo(workspacePath)) return;
-  const lockPath = join(workspacePath, '.git', 'index.lock');
-  let stat;
-  try {
-    stat = statSync(lockPath);
-  } catch {
-    return; // No lock — nothing to do.
-  }
-  const ageMs = Date.now() - stat.mtimeMs;
-  if (ageMs < STALE_INDEX_LOCK_MS) return;
-  try {
-    unlinkSync(lockPath);
-    console.warn(
-      `[git.service] Removed stale .git/index.lock (age ${Math.round(ageMs / 1000)}s) at ${workspacePath}`
-    );
-  } catch (err: any) {
-    // Lock may have been released between stat and unlink — that's fine.
-    // Anything else (permissions, locked by Win32 file handle) we surface
-    // implicitly when the next `git` command fails with a clearer error.
-    if (err?.code !== 'ENOENT') {
-      console.warn(`[git.service] Could not remove .git/index.lock: ${err?.message ?? err}`);
-    }
-  }
+  evictStaleGitLock(workspacePath, STALE_INDEX_LOCK_MS, console);
 }
 
 /**
@@ -619,6 +602,11 @@ function evictStaleIndexLock(workspacePath: string): void {
  * lived in `.gitignore` ended up with the build artifacts committed.
  * Just appending to `.gitignore` doesn't fix existing tracking — we
  * have to actively evict them from the index.
+ *
+ * Shogo's own runtime state (`.shogo/sessions.db` + its live WAL, logs,
+ * `.tmp/`) is handled by the shared predicate in `shogo-state-paths.ts` and
+ * only after `await`ing {@link pruneShogoRuntimeState} — a `snapshotTree`
+ * caller that cannot await keeps the sync-only half.
  */
 function untrackNowIgnoredPaths(workspacePath: string): void {
   if (!isGitRepo(workspacePath)) return;
@@ -637,6 +625,34 @@ function untrackNowIgnoredPaths(workspacePath: string): void {
       // Best-effort: a missing path or a git version that lacks one of
       // these flags shouldn't block the checkpoint.
     }
+  }
+}
+
+/**
+ * Install the managed exclude block and drop Shogo runtime state from the
+ * index (files stay on disk). Idempotent — one `git ls-files` when the repo is
+ * already clean — so it is safe to run before every commit.
+ */
+async function pruneShogoRuntimeState(
+  workspacePath: string,
+  opts: { indexFile?: string } = {}
+): Promise<void> {
+  if (!isGitRepo(workspacePath)) return;
+  evictStaleIndexLock(workspacePath);
+  ensureShogoExcludes(workspacePath, console);
+  try {
+    // A snapshot stages into a temp index seeded from the parent commit, so the
+    // tracked-ness has to be undone *in that index* or the next `git add -A`
+    // re-stages `.shogo/sessions.db` forever.
+    const env = opts.indexFile ? { ...process.env, GIT_INDEX_FILE: opts.indexFile } : undefined;
+    const { removed } = await untrackShogoStatePaths(workspacePath, { logger: console, env });
+    if (removed > 0) {
+      console.log(
+        `[git.service] Untracked ${removed} Shogo runtime-state path(s) in ${workspacePath}`
+      );
+    }
+  } catch (err: any) {
+    console.warn(`[git.service] Untracking Shogo runtime state failed: ${err?.message ?? err}`);
   }
 }
 
@@ -660,6 +676,7 @@ export async function initRepo(
     ensureGitignoreIgnoresDeps(workspacePath);
     evictStaleIndexLock(workspacePath);
     untrackNowIgnoredPaths(workspacePath);
+    await pruneShogoRuntimeState(workspacePath);
     const branch = await getCurrentBranch(workspacePath);
     return { created: false, branch };
   }
@@ -847,6 +864,13 @@ export async function commit(
   requireGit();
   const { message, author, email, includeUntracked = true } = options;
 
+  // A history rewrite is moving this repo's refs; a commit now would be
+  // discarded by it. Skip this checkpoint — the next one commits the tree.
+  if (isRepairInProgress(workspacePath)) {
+    console.log(`[git.service] ${workspacePath}: checkpoint repo is being repaired, skipping commit`);
+    return null;
+  }
+
   // Self-heal legacy repos that pre-date these settings: enable long paths,
   // disable CRLF rewriting, and make sure node_modules/ is ignored so the
   // stage step below doesn't trip on Windows MAX_PATH inside deep
@@ -869,6 +893,12 @@ export async function commit(
   // disk; the index entry is removed so this commit records a clean
   // deletion and future runs find nothing to evict.
   untrackNowIgnoredPaths(workspacePath);
+
+  // Shogo runtime state (`.shogo/sessions.db` + live WAL, logs, `.tmp/`):
+  // install the exclude rules and drop it from the index. Without this an
+  // older repo re-stages its live SQLite files on every single checkpoint
+  // (SHO-105 / #1597).
+  await pruneShogoRuntimeState(workspacePath);
 
   // Sweep Win32-reserved-name files (`nul`, `con`, …) out of the working
   // tree before staging. These are virtually always shell-redirect garbage
@@ -1035,6 +1065,11 @@ export async function snapshotTree(
     } else {
       execFileSync('git', ['read-tree', '--empty'], { cwd: workspacePath, env, stdio: 'pipe' });
     }
+
+    // The temp index was seeded from the parent commit, which may still track
+    // `.shogo/sessions.db` and friends; ignore rules do not apply to a path an
+    // index already holds, so drop them from *this* index before staging.
+    await pruneShogoRuntimeState(workspacePath, { indexFile });
 
     execFileSync('git', ['add', '-A'], { cwd: workspacePath, env, stdio: 'pipe' });
     const tree = execFileSync('git', ['write-tree'], {

@@ -59,42 +59,20 @@ import { getWorkspacesDir } from './paths'
 // node:path + plain constants, so nothing else from agent-runtime gets
 // pulled into the Electron main bundle.
 import { walkFilesTree } from '@shogo/agent-runtime/src/fs-tree-walker'
+import { resolveManagedWorkspaceRoot as resolveManagedRoot } from './workspace-root-containment'
 
 /**
- * Resolve a user-supplied workspace root to its canonical absolute form,
- * but ONLY if it lives directly under `getWorkspacesDir()`. Returns null
- * for anything else (external folder-bound projects, traversal attempts,
- * paths outside the workspaces dir entirely).
+ * Resolve a user-supplied workspace root to its canonical absolute form, but
+ * ONLY if it lives directly under `getWorkspacesDir()`. Returns null for
+ * anything else (external folder-bound projects, traversal attempts, paths
+ * outside the workspaces dir entirely).
  *
- * Resolves symlinks at the workspaces-root level via `realpathSync` so a
- * user with a symlinked data dir doesn't get falsely rejected, while still
- * pinning the validation to the canonical path.
+ * The containment rule itself lives in `workspace-root-containment.ts` so it
+ * can be unit-tested without Electron; this wrapper only binds it to the
+ * current workspaces dir.
  */
 function resolveManagedWorkspaceRoot(rawRoot: string): string | null {
-  if (!rawRoot || typeof rawRoot !== 'string') return null
-  const workspacesDir = realpathOrSelf(getWorkspacesDir())
-  let resolved: string
-  try {
-    resolved = realpathOrSelf(path.resolve(rawRoot))
-  } catch {
-    return null
-  }
-  if (!resolved.startsWith(workspacesDir + path.sep)) return null
-  // Reject the workspaces root itself + any path more than one level deep
-  // (only `<workspacesDir>/<projectId>` is a valid workspace root).
-  const rel = resolved.slice(workspacesDir.length + 1)
-  if (rel.length === 0) return null
-  if (rel.includes(path.sep)) return null
-  if (!fs.existsSync(resolved)) return null
-  return resolved
-}
-
-function realpathOrSelf(p: string): string {
-  try {
-    return fs.realpathSync(p)
-  } catch {
-    return path.resolve(p)
-  }
+  return resolveManagedRoot(rawRoot, getWorkspacesDir())
 }
 
 /**

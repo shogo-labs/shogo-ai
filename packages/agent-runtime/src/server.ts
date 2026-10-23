@@ -17,7 +17,7 @@ import { resolve, dirname, join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
-import { createBufferedTurns, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
+import { createBufferedTurns, type PipelineCallHooks, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
 import { describeTurn } from './turn-status'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
@@ -80,6 +80,7 @@ import {
   packRepoArchive,
   seedRepoIfAbsent,
   untrackDependencyDirs,
+  repairCheckpointRepo,
   createTagLocal,
   deleteTagLocal,
   getHeadSha,
@@ -139,11 +140,13 @@ import {
   SQLITE_SIDECAR_ENTRY,
 } from './writable-state'
 import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
+import { sweepExecCwdMarkers } from './exec-cwd'
 import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { handleExportHome, handleHydrateHome } from './home-state-routes'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
+import { ensureDurableTaskLogs } from './task-log-durability'
 import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
@@ -163,7 +166,7 @@ import {
   type PortBridgeWsData,
   type PortHttpWsData,
 } from './port-bridge'
-import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorktreeStatus, postPlanMirror } from './internal-api'
 import { acceptsAppToolToken } from './app-runtime-token'
 import {
   detachMemberFromRootRepo,
@@ -212,6 +215,7 @@ import {
   listAvailableWorkspaceProjects,
 } from './workspace-members'
 import { seedEmptyChatSession } from './file-attachment-utils'
+import { parseHistorySeed } from './history-seed'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
@@ -792,6 +796,8 @@ const { app, state, logTiming } = await createRuntimeApp({
       const localShogoDir = join(POOL_STATE_ROOT, projectId, '.shogo')
       mkdirSync(localShogoDir, { recursive: true })
       const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+      /** `.shogo` dirs moved aside here; their `tasks/` is carried to host storage. */
+      const adoptedShogoDirs: string[] = []
 
       let existingStat: ReturnType<typeof lstatSync> | null = null
       try { existingStat = lstatSync(workspaceShogoDir) } catch { /* doesn't exist — easy path */ }
@@ -813,6 +819,7 @@ const { app, state, logTiming } = await createRuntimeApp({
         try {
           renameSync(workspaceShogoDir, asidePath)
           cleared = true
+          adoptedShogoDirs.push(asidePath)
         } catch (err: any) {
           renameErrMsg = err?.message ?? String(err)
         }
@@ -835,6 +842,17 @@ const { app, state, logTiming } = await createRuntimeApp({
       if (!alreadyCorrect) {
         symlinkSync(localShogoDir, workspaceShogoDir)
       }
+
+      // Task logs must outlive this VM (SHO-141). `.shogo` is on the overlay so
+      // SQLite works; `tasks/` is a symlink out to host-backed storage, which
+      // keeps `<workspace>/.shogo/tasks/<session>/<task>.log` the same path
+      // every caller already uses while the bytes survive a re-assign.
+      ensureDurableTaskLogs({
+        localShogoDir,
+        hostWorkspacesRoot,
+        projectId,
+        adoptFrom: adoptedShogoDirs,
+      })
 
       // Suppress .virtfs_metadata in git (created by 9p security_model=mapped-file)
       try {
@@ -889,13 +907,14 @@ const { app, state, logTiming } = await createRuntimeApp({
       (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
-    const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0 }
+    const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0, children: 0 }
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
       activeStreams,
       activeTurns: work.turns,
       activeTasks: work.tasks,
+      activeChildren: work.children ?? 0,
       repoHeadSha: cachedRepoHeadSha,
       previewHealth: safePreviewHealth(),
     }
@@ -1392,12 +1411,63 @@ app.get('/agent/status', (c) => {
 // plus the metadata the StatusPanel needs to render its expanded view.
 // Sessions live in memory on this pod; if the id has been evicted (TTL)
 // or never existed, this returns 404.
-app.get('/agent/sessions/:sessionId/summary', (c) => {
+app.get('/agent/sessions/:sessionId/summary', async (c) => {
   const sm = agentGateway?.getSessionManager()
   if (!sm) return c.json({ error: 'Agent gateway not running' }, 503)
-  const detail = sm.getDetail(c.req.param('sessionId'))
+  const sessionId = c.req.param('sessionId')
+  // An evicted session is still on disk; load it before reporting 404.
+  await sm.loadSession(sessionId)
+  const detail = sm.getDetail(sessionId)
   if (!detail) return c.json({ error: 'session not found' }, 404)
   return c.json(detail)
+})
+
+/**
+ * Forget a chat's persisted history for good. Called only when the chat itself
+ * is deleted — never for idle time (that is what `pruneExpired()` stopped
+ * doing; see SHO-137). Wipes memory and the durable copy, so a deleted chat
+ * cannot come back from `sessions.db`.
+ */
+app.delete('/agent/sessions/:sessionId', async (c) => {
+  const sm = agentGateway?.getSessionManager()
+  if (!sm) return c.json({ error: 'Agent gateway not running' }, 503)
+  const sessionId = c.req.param('sessionId')
+  const existed = await sm.deleteSession(sessionId)
+  return c.json({ forgotten: true, existed })
+})
+
+// Manually summarize a session's context — the context-usage dock's button.
+// A live turn cannot be summarized synchronously (the request has already been
+// sent), so the flag is queued and consumed at the next step; the caller gets
+// 202 and a reason instead of a fake success. An idle session compacts here and
+// reports the real before/after. Nothing foldable is an honest 200.
+app.post('/agent/sessions/:sessionId/compact', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const result = await agentGateway.compactSession(c.req.param('sessionId'))
+  switch (result.status) {
+    case 'unknown-session':
+      return c.json({ compacted: false, queued: false, reason: result.reason ?? 'session not found' }, 404)
+    case 'queued':
+      return c.json({ compacted: false, queued: true, reason: result.reason }, 202)
+    case 'nothing-to-compact':
+      return c.json({
+        compacted: false,
+        queued: false,
+        reason: result.reason,
+        tokensBefore: result.tokensBefore,
+        tokensAfter: result.tokensAfter,
+      })
+    case 'compacted':
+      return c.json({
+        compacted: true,
+        queued: false,
+        tokensBefore: result.tokensBefore,
+        tokensAfter: result.tokensAfter,
+        messagesBefore: result.messagesBefore,
+        messagesAfter: result.messagesAfter,
+        summaryChars: result.summaryChars,
+      })
+  }
 })
 
 // List the background shell processes still running for a chat thread. Used by
@@ -1513,7 +1583,8 @@ app.patch('/agent/config', async (c) => {
     agentGateway?.reloadConfig()
 
     // The PATCH is the immediate update. Capability toggles are then
-    // confirmed against Project.settings, which wins when the pull succeeds.
+    // confirmed against the database (Project.settings, plus Workspace.settings
+    // in a workspace runtime), which wins when the pull succeeds.
     await agentGateway?.syncCapabilitiesFromApi()
 
     return c.json({ ok: true })
@@ -1895,11 +1966,17 @@ app.post('/agent/chat', async (c) => {
   }
   const chatSessionKey = rawChatSessionKey
   const sessionManager = agentGateway!.getSessionManager()
-  sessionManager.getOrCreate(chatSessionKey)
+  // Load, don't fabricate: on a pod that has not restored this id yet, a
+  // memory-only `getOrCreate` would hand the turn an empty session and the
+  // next persist would write that emptiness over the real history (SHO-137).
+  await sessionManager.getOrCreateAsync(chatSessionKey)
   const wokenByTasks: unknown = body.taskNotification?.taskIds
   if (Array.isArray(wokenByTasks)) {
     agentGateway!.acknowledgeTaskNotification(chatSessionKey, wokenByTasks.filter((id): id is string => typeof id === 'string'))
   }
+  // What this session is still holding (a pause and the updates behind it) is
+  // part of this turn's prompt, so read it before the prompt is assembled.
+  await agentGateway!.refreshWakeState(chatSessionKey).catch(() => {})
   if (typeof body.chatSessionName === 'string' && body.chatSessionName.trim()) {
     sessionManager.setSessionMetadata(chatSessionKey, { title: body.chatSessionName.trim().slice(0, 200) })
   }
@@ -1921,6 +1998,41 @@ app.post('/agent/chat', async (c) => {
       console.log(`[AgentRuntime][chat] seeded ${seeded} history message(s) for session ${chatSessionKey}`)
     }
   }
+  // A server-initiated turn (background-task wake, queued message, scheduled
+  // run, team-chat dispatch) carries exactly one message, so the block above
+  // never runs and a session with no local copy starts from the wake note
+  // alone. The API sends the conversation it already stores as `historySeed`
+  // for exactly that case (SHO-137).
+  if (allMessages.length <= 1) {
+    const seed = parseHistorySeed(body.historySeed)
+    const restored = seed && (sessionManager.get(chatSessionKey)?.messages.length ?? 0) === 0
+    if (seed && restored) {
+      const seeded = seedEmptyChatSession(
+        sessionManager,
+        chatSessionKey,
+        seed.messages.map((m) => ({ role: m.role, parts: [{ type: 'text', text: m.text }] })),
+        { label: 'chat_history' },
+      )
+      if (seed.summary) {
+        // The durable summary must win over a runtime copy that covers less.
+        // The runtime has no watermark of its own (its counts are not the
+        // API's `ChatMessage` counts), so the comparable signal is coverage:
+        // a longer durable block folds more of the conversation. Every runtime
+        // compaction is also written back to the API, so it is never the older
+        // copy for long (SHO-137 round 3, R4).
+        const runtimeSummary = sessionManager.get(chatSessionKey)?.compactedSummary ?? null
+        sessionManager.setCompactedSummary(chatSessionKey, seed.summary, {
+          replace: !runtimeSummary || seed.summary.trim().length > runtimeSummary.trim().length,
+        })
+      }
+      if (seeded > 0 || seed.summary) {
+        console.log(
+          `[AgentRuntime][chat] restored ${seeded} message(s) and ${seed.summary ? 'a summary' : 'no summary'} ` +
+            `from historySeed for session ${chatSessionKey}`,
+        )
+      }
+    }
+  }
 
   const modelOverride = (body.agentMode as string | undefined) || undefined
   // Native provider hint resolved by the API server from its model registry so
@@ -1928,9 +2040,23 @@ app.post('/agent/chat', async (c) => {
   // provider's native endpoint instead of inferring `custom` from the id.
   // Optional — absent requests fall back to id-based inference.
   const modelProvider = (body.modelProvider as string | undefined) || undefined
+  // Product name of the model `agentMode` resolves to (e.g. "Hoshi 2.0"),
+  // stamped by the API alongside `modelProvider`. The gateway pairs it with the
+  // session override so the Account prompt line names the model this turn
+  // actually sends (SHO-145).
+  const modelDisplayName = (body.modelDisplayName as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
+  // Which surface this chat belongs to. The API proxy stamps it (workspace
+  // chat vs project chat); a direct caller without it gets the boot mode's
+  // default, which is what this runtime served before the split.
+  const chatContext =
+    body.chatContext === 'workspace' || body.chatContext === 'project'
+      ? (body.chatContext as 'workspace' | 'project')
+      : IS_WORKSPACE_RUNTIME && !process.env.WORKSPACE_ANCHOR_PROJECT_ID
+        ? 'workspace'
+        : 'project'
   console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, modelProvider: ${modelProvider ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
 
   if (body.timezone && typeof body.timezone === 'string') {
@@ -1958,6 +2084,7 @@ app.post('/agent/chat', async (c) => {
     await agentGateway!.processChatMessageStream(userText || '', writer, {
       modelOverride,
       modelProvider,
+      modelDisplayName,
       fileParts: userFileParts.length > 0 ? userFileParts : undefined,
       userId: chatUserId,
       requesterTicket,
@@ -1965,6 +2092,7 @@ app.post('/agent/chat', async (c) => {
       confirmedPlan,
       dualPlan,
       chatSessionId: chatSessionKey,
+      chatContext,
     })
 
     const usage = agentGateway!.consumeLastTurnUsage()
@@ -2112,8 +2240,24 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
 // 30 s after a turn completes, so the reply is kept separately for an hour —
 // a caller whose stream follower missed the turn (API restart, slow poll) can
 // still persist what the agent said instead of re-running the turn.
+//
+// `?callId=` asks about one named call, and the answer is about that call:
+// `queued` (with `queuedSince`/`queuedDepth`) while it waits for this chat's own
+// turn to end, `lost` when the gate has no record of it any more (the runtime
+// restarted, the queued item vanished, or the chat was stopped first). Without
+// a name the probe describes the chat, which cannot tell those apart.
 app.get('/agent/chat/:chatSessionId/turn', (c) => {
-  const { status, body } = describeTurn(streamBufferStore, c.req.param('chatSessionId'))
+  const chatSessionId = c.req.param('chatSessionId')
+  // `?callId=` answers for one named call: a chat that is busy with its own
+  // turn looks identical to a call still waiting behind it, so a follower that
+  // asks by name gets `queued` until the call's own turn exists.
+  const callId = c.req.query('callId')?.trim()
+  const { status, body } = describeTurn(
+    streamBufferStore,
+    chatSessionId,
+    liveTurnGate.queued(chatSessionId),
+    callId ? { callId, state: liveTurnGate.callState(chatSessionId, callId) } : null,
+  )
   return c.json(body, status as 200 | 404)
 })
 
@@ -2489,6 +2633,7 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
+import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
@@ -3833,26 +3978,45 @@ app.post('/agent/pipeline/call', async (c) => {
     callerProjectId: typeof body.callerProjectId === 'string' ? body.callerProjectId : undefined,
     requesterTicket: c.req.header('x-requester-ticket') || undefined,
   }
+  // The caller names its call so the turn probe can answer for it: "queued
+  // behind the chat's own turn" and "this is the chat's live turn" are
+  // indistinguishable from the chat's state alone.
+  const callId = typeof body.callId === 'string' && body.callId.trim() ? body.callId.trim() : crypto.randomUUID()
 
   if (body.wait === false) {
-    runPipelineCall(opts).then(
+    // Ack at once: the caller's forward timeout is 15 s, and a chat that is
+    // busy with its own turn queues this call rather than dropping it, so the
+    // answer is which of the two happened — not a hold on the turn.
+    const sessionId = opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline')
+    let started = false
+    const pending = runPipelineCall({ ...opts, callId }, {
+      onQueued: () => { started = false },
+      onTurnStarted: () => { started = true },
+    })
+    pending.then(
       (r: { reply: string; sessionId: string; runId?: string }) =>
         console.log(`[agent-runtime] pipeline call complete (run=${r.runId ?? '-'}):`, r.reply.substring(0, 200)),
       (err: any) => console.error('[agent-runtime] pipeline call failed:', err?.message ?? err),
     )
-    return c.json({ status: 'accepted', runId: opts.runId, sessionId: opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline') }, 202)
+    // `runPipelineCall` creates the buffer synchronously when the chat is free,
+    // so by the time it returns, `started` already says whether the turn is
+    // running or still waiting for the chat's own turn to end.
+    return c.json({ status: started ? 'started' : 'queued', callId, runId: opts.runId, sessionId }, 202)
   }
 
   try {
-    const result = await runPipelineCall(opts)
+    const result = await runPipelineCall({ ...opts, callId })
     return c.json({ status: 'completed', ...result })
   } catch (err: any) {
     return c.json({ error: { code: 'agent_turn_failed', message: err?.message ?? String(err) } }, 500)
   }
 })
 
-function runPipelineCall(opts: PipelineCallOptions): Promise<PipelineCallResult> {
-  return bufferedTurns.runPipelineCall((call) => agentGateway!.processPipelineCall(call), opts)
+function runPipelineCall(
+  opts: PipelineCallOptions,
+  hooks: PipelineCallHooks = {},
+): Promise<PipelineCallResult> {
+  return bufferedTurns.runPipelineCall((call) => agentGateway!.processPipelineCall(call), opts, hooks)
 }
 
 /**
@@ -4009,6 +4173,29 @@ app.post('/agent/tool-mocks/sim-advance', async (c) => {
 app.post('/agent/tool-mocks/sim-next-wake', (c) => {
   if (!simWorld) return c.json({ error: 'No simulation installed' }, 404)
   return c.json({ ok: true, wake: simWorld.nextWake() })
+})
+
+// Prompt-cache prefix probe — builds the real system prompt twice without
+// calling a model, so `cache-efficiency` can assert that the cached zone is
+// byte-identical across a tick, and that the tool block is stable.
+app.get('/agent/tool-mocks/cache-prefix', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const sessionId = c.req.query('sessionId') || 'chat'
+  const probe = await agentGateway.sampleCachePrefix(sessionId)
+  return c.json(probe)
+})
+
+// Force one compaction pass between eval turns (prefix-rewrite recovery test).
+app.post('/agent/tool-mocks/compact', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const { sessionId } = await c.req.json().catch(() => ({})) as { sessionId?: string }
+  const result = await agentGateway.forceCompaction(sessionId || 'chat')
+  if (!result) return c.json({ ok: false, compacted: false, reason: 'nothing to compact' })
+  return c.json({ ok: true, compacted: true, ...result })
 })
 
 app.post('/agent/workspace/seed', async (c) => {
@@ -6294,6 +6481,18 @@ async function initializeEssentials(): Promise<void> {
     const localShogoDir = join(POOL_STATE_ROOT, projectId, '.shogo')
     mkdirSync(localShogoDir, { recursive: true })
     const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+    // A real `.shogo` here is HOST-mode state that is about to be replaced by
+    // the overlay symlink. Carry its task logs to host storage first, so the
+    // cold-start path loses nothing that the assign path keeps (SHO-141).
+    let adoptWorkspaceShogo: string[] = []
+    try {
+      if (!lstatSync(workspaceShogoDir).isSymbolicLink()) adoptWorkspaceShogo = [workspaceShogoDir]
+    } catch { /* nothing there yet */ }
+    const hostRoot = process.env.SHOGO_HOST_WORKSPACES_ROOT || '/host-workspaces'
+    const hostWorkspacesRoot = existsSync(hostRoot) ? hostRoot : undefined
+    if (adoptWorkspaceShogo.length > 0) {
+      ensureDurableTaskLogs({ localShogoDir, projectId, hostWorkspacesRoot, adoptFrom: adoptWorkspaceShogo })
+    }
     try {
       const st = lstatSync(workspaceShogoDir)
       if (!st.isSymbolicLink()) {
@@ -6303,6 +6502,13 @@ async function initializeEssentials(): Promise<void> {
     } catch {
       try { symlinkSync(localShogoDir, workspaceShogoDir) } catch {}
     }
+    // Same durability rule as onAssign: the logs go to host-backed storage even
+    // though `.shogo` itself has to stay on the overlay (SHO-141).
+    ensureDurableTaskLogs({
+      localShogoDir,
+      projectId,
+      hostWorkspacesRoot,
+    })
     logTiming('.shogo symlinked to local overlay (9p mount)')
   }
 
@@ -6627,6 +6833,26 @@ async function initializeEssentials(): Promise<void> {
           if (sha) cachedRepoHeadSha = sha
         })
         .catch(() => { /* logged by the helper */ })
+      // SHO-105 / #1597: this pod's repo may already hold `.shogo/sessions.db`
+      // (+ its live WAL) in its history and its LFS store. Rewrite the refs
+      // without touching the working tree, then tell the API which commits
+      // changed so the `ProjectCheckpoint` rows still resolve. Marker-gated, so
+      // every later boot is a no-op, and off the readiness path.
+      void repairCheckpointRepo(WORKSPACE_DIR, {
+        onRemap: projectId
+          ? async (remap) => {
+              await postCheckpointShaRemap(projectId, remap)
+            }
+          : undefined,
+      })
+        .then((repaired) => {
+          if (repaired.skipped) return
+          logTiming(
+            `Git repo repaired: .git/lfs ${(repaired.bytesBefore / 1e6).toFixed(0)}MB -> ` +
+              `${(repaired.bytesAfter / 1e6).toFixed(0)}MB, ${repaired.rewritten} commit(s) rewritten`,
+          )
+        })
+        .catch(() => { /* logged by the helper */ })
       // A host-mediated guest holds no S3 credentials, so the SDK's provider
       // chain can only fail — and on metal it takes minutes to do so, holding
       // up `gitLayerReady` and with it the host's repo hydrate.
@@ -6893,6 +7119,10 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
 
   gatewayStarting = true
   logTiming('Starting agent gateway...')
+
+  // Clear cwd markers a previous process (or a crash) left behind, including
+  // the `.shogo-cwd-*` files older builds wrote into the workspace root.
+  sweepExecCwdMarkers(WORKSPACE_DIR)
 
   gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
 
@@ -7250,6 +7480,17 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
+// Windows has no SIGTERM: `TerminateProcess` ends this process without running
+// a single line of the shutdown above, which is why every runtime stop there
+// stranded its execs, the API sidecar and vite. Putting the runtime in a
+// kill-on-close job makes their death the kernel's job instead of ours — and
+// because we are the only holder of the handle, no crash can dodge it (SHO-144).
+// No-op on POSIX and on a Windows without job objects, where the worker's
+// `taskkill /T` and the POSIX ledger remain the fallback.
+void installRuntimeJobGuard().then((armed) => {
+  if (armed) console.log('[agent-runtime] Arming runtime job object (kill-on-close) for its process tree')
+})
 
 // =============================================================================
 // Start Server
