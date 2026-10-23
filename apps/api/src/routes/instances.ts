@@ -736,7 +736,7 @@ export function instanceRoutes() {
 
     const wsRequested = isWsRequested(instance.wsRequestedAt)
     const nextPollIn = await computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
-    const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
+    const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })
 
     // Where the desktop should open its on-demand WebSocket. In staging
     // / production this points at a non-DomainMapping host
@@ -806,7 +806,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
     }
 
-    if (tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)) {
+    if (tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })) {
       return c.json({ ok: true, status: 'already_connected' })
     }
 
@@ -927,7 +927,7 @@ export function instanceRoutes() {
 
     const online = (await Promise.all(
       instances.map(async (inst) => {
-        const isOnline = tunnels.has(inst.id) || (await isTunnelConnectedAnywhere(inst.id))
+        const isOnline = tunnels.has(inst.id) || (await isTunnelConnectedAnywhere(inst.id, { retry: false }))
         return isOnline ? inst : null
       })
     )).filter((x): x is NonNullable<typeof x> => x !== null)
@@ -984,7 +984,7 @@ export function instanceRoutes() {
     return c.json({
       ...instance,
       kind: formatInstanceKind(instance.kind),
-      status: tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
+      status: tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })
         ? 'online'
         : (isRecentlySeenViaHeartbeat(instance.lastSeenAt) ? 'heartbeat' : 'offline'),
       origin: 'local' as const,
@@ -1693,7 +1693,7 @@ export async function getMachineLiveStatus(
   instanceId: string,
   lastSeenAt: Date | null,
 ): Promise<'online' | 'heartbeat' | 'offline'> {
-  if (tunnels.has(instanceId) || (await isTunnelConnectedAnywhere(instanceId))) return 'online'
+  if (tunnels.has(instanceId) || (await isTunnelConnectedAnywhere(instanceId, { retry: false }))) return 'online'
   return isRecentlySeenViaHeartbeat(lastSeenAt) ? 'heartbeat' : 'offline'
 }
 
@@ -1708,13 +1708,9 @@ export async function getMachineLiveStatus(
 export async function getMachineGroupStatus(
   rows: Array<{ id: string; lastSeenAt: Date | null }>,
 ): Promise<'online' | 'heartbeat' | 'offline'> {
-  let sawHeartbeat = false
-  for (const row of rows) {
-    const status = await getMachineLiveStatus(row.id, row.lastSeenAt)
-    if (status === 'online') return 'online'
-    if (status === 'heartbeat') sawHeartbeat = true
-  }
-  return sawHeartbeat ? 'heartbeat' : 'offline'
+  const statuses = await Promise.all(rows.map((row) => getMachineLiveStatus(row.id, row.lastSeenAt)))
+  if (statuses.includes('online')) return 'online'
+  return statuses.includes('heartbeat') ? 'heartbeat' : 'offline'
 }
 
 /**
@@ -1748,7 +1744,8 @@ export async function ensureTunnelConnected(
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, TUNNEL_WAIT_POLL_MS))
     if (tunnels.has(instanceId)) return true
-    if (await getTunnelOwner(instanceId)) return true
+    // The loop re-polls every TUNNEL_WAIT_POLL_MS, so the cold-start retry would only add delay.
+    if (await getTunnelOwner(instanceId, { retry: false })) return true
   }
   return false
 }
