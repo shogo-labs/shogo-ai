@@ -61,6 +61,27 @@ function offline() {
 }
 
 /**
+ * The machine is offline and this is a write (SHO-185).
+ *
+ * The workspace is read-only until it comes back — its rows are on the desktop,
+ * so a write has nowhere to land. Nothing is queued: a send that surfaced
+ * minutes later, after the machine returned, would be a surprise nobody asked
+ * for. `lastSyncedAt` is what the banner shows.
+ */
+function offlineReadOnly(instance: { name: string | null }, lastSyncedAt: string | null) {
+  return {
+    error: {
+      code: 'machine_offline_readonly',
+      message: `${instance.name || 'The machine'} is offline — this workspace is read-only until it is back`,
+      lastSyncedAt,
+    },
+  }
+}
+
+/** Methods that change something on the machine. Reads are served by the copy. */
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+
+/**
  * A machine we have heard from recently but whose tunnel is not up yet: the wake
  * is in flight, so the client should retry, not tell the user it is offline.
  * Before this, a machine that heartbeated 20 s ago was reported offline for the
@@ -351,6 +372,16 @@ export function machineRoutes() {
         c.header('Retry-After', '3')
         return c.json(waking(instance), 503)
       }
+      // Offline for real. A write has nowhere to land — the rows are on the
+      // desktop — so the workspace is read-only, with no queue behind it
+      // (SHO-185). A live read (preview, agent stream) just says offline.
+      if (MUTATING_METHODS.has(method)) {
+        const state = await prisma.machineSyncState.findUnique({
+          where: { instanceId: instance.id },
+          select: { lastIngestAt: true },
+        })
+        return c.json(offlineReadOnly(instance, state?.lastIngestAt?.toISOString() ?? null), 409)
+      }
       return c.json(offline(), 503)
     }
 
@@ -506,6 +537,17 @@ export function machineRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not this machine' } }, 403)
     }
     if (isCliWorker(instance.kind)) return c.json(notAMachine(), 409)
+
+    // Sync off is answered as a normal ack with `disabled: true`: the desktop
+    // stops pushing, and nothing it was about to send recreates the copy the
+    // switch deleted (SHO-185).
+    const syncState = await prisma.machineSyncState.findUnique({
+      where: { instanceId },
+      select: { enabled: true, cursor: true },
+    })
+    if (syncState && syncState.enabled === false) {
+      return c.json({ ok: true, disabled: true, cursor: syncState.cursor ?? 0, applied: 0, skipped: 0 })
+    }
 
     const body = await c.req.json().catch(() => null)
     if (!body || typeof body !== 'object') {

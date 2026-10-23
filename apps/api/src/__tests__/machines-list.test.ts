@@ -58,6 +58,11 @@ const mockPrisma = {
     },
   },
   remoteAction: { create: async (args: any) => args.data },
+  // `GET /machines` reports `lastSyncedAt` / `syncEnabled` per machine (SHO-185).
+  machineSyncState: {
+    findMany: async () => [],
+    findUnique: async () => null,
+  },
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
