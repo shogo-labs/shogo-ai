@@ -818,14 +818,25 @@ export const api = {
     return res.data
   },
 
-  async listAgentTasks(http: HttpClient, params: { status?: string; projectId?: string; workspaceId?: string } = {}) {
+  async listAgentTasksPage(
+    http: HttpClient,
+    params: { status?: string; projectId?: string; workspaceId?: string; limit?: number; before?: string; beforeId?: string } = {},
+  ) {
     const query = new URLSearchParams()
     if (params.status) query.set('status', params.status)
     if (params.projectId) query.set('projectId', params.projectId)
     if (params.workspaceId) query.set('workspaceId', params.workspaceId)
+    if (params.limit) query.set('limit', String(params.limit))
+    if (params.before) query.set('before', params.before)
+    if (params.beforeId) query.set('beforeId', params.beforeId)
     const suffix = query.toString() ? `?${query.toString()}` : ''
-    const res = await http.get<{ ok?: boolean; items?: AgentTask[] }>(`/api/agent-tasks${suffix}`)
-    return res.data?.items ?? []
+    const res = await http.get<{ ok?: boolean; items?: AgentTask[]; hasMore?: boolean }>(`/api/agent-tasks${suffix}`)
+    return { items: res.data?.items ?? [], hasMore: res.data?.hasMore === true }
+  },
+
+  async listAgentTasks(http: HttpClient, params: { status?: string; projectId?: string; workspaceId?: string } = {}) {
+    const { items } = await this.listAgentTasksPage(http, params)
+    return items
   },
 
   async createAgentTask(

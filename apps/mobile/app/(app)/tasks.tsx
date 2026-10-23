@@ -15,6 +15,7 @@ import { agentTaskEvents } from '../../lib/agent-task-events'
 import { NativePhoneSheet } from '../../components/phone/NativePhoneSheet'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
+import { appendTasksPage, nextPageCursor } from '../../lib/agent-task-paging'
 import { getPinnedProjectIds } from '../../lib/project-prefs-store'
 import { TASK_LANES, taskDropAction, taskLane } from '../../lib/agent-task-board'
 import { Lane } from '../../components/boards/Lane'
@@ -22,6 +23,10 @@ import { DraggableCard } from '../../components/boards/drag'
 
 /** Wide enough for five lanes side by side. */
 const TASK_BOARD_MIN_WIDTH = 900
+
+/** One page of tasks. Matches the route's previous hard cap, so nothing changes
+ *  for anyone under it; the difference is that older tasks are now reachable. */
+const TASK_PAGE_SIZE = 200
 
 function statusClass(status: AgentTaskStatus) {
   switch (status) {
@@ -92,6 +97,8 @@ const TasksScreen = observer(function TasksScreen() {
   const requestedTaskId = Array.isArray(params.taskId) ? params.taskId[0] : params.taskId
 
   const [tasks, setTasks] = useState<AgentTask[]>([])
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -144,8 +151,15 @@ const TasksScreen = observer(function TasksScreen() {
       }
       try {
         setError(null)
-        const next = await api.listAgentTasks(http)
-        setTasks(next.filter((task) => task.workspaceId === workspace.id))
+        // Scope the read server-side. Without workspaceId the route's page is cut
+        // across every workspace the user has, and the client filter below then
+        // threw away most of it — this workspace's tasks could fall off the end.
+        const next = await api.listAgentTasksPage(http, {
+          limit: TASK_PAGE_SIZE,
+          ...(!isRemoteSource && workspace.id ? { workspaceId: workspace.id } : {}),
+        })
+        setTasks(appendTasksPage([], next.items, workspace.id))
+        setHasMore(next.hasMore)
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : 'Could not load tasks')
       } finally {
@@ -160,7 +174,29 @@ const TasksScreen = observer(function TasksScreen() {
     }
     void request.then(clearInFlight, clearInFlight)
     return request
-  }, [http, workspace?.id])
+  }, [http, isRemoteSource, workspace?.id])
+
+  // Ordered by updatedAt desc, so the oldest row loaded is the resume point.
+  // Appending dedupes by id: a task edited between pages comes back on the next
+  // page too, and it must not appear twice.
+  const loadMore = useCallback(async () => {
+    const cursor = nextPageCursor(tasks)
+    if (!cursor || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const next = await api.listAgentTasksPage(http, {
+        limit: TASK_PAGE_SIZE,
+        ...cursor,
+        ...(!isRemoteSource && workspace?.id ? { workspaceId: workspace.id } : {}),
+      })
+      setTasks((prev) => appendTasksPage(prev, next.items, workspace?.id))
+      setHasMore(next.hasMore)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not load more tasks')
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [http, isRemoteSource, loadingMore, tasks, workspace?.id])
 
   useFocusEffect(useCallback(() => {
     void load()
@@ -170,6 +206,14 @@ const TasksScreen = observer(function TasksScreen() {
   useEffect(() => {
     if (requestedProjectId) setSelectedProjectId(requestedProjectId)
   }, [requestedProjectId])
+
+  useEffect(() => {
+    if (!requestedTaskId) return
+    if (tasks.some((task) => task.id === requestedTaskId)) return
+    // A notification can name a task older than the first page. Walk forward
+    // instead of leaving the deep link inert; loadMore stops at the last page.
+    if (hasMore && !loadingMore) void loadMore()
+  }, [requestedTaskId, tasks, hasMore, loadingMore, loadMore])
 
   useEffect(() => {
     if (!requestedTaskId || !tasks.some((task) => task.id === requestedTaskId)) return
@@ -490,6 +534,19 @@ const TasksScreen = observer(function TasksScreen() {
           {!showBoard && activeTasks.map(renderTask)}
           {!showBoard && finishedTasks.length > 0 ? <View className="mb-3 mt-5 flex-row items-center justify-between px-4"><Text className="text-[16px] font-semibold text-foreground">Recent activity</Text><Text className="text-[13px] font-medium text-muted-foreground">{finishedTasks.length}</Text></View> : null}
           {!showBoard && finishedTasks.map(renderTask)}
+          {hasMore ? (
+            <View className="mt-3 items-center px-4">
+              <Pressable
+                onPress={() => void loadMore()}
+                disabled={loadingMore}
+                accessibilityLabel="Load older tasks"
+                className="flex-row items-center gap-2 rounded-full border border-border px-4 py-2 active:bg-muted"
+              >
+                {loadingMore ? <ActivityIndicator size="small" /> : <Clock3 size={15} className="text-muted-foreground" />}
+                <Text className="text-[14px] font-semibold text-foreground">{loadingMore ? 'Loading…' : 'Load older tasks'}</Text>
+              </Pressable>
+            </View>
+          ) : null}
           {tasks.length === 0 ? <PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="No tasks yet" message="Create a task from Home or a project, then start the agent when you are ready." action={<Pressable onPress={() => { resetCreate(); setShowCreate(true) }} className="rounded-lg bg-primary px-4 py-2"><Text className="font-semibold text-primary-foreground">Create task</Text></Pressable>} /> : null}
         </ScrollView>
       )}
