@@ -23,8 +23,8 @@ import { askUserStreamVariant } from "./pendingQuestion"
 import { TodoRow } from "./TodoRow"
 import { ToolCallGroup } from "./ToolCallGroup"
 import { WorkGroup } from "./WorkGroup"
-import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
-import { useChatImageWidth } from "./use-chat-image-width"
+import { fitChatImage } from "./image-sizing"
+import { useMeasuredWidth } from "./use-measured-width"
 import { WorkedForGroup } from "./WorkedForGroup"
 import { ContextCompactionDivider } from "./ContextCompactionDivider"
 import { PlanningStatusLine } from "./PlanningStatusLine"
@@ -270,8 +270,16 @@ function ImageThumbnail({
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
-  const [aspectRatio, setAspectRatio] = useState(DEFAULT_IMAGE_ASPECT)
-  const imageWidth = useChatImageWidth()
+  const [natural, setNatural] = useState<{ width: number; height: number } | null>(
+    null,
+  )
+  // The message column's width, not the window's: a side pane is narrower.
+  const column = useMeasuredWidth()
+  const box = fitChatImage({
+    naturalWidth: natural?.width,
+    naturalHeight: natural?.height,
+    containerWidth: column.width,
+  })
   const imageSource = useAgentImageSource(url)
   const [contextMenu, setContextMenu] = useState<{
     x: number
@@ -311,34 +319,39 @@ function ImageThumbnail({
 
   return (
     <>
-      <Pressable
-        onPress={handlePress}
-        {...(Platform.OS === "web"
-          ? ({ onContextMenu: handleContextMenu } as any)
-          : {})}
-        testID="image-thumbnail"
-        accessibilityRole="button"
-        accessibilityLabel={`Open image attachment ${index + 1}`}
-        accessibilityHint="Opens a larger preview."
-        className={Platform.OS === "web" ? "cursor-zoom-in" : undefined}
-      >
-        {imageSource ? (
-          <Image
-            source={imageSource}
-            className="max-w-full rounded-md"
-            resizeMode="contain"
-            accessibilityLabel={`Image attachment ${index + 1}`}
-            onError={() => setHasError(true)}
-            onLoad={(event) => {
-              const source = event.nativeEvent?.source
-              if (source?.width && source?.height) {
-                setAspectRatio(clampAspectRatio(source.width, source.height))
-              }
-            }}
-            style={{ width: imageWidth, aspectRatio }}
-          />
-        ) : null}
-      </Pressable>
+      <View onLayout={column.onLayout}>
+        <Pressable
+          onPress={handlePress}
+          {...(Platform.OS === "web"
+            ? ({ onContextMenu: handleContextMenu } as any)
+            : {})}
+          testID="image-thumbnail"
+          accessibilityRole="button"
+          accessibilityLabel={`Open image attachment ${index + 1}`}
+          accessibilityHint="Opens a larger preview."
+          className={cn(
+            "self-start",
+            Platform.OS === "web" && "cursor-zoom-in",
+          )}
+        >
+          {imageSource ? (
+            <Image
+              source={imageSource}
+              className="rounded-md"
+              resizeMode={box.cropped ? "cover" : "contain"}
+              accessibilityLabel={`Image attachment ${index + 1}`}
+              onError={() => setHasError(true)}
+              onLoad={(event) => {
+                const source = event.nativeEvent?.source
+                if (source?.width && source?.height) {
+                  setNatural({ width: source.width, height: source.height })
+                }
+              }}
+              style={{ width: box.width, height: box.height }}
+            />
+          ) : null}
+        </Pressable>
+      </View>
       <ImagePreviewModal
         visible={showModal}
         onClose={() => setShowModal(false)}

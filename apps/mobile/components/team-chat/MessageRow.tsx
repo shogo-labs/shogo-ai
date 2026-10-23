@@ -38,9 +38,11 @@ import { markdownToPlainText, renderMentions, renderMentionsMarkdown, type Menti
 import { isVoiceNote } from '../../lib/voice-note'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
 import { DownloadBadge, FileAttachmentCard } from './FileAttachmentCard'
+import { ChatImageAttachment } from './ChatImageAttachment'
 import { PastedMarkdownCard } from './MarkdownAttachmentBody'
 import { isPastedMarkdownAttachment } from '../chat/long-text-utils'
 import { VideoAttachment } from './VideoAttachment'
+import { useMeasuredWidth } from '../chat/turns/use-measured-width'
 import { hasReacted, reactionDetail, reactionTooltip } from '../../lib/team-chat-reactions'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { PresenceDot } from './PresenceDot'
@@ -523,6 +525,9 @@ function MessageRowImpl(props: MessageRowProps) {
   const imageAttachments = deleted ? [] : message.attachments.filter((a) => a.mimeType.startsWith('image/'))
   const imageIndexById = new Map(imageAttachments.map((a, index) => [a.id, index]))
   const activeLightboxImage = lightboxIndex === null ? null : imageAttachments[lightboxIndex] ?? null
+  // The row's own width, not the window's: a thread sidebar or side pane is
+  // narrower, and an image must fit the space the message actually got.
+  const attachmentRow = useMeasuredWidth()
   useEditRequest(message.id, () => {
     if (!mine || deleted || message.authorType !== 'user') return
     setDraft(message.text)
@@ -927,7 +932,7 @@ function MessageRowImpl(props: MessageRowProps) {
         )}
 
         {!deleted && message.attachments.length > 0 && (
-          <View className="mt-1.5 flex-row flex-wrap gap-2">
+          <View className="mt-1.5 flex-row flex-wrap gap-2" testID="message-attachments" onLayout={attachmentRow.onLayout}>
             {message.attachments.map((a) =>
               isVoiceNote(a) ? (
                 <VoiceNotePlayer
@@ -946,19 +951,25 @@ function MessageRowImpl(props: MessageRowProps) {
                     accessibilityLabel={`Open ${a.name}`}
                     className={isWeb ? 'cursor-pointer' : undefined}
                   >
-                    <Image
-                      source={{ uri: absoluteApiUrl(a.url) }}
-                      className="rounded-lg border border-border"
-                      style={{ width: 220, height: a.width && a.height ? Math.min(260, (220 * a.height) / a.width) : 160 }}
-                      resizeMode="cover"
-                      accessibilityLabel={a.name}
+                    <ChatImageAttachment
+                      url={absoluteApiUrl(a.url)}
+                      name={a.name}
+                      naturalWidth={a.width}
+                      naturalHeight={a.height}
+                      containerWidth={attachmentRow.width}
                     />
                   </Pressable>
                   <DownloadBadge url={absoluteApiUrl(a.url)} name={a.name} />
                 </View>
               ) : a.mimeType.startsWith('video/') ? (
                 <View key={a.id} className="relative">
-                  <VideoAttachment url={absoluteApiUrl(a.url)} name={a.name} width={a.width} height={a.height} />
+                  <VideoAttachment
+                    url={absoluteApiUrl(a.url)}
+                    name={a.name}
+                    width={a.width}
+                    height={a.height}
+                    containerWidth={attachmentRow.width}
+                  />
                   <DownloadBadge url={absoluteApiUrl(a.url)} name={a.name} />
                 </View>
               ) : isPastedMarkdownAttachment(a.name, a.mimeType) ? (
