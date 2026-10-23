@@ -136,6 +136,36 @@ describe('a reply this panel streamed keeps the AI SDK id (SHO-99)', () => {
     expect(persistedTailIsUnseen({ id: 'a2', role: 'assistant', turnStartedAt: null }, messages)).toBe(true)
     expect(persistedTailIsUnseen({ id: 'sdk-1', role: 'assistant' }, messages)).toBe(false)
   })
+
+  test('(d) a reply still unwritten leaves the panel own prompt as the newest row', () => {
+    // The reply is on screen and its row has not been written yet.
+    const messages = [user('u1', 'just a normal message'), liveReply('sdk-1', 1_000)]
+    const tail = { id: 'p1', role: 'user', content: 'just a normal message' }
+    expect(persistedTailIsUnseen(tail, messages, { streamedHere: true })).toBe(false)
+    // Without a stream in this window the panel has seen nothing of that turn.
+    expect(persistedTailIsUnseen(tail, messages)).toBe(true)
+  })
+
+  test('a different prompt is a turn this window has never shown', () => {
+    const messages = [user('u1', 'just a normal message'), liveReply('sdk-1', 1_000)]
+    expect(
+      persistedTailIsUnseen(
+        { id: 'p2', role: 'user', content: '[Task update] the task finished' },
+        messages,
+        { streamedHere: true },
+      ),
+    ).toBe(true)
+  })
+
+  test('a prompt the screen only shows as a prompt does not count as seen', () => {
+    // Screen still ends on its own prompt: there is no reply to protect.
+    const messages = [user('u1', 'just a normal message')]
+    expect(
+      persistedTailIsUnseen({ id: 'p1', role: 'user', content: 'just a normal message' }, messages, {
+        streamedHere: true,
+      }),
+    ).toBe(true)
+  })
 })
 
 describe('the turn stamp is read off both copies of a reply', () => {

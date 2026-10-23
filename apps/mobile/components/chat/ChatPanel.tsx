@@ -4093,6 +4093,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return {
           id: String(newest.id),
           role: typeof newest.role === "string" ? newest.role : null,
+          content: typeof newest.content === "string" ? newest.content : null,
           turnStartedAt: messageTurnStartedAt({ parts }),
           contentLength:
             typeof newest.content === "string" ? newest.content.length : null,
@@ -4303,7 +4304,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return
     const tail = await probePersistedTail(sessionId)
     if (currentSessionIdRef.current !== sessionId) return
-    if (!persistedTailIsUnseen(tail, messagesRef.current)) return
+    if (
+      !persistedTailIsUnseen(tail, messagesRef.current, {
+        // A reply this window streamed is on screen under the AI SDK's id
+        // until a paint adopts the saved row (SHO-85/SHO-99).
+        streamedHere: liveReplySessionRef.current === sessionId,
+      })
+    )
+      return
     // A repaint that requires the reply keeps SHO-31's rule: another window's
     // ordinary turn is not this window's to overwrite. A tail that is still a
     // user row is a prompt answered elsewhere (the queue's `[Task update]`

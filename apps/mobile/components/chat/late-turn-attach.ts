@@ -126,6 +126,8 @@ export function persistedTailQuery(sessionId: string): Record<string, string> {
 export interface PersistedTail {
   id?: string | null
   role?: string | null
+  /** The row's text, to recognise the prompt this panel's own reply answers. */
+  content?: string | null
   /**
    * Wall-clock start of the turn the row was written for, read off the
    * `data-turn-timing` part the API appends when it persists a reply.
@@ -133,6 +135,14 @@ export interface PersistedTail {
   turnStartedAt?: number | null
   /** Length of the saved text, to notice a reply that grew after a cut stream. */
   contentLength?: number | null
+}
+
+export interface PersistedTailCheck {
+  /**
+   * This panel streamed (or joined) the reply on screen and no history paint
+   * has adopted it yet, so the reply is this window's own.
+   */
+  streamedHere?: boolean
 }
 
 /**
@@ -177,13 +187,19 @@ export function messageTextLength(message: any): number {
  * screen under the AI SDK's own id: the post-turn reconcile paints the saved
  * row over it only when the row has been written by then, and the row can land
  * after that window. Comparing ids then reads the panel's own reply as unseen
- * and pays the full reload on every refocus. The turn stamp does not have that
- * gap — both copies of the reply carry the same `startedAt` — so the same turn
- * counts as seen whichever id the screen is showing.
+ * and pays the full reload on every refocus. Two things close that gap:
+ *
+ * - The saved row carries its turn's `startedAt`, the same stamp the live
+ *   message got from `data-turn-start`, so the same turn is recognised
+ *   whichever id the screen shows.
+ * - While that reply is still unwritten the newest saved row is the panel's
+ *   own prompt. The reply is on screen and only its row is missing, so that is
+ *   history behind the screen, not ahead of it (`streamedHere`).
  */
 export function persistedTailIsUnseen(
   tail: PersistedTail | null | undefined,
   messages: readonly any[],
+  check: PersistedTailCheck = {},
 ): boolean {
   const persistedId = tail?.id
   if (!persistedId) return false
@@ -192,13 +208,40 @@ export function persistedTailIsUnseen(
   if (String(newest?.id ?? '') === String(persistedId)) return false
 
   const tailTurn = tail?.turnStartedAt ?? null
-  if (tailTurn === null) return true
+  if (tailTurn === null) {
+    // An assistant tail with no stamp is an older row (the API only stamps
+    // turns it saw start), so it cannot be this window's reply.
+    if (tail?.role !== 'user') return true
+    // A prompt row with no reply written yet. When it is the prompt this
+    // panel's own reply answers, nothing is unseen.
+    return !(check.streamedHere && tailAnswersScreenPrompt(tail, newest, messages))
+  }
   if (messageTurnStartedAt(newest) !== tailTurn) return true
   // Same turn, same reply — unless the saved row carries more text than the
   // one on screen, which is how a stream that was cut and finished server-side
   // gets its remainder painted (SHO-121).
   const savedLength = typeof tail?.contentLength === 'number' ? tail.contentLength : null
   return savedLength !== null && savedLength > messageTextLength(newest)
+}
+
+/**
+ * Whether a saved prompt row is the one the reply on screen answers: the same
+ * text as the newest prompt this panel shows, with that reply still unwritten.
+ */
+function tailAnswersScreenPrompt(
+  tail: PersistedTail,
+  newest: any,
+  messages: readonly any[],
+): boolean {
+  if (newest?.role !== 'assistant') return false
+  const saved = String(tail?.content ?? '').trim()
+  if (!saved) return false
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role !== 'user') continue
+    return String(message?.content ?? '').trim() === saved
+  }
+  return false
 }
 
 /**
