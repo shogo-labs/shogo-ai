@@ -20,10 +20,61 @@ let deleteError: string | null = null
 const personalLook = { color: '#FF7A8A', topper: 'cat-ears' }
 /** What `useMentionables` answers; null until a test needs the workspace agent. */
 const hookMentionables: { value: unknown } = { value: null }
+/** Layout handlers the View shim captured, so a test can report a width. */
+const layoutHandlers = new WeakMap<Element, (event: unknown) => void>()
+/** Image load handlers the Image shim captured, so a test can report a size. */
+const imageLoadHandlers = new WeakMap<Element, (event: unknown) => void>()
+/** `Image.getSize` requests, so a test can answer the way web measures an image. */
+const imageGetSizeRequests: { uri: string; success: (width: number, height: number) => void }[] = []
 
 mock.module('react-native', () =>
   createReactNativeMock({
     Platform: { OS: 'web', select: (s: any) => s.web ?? s.default },
+    // onLayout is not a DOM event, so the shim keeps the handler and a test
+    // reports a width the way a real layout pass would. Everything else about
+    // a View is the shared passthrough shim.
+    View: forwardRef(function LayoutView({ children, onLayout, testID, style, ...props }: any, ref: any) {
+      return createElement(
+        'div',
+        {
+          ...props,
+          style: Array.isArray(style) ? Object.assign({}, ...style.filter(Boolean)) : style,
+          'data-rn-shim': testID ?? undefined,
+          ref: (node: any) => {
+            if (node && onLayout) layoutHandlers.set(node, onLayout)
+            if (typeof ref === 'function') ref(node)
+            else if (ref) ref.current = node
+          },
+        },
+        children,
+      )
+    }),
+    // An <img> as the shared shim renders it, plus a handle on `onLoad` so a
+    // test can report the natural size an attachment did not store.
+    Image: (() => {
+      const shim = forwardRef(function LayoutImage({ children, style, onLoad, ...props }: any, ref: any) {
+        return createElement(
+          'img',
+          {
+            ...props,
+            style: Array.isArray(style) ? Object.assign({}, ...style.filter(Boolean)) : style,
+            'data-rn-shim': props.testID ?? undefined,
+            ref: (node: any) => {
+              if (node && onLoad) imageLoadHandlers.set(node, onLoad)
+              if (typeof ref === 'function') ref(node)
+              else if (ref) ref.current = node
+            },
+          },
+          children,
+        )
+      })
+      // On web the load event carries no size, so this is what measures the
+      // image; a test answers it the way react-native-web would.
+      ;(shim as any).getSize = (uri: string, success: (width: number, height: number) => void) => {
+        imageGetSizeRequests.push({ uri, success })
+      }
+      return shim
+    })(),
     // A press goes to the innermost Pressable only, as in React Native — not
     // on to a modal's backdrop that closes it.
     Pressable: ({ accessibilityLabel, children, onPress, onHoverIn, onHoverOut, onPointerEnter, onPointerLeave, onContextMenu, disabled, testID }: any) =>
@@ -1828,6 +1879,156 @@ describe('MessageRow image attachments', () => {
 
     expect(screen.queryByLabelText('Open shot-1.png')).toBeNull()
     expect(screen.queryByTestId('image-lightbox')).toBeNull()
+  })
+
+  describe('sizing to the image and the pane', () => {
+    const sized = (id: string, name: string, width: number | null, height: number | null) => ({
+      id, name, mimeType: 'image/png', size: 2048, width, height, url: `/api/uploads/${id}`,
+    })
+
+    /** What a layout pass on the attachment row would report. */
+    const reportRowWidth = (width: number) => {
+      const row = document.querySelector('[data-rn-shim="message-attachments"]') as Element
+      const handler = layoutHandlers.get(row)
+      if (!handler) throw new Error('the attachment row registered no onLayout')
+      act(() => handler({ nativeEvent: { layout: { width, height: 40 } } }))
+    }
+
+    /** What an image reports once it has loaded, for attachments with no stored size. */
+    const reportImageSize = (
+      name: string,
+      width: number,
+      height: number,
+      shape: 'native' | 'web' | 'nulled' = 'native',
+    ) => {
+      const img = document.querySelector(`img[accessibilitylabel="${name}"]`) as Element
+      const handler = imageLoadHandlers.get(img)
+      if (!handler) throw new Error('the image registered no onLoad')
+      // Native puts the size in `nativeEvent.source`; a DOM load event carries it
+      // on its target, and on web it arrives after `decode()` with that target
+      // already nulled.
+      const event =
+        shape === 'nulled'
+          ? { nativeEvent: { type: 'load', target: null } }
+          : shape === 'web'
+            ? { nativeEvent: { type: 'load', target: { naturalWidth: width, naturalHeight: height } } }
+            : { nativeEvent: { source: { width, height, uri: '' } } }
+      act(() => handler(event))
+    }
+
+    const imageEl = (name: string) =>
+      document.querySelector(`img[accessibilitylabel="${name}"]`) as HTMLImageElement
+
+    /**
+     * What `Image.getSize` answers, which is the only measurement that survives
+     * a web load event: react-native-web defers `onLoad` through
+     * `image.decode()`, and Chromium has nulled the event's target by then.
+     */
+    const reportGetSize = (uriPart: string, width: number, height: number) => {
+      // The most recent request is the live one; an earlier uri's request is
+      // ignored by the hook on purpose.
+      const request = [...imageGetSizeRequests].reverse().find((entry) => entry.uri.includes(uriPart))
+      if (!request) throw new Error(`no Image.getSize request matching ${uriPart}`)
+      act(() => request.success(width, height))
+    }
+
+    beforeEach(() => {
+      imageGetSizeRequests.length = 0
+    })
+
+    test('a wide screenshot fills the row instead of a 220px strip', () => {
+      renderRow([sized('a1', 'shot.png', 1600, 900)])
+      reportRowWidth(900)
+
+      const img = imageEl('shot.png')
+      expect(img.style.width).toBe('462px')
+      expect(img.style.height).toBe('260px')
+      // The box matches the aspect, so the image is shown whole, never cropped.
+      expect(img.getAttribute('resizemode')).toBe('contain')
+    })
+
+    test('it shrinks with a narrow pane and never overflows it', () => {
+      renderRow([sized('a1', 'shot.png', 1600, 900)])
+      reportRowWidth(200)
+
+      expect(imageEl('shot.png').style.width).toBe('200px')
+      expect(imageEl('shot.png').style.height).toBe('113px')
+    })
+
+    test('a small image is not upscaled past its own pixels', () => {
+      renderRow([sized('a1', 'tiny.png', 120, 80)])
+      reportRowWidth(900)
+
+      expect(imageEl('tiny.png').style.width).toBe('120px')
+      expect(imageEl('tiny.png').style.height).toBe('80px')
+    })
+
+    test('a tall image stays within the max height', () => {
+      renderRow([sized('a1', 'tall.png', 900, 1600)])
+      reportRowWidth(900)
+
+      expect(imageEl('tall.png').style.height).toBe('260px')
+      // 146 wide, so the portrait keeps its aspect rather than being squeezed.
+      expect(imageEl('tall.png').style.width).toBe('146px')
+      expect(imageEl('tall.png').getAttribute('resizemode')).toBe('contain')
+    })
+
+    test('an extremely tall image is widened to the min width and cropped', () => {
+      renderRow([sized('a1', 'sliver.png', 300, 2400)])
+      reportRowWidth(900)
+
+      expect(imageEl('sliver.png').style.width).toBe('120px')
+      expect(imageEl('sliver.png').style.height).toBe('260px')
+      expect(imageEl('sliver.png').getAttribute('resizemode')).toBe('cover')
+    })
+
+    test('an attachment with no stored dimensions takes its aspect from the image', () => {
+      renderRow([sized('a1', 'old.png', null, null)])
+      reportRowWidth(900)
+      // Until it loads the fallback aspect fills the row, the size a 4:3 image would want.
+      expect(imageEl('old.png').style.width).toBe('347px')
+
+      reportImageSize('old.png', 1600, 900)
+
+      expect(imageEl('old.png').style.width).toBe('462px')
+      expect(imageEl('old.png').style.height).toBe('260px')
+    })
+
+    test('a stored smaller size is not overridden by what the image loads as', () => {
+      renderRow([sized('a1', 'small.png', 200, 100)])
+      reportRowWidth(900)
+
+      reportImageSize('small.png', 1600, 900, 'web')
+
+      expect(imageEl('small.png').style.width).toBe('200px')
+      expect(imageEl('small.png').style.height).toBe('100px')
+      // Stored dimensions win, so nothing is measured at all.
+      expect(imageGetSizeRequests).toHaveLength(0)
+    })
+
+    test('web sizes an attachment with no stored dimensions from Image.getSize', () => {
+      renderRow([sized('a1', 'old.png', null, null)])
+      reportRowWidth(900)
+      expect(imageEl('old.png').style.width).toBe('347px')
+
+      // react-native-web's load event arrives after `image.decode()` with a
+      // nulled target, so it carries no size at all.
+      reportImageSize('old.png', 0, 0, 'nulled')
+      expect(imageEl('old.png').style.width).toBe('347px')
+
+      reportGetSize('/api/uploads/a1', 1600, 900)
+
+      expect(imageEl('old.png').style.width).toBe('462px')
+      expect(imageEl('old.png').style.height).toBe('260px')
+      expect(imageEl('old.png').getAttribute('resizemode')).toBe('contain')
+    })
+
+    test('before the row is measured the preview keeps the old 220px width', () => {
+      renderRow([sized('a1', 'shot.png', 800, 600)])
+
+      expect(imageEl('shot.png').style.width).toBe('220px')
+      expect(imageEl('shot.png').style.height).toBe('165px')
+    })
   })
 })
 

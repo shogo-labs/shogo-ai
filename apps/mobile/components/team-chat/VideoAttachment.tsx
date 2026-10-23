@@ -7,6 +7,7 @@
 import React from 'react'
 import { Linking, Platform, Pressable, Text, View } from 'react-native'
 import { PlayCircle } from 'lucide-react-native'
+import { fitChatImage } from '../chat/turns/image-sizing'
 
 interface WebVideoProps {
   src: string
@@ -20,12 +21,12 @@ interface WebVideoProps {
 // React Native Web passes unknown host component names straight to the DOM.
 const WebVideo = 'video' as unknown as React.FC<WebVideoProps>
 
-export function VideoAttachment({ url, name, width, height }: { url: string; name: string; width?: number | null; height?: number | null }) {
-  const displayWidth = 320
-  const displayHeight = width && height ? Math.min(360, (displayWidth * height) / width) : 180
+export function VideoAttachment({ url, name, width, height, containerWidth }: { url: string; name: string; width?: number | null; height?: number | null; containerWidth?: number | null }) {
+  // A video without recorded dimensions is assumed 16:9 rather than the 4:3 an image falls back to.
+  const web = fitChatImage({ naturalWidth: width, naturalHeight: height, containerWidth, maxHeight: 360, fallbackAspect: 16 / 9 })
   if (Platform.OS === 'web') {
     return (
-      <View className="overflow-hidden rounded-lg border border-border bg-black" style={{ width: displayWidth }}>
+      <View className="overflow-hidden rounded-lg border border-border bg-black" style={{ width: web.width }}>
         <WebVideo
           src={url}
           controls
@@ -33,7 +34,7 @@ export function VideoAttachment({ url, name, width, height }: { url: string; nam
           title={name}
           aria-label={name}
           data-testid="message-video"
-          style={{ width: '100%', height: displayHeight, display: 'block', objectFit: 'contain' }}
+          style={{ width: '100%', height: web.height, display: 'block', objectFit: 'contain' }}
         />
       </View>
     )

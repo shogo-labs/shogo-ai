@@ -36,8 +36,9 @@ import { usePhoneLayout, usePhoneLayoutOverride } from "../../../lib/native-phon
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
-import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
-import { useChatImageWidth } from "./use-chat-image-width"
+import { fitChatImage } from "./image-sizing"
+import { useNaturalImageSize } from "./image-natural-size"
+import { useMeasuredWidth } from "./use-measured-width"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
 import { stripBuildBriefMarker } from "./buildBrief"
 
@@ -140,16 +141,23 @@ function ImageThumbnail({
   url,
   mediaType,
   index,
+  containerWidth,
 }: {
   url: string
   mediaType: string
   index: number
+  /** Width of the row the thumbnail sits in, so it fits the pane, not the window. */
+  containerWidth?: number | null
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
-  const [aspectRatio, setAspectRatio] = useState(DEFAULT_IMAGE_ASPECT)
-  const thumbnailWidth = useChatImageWidth(96, 144)
   const imageSource = useAgentImageSource(url)
+  const naturalSize = useNaturalImageSize(imageSource?.uri ?? url)
+  const box = fitChatImage({
+    naturalWidth: naturalSize.size?.width,
+    naturalHeight: naturalSize.size?.height,
+    containerWidth,
+  })
   const [contextMenu, setContextMenu] = useState<{
     x: number
     y: number
@@ -204,20 +212,15 @@ function ImageThumbnail({
       >
         <View
           className="rounded-lg overflow-hidden border border-border/40 bg-muted/30"
-          style={{ width: thumbnailWidth, aspectRatio }}
+          style={{ width: box.width, height: box.height }}
         >
           {imageSource ? (
             <Image
               source={imageSource}
-              resizeMode="contain"
+              resizeMode={box.cropped ? "cover" : "contain"}
               accessibilityLabel={`Image attachment ${index + 1}`}
               onError={() => setHasError(true)}
-              onLoad={(event) => {
-                const source = event.nativeEvent?.source
-                if (source?.width && source?.height) {
-                  setAspectRatio(clampAspectRatio(source.width, source.height))
-                }
-              }}
+              onLoad={naturalSize.onLoad}
               style={{ width: "100%", height: "100%" }}
             />
           ) : null}
@@ -446,6 +449,9 @@ export function MessageContent({
     isUser && content && !hasAttachments
       ? analyzeContent(content).isLong
       : false
+  // Attachments fit the width the message actually got — a split view or side
+  // pane is narrower than the window.
+  const attachmentRow = useMeasuredWidth()
 
   // For assistants we keep the original "transparent, padded" style.
   // For users we render full-width and let EditableUserMessage own
@@ -461,32 +467,37 @@ export function MessageContent({
   )
 
   if (isUser) {
-    const attachmentRow =
+    const attachmentRowView =
       images.length > 0 || files.length > 0 ? (
-        <View
-          className={cn(
-            "flex-row flex-wrap gap-2",
-            userBubble && "justify-end",
-          )}
-        >
-          {images.map((img, i) => (
-            <ImageThumbnail
-              key={`${message.id}-img-${i}`}
-              url={resolveChatAttachmentUrl(img.url)}
-              mediaType={img.mediaType}
-              index={i}
-            />
-          ))}
-          {files.map((file, i) => (
-            <DocumentThumbnail
-              key={`${message.id}-file-${i}`}
-              url={resolveChatAttachmentUrl(file.url)}
-              mediaType={file.mediaType}
-              name={file.name}
-              index={i}
-              onUserBubble={userBubble}
-            />
-          ))}
+        // A full-width wrapper so the row's width is the pane's even when the
+        // bubble aligns its children to the end.
+        <View className="w-full" onLayout={attachmentRow.onLayout}>
+          <View
+            className={cn(
+              "flex-row flex-wrap gap-2",
+              userBubble && "justify-end",
+            )}
+          >
+            {images.map((img, i) => (
+              <ImageThumbnail
+                key={`${message.id}-img-${i}`}
+                url={resolveChatAttachmentUrl(img.url)}
+                mediaType={img.mediaType}
+                index={i}
+                containerWidth={attachmentRow.width}
+              />
+            ))}
+            {files.map((file, i) => (
+              <DocumentThumbnail
+                key={`${message.id}-file-${i}`}
+                url={resolveChatAttachmentUrl(file.url)}
+                mediaType={file.mediaType}
+                name={file.name}
+                index={i}
+                onUserBubble={userBubble}
+              />
+            ))}
+          </View>
         </View>
       ) : null
 
@@ -520,7 +531,7 @@ export function MessageContent({
     if (userBubble) {
       return (
         <View className={cn(baseClasses, "items-end gap-1.5")}>
-          {attachmentRow}
+          {attachmentRowView}
           {body ? (
             <View
               className="px-4 py-2.5"
@@ -541,7 +552,7 @@ export function MessageContent({
 
     return (
       <View className={cn(baseClasses, "gap-2")}>
-        {attachmentRow}
+        {attachmentRowView}
         {body}
       </View>
     )
@@ -558,24 +569,27 @@ export function MessageContent({
         </MarkdownText>
       ) : null}
       {(images.length > 0 || files.length > 0) && (
-        <View className="flex-row flex-wrap gap-2">
-          {images.map((img, i) => (
-            <ImageThumbnail
-              key={`${message.id}-img-${i}`}
-              url={resolveChatAttachmentUrl(img.url)}
-              mediaType={img.mediaType}
-              index={i}
-            />
-          ))}
-          {files.map((file, i) => (
-            <DocumentThumbnail
-              key={`${message.id}-file-${i}`}
-              url={resolveChatAttachmentUrl(file.url)}
-              mediaType={file.mediaType}
-              name={file.name}
-              index={i}
-            />
-          ))}
+        <View onLayout={attachmentRow.onLayout}>
+          <View className="flex-row flex-wrap gap-2">
+            {images.map((img, i) => (
+              <ImageThumbnail
+                key={`${message.id}-img-${i}`}
+                url={resolveChatAttachmentUrl(img.url)}
+                mediaType={img.mediaType}
+                index={i}
+                containerWidth={attachmentRow.width}
+              />
+            ))}
+            {files.map((file, i) => (
+              <DocumentThumbnail
+                key={`${message.id}-file-${i}`}
+                url={resolveChatAttachmentUrl(file.url)}
+                mediaType={file.mediaType}
+                name={file.name}
+                index={i}
+              />
+            ))}
+          </View>
         </View>
       )}
     </View>
