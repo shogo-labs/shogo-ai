@@ -160,8 +160,8 @@ export interface CapabilitiesIndexFlags {
   video?: boolean
   /** Whether the media line advertises the 3D tools (default: false) */
   threeD?: boolean
-  /** Devops / heartbeat scheduling line (default: true) */
-  devops?: boolean
+  /** Heartbeat scheduling line (default: true) */
+  heartbeat?: boolean
   /**
    * Whether this runtime can spawn subagents at all (default: true). False
    * for personal workspaces and the workspace agent: the subagent and
@@ -173,7 +173,7 @@ export interface CapabilitiesIndexFlags {
 /**
  * Build the Capabilities Index embedded in the system prompt. The coding /
  * orchestration capabilities are always present; the Shogo-platform lines
- * (integrations, channel, media, devops) are gated by `flags` so they can be
+ * (integrations, channel, media, heartbeat) are gated by `flags` so they can be
  * stripped without dropping the whole index.
  */
 export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): string {
@@ -183,7 +183,7 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
   const video = flags.video === true
   const threeD = flags.threeD === true
   const subagents = flags.subagents !== false
-  const devops = flags.devops !== false
+  const heartbeat = flags.heartbeat !== false
 
   // The subagent line advertises delegated agent types; only list the ones
   // whose surface is still enabled so we don't point at unavailable paths.
@@ -195,7 +195,6 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
     'browser',
     ...(integrations ? ['integration'] : []),
     ...(channels ? ['channel'] : []),
-    ...(devops ? ['devops'] : []),
     'fork mode',
     'and team swarm',
   ].join(', ')
@@ -255,11 +254,9 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
         : '- **channel**: Channel connection and messaging (Telegram, Discord, webchat). Call `channel_connect` / `channel_list` / `send_message` directly.',
     )
   }
-  if (devops) {
+  if (heartbeat) {
     lines.push(
-      subagents
-        ? '- **devops**: Heartbeat scheduling, monitoring, and skill server sync. Delegated — use `agent_spawn({ type: "devops", prompt: "..." })`.'
-        : '- **devops**: Heartbeat scheduling and monitoring. Call `heartbeat_configure` / `heartbeat_status` directly.',
+      '- **heartbeat**: Heartbeat scheduling and monitoring. Call `heartbeat_configure` / `heartbeat_status` directly.',
     )
   }
 

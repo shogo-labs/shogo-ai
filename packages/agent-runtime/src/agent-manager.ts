@@ -13,6 +13,8 @@ import type { Message } from '@mariozechner/pi-ai'
 import {
   runSubagent,
   getBuiltinSubagentConfig,
+  BUILTIN_SUBAGENT_TYPES,
+  RETIRED_SUBAGENT_TYPES,
   type SubagentConfig,
   type SubagentResult,
   type SubagentStreamCallbacks,
@@ -332,7 +334,12 @@ export class AgentManager {
       config = getBuiltinSubagentConfig(type, parentCtx, allTools)
     }
     if (!config) {
-      return { ok: false, error: `Unknown agent type: ${type}` }
+      const valid = [...BUILTIN_SUBAGENT_TYPES, ...[...this.registry.keys()].filter(n => !(BUILTIN_SUBAGENT_TYPES as readonly string[]).includes(n))]
+      const retired = RETIRED_SUBAGENT_TYPES[type]
+      return {
+        ok: false,
+        error: `${retired ? `${retired} ` : ''}Unknown agent type: ${type}. Valid types: ${valid.join(', ')}. Omit type for fork mode.`,
+      }
     }
 
     const instanceId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
