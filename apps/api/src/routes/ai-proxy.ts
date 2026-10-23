@@ -36,7 +36,7 @@ import {
   type ProxyTokenPayload,
 } from '../lib/ai-proxy-token'
 import { verifyRuntimeToken } from '../lib/runtime-token'
-import { resolveApiKey } from './api-keys'
+import { resolveApiKey, resolveApiKeyForRequest } from './api-keys'
 import { getDbRoutingConfigSync, getMergedModelEntrySync, type ModelUpstreamFallback } from '../services/model-registry.service'
 import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
@@ -3775,7 +3775,8 @@ export function aiProxyRoutes() {
       // caller's header so the cloud Devices UI reflects upgrades without a
       // dedicated heartbeat round-trip.
       const deviceAppVersion = c.req.header('X-Shogo-Device-App-Version')
-      const resolved = await resolveApiKey(
+      const resolved = await resolveApiKeyForRequest(
+        c,
         token,
         deviceAppVersion ? { deviceAppVersion } : undefined,
       )

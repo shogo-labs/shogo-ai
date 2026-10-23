@@ -190,7 +190,10 @@ export async function authMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header("authorization")
   if (authHeader?.startsWith("Bearer shogo_sk_")) {
     try {
-      const result = await resolveApiKey(authHeader.slice(7))
+      const key = authHeader.slice(7)
+      const deviceAppVersion = c.req.header("X-Shogo-Device-App-Version")
+      const result = await resolveApiKey(key, deviceAppVersion ? { deviceAppVersion } : undefined)
+      c.set("apiKeyResolution", { key, result })
       if (result) {
         c.set("auth", {
           userId: result.userId,
