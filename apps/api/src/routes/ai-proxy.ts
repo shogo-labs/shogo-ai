@@ -3628,6 +3628,8 @@ export async function recordTranscriptionUsage(
   tokenPayload: ProxyTokenPayload,
   model: string,
   durationSeconds: number | undefined,
+  /** Anything the caller needs on the usage event to recognise this charge. */
+  actionMetadata?: Record<string, unknown>,
 ) {
   try {
     const { rawUsd, billedUsd } = calculateTranscriptionUsageCost(durationSeconds)
@@ -3645,7 +3647,7 @@ export async function recordTranscriptionUsage(
       actionType: 'ai_audio_transcription',
       rawUsd,
       billedUsd,
-      actionMetadata: { model, durationSeconds, rawUsd },
+      actionMetadata: { model, durationSeconds, rawUsd, ...actionMetadata },
     })
 
     if (result.success) {

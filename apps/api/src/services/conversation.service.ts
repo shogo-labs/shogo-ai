@@ -1024,11 +1024,38 @@ export async function openDirectConversation(workspaceId: string, userId: string
   const participants = [...new Set([userId, ...others])].sort()
   const dmKey = `u:${participants.join(',')}`
   const kind = participants.length <= 2 ? 'dm' : 'group_dm'
-  return findOrCreateDirect(workspaceId, dmKey, kind, userId, async (conversationId) => {
-    for (const uid of participants) {
-      await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId: uid } })
-    }
+  const conversation = await findOrCreateDirect(workspaceId, dmKey, kind, userId, async (conversationId) => {
+    for (const uid of participants) await ensureUserMember(conversationId, uid)
   })
+  // Someone else may have asked for the same group a moment ago (a call adding
+  // people has everyone ask at once) and be returned it before its members
+  // were written, and a person who left an earlier group with these people
+  // would otherwise be locked out of it. The key is exactly these people, so
+  // everyone in it belongs in it.
+  const added = await ensureUserMembers(conversation.id, participants)
+  if (added.length) {
+    await publish(conversation, { type: 'conversation.created', conversation: serializeConversation(conversation) })
+  }
+  return conversation
+}
+
+/** Add one person to a conversation unless they already are (safe to race). */
+async function ensureUserMember(conversationId: string, userId: string): Promise<boolean> {
+  const existing = await db.conversationMember.findFirst({ where: { conversationId, userId } })
+  if (existing) return false
+  try {
+    await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId } })
+    return true
+  } catch (err: any) {
+    if (err?.code === 'P2002') return false
+    throw err
+  }
+}
+
+async function ensureUserMembers(conversationId: string, userIds: string[]): Promise<string[]> {
+  const added: string[] = []
+  for (const uid of userIds) if (await ensureUserMember(conversationId, uid)) added.push(uid)
+  return added
 }
 
 export async function openAgentConversation(workspaceId: string, userId: string, target: AgentTarget) {

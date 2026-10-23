@@ -9963,6 +9963,18 @@ setTimeout(async () => {
   }
 }, 15_000)
 
+// The hidden LiveKit fallback for huddle notes. It runs in this process (rtc-node
+// works under Bun, in the API and in the desktop's API), and is a no-op when
+// LiveKit is not configured, so cloud and desktop take the same path.
+setTimeout(async () => {
+  try {
+    const { startNotesWorker } = await import('./workers/huddle-notes-agent')
+    await startNotesWorker()
+  } catch (err: any) {
+    console.error('[huddle-notes] Failed to start the fallback worker (non-fatal):', err?.message ?? err)
+  }
+}, 20_000)
+
 // Voice telephony monthly rebill (runs everywhere; the debit itself
 // is a no-op if no VoiceProjectConfig rows exist).
 {

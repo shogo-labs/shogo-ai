@@ -31,7 +31,13 @@ function catchUp(workspaceId: string, me: string | null) {
 }
 
 function ringTitle(ring: IncomingRing): string {
+  if (ring.invite) return ring.conversationName ? `${ring.from.name} invited you to a huddle in #${ring.conversationName}` : `${ring.from.name} invited you to a huddle`
   return ring.kind === 'dm' ? `${ring.from.name} is calling you` : `${ring.from.name} started a huddle with you`
+}
+
+function ringSubtitle(ring: IncomingRing): string {
+  if (ring.invite) return ring.conversationName ? `Invited you to a huddle in #${ring.conversationName}` : 'Invited you to a huddle'
+  return ring.kind === 'dm' ? 'Incoming huddle' : 'Started a huddle with you'
 }
 
 export function HuddleRinger() {
@@ -68,7 +74,9 @@ export function HuddleRinger() {
         messageId: `huddle-${event.huddleId}`,
         threadRootId: null,
         title: event.from.name,
-        body: event.conversationKind === 'dm' ? 'is calling you' : 'started a huddle with you',
+        body: event.invite
+          ? event.conversationName ? `invited you to a huddle in #${event.conversationName}` : 'invited you to a huddle'
+          : event.conversationKind === 'dm' ? 'is calling you' : 'started a huddle with you',
       })
     })()
   })
@@ -77,10 +85,11 @@ export function HuddleRinger() {
   // A phone whose system call screen is already ringing doesn't buzz a second time.
   const ringId = ring?.huddleId ?? null
   const ringKind = ring?.kind ?? null
+  const ringInvite = !!ring?.invite
   useEffect(() => {
     if (!ringId || !ringKind) return
-    return startRingtone({ sound: huddleSound, loop: ringKind === 'dm', vibrate: !hasSystemCall(ringId) })
-  }, [ringId, ringKind, huddleSound])
+    return startRingtone({ sound: huddleSound, loop: ringKind === 'dm' && !ringInvite, vibrate: !hasSystemCall(ringId) })
+  }, [ringId, ringKind, ringInvite, huddleSound])
 
   if (!ring) return null
 
@@ -99,7 +108,7 @@ export function HuddleRinger() {
             {ring.from.name}
           </Text>
           <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-            {ring.kind === 'dm' ? 'Incoming huddle' : 'Started a huddle with you'}
+            {ringSubtitle(ring)}
             {huddleMediaSupported ? '' : ' · join from web or desktop'}
           </Text>
         </View>

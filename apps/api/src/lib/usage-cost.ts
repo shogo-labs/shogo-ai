@@ -409,13 +409,37 @@ export function calculateSocialLookupCost(units: number): UsageCostResult {
 const WHISPER_USD_PER_SECOND = 0.006 / 60
 
 /**
- * Calculate USD cost for a Whisper transcription call from the audio
- * duration (seconds) reported by the API response. Falls back to a
- * one-second minimum when duration is unavailable (e.g. non-JSON
- * `response_format`) so a call is never billed at exactly $0.
+ * LiveKit Inference STT list prices, per second of audio. Deepgram Nova-3 runs
+ * $0.0058/min in multi-language mode (what we use) and $0.0048/min mono; the
+ * published list covers the other flavours we might be pointed at, and anything
+ * unrecognised falls back to the multi rate rather than to Whisper's.
  */
-export function calculateTranscriptionUsageCost(durationSeconds: number | undefined): UsageCostResult {
+const LIVEKIT_STT_USD_PER_SECOND: Record<string, number> = {
+  'deepgram/nova-3': 0.0058 / 60,
+  'deepgram/nova-3-mono': 0.0048 / 60,
+  'deepgram/nova-2': 0.0058 / 60,
+}
+const LIVEKIT_STT_DEFAULT_USD_PER_SECOND = 0.0058 / 60
+
+/** `${rate}` for a `livekit/<provider>/<model>` id, matching the Inference model string. */
+function livekitSttRate(model: string): number {
+  const id = model.replace(/^livekit\//, '')
+  return LIVEKIT_STT_USD_PER_SECOND[id] ?? LIVEKIT_STT_DEFAULT_USD_PER_SECOND
+}
+
+/**
+ * Calculate USD cost for a transcription call from the audio duration
+ * (seconds) reported by the API response. Falls back to a one-second minimum
+ * when duration is unavailable (e.g. non-JSON `response_format`) so a call is
+ * never billed at exactly $0. Pass the model id to price LiveKit Inference STT
+ * (`livekit/deepgram/nova-3`); anything else bills at Whisper's rate.
+ */
+export function calculateTranscriptionUsageCost(
+  durationSeconds: number | undefined,
+  model?: string,
+): UsageCostResult {
   const seconds = durationSeconds && durationSeconds > 0 ? durationSeconds : 1
-  const rawUsd = seconds * WHISPER_USD_PER_SECOND
+  const perSecond = model?.startsWith('livekit/') ? livekitSttRate(model) : WHISPER_USD_PER_SECOND
+  const rawUsd = seconds * perSecond
   return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
 }

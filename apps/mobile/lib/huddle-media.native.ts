@@ -10,9 +10,19 @@
  * foreground service (Android), so it stays off here.
  */
 import { NativeModules } from 'react-native'
-import type { HuddleMedia, HuddleMediaHandlers } from './huddle-room'
+import type { HuddleMedia, HuddleMediaHandlers, HuddleMediaOptions } from './huddle-room'
 
-export type { HuddleMedia, HuddleMediaHandlers, HuddleVideoTile } from './huddle-room'
+export type {
+  ConnectionQualityLevel,
+  HuddleDevice,
+  HuddleDeviceKind,
+  HuddleMedia,
+  HuddleMediaHandlers,
+  HuddleMediaOptions,
+  HuddleParticipantState,
+  HuddleReactionEvent,
+  HuddleVideoTile,
+} from './huddle-room'
 
 type LiveKitNative = typeof import('@livekit/react-native')
 
@@ -34,7 +44,12 @@ export const huddleMediaSupported = liveKit !== null
 export const huddleVideoSupported = liveKit !== null
 export const screenShareSupported = false
 
-export async function connectHuddleMedia(url: string, token: string, handlers: HuddleMediaHandlers): Promise<HuddleMedia> {
+export async function connectHuddleMedia(
+  url: string,
+  token: string,
+  handlers: HuddleMediaHandlers,
+  options?: HuddleMediaOptions,
+): Promise<HuddleMedia> {
   if (!liveKit) throw new Error('Huddles are available on web and desktop for now')
   const lk = liveKit
   // Required lazily: livekit-client must load after registerGlobals() has installed WebRTC.
@@ -54,7 +69,7 @@ export async function connectHuddleMedia(url: string, token: string, handlers: H
         closeSession()
         handlers.onDropped(reason)
       },
-    })
+    }, options)
     return {
       ...media,
       disconnect: async () => {

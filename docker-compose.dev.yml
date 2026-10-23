@@ -52,6 +52,12 @@ services:
       WORKSPACES_DIR: /app/workspaces
       RUNTIME_BASE_PORT: "5200"
       RUNTIME_DOMAIN_SUFFIX: localhost
+      # Huddles, and the hidden `huddle-notes` fallback agent the API starts
+      # in-process. Empty values simply mean huddles are off.
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      LIVEKIT_NOTES_STT_MODEL: ${LIVEKIT_NOTES_STT_MODEL:-deepgram/nova-3}
     command: ["bun", "--watch", "src/server.ts"]
 
   # ---------------------------------------------------------------------------

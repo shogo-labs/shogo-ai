@@ -12,8 +12,9 @@
  */
 import { useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Check } from 'lucide-react-native'
+import { Check, Headphones } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { huddleMediaSupported, joinHuddleCall } from '../../lib/huddle-call'
 import { teamChatApi, type ConversationSummary, type Mentionables } from '../../lib/team-chat-api'
 import { AgentAvatar } from './AgentAvatar'
 import { PresenceDot } from './PresenceDot'
@@ -88,6 +89,21 @@ export function NewMessagePicker({
       setBusy(false)
     }
   }
+
+  const selectedNames = (mentionables?.people ?? []).filter((p) => selected.includes(p.id)).map((p) => p.name)
+
+  /** Open (or create) the DM for the checked people, then ring all of them. */
+  const startHuddle = () =>
+    submit(async () => {
+      const conversation = await teamChatApi().openDm(workspaceId, selected)
+      void joinHuddleCall({
+        conversationId: conversation.id,
+        workspaceId,
+        label: selectedNames.join(', ') || 'Direct message',
+        kind: conversation.kind,
+      })
+      return conversation
+    })
 
   const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
   const empty = (!showPeople || (!people.length && !showSelf)) && (!showAgents || !agents.length)
@@ -200,13 +216,27 @@ export function NewMessagePicker({
         )}
       </ScrollView>
 
+      {selected.length > 0 && huddleMediaSupported && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={selected.length > 1 ? `Start huddle with ${selected.length} people` : 'Start huddle'}
+          disabled={busy}
+          onPress={() => void startHuddle()}
+          className="mt-3 flex-row items-center justify-center gap-2 rounded-md border border-emerald-600/40 py-3 active:bg-emerald-500/10"
+        >
+          <Headphones size={15} className="text-emerald-600" />
+          <Text className="text-sm font-medium text-emerald-600">
+            {selected.length > 1 ? `Start huddle with ${selected.length} people` : 'Start huddle'}
+          </Text>
+        </Pressable>
+      )}
       {selected.length > 0 && (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={selected.length > 1 ? `Start group message (${selected.length})` : 'Start message'}
           disabled={busy}
           onPress={() => void submit(() => teamChatApi().openDm(workspaceId, selected))}
-          className="mt-3 items-center rounded-md bg-primary py-3"
+          className="mt-2 items-center rounded-md bg-primary py-3"
         >
           {busy ? (
             <ActivityIndicator size="small" />

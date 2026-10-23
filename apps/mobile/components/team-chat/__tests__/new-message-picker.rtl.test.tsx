@@ -9,6 +9,7 @@ import { createReactNativeMock } from '../../../test/react-native-mock'
 const agentDms: Array<{ workspaceId: string; projectId: string | null }> = []
 const dms: Array<{ workspaceId: string; userIds: string[] }> = []
 const selfDms: Array<{ workspaceId: string; userId: string }> = []
+const huddles: Array<{ conversationId: string; workspaceId: string; label: string; kind?: string | null }> = []
 
 mock.module('react-native', () =>
   createReactNativeMock({
@@ -28,6 +29,10 @@ mock.module('react-native', () =>
       }),
   } as any),
 )
+mock.module('../../../lib/huddle-call', () => ({
+  huddleMediaSupported: true,
+  joinHuddleCall: async (input: any) => void huddles.push(input),
+}))
 mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }))
 mock.module('../../../lib/team-chat-api', () => ({
   absoluteApiUrl: (url: string) => url,
@@ -76,6 +81,7 @@ afterEach(() => {
   agentDms.length = 0
   dms.length = 0
   selfDms.length = 0
+  huddles.length = 0
 })
 
 describe('filterRecipients', () => {
@@ -178,5 +184,19 @@ describe('NewMessagePicker', () => {
 
     await waitFor(() => expect(created).toEqual([{ id: 'people-dm' }]))
     expect(dms).toEqual([{ workspaceId: 'ws-1', userIds: ['u-ana', 'u-ben'] }])
+  })
+
+  test('"Start huddle" opens the group DM for everyone checked and rings them into a call', async () => {
+    const created = renderPicker()
+    expect(screen.queryByLabelText('Start huddle')).toBeNull()
+
+    fireEvent.click(screen.getByLabelText('Ana Lopez, ana@example.com'))
+    expect(screen.getByLabelText('Start huddle')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Ben Okafor, ben@example.com'))
+    fireEvent.click(screen.getByLabelText('Start huddle with 2 people'))
+
+    await waitFor(() => expect(created).toEqual([{ id: 'people-dm' }]))
+    expect(dms).toEqual([{ workspaceId: 'ws-1', userIds: ['u-ana', 'u-ben'] }])
+    expect(huddles).toEqual([{ conversationId: 'people-dm', workspaceId: 'ws-1', label: 'Ana Lopez, Ben Okafor' }])
   })
 })

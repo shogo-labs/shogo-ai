@@ -63,6 +63,7 @@ export const MIRROR_MODELS: readonly string[] = [
   'ConversationMessage',
   'ConversationMention',
   'ConversationReaction',
+  'ConversationVote',
   'ConversationAttachment',
   'ChatUserSettings',
   'ConversationPin',
@@ -227,11 +228,17 @@ const NEVER_MACHINE_LOCAL = [
   'MachineSyncChange',
 ] as const
 
+const NEVER_LIVE_CALL = [
+  'HuddleInvite', // ringing state for the call in progress
+  'HuddleJoinRequest', // the waiting room in front of a call in progress
+] as const
+
 const NEVER_REASONS: Array<[readonly string[], string]> = [
   [NEVER_CREDENTIALS, 'credentials, sign-in or identity linkage'],
   [NEVER_BILLING, 'billing, metering or marketplace money'],
   [NEVER_CLOUD_PLATFORM, 'cloud platform data (registry, events, social, evals)'],
   [NEVER_MACHINE_LOCAL, 'machine-local run state or derived index'],
+  [NEVER_LIVE_CALL, 'live call signalling state'],
 ]
 
 /** `Model → why it never leaves the machine`. */
@@ -310,6 +317,13 @@ export const REWRITES: Readonly<
   'User.email': (row) => `${String(row.id)}@machines.shogo.invalid`,
   /** Machine projects are not published by the cloud; keep the unique column empty. */
   'Project.publishedSubdomain': () => null,
+  /**
+   * The huddle's guest join secret. The call runs on the machine that started
+   * it, so a copy on the cloud could only ever admit somebody to a call that is
+   * not there — and a join secret is not something the copy should hold. The
+   * machine keeps minting the real link.
+   */
+  'Huddle.linkToken': () => null,
 }
 
 /** Apply the rewrites for one model to one row. */

@@ -40,6 +40,7 @@ export const MODEL_TABLE: Readonly<Record<string, string>> = {
   ConversationMessage: 'conversation_messages',
   ConversationMention: 'conversation_mentions',
   ConversationReaction: 'conversation_reactions',
+  ConversationVote: 'conversation_votes',
   ConversationAttachment: 'conversation_attachments',
   ChatUserSettings: 'chat_user_settings',
   ConversationPin: 'conversation_pins',

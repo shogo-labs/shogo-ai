@@ -219,7 +219,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   })
 
   mountConversationExtras(router, { requireUser, requireWorkspace, errorResponse, readJson })
-  mountHuddleRoutes(router, { requireUser, requireWorkspace, errorResponse })
+  mountHuddleRoutes(router, { optionalUser: (c) => config.resolveUserId(c), requireUser, requireWorkspace, errorResponse })
 
   /**
    * How many agent replies may work at once, and how busy the queue is now. The

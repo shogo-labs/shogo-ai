@@ -97,7 +97,8 @@ describe('joining and leaving', () => {
     expect(claims.video).toMatchObject({
       roomJoin: true,
       room: row.roomName,
-      canPublishData: false,
+      canPublishData: true,
+      canUpdateOwnMetadata: true,
       canPublishSources: ['microphone', 'camera', 'screen_share', 'screen_share_audio'],
     })
 

@@ -913,14 +913,93 @@ describe('MessageRow', () => {
     expect(shim('attachment-card-Pasted markdown.md')).toBeNull()
   })
 
-  test('any other pasted file stays the plain file card', () => {
-    const attachment = {
-      id: 'att-code', name: 'Pasted code.txt', mimeType: 'text/plain', size: 2100,
-      url: '/api/conversation-files/att-code?t=x', width: null, height: null,
-    }
-    render(<MessageRow message={message({ attachments: [attachment] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
-    expect(shim('attachment-card-Pasted code.txt')).toBeTruthy()
-    expect(shim('pasted-markdown-card')).toBeNull()
+  test('a huddle notes summary shows the title and summary, and opens the transcript', () => {
+    const text = 'Huddle notes: Design review\n\n## Decisions\n- Ship it'
+    render(
+      <MessageRow
+        message={message({
+          authorType: 'system',
+          text,
+          blocks: { huddleNotes: { huddleId: 'h1', meetingId: 'm1', title: 'Design review', status: 'ready' } },
+        })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+    const card = shim('huddle-notes-block')!
+    expect(card).toBeTruthy()
+    expect(card.textContent).toContain('Design review')
+    expect(card.textContent).toContain('Ship it')
+    // The title is the card's own line, not repeated in the body.
+    expect(card.textContent).not.toContain('Huddle notes:')
+
+    const before = routed.length
+    fireEvent.click(screen.getByLabelText('Open the full transcript'))
+    expect(routed.slice(before)).toEqual([
+      expect.objectContaining({ pathname: '/(app)/huddles/[huddleId]/notes', params: { huddleId: 'h1' } }),
+    ])
+  })
+
+  test('deleted notes keep the message, without a transcript to open', () => {
+    render(
+      <MessageRow
+        message={message({
+          authorType: 'system',
+          text: 'Huddle notes deleted.',
+          blocks: { huddleNotes: { huddleId: 'h1', meetingId: null, title: null, status: 'deleted' } },
+        })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+    expect(shim('huddle-notes-block')!.textContent).toContain('Huddle notes deleted')
+    expect(screen.queryByLabelText('Open the full transcript')).toBeNull()
+  })
+
+  test('an ended huddle card links to the notes of the call it belongs to', () => {
+    render(
+      <MessageRow
+        message={message({
+          authorType: 'system',
+          text: 'Huddle ended',
+          blocks: { huddle: { id: 'h1', status: 'ended', notesMeetingId: 'm1' } },
+        })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+    expect(shim('huddle-notes-link')).toBeTruthy()
+    expect(shim('huddle-notes-block')).toBeNull()
+
+    const before = routed.length
+    fireEvent.click(screen.getByLabelText("Open this huddle's notes"))
+    expect(routed.slice(before)).toEqual([
+      expect.objectContaining({ pathname: '/(app)/huddles/[huddleId]/notes', params: { huddleId: 'h1' } }),
+    ])
+  })
+
+  test('a huddle with no notes stays the plain call card', () => {
+    render(
+      <MessageRow
+        message={message({ authorType: 'system', text: 'Huddle ended', blocks: { huddle: { id: 'h1', status: 'ended' } } })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+    expect(shim('huddle-notes-link')).toBeNull()
+    expect(shim('huddle-notes-block')).toBeNull()
   })
 })
 

@@ -4385,15 +4385,66 @@ model Huddle {
   startedById    String
   /// The "started a huddle" system message, updated when the huddle ends.
   messageId      String?
+  /// Secret in the shareable join link. Null until someone asks for a link; rotating it revokes old links.
+  linkToken      String?   @unique
   startedAt      DateTime  @default(now())
   endedAt        DateTime?
+  /// Notes (a speaker-labelled transcript and an auto summary) are on for this call. Any participant may turn them off.
+  notesEnabled   Boolean   @default(true)
+  /// Set when the notes summary was posted, claimed with `updateMany where notesMessageId: null`
+  /// so exactly one pod posts it. Holds the summary message id once it is posted.
+  notesMessageId String?
+  /// Audit: audio seconds the client path actually forwarded to STT for this call.
+  notesClientSeconds  Int @default(0)
+  /// Audit: audio seconds the LiveKit fallback forwarded to Inference STT for this call.
+  notesLivekitSeconds Int @default(0)
 
   conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   participants HuddleParticipant[]
+  invites      HuddleInvite[]
+  joinRequests HuddleJoinRequest[]
 
   @@index([workspaceId, endedAt])
   @@index([conversationId, startedAt])
   @@map("huddles")
+}
+
+/// Someone a participant rang into a live huddle. An invite lets the person
+/// join the huddle (not the conversation). status: ringing | joined | declined | missed | cancelled.
+model HuddleInvite {
+  id          String   @id @default(uuid())
+  huddleId    String
+  userId      String
+  invitedById String
+  status      String   @default("ringing")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@unique([huddleId, userId])
+  @@index([userId, status])
+  @@map("huddle_invites")
+}
+
+/// Someone who opened the huddle link without access and is waiting to be let in.
+/// A workspace member has `userId`; an outside guest has `guestId` and `guestName`.
+/// status: waiting | admitted | denied | expired.
+model HuddleJoinRequest {
+  id         String    @id @default(uuid())
+  huddleId   String
+  userId     String?
+  guestId    String?
+  guestName  String?
+  status     String    @default("waiting")
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@index([huddleId, status])
+  @@index([guestId])
+  @@map("huddle_join_requests")
 }
 
 /// One stay in a huddle. Rejoining after leaving opens a new row.
@@ -4526,6 +4577,7 @@ model ConversationMessage {
   authorUser   User?                         @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
   mentions     ConversationMention[]
   reactions    ConversationReaction[]
+  votes        ConversationVote[]
   attachments  ConversationAttachment[]
   pin          ConversationPin?
   savedBy      SavedMessage[]
@@ -4571,6 +4623,21 @@ model ConversationReaction {
   @@unique([messageId, userId, emoji])
   @@index([messageId])
   @@map("conversation_reactions")
+}
+
+/// A vote on a poll option, or an upvote on a question (`optionId` = "up").
+model ConversationVote {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  optionId  String
+  createdAt DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, optionId])
+  @@index([messageId])
+  @@map("conversation_votes")
 }
 
 /// Uploaded file. Created before the message is sent, then attached.
