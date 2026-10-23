@@ -77,6 +77,11 @@ import {
 } from "../../../../lib/platform-config";
 import { resolveChatScope } from "../../../../lib/chat-scope";
 import { useProjectChatTabs } from "../../../../lib/project-chat-tabs";
+import {
+  hasChatUrlOneShotParams,
+  isChatSessionOfProject,
+  useProjectChatUrlMirror,
+} from "../../../../lib/project-chat-url";
 import { stripAskUserAnswerMarker } from "../../../../components/chat/turns/askUserAnswers";
 import { buildCanvasErrorDebugPrompt } from "../../../../components/chat/turns/canvasErrorPrompt";
 import { consumePendingFiles } from "../../../../lib/pending-image-store";
@@ -393,6 +398,12 @@ export default observer(function ProjectLayout() {
   const [capturedAutoStartVoice] = useState(
     () => params.autoStartVoice === "1"
   );
+  // A pending sidebar "+ new chat" arrival owns session creation and must not
+  // be raced by the pinned/last-chat selection effects. Captured once: the
+  // chat-URL mirror drops `newChat` from the address bar as soon as the new
+  // chat has an id, and reading the live param would flip this back to false
+  // mid-arrival.
+  const [capturedNewChatArrival] = useState(() => params.newChat === "1");
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
@@ -411,6 +422,23 @@ export default observer(function ProjectLayout() {
   const [chatSessionId, setChatSessionId] = useState<string | null>(
     () => params.chatSessionId ?? null
   );
+
+  // Mirror the open chat into `?chatSessionId=` so the address bar names it —
+  // copying, reloading or sharing the URL lands on that exact chat. One write
+  // point for every `setChatSessionId` call in this screen; `setParams`
+  // replaces the current history entry, so switching chats never stacks Back
+  // entries. `deepLinkedChatSessionId` is the id the viewer actually asked
+  // for: ids this screen mirrored itself are our own state echoed back, so the
+  // selection guards below must not read them as a deep link.
+  const { deepLinkedChatSessionId } = useProjectChatUrlMirror({
+    chatSessionId,
+    currentParam: params.chatSessionId,
+    chatScope: capturedChatScope,
+    initialPropsSessionId,
+    oneShotPresent: hasChatUrlOneShotParams(params),
+    enabled: Platform.OS === "web" && !isIdeChatEmbed,
+    setParams: (next) => router.setParams(next as any),
+  });
 
   // Coordinates pinned-session resolution and avoids remount races. Off in
   // cloud builds, where the project-pinned session endpoints are not mounted.
@@ -1093,10 +1121,15 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     if (!workspaceRuntimeEnabled || !projectId) return;
     if (chatSessionId) return;
-    if (params.chatSessionId) return;
+    // The viewer named a chat in the URL — that is what should render, not a
+    // replay of last time. Latch so a later re-run can't resurrect the cache.
+    if (deepLinkedChatSessionId) {
+      lastSessionCacheAppliedRef.current = true;
+      return;
+    }
     // A pending "+ new chat" arrival owns session creation on this arrival —
     // don't race it with a stale cached session id.
-    if (params.newChat === "1") return;
+    if (capturedNewChatArrival) return;
     if (lastSessionCacheAppliedRef.current) return;
     lastSessionCacheAppliedRef.current = true;
     let cancelled = false;
@@ -1116,8 +1149,8 @@ export default observer(function ProjectLayout() {
     workspaceRuntimeEnabled,
     projectId,
     chatSessionId,
-    params.chatSessionId,
-    params.newChat,
+    deepLinkedChatSessionId,
+    capturedNewChatArrival,
   ]);
 
   // Make the pinned workspace session the project's canonical chat (flag-on
@@ -1132,15 +1165,27 @@ export default observer(function ProjectLayout() {
   // open-tabs list and ChatPanel renders it in 'workspace' scope.
   useEffect(() => {
     if (!workspaceRuntimeEnabled || !pinnedWorkspaceSessionId) return;
-    if (params.chatSessionId) return;
+    if (deepLinkedChatSessionId) {
+      // The URL names a chat: never promote the pinned session over it, and
+      // latch so a late resolve can't clobber it afterwards either. The
+      // deep-link validation effect clears the latch if that id turns out not
+      // to be a chat of this project / not loadable.
+      pinnedSessionAppliedRef.current = true;
+      return;
+    }
     // A pending "+ new chat" arrival creates its own session — don't promote
     // the pinned session over it (it may resolve after the create and clobber
     // the fresh chat).
-    if (params.newChat === "1") return;
+    if (capturedNewChatArrival) return;
     if (pinnedSessionAppliedRef.current) return;
     pinnedSessionAppliedRef.current = true;
     setChatSessionId(pinnedWorkspaceSessionId);
-  }, [workspaceRuntimeEnabled, pinnedWorkspaceSessionId, params.chatSessionId, params.newChat]);
+  }, [
+    workspaceRuntimeEnabled,
+    pinnedWorkspaceSessionId,
+    deepLinkedChatSessionId,
+    capturedNewChatArrival,
+  ]);
 
   // APP_MODE_DISABLED: app template copy effect removed
 
@@ -1450,7 +1495,7 @@ export default observer(function ProjectLayout() {
   const { openChatTabIds, setOpenChatTabIds, tabsHydration } = useProjectChatTabs({
     projectId,
     chatSessionId,
-    skipRestore: workspaceRuntimeEnabled && !params.chatSessionId,
+    skipRestore: workspaceRuntimeEnabled && !deepLinkedChatSessionId,
     nativePhone,
   });
   /** Web: pending delete confirmation (AlertDialog); native uses Alert.alert */
@@ -1473,8 +1518,8 @@ export default observer(function ProjectLayout() {
   // projects, so without this the new param would be ignored and the project
   // would show its default chat instead of the one the user clicked. We key
   // off the param alone (not `chatSessionId`) so an in-place switch via the
-  // event bus — which changes `chatSessionId` without touching the URL —
-  // doesn't get reverted to the stale deep-link.
+  // event bus — which changes `chatSessionId` and mirrors it into the URL —
+  // doesn't get reverted to a stale deep-link.
   useEffect(() => {
     const incoming = Array.isArray(params.chatSessionId)
       ? params.chatSessionId[0]
@@ -1585,7 +1630,7 @@ export default observer(function ProjectLayout() {
       // A pending sidebar "+ new chat" request owns session creation on this
       // arrival (handled by the one-shot newChat effect) — don't also
       // auto-select an existing chat or we'd land on the wrong one.
-      if (params.newChat === "1") return;
+      if (capturedNewChatArrival) return;
       // Under the always-on workspace runtime, the project-pinned workspace
       // session owns active-session selection (see the pinned-session
       // promotion effect). Auto-selecting / auto-creating a *project-scoped*
@@ -1652,7 +1697,7 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, store, chatSessionId, actions, tabsHydration, params.newChat, refreshProjectChatSessions]);
+  }, [projectId, store, chatSessionId, actions, tabsHydration, capturedNewChatArrival, refreshProjectChatSessions]);
 
   // After a 'restored-with-tabs' hydration, choose which restored tab is
   // active. Prefer the persisted `lastChatSession` if it's still in the list,
@@ -2621,6 +2666,53 @@ export default observer(function ProjectLayout() {
     );
   }, [isIdeChatEmbed, chatSessions, chatSessionId]);
 
+  // A link that names a chat this viewer can't open — deleted, another
+  // project's chat, no access — must land on the project's normal chat with
+  // the URL corrected, not on a blank panel stuck on a dead id. Each incoming
+  // id is checked once against the session it resolves to: `contextId` is the
+  // project for both project-scoped and workspace-scoped project chats.
+  const validatedDeepLinkIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const incoming = deepLinkedChatSessionId;
+    const collection = store?.chatSessionCollection;
+    if (!incoming || !projectId || !collection) return;
+    const key = `${projectId}:${incoming}`;
+    if (validatedDeepLinkIdsRef.current.has(key)) return;
+    validatedDeepLinkIdsRef.current.add(key);
+
+    const fallBackToProjectChat = () => {
+      // Let the pinned/default promotion own selection again.
+      pinnedSessionAppliedRef.current = false;
+      setOpenChatTabIds((prev) =>
+        prev.includes(incoming) ? prev.filter((id) => id !== incoming) : prev
+      );
+      setChatSessionId((current) => (current === incoming ? null : current));
+    };
+    const belongsHere = (session: any) =>
+      isChatSessionOfProject(session, {
+        projectId,
+        allowCrossProject: capturedChatScope === "workspace",
+      });
+
+    const cached: any = collection.get?.(incoming);
+    if (cached) {
+      if (!belongsHere(cached)) fallBackToProjectChat();
+      return;
+    }
+    void collection
+      .loadById(incoming)
+      .then((session: any) => {
+        if (!belongsHere(session)) fallBackToProjectChat();
+      })
+      .catch(() => fallBackToProjectChat());
+  }, [
+    deepLinkedChatSessionId,
+    projectId,
+    store,
+    setOpenChatTabIds,
+    capturedChatScope,
+  ]);
+
   const handleCreateNewSession = useCallback(async () => {
     if (!projectId) return;
     try {
@@ -3405,7 +3497,7 @@ export default observer(function ProjectLayout() {
   // legacy empty-chat list.
   const workspaceChatLoading =
     workspaceRuntimeEnabled &&
-    !params.chatSessionId &&
+    !deepLinkedChatSessionId &&
     !pinnedResolveFailed &&
     openChatTabIds.length === 0;
 
