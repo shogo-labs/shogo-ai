@@ -259,6 +259,14 @@ export interface RemoteInterceptorConfig {
    * projects vanished".
    */
   machineWorkspaceId?: string | null
+
+  /**
+   * A machine-workspace request failed with one of the machine's own codes
+   * (`waking`, `runtime_starting`, `machine_offline_readonly`). The screen that
+   * owns the machine state decides what to show; the interceptor only reports,
+   * so every caller cannot drift into a different wording.
+   */
+  onMachineState?: (error: unknown, path: string) => void
 }
 
 /**
@@ -539,11 +547,20 @@ export function createRemoteAwareHttpClient(
 
         // If it's a promise (all HTTP methods return promises), add error handling
         if (result && typeof result.then === 'function') {
-          return result.catch((error: Error) => {
-            // Notify caller about remote errors for fallback handling
-            config.onRemoteError?.(error, machinePath)
-            throw error
-          })
+          return result.then(
+            (response: unknown) => {
+              // A request that came back means the machine is up: the banner
+              // goes away on the first answer, not on the next 15s poll.
+              if (config.machineWorkspaceId) config.onMachineState?.(null, machinePath)
+              return response
+            },
+            (error: Error) => {
+              // Notify caller about remote errors for fallback handling
+              config.onRemoteError?.(error, machinePath)
+              if (config.machineWorkspaceId) config.onMachineState?.(error, machinePath)
+              throw error
+            },
+          )
         }
 
         return result
