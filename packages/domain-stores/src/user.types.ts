@@ -21,6 +21,7 @@ export interface UserType {
   onboardingIntent?: string
   buddyLook?: string
   homeRegion?: string
+  emailCanonical?: string
   createdAt: Date
   updatedAt: Date
 }
@@ -37,6 +38,7 @@ export interface UserCreateInput {
   onboardingIntent?: string
   buddyLook?: string
   homeRegion?: string
+  emailCanonical?: string
 }
 
 export interface UserUpdateInput {
@@ -51,4 +53,5 @@ export interface UserUpdateInput {
   onboardingIntent?: string
   buddyLook?: string
   homeRegion?: string
+  emailCanonical?: string
 }
