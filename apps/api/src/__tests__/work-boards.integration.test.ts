@@ -658,7 +658,7 @@ describe('waking the agent that owns a card', () => {
     const ack = rows
       .map((r: any) => ({ ...r, blocks: typeof r.blocks === 'string' ? JSON.parse(r.blocks) : r.blocks }))
       .find((r: any) => r.blocks?.wakeQueued)
-    expect(ack?.text).toContain('still working on the previous message')
+    expect(ack?.text).toContain('Queued for')
     expect(ack.blocks.wakeQueued.agentRef).toBe(`project:${seed.projectId}`)
     expect(await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_wake_queued' } })).toBe(1)
 

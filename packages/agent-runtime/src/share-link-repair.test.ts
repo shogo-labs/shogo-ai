@@ -55,6 +55,64 @@ describe('repairShareLinks', () => {
   })
 })
 
+// SHO-172: a `share_file` result relayed through `project_call` reached the
+// workspace agent as a string it re-typed with `"workspaceId"` ->
+// `"wworkspaceId"`. The extra JSON byte shifts base64 alignment, so every
+// character after it differs while the 43-char signature is copied exactly.
+const b64url = (value: string) => Buffer.from(value, 'utf8').toString('base64url')
+const RELAY_PAYLOAD = JSON.stringify({
+  typ: 'shared-file',
+  projectId: 'd3cce05d-5a1e-4c2b-9f30-6f1a2b3c4d5e',
+  workspaceId: '0599aa18-8e7d-4f6a-9b21-3c4d5e6f7a8b',
+  path: 'public/takes/2026-10-24-A.mp4',
+  exp: 1792400531,
+  iat: 1791795731,
+})
+const RELAY_SIG = 'Rk7mQ2xT9vLp0aWz4NbCy6Hs8EdF1gJu3Kt5MoPq7Sw'
+const RELAY_MINTED = `${b64url(RELAY_PAYLOAD)}.${RELAY_SIG}`
+const RELAY_RETYPED = `${b64url(RELAY_PAYLOAD.replace('"workspaceId"', '"wworkspaceId"'))}.${RELAY_SIG}`
+const RELAY_TRUNCATED = `${b64url(RELAY_PAYLOAD.replace('"public/takes', '"publc/takes'))}.${RELAY_SIG}`
+
+/** Characters that sit at the same index in both strings. */
+function samePlaceCount(a: string, b: string): number {
+  return [...a].filter((ch, i) => ch === b[i]).length
+}
+
+describe('share-link repair by signature (SHO-172)', () => {
+  test('repairs a re-encoded payload that only the signature can identify', () => {
+    // No edit-distance budget can reach this: a one-character JSON slip
+    // re-encodes the whole tail of the payload.
+    expect(samePlaceCount(RELAY_MINTED, RELAY_RETYPED)).toBeLessThan(RELAY_MINTED.length / 2)
+    expect(repairShareLinks(`Download link: ${url(RELAY_RETYPED)}`, new Set([RELAY_MINTED]))).toBe(
+      `Download link: ${url(RELAY_MINTED)}`,
+    )
+  })
+
+  test('repairs a payload that lost a character as well as one that gained it', () => {
+    expect(repairShareLinks(url(RELAY_TRUNCATED), new Set([RELAY_MINTED]))).toBe(url(RELAY_MINTED))
+  })
+
+  test('repairs a token whose separator was URL-encoded', () => {
+    expect(repairShareLinks(url(RELAY_RETYPED.replace('.', '%2E')), new Set([RELAY_MINTED]))).toBe(url(RELAY_MINTED))
+    expect(repairShareLinks(url(RELAY_RETYPED.replace('.', '%2e')), new Set([RELAY_MINTED]))).toBe(url(RELAY_MINTED))
+  })
+
+  test('a re-encoded payload resolves to its own token among several shared files', () => {
+    expect(repairShareLinks(url(RELAY_RETYPED), new Set([OTHER, MINTED, RELAY_MINTED]))).toBe(url(RELAY_MINTED))
+  })
+
+  test('an unknown signature far from every minted token is left alone', () => {
+    const stranger = `${b64url(RELAY_PAYLOAD)}.${'z'.repeat(43)}`
+    expect(repairShareLinks(url(stranger), new Set([MINTED, RELAY_MINTED]))).toBe(url(stranger))
+  })
+
+  test('an ambiguous signature is never guessed: the text is left unchanged', () => {
+    const twin = `${b64url(RELAY_PAYLOAD.replace('2026-10-24-A.mp4', '2026-10-25-B.mp4'))}.${RELAY_SIG}`
+    const candidate = `${b64url(RELAY_PAYLOAD.replace('"typ":"shared-file"', '"typ":"shared-files"'))}.${RELAY_SIG}`
+    expect(repairShareLinks(url(candidate), new Set([RELAY_MINTED, twin, MINTED]))).toBe(url(candidate))
+  })
+})
+
 describe('LocalhostLinkRewriter share-link repair', () => {
   test('repairs a token split across streamed deltas, with no public preview URL', () => {
     const tokens = new Set<string>()

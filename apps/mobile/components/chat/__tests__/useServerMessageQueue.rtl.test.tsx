@@ -66,8 +66,35 @@ mock.module("@shogo/shared-app/domain", () => ({
   useSDKDomains: () => ({ studioChat: { chatQueuedMessageCollection: collection } }),
 }))
 let postResponse: { data?: any } = { data: { ok: true } }
+/** Wakes waiting behind this session, as `/api/agent-wakes` lists them. */
+let wakeList: any[] = []
+const wakeCalls: string[] = []
+const wakeDeletes: string[] = []
+let sendWakeFailure: Error | null = null
+/** When set, the Send-now POST hangs on it so a test can look at the in-flight dock. */
+let sendWakeHold: Promise<void> | null = null
 mock.module("mobx-state-tree", () => ({
-  getEnv: () => ({ http: { post: async () => postResponse } }),
+  getEnv: () => ({
+    http: {
+      post: async (url: string) => {
+        if (url.startsWith("/api/agent-wakes/") && url.endsWith("/send-now")) {
+          wakeCalls.push(url)
+          if (sendWakeHold) await sendWakeHold
+          if (sendWakeFailure) throw sendWakeFailure
+          return { data: { ok: true } }
+        }
+        return postResponse
+      },
+      get: async (url: string) => {
+        wakeCalls.push(url)
+        return { data: { wakes: wakeList } }
+      },
+      delete: async (url: string) => {
+        wakeDeletes.push(url)
+        return { data: { ok: true } }
+      },
+    },
+  }),
 }))
 
 const { useServerMessageQueue } = await import("../useServerMessageQueue")
@@ -99,6 +126,11 @@ function reset() {
   dispatchedBeforeObserved = false
   serverSeq = 0
   postResponse = { data: { ok: true } }
+  wakeList = []
+  wakeCalls.length = 0
+  wakeDeletes.length = 0
+  sendWakeFailure = null
+  sendWakeHold = null
   act(() => runInAction(() => { collection.all.splice(0, collection.all.length) }))
 }
 
@@ -373,4 +405,160 @@ describe("useServerMessageQueue", () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
     expect(turns).toEqual([{ id: "srv-1", text: "mine" }])
   })
+})
+
+/**
+ * A team-chat message queued behind this session's turn is not a
+ * `ChatQueuedMessage` row: `AgentWake` is its one queue, read from its own
+ * route. The dock shows it after the session's own rows and presses the wake
+ * routes, not the chat queue's.
+ */
+describe("team-chat wakes waiting behind this session", () => {
+  const wake = (overrides: Record<string, unknown> = {}) => ({
+    id: "w1",
+    status: "pending",
+    sendNowAt: null,
+    createdAt: "2026-09-29T10:00:00.000Z",
+    conversationId: "c-eng",
+    threadRootId: null,
+    channelName: "eng",
+    author: { name: "Ana Lopez" },
+    text: "can you look at this?",
+    ...overrides,
+  })
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+  test("a queued team-chat message joins the dock after the session's own rows", async () => {
+    reset()
+    wakeList = [wake()]
+    const view = render(<Probe isStreaming />)
+    await settle()
+
+    expect(wakeCalls).toContain("/api/agent-wakes?sessionId=s1")
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "typed here")) }))
+
+    // Typed here first, then the channel's message: the order the agent wakes them in.
+    expect(queueApi!.queuedMessages.map((m) => [m.id, m.kind ?? "message"])).toEqual([
+      ["q1", "message"],
+      ["w1", "agent_wake"],
+    ])
+    expect(queueApi!.queuedMessages[1]!.source).toBe("#eng · Ana Lopez")
+    expect(dockText(view)).toEqual(["typed here", "can you look at this?"])
+  })
+
+  test("Send now posts to the wake route and hides the row until the drain claims it", async () => {
+    reset()
+    wakeList = [wake()]
+    render(<Probe isStreaming />)
+    await settle()
+    expect(queueApi!.queuedMessages.map((m) => m.id)).toEqual(["w1"])
+
+    await act(async () => { await queueApi!.sendWakeNow("w1") })
+
+    expect(wakeCalls).toContain("/api/agent-wakes/w1/send-now")
+    // The server has not taken it off the list yet, so the hide is the click's,
+    // not the next poll's.
+    expect(queueApi!.queuedMessages).toEqual([])
+  })
+
+  test("Send now keeps the row on screen until the server answers", async () => {
+    reset()
+    wakeList = [wake()]
+    render(<Probe isStreaming />)
+    await settle()
+
+    // The POST is in flight: the row must still be the person's queued message,
+    // or a refusal would land on an unmounted row and show nothing.
+    let release!: () => void
+    sendWakeHold = new Promise<void>((resolve) => { release = resolve })
+    let pending!: Promise<void>
+    act(() => { pending = queueApi!.sendWakeNow("w1") })
+    expect(queueApi!.queuedMessages.map((m) => m.id)).toEqual(["w1"])
+
+    await act(async () => { release(); await pending })
+    // Taken by the server: now it goes off the dock.
+    expect(queueApi!.queuedMessages).toEqual([])
+  })
+
+  test("a refused Send now raises and puts the row back", async () => {
+    reset()
+    wakeList = [wake()]
+    render(<Probe isStreaming />)
+    await settle()
+    sendWakeFailure = new Error("Request failed with status code 409")
+
+    let failure: unknown
+    await act(async () => {
+      try {
+        await queueApi!.sendWakeNow("w1")
+      } catch (error) {
+        failure = error
+      }
+    })
+    expect(String(failure)).toContain("409")
+    expect(queueApi!.queuedMessages.map((m) => m.id)).toEqual(["w1"])
+  })
+
+  test("removing a wake deletes it by id and the queue reloads without it", async () => {
+    reset()
+    wakeList = [wake()]
+    render(<Probe isStreaming />)
+    await settle()
+
+    await act(async () => { await queueApi!.removeWake("w1") })
+    expect(wakeDeletes).toEqual(["/api/agent-wakes/w1"])
+
+    wakeList = []
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1600)) })
+    expect(queueApi!.queuedMessages).toEqual([])
+  })
+})
+
+/**
+ * QA round 1: the wake poll used to run on every open session, forever, with
+ * nothing queued — ~40 GETs a minute and a DB query each. A wake only exists
+ * while a reply is running in the thread, so the poll now runs only while the
+ * session is streaming or a wake is actually waiting.
+ */
+describe("the wake poll idles", () => {
+  const wakeCallCount = () =>
+    wakeCalls.filter((url) => url.startsWith("/api/agent-wakes?")).length
+
+  test("an idle session asks once on mount and then not again", async () => {
+    reset()
+    render(<Probe isStreaming={false} />)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(wakeCallCount()).toBe(1)
+
+    // Two poll intervals go by with nothing queued and nothing streaming.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 3200)) })
+    expect(wakeCallCount()).toBe(1)
+  })
+
+  test("it polls while the session is streaming", async () => {
+    reset()
+    render(<Probe isStreaming />)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const afterMount = wakeCallCount()
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    expect(wakeCallCount()).toBeGreaterThan(afterMount)
+  })
+
+  test("it polls while a wake is waiting, and stops once the list is empty", async () => {
+    reset()
+    wakeList = [{ id: "w1", status: "pending", sendNowAt: null, createdAt: new Date().toISOString(), conversationId: "c-eng", threadRootId: null, channelName: "eng", author: { name: "Ana Lopez" }, text: "look at this" }]
+    render(<Probe isStreaming={false} />)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const withWake = wakeCallCount()
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    expect(wakeCallCount()).toBeGreaterThan(withWake)
+
+    wakeList = []
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    const afterDrain = wakeCallCount()
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    expect(wakeCallCount()).toBe(afterDrain)
+  }, 15_000)
 })

@@ -10,6 +10,7 @@
  * browser no matter where it was clicked.
  */
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react"
+import { Platform } from "react-native"
 import { parseInAppFileHref } from "../../lib/share-file-links"
 import { ShareFileSheet, type ShareFileTarget } from "./ShareFileViewer"
 
@@ -41,7 +42,8 @@ export function ShareFileHost({ children }: { children: ReactNode }) {
   const close = useCallback(() => setTarget(null), [])
 
   useEffect(() => {
-    if (typeof window === "undefined") return
+    // React Native defines `window` as a global alias without DOM event APIs.
+    if (Platform.OS !== "web" || typeof window === "undefined") return
     const onOpenFile = (event: Event) => {
       const href = (event as CustomEvent<{ href?: string }>).detail?.href
       const file = parseInAppFileHref(href)

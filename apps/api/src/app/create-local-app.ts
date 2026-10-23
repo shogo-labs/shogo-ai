@@ -42,6 +42,7 @@ import { createChatMessageEditRoutes } from '../routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from '../routes/chat-message-feedback'
 import { createChatSessionForkRoutes } from '../routes/chat-session-fork'
 import { chatQueuedMessageActionsRoutes } from '../routes/chat-queued-message-actions'
+import { agentWakeRoutes } from '../routes/agent-wakes'
 import { toolsProxyRoutes } from '../routes/tools-proxy'
 import { socialEventRoutes, socialRoutes } from '../routes/social'
 import { techStackRoutes } from '../routes/tech-stacks'
@@ -223,6 +224,8 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api/v1', appActionsRoutes())
   app.route('/api/chat-messages', createChatMessageEditRoutes())
   app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
+  // The queue of team-chat wakes waiting behind a live reply (SHO-167).
+  app.route('/api', agentWakeRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api/chat-messages', createChatMessageFeedbackRoutes())
   app.route('/api/chat-sessions', createChatSessionFeedbackRoutes())
   app.route('/api/chat-sessions', createChatSessionForkRoutes())
