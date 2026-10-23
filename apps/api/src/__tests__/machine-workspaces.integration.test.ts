@@ -46,6 +46,8 @@ type Topology = {
   instanceId: string
   /** The cloud user the device key was issued to — the voice of the desktop. */
   ownerUserId: string
+  /** The workspace the machine is paired into: a real cloud workspace. */
+  deviceWorkspaceId: string
   desktop: Subprocess
   desktopUrl: string
   pods: Subprocess[]
@@ -256,6 +258,7 @@ async function startTopology(suffix: string): Promise<Topology> {
     label: suffix,
     instanceId,
     ownerUserId: cloudUser.id,
+    deviceWorkspaceId: deviceWorkspace.id,
     desktop,
     desktopUrl: `http://127.0.0.1:${desktopPort}`,
     pods,
@@ -463,6 +466,108 @@ describeIfInfra('a real desktop and two real cloud pods', () => {
       headers: authHeaders(leftMembership.userId),
     })
     expect(ownRead.status).toBe(200)
+  }, 180_000)
+
+  test('every cloud worker leaves the copy alone, and still serves a normal workspace', async () => {
+    const topology = await startTopology('quiet')
+    const suffix = 'quiet'
+    await waitUntil(async () => db.workspace.findFirst({ where: { id: `ws-local-${suffix}` } }))
+
+    const now = Date.now()
+    const past = new Date(now - 60 * 60_000)
+    const copyId = `ws-local-${suffix}`
+    const conversationId = `conv-copy-${suffix}`
+    const controlConversationId = `conv-cloud-${suffix}`
+
+    await db.conversation.create({
+      data: { id: conversationId, workspaceId: copyId, kind: 'public', name: 'copy' },
+    })
+    await db.conversation.create({
+      data: {
+        id: controlConversationId,
+        workspaceId: topology.deviceWorkspaceId,
+        kind: 'public',
+        name: 'cloud',
+      },
+    })
+
+    // Work that would run on the cloud if the copy were not filtered out.
+    await db.agentWake.create({
+      data: {
+        workspaceId: copyId,
+        conversationId,
+        triggerMessageId: `msg-copy-${suffix}`,
+        agentRef: 'workspace',
+        userId: topology.ownerUserId,
+        createdAt: past,
+      },
+    })
+    const copyScheduled = await db.scheduledMessage.create({
+      data: {
+        workspaceId: copyId,
+        conversationId,
+        userId: topology.ownerUserId,
+        text: 'should not send',
+        sendAt: past,
+      },
+    })
+    const copyReminder = await db.chatReminder.create({
+      data: { workspaceId: copyId, userId: topology.ownerUserId, text: 'should not fire', remindAt: past },
+    })
+    const copySession = await db.chatSession.create({
+      data: {
+        contextType: 'workspace',
+        inferredName: `copy ${suffix}`,
+        workspaceId: copyId,
+      },
+    })
+    const copyQueued = await db.chatQueuedMessage.create({
+      data: {
+        sessionId: copySession.id,
+        userId: topology.ownerUserId,
+        status: 'pending',
+        content: 'should not dispatch',
+        body: 'should not dispatch',
+        position: 1,
+      },
+    })
+
+    // The control: a reminder in a real cloud workspace, due at the same time.
+    const cloudReminder = await db.chatReminder.create({
+      data: {
+        workspaceId: topology.deviceWorkspaceId,
+        userId: topology.ownerUserId,
+        text: 'should fire',
+        remindAt: past,
+      },
+    })
+
+    const { sweepPendingAgentWakes } = await import('../services/conversation-agent-dispatcher')
+    const { fireDueReminders, sendDueScheduledMessages } = await import('../services/chat-items')
+    const { dispatchPendingSessions } = await import('../services/chat-queue-dispatcher.service')
+
+    // Each worker once, with the clock already past every due time.
+    const wakes = await sweepPendingAgentWakes(0)
+    const sent = await sendDueScheduledMessages(new Date(now))
+    const fired = await fireDueReminders(new Date(now))
+    const dispatched = await dispatchPendingSessions()
+
+    // Nothing in the copy moved: still pending, never claimed, never sent.
+    const wake = await db.agentWake.findFirst({ where: { workspaceId: copyId } })
+    expect(wake.status).toBe('pending')
+    expect(wake.attempts).toBe(0)
+    expect((await db.scheduledMessage.findUnique({ where: { id: copyScheduled.id } }))?.status).toBe('pending')
+    expect((await db.chatReminder.findUnique({ where: { id: copyReminder.id } }))?.status).toBe('pending')
+    expect((await db.chatQueuedMessage.findUnique({ where: { id: copyQueued.id } }))?.status).toBe('pending')
+    expect(await db.conversationMessage.count({ where: { conversationId } })).toBe(0)
+
+    // …while the filter is not so broad that it stops ordinary cloud work: the
+    // control reminder fired, and only the copy's rows were held back.
+    expect(wakes).toBe(0)
+    expect(sent).toBe(0)
+    expect(dispatched).toBe(0)
+    expect(fired).toBeGreaterThanOrEqual(1)
+    expect((await db.chatReminder.findUnique({ where: { id: cloudReminder.id } }))?.status).toBe('fired')
   }, 180_000)
 
   test('unpairing the machine deletes its copy', async () => {

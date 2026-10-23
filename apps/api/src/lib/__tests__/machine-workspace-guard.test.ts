@@ -85,6 +85,31 @@ describe('every cloud worker that selects workspace-owned rows skips the copy', 
       why: 'warming the copy would start a runtime for a workspace this pod cannot serve',
       marker: /where: \{ machineInstanceId: null \}/,
     },
+    {
+      file: 'src/services/conversation-agent-dispatcher.ts',
+      why: 'a queued wake in a copy would run the agent on the cloud as well as the desktop',
+      marker: /\.\.\.\(await notMachineWorkspaceWhere\(\)\)/,
+    },
+    {
+      file: 'src/services/chat-items.ts',
+      why: 'a scheduled message or reminder for the copy would post from the cloud',
+      marker: /machineWorkspaceIds\(\)/,
+    },
+    {
+      file: 'src/services/conversation-semantic.ts',
+      why: 'indexing a copy would embed messages the cloud never owns',
+      marker: /\.\.\.\(await notMachineWorkspaceWhere\(\)\)/,
+    },
+    {
+      file: 'src/services/conversation-file-index.ts',
+      why: 'chunking or embedding a copy would write an index the desktop owns',
+      marker: /withCloudWorkspaces\(home \?\? \{\}\)/,
+    },
+    {
+      file: 'src/services/chat-queue-dispatcher.service.ts',
+      why: 'a queue row for a copy would dispatch the agent on the cloud',
+      marker: /cloudSessionIds/,
+    },
   ]
 
   for (const worker of workers) {
@@ -98,6 +123,46 @@ describe('every cloud worker that selects workspace-owned rows skips the copy', 
     const cloudOnly = file.match(/machineInstanceId: null/g) ?? []
     expect(cloudOnly.length).toBeGreaterThanOrEqual(2)
   })
+})
+
+/**
+ * The workers that need no filter, and why. Each one either never names a
+ * workspace row of its own or is handed the id by an event the cloud cannot
+ * receive for a copy — so a filter here would be decoration, not protection.
+ */
+describe('the workers that cannot select a copied row, and why', () => {
+  const exempt: Array<{ file: string; why: string; evidence: RegExp }> = [
+    {
+      file: 'src/lib/analytics-digest-collector.ts',
+      why: 'the daily digest runs over platform-wide analytics aggregates, not per-workspace rows, so there is no workspace to filter on',
+      evidence: /getUserFunnel|getUserActivityTable/,
+    },
+    {
+      file: 'src/lib/live-session-meter.ts',
+      why: 'it meters the workspaceId on a usage event; the runtime that emits those events for a copy is the desktop, so the cloud never receives one',
+      evidence: /workspaceId: payload\.workspaceId/,
+    },
+    {
+      file: 'src/lib/voice-meter.ts',
+      why: 'same shape as the live-session meter: it is called with a workspace from a voice event, and a copy’s calls are metered on the desktop',
+      evidence: /params\.workspaceId/,
+    },
+    {
+      file: 'src/services/published-site-sweep.ts',
+      why: 'it reconciles what the publishing substrate reports as deployed, keyed by project id; a copy has no cloud publish row because the write guard refuses to publish one',
+      evidence: /loadProjectRows/,
+    },
+  ]
+
+  for (const entry of exempt) {
+    test(`${entry.file} — ${entry.why}`, () => {
+      const file = source(entry.file)
+      // The reason has to still be true: the file must still start from the
+      // input it is supposed to, not a workspace scan we forgot to filter.
+      expect(entry.evidence.test(file)).toBe(true)
+      expect(/prisma\.workspace\.findMany\(\s*\{\s*where: \{\s*\}\s*\}\)/.test(file)).toBe(false)
+    })
+  }
 })
 
 describe('the write guard is mounted, and stays mounted', () => {

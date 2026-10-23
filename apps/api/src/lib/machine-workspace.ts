@@ -54,6 +54,29 @@ export function withCloudWorkspaces<T extends Record<string, unknown>>(where: T)
   return { ...where, ...CLOUD_WORKSPACE_ONLY }
 }
 
+/**
+ * Ids of every machine copy.
+ *
+ * For a worker whose table carries `workspaceId` as a plain column — no
+ * relation to filter through — this is the whole guard: one indexed read of the
+ * (tiny) set of paired machines, then `workspaceId: { notIn: ids }`. Leaving the
+ * filter off when nothing is paired keeps the query plan unchanged for everyone
+ * who has no machine.
+ */
+export async function machineWorkspaceIds(): Promise<string[]> {
+  const rows = await prisma.workspace.findMany({
+    where: MACHINE_WORKSPACE_ONLY,
+    select: { id: true },
+  })
+  return rows.map((row) => row.id)
+}
+
+/** `{ workspaceId: { notIn: … } }`, or nothing at all when no machine is paired. */
+export async function notMachineWorkspaceWhere(): Promise<Record<string, unknown>> {
+  const ids = await machineWorkspaceIds()
+  return ids.length ? { workspaceId: { notIn: ids } } : {}
+}
+
 export function machineWorkspaceWriteError(machineInstanceId: string | null) {
   return {
     error: {

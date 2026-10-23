@@ -12,6 +12,7 @@
 
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
+import { notMachineWorkspaceWhere } from '../lib/machine-workspace'
 import { finishAgentReply, queueAgentReplyNotice, startAgentReply, streamAgentReply } from './chat-providers/outbound'
 import {
   agentKey,
@@ -1051,6 +1052,9 @@ export async function sweepPendingAgentWakes(minAgeMs = WAKE_SWEEP_MIN_AGE_MS): 
       status: 'pending',
       createdAt: { lt: cutoff },
       attempts: { lt: WAKE_MAX_ATTEMPTS },
+      // A queued wake in a machine workspace's thread belongs to the desktop:
+      // the cloud only holds a copy of that conversation.
+      ...(await notMachineWorkspaceWhere()),
       // A debounced row still inside its window waits for its own timer.
       OR: [{ notBefore: null }, { notBefore: { lte: now } }],
     },
