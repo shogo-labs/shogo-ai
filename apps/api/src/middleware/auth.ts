@@ -372,6 +372,12 @@ export const PUBLIC_PATTERNS: RegExp[] = [
   // `./routes/invitation-info.ts`. Matching the exact subpath keeps the rest of
   // the generated `/api/invitations` CRUD surface behind `requireAuth`.
   /^\/api\/invitations\/[^/]+\/info$/,
+  // Zernio redirects the browser here straight from the OAuth consent screen,
+  // so there is no Shogo session on the request. The page only reads the
+  // `connected`/`error` query params and renders copy — it never touches
+  // tenant data. Matching the exact path keeps the rest of `/api/social/*`
+  // (accounts, posts, inbox) behind `requireAuth`.
+  /^\/api\/social\/connect\/return$/,
 ]
 
 /** True when `path` is public for `requireAuth` (prefix or pattern list). */

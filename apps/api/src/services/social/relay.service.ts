@@ -91,7 +91,13 @@ async function recordPost(
   const parsedSchedule = typeof body?.scheduledFor === 'string' ? new Date(body.scheduledFor) : null
   const scheduledFor =
     parsedSchedule && !Number.isNaN(parsedSchedule.getTime()) ? parsedSchedule : null
-  const mediaUrls = Array.isArray(body?.mediaUrls) ? body.mediaUrls : []
+  // Zernio's field is `mediaItems`; a relayed post reconciled from our rows has
+  // to record the same URLs the provider was given, not a field it never reads.
+  const mediaUrls = Array.isArray(body?.mediaItems)
+    ? body.mediaItems
+        .map((item: any) => (typeof item === 'string' ? item : item?.url))
+        .filter((url: unknown): url is string => typeof url === 'string')
+    : []
   // Mirrors `createPost`: a draft publishes nothing, a schedule publishes later,
   // and anything else publishes now. `willPublish` is the billing condition —
   // only a leg the provider will actually put out is one X charges us for.

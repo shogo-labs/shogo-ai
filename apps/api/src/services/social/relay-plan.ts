@@ -117,7 +117,48 @@ export function planRelayRequest(args: {
     }
     const query: Record<string, string> = { profileId: args.profile!.zernioProfileId }
     if (typeof args.query.redirect_url === 'string') query.redirect_url = args.query.redirect_url
+    // `forceReauth` and `expectedUsername` are how "connect *this* account"
+    // holds: without them a desktop's connect lands on whichever account the
+    // device already has signed in.
+    if (typeof args.query.forceReauth === 'string') query.forceReauth = args.query.forceReauth
+    if (typeof args.query.expectedUsername === 'string') query.expectedUsername = args.query.expectedUsername
+    if (typeof args.query.reconnectAccountId === 'string') {
+      query.reconnectAccountId = args.query.reconnectAccountId
+    }
     return { kind: 'forward', path: `/connect/${encodeURIComponent(seg[1]!)}`, query }
+  }
+
+  // ── media: presigned uploads ────────────────────────────────────────────
+  //
+  // An upload slot is scoped to the caller's Zernio account, not to a profile,
+  // so this needs no profile. It is still an allowlist entry rather than a
+  // pass-through: only the mint is relayed (never the PUT, which carries no
+  // Shogo credential anyway), and a generic content type is refused before the
+  // provider sees it.
+  if (seg[0] === 'media' && seg.length === 2 && seg[1] === 'presign') {
+    if (method !== 'POST') {
+      return deny(405, 'method_not_allowed', `${method} /media/presign is not relayed`)
+    }
+    const contentType =
+      typeof args.body?.contentType === 'string' ? args.body.contentType.trim().toLowerCase() : ''
+    if (!contentType || contentType === 'application/octet-stream') {
+      return deny(
+        400,
+        'invalid_content_type',
+        'contentType must be the file\'s real media type (image/png, video/mp4, …); application/octet-stream is not accepted.',
+      )
+    }
+    const size = args.body?.size
+    return {
+      kind: 'forward',
+      path: '/media/presign',
+      query: {},
+      body: {
+        filename: args.body?.filename,
+        contentType,
+        ...(typeof size === 'number' ? { size } : {}),
+      },
+    }
   }
 
   // ── accounts ────────────────────────────────────────────────────────────
