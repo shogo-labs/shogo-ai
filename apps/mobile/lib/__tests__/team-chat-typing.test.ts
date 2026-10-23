@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { runningAgentReplies, typingLabel, type Typist } from '../team-chat-typing'
+import { runningAgentReplies, typingLabel, typingLabelText, type Typist } from '../team-chat-typing'
 
 const typists = (...names: string[]): Typist[] => names.map((name, i) => ({ id: `t${i}`, name }))
 
@@ -35,6 +35,21 @@ describe('typingLabel', () => {
 
   test('the same name under different identities is listed twice', () => {
     expect(typingLabel([{ id: 'u-pat', name: 'Pat' }, { id: 'agent:p1', name: 'Pat' }])).toBe('Pat and Pat are typing…')
+  })
+})
+
+describe('typingLabelText', () => {
+  test('the sentence without its ellipsis, so a view can draw the dots', () => {
+    expect(typingLabelText([])).toBeNull()
+    expect(typingLabelText(typists('Ana'))).toBe('Ana is typing')
+    expect(typingLabelText(typists('Ana', 'Billing Bot'))).toBe('Ana and Billing Bot are typing')
+    expect(typingLabelText(typists('Ana', 'Billing Bot', 'Lee'))).toBe('Ana, Billing Bot and 1 other are typing')
+    expect(typingLabelText(typists('Ana', 'Lee', 'Kim', 'Sam'))).toBe('Ana, Lee and 2 others are typing')
+  })
+
+  test('typingLabel is exactly the text plus the ellipsis', () => {
+    const three = typists('Ana', 'Billing Bot', 'Lee')
+    expect(typingLabel(three)).toBe(`${typingLabelText(three)}…`)
   })
 })
 

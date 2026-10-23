@@ -1932,7 +1932,7 @@ describe('running agents in a channel', () => {
     typingUsers.push({ id: 'pat', name: 'Billing Bot' })
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
     renderChannel()
-    expect(screen.getByText('Billing Bot is typing…')).toBeTruthy()
+    expect(screen.getByText('Billing Bot is typing')).toBeTruthy()
     expect(document.body.textContent).not.toContain('Billing Bot and Billing Bot')
     expect(shim('running-agents-dock')!.textContent).toContain('Billing Bot')
   })
@@ -1941,7 +1941,7 @@ describe('running agents in a channel', () => {
     typingUsers.push({ id: 'pat', name: 'Pat' }, { id: 'lee', name: 'Lee' })
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot'), runningReply('r2', 'proj-2', 'Support Bot')]
     renderChannel()
-    expect(screen.getByText('Pat and Lee are typing…')).toBeTruthy()
+    expect(screen.getByText('Pat and Lee are typing')).toBeTruthy()
     expect(screen.getAllByTestId(/^running-agent-row-/)).toHaveLength(2)
   })
 

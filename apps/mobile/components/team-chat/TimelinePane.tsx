@@ -13,7 +13,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import type { MentionTarget } from '../chat/file-links'
 import { mentionNames, newestReadableSeq } from '../../lib/team-chat-state'
-import { runningAgentReplies, typingLabel } from '../../lib/team-chat-typing'
+import { runningAgentReplies, typingLabel, typingLabelText } from '../../lib/team-chat-typing'
 import { useComposerColumnStyle } from '../chat/composer/useComposerColumnStyle'
 import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive, matchesActivityFilters, type ActivityFilterState } from '../../lib/activity-channel-filters'
 import { TIMELINE_SOFT_LIMIT, useChannelDirectory, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
@@ -25,6 +25,7 @@ import { Breadcrumb } from './SessionBreadcrumb'
 import { ActivityFilterPicker } from './ActivityFilterPicker'
 import { MessageList } from './MessageList'
 import { RunningAgentsDock } from './RunningAgentsDock'
+import { TypingIndicator } from './TypingIndicator'
 import { Composer, type ComposerHandle } from './Composer'
 import { MentionNudgeCard } from './MentionNudgeCard'
 import { EphemeralNotice } from './EphemeralNotice'
@@ -362,7 +363,14 @@ export function TimelinePane(props: TimelinePaneProps) {
 
   const crumbs = threadCrumbs({ kind: conversation.kind, label: conversationTitle(conversation) })
   // Running agents are the dock's business; this line is only ever people.
-  const typingText = cardNotice ?? typingLabel(typing)
+  const typingBody = typingLabelText(typing)
+  // The slot is shared with transient notices ("Made SHO-123", an error), so a
+  // notice wins the space and only a real typist gets the animated dots.
+  const typingRow = cardNotice ? (
+    <Text className="text-[13px] text-muted-foreground">{cardNotice}</Text>
+  ) : typingBody ? (
+    <TypingIndicator label={typingBody} spoken={typingLabel(typing) ?? undefined} />
+  ) : null
   const runningReplies = useMemo(() => runningAgentReplies(timeline.state.messages), [timeline.state.messages])
   const runningDock = (
     <RunningAgentsDock
@@ -562,10 +570,10 @@ export function TimelinePane(props: TimelinePaneProps) {
               {runningDock}
             </View>
           ) : null}
-          {typingText ? (
-            <View pointerEvents="box-none" className="mb-2" style={typingColumnStyle}>
-              <GlassChip className="self-start px-3 py-1">
-                <Text className="text-xs text-muted-foreground">{typingText}</Text>
+          {typingRow ? (
+            <View pointerEvents="box-none" className="mb-2.5" style={typingColumnStyle}>
+              <GlassChip className="self-start px-3 py-1.5">
+                {typingRow}
               </GlassChip>
             </View>
           ) : null}
@@ -620,8 +628,8 @@ export function TimelinePane(props: TimelinePaneProps) {
       <View style={typingColumnStyle}>
         {runningDock}
       </View>
-      <View className="h-5 justify-center" style={typingColumnStyle}>
-        {typingText && <Text className="text-xs text-muted-foreground">{typingText}</Text>}
+      <View className="min-h-[30px] justify-end pb-2.5" style={typingColumnStyle}>
+        {typingRow}
       </View>
       {!showComposer ? (
         <View className="items-center gap-2 border-t border-border px-4 py-3">
