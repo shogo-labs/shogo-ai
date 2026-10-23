@@ -19,7 +19,11 @@ import {
   useProjectCollection,
   useWorkspaceCollection,
 } from "../../contexts/domain"
-import { openInWorkspace, adoptChatWorkspace } from "../../lib/switch-workspace"
+import {
+  openInWorkspace,
+  adoptChatWorkspace,
+  shouldAdoptChatWorkspace,
+} from "../../lib/switch-workspace"
 import { pickTeamWorkspace } from "../../lib/team-workspace"
 import { useWorkspaceInView } from "../../hooks/useWorkspaceInView"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
@@ -153,6 +157,10 @@ export const WorkspaceAgentChatScreen = observer(
     // The `?chatSessionId=` whose owning workspace this screen already adopted,
     // so a re-run of the load does not switch (or reload projects) twice.
     const adoptedChat = useRef<string | null>(null)
+    // The workspace this screen mounted in. Adoption only applies while the
+    // screen is still on it: a workspace change means the person left the chat
+    // this screen was opened for (SHO-157).
+    const screenWorkspace = useRef<string | null>(null)
     // The empty chat the landing opens. Single-flight per workspace so a
     // re-running load (a new `http` identity, a re-render) cannot mint a
     // second empty session; the session itself is reused across cold starts
@@ -199,6 +207,7 @@ export const WorkspaceAgentChatScreen = observer(
         return
       }
       const version = ++loadVersion.current
+      if (screenWorkspace.current == null) screenWorkspace.current = workspace.id
       try {
         setError(null)
         // Never render the previous workspace's transcript/profile while the
@@ -220,7 +229,16 @@ export const WorkspaceAgentChatScreen = observer(
         // adopt it here — after boot, with the fact in hand — and return, so
         // this load re-runs against the right workspace instead of opening a
         // chat the server would refuse to take a send for.
-        if (sessionSource === "url" && initialSessionId && adoptedChat.current !== initialSessionId) {
+        if (
+          sessionSource === "url" &&
+          initialSessionId &&
+          shouldAdoptChatWorkspace({
+            initialSessionId,
+            adoptedSessionId: adoptedChat.current,
+            screenWorkspaceId: screenWorkspace.current,
+            workspaceId: workspace.id,
+          })
+        ) {
           const owner = await chatMentionMetaFor(initialSessionId)
           if (version !== loadVersion.current) return
           if (adoptChatWorkspace(owner?.workspaceId, workspace.id, projects)) {

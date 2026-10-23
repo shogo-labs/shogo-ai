@@ -195,6 +195,67 @@ async function switchWorkspaceNarrow(page: Page, toName: string) {
   await expect.poll(() => activeWorkspaceName(page), { timeout: 30_000 }).toBe(toName)
 }
 
+/** The workspace id behind a switcher row's name. */
+async function workspaceIdFor(page: Page, name: string): Promise<string> {
+  const response = await page.request.get(`${LOCAL_API_BASE}/api/workspaces`)
+  const body = await response.json()
+  const items = (body?.items ?? body?.data?.items ?? []) as Array<{ id: string; name?: string }>
+  const match = items.find((item) => item.name === name)
+  if (!match) throw new Error(`/api/workspaces has no workspace named "${name}"`)
+  return match.id
+}
+
+async function createChatSession(page: Page, workspaceId: string): Promise<string> {
+  const response = await page.request.post(
+    `${LOCAL_API_BASE}/api/workspaces/${workspaceId}/sessions`,
+    { data: { name: "QA workspace switch" } },
+  )
+  const body = (await response.json().catch(() => ({}))) as { session?: { id?: string } }
+  if (!body.session?.id) {
+    throw new Error(`Could not create a chat session in ${workspaceId} (HTTP ${response.status()})`)
+  }
+  return body.session.id
+}
+
+/**
+ * An `/agent?chatSessionId=` URL for a chat in `name`, creating a session when
+ * the workspace has none — the SHO-157 trace needs a chat open in the
+ * workspace being left.
+ */
+async function chatInWorkspace(page: Page, name: string): Promise<string> {
+  const workspaceId = await workspaceIdFor(page, name)
+  const listed = (await (
+    await page.request.get(`${LOCAL_API_BASE}/api/workspaces/${workspaceId}/sessions`)
+  )
+    .json()
+    .catch(() => ({}))) as { sessions?: Array<{ id?: string }> }
+  const existing = listed.sessions?.find((session) => session.id)?.id
+  const sessionId = existing ?? (await createChatSession(page, workspaceId))
+  return `/agent?chatSessionId=${sessionId}`
+}
+
+/** The workspace agent's composer (ChatInput's default accessibility label). */
+function composer(page: Page) {
+  return page
+    .getByRole("textbox", { name: "Chat message input" })
+    .filter({ visible: true })
+    .first()
+}
+
+/**
+ * Switch from *this* page without navigating home first: the bug needs a chat
+ * screen mounted when the switch happens, which `goHome` would unmount.
+ */
+async function switchInPlace(page: Page, toName: string) {
+  const trigger = anyAccountTrigger(page)
+  await expect(trigger).toBeVisible({ timeout: 30_000 })
+  if (await accountTrigger(page, toName).isVisible().catch(() => false)) return
+  await openAccountPopover(page, trigger)
+  await expect(page.getByLabel("Sign in to Shogo Cloud")).toBeVisible({ timeout: 10_000 })
+  await clickAndWaitForReload(page, page.getByLabel(toName, { exact: true }))
+  await expect(accountTrigger(page, toName)).toBeVisible({ timeout: 30_000 })
+}
+
 test.describe("Workspace switching (local mode)", () => {
   test.describe.configure({ mode: "serial" })
 
@@ -301,5 +362,29 @@ test.describe("Workspace switching (local mode)", () => {
     await switchWorkspaceNarrow(page, WORKSPACE_B)
     await switchWorkspaceNarrow(page, WORKSPACE_A)
     await switchWorkspaceNarrow(page, WORKSPACE_B)
+  })
+
+  test("wide desktop: switching with a chat open keeps the chosen workspace (SHO-157)", async () => {
+    test.setTimeout(180_000)
+    await page.setViewportSize({ width: 1280, height: 800 })
+
+    await switchWorkspaceWide(page, WORKSPACE_A)
+    const chatUrl = await chatInWorkspace(page, WORKSPACE_A)
+
+    // Russell's staging trace: `/agent?chatSessionId=<old chat>` is open when
+    // the switch happens, and the screen re-runs its load against the new
+    // workspace with that chat still in hand (~10 ms after the switch).
+    await page.goto(chatUrl)
+    await expect(composer(page)).toBeVisible({ timeout: 90_000 })
+    await page.waitForTimeout(1_500)
+
+    await switchInPlace(page, WORKSPACE_B)
+    await expect.poll(() => activeWorkspaceName(page), { timeout: 30_000 }).toBe(WORKSPACE_B)
+
+    // The bad writer landed *before* the reload, so landing on the new
+    // workspace is most of the assertion — staying there is the rest of it.
+    await page.waitForTimeout(2_500)
+    await expect.poll(() => activeWorkspaceName(page)).toBe(WORKSPACE_B)
+    await expect(accountTrigger(page, WORKSPACE_B)).toBeVisible({ timeout: 30_000 })
   })
 })
