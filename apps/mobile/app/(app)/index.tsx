@@ -911,6 +911,26 @@ export const HomeScreen = observer(function HomeScreen({
     }
   }, [isAuthenticated, localMode, router])
 
+  // A machine workspace cannot take a write while its Mac is asleep, so the
+  // composer is disabled from the same state the banner renders — and the banner
+  // says which of the two things is true, waking or offline.
+  //
+  // These three hooks stay above every early return below: `homeSurface` and
+  // `rendersAgentChat` both flip while the workspace loads, and a hook that only
+  // runs on the second render throws "Rendered more hooks than during the
+  // previous render" — which blanks the whole app behind the error boundary.
+  const { instance: machineInstance } = useActiveInstance()
+  const retryMachineRequest = useCallback(() => {
+    const refused = lastRefusedRef.current
+    if (!refused) return
+    lastRefusedRef.current = null
+    return createProjectFromPrompt(refused.text, refused.files, refused.mode)
+  }, [createProjectFromPrompt])
+  const machineView = useMachineWorkspace({
+    machineName: machineInstance?.name,
+    onRetry: retryMachineRequest,
+  })
+
   if (!isAuthenticated) {
     if (localMode) {
       return null
@@ -999,21 +1019,6 @@ export const HomeScreen = observer(function HomeScreen({
       ) : null}
     </>
   )
-
-  // A machine workspace cannot take a write while its Mac is asleep, so the
-  // composer is disabled from the same state the banner renders — and the banner
-  // says which of the two things is true, waking or offline.
-  const { instance: machineInstance } = useActiveInstance()
-  const retryMachineRequest = useCallback(() => {
-    const refused = lastRefusedRef.current
-    if (!refused) return
-    lastRefusedRef.current = null
-    return createProjectFromPrompt(refused.text, refused.files, refused.mode)
-  }, [createProjectFromPrompt])
-  const machineView = useMachineWorkspace({
-    machineName: machineInstance?.name,
-    onRetry: retryMachineRequest,
-  })
 
   const composer = usesMobileWorkspaceChrome ? (
     <ChatInput
