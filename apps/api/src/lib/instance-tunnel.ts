@@ -378,6 +378,16 @@ function stopQuietly(): void {
   activeTunnel = null
 }
 
+/**
+ * The cloud `instances` row id for this machine, from the primary tunnel's last
+ * heartbeat. Null until the cloud has answered one — the machine copy waits for
+ * it rather than inventing an identity (SHO-185).
+ */
+export function getInstanceId(): string | null {
+  if (activeTunnel) return activeTunnel.instanceId
+  return activeTunnels.values().next().value?.instanceId ?? null
+}
+
 export function isTunnelConnected(): boolean {
   if (activeTunnel?.isConnected()) return true
   for (const tunnel of activeTunnels.values()) {

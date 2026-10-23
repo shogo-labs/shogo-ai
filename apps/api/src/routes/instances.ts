@@ -167,7 +167,8 @@ async function getActiveControllers(instanceId: string): Promise<ActiveControlle
 // ─── In-memory tunnel registry ──────────────────────────────────────────────
 
 interface TunnelConnection {
-  ws: WebSocket
+  /** Bun attaches `.data` to the socket; we keep the socket's last pong there. */
+  ws: WebSocket & { data?: any }
   instanceId: string
   workspaceId: string
   pendingRequests: Map<string, {

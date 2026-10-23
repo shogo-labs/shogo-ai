@@ -183,11 +183,22 @@ export class WorkerTunnel {
   private consecutiveAuthFailures = 0;
   private consecutiveAuthSuccesses = 0;
   private serverPublishedWsUrl: string | null = null;
+  /**
+   * The cloud `instances` row id the last heartbeat reported. The machine copy
+   * (SHO-185) pushes under it, and it only exists once the cloud has answered a
+   * heartbeat, so it is read from there rather than assumed.
+   */
+  private lastInstanceId: string | null = null;
   private readonly activeAbortControllers = new Map<string, AbortController>();
 
   constructor(opts: WorkerTunnelOptions) {
     this.opts = opts;
     this.log = opts.logger ?? console;
+  }
+
+  /** The cloud instance id for this machine, or null before the first heartbeat. */
+  get instanceId(): string | null {
+    return this.lastInstanceId;
   }
 
   // ─── Public lifecycle ────────────────────────────────────────────
@@ -333,6 +344,10 @@ export class WorkerTunnel {
     }
 
     const data = (await resp.json()) as HeartbeatResponse;
+
+    if (typeof data.instanceId === 'string' && data.instanceId.length > 0) {
+      this.lastInstanceId = data.instanceId;
+    }
 
     if (typeof data.wsUrl === 'string' && data.wsUrl.length > 0) {
       if (data.wsUrl !== this.serverPublishedWsUrl) {

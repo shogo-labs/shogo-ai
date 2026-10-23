@@ -33,6 +33,8 @@ import {
 import { isMachineTimeoutError } from '../lib/tunnel-errors'
 import { classifyAction, logRemoteAction } from './remote-audit'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
+import { applyBatch, deleteMachineCopy, ownershipFailure } from '../lib/machine-sync/ingest'
+import { PRIMARY_REGION, RAW_REGION_ID } from '../lib/region'
 
 /**
  * How long one request waits for a cold machine's tunnel before answering.
@@ -106,6 +108,30 @@ function notAMachine() {
 /** `kind` arrives as the enum value; tolerate the wire spelling too. */
 function isCliWorker(kind: string | null | undefined): boolean {
   return (kind ?? '').toLowerCase().replace(/[-\s]/g, '_') === InstanceKind.cli_worker
+}
+
+/**
+ * A mutation from Studio is applied on the desktop and then pushed back over
+ * HTTPS. Until that push lands, a read of the copy would still show the old
+ * value — so the mutation waits here, briefly, for the desktop's change to
+ * arrive. The desktop sends `x-shogo-sync-seq` (the change-log position after its
+ * own write) and the copy's cursor catches up within a tick (SHO-185).
+ */
+const SYNC_CATCH_UP_DEADLINE_MS = 2_000
+const SYNC_CATCH_UP_POLL_MS = 100
+
+async function awaitSyncCatchUp(instanceId: string, seq: number): Promise<void> {
+  if (!Number.isFinite(seq) || seq <= 0) return
+  const deadline = Date.now() + SYNC_CATCH_UP_DEADLINE_MS
+  for (;;) {
+    const state = await prisma.machineSyncState.findUnique({
+      where: { instanceId },
+      select: { cursor: true },
+    })
+    if ((state?.cursor ?? 0) >= seq) return
+    if (Date.now() >= deadline) return
+    await new Promise((resolve) => setTimeout(resolve, SYNC_CATCH_UP_POLL_MS))
+  }
 }
 
 type MachineRow = {
@@ -188,6 +214,13 @@ export function machineRoutes() {
         .map((row) => markViewerActive(row.workspaceId).catch(() => {})),
     )
 
+    // One read for every machine's copy state, so the Settings → Remote control
+    // switch can show "Last synced" without a second round trip (SHO-185).
+    const syncStates = await prisma.machineSyncState
+      .findMany({ where: { instanceId: { in: rows.map((row) => row.id) } } })
+      .catch(() => [] as Array<{ instanceId: string; lastIngestAt: Date | null; enabled: boolean; cursor: number }>)
+    const syncByInstance = new Map(syncStates.map((state) => [state.instanceId, state]))
+
     const machines = await Promise.all(
       grouped.map(async ({ row, workspaces, rows: machineRows }) => ({
         id: row.id,
@@ -201,6 +234,8 @@ export function machineRoutes() {
         status: await getMachineGroupStatus(machineRows),
         lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
         snapshot: cachedSnapshot(row),
+        syncEnabled: syncByInstance.get(row.id)?.enabled ?? true,
+        lastSyncedAt: syncByInstance.get(row.id)?.lastIngestAt?.toISOString() ?? null,
       })),
     )
 
@@ -411,6 +446,11 @@ export function machineRoutes() {
       }
       if (!responseHeaders['content-type']) responseHeaders['content-type'] = 'application/json'
 
+      // Read-your-writes: the desktop stamps the change-log position it reached
+      // with this write, so wait for the copy to catch up before answering.
+      const syncSeq = Number(resp.headers?.['x-shogo-sync-seq'] ?? 0)
+      if (syncSeq > 0) await awaitSyncCatchUp(instance.id, syncSeq).catch(() => {})
+
       // A cold runtime on the desktop is a "retry in a moment", not an error:
       // the desktop starts it in the background and answers RUNTIME_STARTING.
       if (resp.status === 502 && resp.body && resp.body.includes('RUNTIME_STARTING')) {
@@ -444,6 +484,94 @@ export function machineRoutes() {
       }
       return c.json(offline(), 503)
     }
+  })
+
+  // ─── The machine copy (SHO-185) ─────────────────────────────────────────
+  //
+  // POST /machines/:id/sync — the desktop pushes its rows here over HTTPS, with
+  // its device key. Deliberately *not* through the tunnel: bulk data must never
+  // queue behind a live request or a relay PUBLISH. The rows land in the normal
+  // cloud tables with the desktop's ids and the workspace tagged with
+  // `machineInstanceId`, so every read panel is served by the normal routes.
+  router.post('/machines/:id/sync', async (c) => {
+    const auth = c.get('auth') as any
+    // A device key resolves to a principal scoped to the workspace its key was
+    // issued in. Only that machine may push, and only for itself.
+    const instanceId = c.req.param('id')
+    if (!auth?.userId || !auth?.workspaceId || !auth?.via || auth.via !== 'apiKey') {
+      return c.json({ error: { code: 'unauthorized', message: 'A device key is required' } }, 401)
+    }
+    const instance = (await prisma.instance.findUnique({ where: { id: instanceId } })) as MachineRow | null
+    if (!instance || instance.userId !== auth.userId || instance.workspaceId !== auth.workspaceId) {
+      return c.json({ error: { code: 'forbidden', message: 'Not this machine' } }, 403)
+    }
+    if (isCliWorker(instance.kind)) return c.json(notAMachine(), 409)
+
+    const body = await c.req.json().catch(() => null)
+    if (!body || typeof body !== 'object') {
+      return c.json({ error: { code: 'invalid_request', message: 'A JSON body is required' } }, 400)
+    }
+
+    try {
+      const result = await applyBatch(
+        {
+          prisma,
+          instanceId,
+          ownerUserId: auth.userId,
+          homeRegion: RAW_REGION_ID ?? PRIMARY_REGION,
+        },
+        body,
+      )
+      if ('code' in result) {
+        // `epoch_mismatch` is a normal step in a desktop's life (its database
+        // was recreated): 409 tells it to send a snapshot, not that it broke.
+        const detail = 'detail' in result ? result.detail : undefined
+        return c.json({ error: { code: result.code, message: result.message, ...(detail ?? {}) } }, 409)
+      }
+      return c.json(result)
+    } catch (err: any) {
+      const failure = ownershipFailure(err)
+      if (failure) {
+        return c.json({ error: { code: failure.code, message: failure.message } }, 409)
+      }
+      console.warn(`[Machines] sync ingest failed for ${instanceId}: ${err?.message ?? err}`)
+      return c.json({ error: { code: 'ingest_failed', message: err?.message ?? 'sync failed' } }, 500)
+    }
+  })
+
+  // PATCH /machines/:id/sync-settings — the per-machine "Sync to cloud" switch.
+  // Turning it off deletes the copy: the workspace falls back to live relay
+  // reads, and nothing of the machine stays behind in the cloud.
+  router.patch('/machines/:id/sync-settings', async (c) => {
+    const resolved = await loadOwnedMachine(c)
+    if ('response' in resolved) return resolved.response
+    const { instance } = resolved
+    const body = (await c.req.json().catch(() => null)) as { enabled?: boolean } | null
+    if (!body || typeof body.enabled !== 'boolean') {
+      return c.json({ error: { code: 'invalid_request', message: 'enabled (boolean) is required' } }, 400)
+    }
+
+    if (body.enabled) {
+      const state = await prisma.machineSyncState.upsert({
+        where: { instanceId: instance.id },
+        create: { instanceId: instance.id, enabled: true },
+        update: { enabled: true },
+      })
+      return c.json({ ok: true, enabled: true, lastSyncedAt: state.lastIngestAt?.toISOString() ?? null })
+    }
+
+    // Off: stop accepting pushes first, so a batch in flight cannot recreate
+    // rows under the copy we are about to delete.
+    await prisma.machineSyncState.upsert({
+      where: { instanceId: instance.id },
+      create: { instanceId: instance.id, enabled: false },
+      update: { enabled: false },
+    })
+    const removed = await deleteMachineCopy(prisma, instance.id)
+    console.log(
+      `[Machines] Sync off for ${instance.id}: deleted ${removed.rows} row(s) across ${removed.workspaces} workspace(s)`,
+    )
+    return c.json({ ok: true, enabled: false, deleted: removed })
   })
 
   return router

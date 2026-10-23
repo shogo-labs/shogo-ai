@@ -158,6 +158,12 @@ model Workspace {
   // for the maximum the plan (or local mode) allows. An admin can lower it; the
   // plan value is the ceiling in the cloud (see `agent-reply-capacity.ts`).
   agentReplyConcurrency Int?
+  // Set when this workspace is a copy of a paired desktop's workspace: the
+  // machine's id. The cloud holds the records (copied into the normal tables
+  // with their desktop ids), serves reads from them, and refuses its own writes
+  // to them — see `lib/machine-workspace.ts`. Null means a normal cloud
+  // workspace. Added to both schemas; the desktop leaves it null.
+  machineInstanceId String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -216,6 +222,7 @@ model Workspace {
   socialAutomationRuns   SocialAutomationRun[]
 
   @@index([parentWorkspaceId])
+  @@index([machineInstanceId])
   @@map("workspaces")
 }
 
@@ -4401,4 +4408,47 @@ model SocialAutomationRun {
   @@index([workspaceId, startedAt])
   @@index([automationId])
   @@map("social_automation_runs")
+}
+
+// ─── Machine workspaces (SHO-185) ───────────────────────────────────────────
+// Cloud-side copy bookkeeping, kept in the desktop schema too because the two
+// must stay identical (check-schema-parity). The desktop only ever writes
+// `machine_sync_changes`.
+
+model MachineSyncState {
+  instanceId   String    @id
+  epoch        String    @default("")
+  cursor       Int       @default(0)
+  lastIngestAt DateTime?
+  enabled      Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("machine_sync_states")
+}
+
+model MachineMirrorRow {
+  model      String
+  recordId   String
+  instanceId String
+  epoch      String   @default("")
+  createdAt  DateTime @default(now())
+
+  @@id([model, recordId])
+  @@index([instanceId])
+  @@index([instanceId, model])
+  @@map("machine_mirror_rows")
+}
+
+/// The desktop's own change log. SQLite triggers write here, the pusher reads
+/// it and advances `MachineSyncState.cursor` as the cloud acks.
+model MachineSyncChange {
+  seq       Int      @id @default(autoincrement())
+  model     String
+  recordId  String
+  op        String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("machine_sync_changes")
 }
