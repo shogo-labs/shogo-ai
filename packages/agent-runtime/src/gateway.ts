@@ -836,7 +836,14 @@ export class AgentGateway {
     cacheWriteTokens: number
     iterations: number
     toolCallCount: number
+    /**
+     * The meter's denominator: the point summarization fires
+     * (`autocompactThreshold`), NOT the model's window (SHO-168). The client
+     * renders 100% at this value.
+     */
     contextWindowTokens: number
+    /** The model's real window — informational, nothing must render from it. */
+    modelContextWindowTokens: number
     estimatedContextTokens: number
     model: string
     success: boolean
@@ -3942,7 +3949,15 @@ export class AgentGateway {
     try {
       const hookEmitter = this.hookEmitter
       let runningContextEstimate = this.sessionManager.estimateTokens(session)
-      const contextWindowTokens = this.sessionManager.contextWindowTokens
+      /** The model's real window (catalog, or a caller override) — info only. */
+      const modelContextWindowTokens = this.sessionManager.contextWindowTokens
+      // The meter's 100% is the point summarization fires, not the model's
+      // window (SHO-168). On a 1M-window model a session read "180k / 1M" at
+      // ~90% of the way to summarization; `autoCompactTokens` is the threshold
+      // `autocompactThreshold` resolves to (honours AGENT_AUTOCOMPACT_TOKENS),
+      // so the ring and the summarize point move together. The wire field keeps
+      // its name so existing desktop/mobile clients need no release.
+      const contextWindowTokens = autoCompactTokens
 
       // Throttle data-context-usage emissions — at most once per 5s during
       // long-running agent turns with many tool calls. Without this, every
@@ -4530,7 +4545,7 @@ export class AgentGateway {
               `${this.logPrefix} Mid-turn summarization (${event.trigger}): ` +
               `${event.tokensBefore} -> ${event.tokensAfter} tokens, ` +
               `${event.messagesBefore} -> ${event.messagesAfter} messages ` +
-              `(cap ${autoCompactTokens}, window ${contextWindowTokens}) for session ${sessionId}`,
+              `(cap ${autoCompactTokens}, window ${modelContextWindowTokens}) for session ${sessionId}`,
             )
             // Cache-break attribution: the prefix fingerprint changes exactly
             // once per compaction and is stable afterwards (prefix-fingerprint
@@ -5216,7 +5231,8 @@ export class AgentGateway {
         cacheWriteTokens: result.cacheWriteTokens,
         iterations: result.iterations,
         toolCallCount: result.toolCalls.length,
-        contextWindowTokens: this.sessionManager.contextWindowTokens,
+        contextWindowTokens,
+        modelContextWindowTokens,
         estimatedContextTokens,
         model: effectiveModel,
         success: !result.error && !result.maxIterationsExhausted && !result.loopBreak && !responseEmpty,
