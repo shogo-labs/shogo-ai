@@ -192,7 +192,7 @@ describe('notesPillLabel', () => {
     expect(notesPillLabel(pill({ covering: ['ana'] }))).toBe('Notes on · 1 covered')
     expect(notesPillLabel(pill({ enabled: false, mode: 'off' }))).toBe('Notes off')
     expect(notesPillLabel(pill({ mode: 'unsupported' }))).toBe('Notes need someone on web or desktop')
-    expect(notesPillLabel(pill({ mode: 'unavailable', message: 'no recognizer' }))).toBe('Notes: no recognizer')
+    expect(notesPillLabel(pill({ mode: 'unavailable', message: 'no recognizer' }))).toBe('Notes incomplete: no recognizer')
     expect(notesPillLabel(pill({ mode: 'unavailable' }))).toBe('Notes unavailable')
   })
 
@@ -205,6 +205,22 @@ describe('notesPillLabel', () => {
 })
 
 describe('startHuddleNotes', () => {
+  test('each stream knows when its speaker is muted, so silence is never forwarded', () => {
+    let anaMuted = false
+    const h = harness([peer('me'), peer('ana', { needsCover: true })], ['ana'], {}, {
+      isMuted: (forUserId) => (forUserId === 'ana' ? anaMuted : true),
+    })
+    h.engine.sync()
+    advance(COVER_GRACE_MS + 1)
+    h.engine.sync()
+    expect(h.captures).toHaveLength(2)
+    // Our own mic is muted, and the capture has to know that continuously.
+    expect(h.captures[0].options.isMuted?.()).toBe(true)
+    expect(h.captures[1].options.isMuted?.()).toBe(false)
+    anaMuted = true
+    expect(h.captures[1].options.isMuted?.()).toBe(true)
+  })
+
   test('streams this device and tells the room it is the one doing it', () => {
     const h = harness([peer('me'), peer('ana', { self: true })], [])
     h.engine.sync()

@@ -14,26 +14,63 @@
  * Finals land in the same draft `Meeting` the clients write to, tagged
  * `lk:<identity>:<n>`, so finalize can de-duplicate a handover.
  *
- * Run it with `bun run worker:huddle-notes` (see package.json) — it needs
+ * The API starts it on boot when LiveKit is configured (see `startNotesWorker`);
+ * `bun run worker:huddle-notes` runs it on its own for debugging. It needs
  * LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET and uses
  * LIVEKIT_NOTES_STT_MODEL (default `deepgram/nova-3`). With no creds, or
  * LIVEKIT_NOTES_FALLBACK=off, it does nothing and the client path still works.
  */
 
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { AudioStream, Room, RoomEvent, TrackKind, type RemoteParticipant, type RemoteTrack } from '@livekit/rtc-node'
-import { JobContext, WorkerOptions, cli, defineAgent, inference, initializeLogger, stt } from '@livekit/agents'
-import { liveKitConfig } from '../lib/livekit'
-import { notesFallbackAvailability, notesSttModel, parseRoomMetadata } from '../lib/livekit-notes'
+import { AgentServer, JobContext, WorkerOptions, defineAgent, inference, initializeLogger, stt } from '@livekit/agents'
+import { liveKitConfig, type LiveKitConfig } from '../lib/livekit'
+import {
+  NOTES_AGENT_ATTRIBUTE,
+  NOTES_AGENT_NAME,
+  notesFallbackAvailability,
+  notesSttModel,
+  parseRoomMetadata,
+} from '../lib/livekit-notes'
 import { NOTES_COVERAGE_TICK_MS, NotesCoverage, isNotesAgent, type NotesParticipant } from '../services/huddle-notes-coverage'
 
 /** How often a stream's seconds are charged. */
 const FLUSH_INTERVAL_MS = 60_000
+
+/**
+ * Each job runs in a child `bun` process that imports this file, so the worker
+ * is identified by path — an agent object is stringified into the module name.
+ */
+const WORKER_FILE = fileURLToPath(import.meta.url)
+
+/**
+ * The job process imports that path with `pathToFileURL(...).pathname`, which
+ * leaves a space as `%20` and then fails to resolve it — and desktop workspaces
+ * live under `Application Support`. A one-line re-export in a space-free temp
+ * directory imports fine, because a `file://` URL is decoded properly.
+ */
+let agentEntry: string | null = null
+function agentEntryPath(): string {
+  if (!WORKER_FILE.includes(' ')) return WORKER_FILE
+  if (agentEntry) return agentEntry
+  const dir = mkdtempSync(join(tmpdir(), 'shogo-huddle-notes-'))
+  agentEntry = join(dir, 'agent.ts')
+  writeFileSync(agentEntry, `export { default } from ${JSON.stringify(pathToFileURL(WORKER_FILE).href)}\n`)
+  return agentEntry
+}
+
+/** How long boot waits for LiveKit to hand back a worker id. */
+const REGISTER_TIMEOUT_MS = 15_000
 
 interface StreamMeter {
   identity: string
   seconds: number
   flushedSeconds: number
   streamNo: number
+  flushNo: number
 }
 
 /**
@@ -42,7 +79,15 @@ interface StreamMeter {
  */
 export interface NotesJobDeps {
   appendFinal(input: { huddleId: string; identity: string; text: string; start: number; end: number; itemId: string }): Promise<void>
-  meteredSeconds(input: { huddleId: string; identity: string; seconds: number; streamNo: number; flushNo: number }): Promise<void>
+  meteredSeconds(input: {
+    huddleId: string
+    identity: string
+    seconds: number
+    streamNo: number
+    flushNo: number
+    /** Everything the job has pushed so far; a replayed flush charges nothing. */
+    totalSeconds?: number
+  }): Promise<void>
   notesEnabled(huddleId: string): Promise<boolean>
   balanceOk(huddleId: string): Promise<boolean>
   notesOff(huddleId: string, reason: string, message: string): Promise<void>
@@ -98,17 +143,22 @@ export async function runNotesJob(options: {
 
   const secondsOf = (at: number) => Math.max(0, (at - offsetStart) / 1000)
 
+  /** Everything this job has pushed into STT so far, so a replay charges nothing. */
+  const billedSoFar = () => meters.reduce((sum, meter) => sum + meter.seconds, 0)
+
   const flush = async (meter: StreamMeter) => {
     const delta = Math.round(meter.seconds - meter.flushedSeconds)
     if (delta <= 0) return
     meter.flushedSeconds += delta
+    meter.flushNo += 1
     try {
       await deps.meteredSeconds({
         huddleId,
         identity: meter.identity,
         seconds: delta,
         streamNo: meter.streamNo,
-        flushNo: meter.streamNo,
+        flushNo: meter.flushNo,
+        totalSeconds: billedSoFar(),
       })
     } catch (err) {
       console.warn('[huddle-notes] metering failed:', (err as Error).message)
@@ -135,7 +185,7 @@ export async function runNotesJob(options: {
     const track = (publication as any)?.track as RemoteTrack | undefined
     if (!track) return
 
-    const meter: StreamMeter = { identity, seconds: 0, flushedSeconds: 0, streamNo: meters.length + 1 }
+    const meter: StreamMeter = { identity, seconds: 0, flushedSeconds: 0, streamNo: meters.length + 1, flushNo: 0 }
     meters.push(meter)
     const engine = sttFor(identity)
     const speck = engine.stream()
@@ -254,6 +304,20 @@ const worker = defineAgent({
     const { prisma } = await import('../lib/prisma')
 
     await ctx.connect()
+    // Two dispatches for one room (a raced toggle, two pods) would each
+    // transcribe and bill the same tracks. The first one in owns the room.
+    const rival = [...(ctx.room as any).remoteParticipants.values()].find(
+      (participant: any) => participant?.attributes?.[NOTES_AGENT_ATTRIBUTE] === '1',
+    ) as any
+    if (rival) {
+      log(`another notes agent (${rival.identity}) is already covering this room; leaving`)
+      return
+    }
+    try {
+      await (ctx.room as any).localParticipant?.setAttributes?.({ [NOTES_AGENT_ATTRIBUTE]: '1' })
+    } catch (err) {
+      log(`could not mark this agent in the room: ${(err as Error).message}`)
+    }
     const draft = await ensureHuddleNotesDraft(huddleId)
 
     await runNotesJob({
@@ -297,28 +361,71 @@ const worker = defineAgent({
   },
 })
 
-/** Start the worker. Called from the CLI entry; a no-op without LiveKit creds. */
-export function startNotesWorker(): void {
+// The job process imports this module and requires the agent as its default export.
+export default worker
+
+/**
+ * Start the worker. Called on boot (and from the CLI entry); a no-op without
+ * LiveKit creds. Returns the server so a test can drive it and close it again.
+ */
+export async function startNotesWorker(): Promise<any | null> {
   const availability = notesFallbackAvailability()
   if (!availability.ok) {
     log(`not starting: ${availability.reason}`)
-    return
+    return null
   }
+  const config = liveKitConfig()
+  if (!config) return null
   initializeLogger({ pretty: process.env.NODE_ENV !== 'production', level: process.env.LOG_LEVEL ?? 'info' })
-  cli.runApp(
-    new WorkerOptions({
-      agent: worker,
-      agentName: 'huddle-notes',
-      // Hidden and subscribe-only: it never shows in a tile, roster or count,
-      // and it can never publish audio into the call.
-      permissions: { canSubscribe: true, canPublish: false, canPublishData: false, hidden: true },
-      requestFunc: async (req: any) => {
-        const metadata = parseRoomMetadata(req?.room?.metadata)
-        if (!metadata.huddleId) return { accept: false, reject: { reason: 'not a huddle' } }
-        return { accept: true }
-      },
-    } as any),
-  )
+  const server: any = new AgentServer(serverOptions(config))
+  // run() only settles when the worker shuts down, so it cannot be awaited: the
+  // registration to wait on is the id LiveKit hands back (it starts out as
+  // 'unregistered').
+  const running = server.run().catch((err: Error) => log(`stopped: ${err.message}`))
+  const registered = () => Boolean(server.id) && server.id !== 'unregistered'
+  const deadline = Date.now() + REGISTER_TIMEOUT_MS
+  while (!registered() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
+  if (!registered()) {
+    // Never take the API down with it: the fallback is optional, the call is not.
+    log(`could not register with LiveKit (${config.url}); notes stay on the client path`)
+    await server.close?.().catch(() => {})
+    return null
+  }
+  void running
+  log(`registered with LiveKit as ${NOTES_AGENT_NAME} (${config.url})`)
+  return server
+}
+
+/**
+ * `wsURL`/`apiKey`/`apiSecret` are always passed explicitly: WorkerOptions
+ * defaults `wsURL` to localhost before the server can fall back to
+ * LIVEKIT_URL, so leaving them out would pin Cloud deployments to localhost.
+ * Jobs run in forked children (`production: false` keeps idle ones at zero);
+ * the port is for the health endpoint only, so let the OS pick it.
+ */
+function serverOptions(config: LiveKitConfig): any {
+  return new WorkerOptions({
+    agent: agentEntryPath(),
+    agentName: NOTES_AGENT_NAME,
+    wsURL: config.url,
+    apiKey: config.apiKey,
+    apiSecret: config.apiSecret,
+    production: false,
+    port: 0,
+    // Hidden and subscribe-only: it never shows in a tile, roster or count,
+    // and it can never publish audio into the call.
+    permissions: { canSubscribe: true, canPublish: false, canPublishData: false, hidden: true },
+    requestFunc: async (job: any) => {
+      // Accepting is explicit in JS: an un-accepted request just sits until
+      // LiveKit times it out, which is exactly how the fallback stays dark.
+      const huddleId = parseRoomMetadata(job?.room?.metadata).huddleId ?? parseRoomMetadata(job?.job?.metadata).huddleId
+      if (!huddleId) {
+        await job.reject()
+        return
+      }
+      await job.accept()
+    },
+  } as any)
 }
 
 if (import.meta.main) {
@@ -326,5 +433,5 @@ if (import.meta.main) {
     console.error('[huddle-notes] LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET are required')
     process.exit(1)
   }
-  startNotesWorker()
+  void startNotesWorker()
 }

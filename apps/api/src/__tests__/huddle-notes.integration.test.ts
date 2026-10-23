@@ -22,19 +22,34 @@ process.env.LIVEKIT_API_SECRET = 'test-secret-that-is-long-enough-for-hs256'
 process.env.OPENAI_API_KEY = 'sk-test'
 
 const sdk = await import('livekit-server-sdk')
+/** Every explicit dispatch a join or a toggle asked for. */
+const dispatches: Array<{ room: string; agent: string; huddleId: string }> = []
 mock.module('livekit-server-sdk', () => ({
   ...sdk,
   RoomServiceClient: class {
     async listParticipants(room: string) {
       return (liveRooms.get(room) ?? []).map((identity) => ({ identity }))
     }
+    async listRooms(names?: string[]) {
+      return (names ?? [...roomMetadata.keys()]).map((name) => ({ name, metadata: JSON.stringify(roomMetadata.get(name) ?? {}) }))
+    }
     async deleteRoom(room: string) {
       liveRooms.delete(room)
+    }
+    async updateRoomMetadata(room: string, metadata: string) {
+      roomMetadata.set(room, JSON.parse(metadata))
+    }
+  },
+  AgentDispatchClient: class {
+    async createDispatch(room: string, agent: string, options?: { metadata?: string }) {
+      dispatches.push({ room, agent, huddleId: JSON.parse(options?.metadata ?? '{}').huddleId })
+      return { id: `dispatch-${dispatches.length}` }
     }
   },
 }))
 
 const liveRooms = new Map<string, string[]>()
+const roomMetadata = new Map<string, any>()
 
 const { prisma } = await import('../lib/prisma')
 const bus = await import('../lib/conversation-bus')
@@ -56,6 +71,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   events = []
+  dispatches.length = 0
+  roomMetadata.clear()
   huddles._resetHuddlesForTests()
 })
 
@@ -190,6 +207,79 @@ describe('turning notes off', () => {
     const { conv } = await liveHuddle()
     await expect(huddles.setHuddleNotes(conv.id, seed.viewer, false)).rejects.toMatchObject({ status: 403 })
     expect(notesEvents()).toHaveLength(0)
+  })
+})
+
+describe('the fallback agent', () => {
+  /** The dispatch lives in a `void` call, so give it a beat (and a deadline). */
+  const until = async (check: () => boolean, ms = 2_000) => {
+    const started = Date.now()
+    while (!check() && Date.now() - started < ms) await new Promise((r) => setTimeout(r, 10))
+  }
+
+  test('a call that starts with notes on dispatches it, without anyone touching the toggle', async () => {
+    const { conv } = await liveHuddle()
+    await until(() => dispatches.length === 1)
+    expect(dispatches).toHaveLength(1)
+    expect(dispatches[0].agent).toBe('huddle-notes')
+    expect(roomMetadata.get(dispatches[0].room)?.notes).toBe(true)
+    // Every participant joining asks again; only one job is minted.
+    await huddles.joinHuddle(conv.id, seed.owner)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(dispatches).toHaveLength(1)
+  })
+
+  test('a call with notes already off asks for nothing', async () => {
+    const conv = await channel('huddle-notes', [seed.member])
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    await until(() => dispatches.length === 1)
+    await huddles.setHuddleNotes(conv.id, seed.owner, false)
+    dispatches.length = 0
+    await huddles.leaveHuddle(conv.id, seed.member)
+    await huddles.joinHuddle(conv.id, seed.member)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(dispatches).toHaveLength(0)
+    expect(joined.huddle.id).toBeTruthy()
+  })
+
+  test('turning notes off and on again does not mint a second job', async () => {
+    const conv = await channel('huddle-notes', [seed.member])
+    await huddles.joinHuddle(conv.id, seed.owner)
+    await until(() => dispatches.length === 1)
+    await huddles.setHuddleNotes(conv.id, seed.owner, false)
+    await huddles.setHuddleNotes(conv.id, seed.owner, true)
+    await new Promise((r) => setTimeout(r, 50))
+    // One job for the call: the second ask is remembered, and the agent already
+    // in the room is the cross-pod check on top of that.
+    expect(dispatches).toHaveLength(1)
+  })
+
+  test('metering is idempotent: a replayed flush charges nothing, and the counter only climbs', async () => {
+    const { huddleId } = await liveHuddle()
+    const base = { huddleId, identity: seed.member, streamNo: 1, flushNo: 1 }
+    await huddles.notesLivekitFallback({ ...base, seconds: 60, totalSeconds: 60 })
+    let row = await db.huddle.findUnique({ where: { id: huddleId } })
+    expect(row.notesLivekitSeconds).toBe(60)
+
+    // The same flush again (a retry, a duplicate delivery): no new charge.
+    await huddles.notesLivekitFallback({ ...base, seconds: 60, totalSeconds: 60 })
+    row = await db.huddle.findUnique({ where: { id: huddleId } })
+    expect(row.notesLivekitSeconds).toBe(60)
+
+    // The next minute continues from where the ledger is.
+    await huddles.notesLivekitFallback({ ...base, seconds: 60, flushNo: 2, totalSeconds: 120 })
+    row = await db.huddle.findUnique({ where: { id: huddleId } })
+    expect(row.notesLivekitSeconds).toBe(120)
+  })
+
+  test('a re-dispatched job that starts from zero cannot bill the same audio twice', async () => {
+    const { huddleId } = await liveHuddle()
+    await huddles.notesLivekitFallback({ huddleId, identity: seed.member, seconds: 300, streamNo: 1, flushNo: 1, totalSeconds: 300 })
+    // The replacement job's counters restart at zero; its first flush is below
+    // the ledger, so nothing is charged.
+    await huddles.notesLivekitFallback({ huddleId, identity: seed.member, seconds: 60, streamNo: 1, flushNo: 1, totalSeconds: 60 })
+    const row = await db.huddle.findUnique({ where: { id: huddleId } })
+    expect(row.notesLivekitSeconds).toBe(300)
   })
 })
 

@@ -133,6 +133,29 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: ANTHROPIC_API_KEY
+            # Huddles, and with them the hidden `huddle-notes` fallback agent
+            # (started in-process by the API). Optional: without them huddles are
+            # off and every other feature works as before.
+            - name: LIVEKIT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LIVEKIT_URL
+                  optional: true
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LIVEKIT_API_KEY
+                  optional: true
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LIVEKIT_API_SECRET
+                  optional: true
+            - name: LIVEKIT_NOTES_STT_MODEL
+              value: "deepgram/nova-3"
           readinessProbe:
             httpGet:
               path: /api/health

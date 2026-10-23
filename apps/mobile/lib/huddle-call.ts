@@ -262,6 +262,7 @@ function ensureNotesEngine(): void {
     getLocalStream: () => media?.localMicStream?.() ?? null,
     getRemoteStreams: () => media?.remoteAudioStreams?.() ?? [],
     getPeers: notesPeers,
+    isMuted: (forUserId) => media?.micMuted?.(forUserId ?? selfId) === true,
     setSource: async (source) => {
       await media?.setNotesSource?.(source)
     },

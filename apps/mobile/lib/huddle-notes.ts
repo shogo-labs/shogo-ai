@@ -98,7 +98,7 @@ export type NotesPillState = HuddleNotesStatus & { enabled: boolean }
 /** The one-line summary of the call's notes state. Shared by the window, mini card and PiP. */
 export function notesPillLabel(notes: NotesPillState): string {
   if (!notes.enabled) return 'Notes off'
-  if (notes.mode === 'unavailable') return notes.message ? `Notes: ${notes.message}` : 'Notes unavailable'
+  if (notes.mode === 'unavailable') return notes.message ? `Notes incomplete: ${notes.message}` : 'Notes unavailable'
   if (notes.mode === 'unsupported') return 'Notes need someone on web or desktop'
   if (notes.covering.length) return `Notes on · ${notes.covering.length} covered`
   return 'Notes on'
@@ -137,6 +137,11 @@ export interface HuddleNotesOptions {
   getRemoteStreams(): HuddleRemoteAudio[]
   /** The current roster, from the room. */
   getPeers(): NotesPeer[]
+  /**
+   * Whether that person's mic is muted right now (`null` = this device's own).
+   * Muted audio is never forwarded, so it is never transcribed or billed.
+   */
+  isMuted?(forUserId: string | null): boolean
   /** Publish whether this device streams its own audio (`'self'`, `'unsupported'`, `''`). */
   setSource(state: 'self' | 'unsupported' | ''): Promise<void>
   onStatus?(status: HuddleNotesStatus): void
@@ -222,6 +227,7 @@ export function startHuddleNotes(options: HuddleNotesOptions): HuddleNotesEngine
     const capture = startCapture({
       tap,
       wsBase: options.wsBase,
+      isMuted: () => options.isMuted?.(forUserId) === true,
       getTicket: async () => {
         try {
           return await options.ticket(forUserId)

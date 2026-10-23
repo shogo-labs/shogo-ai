@@ -139,6 +139,12 @@ export interface HuddleMedia {
   setCameraEffects?: (config: CameraEffectsConfig) => Promise<void>
   /** This device's microphone as a MediaStream, for the huddle-notes transcriber. */
   localMicStream?: () => MediaStream | null
+  /**
+   * Whether that participant's mic is muted. LiveKit keeps the publication
+   * while muted, so the transcriber has to ask rather than assume a stream is
+   * audible. `identity` may be this device's own.
+   */
+  micMuted?: (identity: string) => boolean
   /** Each remote participant's microphone, so one web or desktop client can cover phones. */
   remoteAudioStreams?: () => HuddleRemoteAudio[]
   /** Publish whether this device streams its own audio: `'self'`, `'unsupported'`, or `''` to clear. */
@@ -493,6 +499,16 @@ export async function connectHuddleRoom(
       await applyEffects()
     },
     localMicStream: () => micStreamOf(room.localParticipant),
+    micMuted: (identity) => {
+      const participant =
+        identity === room.localParticipant?.identity
+          ? room.localParticipant
+          : room.remoteParticipants.get(identity)
+      if (!participant) return true
+      const pub = participant.getTrackPublication?.(Track.Source.Microphone)
+      // No mic published at all is as silent as a muted one.
+      return pub ? !!pub.isMuted : true
+    },
     remoteAudioStreams: () =>
       [...room.remoteParticipants.values()].flatMap((p) => {
         const stream = micStreamOf(p)

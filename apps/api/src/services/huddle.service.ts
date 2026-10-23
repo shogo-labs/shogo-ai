@@ -963,6 +963,10 @@ export async function joinHuddle(conversationId: string, userId: string): Promis
       await postStartMessage(row)
       await ringMembers(row, conversation, userId)
     }
+    // Notes are on by default, so the fallback has to hear about the call
+    // starting rather than only about a toggle: an all-native huddle never
+    // toggles anything, and nobody would ever cover it.
+    if (row.notesEnabled) void syncNotesFallback(row, true)
     const user = await db.user.findUnique({ where: { id: userId }, select: { name: true, email: true, image: true } })
     const token = await mintJoinToken(config, {
       roomName: row.roomName,
@@ -1377,6 +1381,7 @@ export async function getHuddleJoinRequest(requestId: string, userId: string | n
     name: request.guestName || 'Guest',
     guest: true,
   })
+  if (row.notesEnabled) void syncNotesFallback(row, true)
   return { status: 'admitted', token, url: config.url, guestId: request.guestId }
 }
 
@@ -1669,6 +1674,12 @@ export async function notesLivekitFallback(input: {
   seconds: number
   streamNo: number
   flushNo: number
+  /**
+   * Everything this job has sent to Inference so far. The huddle's counter is
+   * the ledger, so a replayed flush charges nothing and a re-dispatched job
+   * (whose counters restart) can only under-count — it can never double-bill.
+   */
+  totalSeconds?: number
   reason?: string
   message?: string
 }): Promise<void> {
@@ -1680,9 +1691,19 @@ export async function notesLivekitFallback(input: {
   if (!(input.seconds > 0)) return
   const row = await db.huddle.findUnique({
     where: { id: input.huddleId },
-    select: { id: true, workspaceId: true },
+    select: { id: true, workspaceId: true, notesLivekitSeconds: true },
   })
   if (!row) return
+
+  const already = row.notesLivekitSeconds ?? 0
+  const billed =
+    input.totalSeconds === undefined
+      ? input.seconds
+      : Math.min(input.seconds, Math.max(0, input.totalSeconds - already))
+  if (!(billed >= 1)) {
+    // A replayed flush (same total) or a sliver nobody has been charged for yet.
+    if (input.totalSeconds !== undefined) return
+  }
 
   const { recordTranscriptionUsage } = await import('../routes/ai-proxy')
   const now = Math.floor(Date.now() / 1000)
@@ -1699,16 +1720,19 @@ export async function notesLivekitFallback(input: {
       exp: now + 3600,
     } as any,
     model,
-    input.seconds,
+    billed,
+    {
+      idempotencyKey: `huddle:${input.huddleId}:${input.identity}:${input.streamNo}:${input.flushNo}`,
+      huddleId: input.huddleId,
+    },
   )
+  const next =
+    input.totalSeconds === undefined
+      ? already + Math.round(billed)
+      : Math.max(already, Math.round(input.totalSeconds))
   await db.huddle
-    .update({
-      where: { id: row.id },
-      data: { notesLivekitSeconds: { increment: Math.round(input.seconds) } },
-    })
+    .update({ where: { id: row.id }, data: { notesLivekitSeconds: next } })
     .catch(() => {})
-  void input.streamNo
-  void input.flushNo
 }
 
 /**

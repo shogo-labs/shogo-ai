@@ -10,6 +10,8 @@
  *     brew install livekit && bun run smoke:huddle-notes
  *     bun run smoke:huddle-notes -- --mode=row      # stop via the huddle row
  *     bun run smoke:huddle-notes -- --mode=balance  # stop via the wallet (60s)
+ *     bun run smoke:huddle-notes -- --mode=dispatch # the worker itself: register,
+ *                                                   # dispatch, job, no second job
  *
  * Needs `livekit-server` on PATH (skipped otherwise) and no cloud credentials:
  * real transcription needs LiveKit Cloud Inference, so this exercises the
@@ -47,6 +49,15 @@ const token = async (identity: string) => {
   const at = new AccessToken(KEY, SECRET, { identity, ttl: 600 })
   at.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true })
   return at.toJwt()
+}
+
+if (mode === 'dispatch') {
+  const code = await runDispatchSmoke().catch((err) => {
+    console.error(err)
+    return 1
+  })
+  server.kill()
+  process.exit(code)
 }
 
 const speaker = new Room()
@@ -159,4 +170,79 @@ try {
   server.kill()
   // rtc-node keeps the Bun event loop alive after every room is closed.
   setTimeout(() => process.exit(process.exitCode ?? 0), 250)
+}
+
+/**
+ * The part unit tests cannot see: that the API host can start the worker
+ * in-process at all, and that a dispatch really spawns a job here. It boots the
+ * worker exactly as `server.ts` does, dispatches against a real room, and fails
+ * unless a `huddle-notes` participant (or a running job) appears — then checks a
+ * second dispatch does not mint a second job.
+ */
+async function runDispatchSmoke(): Promise<number> {
+  process.env.LIVEKIT_URL = WS
+  process.env.LIVEKIT_API_KEY = KEY
+  process.env.LIVEKIT_API_SECRET = SECRET
+  const { NOTES_AGENT_ATTRIBUTE, dispatchNotesAgent } = await import('../src/lib/livekit-notes')
+  const { isNotesAgent } = await import('../src/services/huddle-notes-coverage')
+  const { startNotesWorker } = await import('../src/workers/huddle-notes-agent')
+
+  const agent = await startNotesWorker()
+  if (!agent) {
+    console.log(JSON.stringify({ ok: false, mode, reason: 'the worker did not register with LiveKit' }, null, 2))
+    return 1
+  }
+
+  const rooms = new RoomServiceClient(HTTP, KEY, SECRET)
+  const huddleId = 'huddle-dispatch-smoke'
+  const caller = new Room()
+  const step = (name: string) => console.log(`[dispatch] ${name}`)
+  try {
+    step('room')
+    await rooms.createRoom({ name: roomName, metadata: JSON.stringify({ huddleId, notes: true }) })
+    step('caller')
+    await caller.connect(WS, await token('alice'))
+    step('dispatch')
+    const first = await dispatchNotesAgent(roomName, huddleId)
+    step(`dispatched: ${JSON.stringify(first)}`)
+
+    let sawJob = false
+    let sawAgent = false
+    for (let attempt = 0; attempt < 240 && !sawAgent; attempt++) {
+      if (agent.activeJobs.length > 0) sawJob = true
+      const participants = await rooms.listParticipants(roomName).catch(() => [])
+      sawAgent = participants.some(
+        (participant: any) =>
+          participant?.attributes?.[NOTES_AGENT_ATTRIBUTE] === '1' || isNotesAgent(String(participant?.identity ?? '')),
+      )
+      if (!sawAgent) await sleep(50)
+    }
+
+    // A second dispatch while an agent is already there must not add a job:
+    // each job transcribes and bills the same tracks.
+    const jobsBefore = agent.activeJobs.length
+    const second = await dispatchNotesAgent(roomName, huddleId)
+    await sleep(1_500)
+    const jobsAfter = agent.activeJobs.length
+
+    // The room has no huddle row, so the job itself ends early — this asserts
+    // the plumbing that has to work before the job can do anything.
+    const result = {
+      mode,
+      registered: Boolean(agent.id),
+      firstDispatch: first,
+      secondDispatch: second,
+      sawAgent,
+      sawJob,
+      jobsBefore,
+      jobsAfter,
+    }
+    const ok = first.ok && (sawAgent || sawJob) && second.ok && jobsAfter <= Math.max(jobsBefore, 1)
+    console.log(JSON.stringify({ ok, ...result }, null, 2))
+    return ok ? 0 : 1
+  } finally {
+    await caller.disconnect().catch(() => {})
+    await rooms.deleteRoom(roomName).catch(() => {})
+    await agent.close().catch(() => {})
+  }
 }
