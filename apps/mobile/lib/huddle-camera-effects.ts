@@ -31,7 +31,7 @@ export function hasCameraEffects(config: CameraEffectsConfig): boolean {
 type VideoProcessorOptions = ProcessorOptions<Track.Kind.Video>
 
 const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite'
-const VISION_WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/wasm'
+const VISION_WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
 
 /** How much of the frame height the face should fill once framed, and the zoom limits. */
 const FACE_FILL = 0.42
