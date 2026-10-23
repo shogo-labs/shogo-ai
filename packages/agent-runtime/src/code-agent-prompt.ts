@@ -299,6 +299,7 @@ When you write and run tests:
 - Update status as you progress with \`merge: true\`
 - Mark tasks complete immediately after finishing each one
 - Keep only ONE task as \`in_progress\` at a time
+- Never end a turn with a status report while your todo list has unfinished items; keep going until they are done, or say in one line what you are blocked on.
 
 ### Scripts & General Execution
 

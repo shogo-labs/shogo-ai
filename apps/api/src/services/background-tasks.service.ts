@@ -909,7 +909,13 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
-/** A user message that is a queued background-task wake. */
+/**
+ * A user message that is a queued background-task wake.
+ *
+ * A resume queued after a killed run (`kind: 'resume'`, SHO-121) carries a
+ * `data-resume` part and no `data-task-notification`, so it is deliberately not
+ * one of these and cannot pause wakes.
+ */
 export function isTaskWakeMessage(parts: string | null | undefined): boolean {
   return parseJson<Array<{ type?: string }>>(parts, []).some((p) => p?.type === 'data-task-notification')
 }

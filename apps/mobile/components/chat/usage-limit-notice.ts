@@ -59,7 +59,10 @@ export function usageLimitNoticeFor(input: {
     return {
       variant: "stopped",
       title: "Usage limit reached",
-      body: `The agent stopped partway through; completed work is saved.${resetSentence(stopped.resetsAt, format)} Tap Continue after it resets, or upgrade to keep going now.`,
+      // Lead with the way out. Telling people to "tap Continue" made a hard
+      // limit look like a stalled turn (SHO-121); work resumes on its own once
+      // the window resets, and upgrading is what continues it now.
+      body: `The agent stopped partway through; completed work is saved.${resetSentence(stopped.resetsAt, format)} Upgrade to keep going now — otherwise your work picks up exactly where it stopped once your usage resets.`,
       primaryLabel: "Upgrade",
       secondaryLabel: "Continue",
     }

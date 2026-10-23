@@ -29,6 +29,14 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
+import {
+  buildPlanContinuationPrompt,
+  openPlanItems,
+  planContinuationAllowedFor,
+  planContinuationLimit,
+  shouldContinuePlan,
+} from './plan-continuation'
+import { interruptedTurnResumePrompt } from '@shogo/shared-runtime/interrupted-turn'
 import { sweepExecCwdMarkers } from './exec-cwd'
 import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
@@ -38,13 +46,13 @@ import { recordCompaction, recordTurnBoundary, isPrefixOf } from './context-tele
 import { summariseTurn, lastTurnStart } from './turn-boundary'
 import { renderTranscriptForSummary } from './compaction-transcript'
 import type { ToolContext } from './gateway-tools'
-import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, subagentOrchestrationDisabled, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, type RestrictedMode } from './gateway-tools'
+import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, subagentOrchestrationDisabled, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, getSessionTodos, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { buildExposedPortsPrompt } from './exposed-ports-prompt'
 import { buildConcurrentChatsPrompt, concurrentChatLabel, type ConcurrentChat } from './concurrent-chats-prompt'
 import { HookEmitter, loadAllHooks, workspaceHooksSignature } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
-import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipConsumedResults } from './session-manager'
+import { SessionManager, type SessionManagerConfig, applyToolResultBudget, isChatSessionId, snipConsumedResults } from './session-manager'
 import { microcompact } from './microcompact'
 import {
   type ContentReplacementState,
@@ -115,7 +123,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
+import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, postInterruptedResume, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
 import {
   createToolProfile,
   deferredToolsEnabled,
@@ -312,6 +320,18 @@ const TASK_WAKE_COALESCE_MS = 2_000
 const REMOTE_TASK_POLL_MS = 10_000
 /** How often a running turn refreshes remote tasks so their results can be injected mid-turn. */
 const TURN_REMOTE_REFRESH_MS = 10_000
+/**
+ * Least time between two `inflightTurn.lastTool` writes. The marker is on the
+ * session's persisted metadata, so an unthrottled write would persist the whole
+ * session on every tool call of a long turn.
+ */
+const INFLIGHT_TOOL_MARKER_MS = 2_000
+/**
+ * A turn interrupted longer ago than this is left alone: the person has moved
+ * on, and a resume that re-reads ancient work costs a full model call.
+ * `AGENT_RESUME_MAX_AGE_MINUTES=0` disables the boot sweep.
+ */
+const DEFAULT_RESUME_MAX_AGE_MINUTES = 360
 
 function lowerAutoTier(tier: AutoTierCeiling): AutoTierCeiling | null {
   const index = AUTO_TIER_ORDER.indexOf(tier)
@@ -432,7 +452,7 @@ export function describeTurnFailure(
   // A Shogo agent-loop concept, not a provider failure — decide before
   // classification so it isn't mistaken for an "unknown" provider error.
   if (/maximum iteration limit/i.test(raw)) {
-    return 'This task is taking more steps than a single run allows — I kept going as far as I could. Reply "continue" if you\'d like me to pick up where I left off.'
+    return 'This task is taking more steps than a single run allows — I kept going as far as I could, and the work so far is saved. Send a message if you want me to pick up where I left off.'
   }
 
   // classifyRetryability reads the proxy's `[shogo:retryable=...]` marker (if
@@ -1729,6 +1749,12 @@ export class AgentGateway {
       return result.text || '(summary unavailable)'
     })
 
+    // Finish (or at least explain) turns this runtime was killed in the middle
+    // of, before pruning can drop their sessions (SHO-121).
+    await this.recoverInterruptedTurns().catch((err: any) =>
+      console.warn(`[AgentGateway] Interrupted-turn recovery failed: ${err?.message ?? err}`),
+    )
+
     // Start session pruning
     this.sessionManager.startPruning()
 
@@ -2758,6 +2784,87 @@ export class AgentGateway {
     this.taskWakeRetries.delete(sessionId)
   }
 
+  // ---------------------------------------------------------------------------
+  // Interrupted-turn recovery (SHO-121)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Resume the turns this runtime was killed in the middle of.
+   *
+   * A turn that dies mid-tool leaves an `inflightTurn` marker on the session and
+   * a transcript whose last assistant message has tool calls with no results —
+   * which reads to both the person and the next model call as a turn that
+   * finished. For each such chat session this gives the interrupted calls a
+   * synthetic result, says one line to the user, and (first attempt only)
+   * starts the resumed turn.
+   *
+   * A resume that also dies writes its marker with `resumeAttempts: 1`, so the
+   * next boot posts the note without resuming: a crash loop cannot spin.
+   * `AGENT_RESUME_MAX_AGE_MINUTES=0` turns the sweep off; markers older than
+   * the limit are dropped unanswered because the person has moved on.
+   */
+  async recoverInterruptedTurns(): Promise<void> {
+    const configured = Number.parseInt(process.env.AGENT_RESUME_MAX_AGE_MINUTES ?? '', 10)
+    const maxAgeMinutes = Number.isFinite(configured) ? Math.max(0, configured) : DEFAULT_RESUME_MAX_AGE_MINUTES
+    if (maxAgeMinutes === 0) return
+    const maxAgeMs = maxAgeMinutes * 60_000
+    const now = Date.now()
+    for (const { sessionId, marker } of this.sessionManager.listInterruptedTurns()) {
+      // Something already owns this session: a re-attached client's turn, or a
+      // queued message about to start one.
+      if (this.turnAbortControllers.has(sessionId) || this.turnLocks.has(sessionId)) continue
+      this.sessionManager.setSessionMetadata(sessionId, { inflightTurn: null })
+      if (now - marker.startedAt > maxAgeMs) {
+        console.log(
+          `${this.logPrefix} Interrupted turn for session ${sessionId} is older than ${maxAgeMinutes}m; not resuming`,
+        )
+        continue
+      }
+      const repaired = this.sessionManager.repairInterruptedTail(sessionId)
+      const toolName = marker.lastTool ?? repaired[repaired.length - 1]?.toolName
+      const resuming = marker.resumeAttempts === 0
+      if (resuming) {
+        this.resumeStarts.set(sessionId, marker.resumeAttempts + 1)
+        console.warn(
+          `${this.logPrefix} Resuming interrupted turn for session ${sessionId}` +
+            `${toolName ? ` (was running ${toolName})` : ''}`,
+        )
+      } else {
+        console.warn(
+          `${this.logPrefix} Interrupted turn for session ${sessionId} already resumed once; posting the note only`,
+        )
+      }
+      await this.deliverInterruptedTurn(sessionId, toolName, resuming)
+    }
+  }
+
+  /**
+   * Deliver the interruption to its session.
+   *
+   * With API credentials the note and the resume are queued server-side, which
+   * is what a client re-attaches to and what survives this process. On desktop
+   * there is no queue, so the resumed turn is started directly — the same split
+   * `flushTaskWake` already makes.
+   */
+  private async deliverInterruptedTurn(
+    sessionId: string,
+    toolName: string | undefined,
+    resuming: boolean,
+  ): Promise<void> {
+    if (hasInternalApiCredentials()) {
+      const res = await postInterruptedResume(sessionId, { toolName: toolName ?? null, resume: resuming })
+      if (res.ok) return
+      // A failed request queued nothing, so resuming here cannot double-run the
+      // turn — and without this a runtime that boots before the API knows the
+      // route would silently drop the work.
+      console.warn(`${this.logPrefix} Interrupted-turn note for ${sessionId} failed: ${res.error ?? res.status}`)
+    }
+    if (!resuming) return
+    void this.agentTurn(interruptedTurnResumePrompt(toolName), sessionId).catch((err: any) =>
+      console.warn(`${this.logPrefix} Resumed turn for ${sessionId} failed: ${err?.message ?? err}`),
+    )
+  }
+
   /**
    * Tasks mirrored from another project's runtime have no API row to wake the
    * session, so while idle the gateway polls them itself.
@@ -3754,6 +3861,33 @@ export class AgentGateway {
     const retryWaker = new RetryWaker()
     this.retryWakers.set(sessionId, retryWaker)
 
+    // Durable in-flight marker (SHO-121). Messages persist incrementally, so a
+    // run that dies mid-tool leaves a transcript that reads like a finished
+    // turn — nothing records that work was in progress, and nothing on the next
+    // boot knows to finish it. The marker is cleared in the finally below; what
+    // survives a crash is what `recoverInterruptedTurns()` looks for.
+    const inflightTurnId = `${sessionId}:${Date.now()}`
+    const inflightStartedAt = Date.now()
+    // Only a chat session can be resumed on boot, so only a chat session gets a
+    // marker — a pipeline or `default` session would just be noise in the sweep.
+    const tracksInflightTurn = !!sessionId && !isHeartbeat && isChatSessionId(sessionId)
+    let inflightMarkerWrite = 0
+    const stampInflightTurn = (lastTool?: string) => {
+      if (!tracksInflightTurn) return
+      this.sessionManager.setSessionMetadata(sessionId, {
+        inflightTurn: {
+          id: inflightTurnId,
+          startedAt: inflightStartedAt,
+          ...(lastTool ? { lastTool } : {}),
+          // Set when this turn *is* a boot-sweep resume: if it also dies, the
+          // next boot posts the note instead of resuming again.
+          resumeAttempts: this.resumeStarts.get(sessionId) ?? 0,
+        },
+      })
+      inflightMarkerWrite = Date.now()
+    }
+    stampInflightTurn()
+
     // Stream live process-list updates to the UI for the duration of this turn.
     // The registry persists across turns; this subscription is per-turn so it
     // is torn down when the stream closes.
@@ -4449,6 +4583,12 @@ export class AgentGateway {
         },
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
+          // What the resume note names if this run dies before the tool returns.
+          // Coalesced like the marker itself: a tool-heavy turn would otherwise
+          // persist the session on every call.
+          if (inflightMarkerWrite === 0 || Date.now() - inflightMarkerWrite >= INFLIGHT_TOOL_MARKER_MS) {
+            stampInflightTurn(name)
+          }
         },
         // First call of the turn carries the cache numbers `context_turn_boundary`
         // reports: input/cacheRead/cacheWrite as the provider billed them.
@@ -4891,6 +5031,63 @@ export class AgentGateway {
         contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
         result = contResult
       }
+
+      // Plan continuation (SHO-121). A model can end a turn normally while the
+      // todo list it wrote during that turn still has open items: the
+      // transcript then reads as finished while the plan is not, and the only
+      // way to restart it is a person typing "continue". Keep the turn going a
+      // bounded number of times instead. Unlike the ceiling loop above this is
+      // a *new* model call per pass, so every guard below is a reason the turn
+      // ended correctly and must not be restarted.
+      const maxPlanContinuations = planContinuationLimit()
+      if (
+        maxPlanContinuations > 0 &&
+        sessionId &&
+        planContinuationAllowedFor({ isHeartbeat, isChannelTurn: !!streamTarget, interactionMode })
+      ) {
+        let planContinuations = 0
+        while (planContinuations < maxPlanContinuations) {
+          const snapshot = getSessionTodos(sessionId)
+          const open = snapshot && snapshot.updatedAt >= turnStartedAt ? openPlanItems(snapshot.todos) : []
+          const registry = this.commandRegistries.get(sessionId)
+          if (
+            !shouldContinuePlan({
+              turn: result,
+              open,
+              aborted: turnAbort.signal.aborted,
+              pendingWake: !!registry?.hasPendingNotifications(),
+              runningTask: !!registry && registry.listRunning().length > 0,
+            })
+          ) {
+            break
+          }
+          planContinuations++
+          console.warn(
+            `${this.logPrefix} [AgentLoop] Plan continuation ${planContinuations}/${maxPlanContinuations} ` +
+              `for session ${sessionId} (${open.length} open item${open.length === 1 ? '' : 's'})`,
+          )
+          const toolCallsBefore = result.toolCalls.length
+          const contResult = await runAgentLoop({
+            ...loopOptions,
+            history: [...history, ...accumulatedNewMessages],
+            prompt: buildPlanContinuationPrompt(open),
+            images: undefined,
+          })
+          accumulatedNewMessages.push(...contResult.newMessages)
+          // Fold usage/iterations/tool calls forward so the whole turn is billed.
+          contResult.inputTokens += result.inputTokens
+          contResult.outputTokens += result.outputTokens
+          contResult.cacheReadTokens += result.cacheReadTokens
+          contResult.cacheWriteTokens += result.cacheWriteTokens
+          contResult.iterations += result.iterations
+          contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
+          const passMadeToolCalls = contResult.toolCalls.length > toolCallsBefore
+          result = contResult
+          // A pass that made no tool call is the model saying it is blocked.
+          // Another pass would only repeat the same answer.
+          if (!passMadeToolCalls) break
+        }
+      }
       if (result.usageLimit && uiWriter) {
         uiWriter.write({
           type: 'data-usage-limit',
@@ -5158,6 +5355,13 @@ export class AgentGateway {
       return `Sorry, I encountered an error processing your message. Please try again.`
     } finally {
       this.turnAbortControllers.delete(sessionId)
+      // The turn is over however it ended — including an error — so the marker
+      // must not survive it. Only a process that dies before reaching here
+      // leaves one behind for the boot sweep.
+      if (tracksInflightTurn) {
+        this.sessionManager.setSessionMetadata(sessionId, { inflightTurn: null })
+        this.resumeStarts.delete(sessionId)
+      }
       if (this.retryWakers.get(sessionId) === retryWaker) this.retryWakers.delete(sessionId)
       if (typingInterval) clearInterval(typingInterval)
       for (const timer of toolHeartbeatTimers.values()) {
@@ -7280,6 +7484,14 @@ export class AgentGateway {
 
   /** Map of sessionId -> AbortController for cancelling in-progress agent turns */
   private turnAbortControllers = new Map<string, AbortController>()
+
+  /**
+   * Sessions whose next turn is a boot-sweep resume (SHO-121), mapped to the
+   * attempt number its in-flight marker should carry. Without this a resume
+   * that also dies would look like a fresh interruption on the next boot and
+   * resume forever.
+   */
+  private resumeStarts = new Map<string, number>()
 
   /** Per-session turn lock: ensures sequential turn execution so a "continue"
    *  after stop always sees the interrupted turn's messages in the session.
