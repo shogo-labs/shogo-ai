@@ -63,6 +63,7 @@ import {
   modelSupportsAudioInput,
   isLiveModel,
   isOpenRouterModel,
+  isAutoModel,
   stripOpenRouterPrefix,
   supportsAdaptiveThinking,
   type Provider,
@@ -78,6 +79,7 @@ import {
   type ModelTier,
 } from '@shogo/model-catalog'
 import { randomUUID } from 'node:crypto'
+import { resolveAutoTierModel } from '../lib/runtime/agent-model-defaults'
 import { putVideoJob, getVideoJob, claimVideoCharge, type VideoJobRecord } from '../lib/video-job-store'
 import { put3dJob, get3dJob, claim3dCharge } from '../lib/3d-job-store'
 import {
@@ -409,6 +411,38 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
     return { resolvedModel: resolveAgentModeDefault(model as AgentMode), isLocal: false }
   }
   return { resolvedModel: model, isLocal: false }
+}
+
+/**
+ * Resolve the model a request actually runs on.
+ *
+ * Every other Shogo surface accepts `auto` (the model picker, the agent
+ * runtime's `AGENT_AUTO_TIER_MAP`, `voice.ts`), but the gateway only mapped
+ * `basic`/`advanced`, so `auto` fell through to `resolveModel('auto')` and
+ * 400'd with `model_not_found`.
+ *
+ * `auto` means the workspace's Auto **standard** tier, resolved by
+ * `resolveAutoTierModel` — the same map agent runtimes are spawned with: the
+ * connected cloud's on a cloud-forwarding desktop, otherwise admin overrides
+ * (`getAutoTierOverrides()`) over `AUTO_MODEL_DEFAULTS`, capped to a model the
+ * workspace is entitled to. Everything else goes through `resolveAgentModel`
+ * unchanged.
+ *
+ * Call this before anything reads `request.model`, so visibility, tier
+ * gating, billing and capture all see the concrete id.
+ */
+export async function resolveRequestModel(
+  model: string,
+  workspaceId: string,
+): Promise<{ resolvedModel: string; isLocal: boolean }> {
+  if (!isAutoModel(model)) return resolveAgentModel(model)
+  // Local dev against an Ollama-style backend: same model `basic` maps to,
+  // since the tier map's ids do not exist there.
+  if (isLocalDev && process.env.LOCAL_LLM_BASE_URL) {
+    return { resolvedModel: process.env.LOCAL_LLM_BASIC_MODEL || 'llama3', isLocal: true }
+  }
+  const entry = await resolveAutoTierModel(workspaceId, 'standard')
+  return { resolvedModel: entry.id, isLocal: false }
 }
 
 // =============================================================================
@@ -4041,10 +4075,17 @@ export function aiProxyRoutes() {
       )
     }
 
+    // Read the body and resolve the requested model (incl. `auto`) before
+    // anything reads `request.model` — including the cloud-forwarding branch
+    // below, which must send the cloud a concrete id rather than `auto`.
+    const request: ChatCompletionRequest = await c.req.json()
+    if (request?.model) {
+      request.model = (await resolveRequestModel(request.model, tokenPayload.workspaceId)).resolvedModel
+    }
+
     // When Shogo Cloud key is configured, forward everything to the cloud
     if (isShogoCloudForwarding()) {
       try {
-        const request: ChatCompletionRequest = await c.req.json()
         if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
           return modelNotVisibleResponse(c, request.model)
         }
@@ -4088,19 +4129,10 @@ export function aiProxyRoutes() {
 
     let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
-      const request: ChatCompletionRequest = await c.req.json()
       // Forwarded by the chat-stream entry points (project-chat / agent-proxy
       // / instance-tunnel) so accumulateUsage can route to the right
       // `(projectId, chatSessionId)` billing-session slot.
       const chatSessionId = c.req.header('x-chat-session-id') || null
-
-      // Resolve agent-mode aliases (basic/advanced) to real model names
-      if (request.model) {
-        const { resolvedModel } = resolveAgentModel(request.model)
-        if (resolvedModel !== request.model) {
-          request.model = resolvedModel
-        }
-      }
 
       // Validate model
       if (!request.model) {
@@ -4347,18 +4379,24 @@ export function aiProxyRoutes() {
       )
     }
 
+    // Read the body and resolve the requested model (incl. `auto`) before the
+    // cloud-forwarding branch below (see chat/completions).
+    const body = await c.req.json()
+    if (body?.model) {
+      body.model = (await resolveRequestModel(body.model, tokenPayload.workspaceId)).resolvedModel
+    }
+
     // When a Shogo Cloud key is configured, forward to the cloud — the local
     // instance has no OpenAI key and the cloud resolves the model id. Mirrors
     // the chat-completions / anthropic-messages cloud paths; required for GPT
     // reasoning (Responses API) to work in cloud-proxy mode.
     if (isShogoCloudForwarding()) {
       try {
-        const request = await c.req.json()
-        if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request?.model))) {
-          return modelNotVisibleResponse(c, request?.model)
+        if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, body?.model))) {
+          return modelNotVisibleResponse(c, body?.model)
         }
-        console.log(`[AI Proxy] Forwarding Responses API to Shogo Cloud: ${request?.model} (stream: ${!!request?.stream})`)
-        return await forwardResponsesToCloud(c, request, c.req.raw.signal)
+        console.log(`[AI Proxy] Forwarding Responses API to Shogo Cloud: ${body?.model} (stream: ${!!body?.stream})`)
+        return await forwardResponsesToCloud(c, body, c.req.raw.signal)
       } catch (error: any) {
         console.error('[AI Proxy] Cloud forwarding error (responses):', error.message)
         return c.json({ error: { message: `Cloud proxy error: ${error.message}`, type: 'server_error', code: 'cloud_proxy_error' } }, 502)
@@ -4383,14 +4421,15 @@ export function aiProxyRoutes() {
 
     let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
-      const body = await c.req.json()
       const requestedModel = body.model
       if (!requestedModel) {
         return c.json({ error: { message: 'model is required', type: 'invalid_request_error' } }, 400)
       }
       const chatSessionId = c.req.header('x-chat-session-id') || null
 
-      const { resolvedModel } = resolveAgentModel(requestedModel)
+      // `auto` / `basic` / `advanced` were resolved above; `requestedModel` is
+      // already the concrete id.
+      const resolvedModel = requestedModel
       const modelConfig = resolveModel(resolvedModel)
       if (!modelConfig) {
         return c.json({ error: { message: `Model '${requestedModel}' is not supported.`, type: 'invalid_request_error' } }, 400)
@@ -4772,12 +4811,12 @@ export function aiProxyRoutes() {
     // When Shogo Cloud key is configured, forward everything to the cloud
     if (isShogoCloudForwarding()) {
       try {
-        const body = await c.req.text()
+        let body = await c.req.text()
         // Same allowlist check as the local path below, using the same model
         // resolution, before the request leaves this machine.
         let forwardedModel: string | undefined
         try { forwardedModel = JSON.parse(body)?.model } catch { /* cloud reports malformed bodies */ }
-        const { resolvedModel: forwardedResolved, isLocal: forwardedIsLocal } = resolveAgentModel(forwardedModel || 'advanced')
+        const { resolvedModel: forwardedResolved, isLocal: forwardedIsLocal } = await resolveRequestModel(forwardedModel || 'advanced', tokenPayload.workspaceId)
         if (!forwardedIsLocal && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, forwardedResolved))) {
           return c.json(
             { type: 'error', error: { type: 'invalid_request_error', message: `Model '${forwardedResolved}' is not available for this workspace. A workspace admin has restricted the available models.` } },
@@ -4789,6 +4828,12 @@ export function aiProxyRoutes() {
           if (value) headers[key] = value as string
         }
         const parsed = JSON.parse(body)
+        // Send the concrete id: a cloud that has not shipped `auto` yet would
+        // 400 on it, and `basic`/`advanced` resolve the same way there.
+        if (parsed.model && parsed.model !== forwardedResolved) {
+          parsed.model = forwardedResolved
+          body = JSON.stringify(parsed)
+        }
         console.log(`[AI Proxy] Forwarding Anthropic to Shogo Cloud: ${parsed.model || 'unknown'} (stream: ${!!parsed.stream})`)
         return await forwardAnthropicToCloud(c, body, headers, c.req.raw.signal)
       } catch (error: any) {
@@ -4824,7 +4869,7 @@ export function aiProxyRoutes() {
       const isStream = !!parsed.stream
       const chatSessionId = c.req.header('x-chat-session-id') || null
 
-      const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
+      const { resolvedModel, isLocal } = await resolveRequestModel(requestModel, tokenPayload.workspaceId)
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
       const resolvedModelConfig = resolveModel(resolvedModel)
 
