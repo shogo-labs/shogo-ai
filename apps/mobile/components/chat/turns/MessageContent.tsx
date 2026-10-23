@@ -151,13 +151,13 @@ function ImageThumbnail({
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
-  const naturalSize = useNaturalImageSize(url)
+  const imageSource = useAgentImageSource(url)
+  const naturalSize = useNaturalImageSize(imageSource?.uri ?? url)
   const box = fitChatImage({
     naturalWidth: naturalSize.size?.width,
     naturalHeight: naturalSize.size?.height,
     containerWidth,
   })
-  const imageSource = useAgentImageSource(url)
   const [contextMenu, setContextMenu] = useState<{
     x: number
     y: number
