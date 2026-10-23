@@ -11,11 +11,16 @@ import { CHAT_RATE_LIMITS, takeRateLimit } from '../lib/chat-limits'
 import { huddlesEnabled } from '../lib/livekit'
 import {
   cancelHuddleInvite,
+  createHuddleNotesTicket,
   declineHuddle,
+  deleteHuddleNotes,
   getHuddle,
   getHuddleJoinRequest,
   getHuddleLink,
   getHuddleLinkInfo,
+  getHuddleNotes,
+  guestHuddleNotesChunk,
+  guestHuddleNotesTicket,
   guestLeaveHuddle,
   getHuddleChat,
   inviteToHuddle,
@@ -24,8 +29,10 @@ import {
   leaveHuddle,
   listActiveHuddles,
   muteHuddleParticipant,
+  postHuddleNotesChunk,
   removeHuddleParticipant,
   resolveHuddleRequest,
+  setHuddleNotes,
 } from '../services/huddle.service'
 import { closePoll, postHuddlePoll, postHuddleQuestion, setQuestionAnswered, voteOnMessage } from '../services/conversation-polls.service'
 
@@ -135,6 +142,32 @@ export function mountHuddleRoutes(router: Hono, h: HuddleRouteHelpers): void {
   }
   const bodyOf = async (c: any): Promise<Record<string, unknown>> => ((await c.req.json().catch(() => null)) as Record<string, unknown> | null) ?? {}
   const clientIp = (c: any): string => c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || c.req.header('x-real-ip') || 'unknown'
+  /**
+   * One live-audio chunk, in any of the shapes the recorders use: a raw WAV with
+   * `x-live-seq`, multipart `audio` + `seq`, or JSON with base64 `audio`.
+   */
+  const readChunk = async (c: any): Promise<{ audio: Buffer; seq: number } | null> => {
+    const contentType = c.req.header('content-type') || ''
+    const headerSeq = Number(c.req.header('x-live-seq'))
+    let audio: Buffer
+    let seq: number
+    if (contentType.includes('multipart/form-data')) {
+      const form = await c.req.formData()
+      const file = form.get('audio')
+      if (!file || typeof file === 'string') return null
+      audio = Buffer.from(await (file as File).arrayBuffer())
+      seq = Number(form.get('seq'))
+    } else if (contentType.includes('audio/') || contentType.includes('application/octet-stream')) {
+      audio = Buffer.from(await c.req.arrayBuffer())
+      seq = headerSeq
+    } else {
+      const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+      seq = Number(body?.seq ?? headerSeq)
+      audio = typeof body?.audio === 'string' ? Buffer.from(body.audio, 'base64') : Buffer.alloc(0)
+    }
+    if (!audio.length || !Number.isInteger(seq) || seq < 0) return null
+    return { audio, seq }
+  }
 
   // ─── Moderation ──────────────────────────────────────────────────────────
 
@@ -235,6 +268,111 @@ export function mountHuddleRoutes(router: Hono, h: HuddleRouteHelpers): void {
   router.post('/huddle-links/requests/:requestId/leave', async (c) => {
     try {
       await guestLeaveHuddle(c.req.param('requestId'))
+      return c.json({ ok: true })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  // ─── Notes (transcript + auto summary) ───────────────────────────────────
+
+  router.post('/conversations/:conversationId/huddle/notes/ticket', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const limited = await takeRateLimit(`huddle-notes-ticket:${userId}`, 60, 60_000)
+    if (!limited.allowed) return tooFast(c, limited.retryAfterSeconds)
+    const body = await bodyOf(c)
+    try {
+      return c.json(
+        await createHuddleNotesTicket(c.req.param('conversationId'), userId, {
+          forUserId: typeof body.forUserId === 'string' ? body.forUserId : null,
+          client: typeof body.client === 'string' ? body.client : null,
+        }),
+      )
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversations/:conversationId/huddle/notes', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await bodyOf(c)
+    if (typeof body.enabled !== 'boolean') {
+      return c.json({ error: { code: 'invalid_request', message: 'Say whether notes should be on or off' } }, 400)
+    }
+    try {
+      return c.json({ huddle: await setHuddleNotes(c.req.param('conversationId'), userId, body.enabled) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  // Fallback when the audio socket can't run: one short WAV per chunk.
+  router.post('/conversations/:conversationId/huddle/notes/chunk', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const limited = await takeRateLimit(`huddle-notes-chunk:${userId}`, 240, 60_000)
+    if (!limited.allowed) return tooFast(c, limited.retryAfterSeconds)
+    let chunk: { audio: Buffer; seq: number } | null
+    try {
+      chunk = await readChunk(c)
+    } catch {
+      chunk = null
+    }
+    if (!chunk) return c.json({ error: { code: 'invalid_chunk', message: 'Could not read the live audio chunk' } }, 400)
+    const forUserId = c.req.header('x-notes-for') || c.req.query('forUserId') || null
+    const client = c.req.header('x-client-platform') || null
+    try {
+      return c.json(await postHuddleNotesChunk(c.req.param('conversationId'), userId, { ...chunk, forUserId, client }))
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  // Public twins for a guest: their admitted request id is their credential.
+  router.post('/huddle-links/requests/:requestId/notes/ticket', async (c) => {
+    const limited = await takeRateLimit(`huddle-guest-notes-ticket:${clientIp(c)}`, 60, 60_000)
+    if (!limited.allowed) return tooFast(c, limited.retryAfterSeconds)
+    try {
+      return c.json(await guestHuddleNotesTicket(c.req.param('requestId')))
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.post('/huddle-links/requests/:requestId/notes/chunk', async (c) => {
+    const limited = await takeRateLimit(`huddle-guest-notes-chunk:${clientIp(c)}`, 240, 60_000)
+    if (!limited.allowed) return tooFast(c, limited.retryAfterSeconds)
+    let chunk: { audio: Buffer; seq: number } | null
+    try {
+      chunk = await readChunk(c)
+    } catch {
+      chunk = null
+    }
+    if (!chunk) return c.json({ error: { code: 'invalid_chunk', message: 'Could not read the live audio chunk' } }, 400)
+    try {
+      return c.json(await guestHuddleNotesChunk(c.req.param('requestId'), chunk))
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.get('/huddles/:huddleId/notes', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json(await getHuddleNotes(c.req.param('huddleId'), userId))
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.delete('/huddles/:huddleId/notes', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      await deleteHuddleNotes(c.req.param('huddleId'), userId)
       return c.json({ ok: true })
     } catch (err) {
       return h.errorResponse(c, err)

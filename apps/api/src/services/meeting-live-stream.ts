@@ -22,12 +22,14 @@ import { spawn, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import { createServer } from 'net'
 import {
   appendStreamFinal,
+  ensureHuddleNotesDraft,
   getLocalMeetingConfig,
   setLiveStatus,
   upsertRecordingDraft,
   friendlyMeetingError,
   type StreamFinalResult,
 } from './meeting.service'
+import { prisma } from '../lib/prisma'
 import {
   getSherpaOnlineServerPath,
   getSherpaProcessEnv,
@@ -43,7 +45,9 @@ export const STREAM_SAMPLE_RATE = 16000
 export const STREAM_MAX_FRAME_BYTES = 64 * 1024
 /** A single stream never runs longer than this. */
 export const STREAM_MAX_SECONDS = 8 * 60 * 60
-const FINISH_TIMEOUT_MS = 8000
+export const FINISH_TIMEOUT_MS = 8000
+/** Huddle streams merge into one shared draft from several people at once, so they retry more. */
+export const HUDDLE_FINAL_ATTEMPTS = 25
 
 // ---------------------------------------------------------------------------
 // Backend contract
@@ -642,17 +646,34 @@ export interface StreamSessionDeps {
     owner: { workspaceId: string; userId: string | null },
     recordingId: string,
   ): Promise<{ id: string; status: string }>
-  appendFinal(meetingId: string, input: { itemId: string; segment: { start: number; end: number; text: string } }): Promise<StreamFinalResult>
+  appendFinal(
+    meetingId: string,
+    input: { itemId: string; segment: { start: number; end: number; text: string }; speaker?: string },
+    options?: { attempts?: number },
+  ): Promise<StreamFinalResult>
   publish(meetingId: string, event: MeetingLiveEvent): void
   setStatus(meetingId: string, status: { state: 'ok' | 'error'; message?: string }): Promise<void>
   /** Called once with the audio seconds streamed, when the backend is billed. */
   bill(ticket: MeetingStreamTicket, seconds: number): Promise<void>
   admit(ticket: MeetingStreamTicket): Promise<boolean>
+  /** A huddle's one shared draft, created on the first stream. */
+  ensureHuddleDraft?(huddleId: string): Promise<{ id: string; status: string }>
+  /**
+   * Seconds since the huddle started, computed on the server. Recorders'
+   * clocks disagree, so a huddle's timeline can't come from the client.
+   */
+  huddleOffsetSeconds?(huddleId: string): Promise<number | null>
 }
 
 export const defaultStreamDeps: StreamSessionDeps = {
   ensureDraft: (owner, recordingId) => upsertRecordingDraft(owner, recordingId, {}),
-  appendFinal: appendStreamFinal,
+  appendFinal: (meetingId, input, options) => appendStreamFinal(meetingId, input, options),
+  ensureHuddleDraft: ensureHuddleNotesDraft,
+  async huddleOffsetSeconds(huddleId) {
+    const huddle = await prisma.huddle.findUnique({ where: { id: huddleId }, select: { startedAt: true } })
+    if (!huddle) return null
+    return Math.max(0, (Date.now() - new Date(huddle.startedAt).getTime()) / 1000)
+  },
   publish: publishMeetingLive,
   setStatus: setLiveStatus,
   async bill(ticket, seconds) {
@@ -693,14 +714,22 @@ export class LiveStreamSession {
   private finished: Promise<void> | null = null
   private billed = false
   private closed = false
+  /**
+   * Where this stream's audio lands on the draft's timeline. A recording
+   * passes it in; a huddle's is computed on the server in `doBegin`, because
+   * each participant's clock disagrees with the others'.
+   */
+  private offset: number
 
   constructor(
     private readonly ticket: MeetingStreamTicket,
-    private readonly offsetSeconds: number,
+    offsetSeconds: number,
     private readonly send: (message: ServerMessage) => void,
     private readonly choice: BackendChoice | null = chooseStreamingBackend(),
     private readonly deps: StreamSessionDeps = defaultStreamDeps,
-  ) {}
+  ) {
+    this.offset = offsetSeconds
+  }
 
   /** Connect the recognizer. False (after telling the recorder why) when the stream can't run. */
   begin(): Promise<boolean> {
@@ -717,13 +746,26 @@ export class LiveStreamSession {
     const choice = this.choice
     if (!choice) return this.fail('stream_unavailable', 'Live streaming is not available here.')
     if (!(await this.deps.admit(this.ticket))) return this.fail('usage_limit_reached', 'Workspace usage limit reached.')
-    const draft = await this.deps.ensureDraft(
-      { workspaceId: this.ticket.workspaceId, userId: this.ticket.userId },
-      this.ticket.recordingId,
-    )
+    const huddleId = this.ticket.huddleId
+    let draft: { id: string; status: string }
+    if (huddleId) {
+      const ensure = this.deps.ensureHuddleDraft
+      if (!ensure) return this.fail('stream_unavailable', 'Huddle notes are not available here.')
+      draft = await ensure(huddleId)
+    } else {
+      draft = await this.deps.ensureDraft(
+        { workspaceId: this.ticket.workspaceId, userId: this.ticket.userId },
+        this.ticket.recordingId,
+      )
+    }
     this.meetingId = draft.id
     if (draft.status !== 'recording') return this.fail('not_recording', 'This recording has already finished.')
-    const backend = choice.create(this.offsetSeconds)
+    if (huddleId) {
+      // Late joins and skewed clocks both land on the huddle's own clock.
+      const offset = await this.deps.huddleOffsetSeconds?.(huddleId).catch(() => null)
+      if (typeof offset === 'number' && Number.isFinite(offset)) this.offset = Math.max(0, offset)
+    }
+    const backend = choice.create(this.offset)
     this.backend = backend
     try {
       await backend.start((event) => this.onBackendEvent(event))
@@ -769,16 +811,23 @@ export class LiveStreamSession {
       this.send(message)
     } else if (event.type === 'final') {
       const segment = { start: event.start, end: event.end, text: event.text }
+      const speaker = this.ticket.speaker
+      // Several people stream into one huddle draft, so their provider item
+      // ids are namespaced by speaker: otherwise one person's item 3 would
+      // dedupe away another person's item 3.
+      const speakerId = this.ticket.speakerId
+      const itemId = speakerId ? `${speakerId}:${event.itemId}` : event.itemId
+      const options = speakerId ? { attempts: HUDDLE_FINAL_ATTEMPTS } : undefined
       this.persist = this.persist.then(async () => {
-        const result = await this.deps.appendFinal(meetingId, { itemId: event.itemId, segment })
+        const result = await this.deps.appendFinal(meetingId, { itemId, segment, ...(speaker ? { speaker } : {}) }, options)
         if (!result.ok) {
           this.lost = true
           if (result.reason === 'not_recording') this.close()
           return
         }
         if (result.stored) this.finals = result.finals
-        this.deps.publish(meetingId, { type: 'final', itemId: event.itemId, segment })
-        this.send({ type: 'final', itemId: event.itemId, segment })
+        this.deps.publish(meetingId, { type: 'final', itemId, segment })
+        this.send({ type: 'final', itemId, segment })
       })
     } else {
       this.lost = true
@@ -802,7 +851,7 @@ export class LiveStreamSession {
       type: 'done',
       complete: ok && !this.lost,
       chunks: this.finals,
-      seconds: this.offsetSeconds + this.samples / STREAM_SAMPLE_RATE,
+      seconds: this.offset + this.samples / STREAM_SAMPLE_RATE,
     })
     await this.settleBilling()
     this.backend?.close()
@@ -906,6 +955,8 @@ export function meetingStreamSocketData(url: URL): MeetingStreamSocketData | nul
   const ticket = verifyStreamTicket(url.searchParams.get('ticket'))
   if (!ticket) return null
   const offset = Number(url.searchParams.get('offset') ?? 0)
+  // A huddle's timeline comes from its `startedAt` on the server, never from the recorder.
+  if (ticket.huddleId) return { kind: 'meeting-live-stream', ticket, offsetSeconds: 0 }
   return {
     kind: 'meeting-live-stream',
     ticket,

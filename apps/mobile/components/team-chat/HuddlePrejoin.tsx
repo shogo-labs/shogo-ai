@@ -11,6 +11,7 @@ import { Mic, MicOff, Settings, Video, VideoOff } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { cancelPendingHuddleJoin, joinHuddleCall, type PendingHuddleJoin } from '../../lib/huddle-call'
 import { useHuddlePrefs } from '../../lib/huddle-prefs'
+import { HuddleNotesNotice } from './HuddleNotesPill'
 import { openPreview, previewSupported, type Preview } from '../../lib/huddle-preview'
 import { HuddleSettingsSheet } from './HuddleSettingsSheet'
 
@@ -128,6 +129,10 @@ export function HuddlePrejoin({ pending }: { pending: PendingHuddleJoin }) {
             <Pressable onPress={() => setSettings(true)} accessibilityRole="button" accessibilityLabel="Device and camera settings" className="h-10 w-10 items-center justify-center rounded-full bg-muted">
               <Settings size={18} className="text-foreground" />
             </Pressable>
+          </View>
+
+          <View className="mb-3">
+            <HuddleNotesNotice />
           </View>
 
           <View className="flex-row gap-2">

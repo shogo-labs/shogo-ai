@@ -28,6 +28,9 @@ import {
   type HuddleViewMode,
 } from './huddle-prefs'
 import { getHuddleAppBridge, type DesktopHuddleCommand } from './desktop-huddle'
+import { startHuddleNotes, type HuddleNotesEngine, type NotesMode, type NotesPeer } from './huddle-notes'
+import { toWsBase } from './live-stream'
+import { API_URL } from './api'
 import { huddleJoinLink } from './team-chat-links'
 import { teamChatApi, type ConversationKind, type TeamChatEvent } from './team-chat-api'
 
@@ -86,6 +89,12 @@ export interface HuddleCallState {
   notice: string | null
   /** Set when you're in as an outside guest let in through a huddle link. */
   guest: { requestId: string; name: string } | null
+  /**
+   * Notes (transcript + summary): the call-wide toggle, and what this device is
+   * doing about it. `mode` is `unsupported` on a phone, which a web or desktop
+   * participant covers.
+   */
+  notes: { enabled: boolean; mode: NotesMode; message: string | null; covering: string[] }
 }
 
 const IDLE: HuddleCallState = {
@@ -110,6 +119,7 @@ const IDLE: HuddleCallState = {
   pending: null,
   notice: null,
   guest: null,
+  notes: { enabled: true, mode: 'off', message: null, covering: [] },
 }
 
 let state: HuddleCallState = IDLE
@@ -204,8 +214,123 @@ function aloneInCall(): boolean {
 /** The call LiveKit last dropped us from, so a decline that lands just after can still explain it. */
 let lastDropped: { conversationId: string; at: number } | null = null
 
+// ─── Notes: every participant's audio goes through the meeting pipeline ─────
+
+/** What this device is streaming notes through, or null when notes are off. */
+let notesEngine: HuddleNotesEngine | null = null
+
+/** Which client this is: a phone can't tap PCM, so it tells the room it needs covering. */
+function notesClientKind(): 'web' | 'native' {
+  return Platform.OS === 'web' ? 'web' : 'native'
+}
+
+/** What the coverer decision sees: who is here, who streams, who needs covering. */
+function notesPeers(): NotesPeer[] {
+  return state.participants.map((p) => ({
+    userId: p.userId,
+    present: true,
+    self: p.notesSelf,
+    needsCover: p.notesNeedsCover,
+  }))
+}
+
+/**
+ * Start this device's notes stream, once the room has told us who we are and
+ * the call's toggle is on. Every participant runs this; the engine decides
+ * whether this one streams its own audio, covers a phone, or does nothing.
+ */
+function ensureNotesEngine(): void {
+  if (notesEngine || state.status === 'idle' || !state.conversationId) return
+  if (!state.notes.enabled) return
+  const selfId = state.participants.find((p) => p.isLocal)?.userId
+  // The first roster event carries our own id; until then there is nobody to stream.
+  if (!selfId) return
+  const conversationId = state.conversationId
+  const guest = state.guest
+  const gen = generation
+  const engine = startHuddleNotes({
+    selfId,
+    wsBase: toWsBase(API_URL),
+    ticket: async (forUserId) =>
+      guest
+        ? teamChatApi().guestHuddleNotesTicket(guest.requestId)
+        : teamChatApi().huddleNotesTicket(conversationId, { forUserId, client: notesClientKind() }),
+    postChunk: async (forUserId, chunk) => {
+      if (guest) return teamChatApi().guestHuddleNotesChunk(guest.requestId, chunk)
+      return teamChatApi().postHuddleNotesChunk(conversationId, chunk, { forUserId, client: notesClientKind() })
+    },
+    getLocalStream: () => media?.localMicStream?.() ?? null,
+    getRemoteStreams: () => media?.remoteAudioStreams?.() ?? [],
+    getPeers: notesPeers,
+    setSource: async (source) => {
+      await media?.setNotesSource?.(source)
+    },
+    onStatus: (notes) => {
+      if (gen !== generation || notesEngine !== engine) return
+      set({ notes: { ...state.notes, ...notes } })
+    },
+  })
+  notesEngine = engine
+  engine.sync()
+}
+
+/** Recompute the streams after the roster, the mic or the toggle changed. */
+function syncNotes(): void {
+  if (!state.notes.enabled) {
+    void stopNotes()
+    return
+  }
+  ensureNotesEngine()
+  notesEngine?.sync()
+}
+
+async function stopNotes(): Promise<void> {
+  const engine = notesEngine
+  notesEngine = null
+  await engine?.stop({ discard: true }).catch(() => {})
+}
+
+/**
+ * Turn notes on or off for the rest of the call. Any participant may: everyone
+ * is told who did it, and the streams stop within a second or two.
+ */
+export async function setHuddleNotesEnabled(enabled: boolean): Promise<void> {
+  const { conversationId, workspaceId } = state
+  if (!conversationId) return
+  if (state.notes.enabled === enabled) return
+  set({ notes: { ...state.notes, enabled } })
+  if (!enabled) void stopNotes()
+  try {
+    const huddle = await teamChatApi().setHuddleNotes(conversationId, enabled)
+    if (huddle && workspaceId) setConversationHuddle(workspaceId, conversationId, huddle)
+    if (enabled) syncNotes()
+  } catch (err) {
+    set({ notes: { ...state.notes, enabled: !enabled }, notice: errorMessage(err, 'Could not change notes') })
+    if (!enabled) syncNotes()
+  }
+}
+
+/** Follow the toggle when it comes from the server (someone else flipped it). */
+function applyNotesState(enabled: boolean): void {
+  if (state.notes.enabled === enabled) return
+  set({ notes: { ...state.notes, enabled } })
+  if (enabled) syncNotes()
+  else void stopNotes()
+}
+
+/** Someone turned notes on or off: say who, so nobody is transcribed without knowing. */
+export function applyHuddleNotesEvent(event: { conversationId: string; enabled: boolean; name: string }): void {
+  if (!state.conversationId || event.conversationId !== state.conversationId) return
+  const mine = event.name === state.participants.find((p) => p.isLocal)?.name
+  if (!mine) {
+    set({ notice: event.enabled ? `Notes on (${event.name})` : `Notes off (${event.name}): nothing is being written down` })
+  }
+  applyNotesState(event.enabled)
+}
+
 async function teardown(conversationId: string | null, workspaceId: string | null, guest: HuddleCallState['guest'] = null): Promise<void> {
   clearNoAnswer()
+  await stopNotes()
   const current = media
   media = null
   await current?.disconnect().catch(() => {})
@@ -263,11 +388,15 @@ function callHandlers(gen: number) {
     onLocalMedia: ({ camera, screen, muted }: { camera: boolean; screen: boolean; muted?: boolean }) => {
       if (gen !== generation) return
       set({ camera, screen, ...(muted === undefined ? {} : { muted }) })
+      // The mic just published (or went away): that is when notes can start.
+      syncNotes()
     },
     onParticipants: (participants: HuddleParticipantState[]) => {
       if (gen !== generation) return
       const me = participants.find((p) => p.isLocal)
       set({ participants, handRaised: !!me?.handRaisedAt })
+      // Roster changes decide who streams and who covers a phone.
+      syncNotes()
     },
     onReaction: (reaction: HuddleReactionEvent) => gen === generation && addReaction(reaction),
     onDevicesChanged: () => gen === generation && deviceListeners.forEach((l) => l()),
@@ -340,7 +469,8 @@ export async function joinHuddleCall(input: JoinHuddleInput): Promise<void> {
       return
     }
     media = connected
-    set({ status: 'connected' })
+    set({ status: 'connected', notes: { ...state.notes, enabled: joined.huddle.notes?.enabled !== false } })
+    syncNotes()
     if (input.kind === 'dm' && joined.huddle.participants.length === 1) {
       noAnswerTimer = setTimeout(() => {
         noAnswerTimer = null
@@ -404,6 +534,7 @@ export async function joinHuddleAsGuest(input: GuestHuddleInput & { startMuted?:
     }
     media = connected
     set({ status: 'connected' })
+    syncNotes()
   } catch (err) {
     if (gen !== generation) return
     generation++
@@ -671,9 +802,19 @@ export function clearHuddleError(): void {
  * can't decline a huddle you're in, so a decline is always someone else's.
  */
 export function applyCallEvent(event: TeamChatEvent): void {
-  if (event.type !== 'huddle.declined') return
   // The huddle window sees the same events and handles the hang-up itself.
   if (remote()) return
+  // Someone turned notes on or off: stop our streams at once, or start them again.
+  if (event.type === 'huddle.notes') {
+    applyHuddleNotesEvent(event)
+    return
+  }
+  if (event.type === 'huddle.updated') {
+    if (!state.conversationId || event.conversationId !== state.conversationId) return
+    applyNotesState(event.huddle?.notes?.enabled !== false)
+    return
+  }
+  if (event.type !== 'huddle.declined') return
   if (state.status === 'idle') {
     if (lastDropped?.conversationId === event.conversationId && Date.now() - lastDropped.at < 5_000) set({ error: `${event.name} declined` })
     return

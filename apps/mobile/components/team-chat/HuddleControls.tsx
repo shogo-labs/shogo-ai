@@ -12,6 +12,7 @@ import {
   Mic,
   MicOff,
   MonitorOff,
+  NotebookPen,
   MonitorUp,
   PhoneOff,
   Presentation,
@@ -33,6 +34,7 @@ import {
   setHuddleHand,
   setHuddleLayout,
   setHuddleMuted,
+  setHuddleNotesEnabled,
   setHuddleScreenShare,
   type HuddleCallState,
 } from '../../lib/huddle-call'
@@ -145,6 +147,16 @@ export function HuddleControls({ call, compact, onInvite, onSettings, onCopyLink
         {!compact && onToggleChat ? (
           <ControlButton label={chatOpen ? 'Hide huddle chat' : 'Show huddle chat'} size={size} active={chatOpen} onPress={onToggleChat}>
             <MessageSquare size={icon} color={chatOpen ? white : undefined} className={chatOpen ? undefined : 'text-foreground'} />
+          </ControlButton>
+        ) : null}
+        {!compact ? (
+          <ControlButton
+            label={call.notes.enabled ? 'Turn notes off for everyone' : 'Turn notes on for everyone'}
+            size={size}
+            active={call.notes.enabled}
+            onPress={() => void setHuddleNotesEnabled(!call.notes.enabled)}
+          >
+            <NotebookPen size={icon} color={call.notes.enabled ? white : undefined} className={call.notes.enabled ? undefined : 'text-foreground'} />
           </ControlButton>
         ) : null}
         {!compact && onSettings ? (

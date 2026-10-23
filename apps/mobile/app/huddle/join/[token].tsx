@@ -11,6 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native'
+import { HuddleNotesNotice } from '../../../components/team-chat/HuddleNotesPill'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { AlertTriangle, Headphones } from 'lucide-react-native'
@@ -273,6 +274,10 @@ export default function HuddleJoinScreen() {
         <Text className="text-center text-sm text-muted-foreground">{who(info)}</Text>
       </View>
       {error || call.error ? <Text className="text-center text-sm text-destructive">{error ?? call.error}</Text> : null}
+      {/* Nobody joins this call without knowing it is written down. */}
+      <View className="w-full">
+        <HuddleNotesNotice />
+      </View>
       {member ? (
         <Button label="Join huddle" onPress={() => void goIn(info)} disabled={busy} />
       ) : (

@@ -35,6 +35,21 @@ import {
   requirePost,
   updateMessageInternal,
 } from './conversation.service'
+import { createStreamTicket, STREAM_TICKET_TTL_MS, STREAM_WS_PATH } from '../lib/meeting-stream-ticket'
+import { describeStreamAvailability, FINISH_TIMEOUT_MS } from './meeting-live-stream'
+import {
+  appendLiveTranscript,
+  enhanceMeeting,
+  ensureHuddleNotesDraft,
+  finalizeLiveTranscript,
+  findRecordingDraft,
+  huddleRecordingId,
+  parseActionItems,
+  readTranscript,
+  registerHuddleDraftFinisher,
+  serializeMeeting,
+} from './meeting.service'
+import { BUILTIN_TEMPLATE_PREFIX } from './meeting-templates'
 
 const db = prisma as any
 
@@ -126,6 +141,11 @@ export interface HuddleView {
   chatMembers: string[]
   /** People knocking to be let in. Everyone in the call sees these with Admit and Deny. */
   requests: HuddleRequestView[]
+  /**
+   * Notes (speaker-labelled transcript + auto summary at the end). On by
+   * default; any participant may turn it off for the rest of the call.
+   */
+  notes: { enabled: boolean }
 }
 
 export interface HuddleJoin {
@@ -240,6 +260,7 @@ async function serialize(row: any): Promise<HuddleView> {
         createdAt: new Date(r.createdAt).toISOString(),
       }
     }),
+    notes: { enabled: row.notesEnabled !== false },
   }
 }
 
@@ -276,6 +297,45 @@ export interface HuddleChatTarget {
 }
 
 /**
+ * Where a huddle's chat lives, decided from its roster alone: a channel keeps
+ * the channel's huddle thread, two people use their DM, three or more use the
+ * group DM with exactly those people (found or created). `allowOwn` is false
+ * for someone who can't post in the conversation the call started in; they
+ * only get the group. Unlike `getHuddleChat` this also works for an ended
+ * huddle, which is how the notes summary lands where the call's chat did.
+ */
+async function resolveHuddleChat(
+  row: any,
+  conversation: any,
+  allowOwn: boolean,
+): Promise<{ chat: HuddleChatTarget | null; members: string[] }> {
+  const members = await chatMembersOf(row)
+  const own = (): HuddleChatTarget | null =>
+    allowOwn ? { conversationId: conversation.id, kind: conversation.kind, threadRootId: row.messageId ?? null, members, moved: false } : null
+
+  // A channel's thread is for its members; everyone else in the call gets the group.
+  if (!isDirect(conversation.kind) && allowOwn) return { chat: own(), members }
+  if (members.length < 2) return { chat: own(), members }
+  if (members.length > MAX_GROUP_DM_PARTICIPANTS) return { chat: own(), members }
+  const chat = await openDirectConversation(
+    conversation.workspaceId,
+    row.startedById,
+    members.filter((id: string) => id !== row.startedById),
+  )
+  const same = chat.id === conversation.id
+  return {
+    chat: {
+      conversationId: chat.id,
+      kind: chat.kind,
+      threadRootId: same ? row.messageId ?? null : null,
+      members,
+      moved: !same,
+    },
+    members,
+  }
+}
+
+/**
  * Where a person in the call chats. Two people use their DM and three or more
  * use the group DM with exactly those people, found or created. Anyone added
  * to the call changes the set, so the next lookup lands in the right group and
@@ -297,28 +357,12 @@ export async function getHuddleChat(conversationId: string, userId: string): Pro
   } catch (err) {
     if (!(err instanceof ConversationError) || (err.status !== 404 && err.status !== 403)) throw err
   }
-  const members = await chatMembersOf(row)
+  const { chat, members } = await resolveHuddleChat(row, conversation, member)
   if (!member && !members.includes(userId)) throw new ConversationError(403, 'forbidden', 'Join the huddle first')
-
-  const own = (): HuddleChatTarget | null =>
-    member ? { conversationId, kind: conversation.kind, threadRootId: row.messageId ?? null, members, moved: false } : null
-
-  if (!isDirect(conversation.kind) && member) return own()
-  if (members.length < 2) return own()
-  if (members.length > MAX_GROUP_DM_PARTICIPANTS) {
-    const fallback = own()
-    if (fallback) return fallback
+  if (!chat && members.length > MAX_GROUP_DM_PARTICIPANTS) {
     throw new ConversationError(400, 'too_many', `Group chat is limited to ${MAX_GROUP_DM_PARTICIPANTS} people`)
   }
-  const chat = await openDirectConversation(conversation.workspaceId, userId, members.filter((id) => id !== userId))
-  const same = chat.id === conversationId
-  return {
-    conversationId: chat.id,
-    kind: chat.kind,
-    threadRootId: same ? row.messageId ?? null : null,
-    members,
-    moved: !same,
-  }
+  return chat
 }
 
 /**
@@ -442,6 +486,9 @@ async function endHuddle(huddleId: string): Promise<boolean> {
     const config = liveKitConfig()
     if (config) void deleteRoom(config, huddle.roomName)
     await finishStartMessage(huddle, endedAt)
+    // The transcript is finished, summarized and posted a little after the
+    // last person leaves, once every streamer has flushed its recognizer.
+    scheduleHuddleNotes(huddleId)
     await announce(huddle.conversationId, huddleId)
     await publishHuddlePresence(huddle.workspaceId, open.map((p: any) => p.userId))
   }
@@ -1401,12 +1448,374 @@ export async function handleLiveKitWebhook(input: {
   return { status: 200, body: { ok: true } }
 }
 
+// ─── Notes: a speaker-labelled transcript and an auto summary ────────────────
+
+/**
+ * How long after the last person leaves the notes wait before finishing: the
+ * streamers flush their recognizers first, and a final that lands later gets
+ * `not_recording` and is dropped. Safe across pods, so no coordination needed.
+ */
+const NOTES_FINISH_GRACE_MS = FINISH_TIMEOUT_MS + 4_000
+/** A call shorter than this leaves no record at all. */
+export const HUDDLE_NOTES_MIN_MS = 30_000
+const HUDDLE_TEMPLATE_ID = `${BUILTIN_TEMPLATE_PREFIX}huddle`
+/** Summary text that would not fit a message leaves room for the title and link. */
+const MAX_NOTES_MESSAGE_CHARS = 30_000
+
+const notesTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+export interface HuddleNotesTicket {
+  ticket: string
+  path: string
+  backend: 'openai' | 'sherpa'
+  expiresInMs: number
+}
+
+function requireParticipant(row: any, userId: string, message = 'Join the huddle first'): void {
+  if (!row.participants?.some((p: any) => p.userId === userId)) throw new ConversationError(403, 'forbidden', message)
+}
+
+/** What the transcript calls this person: their name, or their guest name. */
+async function speakerName(row: any, id: string): Promise<string> {
+  if (isGuestId(id)) {
+    const guest = await db.huddleJoinRequest.findFirst({
+      where: { huddleId: row.id, guestId: id },
+      select: { guestName: true },
+    })
+    return guest?.guestName || 'Guest'
+  }
+  const user = await db.user.findUnique({ where: { id }, select: { name: true, email: true } })
+  return user?.name || user?.email || 'Someone'
+}
+
+/** 502/409 with the reason when streaming transcription can't run here. */
+async function streamAvailabilityOrThrow(): Promise<{ backend: 'openai' | 'sherpa' }> {
+  const availability = await describeStreamAvailability()
+  if (availability.ok) return { backend: availability.backend }
+  throw availability.reason === 'disabled'
+    ? new ConversationError(409, 'meetings_disabled', 'Meetings and transcription are disabled')
+    : new ConversationError(502, 'stream_unavailable', 'Streaming transcription is not available here')
+}
+
+function notesTicket(
+  row: any,
+  target: string,
+  speaker: string,
+  ownerUserId: string | null,
+  backend: 'openai' | 'sherpa',
+): HuddleNotesTicket {
+  return {
+    ticket: createStreamTicket({
+      workspaceId: row.workspaceId,
+      userId: ownerUserId,
+      recordingId: huddleRecordingId(row.id),
+      huddleId: row.id,
+      speaker,
+      speakerId: target,
+    }),
+    path: STREAM_WS_PATH,
+    backend,
+    expiresInMs: STREAM_TICKET_TTL_MS,
+  }
+}
+
+/**
+ * A ticket for the audio socket that transcribes one person in a huddle.
+ *
+ * `forUserId` is how a covering client on web or desktop transcribes someone
+ * else: a phone can't tap its own audio for streaming, so one participant's
+ * device listens to the phone's track and sends it labelled with that person.
+ */
+export async function createHuddleNotesTicket(
+  conversationId: string,
+  userId: string,
+  opts: { forUserId?: string | null; client?: string | null } = {},
+): Promise<HuddleNotesTicket> {
+  const row = await activeHuddleRow(conversationId)
+  if (!row) throw new ConversationError(409, 'huddle_ended', 'This huddle has ended')
+  requireParticipant(row, userId)
+  if (!row.notesEnabled) throw new ConversationError(409, 'notes_off', 'Notes are off for this huddle')
+  const { backend } = await streamAvailabilityOrThrow()
+
+  const target = opts.forUserId && opts.forUserId !== userId ? opts.forUserId : userId
+  if (target !== userId) {
+    if (opts.client === 'native') {
+      throw new ConversationError(403, 'forbidden', 'Notes for a phone participant need someone on web or desktop')
+    }
+    requireParticipant(row, target, 'That person is not in this huddle')
+  }
+  return notesTicket(row, target, await speakerName(row, target), userId, backend)
+}
+
+/** The same ticket for a guest let in through the link: their request id is their credential. */
+export async function guestHuddleNotesTicket(requestId: string): Promise<HuddleNotesTicket> {
+  const request = await db.huddleJoinRequest.findUnique({ where: { id: requestId }, include: { huddle: true } })
+  if (!request?.guestId || !request.huddle || request.huddle.endedAt) {
+    throw new ConversationError(404, 'not_found', 'Request not found')
+  }
+  if (request.status !== 'admitted') throw new ConversationError(403, 'forbidden', 'You are not in this huddle')
+  const row = await db.huddle.findUnique({ where: { id: request.huddleId }, include: { participants: OPEN_PARTICIPANTS } })
+  if (!row || row.endedAt) throw new ConversationError(409, 'huddle_ended', 'This huddle has ended')
+  if (!row.participants.some((p: any) => p.userId === request.guestId)) {
+    throw new ConversationError(403, 'forbidden', 'You are not in this huddle')
+  }
+  if (!row.notesEnabled) throw new ConversationError(409, 'notes_off', 'Notes are off for this huddle')
+  const { backend } = await streamAvailabilityOrThrow()
+  return notesTicket(row, request.guestId, request.guestName || 'Guest', null, backend)
+}
+
+/**
+ * Turn notes on or off for the rest of the call. Any participant may: the
+ * change is announced to everyone with who did it, so nobody is transcribed
+ * without knowing.
+ */
+export async function setHuddleNotes(conversationId: string, userId: string, enabled: boolean): Promise<HuddleView> {
+  const row = await activeHuddleRow(conversationId)
+  if (!row) throw new ConversationError(409, 'huddle_ended', 'This huddle has ended')
+  requireParticipant(row, userId)
+  const changed = row.notesEnabled !== enabled
+  if (changed) await db.huddle.update({ where: { id: row.id }, data: { notesEnabled: enabled } })
+  const view = (await announce(conversationId)) ?? (await serialize(await activeHuddleRow(conversationId)))
+  if (changed) {
+    const conversation = await db.conversation.findUnique({ where: { id: conversationId } })
+    const user = await db.user.findUnique({ where: { id: userId }, select: { name: true, email: true } })
+    if (conversation) {
+      publishConversationEvent(
+        conversation.workspaceId,
+        {
+          type: 'huddle.notes',
+          conversationId,
+          huddleId: row.id,
+          enabled,
+          changedById: userId,
+          name: user?.name || user?.email || 'Someone',
+        },
+        await huddleAudience(conversation, row.id),
+      )
+    }
+  }
+  return view
+}
+
+/**
+ * Where on the huddle's timeline a chunk that arrived now belongs. The server
+ * decides, so people whose clocks disagree still interleave correctly.
+ */
+function notesOffset(row: any): number {
+  return Math.max(0, (Date.now() - new Date(row.startedAt).getTime()) / 1000)
+}
+
+async function postNotesChunk(
+  row: any,
+  target: string,
+  input: { audio: Buffer; seq: number },
+): Promise<{ meetingId: string; segment: unknown }> {
+  const draft = await ensureHuddleNotesDraft(row.id)
+  const result = await appendLiveTranscript(draft.id, {
+    audio: input.audio,
+    start: notesOffset(row),
+    seq: input.seq,
+    speaker: await speakerName(row, target),
+    // Seqs collide between people sharing the draft, so huddle chunks dedupe by speaker too.
+    itemKey: `${target}:chunk-${input.seq}`,
+  })
+  if (!result.ok) {
+    throw result.reason === 'not_recording'
+      ? new ConversationError(409, 'not_recording', 'This huddle has ended')
+      : result.reason === 'invalid'
+        ? new ConversationError(400, 'invalid_chunk', 'Live audio chunk must be a WAV with a sequence number')
+        : result.reason === 'disabled'
+          ? new ConversationError(409, 'meetings_disabled', 'Meetings and transcription are disabled')
+          : new ConversationError(502, 'busy', 'Live transcript is busy. Try again in a moment.')
+  }
+  return { meetingId: draft.id, segment: result.segment }
+}
+
+/** Fallback when the socket can't run: one short WAV chunk at a time. */
+export async function postHuddleNotesChunk(
+  conversationId: string,
+  userId: string,
+  input: { audio: Buffer; seq: number; forUserId?: string | null; client?: string | null },
+): Promise<{ meetingId: string; segment: unknown }> {
+  const row = await activeHuddleRow(conversationId)
+  if (!row) throw new ConversationError(409, 'huddle_ended', 'This huddle has ended')
+  requireParticipant(row, userId)
+  if (!row.notesEnabled) throw new ConversationError(409, 'notes_off', 'Notes are off for this huddle')
+  const target = input.forUserId && input.forUserId !== userId ? input.forUserId : userId
+  if (target !== userId) {
+    if (input.client === 'native') throw new ConversationError(403, 'forbidden', 'Notes for a phone participant need someone on web or desktop')
+    requireParticipant(row, target, 'That person is not in this huddle')
+  }
+  return postNotesChunk(row, target, input)
+}
+
+export async function guestHuddleNotesChunk(requestId: string, input: { audio: Buffer; seq: number }) {
+  const request = await db.huddleJoinRequest.findUnique({ where: { id: requestId }, include: { huddle: true } })
+  if (!request?.guestId || !request.huddle || request.huddle.endedAt) throw new ConversationError(404, 'not_found', 'Request not found')
+  if (request.status !== 'admitted') throw new ConversationError(403, 'forbidden', 'You are not in this huddle')
+  const row = await db.huddle.findUnique({ where: { id: request.huddleId }, include: { participants: OPEN_PARTICIPANTS } })
+  if (!row || row.endedAt) throw new ConversationError(409, 'huddle_ended', 'This huddle has ended')
+  if (!row.participants.some((p: any) => p.userId === request.guestId)) throw new ConversationError(403, 'forbidden', 'You are not in this huddle')
+  if (!row.notesEnabled) throw new ConversationError(409, 'notes_off', 'Notes are off for this huddle')
+  return postNotesChunk(row, request.guestId, input)
+}
+
+/**
+ * Finish a huddle's notes: promote the transcript every participant wrote
+ * into, write the summary, then post it once — wherever the call's chat went.
+ * Safe to call twice: the post is claimed on the huddle row.
+ */
+export async function finalizeHuddleNotes(huddleId: string): Promise<void> {
+  const row = await db.huddle.findUnique({ where: { id: huddleId }, include: { conversation: true } })
+  if (!row?.endedAt) return
+  const draft = await findRecordingDraft(row.workspaceId, huddleRecordingId(huddleId))
+  if (!draft) return
+
+  const live = draft.status === 'recording' ? readTranscript(draft.transcript) : null
+  const durationMs = new Date(row.endedAt).getTime() - new Date(row.startedAt).getTime()
+  if (draft.status === 'recording') {
+    const stays = await db.huddleParticipant.findMany({ where: { huddleId }, select: { userId: true } })
+    const nobodyElse = stays.length > 0 && stays.every((s: any) => s.userId === row.startedById)
+    // A missed call, a huddle nobody spoke in, or one under 30 s leaves nothing behind.
+    if ((nobodyElse && isDirect(row.conversation.kind)) || !live?.segments.length || durationMs < HUDDLE_NOTES_MIN_MS) {
+      await db.meeting.deleteMany({ where: { id: draft.id, status: 'recording' } })
+      return
+    }
+    await finalizeLiveTranscript(draft.id, Math.round(durationMs / 1000))
+  }
+
+  // Another pod (or an earlier attempt) may have written the summary already.
+  const before = await db.meeting.findUnique({ where: { id: draft.id }, select: { enhanceStatus: true } })
+  if (before && before.enhanceStatus !== 'ready') {
+    await enhanceMeeting(draft.id, { templateId: HUDDLE_TEMPLATE_ID })
+  }
+  const meeting = await db.meeting.findUnique({ where: { id: draft.id } })
+  if (!meeting) return
+
+  // Exactly one pod posts: whoever flips notesMessageId from null.
+  const claim = `pending:${randomUUID()}`
+  const { count } = await db.huddle.updateMany({ where: { id: huddleId, notesMessageId: null }, data: { notesMessageId: claim } })
+  if (!count) return
+
+  const summary = (meeting.enhancedNotes ?? '').trim()
+  const failed = meeting.enhanceStatus !== 'ready' || !summary
+  const title = meeting.title || 'Huddle notes'
+  const target = await resolveHuddleChat(row, row.conversation, true)
+  if (!target.chat) {
+    await db.huddle.updateMany({ where: { id: huddleId, notesMessageId: claim }, data: { notesMessageId: null } })
+    return
+  }
+  const text = failed
+    ? `Huddle notes saved. The summary could not be written: ${(meeting.enhanceError || 'the model returned nothing').slice(0, 300)}.`
+    : `Huddle notes: ${title}\n\n${summary}`.slice(0, MAX_NOTES_MESSAGE_CHARS)
+  try {
+    const posted = await postMessage({
+      conversationId: target.chat.conversationId,
+      threadRootId: target.chat.threadRootId,
+      authorType: 'system',
+      text,
+      blocks: {
+        huddleNotes: { huddleId, meetingId: meeting.id, title, status: failed ? 'failed' : 'ready' },
+      },
+    })
+    await db.huddle.updateMany({ where: { id: huddleId, notesMessageId: claim }, data: { notesMessageId: posted.row.id } })
+    await linkNotesOnStartMessage(row, meeting.id).catch(() => {})
+  } catch (err) {
+    console.error('[Huddles] Posting notes failed:', (err as Error).message)
+    await db.huddle.updateMany({ where: { id: huddleId, notesMessageId: claim }, data: { notesMessageId: null } })
+  }
+}
+
+/** Put the notes link on the ended huddle card, next to the call it belongs to. */
+async function linkNotesOnStartMessage(row: any, meetingId: string): Promise<void> {
+  if (!row.messageId) return
+  const message = await db.conversationMessage.findUnique({ where: { id: row.messageId }, select: { blocks: true } })
+  let blocks: Record<string, any> = {}
+  const raw = message?.blocks
+  if (raw && typeof raw === 'object') blocks = raw as Record<string, any>
+  else if (typeof raw === 'string') {
+    try {
+      blocks = JSON.parse(raw) ?? {}
+    } catch {}
+  }
+  const huddle = blocks.huddle ?? { id: row.id, status: 'ended', startedById: row.startedById }
+  await updateMessageInternal(row.messageId, { blocks: { ...blocks, huddle: { ...huddle, notesMeetingId: meetingId } } })
+}
+
+/** Finish the notes a little after the call ends, once the streamers have flushed. */
+export function scheduleHuddleNotes(huddleId: string): void {
+  if (notesTimers.has(huddleId)) return
+  const timer = setTimeout(() => {
+    notesTimers.delete(huddleId)
+    void finalizeHuddleNotes(huddleId).catch((err) => {
+      console.error('[Huddles] Notes failed:', (err as Error).message)
+    })
+  }, NOTES_FINISH_GRACE_MS)
+  timer.unref?.()
+  notesTimers.set(huddleId, timer)
+}
+
+/** Anyone who was in the call, or who can read the conversation it happened in. */
+async function assertCanReadNotes(row: any, userId: string): Promise<void> {
+  const wasThere = await db.huddleParticipant.findFirst({ where: { huddleId: row.id, userId } })
+  if (wasThere) return
+  if (await canPostIn(row.conversationId, userId)) return
+  throw new ConversationError(403, 'forbidden', 'You were not in this huddle')
+}
+
+export interface HuddleNotesView {
+  huddleId: string
+  meeting: ReturnType<typeof serializeMeeting>
+  transcript: { text: string; segments: any[]; language?: string }
+  actionItems: ReturnType<typeof parseActionItems>
+}
+
+export async function getHuddleNotes(huddleId: string, userId: string): Promise<HuddleNotesView> {
+  const row = await db.huddle.findUnique({ where: { id: huddleId } })
+  if (!row) throw new ConversationError(404, 'not_found', 'Huddle not found')
+  await assertCanReadNotes(row, userId)
+  const meeting = await findRecordingDraft(row.workspaceId, huddleRecordingId(huddleId))
+  if (!meeting) throw new ConversationError(404, 'no_notes', 'This huddle has no notes')
+  const transcript = readTranscript(meeting.transcript) ?? { text: '', segments: [] }
+  return {
+    huddleId,
+    meeting: serializeMeeting(meeting),
+    transcript: { text: transcript.text, segments: transcript.segments, language: transcript.language },
+    actionItems: parseActionItems(meeting.actionItems),
+  }
+}
+
+/** Only the person who started the huddle or a workspace admin may delete its notes. */
+export async function deleteHuddleNotes(huddleId: string, userId: string): Promise<void> {
+  const row = await db.huddle.findUnique({ where: { id: huddleId } })
+  if (!row) throw new ConversationError(404, 'not_found', 'Huddle not found')
+  const role = await getWorkspaceRole(row.workspaceId, userId)
+  const allowed = row.startedById === userId || role === 'owner' || role === 'admin'
+  if (!allowed) {
+    throw new ConversationError(403, 'forbidden', 'Only the person who started the huddle, or a workspace admin, can delete its notes')
+  }
+  const meeting = await findRecordingDraft(row.workspaceId, huddleRecordingId(huddleId))
+  if (meeting) await db.meeting.deleteMany({ where: { id: meeting.id } })
+  if (row.notesMessageId) {
+    await updateMessageInternal(row.notesMessageId, {
+      text: 'Huddle notes deleted.',
+      blocks: { huddleNotes: { huddleId, meetingId: null, title: null, status: 'deleted' } },
+    }).catch(() => {})
+    await db.huddle.update({ where: { id: huddleId }, data: { notesMessageId: null } })
+  }
+}
+
+// The meeting sweeper finishes huddle drafts left open by a restart.
+registerHuddleDraftFinisher(finalizeHuddleNotes)
+
 export function _resetHuddlesForTests(): void {
   lastReconciled.clear()
   for (const ring of openRings.values()) clearTimeout(ring.timer)
   openRings.clear()
   for (const ring of inviteRings.values()) clearTimeout(ring.timer)
   inviteRings.clear()
+  for (const timer of notesTimers.values()) clearTimeout(timer)
+  notesTimers.clear()
 }
 
 export function _setHuddlePushSenderForTests(sender: PushSender | null): void {

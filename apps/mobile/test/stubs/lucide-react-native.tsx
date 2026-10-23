@@ -45,6 +45,7 @@ export {
   Icon as MousePointer2,
   Icon as Table2,
   Icon as MousePointerClick,
+  Icon as NotebookPen,
   Icon as NotebookText,
   Icon as AlarmClock,
   Icon as AlertCircle,

@@ -49,6 +49,10 @@ export interface HuddleParticipantState {
   handRaisedAt: number | null
   /** An outside guest let in through the huddle link. */
   guest: boolean
+  /** Their own device is streaming their audio to the notes transcriber. */
+  notesSelf: boolean
+  /** Their device can't stream its own audio (a phone), so a web or desktop client covers them. */
+  notesNeedsCover: boolean
 }
 
 /** An emoji someone sent to the call; it floats over the video for a few seconds. */
@@ -81,6 +85,22 @@ export interface HuddleMediaOptions {
 export const HUDDLE_DATA_TOPIC = 'huddle'
 /** Participant attribute that holds when a hand went up; attributes reach people who join later. */
 export const HAND_ATTRIBUTE = 'hand'
+/**
+ * Participant attribute saying whether this device streams its own audio to the
+ * notes transcriber: `'self'` while the stream is live, `'unsupported'` when it
+ * can't (a phone has no way to tap PCM). Everyone sees it, so exactly one web or
+ * desktop client covers a phone, and it stops the moment the phone's attribute
+ * appears.
+ */
+export const NOTES_ATTRIBUTE = 'notes'
+
+/** One remote person's microphone, tapped by a covering client for huddle notes. */
+export interface HuddleRemoteAudio {
+  userId: string
+  stream: MediaStream
+  notesSelf: boolean
+  notesNeedsCover: boolean
+}
 
 export interface HuddleMediaHandlers {
   /** Identities (user ids) currently speaking, loudest first. */
@@ -117,6 +137,12 @@ export interface HuddleMedia {
   switchDevice?: (kind: HuddleDeviceKind, id: string) => Promise<void>
   /** Apply blur / background / framing / low-light to the camera now and whenever it turns on. */
   setCameraEffects?: (config: CameraEffectsConfig) => Promise<void>
+  /** This device's microphone as a MediaStream, for the huddle-notes transcriber. */
+  localMicStream?: () => MediaStream | null
+  /** Each remote participant's microphone, so one web or desktop client can cover phones. */
+  remoteAudioStreams?: () => HuddleRemoteAudio[]
+  /** Publish whether this device streams its own audio: `'self'`, `'unsupported'`, or `''` to clear. */
+  setNotesSource?: (state: 'self' | 'unsupported' | '') => Promise<void>
 }
 
 function dropReason(reason: DisconnectReason | undefined): string {
@@ -178,6 +204,7 @@ export function parseHuddleData(payload: Uint8Array): { t: 'reaction'; emoji: st
 export function participantStateOf(participant: Participant, isLocal: boolean): HuddleParticipantState {
   const meta = parseMetadata(participant.metadata)
   const hand = Number(participant.attributes?.[HAND_ATTRIBUTE])
+  const notes = participant.attributes?.[NOTES_ATTRIBUTE]
   return {
     userId: participant.identity,
     name: participant.name || participant.identity,
@@ -190,7 +217,16 @@ export function participantStateOf(participant: Participant, isLocal: boolean): 
     quality: qualityOf(participant.connectionQuality),
     handRaisedAt: Number.isFinite(hand) && hand > 0 ? hand : null,
     guest: !!meta.guest,
+    notesSelf: notes === 'self',
+    notesNeedsCover: notes === 'unsupported',
   }
+}
+
+/** The media stream behind a participant's microphone, or null before it is published. */
+function micStreamOf(participant: Participant): MediaStream | null {
+  const track = participant.getTrackPublication(Track.Source.Microphone)?.track
+  const media = track?.mediaStreamTrack
+  return media ? new MediaStream([media]) : null
 }
 
 function tilesOf(participant: Participant, isLocal: boolean): HuddleVideoTile[] {
@@ -455,6 +491,18 @@ export async function connectHuddleRoom(
     setCameraEffects: async (config) => {
       effects = config
       await applyEffects()
+    },
+    localMicStream: () => micStreamOf(room.localParticipant),
+    remoteAudioStreams: () =>
+      [...room.remoteParticipants.values()].flatMap((p) => {
+        const stream = micStreamOf(p)
+        if (!stream) return []
+        const notes = p.attributes?.[NOTES_ATTRIBUTE]
+        return [{ userId: p.identity, stream, notesSelf: notes === 'self', notesNeedsCover: notes === 'unsupported' }]
+      }),
+    setNotesSource: async (state) => {
+      await room.localParticipant.setAttributes({ [NOTES_ATTRIBUTE]: state })
+      emitParticipants()
     },
     disconnect: async () => {
       leaving = true

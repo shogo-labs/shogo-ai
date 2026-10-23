@@ -15,7 +15,8 @@ import { createPortal } from 'react-dom'
 import { Platform } from 'react-native'
 import { useHuddleRoster } from '../../hooks/useHuddleRoster'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
-import { leaveHuddleCall, sendHuddleReaction, setHuddleCamera, setHuddleHand, setHuddleMuted, setHuddleView } from '../../lib/huddle-call'
+import { notesPillLabel, notesPillTone } from '../../lib/huddle-notes'
+import { leaveHuddleCall, sendHuddleReaction, setHuddleCamera, setHuddleHand, setHuddleMuted, setHuddleNotesEnabled, setHuddleView } from '../../lib/huddle-call'
 import { miniFeature, miniScreen, miniSelfView, type RosterEntry } from '../../lib/huddle-roster'
 import { HuddleVideo } from './HuddleVideo'
 
@@ -190,6 +191,24 @@ function PipView() {
               <Avatar entry={p} size={22} />
             </div>
           ))}
+        </div>
+        <div style={{ position: 'absolute', top: 6, right: 6, display: 'flex' }}>
+          <button
+            type="button"
+            aria-label={notesPillLabel(call.notes)}
+            title={`${notesPillLabel(call.notes)} — click to ${call.notes.enabled ? 'turn notes off' : 'turn notes on'}`}
+            onClick={() => void setHuddleNotesEnabled(!call.notes.enabled)}
+            style={{
+              ...btn(notesPillTone(call.notes) === 'on' ? '#065f46' : notesPillTone(call.notes) === 'off' ? '#3f3f46' : '#78350f'),
+              width: 'auto',
+              padding: '0 8px',
+              fontSize: 10,
+              fontWeight: 600,
+            }}
+            data-testid="huddle-pip-notes"
+          >
+            {notesPillLabel(call.notes)}
+          </button>
         </div>
         <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
           {call.reactions.map((r) => (

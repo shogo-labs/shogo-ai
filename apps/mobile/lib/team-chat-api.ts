@@ -11,6 +11,7 @@ import { getSDKHttpClient } from '@shogo/shared-app/domain'
 import { Platform } from 'react-native'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
+import type { LiveChunk } from './live-audio'
 import type { Question } from './team-chat-kinds'
 import type { UploadPart } from './upload-part'
 import { routeUrl } from './workspace-route'
@@ -561,6 +562,7 @@ export type TeamChatEvent =
       conversationName?: string | null
     }
   | { type: 'huddle.declined'; conversationId: string; huddleId: string; userId: string; name: string }
+  | { type: 'huddle.notes'; conversationId: string; huddleId: string; enabled: boolean; changedById: string; name: string }
   | { type: 'huddle.knock'; conversationId: string; huddleId: string; request: { id: string; name: string; guest: boolean } }
   | {
       type: 'doc.updated'
@@ -693,6 +695,42 @@ export interface Huddle {
   chatMembers?: string[]
   /** People knocking through the huddle link. */
   requests?: HuddleJoinRequest[]
+  /** Notes: a speaker-labelled transcript, and an auto summary posted when the call ends. */
+  notes?: { enabled: boolean }
+}
+
+/** Audio-socket ticket that transcribes one person in a huddle. */
+export interface HuddleNotesTicket {
+  ticket: string
+  path: string
+  backend: string
+  expiresInMs: number
+}
+
+/** One line of a huddle transcript, labelled with who said it. */
+export interface HuddleNotesSegment {
+  start: number
+  end: number
+  text: string
+  speaker?: string
+}
+
+/** A finished huddle's notes, as `GET /api/huddles/:id/notes` returns them. */
+export interface HuddleNotesDetail {
+  huddleId: string
+  meeting: {
+    id: string
+    title: string | null
+    duration: number | null
+    status: string
+    createdAt: string
+    workspaceId?: string
+    enhanceStatus?: string
+    enhancedNotes?: string | null
+    [key: string]: unknown
+  }
+  transcript: { text: string; segments: HuddleNotesSegment[]; language?: string }
+  actionItems: Array<{ text: string; owner?: string; done: boolean }>
 }
 
 /** Where one person chats during a call. */
@@ -1267,6 +1305,18 @@ export function teamChatApi() {
     async admitHuddleRequest(id: string, requestId: string): Promise<Huddle | null> {
       return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/requests/${encodeURIComponent(requestId)}/admit`, {})).data.huddle
     },
+    /** Turn notes on or off for the rest of the call. Any participant may. */
+    async setHuddleNotes(id: string, enabled: boolean): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle }>(`${conv(id)}/huddle/notes`, { enabled })).data.huddle
+    },
+    /** The audio-socket ticket that transcribes one person in this huddle. */
+    async huddleNotesTicket(id: string, opts: { forUserId?: string | null; client?: 'web' | 'desktop' | 'native' } = {}): Promise<HuddleNotesTicket> {
+      return (await http.post<HuddleNotesTicket>(`${conv(id)}/huddle/notes/ticket`, opts)).data
+    },
+    /** One WAV chunk from this device, when the audio socket can't run. */
+    async postHuddleNotesChunk(id: string, chunk: LiveChunk, opts: { forUserId?: string | null; client?: string | null } = {}): Promise<void> {
+      await postNotesChunk(`${conv(id)}/huddle/notes/chunk`, chunk, opts)
+    },
     async denyHuddleRequest(id: string, requestId: string): Promise<Huddle | null> {
       return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/requests/${encodeURIComponent(requestId)}/deny`, {})).data.huddle
     },
@@ -1294,6 +1344,22 @@ export function teamChatApi() {
           body: '{}',
         }).catch(() => {})
       } catch {}
+    },
+    /** The notes ticket for an admitted guest: their request id is their credential. */
+    async guestHuddleNotesTicket(requestId: string): Promise<HuddleNotesTicket> {
+      return (await http.post<HuddleNotesTicket>(`/api/huddle-links/requests/${encodeURIComponent(requestId)}/notes/ticket`, {})).data
+    },
+    /** One WAV chunk of a guest's speech, when the socket can't run. */
+    async guestHuddleNotesChunk(requestId: string, chunk: LiveChunk): Promise<void> {
+      await postNotesChunk(`/api/huddle-links/requests/${encodeURIComponent(requestId)}/notes/chunk`, chunk, {})
+    },
+    /** A finished huddle's notes: the meeting row, its transcript and action items. */
+    async huddleNotes(huddleId: string): Promise<HuddleNotesDetail> {
+      return (await http.get<HuddleNotesDetail>(`/api/huddles/${encodeURIComponent(huddleId)}/notes`)).data
+    },
+    /** Delete a huddle's notes (the person who started it, or a workspace admin). */
+    async deleteHuddleNotes(huddleId: string): Promise<void> {
+      await http.delete(`/api/huddles/${encodeURIComponent(huddleId)}/notes`)
     },
     /** Where you chat in this call: your DM for two people, the exact group DM for more. */
     async huddleChat(id: string): Promise<HuddleChatTarget | null> {
@@ -1365,6 +1431,41 @@ export function nativeCookieHeader(): Record<string, string> {
   if (Platform.OS === 'web') return {}
   const cookie = (authClient as { getCookie?: () => string | null }).getCookie?.()
   return cookie ? { Cookie: cookie } : {}
+}
+
+export class HuddleNotesError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
+/**
+ * One WAV chunk of live speech, when the audio socket can't run. Raw fetch:
+ * the SDK client JSON-serializes bodies and this one is binary.
+ */
+async function postNotesChunk(
+  path: string,
+  chunk: LiveChunk,
+  opts: { forUserId?: string | null; client?: string | null },
+): Promise<void> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    body: new Uint8Array(chunk.wav),
+    credentials: Platform.OS === 'web' ? 'include' : 'omit',
+    headers: {
+      ...nativeCookieHeader(),
+      'Content-Type': 'audio/wav',
+      'X-Live-Seq': String(chunk.seq),
+      ...(opts.forUserId ? { 'X-Notes-For': opts.forUserId } : {}),
+      ...(opts.client ? { 'X-Client-Platform': opts.client } : {}),
+    },
+  })
+  if (res.ok) return
+  const body = await res.json().catch(() => null)
+  throw new HuddleNotesError(body?.error?.message ?? `Live notes failed (${res.status})`, res.status)
 }
 
 /**

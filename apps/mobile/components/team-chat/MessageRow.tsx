@@ -10,7 +10,7 @@ import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text
 import { createPortal } from 'react-dom'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
-import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, ExternalLink, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2, UserPlus } from 'lucide-react-native'
+import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, ExternalLink, FileText, Headphones, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, NotebookPen, Pencil, Pin, SmilePlus, Square, Trash2, UserPlus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import type { MentionTarget } from '../chat/file-links'
@@ -647,6 +647,72 @@ function MessageRowImpl(props: MessageRowProps) {
     }
     await props.onEdit(message, text)
     setEditing(false)
+  }
+
+  // A huddle's notes: the summary the meeting pipeline wrote, with the transcript behind it.
+  const notesBlock = message.blocks?.huddleNotes as
+    | { huddleId: string; meetingId: string | null; title: string | null; status: 'ready' | 'failed' | 'deleted' }
+    | undefined
+  if (message.authorType === 'system' && notesBlock) {
+    const deleted = notesBlock.status === 'deleted'
+    // The text opens with the same title the card shows.
+    const body = message.text.replace(/^Huddle notes:.*?\n\n/s, '')
+    return (
+      <View className="px-4 py-1.5" testID="huddle-notes-block">
+        <View className="rounded-xl border border-border bg-card px-3 py-2.5">
+          <View className="flex-row items-center gap-1.5">
+            <NotebookPen size={13} className={deleted ? 'text-muted-foreground' : 'text-emerald-600'} />
+            <Text className="min-w-0 flex-1 text-xs font-semibold text-foreground" numberOfLines={1}>
+              {deleted ? 'Huddle notes deleted' : notesBlock.title || 'Huddle notes'}
+            </Text>
+            <TimeTooltip iso={message.createdAt}>
+              {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+            </TimeTooltip>
+          </View>
+          {deleted ? null : (
+            <>
+              <View className="mt-1.5">
+                <ChatMarkdown isStreaming={false}>{renderMentionsMarkdown(body, names)}</ChatMarkdown>
+              </View>
+              <Pressable
+                onPress={() => router.push({ pathname: '/(app)/huddles/[huddleId]/notes', params: { huddleId: notesBlock.huddleId } } as any)}
+                accessibilityRole="link"
+                accessibilityLabel="Open the full transcript"
+                className="mt-2 flex-row items-center gap-1 self-start rounded-md bg-muted px-2 py-1 active:opacity-70"
+              >
+                <FileText size={12} className="text-foreground" />
+                <Text className="text-[11px] font-medium text-foreground">Transcript</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+      </View>
+    )
+  }
+
+  // The ended huddle card carries the link to what was said in it.
+  const huddleBlock = message.blocks?.huddle as { id?: string; status?: string; notesMeetingId?: string | null } | undefined
+  if (message.authorType === 'system' && huddleBlock?.notesMeetingId && huddleBlock.status !== 'live') {
+    return (
+      <View className="flex-row items-center gap-2 px-4 py-1.5" testID="huddle-notes-link">
+        <Headphones size={13} className="text-muted-foreground" />
+        <Text className="min-w-0 flex-1 text-xs text-muted-foreground">{renderMentions(message.text, names)}</Text>
+        <Pressable
+          onPress={() =>
+            router.push({ pathname: '/(app)/huddles/[huddleId]/notes', params: { huddleId: huddleBlock.id } } as any)
+          }
+          accessibilityRole="link"
+          accessibilityLabel="Open this huddle's notes"
+          className="flex-row items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 active:opacity-70"
+        >
+          <FileText size={11} className="text-foreground" />
+          <Text className="text-[11px] font-medium text-foreground">Notes</Text>
+        </Pressable>
+        <TimeTooltip iso={message.createdAt}>
+          {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+        </TimeTooltip>
+      </View>
+    )
   }
 
   if (message.authorType === 'system' && message.blocks?.type === 'activity') {

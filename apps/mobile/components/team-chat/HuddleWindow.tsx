@@ -42,6 +42,7 @@ import { HuddleInviteSheet } from './HuddleInviteSheet'
 import { HuddleRequests, HuddleRequestStrip } from './HuddleRequests'
 import { HuddleThreadPanel } from './HuddleThreadPanel'
 import { useHuddleChat } from '../../hooks/useHuddleChat'
+import { HuddleNotesPill } from './HuddleNotesPill'
 import { HuddlePrejoin } from './HuddlePrejoin'
 import { ReactionOverlay } from './HuddleReactions'
 import { HuddleSettingsSheet } from './HuddleSettingsSheet'
@@ -135,8 +136,9 @@ export function HuddleMiniCard({ onExpand, onPill }: { onExpand: () => void; onP
             <Maximize2 size={13} color="white" />
           </Pressable>
         </View>
-        <View className="absolute left-1.5 top-1.5">
+        <View className="absolute left-1.5 top-1.5 flex-row items-center gap-1">
           <Faces roster={roster} size={20} />
+          <HuddleNotesPill notes={call.notes} compact />
         </View>
       </View>
       <View className="items-center px-2 py-1.5">
@@ -161,6 +163,11 @@ export function HuddlePill({ onExpand }: { onExpand: () => void }) {
         <Text className="flex-shrink text-sm font-medium text-foreground" numberOfLines={1}>
           {label}
         </Text>
+        {call.notes.enabled ? null : (
+          <View className="rounded-full bg-muted px-1.5 py-0.5" accessibilityLabel="Notes are off" testID="huddle-pill-notes">
+            <Text className="text-[10px] font-semibold text-muted-foreground">Notes off</Text>
+          </View>
+        )}
         {waiting ? (
           <View className="rounded-full bg-amber-400 px-1.5 py-0.5" accessibilityLabel={`${waiting} waiting to join`} testID="huddle-pill-requests">
             <Text className="text-[10px] font-bold text-black">{waiting}</Text>
@@ -256,6 +263,7 @@ export function HuddlePanel() {
           <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>{call.label ?? 'Huddle'}</Text>
           <Text className="text-xs text-muted-foreground" numberOfLines={1}>{subtitle}</Text>
         </View>
+        <HuddleNotesPill notes={call.notes} />
         {guest ? null : (
           <HeaderButton
             label="Open conversation"

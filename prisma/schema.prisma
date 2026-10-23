@@ -4373,6 +4373,11 @@ model Huddle {
   linkToken      String?   @unique
   startedAt      DateTime  @default(now())
   endedAt        DateTime?
+  /// Notes (a speaker-labelled transcript and an auto summary) are on for this call. Any participant may turn them off.
+  notesEnabled   Boolean   @default(true)
+  /// Set when the notes summary was posted, claimed with `updateMany where notesMessageId: null`
+  /// so exactly one pod posts it. Holds the summary message id once it is posted.
+  notesMessageId String?
 
   conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   participants HuddleParticipant[]
