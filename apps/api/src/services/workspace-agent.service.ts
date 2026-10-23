@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { prisma } from '../lib/prisma'
+import { isMachineWorkspace } from '../lib/machine-workspace'
 import { listActiveChatTurns } from './chat-turn-state.service'
 
 export const GOAL_STATUSES = ['active', 'paused', 'done'] as const
@@ -18,16 +19,70 @@ export function isGoalEventKind(value: unknown): value is GoalEventKind {
   return typeof value === 'string' && (GOAL_EVENT_KINDS as readonly string[]).includes(value)
 }
 
+/** The profile a workspace starts with, whether or not a row exists yet. */
+const DEFAULT_AGENT_PROFILE = {
+  name: 'Shogo',
+  tagline: 'Your personal AI companion',
+} as const
+
+/**
+ * A workspace's companion profile, created on first read.
+ *
+ * On a machine workspace the read must not create: the cloud's copy is
+ * written only by ingest, and a row minted here would carry a *cloud* id for a
+ * `workspaceId` the desktop also pushes (`WorkspaceAgentProfile.workspaceId` is
+ * unique), so the desktop's own row would hit P2002 and the whole ingest batch
+ * would fail. The desktop owns that row; a read that finds none is answered with
+ * the defaults and changes nothing.
+ */
 export async function getOrCreateAgentProfile(workspaceId: string) {
-  return prisma.workspaceAgentProfile.upsert({
-    where: { workspaceId },
-    create: {
-      workspaceId,
-      name: 'Shogo',
-      tagline: 'Your personal AI companion',
-    },
-    update: {},
+  if (await isWritableHere(workspaceId)) {
+    return prisma.workspaceAgentProfile.upsert({
+      where: { workspaceId },
+      create: { workspaceId, ...DEFAULT_AGENT_PROFILE },
+      update: {},
+    })
+  }
+
+  const existing = await prisma.workspaceAgentProfile.findUnique({ where: { workspaceId } })
+  return existing ?? unpersistedAgentProfile(workspaceId)
+}
+
+/**
+ * Whether a profile row for this workspace may be created here.
+ *
+ * Two cases say no, and they share one failure: an insert needs a `Workspace`
+ * row to point at, so Postgres answers a foreign-key violation and the panel
+ * 500s instead of showing the agent.
+ *
+ *   • **A machine workspace** — the desktop is the writer (see above).
+ *   • **A workspace with no row at all** — a machine workspace whose copy has
+ *     not landed yet, read through the cloud before ingest caught up. Asking
+ *     `MACHINE_WORKSPACE_ONLY` alone answered "not a machine copy" for it and
+ *     fell through to the insert.
+ */
+async function isWritableHere(workspaceId: string): Promise<boolean> {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { machineInstanceId: true },
   })
+  return Boolean(workspace) && !isMachineWorkspace(workspace)
+}
+
+/** Shaped like the row a cloud workspace would get, so a client cannot tell. */
+function unpersistedAgentProfile(workspaceId: string) {
+  return {
+    id: `machine-copy-${workspaceId}`,
+    workspaceId,
+    name: DEFAULT_AGENT_PROFILE.name,
+    avatarUrl: null,
+    tagline: DEFAULT_AGENT_PROFILE.tagline,
+    personality: null,
+    statusText: null,
+    statusUpdatedAt: null,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  }
 }
 
 export async function updateAgentProfile(
@@ -43,6 +98,15 @@ export async function updateAgentProfile(
   const data = {
     ...changes,
     ...(changes.statusText !== undefined ? { statusUpdatedAt: new Date() } : {}),
+  }
+
+  // The same two cases as the read: a machine workspace is written by its
+  // desktop (a cloud PATCH to one is already refused with 409 upstream), and a
+  // workspace with no row here has nothing to attach a row to. Answer with the
+  // profile the read would give rather than 500 on the foreign key.
+  if (!(await isWritableHere(workspaceId))) {
+    const existing = await prisma.workspaceAgentProfile.findUnique({ where: { workspaceId } })
+    return { ...(existing ?? unpersistedAgentProfile(workspaceId)), ...data }
   }
 
   return prisma.workspaceAgentProfile.upsert({

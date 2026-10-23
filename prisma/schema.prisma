@@ -208,6 +208,12 @@ model Workspace {
   // for the maximum the plan (or local mode) allows. An admin can lower it; the
   // plan value is the ceiling in the cloud (see `agent-reply-capacity.ts`).
   agentReplyConcurrency Int?
+  // Set when this workspace is a copy of a paired desktop's workspace: the
+  // machine's id. The cloud holds the records (copied into the normal tables
+  // with their desktop ids), serves reads from them, and refuses its own writes
+  // to them — see `lib/machine-workspace.ts`. Null means a normal cloud
+  // workspace. Added to both schemas; the desktop leaves it null.
+  machineInstanceId String?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -269,6 +275,7 @@ model Workspace {
   @@index([createdAt])
   @@index([homeRegion])
   @@index([parentWorkspaceId])
+  @@index([machineInstanceId])
   @@map("workspaces")
 }
 
@@ -5513,4 +5520,62 @@ model SocialAutomationRun {
   @@index([workspaceId, startedAt])
   @@index([automationId])
   @@map("social_automation_runs")
+}
+
+// ─── Machine workspaces (SHO-185) ───────────────────────────────────────────
+// A paired desktop is the single writer of its own data; the cloud keeps a copy
+// of those records in the normal tables (same ids) so reads never touch the
+// tunnel. These three models track that copy. The desktop leaves them empty
+// apart from `MachineSyncChange`, which is its change log.
+
+/// Per-machine ingest bookkeeping: which `epoch` of the desktop's database the
+/// copy represents (`epoch_mismatch` when the desktop recreates its DB), how far
+/// the push cursor has been acknowledged, and whether syncing is on at all.
+model MachineSyncState {
+  instanceId   String    @id
+  /// Opaque token the desktop generates per database lifetime.
+  epoch        String    @default("")
+  /// Highest `MachineSyncChange.seq` the cloud has applied.
+  cursor       Int       @default(0)
+  lastIngestAt DateTime?
+  /// The per-machine "Sync to cloud" switch. Off deletes the copy.
+  enabled      Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("machine_sync_states")
+}
+
+/// Which machine owns each copied row. `(model, recordId)` is unique because a
+/// desktop id belongs to exactly one row; ingest rejects a row it does not own
+/// with `409 mirror_ownership`, so a desktop can never overwrite cloud data or
+/// another machine's copy by guessing an id.
+model MachineMirrorRow {
+  model      String
+  recordId   String
+  instanceId String
+  epoch      String   @default("")
+  createdAt  DateTime @default(now())
+
+  @@id([model, recordId])
+  @@index([instanceId])
+  @@index([instanceId, model])
+  @@map("machine_mirror_rows")
+}
+
+/// Desktop change log, written by SQLite triggers on each mirrored table. Unused
+/// in the cloud; the model lives in both schemas because they must stay equal.
+model MachineSyncChange {
+  /// Autoincrement so the pusher can resume from an acked cursor. `Int`, not
+  /// `BigInt`: SQLite only autoincrements an INTEGER PRIMARY KEY, and the seq
+  /// travels in JSON, where BigInt cannot be serialised. Acked rows are pruned
+  /// on every ack, so the table stays small.
+  seq       Int      @id @default(autoincrement())
+  model     String
+  recordId  String
+  op        String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("machine_sync_changes")
 }

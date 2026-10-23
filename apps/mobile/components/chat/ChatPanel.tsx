@@ -73,6 +73,7 @@ import {
   type OptimisticEchoInput as OptimisticUserInput,
 } from "./optimistic-echo"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
+import { useMachineWorkspace } from "../instance/MachineWorkspaceBanner"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
@@ -1028,6 +1029,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   readOnlyReason,
   phoneTranscriptTopPadding = "chrome",
 }: ChatPanelProps) {
+  // A machine workspace cannot take a write while its Mac is asleep, so the
+  // composer is refused from the same state the banner renders (SHO-185 AC4).
+  // The banner's own line is the reason, so the input says why it is off.
+  const { instance: machineInstance } = useActiveInstance()
+  const machineView = useMachineWorkspace({ machineName: machineInstance?.name })
+  const machineStop = machineView.composeDisabled ? machineView.banner ?? undefined : undefined
   const composer = composerProp ?? DEFAULT_CHAT_COMPOSER
   const chatDockStore = useChatDockStore()
   const {
@@ -8922,10 +8929,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   <ExecutionBadge />
                   <ChatInput
                     onSubmit={handleInputSubmit}
-                    disabled={!currentSessionId || !!readOnlyReason}
+                    disabled={!currentSessionId || !!readOnlyReason || machineView.composeDisabled}
                     placeholder={
-                      readOnlyReason
-                        ? readOnlyReason
+                      readOnlyReason ?? machineStop
+                        ? (readOnlyReason ?? machineStop)!
                         : !featureId
                         ? "Message"
                         : hasPendingQuestion

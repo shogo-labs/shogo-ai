@@ -3,6 +3,7 @@
 
 import { prisma } from '../lib/prisma'
 import { createRuntimeManager, setRuntimeManager } from '../lib/runtime'
+import { machineSyncSeqHeader } from '../lib/machine-sync/local-sync'
 import { createApp } from './create-app'
 import { deriveApiProfile } from './profile'
 import { runtimeRoutes } from '../routes/runtime'
@@ -102,6 +103,11 @@ export function createLocalApp(): LocalAppBundle {
     vitePort: VITE_PORT,
     health: (c) => c.json({ ok: true, redis: { healthy: true, latencyMs: 0, degraded: false } }),
   })
+
+  // Stamps `x-shogo-sync-seq` on this process's mutations so the cloud can wait
+  // for the machine copy to catch up before answering the Studio (SHO-185).
+  // Registered first, so it wraps every route below.
+  app.use('/api/*', machineSyncSeqHeader())
 
   app.route('/api', localPlatformRoutes())
   app.route('/api', localSystemRoutes())

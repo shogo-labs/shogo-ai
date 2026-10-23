@@ -45,6 +45,7 @@ import {
 } from '@/components/ui/modal'
 import { useActiveInstance } from '../../contexts/active-instance'
 import { useInstancePicker, type Instance } from '@shogo/shared-app/hooks'
+import { MachineSyncSettings } from './MachineSyncSettings'
 import { API_URL } from '../../lib/api'
 import { authClient } from '../../lib/auth-client'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
@@ -355,6 +356,9 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
         ) : (
           <Card>
             <CardContent className="p-0">
+              <View className="px-4 pb-2 pt-4">
+                <MachineSyncSettings />
+              </View>
               {instances.map((inst, index) => {
                 const isActive = activeInstance?.instanceId === inst.id
                 const isConnecting = connecting === inst.id

@@ -14,13 +14,41 @@
 
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
-const tunnelInstances: any[] = []
+const tunnelInstances: Array<{ apiKey: string; connected: boolean; stopped: boolean }> = []
+
+/**
+ * Stand-in for the threaded host that `ThreadedTunnel` really creates (SHO-185
+ * §5). The threading itself has its own test — `tunnel-worker-block.test.ts` —
+ * and what this file is about is the reconcile: which device keys hold a tunnel
+ * after a join, a leave or a rotation. So the host is a record plus the two
+ * notifications `ThreadedTunnel` reads its state from.
+ */
+mock.module('@shogo-ai/worker/tunnel-host', () => ({
+  startTunnelInWorker: (options: any) => {
+    const host = { apiKey: options.apiKey, connected: false, stopped: false }
+    tunnelInstances.push(host)
+    host.connected = true
+    options.onConnection?.(true)
+    return {
+      stop() {
+        host.stopped = true
+        host.connected = false
+        options.onConnection?.(false)
+      },
+      instanceId: () => null,
+      isConnected: () => host.connected,
+      ready: () => Promise.resolve(),
+    }
+  },
+}))
 
 mock.module('@shogo-ai/worker/tunnel', () => {
   class WorkerTunnel {
+    apiKey: string
     connected = false
     stopped = false
     constructor(public opts: any) {
+      this.apiKey = opts.apiKey
       tunnelInstances.push(this)
     }
     start() {
@@ -81,7 +109,7 @@ const PRIMARY_KEY = 'shogo_sk_primary'
 const ORIGINAL_KEY = process.env.SHOGO_API_KEY
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
-const keysInUse = () => tunnelInstances.filter((t) => !t.stopped).map((t) => t.opts.apiKey).sort()
+const keysInUse = () => tunnelInstances.filter((t) => !t.stopped).map((t) => t.apiKey).sort()
 
 beforeEach(() => {
   process.env.SHOGO_API_KEY = PRIMARY_KEY
@@ -175,7 +203,7 @@ describe('syncWorkspaceTunnels', () => {
     await settle()
 
     expect(keysInUse()).toEqual([PRIMARY_KEY, 'shogo_sk_odin_new'].sort())
-    expect(tunnelInstances.filter((t) => t.opts.apiKey === 'shogo_sk_odin_old').every((t) => t.stopped)).toBe(true)
+    expect(tunnelInstances.filter((t) => t.apiKey === 'shogo_sk_odin_old').every((t) => t.stopped)).toBe(true)
   })
 
   test('does nothing without a key, and nothing extra when the set is unchanged', async () => {

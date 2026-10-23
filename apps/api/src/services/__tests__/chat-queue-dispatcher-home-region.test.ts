@@ -12,6 +12,13 @@ const state = {
   countWheres: [] as any[],
   findManyWheres: [] as any[],
   resetWheres: [] as any[],
+  /** Sessions the drain finds waiting, in the order the DB returns them. */
+  pendingSessions: [{ sessionId: "home-session" }] as Array<{ sessionId: string }>,
+  /** The workspace each session belongs to, directly (null = through its project). */
+  sessionWorkspaces: {} as Record<string, string | null>,
+  /** Workspace ids the cloud holds as a machine copy (`machineInstanceId` set). */
+  machineWorkspaces: [] as string[],
+  sessionWheres: [] as any[],
 }
 
 const mockPrisma = {
@@ -19,6 +26,14 @@ const mockPrisma = {
     count: async ({ where }: any) => {
       state.countWheres.push(where)
       return state.homeSessionIds.has(where.id) ? 1 : 0
+    },
+    findMany: async ({ where }: any) => {
+      state.sessionWheres.push(where)
+      return (where.id?.in ?? []).map((id: string) => ({
+        id,
+        workspaceId: state.sessionWorkspaces[id] ?? null,
+        project: null,
+      }))
     },
     findUnique: async ({ where }: any) => ({
       id: where.id,
@@ -29,6 +44,13 @@ const mockPrisma = {
       activeTurnHeartbeatAt: null,
     }),
     update: async () => ({}),
+  },
+  workspace: {
+    findMany: async ({ where }: any) => {
+      // The guard asks for the copies among the workspaces those sessions are in.
+      const wanted: string[] = where.id?.in ?? []
+      return wanted.filter((id) => state.machineWorkspaces.includes(id)).map((id) => ({ id }))
+    },
   },
   chatQueuedMessage: {
     findFirst: async ({ where }: any) => ({
@@ -51,7 +73,7 @@ const mockPrisma = {
     deleteMany: async () => ({ count: 0 }),
     findMany: async ({ where }: any) => {
       state.findManyWheres.push(where)
-      return [{ sessionId: "home-session" }]
+      return state.pendingSessions
     },
   },
   chatMessage: {
@@ -94,6 +116,10 @@ describe("chat queue dispatcher in multi-region mode", () => {
     state.countWheres = []
     state.findManyWheres = []
     state.resetWheres = []
+    state.pendingSessions = [{ sessionId: "home-session" }]
+    state.sessionWorkspaces = { "home-session": "ws-cloud" }
+    state.machineWorkspaces = []
+    state.sessionWheres = []
   })
 
   it("does not claim, persist, or start a turn for a peer-homed session", async () => {
@@ -117,5 +143,20 @@ describe("chat queue dispatcher in multi-region mode", () => {
 
     expect(await dispatchPendingSessions()).toBe(1)
     expect(state.findManyWheres[0]).toEqual({ status: "pending", session: HOME_SESSION })
+  })
+
+  it("dispatches the plain session and skips the one in a machine copy", async () => {
+    state.homeSessionIds = new Set(["cloud-session", "machine-session"])
+    state.pendingSessions = [{ sessionId: "cloud-session" }, { sessionId: "machine-session" }]
+    state.sessionWorkspaces = { "cloud-session": "ws-cloud", "machine-session": "ws-machine" }
+    state.machineWorkspaces = ["ws-machine"]
+
+    expect(await dispatchPendingSessions()).toBe(1)
+    // The guard looked at both sessions and rejected exactly one of them.
+    expect(state.sessionWheres[0]).toEqual({ id: { in: ["cloud-session", "machine-session"] } })
+    // Only the plain session's row was claimed and its turn started.
+    expect(state.claims).toBe(1)
+    expect(state.requests).toBe(1)
+    expect(state.countWheres.map((where) => where.id)).toEqual(["cloud-session"])
   })
 })

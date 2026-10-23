@@ -178,6 +178,27 @@ const MACHINE_WORKSPACE_FAMILIES: RouteEntry[] = [
 ]
 
 /**
+ * Reads that must still go through the tunnel, because the *answer* is not a
+ * database row that the cloud copy can serve — it is the machine's own runtime
+ * talking (an agent turn streaming back, a preview frame, a file on its disk).
+ *
+ * Every other read of a machine workspace is answered from the cloud copy of
+ * its rows (SHO-185): the copy keeps the desktop's row ids, so a panel loads the
+ * same records whether the machine is awake or asleep, and wakes only when it
+ * does something.
+ */
+const MACHINE_WORKSPACE_LIVE_READS: RouteEntry[] = [
+  // Agent turns, runtime start/stop and the proxy the chat pane talks through.
+  { pattern: /^\/api\/workspaces\/[^/]+\/agent-proxy(\/|$)/, target: 'remote' },
+  // The machine's own runtime surface: preview frames, ports, its IDE, its
+  // files on disk.
+  { pattern: /^\/api\/workspaces\/[^/]+\/(preview|runtime|ide|local-files|terminal|files)(\/|$)/, target: 'remote' },
+  // Attachment and conversation-file *contents* are bytes on the machine; the
+  // row that names them is mirrored, the file is not.
+  { pattern: /^\/api\/(conversation-files|chat-attachments)\/[^/]+(\/|$)/, target: 'remote' },
+]
+
+/**
  * Legacy prefix list for backward-compat exports.
  * @deprecated Use ROUTE_TABLE instead.
  */
@@ -238,6 +259,14 @@ export interface RemoteInterceptorConfig {
    * projects vanished".
    */
   machineWorkspaceId?: string | null
+
+  /**
+   * A machine-workspace request failed with one of the machine's own codes
+   * (`waking`, `runtime_starting`, `machine_offline_readonly`). The screen that
+   * owns the machine state decides what to show; the interceptor only reports,
+   * so every caller cannot drift into a different wording.
+   */
+  onMachineState?: (error: unknown, path: string) => void
 }
 
 /**
@@ -287,6 +316,48 @@ export function rewriteMachineWorkspaceBody<T>(body: T, localWorkspaceId: string
   return { ...record, workspaceId: localWorkspaceId } as T
 }
 
+/**
+ * What a machine-workspace request may come back with, and what the UI should do
+ * about it (SHO-185). The codes are the ones the cloud's machine routes emit; a
+ * screen that maps them once cannot drift into showing "Machine is offline" for a
+ * machine that is merely waking.
+ */
+export const MACHINE_ERROR_CODES = {
+  /** Recently heartbeated, tunnel still coming up: retry in a moment. */
+  waking: 'waking',
+  /** The desktop is starting a cold runtime: retry in a moment. */
+  runtimeStarting: 'runtime_starting',
+  /** Connected, but the request did not come back in time: show it. */
+  machineTimeout: 'machine_timeout',
+  /**
+   * The machine is offline: the workspace is read-only until it is back. Nothing
+   * is queued, so a send cannot be retried into a surprise later.
+   */
+  offlineReadonly: 'machine_offline_readonly',
+} as const
+
+export type MachineErrorCode = (typeof MACHINE_ERROR_CODES)[keyof typeof MACHINE_ERROR_CODES]
+
+/** True for the two codes that mean "the machine is coming up; try again". */
+export function isMachineWakeError(status: number, code?: string | null): boolean {
+  if (status !== 503) return false
+  return code === MACHINE_ERROR_CODES.waking || code === MACHINE_ERROR_CODES.runtimeStarting
+}
+
+/** True when the workspace should be read-only until the machine comes back. */
+export function isMachineOfflineReadOnly(status: number, code?: string | null): boolean {
+  return status === 409 && code === MACHINE_ERROR_CODES.offlineReadonly
+}
+
+/** A read: served from the cloud copy, never through the tunnel. */
+function isReadCall(prop: string, args: any[]): boolean {
+  if (prop === 'get') return true
+  if (prop !== 'request') return false
+  const init = args[1]
+  const method = typeof init?.method === 'string' ? init.method.toUpperCase() : 'GET'
+  return method === 'GET' || method === 'HEAD'
+}
+
 // ─── Path Routing Logic ─────────────────────────────────────────────────────
 
 /**
@@ -299,7 +370,7 @@ export function rewriteMachineWorkspaceBody<T>(body: T, localWorkspaceId: string
  */
 export function shouldRouteToRemote(
   path: string,
-  opts?: { machineWorkspaceId?: string | null },
+  opts?: { machineWorkspaceId?: string | null; isRead?: boolean },
 ): boolean {
   // Strip query string for matching — qs is preserved during rewrite.
   const pathOnly = path.split('?')[0] || path
@@ -314,6 +385,13 @@ export function shouldRouteToRemote(
     // membership, installs) — a machine has none of them.
     for (const entry of MACHINE_WORKSPACE_CLOUD_ONLY) {
       if (entry.pattern.test(pathOnly)) return false
+    }
+    // A read is answered by the cloud copy of the machine's rows, so a panel
+    // opens on the same records with the machine asleep. Only the reads whose
+    // answer is the machine's runtime (an agent turn, a preview frame, a file on
+    // its disk) still go through the tunnel.
+    if (opts.isRead && !MACHINE_WORKSPACE_LIVE_READS.some((entry) => entry.pattern.test(pathOnly))) {
+      return false
     }
     if (MACHINE_WORKSPACE_SCOPE.test(pathOnly)) return true
     for (const entry of MACHINE_WORKSPACE_OWNED) {
@@ -399,9 +477,12 @@ export function createRemoteAwareHttpClient(
 
         // Check if this path should be routed to remote. A machine workspace
         // widens the remote set (its own agent and team chat live on the
-        // desktop), but only paths that match either table.
+        // desktop), but a *read* of its records is answered by the cloud copy —
+        // so the same panel opens with the machine asleep, and the machine is
+        // woken by the edit, not by the page load.
         const shouldRoute = shouldRouteToRemote(originalPath, {
           machineWorkspaceId: config.machineWorkspaceId,
+          isRead: isReadCall(String(prop), args),
         })
 
         if (!shouldRoute) {
@@ -466,11 +547,20 @@ export function createRemoteAwareHttpClient(
 
         // If it's a promise (all HTTP methods return promises), add error handling
         if (result && typeof result.then === 'function') {
-          return result.catch((error: Error) => {
-            // Notify caller about remote errors for fallback handling
-            config.onRemoteError?.(error, machinePath)
-            throw error
-          })
+          return result.then(
+            (response: unknown) => {
+              // A request that came back means the machine is up: the banner
+              // goes away on the first answer, not on the next 15s poll.
+              if (config.machineWorkspaceId) config.onMachineState?.(null, machinePath)
+              return response
+            },
+            (error: Error) => {
+              // Notify caller about remote errors for fallback handling
+              config.onRemoteError?.(error, machinePath)
+              if (config.machineWorkspaceId) config.onMachineState?.(error, machinePath)
+              throw error
+            },
+          )
         }
 
         return result
@@ -490,6 +580,7 @@ export {
   MACHINE_WORKSPACE_CLOUD_ONLY,
   MACHINE_WORKSPACE_OWNED,
   MACHINE_WORKSPACE_FAMILIES,
+  MACHINE_WORKSPACE_LIVE_READS,
   type RouteTarget,
   type RouteEntry,
 }

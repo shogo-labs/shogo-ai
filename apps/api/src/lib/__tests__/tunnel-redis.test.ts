@@ -255,6 +255,21 @@ describe('ownership CRUD', () => {
     expect(pub().expirations.get('tunnel:i:pod')).toBe(600)
   })
 
+  it('refreshTunnelOwnership recreates an owner key another pod evicted', async () => {
+    // The heartbeat is the only thing that can repair a wrong eviction. With
+    // EXPIRE this was a no-op on a deleted key, so one slow relay took a live
+    // tunnel out of cross-pod routing for the life of the socket (SHO-185).
+    await tr.registerTunnelOwnership('inst-heal')
+    await tr.evictTunnelOwnership('inst-heal')
+    expect(pub().store.has('tunnel:inst-heal:pod')).toBe(false)
+
+    await tr.refreshTunnelOwnership('inst-heal')
+
+    expect(pub().store.get('tunnel:inst-heal:pod')).toBe('pod-A')
+    expect(pub().expirations.get('tunnel:inst-heal:pod')).toBe(600)
+    expect(await tr.getTunnelOwner('inst-heal')).toBe('pod-A')
+  })
+
   it('getTunnelOwner returns null when not present, even after retry', async () => {
     const v = await tr.getTunnelOwner('missing')
     expect(v).toBeNull()
@@ -478,6 +493,51 @@ describe('cross-pod relay', () => {
     })
     expect(r?.status).toBe(200)
     expect(r?.body).toBe('ok')
+  })
+
+  it('a relay body larger than the chunk size arrives intact', async () => {
+    // One multi-megabyte PUBLISH starves the probes and other relays sharing the
+    // connection, so big frames are split at the configured chunk size (SHO-185).
+    tr.__setRelayChunkBytesForTests(200)
+    sub().subscriptions.add('tunnel:pod:peer:request')
+
+    // Stand in for the owner pod, which in production is tunnel-redis itself and
+    // therefore reassembles chunk frames before dispatching.
+    const partial = new Map<string, string[]>()
+    const parseFull = (message: string): any | null => {
+      if (!message.startsWith('{"relayChunk"')) return JSON.parse(message)
+      const { id, seq, total, data } = JSON.parse(message).relayChunk
+      const parts = partial.get(id) ?? new Array<string>(total)
+      parts[seq] = data
+      partial.set(id, parts)
+      if (parts.filter((p) => p !== undefined).length < total) return null
+      partial.delete(id)
+      return JSON.parse(parts.join(''))
+    }
+
+    const bigBody = 'x'.repeat(500)
+    sub().on('message', async (channel: string, message: string) => {
+      const parsed = parseFull(message)
+      if (channel !== 'tunnel:pod:peer:request' || !parsed?.request) return
+      await pub().publish(`tunnel:pod:${parsed.replyPod}:request`, JSON.stringify({
+        relayId: parsed.relayId,
+        response: { type: 'response', requestId: parsed.request.requestId, status: 200, body: bigBody },
+      }))
+    })
+
+    const before = pub().publishLog.length
+    const r = await tr.relayTunnelRequest('peer', 'i1', {
+      type: 'request', requestId: 'r-big', method: 'POST', path: '/p', body: bigBody,
+    })
+    tr.__setRelayChunkBytesForTests(256 * 1024)
+
+    expect(r?.body).toBe(bigBody)
+    const frames = pub().publishLog.slice(before)
+    const chunks = frames.filter((f) => f.message.startsWith('{"relayChunk"'))
+    // The request was split into several frames, each bounded by the chunk size
+    // (plus the small envelope) instead of one large publish.
+    expect(chunks.length).toBeGreaterThan(2)
+    for (const frame of chunks) expect(frame.message.length).toBeLessThan(200 + 128)
   })
 
   it('relayTunnelRequest rejects on relay error response', async () => {
