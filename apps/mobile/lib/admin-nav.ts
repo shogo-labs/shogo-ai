@@ -40,6 +40,7 @@ export function adminPageTitle(pathname: string): string {
   if (pathname.startsWith('/creators/')) return 'Creator Profile'
   if (pathname.includes('creators')) return 'Creators'
   if (pathname.includes('affiliate-payouts')) return 'Affiliate Payouts'
+  if (pathname.includes('signup-risk')) return 'Signup Risk'
   if (pathname.includes('affiliate-content')) return 'Affiliate CPM'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
   if (pathname.includes('heartbeats')) return 'Heartbeats'

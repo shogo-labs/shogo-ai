@@ -51,6 +51,8 @@ test.describe("Pro Feature Gating", () => {
 
     await expect(page.getByText("You're on Pro Plan")).toBeVisible()
     await expect(page.getByText("Change Plan")).toBeVisible()
+    // The one-time 7-day trial is for first-time upgrades only.
+    await expect(page.getByText("Start 7-day free trial")).toHaveCount(0)
     // Paid plans show rolling usage windows, not a depleting USD pool.
     await expect(page.getByText("Usage limits", { exact: true })).toBeVisible()
     await expect(page.getByText("5-hour window", { exact: true }).first()).toBeVisible()

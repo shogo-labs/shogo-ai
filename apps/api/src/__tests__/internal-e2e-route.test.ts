@@ -29,10 +29,15 @@ const allocateMonthlyIncludedMock = mock(async (_w: string, _p: string, _s: numb
 }))
 const getSubscriptionMock = mock(async (_w: string) => null as any)
 const getUsageWalletMock = mock(async (_w: string) => null as any)
+// signup-credit.service (imported by the route's verify-email handler) calls
+// this when it seeds a workspace wallet; the e2e routes under test never do,
+// but the module graph needs the export to load.
+const allocateFreeWalletMock = mock(async (_w: string) => ({}))
 mock.module('../services/billing.service', () => ({
   upsertBillingAccount: upsertBillingAccountMock,
   syncFromStripe: syncFromStripeMock,
   allocateMonthlyIncluded: allocateMonthlyIncludedMock,
+  allocateFreeWallet: allocateFreeWalletMock,
   getSubscription: getSubscriptionMock,
   getUsageWallet: getUsageWalletMock,
 }))

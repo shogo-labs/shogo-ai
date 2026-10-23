@@ -48,6 +48,13 @@ mock.module('../lib/prisma', () => ({
 const billingCalls: Array<{ fn: string; args: unknown[] }> = []
 
 mock.module('../services/billing.service', () => ({
+  // signup-credit.service (imported by the route's verify-email handler) calls
+  // this when it seeds a workspace wallet; these routes never do, but the
+  // module graph needs the export to load.
+  allocateFreeWallet: async (...args: unknown[]) => {
+    billingCalls.push({ fn: 'allocateFreeWallet', args })
+    return { workspaceId: args[0] }
+  },
   syncFromStripe: async (...args: unknown[]) => {
     billingCalls.push({ fn: 'syncFromStripe', args })
     const { workspaceId, stripeSubscriptionId, planId } = args[0] as {

@@ -7,6 +7,7 @@ interface BillingState {
   syncCalls: any[]
   upsertCalls: any[]
   allocCalls: any[]
+  freeAllocCalls: string[]
   syncReturn: any
   walletReturn: any
   subscriptionReturn: any
@@ -18,6 +19,7 @@ const bs: BillingState = {
   syncCalls: [],
   upsertCalls: [],
   allocCalls: [],
+  freeAllocCalls: [],
   syncReturn: { id: 'sub-1', planId: 'pro' },
   walletReturn: { workspaceId: 'ws-1', includedUsd: 20 },
   subscriptionReturn: null,
@@ -38,6 +40,10 @@ mock.module('../../services/billing.service', () => ({
     bs.allocCalls.push({ workspaceId, planId, seats })
     return bs.walletReturn
   },
+  allocateFreeWallet: async (workspaceId: string) => {
+    bs.freeAllocCalls.push(workspaceId)
+    return bs.walletReturn
+  },
   getSubscription: async (_workspaceId: string) => bs.subscriptionReturn,
   getUsageWallet: async (_workspaceId: string) => bs.walletStateReturn,
 }))
@@ -50,7 +56,7 @@ mock.module('../../lib/prisma', () => ({
       findUnique: async (args: any) => userFindImpl(args),
     },
   },
-  SubscriptionStatus: { active: 'active', canceled: 'canceled' },
+  SubscriptionStatus: { active: 'active', trialing: 'trialing', canceled: 'canceled' },
   BillingInterval: { monthly: 'monthly', annual: 'annual' },
 }))
 
@@ -73,6 +79,7 @@ beforeEach(() => {
   bs.syncCalls = []
   bs.upsertCalls = []
   bs.allocCalls = []
+  bs.freeAllocCalls = []
   bs.syncReturn = { id: 'sub-1', planId: 'pro' }
   bs.walletReturn = { workspaceId: 'ws-1', includedUsd: 20 }
   bs.subscriptionReturn = null
@@ -275,6 +282,17 @@ describe('POST /bootstrap-subscription — happy path', () => {
     expect(sync.stripeSubscriptionId).toMatch(/^e2e_bootstrap_sub_ws-1_\d+$/)
 
     expect(bs.allocCalls).toEqual([{ workspaceId: 'ws-1', planId: 'pro', seats: 3 }])
+    expect(bs.freeAllocCalls).toEqual([])
+  })
+
+  it('status=trialing syncs a trialing subscription and keeps the free wallet', async () => {
+    const res = await app.fetch(
+      jsonReq('/bootstrap-subscription', { workspaceId: 'ws-1', planId: 'pro', status: 'trialing' }, { secret: 'test-secret' }),
+    )
+    expect(res.status).toBe(200)
+    expect(bs.syncCalls[0].status).toBe('trialing')
+    expect(bs.allocCalls).toEqual([])
+    expect(bs.freeAllocCalls).toEqual(['ws-1'])
   })
 
   it("defaults planId='pro', seats=1, interval='monthly', period=30d", async () => {

@@ -333,6 +333,8 @@ export interface CheckoutParams {
   referralId?: string
   successUrl?: string
   cancelUrl?: string
+  /** Start the 7-day free trial (card required). Ignored when not eligible. */
+  trial?: boolean
 }
 
 export interface WorkspaceCheckoutParams {

@@ -1332,6 +1332,11 @@ model UsageWallet {
   fiveHourUsedUsd              Float     @default(0)
   weeklyWindowStart            DateTime?
   weeklyUsedUsd                Float     @default(0)
+  // Signup promo credit. Mirrors prisma/schema.prisma UsageWallet.promoCredit*.
+  promoCreditUsd               Float     @default(0)
+  promoCreditGrantedUsd        Float     @default(0)
+  promoCreditExpiresAt         DateTime?
+  promoCreditStage             Int       @default(0)
   createdAt                    DateTime  @default(now())
   updatedAt                    DateTime  @updatedAt
 

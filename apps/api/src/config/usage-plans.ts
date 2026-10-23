@@ -369,3 +369,40 @@ export type VoiceRateKey = keyof typeof VOICE_RAW_USD
 export const PLAN_VOICE_RATE_OVERRIDES: Partial<
   Record<PlanId, Partial<typeof VOICE_RAW_USD>>
 > = {}
+
+/**
+ * Signup promo credit (see `services/signup-credit.service.ts`).
+ *
+ * New cloud signups receive `SIGNUP_CREDIT_TOTAL_USD` of promo credit on
+ * their team workspace, released in two stages:
+ *   - `SIGNUP_CREDIT_INITIAL_USD` at signup (low-risk, email not yet verified)
+ *   - the remainder once the email is verified
+ * Credit expires `SIGNUP_CREDIT_TTL_DAYS` after the first grant. It is spent
+ * after the rolling windows and before metered overage, and only while it has
+ * not expired.
+ */
+export const SIGNUP_CREDIT_TOTAL_USD = 10
+export const SIGNUP_CREDIT_INITIAL_USD = 2
+export const SIGNUP_CREDIT_VERIFIED_USD = SIGNUP_CREDIT_TOTAL_USD - SIGNUP_CREDIT_INITIAL_USD
+export const SIGNUP_CREDIT_TTL_DAYS = 30
+
+/**
+ * Free trial on paid plans. Stripe Checkout collects a card up front and bills
+ * it when the trial ends. Only one trial per user, workspace and card.
+ */
+export const TRIAL_PERIOD_DAYS = 7
+export const TRIAL_ELIGIBLE_PLANS: readonly PlanId[] = ['basic', 'pro', 'business']
+
+/**
+ * Promo credit that can still be spent at `now`. Zero once the credit has
+ * expired or when there is no expiry, so a stray balance without an expiry
+ * never becomes spendable.
+ */
+export function promoCreditAvailableUsd(
+  wallet: { promoCreditUsd: number; promoCreditExpiresAt: Date | string | null } | null | undefined,
+  now: Date = new Date(),
+): number {
+  if (!wallet?.promoCreditExpiresAt) return 0
+  if (new Date(wallet.promoCreditExpiresAt).getTime() <= now.getTime()) return 0
+  return Math.max(0, wallet.promoCreditUsd)
+}
