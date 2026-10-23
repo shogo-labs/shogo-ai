@@ -333,6 +333,13 @@ const INFLIGHT_TOOL_MARKER_MS = 2_000
  */
 const DEFAULT_RESUME_MAX_AGE_MINUTES = 360
 
+/**
+ * How much of a tool result is searched for a `/f/<token>` share link. Share
+ * results are tiny; this only stops a multi-megabyte dump from being scanned
+ * after every tool call.
+ */
+const MAX_SHARE_LINK_SCAN = 1_000_000
+
 function lowerAutoTier(tier: AutoTierCeiling): AutoTierCeiling | null {
   const index = AUTO_TIER_ORDER.indexOf(tier)
   return index > 0 ? AUTO_TIER_ORDER[index - 1] : null
@@ -4857,10 +4864,7 @@ export class AgentGateway {
           } else {
             console.log(`${this.logPrefix} Tool result: ${toolName}`, JSON.stringify(result).substring(0, 20))
           }
-          if (toolName === 'share_file' && !isError) {
-            const resultText = typeof result === 'string' ? result : JSON.stringify(result ?? '')
-            for (const token of extractShareLinkTokens([resultText])) shareLinkTokens.add(token)
-          }
+          this.harvestShareLinkTokens(sessionId, result, isError)
           // Wait for onBeforeToolCall's flush gate so the client receives
           // tool-input-start in a separate HTTP chunk before we send the output.
           const gate = toolFlushGates.get(toolCallId)
@@ -5126,14 +5130,21 @@ export class AgentGateway {
       if (previewPublicUrl || shareLinkTokens.size > 0) {
         const rewriteText = (text: string) =>
           repairShareLinks(rewriteLocalhostLinks(text, previewPublicUrl), shareLinkTokens)
-        for (const msg of result.newMessages) {
-          if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
+        const rewriteMessage = (msg: Message) => {
+          if (msg.role !== 'assistant' || !Array.isArray(msg.content)) return
           for (const block of msg.content as any[]) {
             if (block?.type === 'text' && typeof block.text === 'string') {
               block.text = rewriteText(block.text)
             }
           }
         }
+        for (const msg of result.newMessages) rewriteMessage(msg)
+        // Messages `onProgress` already persisted mid-turn are not in
+        // `newMessages` by the time we get here, so rewriting only those leaves
+        // the mistyped token in the history the next turn reads. They are the
+        // same objects the session holds, so this repairs them in place, and
+        // the `addMessages` below persists the session again.
+        for (const msg of persistedProgressMessages) rewriteMessage(msg)
         if (typeof result.text === 'string') {
           result.text = rewriteText(result.text)
         }
@@ -7536,6 +7547,33 @@ export class AgentGateway {
       this.shareLinkTokens.set(sessionId, tokens)
     }
     return tokens
+  }
+
+  /**
+   * Learn every `/f/<token>` a tool result carried, whichever tool produced it.
+   * A link relayed through `project_call`, `agent_spawn`, `team_chat_read` or
+   * `chat_handoff` came from a server rather than from the model's own typing,
+   * so it is as trustworthy as `share_file`'s own result — and only a token we
+   * learned can be repaired when the model mistypes it on the way to the user.
+   * Error results carry no URL worth trusting, so they are skipped.
+   */
+  private harvestShareLinkTokens(sessionId: string, result: unknown, isError: boolean): void {
+    if (isError) return
+    let text: string
+    if (typeof result === 'string') {
+      text = result
+    } else {
+      try {
+        text = JSON.stringify(result ?? '') ?? ''
+      } catch {
+        return
+      }
+    }
+    // A tool dump past this size is output, not a link to repair; scanning it
+    // on every tool call costs more than the (unlikely) link in it is worth.
+    for (const token of extractShareLinkTokens([text.slice(0, MAX_SHARE_LINK_SCAN)])) {
+      this.shareLinkTokensFor(sessionId).add(token)
+    }
   }
 
   /**

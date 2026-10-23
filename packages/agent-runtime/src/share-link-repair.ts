@@ -4,18 +4,25 @@
  * Repair mistyped `share_file` download links in assistant text (pure,
  * unit-testable).
  *
- * `share_file` returns a signed capability URL (`.../api/f/<payload>.<sig>`)
- * whose token is several hundred characters of base64url. The model is told
- * to paste it verbatim but still occasionally flips a character while
- * re-typing it, which breaks the HMAC and the user gets a 404. We know every
- * URL the tool minted, so any `/f/<token>` in the text that is not an exact
- * minted token but is within a small edit distance of one is replaced with
- * the minted token.
+ * A `/f/<payload>.<sig>` capability URL carries several hundred characters of
+ * base64url. The model is told to paste it verbatim but still occasionally
+ * flips a character while re-typing it, which breaks the HMAC and the user
+ * gets a 404. We know every URL a tool result brought into the session, so any
+ * `/f/<token>` in the text that is not an exact minted token is replaced with
+ * the minted token it was meant to be.
  *
- * Distinct minted tokens differ in their payload (`iat`, path) and in a
- * 43-char HMAC, so they are far apart; the distance bound only has to absorb
- * a few typos and is kept well below that gap. A tie between two minted
- * tokens leaves the text unchanged rather than guessing.
+ * Two kinds of slip are repaired, in this order:
+ *
+ * 1. **Same signature.** If the JSON payload is re-encoded — one inserted or
+ *    deleted character (`"workspaceId"` → `"wworkspaceId"`) shifts base64
+ *    alignment, so *every* character after it differs while the signature is
+ *    copied exactly — the signature still identifies the token. Since a tie
+ *    between two minted tokens is not a guess we make, the text is left alone.
+ * 2. **Near miss.** Otherwise a token within a small edit distance of a minted
+ *    one is repaired; that absorbs a few typos, including inside the
+ *    signature. Distinct minted tokens differ in payload (`iat`, path) and in
+ *    a 43-char HMAC, so they are far apart and the bound stays well below that
+ *    gap. A tie between two minted tokens leaves the text unchanged.
  */
 
 const SHARE_TOKEN_RE = /\/f\/([A-Za-z0-9._%-]+)/g
@@ -24,13 +31,44 @@ const SHARE_TOKEN_RE = /\/f\/([A-Za-z0-9._%-]+)/g
 const MAX_EDIT_RATIO = 0.05
 const MIN_EDIT_BUDGET = 2
 
-/** Extract the `/f/<token>` token from each minted share URL. */
-export function extractShareLinkTokens(urls: Iterable<string>): Set<string> {
+/**
+ * Extract the `/f/<token>` token from each string that may carry a share URL
+ * (a whole share URL, a JSON tool result, a relayed reply).
+ */
+export function extractShareLinkTokens(texts: Iterable<string>): Set<string> {
   const tokens = new Set<string>()
-  for (const url of urls) {
-    for (const m of url.matchAll(SHARE_TOKEN_RE)) tokens.add(m[1])
+  for (const text of texts) {
+    if (!text || !text.includes('/f/')) continue
+    for (const m of text.matchAll(SHARE_TOKEN_RE)) tokens.add(m[1])
   }
   return tokens
+}
+
+/** The signature part of `<payload>.<signature>`, or null when there is none. */
+function signatureOf(token: string): string | null {
+  const dot = token.lastIndexOf('.')
+  return dot > 0 && dot < token.length - 1 ? token.slice(dot + 1) : null
+}
+
+/** A token with a `%2E`-encoded separator decoded, so encoding cannot hide the signature. */
+function decodeSeparator(token: string): string {
+  return token.replace(/%2[eE]/g, '.')
+}
+
+/**
+ * The minted token whose signature `candidate` carries verbatim, or null when
+ * none or more than one does (a tie is never resolved by guessing).
+ */
+function matchBySignature(candidate: string, minted: ReadonlySet<string>): string | null {
+  const signature = signatureOf(decodeSeparator(candidate))
+  if (!signature) return null
+  let match: string | null = null
+  for (const token of minted) {
+    if (signatureOf(token) !== signature) continue
+    if (match !== null) return null
+    match = token
+  }
+  return match
 }
 
 /**
@@ -57,6 +95,9 @@ function boundedEditDistance(a: string, b: string, max: number): number {
 }
 
 function closestToken(candidate: string, minted: ReadonlySet<string>): string | null {
+  const bySignature = matchBySignature(candidate, minted)
+  if (bySignature) return bySignature
+
   let best: string | null = null
   let bestDistance = Infinity
   let tied = false
@@ -75,9 +116,10 @@ function closestToken(candidate: string, minted: ReadonlySet<string>): string | 
 }
 
 /**
- * Replace each near-miss `/f/<token>` in `text` with the minted token it was
- * meant to be. Exact matches and tokens not close to any minted one are left
- * alone. No-op when nothing has been minted.
+ * Replace each mistyped `/f/<token>` in `text` with the minted token it was
+ * meant to be — by signature first, then by edit distance. Exact matches and
+ * tokens that match no minted one are left alone. No-op when nothing has been
+ * minted.
  */
 export function repairShareLinks(text: string, mintedTokens: ReadonlySet<string>): string {
   if (!text || mintedTokens.size === 0 || !text.includes('/f/')) return text
