@@ -40,6 +40,10 @@ import {
   openCloudWorkspace,
   openSwitcher,
   readWorkspaces,
+  relayBase,
+  setMachinePower,
+  type CopyCall,
+  type MachinePower,
   type RelayCall,
 } from "./machine-relay"
 
@@ -48,6 +52,19 @@ const CLOUD_ONLY_PROJECT = "Cloud only"
 const CANARY = "SHO130-CANARY-8f2e1c"
 /** A message written into a channel that lives on the machine. */
 const CHANNEL_MESSAGE = `Still on the studio machine ${Date.now().toString(36)}`
+
+/**
+ * The reads that are still the machine's: an answer about its runtime (an agent
+ * turn, its worktrees, a file on its disk) and live streams. Everything else is
+ * a record read, and a record read of a machine workspace is served by the cloud
+ * copy — never the tunnel (SHO-185 AC1).
+ */
+function recordReads(calls: RelayCall[]): string[] {
+  return calls
+    .filter((r) => r.method === "GET")
+    .map((r) => r.path)
+    .filter((path) => !path.includes("/agent-proxy/") && !path.endsWith("/events"))
+}
 
 /** Two projects of the same shape, one on either side of the machine boundary. */
 async function seedProjects(page: Page, cloudId: string, machineId: string): Promise<void> {
@@ -78,11 +95,12 @@ test("SHO-130 · a paired machine's workspace opens from the cloud, stays on rel
 }) => {
   test.slow()
   const log: RelayCall[] = []
+  const copies: CopyCall[] = []
 
   await openCloudWorkspace(page)
   const { personal, team, userId } = await readWorkspaces(page)
   await seedProjects(page, personal.id, team.id)
-  await installCloudRelay(page, { machineWorkspaceId: team.id, userId, log })
+  await installCloudRelay(page, { machineWorkspaceId: team.id, userId, log, copies })
   await page.reload({ waitUntil: "domcontentloaded" })
   await page.waitForTimeout(3000)
 
@@ -117,17 +135,16 @@ test("SHO-130 · a paired machine's workspace opens from the cloud, stays on rel
   await page.keyboard.press("Escape")
 
   // ── AC 2 — what is on screen is what is on that machine ──────────────────
-  // The machine's project list came back through the relay, carrying the
-  // machine's project and not the cloud workspace's look-alike.
-  const projectCalls = log.filter((r) => r.path.startsWith("/api/projects"))
-  expect(projectCalls.length).toBeGreaterThan(0)
-  expect(projectCalls.some((r) => (r.projectNames ?? []).includes(MACHINE_ONLY_PROJECT))).toBe(true)
-  expect(projectCalls.every((r) => !(r.projectNames ?? []).includes(CLOUD_ONLY_PROJECT))).toBe(true)
-  // …and every workspace-scoped ask named the machine's workspace, never the
-  // cloud one. (An unscoped list is the machine's own full list.)
-  expect(
-    projectCalls.filter((r) => r.path.includes("workspaceId=") && !r.path.includes(team.id)).map((r) => r.path),
-  ).toEqual([])
+  // The project list is the machine's: its project, not the cloud workspace's
+  // look-alike.
+  const projectCopies = copies.filter((r) => r.path.startsWith("/api/projects"))
+  expect(projectCopies.length).toBeGreaterThan(0)
+  expect(projectCopies.some((r) => (r.projectNames ?? []).includes(MACHINE_ONLY_PROJECT))).toBe(true)
+  expect(projectCopies.every((r) => !(r.projectNames ?? []).includes(CLOUD_ONLY_PROJECT))).toBe(true)
+  // …and it came from the cloud **copy**, not the tunnel: opening a panel is a
+  // read, and a read of a machine workspace never enters the relay (SHO-185
+  // AC1). Every relayed call here is a mutation or a live path.
+  expect(recordReads(log), "a record read went through the tunnel").toEqual([])
 
   // ── AC 3 — a reload does not bounce back to the cloud ────────────────────
   await page.reload({ waitUntil: "domcontentloaded" })
@@ -251,4 +268,71 @@ test("SHO-130 · a paired machine's workspace opens from the cloud, stays on rel
   const drained = log.length
   await page.waitForTimeout(3000)
   expect(log.slice(drained)).toEqual([])
+})
+
+/**
+ * SHO-185 AC1 + AC4 — the machine asleep, through the UI.
+ *
+ * Reads are answered by the cloud copy, so every panel still opens with the
+ * machine down; a write has nowhere to land, so it is refused with the code the
+ * banner and the composer read, and nothing is queued.
+ */
+test("SHO-185 · a sleeping machine still serves its records, refuses writes, and says so", async ({
+  page,
+}) => {
+  test.slow()
+  const log: RelayCall[] = []
+  const copies: CopyCall[] = []
+  const power: MachinePower = { online: true }
+
+  await openCloudWorkspace(page)
+  const { personal, team, userId } = await readWorkspaces(page)
+  await seedProjects(page, personal.id, team.id)
+  await installCloudRelay(page, { machineWorkspaceId: team.id, userId, log, copies, power })
+  await page.reload({ waitUntil: "domcontentloaded" })
+  await page.waitForTimeout(3000)
+
+  await openSwitcher(page)
+  await page.getByTestId(`workspace-row:machine:${MACHINE_ID}:${MACHINE_WORKSPACE_ID}`).click()
+  await expect(page.getByRole("button", { name: `${MACHINE_WORKSPACE_NAME}, workspace menu` })).toBeVisible({
+    timeout: 20_000,
+  })
+
+  // ── The machine goes to sleep ────────────────────────────────────────────
+  setMachinePower(power, false)
+  copies.length = 0
+  log.length = 0
+  await page.reload({ waitUntil: "domcontentloaded" })
+
+  // AC1: the workspace still opens, from the copy, and no read enters the relay.
+  await expect(page.getByRole("button", { name: `${MACHINE_WORKSPACE_NAME}, workspace menu` })).toBeVisible({
+    timeout: 30_000,
+  })
+  await expect
+    .poll(() => copies.filter((r) => r.path.startsWith("/api/projects")).length, { timeout: 30_000 })
+    .toBeGreaterThan(0)
+  expect(copies.some((r) => (r.projectNames ?? []).includes(MACHINE_ONLY_PROJECT))).toBe(true)
+  expect(recordReads(log), "a record read went through the tunnel while the machine was asleep").toEqual(
+    [],
+  )
+
+  // AC4: a write is refused with the code the UI reads, and nothing is queued.
+  // The refusal goes through the app's own client — that is what feeds the
+  // banner and the composer, so a raw fetch would prove nothing about the UI.
+  const composer = page.getByRole("textbox").last()
+  await composer.click()
+  await composer.fill("sent while the machine is asleep")
+  await page.keyboard.press("Enter")
+
+  await expect
+    .poll(() => log.filter((r) => r.status === 409).length, { timeout: 45_000 })
+    .toBeGreaterThan(0)
+
+  // The banner says which machine and when it last synced, and the composer is
+  // disabled from the same value — not a second, disagreeing opinion.
+  await expect(page.getByTestId("machine-workspace-banner")).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText(/is offline — last synced /)).toBeVisible()
+  // RN renders a disabled input as `editable={false}` (read-only in the DOM), so
+  // the composer is asserted the way the web build expresses it.
+  await expect(composer).not.toBeEditable()
 })

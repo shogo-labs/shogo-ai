@@ -36,6 +36,7 @@ import {
   MachineWorkspaceBanner,
   useMachineWorkspace,
 } from '../../components/instance/MachineWorkspaceBanner'
+import { isMachineConditionError } from '@shogo/shared-app/services'
 import { useActiveInstance } from '../../contexts/active-instance'
 import {
   ChatInput,
@@ -333,6 +334,13 @@ export const HomeScreen = observer(function HomeScreen({
   const draftRef = useRef<HomeDraft | null>(null)
   const draftPromiseRef = useRef<Promise<HomeDraft | null> | null>(null)
   const draftPrewarmedRef = useRef<Set<string>>(new Set())
+  // The last submission the machine refused, kept only long enough for the
+  // banner's Try again (and the waking auto-retry) to re-run it.
+  const lastRefusedRef = useRef<{
+    text: string
+    files?: FileAttachment[]
+    mode: InteractionMode
+  } | null>(null)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   // APP_MODE_DISABLED: homeAppTemplates state removed
 
@@ -663,6 +671,13 @@ export const HomeScreen = observer(function HomeScreen({
             prewarmHomeDraft(draft, currentWorkspace.id)
           }
         } catch (err: any) {
+          if (isMachineConditionError(err)) {
+            // The machine is asleep or still waking: the banner says so and
+            // offers Try again, so keep the submission to re-run rather than
+            // showing a second, worse explanation in an alert.
+            lastRefusedRef.current = { text, files, mode: submissionInteractionMode }
+            return
+          }
           const detail = err?.message || err?.details?.error?.message || String(err)
           console.error('[Home] Failed to create project:', detail, err)
           Alert.alert('Error', `Failed to create project: ${detail}`)
@@ -989,7 +1004,16 @@ export const HomeScreen = observer(function HomeScreen({
   // composer is disabled from the same state the banner renders — and the banner
   // says which of the two things is true, waking or offline.
   const { instance: machineInstance } = useActiveInstance()
-  const machineView = useMachineWorkspace({ machineName: machineInstance?.name })
+  const retryMachineRequest = useCallback(() => {
+    const refused = lastRefusedRef.current
+    if (!refused) return
+    lastRefusedRef.current = null
+    return createProjectFromPrompt(refused.text, refused.files, refused.mode)
+  }, [createProjectFromPrompt])
+  const machineView = useMachineWorkspace({
+    machineName: machineInstance?.name,
+    onRetry: retryMachineRequest,
+  })
 
   const composer = usesMobileWorkspaceChrome ? (
     <ChatInput
@@ -1110,7 +1134,10 @@ export const HomeScreen = observer(function HomeScreen({
                 : restComposerSidePad,
             }}
           >
-            <MachineWorkspaceBanner machineName={machineInstance?.name} />
+            <MachineWorkspaceBanner
+              machineName={machineInstance?.name}
+              onRetry={retryMachineRequest}
+            />
             {composer}
           </Animated.View>
         </View>
