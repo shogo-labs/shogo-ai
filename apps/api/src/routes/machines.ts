@@ -141,14 +141,61 @@ function isCliWorker(kind: string | null | undefined): boolean {
 const SYNC_CATCH_UP_DEADLINE_MS = 2_000
 const SYNC_CATCH_UP_POLL_MS = 100
 
+/** One machine's copy state, as the read paths need it. */
+type MachineSyncStateRow = {
+  instanceId: string
+  enabled: boolean
+  cursor: number
+  lastIngestAt: Date | null
+}
+
+/**
+ * The `MachineSyncState` delegate, or null when the client has no such model.
+ *
+ * The copy state is a convenience — "Last synced", the Sync to cloud switch, and
+ * how far the push has got — never the machine itself. A Prisma client generated
+ * before those tables exist throws on the property access, which is before any
+ * `.catch()` attached to the call can see it, so `GET /machines` (the list
+ * Studio's switcher polls) turned into a 500 with no machine data at all. Missing
+ * means "no copy state", not "the machine list is broken".
+ */
+function machineSyncState() {
+  return (prisma as any).machineSyncState ?? null
+}
+
+/** One machine's copy state, or null when it has none (or cannot be read). */
+async function readMachineSyncState(instanceId: string): Promise<MachineSyncStateRow | null> {
+  const table = machineSyncState()
+  if (!table?.findUnique) return null
+  try {
+    return (await table.findUnique({
+      where: { instanceId },
+      select: { enabled: true, cursor: true, lastIngestAt: true },
+    })) ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Copy state for many machines at once, for the Settings → Remote control list. */
+async function readMachineSyncStates(instanceIds: string[]): Promise<Map<string, MachineSyncStateRow>> {
+  const table = machineSyncState()
+  if (!table?.findMany) return new Map()
+  try {
+    const rows = (await table.findMany({
+      where: { instanceId: { in: instanceIds } },
+    })) as MachineSyncStateRow[]
+    return new Map(rows.map((row) => [row.instanceId, row]))
+  } catch {
+    return new Map()
+  }
+}
+
 async function awaitSyncCatchUp(instanceId: string, seq: number): Promise<void> {
   if (!Number.isFinite(seq) || seq <= 0) return
   const deadline = Date.now() + SYNC_CATCH_UP_DEADLINE_MS
   for (;;) {
-    const state = await prisma.machineSyncState.findUnique({
-      where: { instanceId },
-      select: { cursor: true },
-    })
+    const state = await readMachineSyncState(instanceId)
     if ((state?.cursor ?? 0) >= seq) return
     if (Date.now() >= deadline) return
     await new Promise((resolve) => setTimeout(resolve, SYNC_CATCH_UP_POLL_MS))
@@ -237,10 +284,7 @@ export function machineRoutes() {
 
     // One read for every machine's copy state, so the Settings → Remote control
     // switch can show "Last synced" without a second round trip (SHO-185).
-    const syncStates = await prisma.machineSyncState
-      .findMany({ where: { instanceId: { in: rows.map((row) => row.id) } } })
-      .catch(() => [] as Array<{ instanceId: string; lastIngestAt: Date | null; enabled: boolean; cursor: number }>)
-    const syncByInstance = new Map(syncStates.map((state) => [state.instanceId, state]))
+    const syncByInstance = await readMachineSyncStates(rows.map((row) => row.id))
 
     const machines = await Promise.all(
       grouped.map(async ({ row, workspaces, rows: machineRows }) => ({
@@ -376,10 +420,10 @@ export function machineRoutes() {
       // desktop — so the workspace is read-only, with no queue behind it
       // (SHO-185). A live read (preview, agent stream) just says offline.
       if (MUTATING_METHODS.has(method)) {
-        const state = await prisma.machineSyncState.findUnique({
-          where: { instanceId: instance.id },
-          select: { lastIngestAt: true },
-        })
+        // `lastSyncedAt` is what the read-only banner shows, so this read has to
+        // answer even when the copy state is unavailable — the machine being
+        // offline is the fact the client needs, not the timestamp's absence.
+        const state = await readMachineSyncState(instance.id)
         return c.json(offlineReadOnly(instance, state?.lastIngestAt?.toISOString() ?? null), 409)
       }
       return c.json(offline(), 503)
