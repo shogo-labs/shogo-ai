@@ -986,6 +986,12 @@ jobs:
     timeout-minutes: 15
     env:
       CHANNELS_TEST_PG_URL: postgresql://shogo:shogo@127.0.0.1:5432/shogo
+      # SHO-185's two-pod relay and machine-copy suites need a real Redis next to
+      # the real Postgres. `CI_REQUIRE_MACHINE_INFRA` makes a missing service a
+      # failure instead of a silent skip.
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      CI_REQUIRE_REDIS: '1'
+      CI_REQUIRE_MACHINE_INFRA: '1'
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -997,6 +1003,15 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U shogo"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
@@ -1073,6 +1088,18 @@ jobs:
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/agent-call-restart.integration.test.ts
 
+      # SHO-185: the cross-pod tunnel relay and the machine copy, both on real
+      # API processes against the real Postgres and the real Redis above. The
+      # relay test used to be mocked, and mocked relay tests passed while
+      # prod-US answered "Machine is offline" for two hours.
+      - name: Machine relay + machine copy (two pods, Postgres + Redis)
+        working-directory: apps/api
+        run: |
+          for f in src/__tests__/machine-relay-two-pods.integration.test.ts src/__tests__/machine-workspaces.integration.test.ts; do
+            echo "::group::$f"
+            bun --no-env-file test "$f" || exit 1
+            echo "::endgroup::"
+          done
 
   test-windows:
     name: Test (Windows path handling)

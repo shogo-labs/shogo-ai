@@ -23,6 +23,42 @@ function homeSessionWhere() {
   return { OR: [{ project: { workspace: home } }, { workspace: home }] }
 }
 
+/**
+ * Which of these sessions may run on the cloud (SHO-185).
+ *
+ * A session belongs to a workspace either through its project or directly, and
+ * either can be a machine copy — whose agent runs on the desktop. Asking here
+ * keeps the dispatcher's own home-region where intact instead of folding two
+ * relation shapes into one filter.
+ */
+async function cloudSessionIds(sessionIds: string[]): Promise<Set<string>> {
+  if (!sessionIds.length) return new Set()
+  const rows = await (prisma as any).chatSession.findMany({
+    where: { id: { in: sessionIds } },
+    select: { id: true, workspaceId: true, project: { select: { workspaceId: true } } },
+  })
+  const workspaceIds = new Set<string>()
+  for (const row of rows) {
+    if (row.workspaceId) workspaceIds.add(row.workspaceId)
+    if (row.project?.workspaceId) workspaceIds.add(row.project.workspaceId)
+  }
+  if (!workspaceIds.size) return new Set(sessionIds)
+  const copies = await (prisma as any).workspace.findMany({
+    where: { id: { in: [...workspaceIds] }, machineInstanceId: { not: null } },
+    select: { id: true },
+  })
+  if (!copies.length) return new Set(sessionIds)
+  const blocked = new Set<string>(copies.map((copy: { id: string }) => copy.id))
+  return new Set(
+    rows
+      .filter((row: { workspaceId: string | null; project: { workspaceId: string } | null }) =>
+        !(row.workspaceId && blocked.has(row.workspaceId)) &&
+        !(row.project?.workspaceId && blocked.has(row.project.workspaceId)),
+      )
+      .map((row: { id: string }) => row.id),
+  )
+}
+
 export async function isHomeRegionSession(chatSessionId: string): Promise<boolean> {
   const home = homeSessionWhere()
   if (!home) return true
@@ -531,8 +567,10 @@ export async function dispatchPendingSessions(): Promise<number> {
     distinct: ['sessionId'],
     select: { sessionId: true },
   })
+  const allowed = await cloudSessionIds(rows.map((row: { sessionId: string }) => row.sessionId))
   let dispatched = 0
   for (const row of rows) {
+    if (!allowed.has(row.sessionId)) continue
     if (await dispatchNext(row.sessionId)) dispatched++
   }
   return dispatched

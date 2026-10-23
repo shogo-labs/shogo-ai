@@ -41,6 +41,9 @@ type Instance = {
 
 const instancesById = new Map<string, Instance>()
 const auditRows: any[] = []
+let syncStateRow:
+  | { instanceId: string; enabled: boolean; lastIngestAt: Date | null; cursor?: number }
+  | null = null
 
 const mockPrisma = {
   instance: {
@@ -66,6 +69,23 @@ const mockPrisma = {
     create: async (args: any) => {
       auditRows.push(args.data)
       return args.data
+    },
+  },
+  machineSyncState: {
+    findUnique: async (args: any) => {
+      if (!syncStateRow) return null
+      return args?.where?.instanceId === syncStateRow.instanceId ? { ...syncStateRow } : null
+    },
+    findMany: async () => (syncStateRow ? [{ ...syncStateRow }] : []),
+    upsert: async (args: any) => {
+      syncStateRow = {
+        instanceId: args.where.instanceId,
+        enabled: true,
+        lastIngestAt: null,
+        ...(syncStateRow ? syncStateRow : args.create),
+        ...args.update,
+      }
+      return { ...syncStateRow }
     },
   },
 }
@@ -174,6 +194,7 @@ const SNAPSHOT = {
 beforeEach(() => {
   instancesById.clear()
   auditRows.length = 0
+  syncStateRow = null
   instanceTesting.tunnels.clear()
   instanceTesting.activeViewers.clear()
   machineTesting.resetWakeDeadlineMs()
@@ -393,6 +414,19 @@ describe('machine workspace relay', () => {
     expect(body.error.code).toBe('forbidden')
   })
 
+  test('a machine that heartbeated recently is `waking`, not `offline`', async () => {
+    // An idle desktop signals every 60s and has no push channel, so "no tunnel
+    // right now" is normal for a live machine. Saying offline there is what made
+    // every panel of a sleeping machine's workspace fail (SHO-185).
+    seedInstance({ lastSeenAt: new Date(Date.now() - 20_000), metadata: { machine: SNAPSHOT } })
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects')
+    expect(res.status).toBe(503)
+    expect(res.headers.get('retry-after')).toBe('3')
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('waking')
+    expect(body.projects).toBeUndefined()
+  })
+
   test('an offline machine answers 503 offline, never 200 with empty data', async () => {
     seedInstance({ lastSeenAt: null, metadata: { machine: SNAPSHOT } })
     const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects')
@@ -400,6 +434,41 @@ describe('machine workspace relay', () => {
     const body = (await res.json()) as any
     expect(body.error.code).toBe('offline')
     expect(body.projects).toBeUndefined()
+  })
+
+  test('a write to an offline machine is read-only, not a retry', async () => {
+    // The rows are on the desktop, so a write has nowhere to land. Answering
+    // `waking` here would make the composer retry a send that can never be
+    // delivered, and the client would queue nothing to show for it (SHO-185).
+    seedInstance({ lastSeenAt: null, metadata: { machine: SNAPSHOT } })
+    syncStateRow = {
+      instanceId: 'i-1',
+      enabled: true,
+      lastIngestAt: new Date('2026-10-23T09:00:00.000Z'),
+    }
+
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Docs' }),
+    })
+
+    expect(res.status).toBe(409)
+    expect(res.headers.get('retry-after')).toBeNull()
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('machine_offline_readonly')
+    // What the banner shows: the copy's last successful ingest.
+    expect(body.error.lastSyncedAt).toBe('2026-10-23T09:00:00.000Z')
+  })
+
+  test('a live read of an offline machine still says offline', async () => {
+    // Preview, terminal and file contents are not in the copy — they are the
+    // machine. There is nothing to be read-only about, so no 409.
+    seedInstance({ lastSeenAt: null, metadata: { machine: SNAPSHOT } })
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/workspaces/ws-1/preview')
+    expect(res.status).toBe(503)
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('offline')
   })
 
   test('streams an agent chat SSE back through the relay', async () => {
@@ -468,14 +537,14 @@ describe('machine workspace relay', () => {
       respondJson({ projects: [{ id: 'p-1' }] })(req, conn)
     })
 
-    const calls: string[] = []
+    const calls: Array<{ path: string; body?: unknown }> = []
     const http = {
       get: async (path: string) => {
-        calls.push(path)
+        calls.push({ path })
         return { data: {} }
       },
-      post: async (path: string) => {
-        calls.push(path)
+      post: async (path: string, body?: unknown) => {
+        calls.push({ path, body })
         return { data: {} }
       },
       patch: async () => ({ data: {} }),
@@ -489,14 +558,23 @@ describe('machine workspace relay', () => {
       remoteProxyBaseUrl: 'https://studio.shogo.ai/api/machines/i-1/w/lw-1',
       machineWorkspaceId: 'lw-1',
     }))
-    await proxy.get('/api/projects?workspaceId=ws-cloud')
+    // A write — a read of the machine's records is answered by the cloud copy
+    // and never reaches the relay (SHO-185).
+    await proxy.post('/api/projects', { name: 'Docs', workspaceId: 'ws-cloud' })
 
     // The URL the app would fetch, replayed through the real relay route.
-    const sent = new URL(calls[0])
-    const res = await buildApp().request(`${sent.pathname}${sent.search}`)
+    const sent = new URL(calls[0].path)
+    const res = await buildApp().request(`${sent.pathname}${sent.search}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(calls[0].body),
+    })
 
     expect(res.status).toBe(200)
-    expect(seen.path).toBe('/api/projects?workspaceId=lw-1')
+    expect(seen.path).toBe('/api/projects')
     expect(seen.path.startsWith('/api/api')).toBe(false)
+    // A create carries the workspace in its body, and it must be the machine's
+    // own id — the cloud id the UI was showing resolves to nothing there.
+    expect(JSON.parse(seen.body).workspaceId).toBe('lw-1')
   })
 })

@@ -26,6 +26,7 @@ export interface WorkspaceType {
   chatMode?: string
   chatProvider?: string
   agentReplyConcurrency?: number
+  machineInstanceId?: string
   createdAt: Date
   updatedAt: Date
 }
@@ -45,6 +46,7 @@ export interface WorkspaceCreateInput {
   chatMode?: string
   chatProvider?: string
   agentReplyConcurrency?: number
+  machineInstanceId?: string
 }
 
 export interface WorkspaceUpdateInput {
@@ -62,4 +64,5 @@ export interface WorkspaceUpdateInput {
   chatMode?: string
   chatProvider?: string
   agentReplyConcurrency?: number
+  machineInstanceId?: string
 }

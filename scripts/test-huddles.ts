@@ -7,9 +7,12 @@
  *
  *   api      service + route behaviour against a real database: join/leave,
  *            ringing, invites, moderation, share link and knock, polls and Q&A,
- *            the call chat that follows who is in the call, LiveKit webhooks.
- *   mobile   the client call state, roster, chat lookup, ringtone and call
- *            notifications, and the call's panels (chat, polls, requests, invite).
+ *            the call chat that follows who is in the call, LiveKit webhooks,
+ *            and huddle notes (tickets, coverage handover, billing, finalize,
+ *            live captions, the spoken "hey Shogo" wake).
+ *   mobile   the client call state, roster, chat lookup, ringtone, call
+ *            notifications, the captions strip and the wake note, and the
+ *            call's panels (chat, polls, requests, invite).
  *   desktop  the Electron call window's protocol and bounds.
  *   e2e      real browsers through a real LiveKit server (opt-in: it needs the
  *            local stack and LiveKit running).
@@ -46,6 +49,11 @@ const LAYERS: Layer[] = [
     files: [
       'src/__tests__/huddles.integration.test.ts',
       'src/__tests__/huddles-multi.integration.test.ts',
+      'src/__tests__/huddle-notes.integration.test.ts',
+      'src/services/__tests__/huddle-notes-coverage.test.ts',
+      'src/__tests__/meeting-live-stream.test.ts',
+      'src/services/__tests__/huddle-wake.test.ts',
+      'src/routes/__tests__/internal.huddle-finals.test.ts',
       'src/lib/__tests__/apns.test.ts',
       'src/lib/__tests__/push-notifications.test.ts',
     ],
@@ -56,6 +64,8 @@ const LAYERS: Layer[] = [
     cmd: (f) => ['bun', '--no-env-file', 'test', f],
     files: [
       'lib/__tests__/huddles.test.tsx',
+      'lib/__tests__/huddle-notes.test.ts',
+      'lib/__tests__/live-transcription.test.ts',
       'lib/__tests__/huddle-roster.test.ts',
       'lib/__tests__/huddle-ringtone.test.ts',
       'lib/__tests__/native-call-payload.test.ts',
@@ -65,6 +75,10 @@ const LAYERS: Layer[] = [
       'hooks/__tests__/usePresence.test.tsx',
       'components/team-chat/__tests__/poll-card.rtl.test.tsx',
       'components/team-chat/__tests__/huddle-panels.rtl.test.tsx',
+      'lib/__tests__/huddle-captions.test.ts',
+      'components/__tests__/huddle-captions.rtl.test.tsx',
+      'components/team-chat/__tests__/huddle-wake-note.rtl.test.tsx',
+      'components/team-chat/__tests__/huddle-notes-notice.rtl.test.tsx',
     ],
   },
   {
@@ -77,7 +91,7 @@ const LAYERS: Layer[] = [
     name: 'e2e',
     cwd: '.',
     cmd: (f) => ['npx', 'playwright', 'test', '--config', 'e2e/local/playwright.config.ts', '--project=chromium', f],
-    files: ['e2e/local/huddles.test.ts'],
+    files: ['e2e/local/huddle-notes.test.ts'],
     optIn: true,
   },
 ]

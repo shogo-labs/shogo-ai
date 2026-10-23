@@ -230,7 +230,12 @@ export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Pro
   const now = new Date()
   const staleBefore = new Date(now.getTime() - SCHEDULE_STALE_AFTER_MS)
   const homeFilter = homeRegionWorkspaceWhere()
-  const workspaceFilter = homeFilter ? { workspace: homeFilter } : {}
+  // Schedules of a machine workspace run on that desktop (SHO-185); firing them
+  // here too would double every run the copy was never meant to hold.
+  const cloudOnly = { machineInstanceId: null } as const
+  const workspaceFilter = {
+    workspace: homeFilter ? { AND: [homeFilter, cloudOnly] } : cloudOnly,
+  }
 
   const capacity = MAX_CONCURRENT_SCHEDULE_RUNS - inFlightRuns.size
   if (capacity <= 0) return

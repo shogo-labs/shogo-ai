@@ -42,6 +42,7 @@ export const WorkspaceModel = types
     chatMode: types.optional(types.string, ""),
     chatProvider: types.optional(types.string, ""),
     agentReplyConcurrency: types.optional(types.number, 0),
+    machineInstanceId: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     projects: types.optional(types.array(types.safeReference(types.late(() => ProjectModel))), []),

@@ -18,6 +18,21 @@ export {
 } from './remote-http-interceptor'
 
 export {
+  MACHINE_RETRY_CAP_MS,
+  MACHINE_RETRY_BASE_MS,
+  MachineWorkspaceStateStore,
+  machineWorkspaceState,
+  describeMachineWorkspace,
+  describeLastSynced,
+  errorLastSyncedAt,
+  isMachineConditionError,
+  parseRetryAfter,
+  type MachineWorkspaceCondition,
+  type MachineWorkspaceTone,
+  type MachineWorkspaceView,
+} from './machine-workspace-state'
+
+export {
   SyncClient,
   type SyncClientConfig,
   type SyncConnectionStatus,
