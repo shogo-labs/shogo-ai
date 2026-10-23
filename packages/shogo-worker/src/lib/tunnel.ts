@@ -77,7 +77,20 @@ export interface RuntimeResolver {
    * carry an actionable code + message. Optional — when absent the
    * tunnel falls back to a generic `NO_LOCAL_RUNTIME` payload.
    */
-  describeRejection?(pathWithQuery: string, projectId?: string): ResolveRejection;
+  describeRejection?(
+    pathWithQuery: string,
+    projectId?: string,
+  ): ResolveRejection | Promise<ResolveRejection>;
+
+  /**
+   * Refresh whatever the synchronous calls above read from.
+   *
+   * The tunnel runs on its own thread (SHO-185 §5), and `getActiveProjects()` /
+   * `status()` are synchronous per heartbeat — so a resolver that cannot answer
+   * those from its own memory (a bridged one asks the main thread) refreshes in
+   * one awaited round trip here, before the heartbeat that reads them.
+   */
+  refresh?(): Promise<void>;
 
   /**
    * Owner-gated snapshot of this machine's own workspaces (ids, names,
@@ -281,6 +294,13 @@ export class WorkerTunnel {
   }
 
   private async collectMetadata(): Promise<Record<string, unknown>> {
+    // One awaited round trip for everything read synchronously below, so the
+    // heartbeat carries this cycle's runtimes rather than the last thread's.
+    try {
+      await this.opts.resolver.refresh?.();
+    } catch {
+      // A stale snapshot is better than no heartbeat at all.
+    }
     const meta: Record<string, unknown> = {
       hostname: osHostname(),
       os: platform(),
@@ -454,7 +474,7 @@ export class WorkerTunnel {
         // back the original path so the operator doesn't have to
         // correlate request-ids to figure out which fetch failed.
         const rejection: ResolveRejection = this.opts.resolver.describeRejection
-          ? this.opts.resolver.describeRejection(msg.path, msg.projectId)
+          ? await this.opts.resolver.describeRejection(msg.path, msg.projectId)
           : { code: 'NO_LOCAL_RUNTIME', message: `no local runtime available for path: ${msg.path}` };
         this.sendFrame({
           type: 'response',
