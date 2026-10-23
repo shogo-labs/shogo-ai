@@ -19,8 +19,13 @@ const WEB_DIR = path.join(__dirname, '..', 'dist', '_expo', 'static', 'js', 'web
 
 /** Largest `index-*.js` ceiling. After async routes the entry is ~1.12 MB. */
 export const MAIN_CHUNK_BUDGET_BYTES = 2_500_000
-/** Shared `__common-*.js` loaded with the entry. Measured at ~10.3 MB after lazy imports. */
-export const COMMON_CHUNK_BUDGET_BYTES = 12_000_000
+/**
+ * Shared `__common-*.js` loaded with the entry. Measured at ~10.3 MB after lazy imports.
+ * Raised 12 -> 13 MB for v2.3.11: the file viewer (#1672) pulls in the whole
+ * `@shikijs/langs` grammar pack (2.73 MB) instead of the languages it renders,
+ * landing the chunk at 12.32 MB. Lower this back once that is lazy-loaded.
+ */
+export const COMMON_CHUNK_BUDGET_BYTES = 13_000_000
 
 export function packageKey(source) {
   const marker = 'node_modules/'
