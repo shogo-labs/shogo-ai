@@ -48,6 +48,8 @@ import type { OpenProjectPaneRequest } from "../chat/ChatContext"
 import type { PlanData } from "../chat/PlanCard"
 import { PlanStreamProvider } from "../chat/PlanStreamContext"
 import { PlansPanel } from "../project/panels/PlansPanel"
+import { ShareFileProvider, type ShareFileTarget } from "../chat/share-file-context"
+import { ShareFileView } from "../chat/ShareFileViewer"
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
 import { TaskThreadPaneHost } from "../chat/task/TaskThreadPaneHost"
@@ -74,12 +76,20 @@ interface ProjectPaneState extends OpenProjectPaneRequest {
   nonce: number
 }
 
-interface FilePaneState {
-  /** Workspace-relative path the assistant mentioned. */
-  path: string
-  /** Changes on every open so re-opening the same file reloads it. */
-  nonce: number
-}
+/**
+ * The right-hand file pane. Both kinds of link land here — a workspace path the
+ * assistant mentioned and a `share_file` link — so the pane Russell calls the
+ * preview panel is the one place a file opens.
+ */
+type FilePaneState =
+  | {
+      kind: "path"
+      /** Workspace-relative path the assistant mentioned. */
+      path: string
+      /** Changes on every open so re-opening the same file reloads it. */
+      nonce: number
+    }
+  | { kind: "share"; target: ShareFileTarget; nonce: number }
 
 interface PlanPaneState {
   filepath: string | null
@@ -309,7 +319,12 @@ export const WorkspaceAgentChatScreen = observer(
     const openFilePane = useCallback((path: string) => {
       setProjectPane(null)
       setPlanPane(null)
-      setFilePane({ path, nonce: Date.now() })
+      setFilePane({ kind: "path", path, nonce: Date.now() })
+    }, [])
+    const openShareFile = useCallback((target: ShareFileTarget) => {
+      setProjectPane(null)
+      setPlanPane(null)
+      setFilePane({ kind: "share", target, nonce: Date.now() })
     }, [])
     const closeFilePane = useCallback(() => setFilePane(null), [])
     const handleBuildPlan = useCallback(
@@ -651,16 +666,26 @@ export const WorkspaceAgentChatScreen = observer(
       />
     ) : null
     const filePaneContent = filePane ? (
-      <WorkspaceFileViewer
-        agentUrl={workspaceAgentUrl}
-        path={filePane.path}
-        nonce={filePane.nonce}
-        onClose={closeFilePane}
-      />
+      filePane.kind === "share" ? (
+        <ShareFileView
+          key={`${filePane.target.href}:${filePane.nonce}`}
+          target={filePane.target}
+          embedded
+          onClose={closeFilePane}
+        />
+      ) : (
+        <WorkspaceFileViewer
+          agentUrl={workspaceAgentUrl}
+          path={filePane.path}
+          nonce={filePane.nonce}
+          onClose={closeFilePane}
+        />
+      )
     ) : null
 
     return (
       <PlanStreamProvider>
+      <ShareFileProvider open={openShareFile}>
       <View className="flex-1 flex-row bg-background">
       <View className="min-w-0 flex-1 bg-background">
         {usesMobileWorkspaceChrome ? (
@@ -928,12 +953,22 @@ export const WorkspaceAgentChatScreen = observer(
             <View style={{ height: Math.round(height * 0.8) }}>{plansPanel}</View>
           </NativePhoneSheet>
         ) : null}
-        {!hasSidePane ? (
+        {!hasSidePane && filePane?.kind === "path" ? (
           <NativePhoneSheet
-            visible={!!filePane}
+            visible
             onClose={closeFilePane}
             grabber={false}
             testID="workspace-file-sheet"
+          >
+            <View style={{ height: Math.round(height * 0.8) }}>{filePaneContent}</View>
+          </NativePhoneSheet>
+        ) : null}
+        {!hasSidePane && filePane?.kind === "share" ? (
+          <NativePhoneSheet
+            visible
+            onClose={closeFilePane}
+            grabber={false}
+            testID="workspace-share-file-sheet"
           >
             <View style={{ height: Math.round(height * 0.8) }}>{filePaneContent}</View>
           </NativePhoneSheet>
@@ -945,7 +980,10 @@ export const WorkspaceAgentChatScreen = observer(
         </View>
       ) : null}
       {hasSidePane && filePane ? (
-        <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-file-pane">
+        <View
+          className="w-[45%] min-w-[420px] border-l border-border"
+          testID={filePane.kind === "share" ? "workspace-share-file-pane" : "workspace-file-pane"}
+        >
           {filePaneContent}
         </View>
       ) : null}
@@ -966,6 +1004,7 @@ export const WorkspaceAgentChatScreen = observer(
           desktop, in a sheet on phones. Never replaces this chat. */}
       <TaskThreadPaneHost />
       </View>
+      </ShareFileProvider>
       </PlanStreamProvider>
     )
   },
