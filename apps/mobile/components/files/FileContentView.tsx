@@ -14,8 +14,10 @@
  */
 
 import { useState, type ReactNode } from "react"
-import { Platform, ScrollView, Text, View } from "react-native"
+import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native"
+import { Download } from "lucide-react-native"
 import type { editor } from "monaco-editor"
+import { downloadAttachment } from "../../lib/attachment-download"
 import { MarkdownText } from "../chat/MarkdownText"
 import { CodeEditor } from "../project/panels/ide/CodeEditor"
 import { FilePreview } from "../project/panels/ide/FilePreview"
@@ -90,7 +92,9 @@ export function FileContentView({
   testID,
 }: FileContentViewProps) {
   if (kind === "binary") {
-    return <BinaryFallback message={binaryMessage} download={download} testID={testID} />
+    return (
+      <BinaryFallback message={binaryMessage} download={download} url={url} name={name} testID={testID} />
+    )
   }
 
   if (kind === "markdown") {
@@ -138,15 +142,22 @@ export function FileContentView({
     )
   }
 
-  // Media, fonts, SQLite and PDFs render through the IDE's own previews, which
-  // are DOM-only. Phones keep the host's image path and otherwise the
-  // download fallback, exactly as before.
+  // Media, fonts and SQLite render through the IDE's own previews, which are
+  // DOM-only. A PDF has a native renderer of its own, so it is the one kind
+  // that keeps its preview on a phone.
   if (Platform.OS !== "web") {
     if (kind === "image" && nativeImage) return <>{nativeImage}</>
-    return <BinaryFallback message={binaryMessage} download={download} testID={testID} />
+    if (kind === "pdf" && url) return <NativePdf url={url} name={name} testID={testID} />
+    return (
+      <BinaryFallback message={binaryMessage} download={download} url={url} name={name} testID={testID} />
+    )
   }
 
-  if (!url) return <BinaryFallback message={binaryMessage} download={download} testID={testID} />
+  if (!url) {
+    return (
+      <BinaryFallback message={binaryMessage} download={download} url={url} name={name} testID={testID} />
+    )
+  }
 
   return (
     <div
@@ -336,25 +347,72 @@ function CodeBody({
   )
 }
 
+/**
+ * Nothing here can render this file. It never says to press a Download that the
+ * host forgot to pass: with no control of its own it falls back to downloading
+ * the URL it was given, and only mentions the button when there is one.
+ */
 function BinaryFallback({
   message,
   download,
+  url,
+  name,
   testID,
 }: {
   message: string
   download?: ReactNode
+  url?: string | null
+  name: string
   testID?: string
 }) {
+  const control = download ?? (url ? <DownloadControl url={url} name={name} /> : null)
   return (
     <View
       className="flex-1 items-center justify-center gap-2 px-6 py-8"
       testID={testID ?? "file-view-binary"}
     >
       <Text className="text-center text-sm text-foreground">{message}</Text>
-      <Text className="text-center text-[11px] text-muted-foreground">
-        Use Download to save it and open it in its own app.
-      </Text>
-      {download}
+      {control ? (
+        <Text className="text-center text-[11px] text-muted-foreground">
+          Use Download to save it and open it in its own app.
+        </Text>
+      ) : null}
+      {control}
     </View>
+  )
+}
+
+/** The last resort's own download, so no host can leave the button out. */
+function DownloadControl({ url, name }: { url: string; name: string }) {
+  const [busy, setBusy] = useState(false)
+  return (
+    <Pressable
+      onPress={() => {
+        if (busy) return
+        setBusy(true)
+        void downloadAttachment(url, name).finally(() => setBusy(false))
+      }}
+      disabled={busy}
+      accessibilityRole="button"
+      accessibilityLabel={`Download ${name}`}
+      testID="file-view-download"
+      className="flex-row items-center gap-2 rounded-md bg-primary px-3 py-2 active:opacity-90"
+    >
+      {busy ? <ActivityIndicator size="small" color="#fff" /> : <Download size={14} color="#fff" />}
+      <Text className="text-sm font-semibold text-primary-foreground">Download</Text>
+    </Pressable>
+  )
+}
+
+/** A phone's own PDF renderer — the only preview that survives without a DOM. */
+function NativePdf({ url, name, testID }: { url: string; name: string; testID?: string }) {
+  const WebView = require("react-native-webview").default
+  return (
+    <WebView
+      source={{ uri: url }}
+      style={{ flex: 1 }}
+      testID={testID ?? "file-view-pdf"}
+      accessibilityLabel={name}
+    />
   )
 }

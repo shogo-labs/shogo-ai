@@ -143,6 +143,7 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
             themeMode={isDark ? 'dark' : 'light'}
             pathKey={viewerPathKey(`attachment:${file.id}`)}
             nativeImage={nativeImage}
+            download={<DownloadButton url={url} name={file.name} />}
             testID="file-viewer-content"
           />
         )}
