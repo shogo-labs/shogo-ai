@@ -24,6 +24,7 @@ export {
   machineWorkspaceState,
   describeMachineWorkspace,
   describeLastSynced,
+  errorLastSyncedAt,
   isMachineConditionError,
   parseRetryAfter,
   type MachineWorkspaceCondition,

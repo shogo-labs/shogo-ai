@@ -3,12 +3,19 @@
 /**
  * The banner a machine workspace shows, in each of its three states
  * (SHO-185, AC4): asleep, waking, and fine.
+ *
+ * Failures are the ones the app really produces — a real
+ * `ShogoError.fromStatus(status, message, body)` over the body the cloud's
+ * machine routes send. Hand-built `{ status, code }` objects asserted a seam
+ * nothing uses: the SDK keeps the API's code in `details` and puts the status
+ * map on `code`, so those stubs passed while the real banner never appeared.
  */
 
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
+import { ShogoError } from '@shogo-ai/sdk'
 import { machineWorkspaceState } from '@shogo/shared-app/services'
 
 mock.module('react-native', () => ({
@@ -30,6 +37,24 @@ mock.module('lucide-react-native', () => {
 })
 
 const { MachineWorkspaceBanner, useMachineWorkspace } = await import('../MachineWorkspaceBanner')
+
+/** The 409 the cloud answers a write to a sleeping machine with. */
+function offlineReadOnly(lastSyncedAt: string | null = null): ShogoError {
+  return ShogoError.fromStatus(409, "Russell's MacBook is offline", {
+    error: {
+      code: 'machine_offline_readonly',
+      message: "Russell's MacBook is offline — this workspace is read-only until it is back",
+      lastSyncedAt,
+    },
+  })
+}
+
+/** The 503 the cloud answers while the tunnel is coming up. */
+function waking(retryAfterSeconds: number): ShogoError {
+  return ShogoError.fromStatus(503, "Russell's MacBook is waking up", {
+    error: { code: 'waking', message: "Russell's MacBook is waking up", retryAfterSeconds },
+  })
+}
 
 /**
  * The RN shim renders `testID` as `data-rn-shim` (nothing else maps it), so the
@@ -67,12 +92,12 @@ afterAll(() => {
 describe('a machine workspace whose Mac is asleep', () => {
   test('shows the machine by name with when it last synced, and refuses writes', () => {
     const seen: { composeDisabled: boolean; tone: string }[] = []
-    machineWorkspaceState.report({ status: 409, code: 'machine_offline_readonly' })
+    // The home chat has no last-sync value of its own: the refusal carries it.
+    machineWorkspaceState.report(offlineReadOnly(new Date(Date.now() - 12 * 60_000).toISOString()))
 
     render(
       createElement(Harness, {
         machineName: "Russell's MacBook",
-        lastSyncedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
         onState: (view) => seen.push(view),
       }),
     )
@@ -86,7 +111,7 @@ describe('a machine workspace whose Mac is asleep', () => {
 
   test('offers Try again, and calls it', async () => {
     let retried = 0
-    machineWorkspaceState.report({ status: 409, code: 'machine_offline_readonly' })
+    machineWorkspaceState.report(offlineReadOnly())
 
     render(createElement(Harness, { machineName: 'Mac', onRetry: () => { retried++ } }))
     fireEvent.click(screen.getByText('Try again'))
@@ -99,11 +124,7 @@ describe('a machine that is coming up', () => {
   test('says Waking, keeps the composer disabled, and retries once the wait is over', async () => {
     const seen: { composeDisabled: boolean; tone: string }[] = []
     let retried = 0
-    machineWorkspaceState.report({
-      status: 503,
-      code: 'waking',
-      headers: { get: (name: string) => (name === 'retry-after' ? '0.05' : null) },
-    })
+    machineWorkspaceState.report(waking(0.05))
 
     render(
       createElement(Harness, {
@@ -134,7 +155,7 @@ describe('a machine that answered', () => {
   })
 
   test('clears the banner the moment a request comes back', async () => {
-    machineWorkspaceState.report({ status: 409, code: 'machine_offline_readonly' })
+    machineWorkspaceState.report(offlineReadOnly())
     render(createElement(Harness, { machineName: 'Mac' }))
     expect(banner()).not.toBeNull()
 

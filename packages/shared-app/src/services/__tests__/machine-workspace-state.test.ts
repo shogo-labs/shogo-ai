@@ -8,18 +8,79 @@
  * the value a banner and a composer need is this function's output, and this
  * repo has no React Native renderer for the mobile screens — so the test that
  * can actually fail is the view model's.
+ *
+ * The failures are built the way the app really produces them: a real
+ * `ShogoError.fromStatus(status, message, body)` over the real body the cloud's
+ * machine routes send (see `apps/api/src/routes/machines.ts`). An earlier
+ * version of this file hand-built `{ status, code }` objects, which asserted a
+ * seam nothing in the app uses — the SDK puts the API's code in `details`, and
+ * its own `code` is the status map (`409 → 'CONFLICT'`). That story passed
+ * while every real failure classified as `ok`.
  */
 
 import { describe, expect, it } from 'bun:test'
+import { ShogoError } from '@shogo-ai/sdk'
 import {
   MACHINE_RETRY_CAP_MS,
   MACHINE_RETRY_BASE_MS,
   MachineWorkspaceStateStore,
   describeLastSynced,
   describeMachineWorkspace,
+  errorLastSyncedAt,
   isMachineConditionError,
   parseRetryAfter,
 } from '../machine-workspace-state'
+
+/** The 409 the cloud answers a write to a sleeping machine with. */
+function offlineReadOnly(lastSyncedAt: string | null = null): ShogoError {
+  return ShogoError.fromStatus(
+    409,
+    'Russell\'s MacBook is offline — this workspace is read-only until it is back',
+    {
+      error: {
+        code: 'machine_offline_readonly',
+        message: "Russell's MacBook is offline — this workspace is read-only until it is back",
+        lastSyncedAt,
+      },
+    },
+  )
+}
+
+/** The 503 the cloud answers while the machine's tunnel is coming up. */
+function waking(code: 'waking' | 'runtime_starting' = 'waking', retryAfterSeconds = 3): ShogoError {
+  return ShogoError.fromStatus(503, 'Starting the machine runtime', {
+    error: {
+      code,
+      message: code === 'waking' ? "Russell's MacBook is waking up" : 'Starting the machine runtime',
+      retryAfterSeconds,
+    },
+  })
+}
+
+/** Waking with no wait in the body, so the local backoff has to decide. */
+function wakingWithoutWait(): ShogoError {
+  return ShogoError.fromStatus(503, "Russell's MacBook is waking up", {
+    error: { code: 'waking', message: "Russell's MacBook is waking up" },
+  })
+}
+
+/** The 409 for a request that never came back through the tunnel. */
+function machineTimeout(): ShogoError {
+  return ShogoError.fromStatus(409, 'did not answer in time', {
+    error: {
+      code: 'machine_timeout',
+      message: "Russell's MacBook is connected but did not answer in time",
+      detail: 'no response in 30000ms',
+    },
+  })
+}
+
+/** An ordinary failure inside the workspace: not a machine state. */
+function serverError(): ShogoError {
+  return ShogoError.fromStatus(500, 'Something broke', {
+    error: { code: 'internal', message: 'Something broke' },
+  })
+}
 
 const NOW = Date.UTC(2026, 9, 23, 12, 0, 0)
 
@@ -94,14 +155,25 @@ describe('Retry-After', () => {
 })
 
 describe('what counts as a machine state and what is just an error', () => {
-  it('recognises the three machine codes and nothing else', () => {
-    expect(isMachineConditionError({ status: 503, code: 'waking' })).toBe(true)
-    expect(isMachineConditionError({ status: 503, code: 'runtime_starting' })).toBe(true)
-    expect(isMachineConditionError({ status: 409, code: 'machine_offline_readonly' })).toBe(true)
-    expect(isMachineConditionError({ status: 409, code: 'machine_timeout' })).toBe(true)
+  it('recognises the three machine codes the API sends, through the error the client throws', () => {
+    expect(isMachineConditionError(waking('waking'))).toBe(true)
+    expect(isMachineConditionError(waking('runtime_starting'))).toBe(true)
+    expect(isMachineConditionError(offlineReadOnly())).toBe(true)
+    expect(isMachineConditionError(machineTimeout())).toBe(true)
+  })
+
+  it('does not mistake a real error for a machine state', () => {
     // A 500 is the workspace's own problem and must still be shown.
-    expect(isMachineConditionError({ status: 500, code: 'internal' })).toBe(false)
-    expect(isMachineConditionError({ status: 503, code: 'unavailable' })).toBe(false)
+    expect(isMachineConditionError(serverError())).toBe(false)
+    // The status alone is not enough: a 503 with someone else's code is not a wake.
+    expect(
+      isMachineConditionError(
+        ShogoError.fromStatus(503, 'unavailable', { error: { code: 'unavailable' } }),
+      ),
+    ).toBe(false)
+    // And the status map the SDK puts on `code` must never be read as a machine code.
+    expect(ShogoError.fromStatus(409, 'conflict', {}).code).toBe('CONFLICT')
+    expect(isMachineConditionError(ShogoError.fromStatus(409, 'conflict', {}))).toBe(false)
     expect(isMachineConditionError(new Error('network down'))).toBe(false)
   })
 })
@@ -112,39 +184,60 @@ describe('the store a screen subscribes to', () => {
     const seen: string[] = []
     store.subscribe((condition) => seen.push(condition.kind))
 
-    const condition = store.report({ status: 409, code: 'machine_offline_readonly' })
+    const condition = store.report(offlineReadOnly())
 
     expect(condition.kind).toBe('offline')
     expect(seen).toEqual(['offline'])
   })
 
-  it('backs off while waking, honours Retry-After, and caps at a minute', () => {
+  it('carries the last-sync time off the refusal, so the banner can say when', () => {
+    const store = new MachineWorkspaceStateStore()
+    const lastSyncedAt = new Date(NOW - 42 * 60_000).toISOString()
+
+    const condition = store.report(offlineReadOnly(lastSyncedAt))
+
+    expect(condition).toEqual({ kind: 'offline', lastSyncedAt })
+    expect(
+      describeMachineWorkspace(condition, { machineName: "Russell's MacBook", now: NOW }).banner,
+    ).toBe("Russell's MacBook is offline — last synced 42m ago")
+  })
+
+  it('backs off while waking, honours the wait the server asked for, and caps at a minute', () => {
     const store = new MachineWorkspaceStateStore()
 
-    const first = store.report({ status: 503, code: 'waking' }, NOW)
-    expect(first).toEqual({ kind: 'waking', retryAfterMs: MACHINE_RETRY_BASE_MS, attempt: 1 })
+    const first = store.report(waking('waking', 3), NOW)
+    // The server's own number wins over the local backoff, in seconds.
+    expect(first).toEqual({ kind: 'waking', retryAfterMs: 3_000, attempt: 1 })
+    expect(MACHINE_RETRY_BASE_MS).toBeLessThan(3_000)
 
-    const second = store.report({ status: 503, code: 'runtime_starting' }, NOW)
-    expect(second).toEqual({ kind: 'waking', retryAfterMs: MACHINE_RETRY_BASE_MS * 2, attempt: 2 })
+    const second = store.report(waking('runtime_starting', 6), NOW)
+    expect(second).toEqual({ kind: 'waking', retryAfterMs: 6_000, attempt: 2 })
 
-    const asked = store.report(
-      { status: 503, code: 'waking', headers: { get: (name: string) => (name === 'retry-after' ? '7' : null) } },
-      NOW,
-    )
-    expect(asked).toEqual({ kind: 'waking', retryAfterMs: 7_000, attempt: 3 })
-
-    // Ten failures in, the backoff is still a minute, not five.
-    for (let i = 0; i < 10; i++) store.report({ status: 503, code: 'waking' }, NOW)
+    // Ten failures in, the wait is still a minute, not five.
+    for (let i = 0; i < 10; i++) store.report(waking('waking', 600), NOW)
     const capped = store.get()
     expect(capped.kind).toBe('waking')
-    if (capped.kind === 'waking') expect(capped.retryAfterMs).toBeLessThanOrEqual(MACHINE_RETRY_CAP_MS)
+    if (capped.kind === 'waking') {
+      expect(capped.retryAfterMs).toBe(MACHINE_RETRY_CAP_MS)
+      expect(capped.attempt).toBe(12)
+    }
+  })
+
+  it('falls back to doubling backoff when the body carries no wait', () => {
+    const store = new MachineWorkspaceStateStore()
+
+    expect(store.report(wakingWithoutWait())).toEqual({
+      kind: 'waking',
+      retryAfterMs: MACHINE_RETRY_BASE_MS,
+      attempt: 1,
+    })
   })
 
   it('leaves an ordinary error to the screen that made the request', () => {
     const store = new MachineWorkspaceStateStore()
-    store.report({ status: 409, code: 'machine_offline_readonly' })
+    store.report(offlineReadOnly())
 
-    expect(store.report({ status: 500, code: 'internal' }).kind).toBe('offline')
+    expect(store.report(serverError()).kind).toBe('offline')
     expect(store.report(new Error('boom')).kind).toBe('offline')
   })
 
@@ -153,17 +246,27 @@ describe('the store a screen subscribes to', () => {
     const seen: string[] = []
     store.subscribe((condition) => seen.push(condition.kind))
 
-    store.report({ status: 503, code: 'waking' })
+    store.report(waking())
     store.markOk()
     store.markOk()
 
     expect(store.get().kind).toBe('ok')
     expect(seen).toEqual(['waking', 'ok'])
     // A later failure starts the backoff over rather than jumping to 4s.
-    expect(store.report({ status: 503, code: 'waking' })).toEqual({
+    expect(store.report(wakingWithoutWait())).toEqual({
       kind: 'waking',
       retryAfterMs: MACHINE_RETRY_BASE_MS,
       attempt: 1,
     })
+  })
+})
+
+describe('the last-sync time on a refusal', () => {
+  it('reads it out of the body, and says nothing when it is absent', () => {
+    const iso = new Date(NOW - 60_000).toISOString()
+    expect(errorLastSyncedAt(offlineReadOnly(iso))).toBe(iso)
+    expect(errorLastSyncedAt(offlineReadOnly(null))).toBeNull()
+    expect(errorLastSyncedAt(serverError())).toBeNull()
+    expect(errorLastSyncedAt(new Error('boom'))).toBeNull()
   })
 })

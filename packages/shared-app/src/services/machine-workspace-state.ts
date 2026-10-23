@@ -34,7 +34,9 @@ export const MACHINE_RETRY_BASE_MS = 1_500
 export type MachineWorkspaceCondition =
   | { kind: 'ok' }
   | { kind: 'waking'; retryAfterMs: number; attempt: number }
-  | { kind: 'offline' }
+  // `lastSyncedAt` rides on the 409 the API answers with, so the banner can say
+  // when the copy was last fed without a second request.
+  | { kind: 'offline'; lastSyncedAt: string | null }
 
 export type MachineWorkspaceTone = 'none' | 'waking' | 'offline'
 
@@ -75,8 +77,9 @@ export function describeMachineWorkspace(
 ): MachineWorkspaceView {
   const name = options.machineName?.trim() || 'Your Mac'
   if (condition.kind === 'offline') {
+    const lastSyncedAt = options.lastSyncedAt ?? condition.lastSyncedAt ?? null
     return {
-      banner: `${name} is offline — last synced ${describeLastSynced(options.lastSyncedAt, options.now)}`,
+      banner: `${name} is offline — last synced ${describeLastSynced(lastSyncedAt, options.now)}`,
       tone: 'offline',
       composeDisabled: true,
       retryAfterMs: null,
@@ -101,8 +104,28 @@ interface ErrorShape {
   code?: string
   retryAfter?: string | number
   headers?: { get?: (name: string) => string | null } | Record<string, string>
+  /**
+   * The SDK's `ShogoError` keeps the response body here. Its `code` is the HTTP
+   * status map (`409 → 'CONFLICT'`, `503 → 'UNKNOWN'`), *not* the API's own
+   * code — reading `code` first is what made every machine state classify as
+   * `ok` while the banner's tests, which built plain `{ status, code }`
+   * objects, kept passing.
+   */
+  details?: any
   body?: any
   response?: { status?: number; data?: any; headers?: any }
+}
+
+/** The API's own error object, wherever this runtime put the body. */
+function errorDetail(error: unknown): any {
+  const e = (error ?? {}) as ErrorShape
+  const candidates = [e.details, e.body, e.response?.data]
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    if (candidate.error && typeof candidate.error === 'object') return candidate.error
+    if (typeof candidate.code === 'string') return candidate
+  }
+  return null
 }
 
 function errorStatus(error: unknown): number | null {
@@ -112,9 +135,29 @@ function errorStatus(error: unknown): number | null {
 }
 
 function errorCode(error: unknown): string | null {
+  // The body first: the thrown `code` is the status map, never the machine code.
+  const detail = errorDetail(error)
+  if (detail && typeof detail.code === 'string') return detail.code
   const e = (error ?? {}) as ErrorShape
-  const code = e.code ?? e.body?.error?.code ?? e.response?.data?.error?.code
-  return typeof code === 'string' ? code : null
+  return typeof e.code === 'string' ? e.code : null
+}
+
+/** When the copy was last fed, from the offline 409. */
+export function errorLastSyncedAt(error: unknown): string | null {
+  const detail = errorDetail(error)
+  const value = detail?.lastSyncedAt
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+/** `retryAfterSeconds` from the body, in ms. */
+function errorRetryAfterSeconds(error: unknown): number | null {
+  const detail = errorDetail(error)
+  const value = detail?.retryAfterSeconds
+  if (typeof value === 'number' && Number.isFinite(value)) return clampRetry(value * 1000)
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    return clampRetry(Number(value) * 1000)
+  }
+  return null
 }
 
 function headerValue(error: unknown, name: string): string | null {
@@ -209,12 +252,13 @@ export class MachineWorkspaceStateStore {
 
     if (status !== null && isMachineOfflineReadOnly(status, code)) {
       this.attempt = 0
-      return this.set({ kind: 'offline' })
+      return this.set({ kind: 'offline', lastSyncedAt: errorLastSyncedAt(error) })
     }
 
     if (status !== null && isMachineWakeError(status, code)) {
       this.attempt += 1
-      const asked = parseRetryAfter(headerValue(error, 'retry-after'), now)
+      const asked =
+        errorRetryAfterSeconds(error) ?? parseRetryAfter(headerValue(error, 'retry-after'), now)
       const backoff = Math.min(
         MACHINE_RETRY_CAP_MS,
         MACHINE_RETRY_BASE_MS * Math.pow(2, this.attempt - 1),
