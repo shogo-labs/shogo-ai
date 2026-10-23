@@ -315,9 +315,9 @@ describe('AC4 — "N of M on <tag>" follows the deployed release', () => {
 describe('AC5 — adoption history is captured at one insert point', () => {
   test('a version change appends exactly one row; repeats only bump lastSeenAt', async () => {
     const deviceId = 'hist-1'
-    const t0 = new Date('2026-10-01T08:00:00Z')
-    const t1 = new Date('2026-10-05T08:00:00Z')
-    const t2 = new Date('2026-10-10T08:00:00Z')
+    const t0 = ago(9 * DAY)
+    const t1 = ago(5 * DAY)
+    const t2 = ago(1 * DAY)
 
     await deviceVersionEvents.recordDeviceVersionEvent({ deviceId, version: '2.2.27', platform: 'darwin-arm64', seenAt: t0 })
     await deviceVersionEvents.recordDeviceVersionEvent({ deviceId, version: '2.2.27', platform: 'darwin-arm64', seenAt: t1 })
@@ -338,13 +338,13 @@ describe('AC5 — adoption history is captured at one insert point', () => {
       deviceId: 'hist-cli',
       version: 'shogo-cli/unknown',
       platform: 'linux-x64',
-      seenAt: new Date('2026-10-02T08:00:00Z'),
+      seenAt: ago(8 * DAY),
     })
     await deviceVersionEvents.recordDeviceVersionEvent({
       deviceId: 'hist-beta',
       version: '2.3.6-beta.20261020t083308',
       platform: 'win32',
-      seenAt: new Date('2026-10-03T08:00:00Z'),
+      seenAt: ago(7 * DAY),
     })
 
     const cli = await db.deviceVersionEvent.findFirst({ where: { deviceId: 'hist-cli' } })
