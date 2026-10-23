@@ -364,12 +364,21 @@ resource "null_resource" "knative_pdb_patches" {
 # the OOMs; the replica floor and PDB are what keep a single kill (or a node
 # drain) from taking the region's ingress down.
 #
+# The 2026-10-22 incident (SHO-173) was the other half of the same failure. A
+# distributed scanner sent 13k-41k req/min at dead `preview--<uuid>.shogo.ai`
+# hosts for 10 minutes; Envoy got slow enough that its liveness probe (`/ready`,
+# `timeoutSeconds: 1`) timed out, kubelet SIGKILLed the only gateway pod, and
+# the region 502'd until it restarted — 6 times in a row. So this resource also
+# owns the CPU sizing (200m request / 1 CPU limit starved a flooded Envoy), a
+# probe deadline a busy-but-alive Envoy can still meet, and the node spread that
+# keeps a second replica somewhere else.
+#
 # Unlike `knative_pdb_patches` this is NOT gated on `manage_install`: all live
 # clusters run with manage_install = false, which is why those patches never
 # reached prod. When `cluster_id` is set, kubectl is pointed at that cluster
 # explicitly instead of trusting the operator's ambient KUBECONFIG.
 variable "manage_ingress_capacity" {
-  description = "Apply the Kourier gateway replica floor, memory sizing, and PDB (independent of manage_install)"
+  description = "Apply the Kourier gateway replica floor, CPU/memory sizing, liveness tolerance, node spread, and PDB (independent of manage_install)"
   type        = bool
   default     = true
 }
@@ -404,14 +413,48 @@ variable "kourier_gateway_memory_limit" {
   default     = "2Gi"
 }
 
+# 200m/1 was the upstream sizing. Under the 2026-10-22 scanner flood that left
+# Envoy too little CPU to answer its own /ready probe, which is how a load spike
+# turned into a SIGKILL. 500m request also raises the HPA's 100%-of-request
+# target, so it scales on real load instead of immediately.
+variable "kourier_gateway_cpu_request" {
+  description = "CPU request for the kourier-gateway container"
+  type        = string
+  default     = "500m"
+}
+
+variable "kourier_gateway_cpu_limit" {
+  description = "CPU limit for the kourier-gateway container"
+  type        = string
+  default     = "2"
+}
+
+# A deadline a busy-but-alive Envoy can still meet. At timeoutSeconds 1 a single
+# probe that took 1.1s counted as a failure, and 3 in a row killed the pod.
+variable "kourier_gateway_liveness_timeout_seconds" {
+  description = "livenessProbe.timeoutSeconds for the kourier-gateway container"
+  type        = number
+  default     = 5
+}
+
+variable "kourier_gateway_liveness_failure_threshold" {
+  description = "livenessProbe.failureThreshold for the kourier-gateway container"
+  type        = number
+  default     = 6
+}
+
 resource "null_resource" "kourier_gateway_capacity" {
   count = var.manage_ingress_capacity ? 1 : 0
 
   triggers = {
-    cluster_id     = var.cluster_id
-    min_replicas   = var.kourier_gateway_min_replicas
-    memory_request = var.kourier_gateway_memory_request
-    memory_limit   = var.kourier_gateway_memory_limit
+    cluster_id                 = var.cluster_id
+    min_replicas               = var.kourier_gateway_min_replicas
+    cpu_request                = var.kourier_gateway_cpu_request
+    cpu_limit                  = var.kourier_gateway_cpu_limit
+    memory_request             = var.kourier_gateway_memory_request
+    memory_limit               = var.kourier_gateway_memory_limit
+    liveness_timeout_seconds   = var.kourier_gateway_liveness_timeout_seconds
+    liveness_failure_threshold = var.kourier_gateway_liveness_failure_threshold
   }
 
   provisioner "local-exec" {
@@ -440,10 +483,30 @@ resource "null_resource" "kourier_gateway_capacity" {
       fi
       kubectl rollout status deployment/3scale-kourier-gateway -n kourier-system --timeout=300s
 
-      kubectl set resources deployment/3scale-kourier-gateway -n kourier-system \
-        -c kourier-gateway \
-        --requests=memory=${var.kourier_gateway_memory_request} \
-        --limits=memory=${var.kourier_gateway_memory_limit}
+      # One strategic patch for sizing, liveness deadline and node spread, so a
+      # change rolls the gateway once instead of once per field.
+      #
+      # - CPU 500m/2: at 200m/1 a flooded Envoy could not answer /ready inside a
+      #   second and was killed for it. Memory stays 512Mi/2Gi (the route table
+      #   is per replica; the limit is what stopped the OOM kills).
+      # - livenessProbe timeoutSeconds 5 / failureThreshold 6: the pod is only
+      #   killed when six probes in a row get no answer, not when one probe is
+      #   slower than a second. Readiness still gates traffic, so a wedged Envoy
+      #   is pulled out of rotation instead of killed mid-flood.
+      # - podAntiAffinity preferred (NOT required) on kubernetes.io/hostname: a
+      #   hard rule would leave replicas Pending whenever the pool has fewer free
+      #   nodes than the HPA wants (max 10) and would strand the second pod
+      #   through a node drain — i.e. it would recreate the single-pod region
+      #   this resource exists to prevent. Weight 100 makes an empty node always
+      #   beat one already running a gateway, so 2/2 on distinct nodes is the
+      #   scheduler's choice by rule, not by luck.
+      kubectl patch deployment 3scale-kourier-gateway -n kourier-system --type strategic \
+        -p '{"spec":{"template":{"spec":{
+          "affinity":{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":100,"podAffinityTerm":{"topologyKey":"kubernetes.io/hostname","labelSelector":{"matchLabels":{"app":"3scale-kourier-gateway"}}}}]}},
+          "containers":[{"name":"kourier-gateway",
+            "resources":{"requests":{"cpu":"${var.kourier_gateway_cpu_request}","memory":"${var.kourier_gateway_memory_request}"},"limits":{"cpu":"${var.kourier_gateway_cpu_limit}","memory":"${var.kourier_gateway_memory_limit}"}},
+            "livenessProbe":{"timeoutSeconds":${var.kourier_gateway_liveness_timeout_seconds},"failureThreshold":${var.kourier_gateway_liveness_failure_threshold}}}]
+        }}}}'
       kubectl rollout status deployment/3scale-kourier-gateway -n kourier-system --timeout=300s
 
       kubectl apply -f - <<'YAML'

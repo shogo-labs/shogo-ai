@@ -47,11 +47,81 @@ kubectl get pods -n shogo-production-workspaces -l app.kubernetes.io/name=warm-p
 
 # 4. Per-node memory pressure < 80% (Insufficient memory races appear above this).
 kubectl top nodes
+
+# 5. Ingress is redundant: two Kourier gateway pods, ready, on different nodes,
+#    and the HPA floor is 2. A region whose ingress is one pod deep is one
+#    SIGKILL away from a region-wide 502 (SHO-173, 2026-10-22).
+kubectl -n kourier-system get hpa 3scale-kourier-gateway     # MINPODS 2
+kubectl -n kourier-system get pods -o wide -l app=3scale-kourier-gateway
+kubectl -n kourier-system get pdb 3scale-kourier-gateway-pdb  # MAX UNAVAILABLE 1
 ```
 
 If any of these fail, **stop and resolve before deploying**. A red
 `kubectl top nodes` value is the single best predictor of a roll
 that ends in a capacity-famine incident.
+
+## Ingress capacity (Kourier) — a targeted apply must not skip it
+
+Ingress hardening lives in `terraform/modules/knative-oci` as
+`null_resource.kourier_gateway_capacity` (HPA floor, CPU/memory, liveness
+tolerance, node spread) and the PDB it applies. It is **not** gated on
+`manage_install` precisely because every live cluster runs with
+`manage_install = false` — which is why #1062's hardening ("harden prod ingress
+against 502s", 2026-09-26) sat unapplied in prod for a month while the gateway
+crash-looped under a scanner flood on 10-18, 10-21 and 10-22.
+
+Two rules follow from that:
+
+1. **A surgical `-target` apply that touches the ingress must include
+   `kourier_gateway_capacity`** (both regions). The resource address differs by
+   env because the region module nests it:
+
+   | env | `extra_args` |
+   | --- | --- |
+   | `production-us` | `-target=module.us.module.knative.null_resource.kourier_gateway_capacity` |
+   | `production-eu` | `-target=module.eu.module.knative.null_resource.kourier_gateway_capacity` |
+   | `staging` | `-target=module.knative.null_resource.kourier_gateway_capacity` |
+
+   Run it through `terraform.yml` → `workflow_dispatch` (environment, action
+   `apply`, that string in `extra_args`), once per region. A targeted apply that
+   lists the app resources but not this one leaves prod running whatever the last
+   patch happened to be.
+2. **Verify live state after the apply, not the plan.** The `null_resource` only
+   re-runs when one of its `triggers` changes, so a green apply proves nothing
+   about the pods:
+
+```bash
+for region in oke-production-us oke-production-eu; do
+  echo "== $region"
+  kubectl --context $region -n kourier-system get hpa 3scale-kourier-gateway
+  kubectl --context $region -n kourier-system get pods -o wide -l app=3scale-kourier-gateway
+  kubectl --context $region -n kourier-system get deploy 3scale-kourier-gateway \
+    -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{" "}{.resources}{"\n"}{end}'
+  kubectl --context $region -n kourier-system get deploy 3scale-kourier-gateway \
+    -o jsonpath='live: t={.spec.template.spec.containers[0].livenessProbe.timeoutSeconds} f={.spec.template.spec.containers[0].livenessProbe.failureThreshold}{"\n"}'
+done
+```
+
+Expected, per region (SHO-173):
+
+| Field | Value |
+| --- | --- |
+| HPA `MINPODS` / `MAXPODS` | `2` / `10`, `TARGETS` reading real CPU (not `<unknown>`) |
+| pods | `2/2` Running, **different nodes** (soft hostname anti-affinity, weight 100) |
+| memory | requests `512Mi`, limits `2Gi` |
+| CPU | requests `500m`, limits `2` |
+| liveness | `timeoutSeconds` 5, `failureThreshold` 6 (readiness stays 1/3) |
+| PDB | `MAX UNAVAILABLE 1` |
+
+`kubectl -n kourier-system get hpa` showing `<unknown>` in `TARGETS` means
+metrics-server is broken in that region and the gateway will never scale above
+its floor — fix that first (`terraform/modules/metrics-server`, 2 replicas).
+
+Alerts: `KourierGatewayRestarts` (`terraform/modules/signoz/alerts/kourier-gateway-restarts.yaml`)
+pages on 3+ gateway restarts in 10m; `ProdNodeCountBelowMin` covers the node
+floor. The `preview--*.shogo.ai` flood that triggered 2026-10-22 is blocked at
+the edge by `cloudflare_ruleset.worker_m2m_bot_skip` in
+`terraform/environments/edge-global` (`block_retired_preview_hosts` rule).
 
 ## How a release ships: promote, don't rebuild
 
