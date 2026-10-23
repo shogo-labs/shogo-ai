@@ -227,8 +227,10 @@ mock.module('../../../hooks/useChatShortcuts', () => ({
   requestEditMessage: () => {},
 }))
 const activityTimeline: { messages: any[]; channels: any[] } = { messages: [], channels: [] }
-/** People typing in the pane's scope; agents come from the running messages. */
+/** People typing in the pane's scope; a running agent is the dock's business. */
 const typingUsers: Array<{ id: string; name: string }> = []
+/** Replies a pane asked the server to stop. */
+const stoppedAgents: string[] = []
 const { resolveAgentLook } = await import('@shogo/shared-app/buddy-look')
 mock.module('../../../hooks/useTeamChat', () => ({
   TIMELINE_SOFT_LIMIT: 600,
@@ -244,7 +246,7 @@ mock.module('../../../hooks/useTeamChat', () => ({
     react: async () => {},
     edit: () => {},
     remove: async () => {},
-    stopAgent: async () => {},
+    stopAgent: async (id: string) => { stoppedAgents.push(id) },
     retry: () => {},
     discard: () => {},
     send: async () => {},
@@ -508,7 +510,7 @@ const reactors = {
   agents: new Map<string, string>(),
 }
 const handlers = () => ({
-  onReact: mock(() => {}), onEdit: mock(async () => {}), onDelete: mock(() => {}), onStopAgent: mock(() => {}),
+  onReact: mock(() => {}), onEdit: mock(async () => {}), onDelete: mock(() => {}),
   onRetry: mock(() => {}), onDiscard: mock(() => {}), onReply: mock(() => {}), onOpenSession: mock(() => {}),
 })
 
@@ -537,7 +539,7 @@ describe('MessageRow', () => {
     expect(screen.getByText(/support team has no input there/)).toBeTruthy()
   })
 
-  test('renders mentions by name, and a running agent reply streams with a Stop control', () => {
+  test('renders mentions by name, and a running agent reply is a one-line marker', () => {
     const h = handlers()
     const { rerender } = render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
     expect(screen.getByText('@Billing Bot')).toBeTruthy()
@@ -552,29 +554,27 @@ describe('MessageRow', () => {
       <MessageRow message={agentReply} grouped={false} me="u-me" names={names} canManage={false} inThread streaming={{ text: 'Checking invoices', tool: 'exec', tools: [{ name: 'exec', done: false }] }} {...h} />,
     )
     expect(screen.getByText('AGENT')).toBeTruthy()
-    // A running agent shows its status; what it is writing appears once it is done.
+    // Nothing it is writing or doing shows in the row while it runs: the dock
+    // above the composer carries that, and the row keeps its place.
     expect(screen.queryByText('Checking invoices')).toBeNull()
-    expect(shim('group')!.textContent).toBe('1:true')
-    // The planning line is gone; the typing indicator reports the run instead.
+    expect(shim('running-reply-marker')!.textContent).toBe('Replying…')
+    expect(shim('group')).toBeNull()
+    expect(shim('agent-working-status')).toBeNull()
     expect(document.querySelector('[data-rn-shim="planning"]')).toBeNull()
-    // Stop sits in the header beside the AGENT tag, not beside the streamed work.
-    const stop = screen.getByLabelText('Stop agent')
-    expect(stop.parentElement?.textContent).toContain('AGENT')
-    // Open session sits beside Stop; the live status itself is not pressable.
-    expect(screen.getByLabelText('Open the session this agent is working in').parentElement).toBe(stop.parentElement)
-    expect(shim('group')!.closest('[aria-label="Open the session this agent is working in"]')).toBeNull()
-    fireEvent.click(stop)
-    expect(h.onStopAgent).toHaveBeenCalled()
+    expect(screen.queryByLabelText('Stop agent')).toBeNull()
+    expect(screen.queryByLabelText('Open the session this agent is working in')).toBeNull()
     expect(screen.queryByText('Open full session')).toBeNull()
 
     rerender(
       <MessageRow message={{ ...agentReply, agentStatus: 'done', text: 'All paid.' }} grouped={false} me="u-me" names={names} canManage={false} inThread {...h} />,
     )
+    expect(shim('running-reply-marker')).toBeNull()
+    expect(screen.getByText('All paid.')).toBeTruthy()
     fireEvent.click(screen.getByText('Open full session'))
     expect(h.onOpenSession).toHaveBeenCalled()
   })
 
-  test('a grouped running reply has no header, so Open session and Stop sit on a line of their own', () => {
+  test('a grouped running reply is just the marker, with no controls line of its own', () => {
     const h = handlers()
     const running = message({
       id: 'm5', authorType: 'agent', author: null, authorUserId: null,
@@ -584,13 +584,14 @@ describe('MessageRow', () => {
     render(
       <MessageRow message={running} grouped me="u-me" names={names} canManage={false} inThread streaming={{ text: '', tool: 'exec' }} {...h} />,
     )
-    const stop = screen.getByLabelText('Stop agent')
-    expect(stop.parentElement?.textContent).toBe('Open sessionStop')
-    fireEvent.click(stop)
-    expect(h.onStopAgent).toHaveBeenCalled()
+    // Grouped means no header at all, so the dock row is the only handle.
+    expect(screen.queryByText('Billing Bot')).toBeNull()
+    expect(shim('running-reply-marker')!.textContent).toBe('Replying…')
+    expect(screen.queryByLabelText('Stop agent')).toBeNull()
+    expect(screen.queryByLabelText('Open the session this agent is working in')).toBeNull()
   })
 
-  test('a running reply without a session offers Stop but no Open session', () => {
+  test('a running reply with no session still offers no buttons in the row', () => {
     const h = handlers()
     const running = message({
       id: 'm6', authorType: 'agent', author: null, authorUserId: null,
@@ -598,7 +599,8 @@ describe('MessageRow', () => {
       text: '', agentStatus: 'running', agentSessionId: null, threadRootId: 'm1',
     })
     render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} inThread {...h} />)
-    expect(screen.getByLabelText('Stop agent')).toBeTruthy()
+    expect(shim('running-reply-marker')).toBeTruthy()
+    expect(screen.queryByLabelText('Stop agent')).toBeNull()
     expect(screen.queryByLabelText('Open the session this agent is working in')).toBeNull()
   })
 
@@ -1513,30 +1515,17 @@ describe('agent work', () => {
     workLogResult = async () => ({ parts: [], startedAt: 0, completedAt: 1, toolCalls: 0 })
   })
 
-  test('Open session in the header opens the session the agent is working in', () => {
-    const h = handlers()
-    const running = { ...reply(), agentStatus: 'running', text: '' }
-    render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
-    fireEvent.click(screen.getByLabelText('Open the session this agent is working in'))
-    expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
-  })
-
-  test('the workspace agent (no project) opens its session from Open session too', () => {
-    const h = handlers()
-    const running = { ...reply(), authorAgent: { projectId: null, name: 'Workspace agent' }, agentStatus: 'running', text: '' }
-    render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
-    fireEvent.click(screen.getByLabelText('Open the session this agent is working in'))
-    expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
-  })
-
-  test('a running reply has no planning line, before or during tools; the typing indicator reports the run', () => {
+  test('a running reply is a marker before and during tools; its work is the dock\'s job', () => {
     const running = { ...reply(), agentStatus: 'running', text: '' }
     const { rerender } = render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
     expect(shim('planning')).toBeNull()
     expect(shim('group')).toBeNull()
+    expect(shim('running-reply-marker')).toBeTruthy()
     rerender(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} streaming={{ text: '', tool: 'exec', tools: [{ name: 'exec', done: false }] }} {...handlers()} />)
-    expect(shim('group')).toBeTruthy()
+    // The tools it ran show here only once the run has finished.
+    expect(shim('group')).toBeNull()
     expect(shim('planning')).toBeNull()
+    expect(shim('running-reply-marker')).toBeTruthy()
   })
 })
 
@@ -1782,7 +1771,7 @@ describe('#activity filters', () => {
   })
 })
 
-describe('typing indicator in a channel', () => {
+describe('running agents in a channel', () => {
   const channel = {
     id: 'c-eng', workspaceId: 'ws', kind: 'public', name: 'eng', slug: 'eng',
     topic: null, lastSeq: 2, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
@@ -1794,7 +1783,7 @@ describe('typing indicator in a channel', () => {
       id, seq: 2, authorType: 'agent', author: null, authorUserId: null,
       authorAgent: { projectId, name }, text: '', agentStatus: 'running', agentSessionId: `s-${id}`, threadRootId: null,
     })
-  const renderChannel = () =>
+  const renderChannel = (props: Record<string, unknown> = {}) =>
     render(
       <TimelinePane
         workspaceId="ws"
@@ -1802,43 +1791,92 @@ describe('typing indicator in a channel', () => {
         me="u-me"
         mentionables={{ ...mentionables, agents: [] }}
         visible
+        {...props}
       />,
     )
 
+  /** The reply's own row, once it has been marked to jump to. */
+  const highlighted = () => document.querySelector('[data-testid="message-highlighted"]')
+
   beforeEach(() => {
     typingUsers.length = 0
+    stoppedAgents.length = 0
     activityTimeline.messages = []
   })
   afterEach(() => {
     cleanup()
     typingUsers.length = 0
+    stoppedAgents.length = 0
     activityTimeline.messages = []
   })
 
-  test('a running agent reply shows the agent as typing', () => {
+  test('a running agent gets a dock row above the composer, not a typing line', () => {
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
     renderChannel()
-    expect(screen.getByText('Billing Bot is typing…')).toBeTruthy()
+    expect(shim('running-agents-dock')!.textContent).toContain('Billing Bot')
+    expect(screen.getByTestId('running-agent-row-r1')).toBeTruthy()
+    // The grey line under the list never names an agent.
+    expect(document.body.textContent).not.toContain('is typing')
   })
 
-  test('two running replies from one agent list it once', () => {
+  test('two running replies from one agent are two dock rows', () => {
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot'), runningReply('r2', 'proj-1', 'Billing Bot')]
     renderChannel()
-    expect(screen.getByText('Billing Bot is typing…')).toBeTruthy()
+    expect(screen.getAllByTestId(/^running-agent-row-/)).toHaveLength(2)
   })
 
-  test('a person and an agent with the same name are both listed', () => {
+  test('a person and a running agent with the same name: only the person is typing', () => {
     typingUsers.push({ id: 'pat', name: 'Billing Bot' })
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
     renderChannel()
-    expect(screen.getByText('Billing Bot and Billing Bot are typing…')).toBeTruthy()
+    expect(screen.getByText('Billing Bot is typing…')).toBeTruthy()
+    expect(document.body.textContent).not.toContain('Billing Bot and Billing Bot')
+    expect(shim('running-agents-dock')!.textContent).toContain('Billing Bot')
   })
 
-  test('four typists name the first two and count the rest', () => {
+  test('two people typing while two agents run: only the people are counted', () => {
     typingUsers.push({ id: 'pat', name: 'Pat' }, { id: 'lee', name: 'Lee' })
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot'), runningReply('r2', 'proj-2', 'Support Bot')]
     renderChannel()
-    expect(screen.getByText('Pat, Lee and 2 others are typing…')).toBeTruthy()
+    expect(screen.getByText('Pat and Lee are typing…')).toBeTruthy()
+    expect(screen.getAllByTestId(/^running-agent-row-/)).toHaveLength(2)
+  })
+
+  test('a thread docks its own running replies', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel({ threadRootId: 'root-1' })
+    expect(screen.getByTestId('running-agent-row-r1')).toBeTruthy()
+  })
+
+  test('tapping a dock row jumps to and highlights that reply', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel()
+    expect(highlighted()).toBeNull()
+    fireEvent.click(screen.getByLabelText("Jump to Billing Bot's reply"))
+    expect(highlighted()).not.toBeNull()
+  })
+
+  test('Stop on a dock row stops that run', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel()
+    fireEvent.click(screen.getByLabelText('Stop agent'))
+    expect(stoppedAgents).toEqual(['r1'])
+  })
+
+  test('Open session on a dock row opens that reply\'s session', () => {
+    const onOpenSession = mock(() => {})
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel({ onOpenSession })
+    fireEvent.click(screen.getByLabelText('Open the session this agent is working in'))
+    expect(onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'r1', agentSessionId: 's-r1' }))
+  })
+
+  test('the phone pane floats the dock in the footer above the composer', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel({ floating: true, topInset: 0 })
+    const footer = shim('floating-composer')
+    expect(footer).toBeTruthy()
+    expect(footer!.querySelector('[data-rn-shim="running-agents-dock"]')).not.toBeNull()
   })
 })
 

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { runningAgentTypists, typingLabel, type Typist } from '../team-chat-typing'
+import { runningAgentReplies, typingLabel, type Typist } from '../team-chat-typing'
 
 const typists = (...names: string[]): Typist[] => names.map((name, i) => ({ id: `t${i}`, name }))
 
@@ -38,7 +38,7 @@ describe('typingLabel', () => {
   })
 })
 
-describe('runningAgentTypists', () => {
+describe('runningAgentReplies', () => {
   const agent = (id: string, status: string | null, projectId: string | null, name: string | null) =>
     ({
       id,
@@ -51,17 +51,25 @@ describe('runningAgentTypists', () => {
     const messages = [
       agent('m1', 'running', 'p1', 'Billing Bot'),
       agent('m2', 'done', 'p1', 'Billing Bot'),
-      { id: 'm3', authorType: 'user', agentStatus: null, authorAgent: null } as any,
+      agent('m3', 'error', 'p1', 'Billing Bot'),
+      { id: 'm4', authorType: 'user', agentStatus: null, authorAgent: null } as any,
     ]
-    expect(runningAgentTypists(messages)).toEqual([{ id: 'agent:p1', name: 'Billing Bot' }])
+    expect(runningAgentReplies(messages).map((m) => m.id)).toEqual(['m1'])
   })
 
-  test('two running replies from one agent share an identity', () => {
+  test('one entry per running reply, oldest first, even for one agent', () => {
     const messages = [agent('m1', 'running', 'p1', 'Billing Bot'), agent('m2', 'running', 'p1', 'Billing Bot')]
-    expect(runningAgentTypists(messages).map((t) => t.id)).toEqual(['agent:p1', 'agent:p1'])
+    expect(runningAgentReplies(messages).map((m) => m.id)).toEqual(['m1', 'm2'])
   })
 
-  test('an agent without a project falls back to its message id and a generic name', () => {
-    expect(runningAgentTypists([agent('m9', 'running', null, null)])).toEqual([{ id: 'agent:m9', name: 'Agent' }])
+  test('keeps each reply whole, so the dock can name it and open its session', () => {
+    expect(runningAgentReplies([agent('m9', 'running', null, null)])).toEqual([
+      expect.objectContaining({ id: 'm9', authorAgent: null }),
+    ])
+  })
+
+  test('nothing running is nothing to dock', () => {
+    expect(runningAgentReplies([])).toEqual([])
+    expect(runningAgentReplies([agent('m2', 'done', 'p1', 'Billing Bot')])).toEqual([])
   })
 })

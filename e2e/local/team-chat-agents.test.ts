@@ -27,12 +27,12 @@ const NAMES = {
   reviewer: `NotesReviewer${suffix}`,
 }
 
-function writeScript() {
+function writeScript(delayMs = 150) {
   mkdirSync(dirname(SCRIPT_PATH), { recursive: true })
   writeFileSync(
     SCRIPT_PATH,
     JSON.stringify({
-      delayMs: 150,
+      delayMs,
       agents: {
         [NAMES.scout]: [{
           reply:
@@ -200,5 +200,47 @@ test.describe("Team chat: agents hand off to each other", () => {
     expect(limit, reason).toBeGreaterThan(0)
     const reviews = await page.getByText("The draft also claims", { exact: false }).count()
     expect(reviews).toBeLessThanOrEqual(Math.ceil(limit / 2))
+  })
+
+  test("a running agent is a dock row above the composer, not a typing line", async () => {
+    test.setTimeout(180_000)
+    // The scripted stream is two chunks, so this keeps the run open ~24s: long
+    // enough to open the thread it answers in, post under its marker, and read
+    // the composer while the run is still going.
+    writeScript(12_000)
+    try {
+      await page.goto(`/c/${channelId}`)
+      const channelComposer = page.getByLabel("Message", { exact: true }).first()
+      await channelComposer.waitFor({ state: "visible", timeout: 30_000 })
+      await compose(page, channelComposer, [{ mention: NAMES.builder }, " rebuild the release"])
+
+      // A channel mention answers in a thread, which is the pane with this composer.
+      await openThread(page, channelId, "rebuild the release")
+      const dockRow = page.getByLabel(`Jump to ${NAMES.builder}'s reply`)
+      await expect(dockRow).toBeVisible({ timeout: 30_000 })
+
+      // Something posted under the marker pushes the reply row up the thread; the dock stays.
+      const threadComposer = page.getByLabel("Message", { exact: true }).last()
+      await compose(page, threadComposer, ["any news?"])
+      await expect(page.getByText("any news?").first()).toBeVisible({ timeout: 30_000 })
+      await expect(dockRow).toBeVisible()
+
+      const dock = page.getByTestId("running-agents-dock")
+      const dockBox = await dock.boundingBox()
+      const composerBox = await threadComposer.boundingBox()
+      expect(dockBox, "the dock is laid out").toBeTruthy()
+      expect(composerBox, "the composer is laid out").toBeTruthy()
+      expect(dockBox!.y + dockBox!.height).toBeLessThanOrEqual(composerBox!.y + 1)
+
+      // The grey line under the list is only ever people.
+      await expect(page.getByText(`${NAMES.builder} is typing…`)).toHaveCount(0)
+      expect(await dock.textContent()).toContain(NAMES.builder)
+
+      // Once the run lands in its row the dock goes away.
+      await expect(dock).toHaveCount(0, { timeout: 90_000 })
+      await expect(page.getByText("PR ready: https://example.com/pr/1", { exact: false }).last()).toBeVisible({ timeout: 30_000 })
+    } finally {
+      writeScript()
+    }
   })
 })
