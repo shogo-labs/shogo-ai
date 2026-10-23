@@ -379,6 +379,80 @@ describe('LiveKit webhooks', () => {
     expect((await db.huddle.findUnique({ where: { id: row.id } })).endedAt).toBeNull()
     await huddles.leaveHuddle(conv.id, seed.owner)
   })
+
+  // The notes fallback is a LiveKit agent in every huddle that has notes on. It
+  // is not a person: writing it into the roster made it show up as "Someone".
+  test('the hidden notes agent never becomes a participant', async () => {
+    const conv = await channel(`huddle-agent-${crypto.randomUUID().slice(0, 6)}`)
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    const row = await db.huddle.findUnique({ where: { id: joined.huddle.id } })
+    liveRooms.set(row.roomName, [seed.owner, 'huddle-notes', 'huddle-notes-2'])
+
+    for (const identity of ['huddle-notes', 'huddle-notes-2']) {
+      const result = await huddles.handleLiveKitWebhook(
+        await signedWebhook({ event: 'participant_joined', room: { name: row.roomName }, participant: { identity } }),
+      )
+      expect(result.status).toBe(200)
+    }
+
+    // Not one row written, for either agent identity.
+    expect(await db.huddleParticipant.count({ where: { huddleId: row.id } })).toBe(1)
+    const view = await huddles.getHuddle(conv.id, seed.owner)
+    expect(view?.participants.map((p) => p.userId)).toEqual([seed.owner])
+    expect(view?.participants.some((p) => p.name === 'Someone')).toBe(false)
+  })
+
+  // Rows written before the webhook learned to skip agents are already in
+  // production huddles, so the roster has to refuse them too.
+  test('a roster row for an identity that is not a user is never shown', async () => {
+    const conv = await channel(`huddle-legacy-${crypto.randomUUID().slice(0, 6)}`)
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    const row = await db.huddle.findUnique({ where: { id: joined.huddle.id } })
+    await db.huddleParticipant.create({ data: { huddleId: row.id, userId: 'agent-legacy-xyz' } })
+    liveRooms.set(row.roomName, [seed.owner])
+
+    const view = await huddles.getHuddle(conv.id, seed.owner)
+
+    // Fresh enough to be inside the connect grace window, so reconcile leaves it
+    // alone: only the roster filter keeps it off the screen.
+    expect(await db.huddleParticipant.count({ where: { huddleId: row.id, userId: 'agent-legacy-xyz', leftAt: null } })).toBe(1)
+    expect(view?.participants.map((p) => p.userId)).toEqual([seed.owner])
+    expect(view?.participants.some((p) => p.name === 'Someone')).toBe(false)
+  })
+
+  // Left open, an agent row counts as somebody still here, so the huddle never
+  // ends once the last person leaves.
+  test('reconcile closes an agent row even while the agent is in the room', async () => {
+    const conv = await channel(`huddle-agent-end-${crypto.randomUUID().slice(0, 6)}`)
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    const row = await db.huddle.findUnique({ where: { id: joined.huddle.id } })
+    await db.huddleParticipant.create({ data: { huddleId: row.id, userId: 'huddle-notes' } })
+    liveRooms.set(row.roomName, [seed.owner, 'huddle-notes'])
+
+    const view = await huddles.getHuddle(conv.id, seed.owner)
+
+    expect(await db.huddleParticipant.count({ where: { huddleId: row.id, userId: 'huddle-notes', leftAt: null } })).toBe(0)
+    expect(view?.participants.map((p) => p.userId)).toEqual([seed.owner])
+  })
+
+  // `announce` serializes without reconciling, so this is the window where an
+  // agent row is still open: it must not be counted as someone in the call's chat.
+  test('an agent is never a member of the huddle chat', async () => {
+    const conv = await channel(`huddle-agent-chat-${crypto.randomUUID().slice(0, 6)}`)
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    const row = await db.huddle.findUnique({ where: { id: joined.huddle.id } })
+    await db.huddleParticipant.create({ data: { huddleId: row.id, userId: 'huddle-notes' } })
+    events = []
+
+    // A real person joining announces the view; no reconcile runs on this path.
+    await huddles.handleLiveKitWebhook(
+      await signedWebhook({ event: 'participant_joined', room: { name: row.roomName }, participant: { identity: seed.member } }),
+    )
+
+    const announced = events.filter((e) => e.event.type === 'huddle.updated').at(-1)
+    expect(announced?.event.huddle?.chatMembers).not.toContain('huddle-notes')
+    expect(announced?.event.huddle?.chatMembers).toContain(seed.member)
+  })
 })
 describe('huddle presence badge', () => {
   const announcements = () => events.filter((e) => e.event.type === 'huddle.presence')
