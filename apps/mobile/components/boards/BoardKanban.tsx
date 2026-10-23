@@ -7,11 +7,25 @@
  */
 import { useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { AlertTriangle, Bot, Clock, GitPullRequest, KanbanSquare, List, Plus, Search, X } from 'lucide-react-native'
+import { AlertTriangle, ArrowUpDown, Bot, Clock, GitPullRequest, KanbanSquare, List, Plus, Search, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { Mentionables } from '../../lib/team-chat-api'
 import { workBoardsApi, type BoardColumn, type HealthIssue, type WorkItem } from '../../lib/work-boards-api'
-import { ISSUE_LABEL, age, agentName, applyMove, assigneeName, columnBadges, issuesByItem, itemsByColumn } from '../../lib/board-layout'
+import {
+  BOARD_SORT_LABELS,
+  BOARD_SORT_OPTIONS,
+  ISSUE_LABEL,
+  age,
+  agentName,
+  applyMove,
+  assigneeName,
+  columnBadges,
+  issuesByItem,
+  itemsByColumn,
+  orderedItems,
+  type BoardSort,
+} from '../../lib/board-layout'
+import { useBoardSort } from '../../lib/board-sort-preference'
 import { useBoardView } from '../../hooks/useWorkBoards'
 import { DraggableCard, DropZone, supportsDrag } from './drag'
 import { OptionSheet } from './OptionSheet'
@@ -39,13 +53,21 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
   const [menuFor, setMenuFor] = useState<WorkItem | null>(null)
   const [showIssues, setShowIssues] = useState(false)
   const [mode, setMode] = useState<'board' | 'list'>('board')
+  const [sort, chooseSort] = useBoardSort(boardId)
+  const [sortOpen, setSortOpen] = useState(false)
 
-  const grouped = useMemo(() => (view ? itemsByColumn(view) : new Map<string, WorkItem[]>()), [view])
+  const grouped = useMemo(() => (view ? itemsByColumn(view, sort) : new Map<string, WorkItem[]>()), [view, sort])
+  const listed = useMemo(() => (view ? orderedItems(view, sort) : []), [view, sort])
   const byItem = useMemo(() => issuesByItem(view?.health.issues ?? []), [view])
 
   const move = (itemId: string, columnId: string, beforeId: string | null) => {
     if (!view) return
-    const result = applyMove(view.items, { itemId, columnId, beforeId })
+    const card = view.items.find((i) => i.id === itemId)
+    // Only Manual shows an in-column order, so elsewhere a drop just changes the column.
+    if (!card) return
+    if (sort !== 'manual' && card.columnId === columnId) return
+    const anchor = sort === 'manual' ? beforeId : null
+    const result = applyMove(view.items, { itemId, columnId, beforeId: anchor })
     if (!result) return
     setView({ ...view, items: result.items })
     api.move(itemId, result.request)
@@ -106,6 +128,16 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
             className="flex-1 py-1.5 text-sm text-foreground"
           />
         </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Sort cards"
+          onPress={() => setSortOpen(true)}
+          testID="board-sort"
+          className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1.5 hover:bg-muted"
+        >
+          <ArrowUpDown size={13} className="text-muted-foreground" />
+          <Text className="text-xs text-foreground">{BOARD_SORT_LABELS[sort]}</Text>
+        </Pressable>
         <View className="flex-row rounded-md border border-border" accessibilityRole="tablist">
           {(['board', 'list'] as const).map((m) => {
             const Icon = m === 'board' ? KanbanSquare : List
@@ -149,7 +181,7 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
       ) : null}
       {mode === 'list' ? (
         <ScrollView className="flex-1" testID="board-list">
-          {view.board.columns.flatMap((column) => grouped.get(column.id) ?? []).map((item) => (
+          {listed.map((item) => (
             <WorkItemRow
               key={item.id}
               item={{ ...item, column: item.column ?? view.board.columns.find((c) => c.id === item.columnId) }}
@@ -166,6 +198,7 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
               key={column.id}
               column={column}
               items={grouped.get(column.id) ?? []}
+              sort={sort}
               issues={issues}
               byItem={byItem}
               mentionables={mentionables}
@@ -185,6 +218,19 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
           ))}
         </ScrollView>
       )}
+      {sortOpen ? (
+        <OptionSheet
+          title="Sort cards"
+          value={sort}
+          options={BOARD_SORT_OPTIONS.map((s) => ({
+            id: s,
+            label: BOARD_SORT_LABELS[s],
+            hint: s === 'manual' ? 'Drag order' : s === 'newest' ? 'Newest first' : 'Oldest first',
+          }))}
+          onSelect={(id) => chooseSort(id as BoardSort)}
+          onClose={() => setSortOpen(false)}
+        />
+      ) : null}
       {menuFor ? (
         <OptionSheet
           title={`Move ${menuFor.key}`}
@@ -201,6 +247,7 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
 interface ColumnProps {
   column: BoardColumn
   items: WorkItem[]
+  sort: BoardSort
   issues: HealthIssue[]
   byItem: Map<string, HealthIssue[]>
   mentionables: Mentionables | null
@@ -217,6 +264,8 @@ interface ColumnProps {
 
 function Column(props: ColumnProps) {
   const { column, items } = props
+  // Manual is the only sort where a drop has a visible "above this card" meaning.
+  const manual = props.sort === 'manual'
   const [hoverCard, setHoverCard] = useState<string | null>(null)
   const badges = columnBadges(column, items.length, props.issues)
   const agent = column.agentRef ? agentName(column.agentRef, props.mentionables) : null
@@ -265,11 +314,11 @@ function Column(props: ColumnProps) {
           key={item.id}
           onDrop={(id) => {
             setHoverCard(null)
-            props.onDrop(id, item.id)
+            props.onDrop(id, manual ? item.id : null)
           }}
           onHover={(on) => setHoverCard(on ? item.id : null)}
         >
-          {hoverCard === item.id && props.dragging && props.dragging !== item.id ? <View className="h-1 rounded bg-primary" /> : null}
+          {manual && hoverCard === item.id && props.dragging && props.dragging !== item.id ? <View className="h-1 rounded bg-primary" /> : null}
           <DraggableCard id={item.id} onDragStart={props.onDragStart} onDragEnd={props.onDragEnd}>
             <CardTile
               item={item}

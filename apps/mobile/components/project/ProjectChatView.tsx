@@ -13,6 +13,10 @@ import { ChatPanel } from "../chat/ChatPanel";
 import type { InteractionMode } from "../chat/ChatInput";
 import { consumePendingFiles } from "../../lib/pending-image-store";
 import { resolveChatScope } from "../../lib/chat-scope";
+import {
+  useProjectChatUrlMirror,
+  type ChatUrlParams,
+} from "../../lib/project-chat-url";
 import { useAgentLook } from "../../hooks/useTeamChat";
 import { buddyAvatarColor } from "../team-chat/BuddyAvatar";
 import { AgentBackdrop } from "../ui/AgentBackdrop";
@@ -28,7 +32,18 @@ export interface ProjectChatViewProps {
   initialInteractionMode?: InteractionMode;
   /** Rendered above the chat (for example a breadcrumb). */
   header?: ReactNode;
+  /**
+   * `?chatSessionId=` as the route sees it, plus the writer for it. Both are
+   * supplied by the standalone project-chat route so switching chats in place
+   * names the chat in the URL; omitted where there is no URL to mirror (the
+   * team-chat side pane).
+   */
+  urlChatSessionId?: string;
+  /** Arrival-only params still in the URL (`newChatNonce`, `initialMessage`, …). */
+  hasOneShotUrlParams?: boolean;
+  onChatSessionUrlChange?: (params: ChatUrlParams) => void;
 }
+
 
 /** A project's own chat: finds or creates a session, then renders `ChatPanel`. */
 export const ProjectChatView = observer(function ProjectChatView({
@@ -39,6 +54,9 @@ export const ProjectChatView = observer(function ProjectChatView({
   initialMessage,
   initialInteractionMode,
   header,
+  urlChatSessionId,
+  hasOneShotUrlParams,
+  onChatSessionUrlChange,
 }: ProjectChatViewProps) {
   const requestedChatScope = resolveChatScope({
     surface: "project-chat",
@@ -58,6 +76,22 @@ export const ProjectChatView = observer(function ProjectChatView({
   const [chatSessionId, setChatSessionId] = useState<string | null>(
     requestedSessionId ?? null
   );
+  // The chat the URL named when this view mounted: only that one keeps the
+  // workspace hand-off scope (see `planChatUrlWrite`).
+  const [initialRequestedSessionId] = useState(
+    () => requestedSessionId ?? null
+  );
+  // Keep the open chat's id in `?chatSessionId=` (the route passes the writer)
+  // so this chat is shareable and survives a reload.
+  useProjectChatUrlMirror({
+    chatSessionId,
+    currentParam: urlChatSessionId,
+    chatScope: chatScope === "workspace" ? "workspace" : "project",
+    initialPropsSessionId: initialRequestedSessionId,
+    oneShotPresent: hasOneShotUrlParams === true,
+    enabled: !!onChatSessionUrlChange,
+    setParams: onChatSessionUrlChange,
+  });
   // Personal main and side chats intentionally stay Agent-only. A project
   // chat has its own model/runtime, so mobile exposes Ask and Plan from the
   // existing composer plus-sheet without changing desktop presentation.

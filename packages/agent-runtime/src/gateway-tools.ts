@@ -16,6 +16,7 @@ import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
+import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
 import {
   REMOTE_READONLY_TOOLS,
@@ -4276,7 +4277,26 @@ END APP_MODE_DISABLED */
 // TodoWrite Tool (session task checklist)
 // ---------------------------------------------------------------------------
 
-const todoStores = new Map<string, Array<{ id: string; content: string; status: string }>>()
+const todoStores = new Map<string, SessionTodo[]>()
+/** When each list was last written, so a stale plan cannot restart a turn. */
+const todoUpdatedAt = new Map<string, number>()
+
+/**
+ * The session's todo list, as the plan-continuation loop sees it (SHO-121).
+ * `updatedAt` is the last `todo_write` for that session: a turn only continues
+ * on a list written during the turn that is ending.
+ */
+export function getSessionTodos(sessionId: string): SessionTodosSnapshot | null {
+  const todos = todoStores.get(sessionId)
+  if (!todos) return null
+  return { todos: todos.map((todo) => ({ ...todo })), updatedAt: todoUpdatedAt.get(sessionId) ?? 0 }
+}
+
+/** Drop a session's list (cleared history, or a test's workspace teardown). */
+export function clearSessionTodos(sessionId: string): void {
+  todoStores.delete(sessionId)
+  todoUpdatedAt.delete(sessionId)
+}
 
 function createTodoWriteTool(ctx: ToolContext): AgentTool {
   return {
@@ -4300,6 +4320,7 @@ function createTodoWriteTool(ctx: ToolContext): AgentTool {
       }
       const key = ctx.sessionId || ctx.projectId
       todoStores.set(key, todos)
+      todoUpdatedAt.set(key, Date.now())
       return textResult({ ok: true, todos, count: todos.length })
     },
   }

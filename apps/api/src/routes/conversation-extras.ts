@@ -10,6 +10,7 @@
 import type { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { readConversationFile, verifyConversationFileToken } from '../lib/conversation-files'
+import { publishConversationEvent } from '../lib/conversation-bus'
 import {
   MAX_EMOJI_BYTES,
   createEmoji,
@@ -70,7 +71,11 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     const auth = await h.requireWorkspace(c)
     if (auth instanceof Response) return auth
     try {
-      return c.json({ settings: await updateChatSettings(auth.workspaceId, auth.userId, await h.readJson(c)) })
+      const settings = await updateChatSettings(auth.workspaceId, auth.userId, await h.readJson(c))
+      // The person's other open tabs and devices pick the change up live; without it a tab
+      // loaded before the change keeps playing the old message tone until it reloads.
+      publishConversationEvent(auth.workspaceId, { type: 'settings.changed', settings }, [auth.userId])
+      return c.json({ settings })
     } catch (err) {
       return h.errorResponse(c, err)
     }

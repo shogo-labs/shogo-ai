@@ -7,6 +7,7 @@
 
 export type MessageSoundKind = 'dm' | 'mention' | 'thread' | 'other'
 export type MessageSoundLevel = 'default' | 'subtle' | 'off'
+export type MessageTone = 'knock' | 'chirp' | 'pristine' | 'definite' | 'juntos' | 'confirmation' | 'question' | 'glass'
 
 export interface Tone {
   frequency: number
@@ -29,15 +30,26 @@ export function notificationAudioReady(): boolean {
 
 export function scheduleTones(_ctx: AudioContext, _tones: Tone[], _peak: number): void {}
 
+export function setPreferredMessageTone(_tone: MessageTone): void {}
+
 export function playMessageSound(
   _kind: MessageSoundKind,
   _level: MessageSoundLevel,
+  _tone?: MessageTone,
   _now?: number,
 ): boolean {
   return false
 }
 
-export function previewMessageSound(_level: MessageSoundLevel): boolean {
+export function claimMessageSound(_messageKey: string): Promise<boolean> {
+  return Promise.resolve(true)
+}
+
+export function messageSoundRecentlyPlayed(_now?: number): boolean {
+  return false
+}
+
+export function previewMessageSound(_level: MessageSoundLevel, _tone?: MessageTone): boolean {
   return false
 }
 

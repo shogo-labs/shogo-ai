@@ -2575,6 +2575,24 @@ export async function notifyTaskCompletions(
   })
 }
 
+/**
+ * Tell the API a turn was interrupted mid-work, so it can say so in the
+ * transcript and (first attempt only) queue the resumed turn (SHO-121).
+ *
+ * The note and the resume prompt are built API-side from `toolName`, so the
+ * cloud and desktop paths cannot drift apart.
+ */
+export async function postInterruptedResume(
+  chatSessionId: string,
+  input: { toolName?: string | null; resume?: boolean },
+): Promise<CheckpointCallResult<{ noted: boolean; queued: boolean }>> {
+  return lifecycleFetch(`/api/internal/chat/${encodeURIComponent(chatSessionId)}/resume`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+    timeoutMs: 10_000,
+  })
+}
+
 export async function postCostMetric(payload: AgentCostMetricPayload): Promise<void> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) return

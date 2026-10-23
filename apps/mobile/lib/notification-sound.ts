@@ -9,13 +9,16 @@
  * message sounds stay silent instead of queueing up. Phones use the system
  * push sound, so the native build uses `notification-sound.native.ts`.
  *
- * Messages play the Soft Knock recording (`assets/sounds/soft-knock.mp3`),
- * decoded once after the first gesture. Until it has loaded, or where it
- * can't be fetched or decoded, the synthesized cues below play instead.
+ * Messages play the tone the user picked in Settings > Chat. Soft Knock
+ * (`assets/sounds/soft-knock.mp3`) is the default; every tone except Chirp is
+ * a recording, decoded once after the first gesture. Until it has loaded, or
+ * where it can't be fetched or decoded, the synthesized Chirp cues below play.
  */
 
 export type MessageSoundKind = 'dm' | 'mention' | 'thread' | 'other'
 export type MessageSoundLevel = 'default' | 'subtle' | 'off'
+export type MessageTone = 'knock' | 'chirp' | 'pristine' | 'definite' | 'juntos' | 'confirmation' | 'question' | 'glass'
+type RecordedTone = Exclude<MessageTone, 'chirp'>
 
 export interface Tone {
   frequency: number
@@ -31,8 +34,8 @@ export const MESSAGE_SOUND_THROTTLE_MS = 2_000
 const DEFAULT_PEAK = 0.18
 const SUBTLE_PEAK = 0.06
 
-/** Playback gain for the recording, which is mastered near -7 dBFS. */
-const KNOCK_GAIN = { default: 0.7, subtle: 0.25 } as const
+/** Playback gain for the recordings, which all peak near -3 dBFS. */
+const RECORDING_GAIN = { default: 0.7, subtle: 0.25 } as const
 
 const MESSAGE_TONES: Record<MessageSoundKind, Tone[]> = {
   // A two-note knock: the cue for a direct message or a mention.
@@ -54,8 +57,9 @@ type AudioCtor = typeof AudioContext
 let context: AudioContext | null = null
 let lastMessageSoundAt = Number.NEGATIVE_INFINITY
 let unlockInstalled = false
-let knockBuffer: AudioBuffer | null = null
-let knockLoad: Promise<AudioBuffer | null> | null = null
+let preferredTone: MessageTone = 'knock'
+const toneBuffers = new Map<RecordedTone, AudioBuffer>()
+const toneLoads = new Map<RecordedTone, Promise<AudioBuffer | null>>()
 
 function audioCtor(): AudioCtor | undefined {
   if (typeof window === 'undefined') return undefined
@@ -90,7 +94,7 @@ export function unlockNotificationAudio(): void {
     const ctx = sharedAudioContext()
     if (!ctx) return
     if (ctx.state !== 'running') void ctx.resume().catch(() => {})
-    void loadKnock(ctx)
+    void loadTone(ctx, preferredTone)
   }
   window.addEventListener('pointerdown', unlock, { capture: true, passive: true })
   window.addEventListener('keydown', unlock, { capture: true })
@@ -135,22 +139,35 @@ export function fetchAudioBuffer(ctx: AudioContext, url: string | null): Promise
     .then((data) => (data ? ctx.decodeAudioData(data) : null))
 }
 
-/** Fetches and decodes the recording once. Resolves null where that isn't possible. */
-function loadKnock(ctx: AudioContext): Promise<AudioBuffer | null> {
-  if (knockBuffer) return Promise.resolve(knockBuffer)
-  if (knockLoad) return knockLoad
+/** Fetches and decodes a tone's recording once. Resolves null for Chirp or where that isn't possible. */
+function loadTone(ctx: AudioContext, tone: MessageTone): Promise<AudioBuffer | null> {
+  if (tone === 'chirp') return Promise.resolve(null)
+  const cached = toneBuffers.get(tone)
+  if (cached) return Promise.resolve(cached)
+  const pending = toneLoads.get(tone)
+  if (pending) return pending
   if (!canDecodeSounds(ctx)) return Promise.resolve(null)
-  knockLoad = import('./notification-sound-asset')
-    .then(({ messageSoundUrl }) => fetchAudioBuffer(ctx, messageSoundUrl()))
+  const load = import('./notification-sound-asset')
+    .then(({ messageSoundUrl }) => fetchAudioBuffer(ctx, messageSoundUrl(tone)))
     .then((buffer) => {
-      knockBuffer = buffer
+      if (buffer) toneBuffers.set(tone, buffer)
       return buffer
     })
     .catch(() => null)
-  return knockLoad
+  toneLoads.set(tone, load)
+  return load
 }
 
-function playKnock(ctx: AudioContext, buffer: AudioBuffer, gainValue: number): void {
+/**
+ * Remembers the user's tone so the first gesture loads that recording, and
+ * loads it right away if the context already exists.
+ */
+export function setPreferredMessageTone(tone: MessageTone): void {
+  preferredTone = tone
+  if (context) void loadTone(context, tone)
+}
+
+function playRecording(ctx: AudioContext, buffer: AudioBuffer, gainValue: number): void {
   const source = ctx.createBufferSource()
   const gain = ctx.createGain()
   source.buffer = buffer
@@ -169,6 +186,7 @@ function playKnock(ctx: AudioContext, buffer: AudioBuffer, gainValue: number): v
 export function playMessageSound(
   kind: MessageSoundKind,
   level: MessageSoundLevel,
+  tone: MessageTone = 'knock',
   now: number = Date.now(),
 ): boolean {
   if (level === 'off') return false
@@ -180,27 +198,59 @@ export function playMessageSound(
     return false
   }
   lastMessageSoundAt = now
-  if (knockBuffer) {
+  const buffer = tone === 'chirp' ? undefined : toneBuffers.get(tone)
+  if (buffer) {
     // Every kind of message plays the same recording.
-    playKnock(ctx, knockBuffer, KNOCK_GAIN[level])
+    playRecording(ctx, buffer, RECORDING_GAIN[level])
     return true
   }
-  void loadKnock(ctx)
+  void loadTone(ctx, tone)
   scheduleTones(ctx, MESSAGE_TONES[kind], level === 'subtle' ? SUBTLE_PEAK : DEFAULT_PEAK)
   return true
+}
+
+/**
+ * Lets one tab per browser profile play the cue for a message. Every open tab
+ * of the same account gets the notification, and each would otherwise play its
+ * own cue, so a second tab doubled the sound. The first tab to ask holds a Web
+ * Lock for the message; the others get `false` and stay quiet. Resolves `true`
+ * where Web Locks are missing, so a cue is never lost to the check.
+ */
+export function claimMessageSound(messageKey: string): Promise<boolean> {
+  const locks = typeof navigator !== 'undefined' ? (navigator as Navigator & { locks?: LockManager }).locks : undefined
+  if (!locks?.request) return Promise.resolve(true)
+  return new Promise<boolean>((resolve) => {
+    locks
+      .request(`shogo-message-sound:${messageKey}`, { ifAvailable: true }, (lock) => {
+        resolve(!!lock)
+        // Hold the lock past the throttle window so a late tab can't claim the same message.
+        return lock ? new Promise<void>((release) => setTimeout(release, MESSAGE_SOUND_THROTTLE_MS)) : undefined
+      })
+      .catch(() => resolve(true))
+  })
+}
+
+/**
+ * True while a message cue is still within its throttle window. A second alert
+ * in that window plays no cue of its own, but its OS banner must stay silent
+ * too: the chosen tone just played, and the system's default alert sound on top
+ * of it would be a second, different sound.
+ */
+export function messageSoundRecentlyPlayed(now: number = Date.now()): boolean {
+  return now - lastMessageSoundAt < MESSAGE_SOUND_THROTTLE_MS
 }
 
 /**
  * Plays the message cue for the settings preview. It ignores the throttle, and
  * it's only called from a click, so resuming the context here is allowed.
  */
-export function previewMessageSound(level: MessageSoundLevel): boolean {
+export function previewMessageSound(level: MessageSoundLevel, tone: MessageTone = 'knock'): boolean {
   if (level === 'off') return false
   const ctx = sharedAudioContext()
   if (!ctx) return false
   if (ctx.state !== 'running') void ctx.resume().catch(() => {})
-  void loadKnock(ctx).then((buffer) => {
-    if (buffer) playKnock(ctx, buffer, KNOCK_GAIN[level])
+  void loadTone(ctx, tone).then((buffer) => {
+    if (buffer) playRecording(ctx, buffer, RECORDING_GAIN[level])
     else scheduleTones(ctx, MESSAGE_TONES.dm, level === 'subtle' ? SUBTLE_PEAK : DEFAULT_PEAK)
   })
   return true
@@ -227,6 +277,7 @@ export function _resetNotificationAudioForTests(): void {
   context = null
   lastMessageSoundAt = Number.NEGATIVE_INFINITY
   unlockInstalled = false
-  knockBuffer = null
-  knockLoad = null
+  preferredTone = 'knock'
+  toneBuffers.clear()
+  toneLoads.clear()
 }

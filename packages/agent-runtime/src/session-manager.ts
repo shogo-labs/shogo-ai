@@ -360,8 +360,87 @@ export interface ChatSessionSummary {
 }
 
 /** `run:` pipelines and the literal `pipeline` session are not user chats. */
-function isChatSessionId(id: string): boolean {
+export function isChatSessionId(id: string): boolean {
   return id !== 'pipeline' && !id.startsWith('run:')
+}
+
+/**
+ * Durable "a turn is running in this session" marker (SHO-121).
+ *
+ * Written to the session's metadata at turn start and cleared when the turn
+ * ends, so a runtime that dies mid-tool leaves a record that a turn was in
+ * flight. Nothing else says so: the transcript survives (messages persist
+ * incrementally) but it looks like an ordinary turn that finished.
+ */
+export interface InflightTurnMarker {
+  /** Identifies the run; only used for logs. */
+  id: string
+  startedAt: number
+  /** Last tool the turn dispatched, for the resume note. */
+  lastTool?: string
+  /** 0 = never resumed; 1 = a resume already ran and died. */
+  resumeAttempts: number
+}
+
+/** Read a marker off session metadata, tolerating absence and older shapes. */
+export function normalizeInflightTurn(value: unknown): InflightTurnMarker | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Partial<InflightTurnMarker>
+  if (typeof raw.startedAt !== 'number' || !Number.isFinite(raw.startedAt)) return null
+  return {
+    id: typeof raw.id === 'string' ? raw.id : `turn-${raw.startedAt}`,
+    startedAt: raw.startedAt,
+    ...(typeof raw.lastTool === 'string' && raw.lastTool ? { lastTool: raw.lastTool } : {}),
+    resumeAttempts: typeof raw.resumeAttempts === 'number' && raw.resumeAttempts > 0 ? raw.resumeAttempts : 0,
+  }
+}
+
+/**
+ * Repair a history whose tail is an assistant turn with tool calls that never
+ * returned — the shape a run killed mid-tool leaves behind.
+ *
+ * `repairToolResultPairing` deliberately leaves those for pi-ai to fill in, but
+ * pi-ai fills them with a *success*, so the resumed model is told a tool it
+ * never saw finish had run. A synthetic result that says it was interrupted is
+ * the truth the next turn needs. Complete turns are returned untouched.
+ */
+export function repairInterruptedTailMessages(messages: Message[]): {
+  messages: Message[]
+  repaired: Array<{ toolCallId: string; toolName: string }>
+} {
+  // Walk back over the results already written for the last group of calls —
+  // a kill can land between two parallel calls as easily as before the first.
+  let index = messages.length - 1
+  const answered = new Set<string>()
+  while (index >= 0 && messages[index].role === 'toolResult') {
+    const result = messages[index] as any
+    if (typeof result.toolCallId === 'string') answered.add(result.toolCallId)
+    index--
+  }
+  const assistant = messages[index] as AssistantMessage | undefined
+  if (!assistant || assistant.role !== 'assistant') return { messages, repaired: [] }
+  if (assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
+    return { messages, repaired: [] }
+  }
+  const content = Array.isArray(assistant.content) ? assistant.content : []
+  const calls = content.filter((block: any) => block?.type === 'toolCall') as Array<{ id: string; name: string }>
+  const missing = calls.filter((call) => !answered.has(call.id))
+  if (missing.length === 0) return { messages, repaired: [] }
+  const repaired = missing.map((call) => ({ toolCallId: call.id, toolName: call.name }))
+  const results = repaired.map((call) => ({
+    role: 'toolResult' as const,
+    toolCallId: call.toolCallId,
+    toolName: call.toolName,
+    content: [
+      {
+        type: 'text' as const,
+        text: 'Interrupted before this tool returned — the runtime stopped mid-call. Its effect is unknown.',
+      },
+    ],
+    isError: true,
+    timestamp: Date.now(),
+  }))
+  return { messages: [...messages, ...results], repaired }
 }
 
 export interface CompactionResult {
@@ -612,6 +691,35 @@ export class SessionManager {
     if (!session) return
     session.metadata = { ...session.metadata, ...patch }
     this.persistSession(session)
+  }
+
+  /**
+   * Chat sessions carrying an `inflightTurn` marker: turns that were running
+   * when this runtime died (SHO-121). `run:` pipeline sessions are not chats.
+   */
+  listInterruptedTurns(): Array<{ sessionId: string; marker: InflightTurnMarker }> {
+    const out: Array<{ sessionId: string; marker: InflightTurnMarker }> = []
+    for (const session of this.sessions.values()) {
+      if (!isChatSessionId(session.id)) continue
+      const marker = normalizeInflightTurn(session.metadata?.inflightTurn)
+      if (marker) out.push({ sessionId: session.id, marker })
+    }
+    return out
+  }
+
+  /**
+   * Give the trailing assistant tool calls a synthetic result so the next turn
+   * does not read a tool it never saw finish as having succeeded. Returns the
+   * calls that were repaired (empty when the tail is already complete).
+   */
+  repairInterruptedTail(id: string): Array<{ toolCallId: string; toolName: string }> {
+    const session = this.sessions.get(id)
+    if (!session || session.messages.length === 0) return []
+    const { messages, repaired } = repairInterruptedTailMessages(session.messages)
+    if (repaired.length === 0) return []
+    session.messages = messages
+    this.persistSession(session)
+    return repaired
   }
 
   /** Persist the maximum Auto tier allowed for a session after a rejection. */

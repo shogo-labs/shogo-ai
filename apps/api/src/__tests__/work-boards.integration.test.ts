@@ -311,6 +311,28 @@ describe('cards', () => {
     expect(titles).toContain('Mine 1')
     expect(titles[0]).toBe('Mine 2')
   })
+
+  test('a board bigger than the row cap keeps its newest cards, not an arbitrary set', async () => {
+    const big = await createBoard({ conversationId: channelId, name: 'Big board' })
+    const base = Date.parse('2026-01-01T00:00:00Z')
+    await db.workItem.createMany({
+      data: Array.from({ length: 505 }, (_, i) => ({
+        workspaceId: seed.workspaceId,
+        boardId: big.id,
+        columnId: big.columns[0].id,
+        key: `BIG-${i + 1}`,
+        number: i + 1,
+        title: `Card ${i + 1}`,
+        position: i + 1,
+        createdAt: new Date(base + i * 60_000),
+      })),
+    })
+    const res = await call(seed.member, 'GET', `/boards/${big.id}`)
+    const numbers = res.json.items.map((i: any) => i.number).sort((a: number, b: number) => a - b)
+    expect(numbers.length).toBe(500)
+    expect(numbers[0]).toBe(6)
+    expect(numbers[numbers.length - 1]).toBe(505)
+  })
 })
 
 describe('working agents', () => {

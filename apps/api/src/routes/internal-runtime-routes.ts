@@ -2984,5 +2984,17 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     return c.json({ task: updated ? viewOf(updated) : null })
   })
 
+  /** POST /api/internal/chat/:id/resume  body: { toolName?, resume? } — a turn died mid-work. */
+  app.post('/chat/:id/resume', async (c) => {
+    const chatSessionId = c.req.param('id')
+    if (!chatSessionId || !(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
+    const body = (await c.req.json().catch(() => null)) as { toolName?: unknown; resume?: unknown } | null
+    const toolName = typeof body?.toolName === 'string' ? body.toolName : null
+    const resume = body?.resume !== false
+    const { postInterruptedResume } = await import('../services/chat-resume.service')
+    const result = await postInterruptedResume(chatSessionId, { toolName, resume })
+    return c.json(result)
+  })
+
   return app
 }

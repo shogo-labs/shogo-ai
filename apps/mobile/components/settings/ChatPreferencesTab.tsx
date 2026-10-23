@@ -29,7 +29,7 @@ import { useMentionables } from '../../hooks/useTeamChat'
 import { useCustomEmojiFeed } from '../../hooks/useCustomEmoji'
 import { CustomEmojiCard, UserGroupsCard } from '../team-chat/WorkspaceChatAdmin'
 import { AgentCapacityCard } from '../team-chat/AgentCapacityCard'
-import type { HuddleSound, MessageSound, MobilePushDelay, NotifyLevel } from '../../lib/team-chat-api'
+import type { HuddleSound, MessageSound, MessageTone, MobilePushDelay, NotifyLevel } from '../../lib/team-chat-api'
 import { previewMessageSound } from '../../lib/notification-sound'
 import { previewHuddleSound } from '../../lib/huddle-ringtone'
 import {
@@ -78,6 +78,17 @@ const MESSAGE_SOUNDS: Array<{ value: MessageSound; label: string }> = [
   { value: 'default', label: 'Default' },
   { value: 'subtle', label: 'Subtle' },
   { value: 'off', label: 'Off' },
+]
+
+const MESSAGE_TONES: Array<{ value: MessageTone; label: string }> = [
+  { value: 'knock', label: 'Soft Knock' },
+  { value: 'chirp', label: 'Chirp' },
+  { value: 'pristine', label: 'Pristine' },
+  { value: 'definite', label: 'Definite' },
+  { value: 'juntos', label: 'Juntos' },
+  { value: 'confirmation', label: 'Confirmation' },
+  { value: 'question', label: 'Question' },
+  { value: 'glass', label: 'Glass' },
 ]
 
 const HUDDLE_SOUNDS: Array<{ value: HuddleSound; label: string }> = [
@@ -322,6 +333,7 @@ export function ChatPreferencesTab({ highlightSection }: { highlightSection?: st
   })
   const quietValid = /^([01]\d|2[0-3]):[0-5]\d$/.test(quietStart) && /^([01]\d|2[0-3]):[0-5]\d$/.test(quietEnd)
   const messageSound = settings?.messageSound ?? 'default'
+  const messageTone = settings?.messageTone ?? 'knock'
   const huddleSound = settings?.huddleSound ?? 'ring'
 
   return (
@@ -493,7 +505,7 @@ export function ChatPreferencesTab({ highlightSection }: { highlightSection?: st
             variant="outline"
             disabled={messageSound === 'off'}
             accessibilityLabel="Preview message sound"
-            onPress={() => previewMessageSound(messageSound)}
+            onPress={() => previewMessageSound(messageSound, messageTone)}
           >
             Preview
           </Button>
@@ -502,6 +514,24 @@ export function ChatPreferencesTab({ highlightSection }: { highlightSection?: st
             banners are off. Phones use their system sound.
           </Text>
         </View>
+
+        {Platform.OS === 'web' ? (
+          <>
+            <GroupLabel>Message tone</GroupLabel>
+            {MESSAGE_TONES.map((t) => (
+              <ChoiceRow
+                key={t.value}
+                label={t.label}
+                checked={messageTone === t.value}
+                onPress={() => {
+                  void update({ messageTone: t.value })
+                  previewMessageSound(messageSound === 'subtle' ? 'subtle' : 'default', t.value)
+                }}
+                testID={`chat-message-tone-${t.value}`}
+              />
+            ))}
+          </>
+        ) : null}
 
         <GroupLabel>Huddle sound</GroupLabel>
         {HUDDLE_SOUNDS.map((s) => (

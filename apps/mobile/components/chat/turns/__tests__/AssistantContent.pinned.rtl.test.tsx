@@ -68,6 +68,9 @@ mock.module("../../chatImageActions", () => ({
 }))
 mock.module("../../../../lib/native-phone-layout", () => ({
   useIsNativePhoneLayout: () => false,
+  // Reached through the shared file body's Markdown renderer (SHO-165).
+  usePhoneLayoutOverride: () => null,
+  usePhoneLayout: () => false,
 }))
 mock.module("../../../../lib/agent-image-source", () => ({
   useAgentImageSource: (url: string) => ({ uri: url }),

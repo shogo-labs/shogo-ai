@@ -374,6 +374,8 @@ export interface ChatSettings {
   keywords: string[]
   emailDigest: 'off' | 'daily'
   messageSound: MessageSound
+  /** Which sound a chat message plays on web and desktop. */
+  messageTone: MessageTone
   huddleSound: HuddleSound
   /** Direct messages also appear in the Activity inbox. */
   dmInActivity: boolean
@@ -386,6 +388,7 @@ export interface ChatSettings {
 export type MobilePushDelay = 'immediate' | 'inactive' | 'inactive_5m' | 'inactive_10m'
 
 export type MessageSound = 'default' | 'subtle' | 'off'
+export type MessageTone = 'knock' | 'chirp' | 'pristine' | 'definite' | 'juntos' | 'confirmation' | 'question' | 'glass'
 export type HuddleSound = 'ring' | 'chime' | 'off'
 
 export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message' | 'question'
@@ -534,6 +537,7 @@ export type TeamChatEvent =
       title: string
       body: string
     }
+  | { type: 'settings.changed'; settings: ChatSettings }
   | { type: 'status.changed'; userId: string; status: UserStatus | null }
   | { type: 'inbox.created'; item: InboxItem }
   | { type: 'inbox.read'; unread: number; unreadThreads?: number }

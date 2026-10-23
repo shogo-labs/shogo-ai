@@ -44,6 +44,11 @@ beforeAll(() => {
   const mergedRoot = join(workspacesDir, '.workspace-roots', 'ws-1')
   mkdirSync(join(mergedRoot, 'exports'), { recursive: true })
   writeFileSync(join(mergedRoot, 'exports', 'summary.csv'), 'a,b\n1,2\n')
+  mkdirSync(join(mergedRoot, 'media'), { recursive: true })
+  writeFileSync(join(mergedRoot, 'media', 'clip.mp4'), 'not really a video')
+  writeFileSync(join(mergedRoot, 'media', 'voice.mp3'), 'not really audio')
+  writeFileSync(join(mergedRoot, 'media', 'notes.md'), '# Notes')
+  writeFileSync(join(mergedRoot, 'media', 'icon.woff2'), 'wOF2')
 
   mkdirSync(join(workspacesDir, 'proj-a'), { recursive: true })
   writeFileSync(join(workspacesDir, 'proj-a', 'report.txt'), 'project file')
@@ -96,6 +101,32 @@ describe('local shared file routes: workspace links', () => {
     }
     const otherWorkspace = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink('exports/summary.csv', 'ws-2')}`))
     expect(otherWorkspace.status).toBe(404)
+  })
+})
+
+describe('local shared file routes: content types', () => {
+  // The app fetches the bytes and plays them itself (SHO-165): a video served
+  // as `application/octet-stream` gives `<video>` nothing to decode with.
+  it('names media, fonts and markdown by their real type', async () => {
+    const app = localSharedFileRoutes({ workspacesDir })
+    const cases: Array<[string, string]> = [
+      ['media/clip.mp4', 'video/mp4'],
+      ['media/voice.mp3', 'audio/mpeg'],
+      ['media/notes.md', 'text/markdown'],
+      ['media/icon.woff2', 'font/woff2'],
+    ]
+    for (const [path, expected] of cases) {
+      const response = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink(path)}`))
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toBe(expected)
+    }
+  })
+
+  it('still answers octet-stream for a type it does not know', async () => {
+    const app = localSharedFileRoutes({ workspacesDir })
+    writeFileSync(join(workspacesDir, '.workspace-roots', 'ws-1', 'media', 'blob.xyz'), 'x')
+    const response = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink('media/blob.xyz')}`))
+    expect(response.headers.get('content-type')).toBe('application/octet-stream')
   })
 })
 
