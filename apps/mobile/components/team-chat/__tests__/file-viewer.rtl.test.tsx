@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { resolve } from 'node:path'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 import * as lucideStub from '../../../test/stubs/lucide-react-native'
@@ -31,6 +31,12 @@ mock.module(resolve(import.meta.dir, '../../../lib/attachment-download'), () => 
   },
 }))
 
+// Monaco tries to load its AMD bundle under happy-dom; the body's job is to
+// hand it the text, which the stub renders.
+mock.module(resolve(import.meta.dir, '../../project/panels/ide/CodeEditor'), () => ({
+  CodeEditor: ({ value }: { value: string }) => createElement('div', { 'data-testid': 'code-editor' }, value),
+}))
+
 mock.module(resolve(import.meta.dir, '../VoiceNotePlayer'), () => ({
   VoiceNotePlayer: () => createElement('div', { 'data-rn-shim': 'voice-note-player' }),
 }))
@@ -41,6 +47,12 @@ const api = {
     if (id === 'zip') {
       return {
         file: { ...baseFile, id, name: 'bundle.zip', mimeType: 'application/zip', hasText: false },
+        conversation: { id: 'conv-1', name: 'general', kind: 'public' },
+      }
+    }
+    if (id === 'video') {
+      return {
+        file: { ...baseFile, id, name: 'clip.mp4', mimeType: 'application/octet-stream', hasText: false },
         conversation: { id: 'conv-1', name: 'general', kind: 'public' },
       }
     }
@@ -102,6 +114,17 @@ describe('opening a shared file', () => {
 
     await screen.findByText('line one')
     expect(screen.getByText('line one')).toBeDefined()
+  })
+
+  test('plays a video, even when the server only says octet-stream', async () => {
+    const { container } = render(createElement(FileViewer, { attachmentId: 'video' }))
+
+    const video = await waitFor(() => {
+      const node = container.querySelector('video')
+      expect(node).not.toBeNull()
+      return node!
+    })
+    expect(video.getAttribute('src')).toBe('/api/conversation-files/att-1?t=sig')
   })
 
   test('offers a download for a file nothing can show', async () => {

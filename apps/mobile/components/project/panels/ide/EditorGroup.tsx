@@ -2,12 +2,11 @@ import { AlertTriangle, Code2 } from "lucide-react-native";
 import { EditorTabs } from "./EditorTabs";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { GitDiffView } from "./GitDiffView";
-import { CodeEditor } from "./CodeEditor";
-import { FilePreview, isPreviewLanguage } from "./FilePreview";
+import { isPreviewLanguage } from "./FilePreview";
+import { FileContentView } from "../../../files/FileContentView";
 import { ExtensionDetails } from "./extensions/ExtensionDetails";
 import type { ExtensionSearchResult, ExtensionUsableEntryPoint, InstalledExtension } from "./extensions/types";
 import type { EditorGroup as GroupState, EditorSettings, OpenFile } from "./types";
-import { MarkdownText } from "../../../chat/MarkdownText";
 import type { editor } from "monaco-editor";
 
 type MonacoNs = typeof import("monaco-editor");
@@ -160,112 +159,52 @@ export function EditorGroupView({
               }}
             />
           ) : isPreviewLanguage(active.language) ? (
-            <FilePreview kind={active.language} url={active.content} name={active.name} path={active.path} />
-          ) : active.language === "markdown" ? (
-            <MarkdownFileView
-              file={active}
-              settings={settings}
+            <FileContentView
+              kind={active.language}
+              url={active.content}
+              name={active.name}
+              path={active.path}
               themeMode={themeMode}
-              editorTheme={editorTheme}
-              onChange={onChange}
-              onCursor={onCursor}
-              onEditorMount={onEditorMount}
-              onSetMdMode={onSetMdMode}
             />
-          ) : (
-            <CodeEditor
-              value={active.content}
+          ) : active.language === "markdown" ? (
+            <FileContentView
+              kind="markdown"
+              name={active.name}
+              path={active.path}
+              text={active.content}
               language={active.language}
               pathKey={active.id}
+              readOnly={false}
               settings={settings}
               themeMode={themeMode}
               editorTheme={editorTheme}
-              onChange={onChange}
+              mdMode={active.mdMode ?? "preview"}
+              onMdModeChange={(mode) => onSetMdMode?.(active.id, mode)}
+              onChange={(value, fileId) => onChange(fileId, value)}
               onCursor={onCursor}
-              onMount={onEditorMount}
+              onEditorMount={onEditorMount}
+            />
+          ) : (
+            <FileContentView
+              kind="text"
+              name={active.name}
+              path={active.path}
+              text={active.content}
+              language={active.language}
+              pathKey={active.id}
+              readOnly={false}
+              settings={settings}
+              themeMode={themeMode}
+              editorTheme={editorTheme}
+              onChange={(value, fileId) => onChange(fileId, value)}
+              onCursor={onCursor}
+              onEditorMount={onEditorMount}
             />
           )
         ) : (
           <EmptyGroup recent={recentFiles} onOpen={onOpenPlainFile} />
         )}
       </div>
-    </div>
-  );
-}
-
-function MarkdownFileView({
-  file,
-  settings,
-  themeMode,
-  editorTheme,
-  onChange,
-  onCursor,
-  onEditorMount,
-  onSetMdMode,
-}: {
-  file: OpenFile;
-  settings: EditorSettings;
-  themeMode: "dark" | "light";
-  editorTheme?: string;
-  onChange: (fileId: string, val: string) => void;
-  onCursor: (line: number, col: number) => void;
-  onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
-  onSetMdMode?: (fileId: string, mode: "preview" | "edit") => void;
-}) {
-  const mode = file.mdMode ?? "preview";
-  const select = (next: "preview" | "edit") => onSetMdMode?.(file.id, next);
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-1 border-b border-[color:var(--ide-border)] px-2 py-1">
-        <button
-          type="button"
-          data-testid="ide-md-mode-preview"
-          aria-pressed={mode === "preview"}
-          onClick={() => select("preview")}
-          className={`rounded px-2 py-0.5 text-[12px] ${
-            mode === "preview"
-              ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text)]"
-              : "text-[color:var(--ide-muted)]"
-          }`}
-        >
-          Preview
-        </button>
-        <button
-          type="button"
-          data-testid="ide-md-mode-edit"
-          aria-pressed={mode === "edit"}
-          onClick={() => select("edit")}
-          className={`rounded px-2 py-0.5 text-[12px] ${
-            mode === "edit"
-              ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text)]"
-              : "text-[color:var(--ide-muted)]"
-          }`}
-        >
-          Edit
-        </button>
-      </div>
-      {mode === "edit" ? (
-        <div className="min-h-0 flex-1">
-          <CodeEditor
-            value={file.content}
-            language={file.language}
-            pathKey={file.id}
-            settings={settings}
-            themeMode={themeMode}
-            editorTheme={editorTheme}
-            onChange={onChange}
-            onCursor={onCursor}
-            onMount={onEditorMount}
-          />
-        </div>
-      ) : (
-        <div
-          data-testid="ide-md-preview"
-          className="min-h-0 flex-1 overflow-auto px-4 py-3"
-        >
-          <MarkdownText>{file.content}</MarkdownText>
-        </div>
-      )}
     </div>
   );
 }

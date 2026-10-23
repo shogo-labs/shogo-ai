@@ -50,6 +50,15 @@ mock.module("../../chat/turns/DownloadChip", () => ({
     </button>
   ),
 }))
+// Monaco would try to load its AMD bundle under happy-dom; the body's job is
+// to hand it the text and the language, which the stub records.
+mock.module("../../project/panels/ide/CodeEditor", () => ({
+  CodeEditor: ({ value, language, readOnly }: { value: string; language: string; readOnly?: boolean }) => (
+    <div data-testid="code-editor" data-language={language} data-readonly={String(!!readOnly)}>
+      {value}
+    </div>
+  ),
+}))
 mock.module("../../project/panels/ide/FilePreview", () => ({
   FilePreview: ({ kind, url, name }: { kind: string; url: string; name: string }) => (
     <div data-testid="file-preview" data-kind={kind} data-url={url} data-name={name} />
@@ -66,7 +75,7 @@ const revoked: string[] = []
 
 /** The React Native mock renders `testID` / `accessibilityLabel` as lowercase attributes. */
 function byTestId(id: string): HTMLElement | null {
-  return document.querySelector<HTMLElement>(`[testid="${id}"]`)
+  return document.querySelector<HTMLElement>(`[testid="${id}"], [data-testid="${id}"]`)
 }
 
 async function findByTestId(id: string): Promise<HTMLElement> {
@@ -116,6 +125,30 @@ describe("WorkspaceFileViewer", () => {
     expect(body.textContent).toBe("# Launch plan")
     expect(readFile).toHaveBeenCalledWith("notes/plan.md")
     expect(byTestId("workspace-file-text")).toBeNull()
+  })
+
+  test("a Markdown file gets a read-only Source toggle", async () => {
+    readFile.mockImplementation(async () => "# Launch plan")
+    open("notes/plan.md")
+
+    await screen.findByTestId("markdown-body")
+    const source = document.querySelector<HTMLElement>('[data-testid="file-view-md-mode-source"]')
+    expect(source).not.toBeNull()
+    fireEvent.click(source!)
+
+    const editor = document.querySelector<HTMLElement>('[data-testid="code-editor"]')
+    expect(editor!.textContent).toContain("# Launch plan")
+    expect(editor!.getAttribute("data-readonly")).toBe("true")
+    expect(editor!.getAttribute("data-language")).toBe("markdown")
+  })
+
+  test("routes a video to the IDE's own video preview", async () => {
+    open("clips/demo.mp4")
+
+    const preview = await screen.findByTestId("file-preview")
+    expect(preview.getAttribute("data-kind")).toBe("video")
+    expect(readFileBlob).toHaveBeenCalledWith("clips/demo.mp4")
+    expect(readFile).not.toHaveBeenCalled()
   })
 
   test("shows other text files in a monospace view", async () => {

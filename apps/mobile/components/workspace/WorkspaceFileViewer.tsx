@@ -9,26 +9,19 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native"
 import * as Clipboard from "expo-clipboard"
 import { AgentClient } from "@shogo-ai/sdk/agent"
-import { isBinaryFilePath } from "@shogo-ai/sdk/file-types"
 import { Copy, Check, X } from "lucide-react-native"
 import { agentFetch } from "../../lib/agent-fetch"
 import { useResolvedTheme } from "../../contexts/theme"
 import { FileTypeIcon } from "../chat/FileTypeIcon"
-import { MarkdownText } from "../chat/MarkdownText"
 import { MarkdownMediaNative } from "../chat/MarkdownMediaNative"
 import { imageSrcHref } from "../chat/file-links"
 import { DownloadChip } from "../chat/turns/DownloadChip"
-import {
-  FilePreview,
-  previewLanguageFor,
-  type PreviewLanguage,
-} from "../project/panels/ide/FilePreview"
-import { isImagePath } from "../project/panels/ide/ImagePreview"
+import { FileContentView, viewerPathKey } from "../files/FileContentView"
+import { fileViewKind, type FileViewKind } from "../files/file-view-kind"
+import { isPreviewLanguage } from "../project/panels/ide/FilePreview"
 
 /** Text past this many characters is cut off, with a note and a download. */
 const MAX_TEXT_CHARS = 500_000
-
-const MARKDOWN_EXT = /\.mdx?$/i
 
 export interface WorkspaceFileViewerProps {
   /** Workspace agent proxy URL; paths are workspace-relative. */
@@ -42,9 +35,8 @@ export interface WorkspaceFileViewerProps {
 
 type ViewState =
   | { status: "loading" }
-  | { status: "markdown"; text: string; truncated: boolean }
-  | { status: "text"; text: string; truncated: boolean }
-  | { status: "preview"; kind: PreviewLanguage; url: string }
+  | { status: "text"; kind: "text" | "markdown"; text: string; truncated: boolean }
+  | { status: "preview"; kind: FileViewKind; url: string }
   | { status: "native-image" }
   | { status: "unavailable" }
   | { status: "missing" }
@@ -95,30 +87,23 @@ export function WorkspaceFileViewer({ agentUrl, path, nonce, onClose }: Workspac
       )
     }
 
-    const preview = previewLanguageFor(path)
-    if (Platform.OS === "web" && preview) {
+    const kind = fileViewKind(path)
+    if (Platform.OS === "web" && isPreviewLanguage(kind)) {
       client
         .readFileBlob(path)
         .then((blob) => {
           if (cancelled) return
           objectUrl = URL.createObjectURL(blob)
-          setState({ status: "preview", kind: preview, url: objectUrl })
+          setState({ status: "preview", kind, url: objectUrl })
         })
         .catch(fail)
-    } else if (Platform.OS !== "web" && isImagePath(path)) {
+    } else if (Platform.OS !== "web" && kind === "image") {
       setState({ status: "native-image" })
-    } else if (MARKDOWN_EXT.test(path)) {
+    } else if (kind === "markdown" || kind === "text") {
       client
         .readFile(path)
         .then((text) => {
-          if (!cancelled) setState({ status: "markdown", ...capText(text) })
-        })
-        .catch(fail)
-    } else if (!preview && !isBinaryFilePath(path)) {
-      client
-        .readFile(path)
-        .then((text) => {
-          if (!cancelled) setState({ status: "text", ...capText(text) })
+          if (!cancelled) setState({ status: "text", kind, ...capText(text) })
         })
         .catch(fail)
     } else {
@@ -225,29 +210,36 @@ function Body({
       )
     case "preview":
       return (
-        <div
-          className="shogo-ide flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden"
-          data-theme={isDark ? "dark" : "light"}
-          data-testid="workspace-file-preview"
-        >
-          <FilePreview kind={state.kind} url={state.url} name={name} path={path} />
-        </div>
-      )
-    case "markdown":
-      return (
-        <ScrollView className="flex-1 px-4 py-3" testID="workspace-file-markdown">
-          <MarkdownText>{state.text}</MarkdownText>
-          <Truncated visible={state.truncated} path={path} agentUrl={agentUrl} />
-        </ScrollView>
+        <FileContentView
+          kind={state.kind}
+          url={state.url}
+          name={name}
+          path={path}
+          readOnly
+          themeMode={isDark ? "dark" : "light"}
+          pathKey={viewerPathKey(path)}
+          testID="workspace-file-preview"
+        />
       )
     case "text":
       return (
-        <ScrollView className="flex-1 px-4 py-3" testID="workspace-file-text">
-          <Text selectable className="font-mono text-xs leading-5 text-foreground">
-            {state.text}
-          </Text>
-          <Truncated visible={state.truncated} path={path} agentUrl={agentUrl} />
-        </ScrollView>
+        <View className="min-h-0 flex-1">
+          <FileContentView
+            kind={state.kind}
+            text={state.text}
+            name={name}
+            path={path}
+            readOnly
+            themeMode={isDark ? "dark" : "light"}
+            pathKey={viewerPathKey(path)}
+            testID={state.kind === "markdown" ? "workspace-file-markdown" : "workspace-file-text"}
+          />
+          {state.truncated ? (
+            <View className="px-4 pb-3">
+              <Truncated visible path={path} agentUrl={agentUrl} />
+            </View>
+          ) : null}
+        </View>
       )
   }
 }
