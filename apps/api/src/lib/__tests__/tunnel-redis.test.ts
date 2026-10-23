@@ -255,6 +255,21 @@ describe('ownership CRUD', () => {
     expect(pub().expirations.get('tunnel:i:pod')).toBe(600)
   })
 
+  it('refreshTunnelOwnership recreates an owner key another pod evicted', async () => {
+    // The heartbeat is the only thing that can repair a wrong eviction. With
+    // EXPIRE this was a no-op on a deleted key, so one slow relay took a live
+    // tunnel out of cross-pod routing for the life of the socket (SHO-185).
+    await tr.registerTunnelOwnership('inst-heal')
+    await tr.evictTunnelOwnership('inst-heal')
+    expect(pub().store.has('tunnel:inst-heal:pod')).toBe(false)
+
+    await tr.refreshTunnelOwnership('inst-heal')
+
+    expect(pub().store.get('tunnel:inst-heal:pod')).toBe('pod-A')
+    expect(pub().expirations.get('tunnel:inst-heal:pod')).toBe(600)
+    expect(await tr.getTunnelOwner('inst-heal')).toBe('pod-A')
+  })
+
   it('getTunnelOwner returns null when not present, even after retry', async () => {
     const v = await tr.getTunnelOwner('missing')
     expect(v).toBeNull()

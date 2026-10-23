@@ -24,6 +24,7 @@ import {
   readdirSync,
 } from 'fs'
 import { join, dirname, resolve, basename } from 'path'
+import { connect } from 'node:net'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { pkg } from '../../../../../packages/cli/src/pkg'
@@ -834,22 +835,28 @@ export class RuntimeManager implements IRuntimeManager {
 
   /**
    * TCP-level check whether a port is listening (faster and more reliable than HTTP fetch).
+   *
+   * Never shells out: this runs on the runtime start path, which the desktop's
+   * tunnel can trigger many times at once, and `execSync('lsof')` froze the
+   * whole event loop (~65 ms per call here, seconds on a loaded machine). That
+   * stall starved `/health`, the desktop supervisor killed the API after three
+   * missed probes, and the tunnel dropped as 1006 at the cloud (SHO-185).
    */
   private async isPortListening(port: number): Promise<boolean> {
-    try {
-      const result = execSync(
-        process.platform === 'win32'
-          ? `netstat -ano | findstr :${port} | findstr LISTENING`
-          : `lsof -ti :${port} 2>/dev/null || true`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-      ).trim()
-      const pids = result.split('\n').filter(l => l.trim().length > 0)
-      const selfPid = String(process.pid)
-      const parentPid = String(process.ppid)
-      return pids.some(pid => pid !== selfPid && pid !== parentPid)
-    } catch {
-      return false
-    }
+    return await new Promise<boolean>((resolve) => {
+      let settled = false
+      const done = (listening: boolean) => {
+        if (settled) return
+        settled = true
+        try { socket.destroy() } catch { /* already closed */ }
+        resolve(listening)
+      }
+      const socket = connect({ host: '127.0.0.1', port })
+      socket.setTimeout(350)
+      socket.once('connect', () => done(true))
+      socket.once('timeout', () => done(false))
+      socket.once('error', () => done(false))
+    })
   }
 
   /**

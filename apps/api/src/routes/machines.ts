@@ -23,16 +23,25 @@ import {
   generateRequestId,
   getMachineGroupStatus,
   getMachineLiveStatus,
+  isRecentlySeenViaHeartbeat,
   isStreamingRequest,
+  markViewerActive,
   normalizeTransparentProxyPath,
   sendTunnelRequest,
   sendTunnelStreamRequest,
 } from './instances'
+import { isMachineTimeoutError } from '../lib/tunnel-errors'
 import { classifyAction, logRemoteAction } from './remote-audit'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 
-/** How long a cold machine gets to open its tunnel before we call it offline. */
-const DEFAULT_WAKE_DEADLINE_MS = 10_000
+/**
+ * How long one request waits for a cold machine's tunnel before answering.
+ * Deliberately short: a desktop that is not connected takes up to a full idle
+ * poll (60 s) to come back, and holding the HTTP request open for that is what
+ * made every panel hang. A request now waits long enough to catch a tunnel that
+ * is already connecting, then answers `waking` and the client retries (SHO-185).
+ */
+const DEFAULT_WAKE_DEADLINE_MS = 5_000
 let wakeDeadlineMs = DEFAULT_WAKE_DEADLINE_MS
 
 /** Headers we must not copy back through the proxy. */
@@ -47,6 +56,32 @@ const HOP_BY_HOP = new Set([
 
 function offline() {
   return { error: { code: 'offline', message: 'Machine is offline' } }
+}
+
+/**
+ * A machine we have heard from recently but whose tunnel is not up yet: the wake
+ * is in flight, so the client should retry, not tell the user it is offline.
+ * Before this, a machine that heartbeated 20 s ago was reported offline for the
+ * whole 60 s idle-poll window and the workspace looked broken (SHO-185).
+ */
+function waking(instance: { name: string | null }, retryAfterSeconds = 3) {
+  return {
+    error: {
+      code: 'waking',
+      message: `${instance.name || 'The machine'} is waking up`,
+      retryAfterSeconds,
+    },
+  }
+}
+
+function machineTimeout(instance: { name: string | null }, err: Error) {
+  return {
+    error: {
+      code: 'machine_timeout',
+      message: `${instance.name || 'The machine'} is connected but did not answer in time`,
+      detail: err.message,
+    },
+  }
 }
 
 function forbidden() {
@@ -142,6 +177,16 @@ export function machineRoutes() {
     // three workspaces has three rows here.
     const names = await workspaceNamesById(rows.map((row) => row.workspaceId))
     const grouped = groupMachinesByHostname(rows, { nameFor: (id) => names.get(id) })
+
+    // The workspace switcher polls this list, so it is the one place we know
+    // Studio has a machine in view. Marking the viewer active makes that
+    // desktop's heartbeat run at 5 s (POLL_INTERVAL_VIEWER_S) instead of 60 s,
+    // so a sleeping machine is reachable in seconds (SHO-185).
+    await Promise.all(
+      rows
+        .filter((row) => row.lastSeenAt)
+        .map((row) => markViewerActive(row.workspaceId).catch(() => {})),
+    )
 
     const machines = await Promise.all(
       grouped.map(async ({ row, workspaces, rows: machineRows }) => ({
@@ -265,6 +310,12 @@ export function machineRoutes() {
     const method = c.req.method
 
     if (!(await ensureTunnelConnected(instance.id, wakeDeadlineMs))) {
+      // Recently heartbeated means "not connected right now, but alive": say so
+      // and let the client retry instead of claiming the machine is offline.
+      if (isRecentlySeenViaHeartbeat(instance.lastSeenAt)) {
+        c.header('Retry-After', '3')
+        return c.json(waking(instance), 503)
+      }
       return c.json(offline(), 503)
     }
 
@@ -360,6 +411,13 @@ export function machineRoutes() {
       }
       if (!responseHeaders['content-type']) responseHeaders['content-type'] = 'application/json'
 
+      // A cold runtime on the desktop is a "retry in a moment", not an error:
+      // the desktop starts it in the background and answers RUNTIME_STARTING.
+      if (resp.status === 502 && resp.body && resp.body.includes('RUNTIME_STARTING')) {
+        c.header('Retry-After', '3')
+        return c.json({ error: { code: 'runtime_starting', message: 'Starting the machine runtime', retryAfterSeconds: 3 } }, 503)
+      }
+
       return new Response(resp.body || '', {
         status: resp.status,
         headers: responseHeaders,
@@ -373,8 +431,17 @@ export function machineRoutes() {
         method,
         result: `error: ${err?.message ?? err}`,
       })
+      // A machine that answered our probe but not the request is slow, not
+      // offline: say which, and keep its tunnel ownership intact (SHO-185).
+      if (isMachineTimeoutError(err)) {
+        return c.json(machineTimeout(instance, err), 504)
+      }
       // A dead tunnel is an offline machine, not a bad gateway: the client's
       // "connected to <machine>" banner keys off this code.
+      if (isRecentlySeenViaHeartbeat(instance.lastSeenAt)) {
+        c.header('Retry-After', '3')
+        return c.json(waking(instance), 503)
+      }
       return c.json(offline(), 503)
     }
   })

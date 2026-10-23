@@ -128,8 +128,11 @@ async function markTunnelStarted() {
 }
 
 describe('desktopResolver — error paths', () => {
-  test('agent path with projectId: manager.start throws → catch branch + break, falls back to apps/api', async () => {
-    // Force the inner try to throw: status returns "not running" so start() is called, and start() rejects.
+  test('agent path with a stopped runtime: starts it in the background and answers RUNTIME_STARTING', async () => {
+    // Never await a cold start inside a tunnel request: `manager.start()` blocks
+    // the local API's event loop (lsof/ps), and this tunnel shares that loop, so
+    // `/health` stopped answering and the desktop supervisor killed the API
+    // mid-request — the tunnel then dropped as 1006 at the cloud (SHO-185).
     runtimeStatus.mockImplementation(() => ({ status: 'stopped', agentPort: null }))
     runtimeStart.mockImplementation(async () => { throw new Error('cold start failed') })
 
@@ -145,9 +148,11 @@ describe('desktopResolver — error paths', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    // Because projectId was provided AND the inner try threw, the resolver
-    // breaks out of the candidate loop and falls back to the apps/api URL.
-    expect(fetchCalls[0].url).toBe('http://localhost:39100/agent/chat')
+    // Nothing is forwarded to the local API, and the cloud is told to retry.
+    expect(fetchCalls.length).toBe(0)
+    const reply = lastSocket!.sent.map((frame) => JSON.parse(frame)).find((f) => f.requestId === 'req-err-1')
+    expect(reply.status).toBe(502)
+    expect(reply.body).toContain('RUNTIME_STARTING')
   })
 
   test('agent path with no projectId: iterates active projects, skips failing ones', async () => {
@@ -172,9 +177,11 @@ describe('desktopResolver — error paths', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    // Iterated past bad-1 (caught error, did NOT break because projectId was absent),
-    // then resolved good-1's runtime → forwarded to its agentPort.
+    // Only runtimes that are already running are used: bad-1 is stopped and is
+    // skipped without being started (starting every project to answer one
+    // request is what blocked the loop), good-1 already runs → its agentPort.
     expect(fetchCalls[0].url).toBe('http://localhost:9555/agent/chat')
+    expect(runtimeStart).not.toHaveBeenCalled()
   })
 
   test('agent path: outer catch when getRuntimeManager itself throws → falls back to apps/api', async () => {
@@ -194,9 +201,8 @@ describe('desktopResolver — error paths', () => {
     expect(fetchCalls[0].url).toBe('http://localhost:39100/agent/anything')
   })
 
-  test('agent path: start() returns runtime with no agentPort → falls through to apps/api', async () => {
+  test('agent path: a runtime with no agentPort is reported as starting, not forwarded', async () => {
     runtimeStatus.mockImplementation(() => null)
-    // start() resolves but the returned runtime never reaches "running with port".
     runtimeStart.mockImplementation(async () => ({ status: 'starting', agentPort: null }) as any)
 
     await markTunnelStarted()
@@ -211,7 +217,10 @@ describe('desktopResolver — error paths', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(fetchCalls[0].url).toBe('http://localhost:39100/agent/x')
+    expect(fetchCalls.length).toBe(0)
+    const reply = lastSocket!.sent.map((frame) => JSON.parse(frame)).find((f) => f.requestId === 'req-err-4')
+    expect(reply.status).toBe(502)
+    expect(reply.body).toContain('RUNTIME_STARTING')
   })
 
   test('non-agent path always forwards to apps/api (PORT env override is honored)', async () => {

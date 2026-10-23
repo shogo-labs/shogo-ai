@@ -393,6 +393,19 @@ describe('machine workspace relay', () => {
     expect(body.error.code).toBe('forbidden')
   })
 
+  test('a machine that heartbeated recently is `waking`, not `offline`', async () => {
+    // An idle desktop signals every 60s and has no push channel, so "no tunnel
+    // right now" is normal for a live machine. Saying offline there is what made
+    // every panel of a sleeping machine's workspace fail (SHO-185).
+    seedInstance({ lastSeenAt: new Date(Date.now() - 20_000), metadata: { machine: SNAPSHOT } })
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects')
+    expect(res.status).toBe(503)
+    expect(res.headers.get('retry-after')).toBe('3')
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('waking')
+    expect(body.projects).toBeUndefined()
+  })
+
   test('an offline machine answers 503 offline, never 200 with empty data', async () => {
     seedInstance({ lastSeenAt: null, metadata: { machine: SNAPSHOT } })
     const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects')

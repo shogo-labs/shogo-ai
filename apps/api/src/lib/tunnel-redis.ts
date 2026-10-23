@@ -13,6 +13,7 @@
  */
 
 import type Redis from 'ioredis'
+import { RELAY_TIMEOUT_MS } from './tunnel-timeouts'
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis-master:6379'
@@ -21,7 +22,6 @@ const POD_ID = process.env.HOSTNAME || crypto.randomUUID()
 const TUNNEL_OWNERSHIP_TTL = 600 // 10 min, refreshed by heartbeat
 const VIEWER_TTL = 120 // 2 min
 const CONTROLLER_TTL = 60 // 1 min
-const RELAY_TIMEOUT_MS = 30_000
 const STREAM_RELAY_TIMEOUT_MS = 600_000 // 10 min max for streaming
 // One bounded re-read in getTunnelOwner to absorb the cold-start gap on
 // sibling pods. Keep it small — this delays 503s, not real traffic.
@@ -29,6 +29,8 @@ const GET_TUNNEL_OWNER_RETRY_MS = 100
 // Delay between background re-init attempts after a cold-start connect
 // failure (pod booted while Redis was unreachable). Overridable for tests.
 const REINIT_DELAY_MS = Number(process.env.TUNNEL_REDIS_REINIT_MS) || 5000
+/** Upper bound on the health probe's Redis PING (see `checkRedisHealth`). */
+const REDIS_PING_TIMEOUT_MS = 1_000
 
 // Shared ioredis options for both the publisher and subscriber. Centralized
 // so the publisher and subscriber can never drift apart on reconnect policy.
@@ -312,12 +314,27 @@ export async function checkRedisHealth(): Promise<{ healthy: boolean; latencyMs?
   if (!sub || sub.status !== 'ready') {
     return { healthy: false, error: `Redis subscriber not ready (status=${sub?.status ?? 'null'})` }
   }
+  // Bounded: this publisher also carries every relayed tunnel body, so a busy
+  // or reconnecting connection can leave a PING queued behind megabytes of
+  // payload. Awaiting it unbounded made /health hang exactly when the API was
+  // busiest, and the probe then failed every pod (SHO-185).
   const start = Date.now()
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    const pong = await r.ping()
+    const pong = await Promise.race([
+      r.ping(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Redis ping timed out after ${REDIS_PING_TIMEOUT_MS}ms`)),
+          REDIS_PING_TIMEOUT_MS,
+        )
+      }),
+    ])
     return { healthy: pong === 'PONG', latencyMs: Date.now() - start }
   } catch (err) {
     return { healthy: false, latencyMs: Date.now() - start, error: (err as Error).message }
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }
 
@@ -359,7 +376,11 @@ export async function refreshTunnelOwnership(instanceId: string): Promise<void> 
   await whenReady()
   const r = getPublisher()
   if (!r) return
-  await r.expire(`tunnel:${instanceId}:pod`, TUNNEL_OWNERSHIP_TTL)
+  // Re-assert, don't just extend: the heartbeat is the only thing that can
+  // repair a wrong eviction, and `EXPIRE` on a key somebody deleted is a
+  // no-op — which is how a single slow relay used to take a live tunnel out of
+  // cross-pod routing for the life of the socket (SHO-185).
+  await r.set(`tunnel:${instanceId}:pod`, POD_ID, 'EX', TUNNEL_OWNERSHIP_TTL)
 }
 
 /**

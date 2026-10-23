@@ -67,16 +67,25 @@ function managerPrivate() {
 }
 
 describe('RuntimeManager private port helpers', () => {
-  test('isPortListening ignores self and parent pids, accepts other numeric listeners, and swallows exec errors', async () => {
+  test('isPortListening probes the port directly, with no subprocess', async () => {
+    // It used to shell out to `lsof` three times per attempt, up to 50 attempts,
+    // on the runtime start path — which froze the local API's event loop and made
+    // the desktop supervisor kill it mid-tunnel-request (SHO-185).
     const rm = managerPrivate()
-    execPlan = [`${process.pid}\n${process.ppid}\nabc\n43210\n`]
-    await expect(rm.isPortListening(37123)).resolves.toBe(true)
 
-    execPlan = [`${process.pid}\n${process.ppid}\n`]
-    await expect(rm.isPortListening(37123)).resolves.toBe(false)
+    const server = Bun.serve({ port: 0, fetch: () => new Response('ok') })
+    try {
+      execCalls.length = 0
+      await expect(rm.isPortListening(server.port!)).resolves.toBe(true)
+      expect(execCalls).toEqual([])
+    } finally {
+      server.stop(true)
+    }
 
-    execPlan = [new Error('lsof failed')]
-    await expect(rm.isPortListening(37123)).resolves.toBe(false)
+    // Nothing is listening on the port we just released.
+    execCalls.length = 0
+    await expect(rm.isPortListening(server.port!)).resolves.toBe(false)
+    expect(execCalls).toEqual([])
   })
 
   test('allocatePortAsync skips used ports, checks companion ports, and releases allocated ports', async () => {

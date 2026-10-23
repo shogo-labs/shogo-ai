@@ -45,6 +45,8 @@ import {
   verifyPodAlive,
 } from '../lib/tunnel-redis'
 import { sendPushToInstance } from '../lib/push-notifications'
+import { PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
+import { RelayTimeoutError } from '../lib/tunnel-errors'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
 import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
 import { trackUsageFromStream } from './project-chat'
@@ -81,7 +83,6 @@ const POLL_INTERVAL_VIEWER_S = 5
 const POLL_INTERVAL_WS_REQUESTED_S = 3
 const WS_REQUEST_TTL_MS = 2 * 60 * 1000
 const VIEWER_ACTIVE_TTL_MS = 2 * 60 * 1000
-const PROXY_TIMEOUT_MS = 30_000
 const STREAM_FIRST_CHUNK_TIMEOUT_MS = 90_000
 const STREAM_IDLE_TIMEOUT_MS = 120_000
 const STREAM_MAX_TIMEOUT_MS = 600_000
@@ -116,7 +117,7 @@ export async function isViewerActive(workspaceId: string): Promise<boolean> {
   return true
 }
 
-async function markViewerActive(workspaceId: string) {
+export async function markViewerActive(workspaceId: string) {
   activeViewers.set(workspaceId, Date.now())
   await markViewerActiveRedis(workspaceId).catch((err) => {
     console.warn('[RemoteControl] markViewerActiveRedis failed:', (err as Error).message)
@@ -553,14 +554,20 @@ export async function sendTunnelRequest(instanceId: string, req: TunnelRequest):
     throw new Error('Instance is offline')
   }
 
+  // The owner pod is demonstrably alive (it answered the probe), so a relay
+  // timeout means the *machine* was slow, not that the pod died. Evicting here
+  // used to delete a live tunnel's owner key, and the heartbeat could not put
+  // it back — every later call then 503'd "Machine is offline" (SHO-185).
   try {
     const response = await relayTunnelRequest(ownerPod, instanceId, req)
     if (!response) throw new Error('Empty relay response')
     return response as TunnelResponse
   } catch (err: any) {
-    if (err.message === 'Cross-pod relay timed out') {
-      await evictTunnelOwnership(instanceId).catch(() => {})
-      console.warn(`[RemoteControl] Evicted stale tunnel owner ${ownerPod} for instance ${instanceId} after relay timeout`)
+    if (err?.message === 'Cross-pod relay timed out') {
+      console.warn(
+        `[RemoteControl] Relay to ${ownerPod} for instance ${instanceId} timed out; pod answered our probe, keeping ownership`,
+      )
+      throw new RelayTimeoutError(instanceId, RELAY_TIMEOUT_MS)
     }
     throw err
   }
@@ -653,7 +660,6 @@ export function sendTunnelStreamRequest(
   }).catch((err) => {
     onChunk({ type: 'stream-error', requestId: req.requestId, error: (err as Error).message })
   })
-
   return { cancel: () => cancelRef.cancel() }
 }
 
@@ -1678,7 +1684,7 @@ export function instanceRoutes() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
+export function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
   if (!lastSeenAt) return false
   return Date.now() - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
 }

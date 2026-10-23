@@ -71,6 +71,18 @@ function splitPathAndQuery(pathWithQuery: string): { pathname: string; search: s
 const SNAPSHOT_TTL_MS = 20_000
 let snapshotCache: { at: number; value: Record<string, unknown> } | null = null
 
+/**
+ * Projects whose runtime this tunnel asked to start in the background, and when.
+ * An `/agent/*` request for one of them is answered with `RUNTIME_STARTING` so
+ * the client retries instead of showing an error.
+ *
+ * Time-based, not cleared when the start settles: the rejection is described on
+ * a later tick than the request, so a start that settles quickly (or fails) would
+ * otherwise be reported as NO_LOCAL_RUNTIME and the client would stop retrying.
+ */
+const startRequestedAt = new Map<string, number>()
+const STARTING_WINDOW_MS = 60_000
+
 const desktopResolver: RuntimeResolver = {
   async resolveLocalUrl(pathWithQuery, projectId) {
     const { pathname, search } = splitPathAndQuery(pathWithQuery)
@@ -79,19 +91,35 @@ const desktopResolver: RuntimeResolver = {
     if (path.startsWith('/agent/') || path === '/agent') {
       try {
         const manager = getRuntimeManager()
-        const candidates = projectId ? [projectId] : manager.getActiveProjects()
-        for (const pid of candidates) {
-          try {
-            let runtime = manager.status(pid)
-            if (!runtime?.agentPort || runtime.status !== 'running') {
-              runtime = await manager.start(pid)
-            }
-            if (runtime?.agentPort && runtime.status === 'running') {
-              return `http://localhost:${runtime.agentPort}${path}${search}`
-            }
-          } catch (err: any) {
-            console.warn(`[InstanceTunnel] Agent URL resolve failed for ${pid}: ${err?.message ?? err}`)
-            if (projectId) break
+        // Never start a runtime from here, and never fan out over every project.
+        // `manager.start()` runs `lsof`/`ps` and can take seconds; awaiting it
+        // inside a tunnel request froze the local API's event loop, which is in
+        // the same process as this tunnel, so `/health` stopped answering and the
+        // desktop supervisor killed the API mid-request (SHO-185).
+        if (projectId) {
+          const runtime = manager.status(projectId)
+          if (runtime?.agentPort && runtime.status === 'running') {
+            return `http://localhost:${runtime.agentPort}${path}${search}`
+          }
+          // Kick the start off and let the caller retry: the cloud answers
+          // `runtime_starting`, the client retries with Retry-After.
+          if (!runtime || runtime.status !== 'starting') {
+            startRequestedAt.set(projectId, Date.now())
+            void manager
+              .start(projectId)
+              .catch((err: any) => {
+                console.warn(`[InstanceTunnel] Background start failed for ${projectId}: ${err?.message ?? err}`)
+              })
+          }
+          return null
+        }
+
+        // No project named: use whichever runtime is already up rather than
+        // starting all of them to find out.
+        for (const pid of manager.getActiveProjects()) {
+          const runtime = manager.status(pid)
+          if (runtime?.agentPort && runtime.status === 'running') {
+            return `http://localhost:${runtime.agentPort}${path}${search}`
           }
         }
       } catch (err: any) {
@@ -121,6 +149,26 @@ const desktopResolver: RuntimeResolver = {
     } catch {
       return []
     }
+  },
+
+  /**
+   * Why `resolveLocalUrl` returned null. A project whose runtime this tunnel is
+   * starting gets `RUNTIME_STARTING` (retryable) instead of the generic
+   * `NO_LOCAL_RUNTIME`, so Studio can say "starting…" rather than show an error
+   * while a cold runtime comes up (SHO-185).
+   */
+  describeRejection(pathWithQuery: string, projectId?: string) {
+    const { pathname } = splitPathAndQuery(pathWithQuery)
+    const path = pathname || '/'
+    const requestedAt = projectId ? startRequestedAt.get(projectId) : undefined
+    const starting = requestedAt !== undefined && Date.now() - requestedAt < STARTING_WINDOW_MS
+    if (projectId && starting && (path.startsWith('/agent/') || path === '/agent')) {
+      return {
+        code: 'RUNTIME_STARTING',
+        message: `runtime for project ${projectId} is starting`,
+      }
+    }
+    return { code: 'NO_LOCAL_RUNTIME', message: `no local runtime available for path: ${path}` }
   },
 
   /**
