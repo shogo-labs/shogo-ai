@@ -121,9 +121,11 @@ import {
   externalPromptHasResponse,
   LATE_TURN_MAX_WAIT_MS,
   LATE_TURN_POLL_INTERVAL_MS,
+  messageTurnStartedAt,
   pendingExternalPromptIndex,
   persistedTailAwaitsReply,
   persistedTailIsUnseen,
+  persistedTailQuery,
   pollForLateTurn,
   taskWakeHasResponse,
   type PersistedTail,
@@ -4053,32 +4055,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
   /**
    * The newest saved row for this chat, one row wide. A refocus has to tell
    * "this chat is up to date" from "a turn was written while this window was
-   * in the background" without pulling the transcript (SHO-53), and the id of
-   * the newest row is enough: if it is not the row on screen, history moved.
+   * in the background" without pulling the transcript (SHO-53). The row is
+   * read newest-first: the list route only orders when it is told to, and an
+   * unordered `limit=1` hands back an arbitrary row — in local mode the oldest
+   * one, which made every refocus reload the transcript (SHO-99).
    */
   const probePersistedTail = useCallback(
     async (sessionId: string): Promise<PersistedTail | null> => {
       if (!API_URL) return null
-      const params = new URLSearchParams({
-        sessionId,
-        agent: "technical",
-        limit: "1",
-        offset: "0",
-      })
+      const query = persistedTailQuery(sessionId)
       try {
         // Same insert point as the transcript itself (`/api/chat-messages` is
         // routed by the SDK interceptor): read the row from the same places the
         // messages come from, or a machine workspace would compare its
         // transcript against a cloud chat and think history moved.
         const body = domainHttp
-          ? (await domainHttp.get<{ items?: any[] }>("/api/chat-messages", {
-              sessionId,
-              agent: "technical",
-              limit: "1",
-              offset: "0",
-            })).data
+          ? (await domainHttp.get<{ items?: any[] }>("/api/chat-messages", query)).data
           : await (expoFetch ?? globalThis.fetch)(
-              `${API_URL}/api/chat-messages?${params.toString()}`,
+              `${API_URL}/api/chat-messages?${new URLSearchParams(query).toString()}`,
               {
                 headers: nativeHeaders ? nativeHeaders() : {},
                 credentials: Platform.OS === "web" ? "include" : undefined,
@@ -4088,9 +4082,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
               .catch(() => null)
         const newest = Array.isArray(body?.items) ? body.items[0] : null
         if (!newest?.id) return null
+        let parts: any = newest.parts
+        if (typeof parts === "string") {
+          try {
+            parts = JSON.parse(parts)
+          } catch {
+            parts = []
+          }
+        }
         return {
           id: String(newest.id),
           role: typeof newest.role === "string" ? newest.role : null,
+          content: typeof newest.content === "string" ? newest.content : null,
+          turnStartedAt: messageTurnStartedAt({ parts }),
+          contentLength:
+            typeof newest.content === "string" ? newest.content.length : null,
         }
       } catch {
         // A failed read is not evidence of a missed turn: leave the panel be.
@@ -4298,7 +4304,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return
     const tail = await probePersistedTail(sessionId)
     if (currentSessionIdRef.current !== sessionId) return
-    if (!persistedTailIsUnseen(tail, messagesRef.current)) return
+    if (
+      !persistedTailIsUnseen(tail, messagesRef.current, {
+        // A reply this window streamed is on screen under the AI SDK's id
+        // until a paint adopts the saved row (SHO-85/SHO-99).
+        streamedHere: liveReplySessionRef.current === sessionId,
+      })
+    )
+      return
     // A repaint that requires the reply keeps SHO-31's rule: another window's
     // ordinary turn is not this window's to overwrite. A tail that is still a
     // user row is a prompt answered elsewhere (the queue's `[Task update]`
