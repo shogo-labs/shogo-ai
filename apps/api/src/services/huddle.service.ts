@@ -19,6 +19,7 @@ import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { routeToHomeRegion } from '../lib/home-region-route'
 import { deleteRoom, liveKitConfig, listRoomIdentities, mintJoinToken, receiveWebhook } from '../lib/livekit'
+import { sendVoipPush, type VoipPayload, type VoipSendResult } from '../lib/apns'
 import { sendPushToUser } from '../lib/push-notifications'
 import { getSettingsRows, isSilenced } from './chat-settings'
 import { getPresence } from './conversation-presence'
@@ -39,8 +40,27 @@ const RECONCILE_INTERVAL_MS = 30_000
 /** How long a DM huddle keeps ringing the people who haven't joined. Clients use the same window. */
 const RING_WINDOW_MS = 45_000
 
-type PushSender = (userId: string, payload: Parameters<typeof sendPushToUser>[1]) => Promise<void>
+/** Android channel and iOS category for incoming huddle calls (registered on the phone). */
+export const HUDDLE_CALLS_CHANNEL = 'huddle-calls'
+export const HUDDLE_CALL_CATEGORY = 'huddle-call'
+
+function huddleSoundOff(row: { huddleSound?: string } | undefined): boolean {
+  return row?.huddleSound === 'off'
+}
+
+type PushPayload = Parameters<typeof sendPushToUser>[1]
+type PushSender = (userId: string, payload: PushPayload) => Promise<void>
 let sendPush: PushSender = sendPushToUser
+
+type VoipSender = (voipToken: string, payload: VoipPayload) => Promise<VoipSendResult>
+let sendVoip: VoipSender = (voipToken, payload) => sendVoipPush(voipToken, payload)
+
+/** One registered device of a person being rung. */
+export interface RingDevice {
+  pushToken: string
+  platform: string
+  voipToken: string | null
+}
 
 function isDirect(kind: string): boolean {
   return kind === 'dm' || kind === 'group_dm'
@@ -211,6 +231,7 @@ async function endHuddle(huddleId: string): Promise<boolean> {
   const open = await db.huddleParticipant.findMany({ where: { huddleId, leftAt: null }, select: { userId: true } })
   const { count } = await db.huddle.updateMany({ where: { id: huddleId, endedAt: null }, data: { endedAt, activeKey: null } })
   if (!count) return false
+  await cancelRing(huddleId)
   await db.huddleParticipant.updateMany({ where: { huddleId, leftAt: null }, data: { leftAt: endedAt } })
   const huddle = await db.huddle.findUnique({ where: { id: huddleId } })
   if (huddle) {
@@ -251,20 +272,140 @@ async function ringMembers(huddle: any, conversation: any, callerId: string): Pr
     )
 
     const presence = await getPresence(conversation.workspaceId, targets)
-    const body = conversation.kind === 'dm' ? 'is calling you' : 'started a huddle with you'
-    for (const userId of targets) {
-      if (presence[userId] === 'active') continue
-      void sendPush(userId, {
+    const away = targets.filter((id) => presence[id] !== 'active')
+    if (!away.length) return
+
+    const oneToOne = conversation.kind === 'dm'
+    const body = oneToOne ? 'is calling you' : 'started a huddle with you'
+    const data = { conversationId: conversation.id, workspaceId: conversation.workspaceId, huddleId: huddle.id }
+    const devices: Array<RingDevice & { userId: string }> = await db.mobilePushSubscription.findMany({
+      where: { userId: { in: away } },
+      select: { userId: true, pushToken: true, platform: true, voipToken: true },
+    })
+    const byUser = new Map<string, RingDevice[]>()
+    for (const device of devices) byUser.set(device.userId, [...(byUser.get(device.userId) ?? []), device])
+
+    for (const userId of away) {
+      const silent = huddleSoundOff(settings.get(userId))
+      const alert: PushPayload = {
         title: from.name,
         body,
         type: 'huddle-ring',
-        channelId: 'messages',
+        // A ring has its own channel (on Android: maximum importance, ringtone sound),
+        // separate from ordinary messages. The sound follows the person's huddle sound setting.
+        // Group calls use the ordinary messages channel.
+        channelId: oneToOne ? HUDDLE_CALLS_CHANNEL : 'messages',
+        ...(oneToOne ? { categoryId: HUDDLE_CALL_CATEGORY } : {}),
+        priority: 'high',
+        sound: silent ? null : 'default',
         audience: 'chat',
-        data: { conversationId: conversation.id, workspaceId: conversation.workspaceId, huddleId: huddle.id },
-      })
+        data,
+      }
+      const userDevices = byUser.get(userId)
+      // No device records (e.g. a web-only user): one push to the user, which reaches nobody.
+      if (!userDevices?.length) {
+        void sendPush(userId, alert)
+        continue
+      }
+
+      const routed = routeRingDevices(userDevices, { oneToOne, silent })
+      const voipPayload: VoipPayload = {
+        huddleId: huddle.id,
+        conversationId: conversation.id,
+        workspaceId: conversation.workspaceId,
+        kind: conversation.kind,
+        from,
+      }
+      for (const device of routed.voip) void ringByVoip(userId, device, voipPayload, alert)
+      if (routed.data.length) {
+        void sendPush(userId, {
+          type: 'huddle-ring',
+          dataOnly: true,
+          priority: 'high',
+          audience: 'chat',
+          pushTokens: routed.data.map((d) => d.pushToken),
+          data: { ...data, callerName: from.name },
+        })
+      }
+      if (routed.alert.length) void sendPush(userId, { ...alert, pushTokens: routed.alert.map((d) => d.pushToken) })
     }
+
+    registerRing(huddle.id, { workspaceId: conversation.workspaceId, conversationId: conversation.id, userIds: away })
   } catch (err) {
     console.error('[Huddles] ring failed:', (err as Error).message)
+  }
+}
+
+/**
+ * Which push reaches each device of someone being rung. A DM on an iPhone with
+ * a VoIP token gets a PushKit call (iOS must show the call screen at once); a
+ * DM on an Android phone gets a data-only push the app turns into a call; every
+ * other device gets the sounding alert. Silent huddles and group calls only
+ * use the alert.
+ */
+export function routeRingDevices<T extends RingDevice>(devices: T[], opts: { oneToOne: boolean; silent: boolean }): { voip: T[]; data: T[]; alert: T[] } {
+  const routed = { voip: [] as T[], data: [] as T[], alert: [] as T[] }
+  for (const device of devices) {
+    if (opts.oneToOne && !opts.silent && device.platform === 'ios' && device.voipToken) routed.voip.push(device)
+    else if (opts.oneToOne && !opts.silent && device.platform === 'android') routed.data.push(device)
+    else routed.alert.push(device)
+  }
+  return routed
+}
+
+/**
+ * Sends the PushKit call. If APNs refuses it, the device still gets the normal
+ * alert, so a call is never lost; a dead token is dropped from the device record.
+ */
+async function ringByVoip(userId: string, device: RingDevice, payload: VoipPayload, alert: PushPayload): Promise<void> {
+  const token = device.voipToken as string
+  const result = await sendVoip(token, payload).catch((): VoipSendResult => ({ sent: false, dead: false, status: 0 }))
+  if (result.dead) {
+    await db.mobilePushSubscription.updateMany({ where: { voipToken: token }, data: { voipToken: null } }).catch(() => {})
+  }
+  if (!result.sent) await sendPush(userId, { ...alert, pushTokens: [device.pushToken] })
+}
+
+function ringCancelPayload(huddleId: string, conversationId: string, workspaceId: string): PushPayload {
+  return {
+    type: 'huddle-ring-cancel',
+    dataOnly: true,
+    priority: 'high',
+    audience: 'chat',
+    data: { huddleId, conversationId, workspaceId },
+  }
+}
+
+/**
+ * Rings still open, by huddle: the people who were pushed and when the ring
+ * stops on its own. Cancelling sends `huddle-ring-cancel` so their phones stop.
+ */
+interface OpenRing {
+  workspaceId: string
+  conversationId: string
+  userIds: string[]
+  timer: ReturnType<typeof setTimeout>
+}
+const openRings = new Map<string, OpenRing>()
+
+function registerRing(huddleId: string, ring: Omit<OpenRing, 'timer'>): void {
+  const existing = openRings.get(huddleId)
+  if (existing) clearTimeout(existing.timer)
+  const timer = setTimeout(() => {
+    void cancelRing(huddleId)
+  }, RING_WINDOW_MS)
+  timer.unref?.()
+  openRings.set(huddleId, { ...ring, timer })
+}
+
+/** End a ring: answered, declined, the huddle ended, or the window passed. Safe to call twice. */
+async function cancelRing(huddleId: string): Promise<void> {
+  const ring = openRings.get(huddleId)
+  if (!ring) return
+  openRings.delete(huddleId)
+  clearTimeout(ring.timer)
+  for (const userId of ring.userIds) {
+    void sendPush(userId, ringCancelPayload(huddleId, ring.conversationId, ring.workspaceId))
   }
 }
 
@@ -415,6 +556,8 @@ export async function joinHuddle(conversationId: string, userId: string): Promis
     })
     const huddle = (await announce(conversationId)) ?? (await serialize(await activeHuddleRow(conversationId)))
     await publishHuddlePresence(conversation.workspaceId, [userId])
+    // Answered by someone other than the caller: every other device stops ringing.
+    if (userId !== row.startedById) await cancelRing(row.id)
     return { huddle, token, url: config.url }
   }
   throw new ConversationError(409, 'huddle_busy', 'The huddle changed while joining. Try again.')
@@ -452,6 +595,8 @@ export async function declineHuddle(conversationId: string, userId: string): Pro
     { type: 'huddle.declined', conversationId, huddleId: row.id, userId, name: user?.name || user?.email || 'Someone' },
     audience,
   )
+  // Your other devices stop ringing; the ring goes on for anyone else rung.
+  void sendPush(userId, ringCancelPayload(row.id, conversationId, conversation.workspaceId))
   const callerAlone = row.participants.every((p: any) => p.userId === row.startedById)
   if (conversation.kind === 'dm' && callerAlone) {
     await endHuddle(row.id)
@@ -528,8 +673,19 @@ export async function handleLiveKitWebhook(input: {
 
 export function _resetHuddlesForTests(): void {
   lastReconciled.clear()
+  for (const ring of openRings.values()) clearTimeout(ring.timer)
+  openRings.clear()
 }
 
 export function _setHuddlePushSenderForTests(sender: PushSender | null): void {
   sendPush = sender ?? sendPushToUser
+}
+
+/** Runs what the ring window timer does for every open ring. */
+export async function _expireRingsForTests(): Promise<void> {
+  for (const huddleId of [...openRings.keys()]) await cancelRing(huddleId)
+}
+
+export function _setVoipSenderForTests(sender: VoipSender | null): void {
+  sendVoip = sender ?? ((voipToken, payload) => sendVoipPush(voipToken, payload))
 }

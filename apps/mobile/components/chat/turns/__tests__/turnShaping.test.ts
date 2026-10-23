@@ -214,8 +214,8 @@ describe("groupWorkParts", () => {
 
   test("repeated same-name non-work tool calls collapse into a tool-group", () => {
     const parts = [
-      tool("share_file", { path: "/a.pdf" }),
-      tool("share_file", { path: "/b.pdf" }),
+      tool("generate_video", { prompt: "a" }),
+      tool("generate_video", { prompt: "b" }),
     ];
     const grouped = groupWorkParts(parts);
     expect(grouped).toHaveLength(1);
@@ -223,6 +223,15 @@ describe("groupWorkParts", () => {
     if (grouped[0].type === "tool-group") {
       expect(grouped[0].tools).toHaveLength(2);
     }
+  });
+
+  test("repeated share_file calls each keep their own download chip", () => {
+    const parts = [
+      tool("share_file", { path: "/a.pdf" }),
+      tool("share_file", { path: "/b.pdf" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((part) => part.type)).toEqual(["tool", "tool"]);
   });
 
   test("a lone non-work tool call (below MIN_GROUP_SIZE) passes through as a single tool part", () => {

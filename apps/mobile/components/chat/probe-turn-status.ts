@@ -36,6 +36,18 @@
  */
 export type ChatTurnStatus = "active" | "completed" | "failed" | "aborted" | "unknown"
 
+/**
+ * What the turn snapshot says, with the id of the turn it describes. A send
+ * straight after Stop needs the id: the turn Stop cancelled can still read
+ * `active` for a moment (the runtime only sees `/agent/stop` a beat later), and
+ * queuing the new message behind it is what attached the old reply to the new
+ * message.
+ */
+export interface ChatTurnSnapshot {
+  status: ChatTurnStatus
+  turnId: string | null
+}
+
 export interface ProbeTurnStatusOptions {
   /** Resolved chat-turn URL — typically built via `buildChatTurnUrl`. */
   url: string
@@ -64,10 +76,28 @@ export interface ProbeTurnStatusOptions {
  *
  * Pulled out as a pure function so the unit test suite can hit every
  * status arm without standing up React or the runtime — the dynamic
- * fetch is wrapped in a thin async shell (`probeChatTurnStatus`) below.
+ * fetch is wrapped in a thin async shell (`probeChatTurn`) below.
  */
 export function shouldAttachLiveStream(status: ChatTurnStatus): boolean {
   return status === "active"
+}
+
+/**
+ * True when the snapshot is a live turn other than the one the user just
+ * stopped. The cancelled turn can still read `active` for a moment, and a send
+ * that queues behind it ends up showing the new reply under the old message
+ * (see stopped-turn.ts); only a *different* live turn may hold a send back.
+ *
+ * Without a stopped turn id, or without an id on the snapshot (an older
+ * runtime), this falls back to the plain status check.
+ */
+export function isLiveTurnOtherThan(
+  snapshot: ChatTurnSnapshot,
+  stoppedTurnId: string | null | undefined,
+): boolean {
+  if (snapshot.status !== "active") return false
+  if (!stoppedTurnId || !snapshot.turnId) return true
+  return snapshot.turnId !== stoppedTurnId
 }
 
 /**
@@ -83,24 +113,35 @@ export function normalizeTurnStatus(raw: unknown): ChatTurnStatus {
 }
 
 /**
- * Fetch the durable-turn snapshot and return its status. Never throws —
- * a probe failure is treated as "no live turn" so a flaky network can't
- * permanently strand the user on a half-rendered chat.
+ * Fetch the durable-turn snapshot: its status and the id of the turn it
+ * describes. Never throws — a probe failure is treated as "no live turn" so a
+ * flaky network can't permanently strand the user on a half-rendered chat.
  */
-export async function probeChatTurnStatus(
+export async function probeChatTurn(
   opts: ProbeTurnStatusOptions,
-): Promise<ChatTurnStatus> {
+): Promise<ChatTurnSnapshot> {
   const delays = opts.retryDelaysMs ?? []
   for (let attempt = 0; ; attempt++) {
     const result = await probeOnce(opts)
     if (result !== "error") return result
-    if (attempt >= delays.length || opts.signal?.aborted) return "unknown"
+    if (attempt >= delays.length || opts.signal?.aborted) return UNKNOWN_TURN
     await new Promise((resolve) => setTimeout(resolve, delays[attempt]))
-    if (opts.signal?.aborted) return "unknown"
+    if (opts.signal?.aborted) return UNKNOWN_TURN
   }
 }
 
-async function probeOnce(opts: ProbeTurnStatusOptions): Promise<ChatTurnStatus | "error"> {
+/** Just the status, for the callers that only decide whether to attach. */
+export async function probeChatTurnStatus(
+  opts: ProbeTurnStatusOptions,
+): Promise<ChatTurnStatus> {
+  return (await probeChatTurn(opts)).status
+}
+
+const UNKNOWN_TURN: ChatTurnSnapshot = { status: "unknown", turnId: null }
+
+async function probeOnce(
+  opts: ProbeTurnStatusOptions,
+): Promise<ChatTurnSnapshot | "error"> {
   const fetchFn = opts.fetch ?? globalThis.fetch
   try {
     const res = await fetchFn(opts.url, {
@@ -111,11 +152,16 @@ async function probeOnce(opts: ProbeTurnStatusOptions): Promise<ChatTurnStatus |
     } as any)
 
     // 404 ⇒ runtime has no buffer for this session — treat as unknown.
-    if (res.status === 404 || res.status === 204) return "unknown"
+    if (res.status === 404 || res.status === 204) return UNKNOWN_TURN
     if (!res.ok) return "error"
 
-    const body = (await res.json().catch(() => null)) as { status?: unknown } | null
-    return normalizeTurnStatus(body?.status)
+    const body = (await res.json().catch(() => null)) as
+      | { status?: unknown; turnId?: unknown }
+      | null
+    return {
+      status: normalizeTurnStatus(body?.status),
+      turnId: typeof body?.turnId === "string" ? body.turnId : null,
+    }
   } catch {
     // Network error, abort, or otherwise — fall back to "no live turn".
     return "error"

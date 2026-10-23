@@ -34,6 +34,11 @@ import { isPersonalConnectState, verifyPersonalConnectState } from '../services/
 import { ensureDefaultCredentialProviders, githubAdapter } from '../services/integration-credentials/defaults';
 import { resumeAfterConnect } from '../services/integration-credentials/resume';
 import { connectedPage, connectFailedPage } from './integration-credentials';
+import {
+  handlePullRequestWebhook,
+  handleCheckRunWebhook,
+  handleWorkflowRunWebhook,
+} from '../services/work-item-pr.service';
 
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
@@ -746,6 +751,20 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
 
         case 'pull_request_review_comment':
           await githubService.handlePullRequestReviewCommentWebhook(c, data);
+          break;
+
+        // Cards that know their PR: keep a linked card's checks, armed state
+        // and column in step with the PR. Targeted updates, no polling loop.
+        case 'pull_request':
+          await handlePullRequestWebhook(data);
+          break;
+
+        case 'check_run':
+          await handleCheckRunWebhook(data);
+          break;
+
+        case 'workflow_run':
+          await handleWorkflowRunWebhook(data);
           break;
 
         case 'ping':

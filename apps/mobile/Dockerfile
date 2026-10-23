@@ -118,17 +118,12 @@ RUN node scripts/inject-analytics.js
 # undeleted (and publicly served). Fail loudly in that case too. Fork /
 # contributor builds (non-production) without the token still skip and stay
 # telemetry-free.
-RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
-      sentry-cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
-      sentry-cli sourcemaps upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
-      find ./dist -name '*.map' -delete; \
-    elif [ "$REQUIRE_SENTRY_UPLOAD" = "true" ] || [ "${EXPO_PUBLIC_APP_ENV#production}" != "$EXPO_PUBLIC_APP_ENV" ]; then \
-      echo "ERROR: SENTRY_AUTH_TOKEN is empty on a deploy build (REQUIRE_SENTRY_UPLOAD=$REQUIRE_SENTRY_UPLOAD, EXPO_PUBLIC_APP_ENV=$EXPO_PUBLIC_APP_ENV)." >&2; \
-      echo "Refusing to ship a web bundle whose source maps never reach Sentry — production_web issues would be unsymbolicated and .map files would leak publicly. Configure SENTRY_AUTH_TOKEN (project:releases scope) for this deploy environment." >&2; \
-      exit 1; \
-    else \
-      echo "SENTRY_AUTH_TOKEN not set — skipping Sentry source map upload (non-production build)"; \
-    fi
+#
+# The retry loop lives in docker/upload-sourcemaps.sh: a single Sentry 502
+# killed this step and with it the release's web image (v2.3.8, run
+# 39573508746), so inject+upload get three attempts while the build still
+# fails closed on the third.
+RUN sh docker/upload-sourcemaps.sh
 
 # =============================================================================
 # Asset export stage (CDN upload source)

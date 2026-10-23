@@ -5,7 +5,9 @@
  * they do not push the Settings page.
  */
 import { AccountSettingsGroup, AccountSettingsRow } from "./AccountSettingsGroup"
+import { Platform } from "react-native"
 import { PHONE_DENSITY } from "../../../lib/phone-density"
+import { useWorkspaceExperience } from "../../../hooks/useWorkspaceExperience"
 import {
   accountSettingsSheetGroups,
   type AccountSettingsSheetTab,
@@ -22,8 +24,14 @@ export function NativeAccountSettingsSection({
   showBilling?: boolean
   onOpenTab: (tab: AccountSettingsSheetTab) => void
 }) {
+  const teamChat = useWorkspaceExperience().kind === "team"
   if (!hasWorkspace) return null
-  const groups = accountSettingsSheetGroups({ localMode, showBilling })
+  const groups = accountSettingsSheetGroups({
+    localMode,
+    showBilling,
+    platform: Platform.OS,
+    teamChat,
+  })
   return (
     <>
       {groups.map((group) => (

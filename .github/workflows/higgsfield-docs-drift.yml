@@ -1,0 +1,88 @@
+# =============================================================================
+# Higgsfield — vendor docs drift
+# =============================================================================
+# The committed snapshot in docs/vendors/higgsfield/ is the contract our media
+# code is checked against, so it must not silently go stale. Weekly, this
+# fetches the vendor's docs, re-derives the catalog and compares both files with
+# what is committed. On a difference it updates (or opens) one issue carrying
+# the log, and the run goes red.
+#
+# It is a signal, not a gate: no `pull_request` trigger, and it is not part of
+# the required "Lint, Typecheck, Test" aggregate. A person decides whether to
+# re-sync the snapshot.
+# =============================================================================
+
+name: Higgsfield docs drift
+
+on:
+  schedule:
+    - cron: '0 7 * * 1' # Mondays, 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    name: Check the snapshot against the vendor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      # No `bun install`: the script imports only `node:crypto`, `node:fs`,
+      # `node:path` and its sibling module, so it runs from a bare checkout.
+      - name: Compare the snapshot with the vendor docs
+        id: check
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bun run sync:higgsfield-docs --check 2>&1 | tee "${RUNNER_TEMP}/drift.log"
+
+      - name: Report the drift on one issue
+        if: steps.check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh label create higgsfield-drift --color FBCA04 \
+            --description "Higgsfield docs snapshot drift" || true
+
+          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --label higgsfield-drift \
+            --state open --limit 1 --json number --jq '.[0].number // ""')
+
+          {
+            echo "The committed snapshot at ${GITHUB_SHA} is behind the vendor docs — bun run sync:higgsfield-docs --check reports drift."
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo 'Card: SHO-55'
+            echo
+            echo '<details><summary>check log</summary>'
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/drift.log"
+            echo '```'
+            echo
+            echo '</details>'
+            echo
+            echo 'To re-sync: bun run sync:higgsfield-docs, update the sha256 table in docs/vendors/higgsfield/MANIFEST.md, then bun run check:higgsfield-docs.'
+          } > "${RUNNER_TEMP}/comment.md"
+
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" --body-file "${RUNNER_TEMP}/comment.md"
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title 'Higgsfield docs snapshot has drifted' \
+              --label higgsfield-drift \
+              --body-file "${RUNNER_TEMP}/comment.md"
+          fi
+
+      - name: Fail the run when the snapshot drifted
+        if: steps.check.outcome == 'failure'
+        run: exit 1

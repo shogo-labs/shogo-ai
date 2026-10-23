@@ -12,14 +12,22 @@
  *
  * A settled task that the agent has not seen yet (`consumed`) wakes its
  * session: finished tasks are coalesced for a moment, then one queued message
- * of kind `task_notification` is dispatched through the normal chat queue.
+ * of kind `task_notification` per task is dispatched through the normal chat
+ * queue, so each result arrives as its own [Task update].
  * The runtime also hands over its own finished tasks (`notifyLocalTasks`) when
  * the session is idle, so the queue is the one wake path.
  */
 
 import { prisma } from '../lib/prisma'
+import { envInt } from './conversation-agent-chain'
 
 const db = prisma as any
+
+/**
+ * Longest a channel agent reply runs before it is given up as timed out. A
+ * reply whose stream goes silent is given up sooner (the dispatcher's idle timeout).
+ */
+export const AGENT_REPLY_TIMEOUT_MS = envInt('SHOGO_CHANNEL_AGENT_TIMEOUT_MS', 2 * 60 * 60_000)
 
 export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 
@@ -39,6 +47,29 @@ export const MAX_CONSECUTIVE_WAKES = 3
  * per card, so this only stops a runaway session.
  */
 export const MAX_CONSECUTIVE_CARD_WAKES = 40
+/**
+ * A wake that was queued and never ran hands its tasks back, and the drain
+ * sweep re-queues them. The first retry is immediate (a dispatch failure is
+ * usually a busy runtime); repeats back off up to five minutes.
+ */
+const WAKE_RETRY_BACKOFF_MS = [0, 15_000, 30_000, 60_000, 120_000, 300_000]
+/** The longest a released wake waits before its next attempt. */
+export const MAX_WAKE_BACKOFF_MS = WAKE_RETRY_BACKOFF_MS[WAKE_RETRY_BACKOFF_MS.length - 1]!
+/**
+ * How many times one wake is re-queued after a dispatch that never ran. A wake
+ * the runtime will not take would otherwise be retried on the same backoff for
+ * the task's whole 24 h TTL; past this the task is held until it expires and
+ * the queue keeps one row saying why it never arrived.
+ */
+export const MAX_WAKE_ATTEMPTS = 5
+/** An `agent_reply` task whose run never reports back is given up this long after its timeout. */
+export const AGENT_REPLY_RECONCILE_MS = AGENT_REPLY_TIMEOUT_MS + 5 * 60_000
+/**
+ * Longest a finished card watch waits for agents still working the card's
+ * thread. Outlasts the longest channel agent run (`AGENT_REPLY_TIMEOUT_MS`), so it only
+ * fires when a run hangs or ends without reporting back.
+ */
+export const CARD_HOLD_MS = AGENT_REPLY_TIMEOUT_MS + 60_000
 
 export interface BackgroundTaskRow {
   id: string
@@ -54,9 +85,94 @@ export interface BackgroundTaskRow {
   notify: boolean
   consumed: boolean
   notifiedAt: Date | null
+  attempts?: number
+  nextAttemptAt?: Date | null
+  heldUntil?: Date | null
+  /** Where the task's work is happening (channel thread, card, project session, log). */
+  link?: unknown
   finishedAt: Date | null
   expiresAt: Date
   createdAt: Date
+}
+
+/**
+ * Where a task's thread lives, carried from the runtime that created it to the
+ * chat dock that shows it. Kept as plain data (not a union class) because it
+ * round-trips through `background_tasks.link`.
+ */
+export type TaskLink =
+  | { kind: 'log'; path?: string }
+  | { kind: 'project_session'; projectId: string; chatSessionId?: string; name?: string }
+  | { kind: 'subagent'; projectId?: string; chatSessionId?: string; toolCallId: string }
+  | { kind: 'channel_thread'; workspaceId?: string; conversationId: string; threadRootId: string; title?: string }
+  | {
+      kind: 'card'
+      workspaceId?: string
+      conversationId: string
+      threadRootId: string
+      itemId: string
+      itemKey: string
+      board: string
+    }
+
+function str(value: unknown, max = 200): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : undefined
+}
+
+/** Validate a link posted by a runtime, dropping anything malformed. */
+export function normalizeTaskLink(input: unknown): TaskLink | null {
+  if (!input || typeof input !== 'object') return null
+  const raw = input as Record<string, unknown>
+  const kind = str(raw.kind, 32)
+  if (kind === 'log') {
+    const path = str(raw.path, 1000)
+    return path ? { kind: 'log', path } : { kind: 'log' }
+  }
+  if (kind === 'project_session') {
+    const projectId = str(raw.projectId)
+    if (!projectId) return null
+    const chatSessionId = str(raw.chatSessionId)
+    const name = str(raw.name)
+    return { kind: 'project_session', projectId, ...(chatSessionId ? { chatSessionId } : {}), ...(name ? { name } : {}) }
+  }
+  if (kind === 'subagent') {
+    const toolCallId = str(raw.toolCallId)
+    if (!toolCallId) return null
+    const projectId = str(raw.projectId)
+    const chatSessionId = str(raw.chatSessionId)
+    return { kind: 'subagent', toolCallId, ...(projectId ? { projectId } : {}), ...(chatSessionId ? { chatSessionId } : {}) }
+  }
+  if (kind === 'channel_thread') {
+    const conversationId = str(raw.conversationId)
+    const threadRootId = str(raw.threadRootId)
+    if (!conversationId || !threadRootId) return null
+    const workspaceId = str(raw.workspaceId)
+    const title = str(raw.title)
+    return {
+      kind: 'channel_thread',
+      conversationId,
+      threadRootId,
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(title ? { title } : {}),
+    }
+  }
+  if (kind === 'card') {
+    const conversationId = str(raw.conversationId)
+    const threadRootId = str(raw.threadRootId)
+    const itemId = str(raw.itemId)
+    if (!conversationId || !threadRootId || !itemId) return null
+    const workspaceId = str(raw.workspaceId)
+    return {
+      kind: 'card',
+      conversationId,
+      threadRootId,
+      itemId,
+      itemKey: str(raw.itemKey) ?? itemId,
+      board: str(raw.board) ?? '',
+      ...(workspaceId ? { workspaceId } : {}),
+    }
+  }
+  return null
 }
 
 export interface BackgroundTaskView {
@@ -68,6 +184,10 @@ export interface BackgroundTaskView {
   result: { summary: string } | null
   matched?: boolean
   startedAt: string
+  /** Where the task's thread lives, so the dock can open it. */
+  link?: TaskLink | null
+  /** The wake text, once the task settled — the runtime falls back to it when it has no output. */
+  note?: string | null
 }
 
 export class BackgroundTaskError extends Error {
@@ -123,7 +243,33 @@ function isFinal(status: string): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled'
 }
 
+/** Columns a card is finished in: a watch on it has nothing left to hear. */
+export function isClosedCategory(category: string | null | undefined): boolean {
+  return category === 'done' || category === 'dismissed'
+}
+
+/**
+ * A session that auto-woke too many times in a row waits for a person instead
+ * of starting another turn. This is the text its queued wake carries, and the
+ * signal the composer and the task list read to show what is waiting.
+ */
+export const WAKE_PAUSED =
+  'Paused: background tasks finished several times in a row without anyone writing. Send a message to continue.'
+
+/**
+ * The same marker for a different reason: every automatic agent start in the
+ * workspace is held, so this wake is parked rather than delivered (SHO-118).
+ * Both are "paused" rows — the composer shows them the same way, and resuming
+ * either comes from a person or from `agent_run_stop({ resume: true })`.
+ */
+export const WAKE_WORKSPACE_PAUSED =
+  'Paused: agents are paused in this workspace. Resume them and this update will run.'
+
+/** Error markers on a queued row that mean "held, not failed". */
+export const WAKE_PAUSED_MARKERS = [WAKE_PAUSED, WAKE_WORKSPACE_PAUSED]
+
 export function viewOf(row: BackgroundTaskRow, matched?: boolean): BackgroundTaskView {
+  const link = normalizeTaskLink(row.link)
   return {
     id: row.id,
     source: row.source,
@@ -133,6 +279,8 @@ export function viewOf(row: BackgroundTaskRow, matched?: boolean): BackgroundTas
     result: isFinal(row.status) ? { summary: row.summary ?? row.status } : null,
     ...(matched ? { matched: true } : {}),
     startedAt: new Date(row.createdAt).toISOString(),
+    ...(link ? { link } : {}),
+    ...(isFinal(row.status) && row.note ? { note: row.note } : {}),
   }
 }
 
@@ -166,6 +314,8 @@ export interface CreateTaskInput {
   targetRef: string
   title: string
   until?: string | null
+  /** Where the task's thread lives, so the dock can open it instead of an empty log. */
+  link?: unknown
 }
 
 const REMOTE_SOURCES = new Set(['project_call', 'agent_reply', 'work_item'])
@@ -178,6 +328,7 @@ export async function createTask(input: CreateTaskInput): Promise<BackgroundTask
   await expireStale(input.chatSessionId)
   const existing = await db.backgroundTask.findUnique({ where: { id: input.id } })
   if (existing) return existing
+  const link = normalizeTaskLink(input.link)
   const row = await db.backgroundTask.create({
     data: {
       id: input.id,
@@ -186,7 +337,11 @@ export async function createTask(input: CreateTaskInput): Promise<BackgroundTask
       targetRef: input.targetRef.trim().slice(0, 500),
       title: String(input.title || input.source).slice(0, 300),
       until: input.until ?? null,
-      expiresAt: new Date(Date.now() + (input.source === 'work_item' ? CARD_TASK_TTL_MS : TASK_TTL_MS)),
+      ...(link ? { link: link as any } : {}),
+      // A background project call has no time limit, so its task lives as long as a card's.
+      expiresAt: new Date(
+        Date.now() + (input.source === 'work_item' || input.source === 'project_call' ? CARD_TASK_TTL_MS : TASK_TTL_MS),
+      ),
     },
   })
   return (await settleIfAlreadyDone(row)) ?? row
@@ -277,11 +432,36 @@ export async function cancelTask(id: string): Promise<BackgroundTaskRow | null> 
   return updated
 }
 
-/** The agent saw these results (it waited, or they were injected into a turn): never wake for them. */
+/**
+ * A stopped session stays stopped: nothing it was watching may wake it again.
+ * The watched work itself (another agent, a card, a project call) carries on.
+ * Wakes already queued for these tasks are dropped when the queue reaches them.
+ */
+export async function silenceSessionTasks(chatSessionId: string): Promise<number> {
+  for (const timers of [wakeTimers, holdTimers]) {
+    const timer = timers.get(chatSessionId)
+    if (timer) clearTimeout(timer)
+    timers.delete(chatSessionId)
+  }
+  const res = await db.backgroundTask.updateMany({ where: { chatSessionId, consumed: false }, data: { consumed: true } })
+  return res.count
+}
+
+/**
+ * The agent saw these results (it waited, or they were injected into a turn): never wake for them.
+ *
+ * A live card watch is the exception: it is still running, so the *next*
+ * milestone on that card is news it has not seen. Marking it consumed would
+ * silence the watch for the rest of the card's life (`settle` only wakes an
+ * unconsumed row), which is the one-shot behaviour this watch exists to avoid.
+ */
 export async function consumeTasks(ids: string[]): Promise<number> {
   const clean = ids.filter((id) => typeof id === 'string' && id.length <= 64).slice(0, 200)
   if (!clean.length) return 0
-  const res = await db.backgroundTask.updateMany({ where: { id: { in: clean } }, data: { consumed: true } })
+  const res = await db.backgroundTask.updateMany({
+    where: { id: { in: clean }, NOT: { AND: [{ source: 'work_item' }, { status: 'running' }] } },
+    data: { consumed: true },
+  })
   return res.count
 }
 
@@ -291,6 +471,30 @@ export interface TaskEvent {
   status?: Exclude<BackgroundTaskStatus, 'running'>
   line?: string
   summary?: string
+  /**
+   * Machine-readable card state for a `work_item` event: where the move landed
+   * and who holds the card now. A watch reads this to tell a terminal move from
+   * a milestone, instead of re-parsing the rendered line.
+   */
+  card?: CardEventState
+  /**
+   * The agent whose run produced this event (`project:<id>` / `workspace`).
+   * A watch never hears its own agent: the run that just ended knows what it
+   * did, so waking it for that is a wake that buys another wake — the loop
+   * that made one mention re-run an agent a dozen times (SHO-129).
+   */
+  fromAgentRef?: string
+}
+
+export interface CardEventState {
+  to?: { columnId?: string; column?: string; category?: string }
+  assigneeAgentRef?: string | null
+  columnAgentRef?: string | null
+  /**
+   * The card was closed outright (archived, dismissed) rather than moved on:
+   * the watch is done with it either way.
+   */
+  terminal?: boolean
 }
 
 export function replyEvent(agentStatus: string | null | undefined, text: string | null | undefined): TaskEvent {
@@ -304,8 +508,97 @@ async function settle(row: BackgroundTaskRow, status: Exclude<BackgroundTaskStat
     data: { status, summary: summary ?? status, finishedAt: new Date() },
   })
   signal(row.id)
-  if (updated.notify && !updated.consumed) scheduleTaskWake(updated.chatSessionId)
+  if (!updated.notify || updated.consumed) return updated
+  if (updated.source === 'work_item' && (await cardThreadBusy(updated.targetRef))) return holdTasks([updated]).then(() => updated)
+  scheduleTaskWake(updated.chatSessionId)
   return updated
+}
+
+/** An agent is mid-run in the card's thread, so whatever it does next (a tag, a move) is still coming. */
+async function cardThreadBusy(itemId: string): Promise<boolean> {
+  const item = await db.workItem.findUnique({ where: { id: itemId }, select: { threadRootMessageId: true } }).catch(() => null)
+  if (!item?.threadRootMessageId) return false
+  const running = await db.conversationMessage.findFirst({
+    where: { threadRootId: item.threadRootMessageId, authorType: 'agent', agentStatus: 'running', deletedAt: null },
+    select: { id: true },
+  }).catch(() => null)
+  return !!running
+}
+
+/**
+ * Finished card watches waiting for the card's thread to go quiet, plus any
+ * that finished `since` and have not woken their session yet.
+ */
+export async function heldCardTasks(itemId: string, since?: Date): Promise<BackgroundTaskRow[]> {
+  return db.backgroundTask.findMany({
+    where: {
+      source: 'work_item', targetRef: itemId, status: { not: 'running' }, notifiedAt: null, consumed: false, notify: true,
+      OR: [{ heldUntil: { not: null } }, ...(since ? [{ finishedAt: { gte: since } }] : [])],
+    },
+    take: 50,
+  })
+}
+
+/** Hold (or keep holding) finished watches for another `CARD_HOLD_MS`; the hold's end wakes them regardless. */
+export async function holdTasks(rows: BackgroundTaskRow[]): Promise<void> {
+  if (!rows.length) return
+  await db.backgroundTask.updateMany({
+    where: { id: { in: rows.map((r) => r.id) } },
+    data: { heldUntil: new Date(Date.now() + CARD_HOLD_MS) },
+  })
+  for (const session of new Set(rows.map((r) => r.chatSessionId))) scheduleHoldExpiry(session)
+}
+
+/** The thread went quiet: wake the watchers, with what the last agent said when there is one. */
+export async function releaseTasks(rows: BackgroundTaskRow[], line?: string): Promise<void> {
+  for (const row of rows) {
+    const output = line ? capOutput(row.output ? `${row.output}\n${line}` : line) : row.output
+    await db.backgroundTask.update({ where: { id: row.id }, data: { heldUntil: null, output } })
+  }
+  for (const session of new Set(rows.map((r) => r.chatSessionId))) scheduleTaskWake(session)
+}
+
+/**
+ * Put a card watch back to watching, in place, once the milestone that woke it
+ * is safely in the queue.
+ *
+ * A hand-off watch is for the card's whole life: QA → Review and the bounce
+ * back to Changes Requested must wake the assigner too, not just the first
+ * column it reached. Re-arming the same row (not a successor) keeps one task id
+ * for the card, so `consecutiveWakeWaits` does not count each milestone as a
+ * new wait and the card-only wake cap is not burned by a five-column board; the
+ * row's `expiresAt` (`CARD_TASK_TTL_MS`) bounds the chain.
+ *
+ * The guard is the card's state right now, not the text of the event: a closed
+ * or archived card, a cleared holder, or a watch past its expiry all end it for
+ * good.
+ */
+export async function rearmCardWatch(row: BackgroundTaskRow): Promise<BackgroundTaskRow | null> {
+  if (row.source !== 'work_item' || !row.until) return null
+  if (row.expiresAt.getTime() <= Date.now()) return null
+  const item = await db.workItem
+    .findFirst({
+      where: { id: row.targetRef, archivedAt: null },
+      select: { assigneeAgentRef: true, column: { select: { category: true, agentRef: true } } },
+    })
+    .catch(() => null)
+  if (!item || isClosedCategory(item.column?.category)) return null
+  if (!(item.assigneeAgentRef ?? item.column?.agentRef)) return null
+  return db.backgroundTask.update({
+    where: { id: row.id },
+    data: {
+      status: 'running',
+      consumed: false,
+      notifiedAt: null,
+      attempts: 0,
+      finishedAt: null,
+      heldUntil: null,
+      summary: null,
+      // Start the timeline fresh: a re-armed watch that kept the line it already
+      // matched would settle again on the next comment about the card.
+      output: '',
+    },
+  })
 }
 
 async function applyEvent(row: BackgroundTaskRow, event: TaskEvent): Promise<BackgroundTaskRow> {
@@ -315,28 +608,83 @@ async function applyEvent(row: BackgroundTaskRow, event: TaskEvent): Promise<Bac
     current = await db.backgroundTask.update({ where: { id: row.id }, data: { output } })
   }
   if (event.status) return settle(current, event.status, event.summary)
+  // The card was closed outright (archived): the watch is done with it whether
+  // or not the rendered line matched the pattern.
+  if (event.card?.terminal === true) return settle(current, 'completed', 'the card is closed')
   const until = compileUntil(current.until)
-  if (until && until.test(current.output)) return settle(current, 'completed', `matched ${current.until}`)
+  if (until && until.test(current.output)) {
+    // A card watch that the card has closed is done; anything else is a
+    // milestone, and `rearmCardWatch` puts the same row back to watching once
+    // this wake is safely in the queue.
+    const closed = isClosedCategory(event.card?.to?.category)
+    return settle(current, 'completed', closed ? 'the card is closed' : `matched ${current.until}`)
+  }
   signal(row.id)
   return current
 }
 
 /**
- * Something happened to `targetRef`. Every running task watching it gets the
- * line; a status settles it. Never throws: producers call this inline.
+ * Something happened to `targetRef`. Every task watching it gets the line; a
+ * status settles it. Never throws: producers call this inline.
+ *
+ * A card watch is live from the moment it matches until its wake is *claimed*
+ * (`notifiedAt`), not just while its row says `running`: a milestone settles the
+ * row, and the re-arm waits for the coalesce timer, so a second move landing in
+ * that window would otherwise be dropped — a card that goes QA → Done inside it
+ * would never tell the watcher it finished. Joining the queued wake is the
+ * point: the agent is told the latest state, once.
  */
 export async function emitTaskEvent(source: string, targetRef: string, event: TaskEvent): Promise<number> {
   try {
     const rows: BackgroundTaskRow[] = await db.backgroundTask.findMany({
-      where: { source, targetRef, status: 'running' },
+      where: {
+        source,
+        targetRef,
+        OR: [
+          { status: 'running' },
+          // Already matched, wake queued (or held), nobody told yet.
+          { status: 'completed', notify: true, consumed: false, notifiedAt: null, until: { not: null } },
+        ],
+      },
       take: 50,
     })
-    for (const row of rows) await applyEvent(row, event)
-    return rows.length
+    const own = await watchedByAgent(rows, event.fromAgentRef)
+    let applied = 0
+    for (const row of rows) {
+      // The run that wrote this line is the one watching: it already knows, and
+      // settling it would queue a wake whose run writes the next line.
+      if (own.has(row.id)) continue
+      await applyEvent(row, event)
+      applied++
+    }
+    if (own.size) {
+      console.log(`[BackgroundTasks] ${source}:${targetRef} ignored by ${own.size} watch(es) of its own agent ${event.fromAgentRef}`)
+    }
+    return applied
   } catch (err) {
     console.warn(`[BackgroundTasks] emit ${source}:${targetRef} failed:`, (err as Error).message)
     return 0
   }
+}
+
+/**
+ * The watches in `rows` held by `agentRef`, i.e. sitting in one of its chat
+ * sessions. The session is the only record of who owns a watch.
+ */
+async function watchedByAgent(rows: BackgroundTaskRow[], agentRef: string | undefined): Promise<Set<string>> {
+  if (!agentRef || !rows.length) return new Set()
+  const sessions: Array<{ id: string; contextType: string | null; contextId: string | null }> = await db.chatSession
+    .findMany({
+      where: { id: { in: [...new Set(rows.map((row) => row.chatSessionId))] } },
+      select: { id: true, contextType: true, contextId: true },
+    })
+    .catch(() => [])
+  const mine = new Set(
+    sessions
+      .filter((s) => (s.contextType === 'project' && s.contextId ? `project:${s.contextId}` : 'workspace') === agentRef)
+      .map((s) => s.id),
+  )
+  return new Set(rows.filter((row) => mine.has(row.chatSessionId)).map((row) => row.id))
 }
 
 export function newTaskId(): string {
@@ -352,8 +700,19 @@ export async function createReplyTasks(
   chatSessionId: string,
   triggerMessageId: string,
   agents: Array<{ projectId: string | null; name: string }>,
+  where?: { conversationId?: string | null; threadRootId?: string | null; workspaceId?: string | null },
 ): Promise<Array<{ task_id: string; title: string; status: 'running' }>> {
   const out: Array<{ task_id: string; title: string; status: 'running' }> = []
+  // The thread the tags were posted in: that is where the replies land, so it
+  // is what the dock opens instead of an empty log.
+  const link = where?.conversationId
+    ? {
+        kind: 'channel_thread' as const,
+        conversationId: where.conversationId,
+        threadRootId: where.threadRootId ?? triggerMessageId,
+        ...(where.workspaceId ? { workspaceId: where.workspaceId } : {}),
+      }
+    : undefined
   for (const agent of agents) {
     const row = await createTask({
       id: newTaskId(),
@@ -361,6 +720,7 @@ export async function createReplyTasks(
       source: 'agent_reply',
       targetRef: replyTargetRef(triggerMessageId, agent.projectId),
       title: `@${agent.name} reply`,
+      ...(link ? { link } : {}),
     })
     out.push({ task_id: row.id, title: row.title, status: 'running' })
   }
@@ -421,6 +781,20 @@ export function scheduleTaskWake(chatSessionId: string, delayMs = WAKE_COALESCE_
   wakeTimers.set(chatSessionId, timer)
 }
 
+const holdTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** A held watch whose thread never reported back still wakes its session when the hold runs out. */
+function scheduleHoldExpiry(chatSessionId: string): void {
+  const existing = holdTimers.get(chatSessionId)
+  if (existing) clearTimeout(existing)
+  const timer = setTimeout(() => {
+    holdTimers.delete(chatSessionId)
+    scheduleTaskWake(chatSessionId)
+  }, CARD_HOLD_MS + WAKE_COALESCE_MS)
+  ;(timer as any).unref?.()
+  holdTimers.set(chatSessionId, timer)
+}
+
 async function wakeUserFor(session: { id: string; createdByUserId?: string | null; workspaceId?: string | null; contextType?: string; contextId?: string | null }): Promise<string | null> {
   if (session.createdByUserId) return session.createdByUserId
   const queued = await db.chatQueuedMessage.findFirst({ where: { sessionId: session.id }, orderBy: { createdAt: 'desc' }, select: { userId: true } })
@@ -435,63 +809,490 @@ async function wakeUserFor(session: { id: string; createdByUserId?: string | nul
 }
 
 /**
- * Queue one wake message for every finished, unseen task in the session. The
- * dispatcher re-checks `consumed` just before sending it, so a turn the person
- * started in the meantime (which already saw the results) cancels the wake.
+ * These two live in `workspace-pause.service` so the dispatcher, the sweep and
+ * the wake producer all read the flag the same way.
  */
-export async function enqueueTaskWake(chatSessionId: string): Promise<boolean> {
+const isSessionWorkspacePaused = (session: {
+  workspaceId?: string | null
+  contextType?: string | null
+  contextId?: string | null
+}): Promise<boolean> =>
+  import('./workspace-pause.service').then((module) => module.isSessionWorkspacePaused(session))
+
+/**
+ * Queue one wake message per finished, unseen task in the session, in finish
+ * order: one [Task update] per message, so the agent acts on each result as it
+ * lands instead of on a batch. The dispatcher re-checks `consumed` just before
+ * sending a row, and the turn-end hook chains the rest, so a burst is delivered
+ * one turn each. The coalesce timers upstream only delay the burst.
+ */
+export async function enqueueTaskWake(chatSessionId: string, opts: { dispatch?: boolean } = {}): Promise<boolean> {
   const session = await db.chatSession.findUnique({
     where: { id: chatSessionId },
     select: { id: true, createdByUserId: true, workspaceId: true, contextType: true, contextId: true },
   })
   if (!session) return false
+  // A workspace-wide pause holds every automatic wake at the source: no row is
+  // written, so the task stays finished-and-unseen and is delivered once the
+  // pause lifts (`sweepUnnotifiedWakes` re-derives it, nothing is lost).
+  if (await isSessionWorkspacePaused(session)) return false
   const tasks: BackgroundTaskRow[] = await db.backgroundTask.findMany({
-    where: { chatSessionId, status: { not: 'running' }, notify: true, consumed: false, notifiedAt: null },
-    orderBy: { finishedAt: 'asc' },
+    where: {
+      chatSessionId, status: { not: 'running' }, notify: true, consumed: false, notifiedAt: null,
+      OR: [{ heldUntil: null }, { heldUntil: { lte: new Date() } }],
+    },
+    orderBy: [{ finishedAt: 'asc' }, { createdAt: 'asc' }],
     take: 20,
   })
   if (!tasks.length) return false
   const userId = await wakeUserFor(session)
   if (!userId) return false
-  const taskIds = tasks.map((t) => t.id)
-  const claimed = await db.backgroundTask.updateMany({
-    where: { id: { in: taskIds }, notifiedAt: null },
-    data: { notifiedAt: new Date() },
-  })
-  if (claimed.count === 0) return false
-
-  const text = tasks.map(formatTaskNote).join('\n\n')
   const latest = await db.chatQueuedMessage.findFirst({
     where: { sessionId: chatSessionId },
     orderBy: [{ position: 'desc' }, { createdAt: 'desc' }],
     select: { position: true },
   })
-  await db.chatQueuedMessage.create({
-    data: {
-      sessionId: chatSessionId,
-      userId,
-      position: (latest?.position ?? -1) + 1,
-      status: 'pending',
-      kind: 'task_notification',
-      content: text,
-      parts: JSON.stringify([
-        { type: 'text', text },
-        { type: 'data-task-notification', data: { taskIds } },
-      ]),
-      body: JSON.stringify({ text, taskNotification: { taskIds } }),
-    },
-  })
-  const { dispatchNext } = await import('./chat-queue-dispatcher.service')
-  void dispatchNext(chatSessionId).catch(() => {})
+  let position = latest?.position ?? -1
+  let queued = 0
+  for (const task of tasks) {
+    const claimed = await db.backgroundTask.updateMany({
+      where: { id: task.id, notifiedAt: null },
+      data: { notifiedAt: new Date() },
+    })
+    if (claimed.count === 0) continue
+
+    // Read it again: a milestone can land between the batch read above and this
+    // claim, and the agent must hear the state now rather than the one that was
+    // true a moment ago.
+    const fresh = (await getTask(task.id)) ?? task
+    const text = formatTaskNote(fresh)
+    const taskIds = [fresh.id]
+    position += 1
+    await db.chatQueuedMessage.create({
+      data: {
+        sessionId: chatSessionId,
+        userId,
+        position,
+        status: 'pending',
+        kind: 'task_notification',
+        content: text,
+        parts: JSON.stringify([
+          { type: 'text', text },
+          { type: 'data-task-notification', data: { taskIds } },
+        ]),
+        body: JSON.stringify({ text, taskNotification: { taskIds } }),
+      },
+    })
+    // The milestone is in the queue, so the watch can go back to watching the
+    // same card without losing this wake (see `rearmCardWatch`).
+    await rearmCardWatch(fresh).catch(() => null)
+    queued++
+  }
+  if (queued === 0) return false
+  // The drain sweeps and then dispatches in one pass, so it asks for the row
+  // without racing its own dispatcher for the claim.
+  if (opts.dispatch !== false) {
+    const { dispatchNext } = await import('./chat-queue-dispatcher.service')
+    void dispatchNext(chatSessionId).catch(() => {})
+  }
   return true
+}
+
+// ─── Wake pause: waits, not messages ─────────────────────────────────────────
+
+function parseJson<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback
+  try {
+    return JSON.parse(value) as T
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * A user message that is a queued background-task wake.
+ *
+ * A resume queued after a killed run (`kind: 'resume'`, SHO-121) carries a
+ * `data-resume` part and no `data-task-notification`, so it is deliberately not
+ * one of these and cannot pause wakes.
+ */
+export function isTaskWakeMessage(parts: string | null | undefined): boolean {
+  return parseJson<Array<{ type?: string }>>(parts, []).some((p) => p?.type === 'data-task-notification')
+}
+
+/** The tasks a wake message's `parts` were queued for. */
+export function taskWakeIdsFromParts(parts: string | null | undefined): string[] {
+  for (const part of parseJson<Array<{ type?: string; data?: { taskIds?: unknown } }>>(parts, [])) {
+    if (part?.type !== 'data-task-notification') continue
+    const ids = part.data?.taskIds
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []
+  }
+  return []
+}
+
+/** The tasks a queued wake row was queued for. */
+export function taskWakeIdsFromBody(body: string | null | undefined): string[] {
+  const parsed = parseJson<{ taskNotification?: { taskIds?: unknown } }>(body, {})
+  const ids = parsed.taskNotification?.taskIds
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []
+}
+
+/**
+ * A person resumed this wake from the composer: it ends the run of automatic
+ * wakes, so the pause is over and this wake starts the count again. Stored on
+ * the message `parts` (what `consecutiveWakeWaits` reads) and on the queued
+ * row's `body` (what the dispatcher reads before it sends it).
+ */
+export function taskWakeResetsRun(parts: string | null | undefined): boolean {
+  return parseJson<Array<{ type?: string; data?: { wakeRunReset?: unknown } }>>(parts, []).some(
+    (p) => p?.type === 'data-task-notification' && p.data?.wakeRunReset === true,
+  )
+}
+
+/** Same mark, read off a queued wake row's body. */
+export function taskWakeBodyResetsRun(body: string | null | undefined): boolean {
+  return parseJson<{ taskNotification?: { wakeRunReset?: unknown } }>(body, {}).taskNotification?.wakeRunReset === true
+}
+
+/**
+ * How many distinct waits the trailing run of wake turns adds up to.
+ *
+ * With one wake message per finished task, counting messages pauses a session
+ * that merely had four tasks finish. What matters is how many *new* waits the
+ * agent woke for: a wake is a continuation of the previous one (no count) when
+ * every task in it was already running before that previous wake turn started;
+ * it starts a new wait when it introduces a task created after it. A person
+ * writing ends the run, and the oldest wake in it always counts as one.
+ *
+ * A re-armed watch — one row per card, so it keeps its id and its `createdAt` —
+ * wakes on the same task again and again. That is a new wait each time, and it is
+ * read off the wake messages rather than the row, because re-arming clears the
+ * row (`finishedAt`, `notifiedAt`) before the cap is measured. Otherwise a card
+ * watch that keeps waking itself could never reach the cap (SHO-129).
+ *
+ * A wake a person resumed from the composer (`wakeRunReset`) ends the run too:
+ * that is the pause lifting, and the wake it delivers starts the count again.
+ */
+export async function consecutiveWakeWaits(chatSessionId: string, limit: number): Promise<number> {
+  const recent: Array<{ parts: string | null; createdAt: Date }> = await db.chatMessage.findMany({
+    where: { sessionId: chatSessionId, role: 'user' },
+    orderBy: { createdAt: 'desc' },
+    take: limit + 1,
+    select: { parts: true, createdAt: true },
+  })
+  const run: Array<{ at: Date; taskIds: string[] }> = []
+  for (const message of recent) {
+    if (!isTaskWakeMessage(message.parts)) break
+    run.push({ at: message.createdAt, taskIds: taskWakeIdsFromParts(message.parts) })
+  }
+  if (!run.length) return 0
+  if (taskWakeResetsRun(recent[0]!.parts)) return 1
+
+  const ids = [...new Set(run.flatMap((wake) => wake.taskIds))]
+  const rows: Array<{ id: string; createdAt: Date }> = ids.length
+    ? await db.backgroundTask.findMany({ where: { id: { in: ids } }, select: { id: true, createdAt: true } })
+    : []
+  const startedAt = new Map(rows.map((row) => [row.id, row.createdAt.getTime()]))
+
+  let waits = 1
+  for (let i = 0; i + 1 < run.length; i++) {
+    // The same task reporting twice in a row is a re-armed watch waking again.
+    const older = new Set(run[i + 1]!.taskIds)
+    const rearmed = run[i]!.taskIds.some((id) => older.has(id))
+    let newestTaskAt = 0
+    for (const id of run[i]!.taskIds) newestTaskAt = Math.max(newestTaskAt, startedAt.get(id) ?? 0)
+    if (rearmed || newestTaskAt > run[i + 1]!.at.getTime()) waits++
+  }
+  return waits
+}
+
+export interface SessionWakeWait {
+  taskId: string
+  source: string
+  title: string
+  /** When the task finished; null while the task itself is still running (a live card watch). */
+  finishedAt: string | null
+}
+
+export interface SessionWakeState {
+  paused: boolean
+  wakesInARow: number
+  limit: number
+  waiting: SessionWakeWait[]
+}
+
+/**
+ * What a session is waiting to be told, derived from the queue it could not
+ * drain.
+ *
+ * When a session hits the wake cap the dispatcher leaves one `failed`
+ * `task_notification` row holding the pause and hands the tasks back to the
+ * sweep, so the results sit finished-and-unseen while nothing tells the agent
+ * or the person. This reads that state back: no table, no column. `AgentWake`
+ * owns queued *runs*; this is the delivery queue, and `consecutiveWakeWaits`
+ * stays the only definition of "paused".
+ */
+export async function sessionWakeState(chatSessionId: string): Promise<SessionWakeState> {
+  const pausedRows: Array<{ body: string | null; content: string }> = await db.chatQueuedMessage.findMany({
+    where: { sessionId: chatSessionId, kind: 'task_notification', status: 'failed', error: { in: WAKE_PAUSED_MARKERS } },
+    orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+    take: 50,
+    select: { body: true, content: true },
+  })
+  const taskIds = [...new Set(pausedRows.flatMap((row) => taskWakeIdsFromBody(row.body)))]
+  const rows: Array<{ id: string; source: string; title: string; finishedAt: Date | null }> = taskIds.length
+    ? await db.backgroundTask.findMany({
+        where: { id: { in: taskIds } },
+        select: { id: true, source: true, title: true, finishedAt: true },
+      })
+    : []
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  const waiting: SessionWakeWait[] = []
+  for (const row of pausedRows) {
+    for (const id of taskWakeIdsFromBody(row.body)) {
+      if (waiting.some((w) => w.taskId === id)) continue
+      const task = byId.get(id)
+      waiting.push({
+        taskId: id,
+        source: task?.source ?? 'task',
+        title: task?.title ?? row.content.split('\n')[0]!.slice(0, 120),
+        finishedAt: task?.finishedAt ? task.finishedAt.toISOString() : null,
+      })
+    }
+  }
+  const cardsOnly = rows.length > 0 && rows.every((row) => row.source === 'work_item')
+  const limit = cardsOnly ? MAX_CONSECUTIVE_CARD_WAKES : MAX_CONSECUTIVE_WAKES
+  return {
+    paused: pausedRows.length > 0,
+    wakesInARow: await consecutiveWakeWaits(chatSessionId, limit),
+    limit,
+    waiting,
+  }
+}
+
+// ─── Durability ───────────────────────────────────────────────────────────────
+
+/**
+ * Re-derive wakes that the coalesce timer never got to: a finished, unseen
+ * task whose row was never claimed has no queued message behind it, and
+ * nothing else would ever create one. Runs from the drain worker, so a
+ * restarted API heals itself on its next tick (and a peer region leaves the
+ * session to its home region). `enqueueTaskWake`'s conditional claim keeps
+ * concurrent sweeps from queueing the same wake twice.
+ */
+export async function sweepUnnotifiedWakes(limit = 50): Promise<number> {
+  const now = new Date()
+  // A pause lifts when a person writes, so the updates it held are handed back
+  // here rather than only on the turn that ended the pause.
+  await releaseLiftedPauseHolds(now).catch((error) =>
+    console.warn('[BackgroundTasks] releasing pause-held wakes failed:', (error as Error).message))
+  const sessions: Array<{ chatSessionId: string }> = await db.backgroundTask.findMany({
+    where: {
+      status: { not: 'running' },
+      notify: true,
+      consumed: false,
+      notifiedAt: null,
+      expiresAt: { gt: now },
+      AND: [
+        { OR: [{ heldUntil: null }, { heldUntil: { lte: now } }] },
+        { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
+      ],
+    },
+    distinct: ['chatSessionId'],
+    select: { chatSessionId: true },
+    take: limit,
+  })
+  if (!sessions.length) return 0
+  const { isHomeRegionSession } = await import('./chat-queue-dispatcher.service')
+  const { isChatSessionWorkspacePaused } = await import('./workspace-pause.service')
+  let queued = 0
+  for (const row of sessions) {
+    if (!(await isHomeRegionSession(row.chatSessionId))) continue
+    // A paused workspace is skipped before anything is queued: its updates stay
+    // finished-and-unseen and this sweep picks them up on the first tick after
+    // the pause lifts.
+    if (await isChatSessionWorkspacePaused(row.chatSessionId)) continue
+    if (await enqueueTaskWake(row.chatSessionId, { dispatch: false })) queued++
+  }
+  return queued
+}
+
+export interface WakeRelease {
+  /** Tasks handed back to the sweep for another attempt. */
+  released: number
+  /** Tasks that just hit `MAX_WAKE_ATTEMPTS`: held until they expire instead. */
+  capped: string[]
+}
+
+/**
+ * A wake claimed these tasks but never ran: hand them back so the sweep can
+ * queue them again once the runtime is healthy. Repeated failures back off
+ * instead of hot-looping, and a wake still failing after `MAX_WAKE_ATTEMPTS`
+ * stops being retried at all.
+ */
+export async function releaseTaskWakes(taskIds: string[]): Promise<WakeRelease> {
+  const ids = taskIds.filter((id) => typeof id === 'string' && id.length <= 64).slice(0, 200)
+  if (!ids.length) return { released: 0, capped: [] }
+  const rows: Array<{ id: string; attempts: number; expiresAt: Date }> = await db.backgroundTask.findMany({
+    where: { id: { in: ids }, consumed: false, notifiedAt: { not: null } },
+    select: { id: true, attempts: true, expiresAt: true },
+  })
+  if (!rows.length) return { released: 0, capped: [] }
+  const byAttempts = new Map<number, string[]>()
+  const capped: Array<{ id: string; expiresAt: Date }> = []
+  for (const row of rows) {
+    if (row.attempts + 1 >= MAX_WAKE_ATTEMPTS) {
+      capped.push(row)
+      continue
+    }
+    const group = byAttempts.get(row.attempts) ?? []
+    group.push(row.id)
+    byAttempts.set(row.attempts, group)
+  }
+  for (const [attempts, group] of byAttempts) {
+    const delay = WAKE_RETRY_BACKOFF_MS[Math.min(attempts, WAKE_RETRY_BACKOFF_MS.length - 1)]!
+    await db.backgroundTask.updateMany({
+      where: { id: { in: group }, consumed: false, notifiedAt: { not: null } },
+      data: { notifiedAt: null, heldUntil: null, attempts: { increment: 1 }, nextAttemptAt: new Date(Date.now() + delay) },
+    })
+  }
+  for (const row of capped) {
+    // Its last attempt is behind it: keep `notifiedAt` so nothing queues it
+    // again, and hold it to its own expiry. The queue keeps the failed row that
+    // says it could not be delivered.
+    await db.backgroundTask.updateMany({
+      where: { id: row.id, consumed: false },
+      data: { attempts: { increment: 1 }, heldUntil: row.expiresAt },
+    })
+  }
+  return { released: rows.length - capped.length, capped: capped.map((row) => row.id) }
+}
+
+/**
+ * A wake cannot be delivered because the session's wakes are paused: hold the
+ * tasks instead of handing them back.
+ *
+ * Releasing them re-armed the same wake on the retry backoff, so a session left
+ * paused accumulated one failed row per attempt for the task's whole 24 h TTL
+ * (1,150 of them across 9 chats on 2026-10-20). Held tasks are out of the
+ * sweep's reach until a person writes, and then `releaseLiftedPauseHolds` hands
+ * them back once.
+ *
+ * A pause hold is `heldUntil = expiresAt` — the card hold in `holdTasks` is
+ * `now + CARD_HOLD_MS`, so the two never look alike. `notifiedAt` stays: the
+ * wake was claimed, and only the release puts it back in the sweep's reach.
+ */
+export async function holdTaskWakes(taskIds: string[]): Promise<number> {
+  const ids = taskIds.filter((id) => typeof id === 'string' && id.length <= 64).slice(0, 200)
+  if (!ids.length) return 0
+  const rows: Array<{ id: string; expiresAt: Date }> = await db.backgroundTask.findMany({
+    where: { id: { in: ids }, consumed: false, notifiedAt: { not: null } },
+    select: { id: true, expiresAt: true },
+  })
+  for (const row of rows) {
+    await db.backgroundTask.updateMany({
+      where: { id: row.id, consumed: false },
+      data: { heldUntil: row.expiresAt },
+    })
+  }
+  // One attempt was made. The counter records that and then stops climbing.
+  if (rows.length) {
+    await db.backgroundTask.updateMany({
+      where: { id: { in: rows.map((row) => row.id) }, attempts: { lt: 1 } },
+      data: { attempts: 1 },
+    })
+  }
+  return rows.length
+}
+
+/** Tasks held by a pause, as opposed to a card hold. Capped wakes are left out on purpose. */
+async function pauseHeldTasks(now: Date): Promise<Array<{ id: string; chatSessionId: string; source: string }>> {
+  const rows: Array<{ id: string; chatSessionId: string; source: string; heldUntil: Date | null; expiresAt: Date }> =
+    await db.backgroundTask.findMany({
+      where: {
+        status: { not: 'running' },
+        notify: true,
+        consumed: false,
+        notifiedAt: { not: null },
+        heldUntil: { gt: now },
+        expiresAt: { gt: now },
+        attempts: { lt: MAX_WAKE_ATTEMPTS },
+      },
+      select: { id: true, chatSessionId: true, source: true, heldUntil: true, expiresAt: true },
+      take: 500,
+    })
+  return rows
+    .filter((row) => row.heldUntil?.getTime() === row.expiresAt.getTime())
+    .map(({ id, chatSessionId, source }) => ({ id, chatSessionId, source }))
+}
+
+/**
+ * The pause lifted (a person wrote, or a resumed wake ran): the tasks it held
+ * are handed back to the sweep, which queues each waiting update once.
+ * `consecutiveWakeWaits` stays the only definition of "paused" — this does not
+ * re-implement the cap.
+ */
+async function releaseLiftedPauseHolds(now: Date): Promise<number> {
+  const held = await pauseHeldTasks(now)
+  if (!held.length) return 0
+  const bySession = new Map<string, Array<{ id: string; source: string }>>()
+  for (const row of held) {
+    const group = bySession.get(row.chatSessionId) ?? []
+    group.push({ id: row.id, source: row.source })
+    bySession.set(row.chatSessionId, group)
+  }
+  let released = 0
+  for (const [chatSessionId, rows] of bySession) {
+    const limit = rows.every((row) => row.source === 'work_item') ? MAX_CONSECUTIVE_CARD_WAKES : MAX_CONSECUTIVE_WAKES
+    if ((await consecutiveWakeWaits(chatSessionId, limit)) >= limit) continue
+    const cleared = await db.backgroundTask.updateMany({
+      where: { id: { in: rows.map((row) => row.id) }, consumed: false },
+      data: { heldUntil: null, notifiedAt: null },
+    })
+    released += cleared.count
+  }
+  return released
+}
+
+/**
+ * Tasks the API tracks itself only settle when their producer reports back. A
+ * run that died leaves the row `running` for its whole TTL, so the watcher
+ * would never be told anything: give up on it here, with the wake left on.
+ */
+export async function reconcileStuckTasks(): Promise<number> {
+  const now = new Date()
+  const stuck: BackgroundTaskRow[] = await db.backgroundTask.findMany({
+    where: {
+      source: 'agent_reply',
+      status: 'running',
+      createdAt: { lt: new Date(now.getTime() - AGENT_REPLY_RECONCILE_MS) },
+    },
+    take: 50,
+  })
+  let settled = 0
+  for (const row of stuck) {
+    await settle(row, 'failed', 'the agent run ended without reporting back')
+    settled++
+  }
+  const calls: BackgroundTaskRow[] = await db.backgroundTask.findMany({
+    where: { source: 'project_call', status: 'running', createdAt: { lt: new Date(now.getTime() - 5 * 60_000) } },
+    take: 50,
+  })
+  for (const row of calls) {
+    if (await settleIfAlreadyDone(row)) settled++
+  }
+  return settled
 }
 
 /** Test seam. */
 export const _testing = {
   waiters,
   wakeTimers,
+  holdTimers,
   clearTimers() {
     for (const t of wakeTimers.values()) clearTimeout(t)
     wakeTimers.clear()
+    for (const t of holdTimers.values()) clearTimeout(t)
+    holdTimers.clear()
   },
 }

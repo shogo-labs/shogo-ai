@@ -108,4 +108,17 @@ describe('checkpoint tool', () => {
     expect(res.details.external_mode).toBe(true)
     expect(res.details.hint).toContain('own git')
   })
+
+  test('foreign-repo 409 is surfaced gracefully (not a hard failure)', async () => {
+    mockFetch(409, {
+      error: {
+        code: 'checkpoints_disabled_foreign_repo',
+        message: "This project's folder is a checkout of another git repository (https://x/y.git).",
+      },
+    })
+    const tool = getCheckpointTool(makeCtx())
+    const res = await tool.execute('id', { action: 'rollback', checkpoint_id: 'cp-1' })
+    expect(res.details.foreign_repo).toBe(true)
+    expect(res.details.hint).toContain('own git')
+  })
 })

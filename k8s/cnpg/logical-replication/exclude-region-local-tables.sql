@@ -15,6 +15,12 @@
 -- not home-region routed, so the rows are kept (and pruned) where they were
 -- written.
 --
+-- `device_version_events` REJOINED the mesh (SHO-142, reverse of #1635): its
+-- ids are random since `20261022120000_device_version_events_region_ids` and
+-- its unique key is `(region, deviceId, version)`, so the two regions cannot
+-- collide on it any more. It is published again on purpose — keep it off this
+-- list.
+--
 -- THE DRIFT THIS GUARDS
 -- ---------------------
 -- The Publication CR (k8s/cnpg/production-*-oci/platform-publication.yaml)
@@ -35,6 +41,8 @@
 
 DO $$
 DECLARE
+  -- `device_version_events` rejoined the mesh (SHO-142): random ids +
+  -- (region, deviceId, version) key, so it is published on purpose again.
   region_local text[] := ARRAY['storage_usage', 'usage_wallets', 'proxy_turns'];
   is_schema_pub boolean;
   t text;

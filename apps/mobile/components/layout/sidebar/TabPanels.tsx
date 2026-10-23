@@ -4,11 +4,14 @@
  * The Home (workspace-agent chats) and More panels of the desktop sidebar.
  * Channels, DMs, Agents, Projects and Activity have panels of their own.
  */
+import { useEffect, useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { BarChart3, Bookmark, ChevronRight, FileText, KanbanSquare, ListTodo, Store } from 'lucide-react-native'
+import { BarChart3, Bookmark, ChevronRight, FileText, KanbanSquare, ListTodo, Settings, Share2, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
+import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { useDomainHttp } from '../../../contexts/domain'
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { TASKS_NAV_HIDDEN } from '../../../../../packages/shared-app/src/hooks/useWorkspaceExperience'
 import { moreItems, type MoreIcon } from '../../../lib/more-items'
@@ -24,6 +27,8 @@ const MORE_ICONS: Record<MoreIcon, React.ElementType> = {
   work: KanbanSquare,
   marketplace: Store,
   files: FileText,
+  social: Share2,
+  settings: Settings,
 }
 
 export interface HomePanelProps {
@@ -66,7 +71,36 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
   const router = useRouter()
   const experience = useWorkspaceExperience()
   const { features } = usePlatformConfig()
-  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace, workBoards: !!features.workBoards })
+  const http = useDomainHttp()
+  const workspace = useActiveWorkspace()
+  const [social, setSocial] = useState(false)
+
+  // Social management is a capability, not a consequence of having connected an
+  // account: a 200 from `/social/status` means this workspace may manage social
+  // accounts — even with none connected, and even on desktop without Shogo Cloud
+  // (`mode: 'unavailable'` still answers 200, and that screen is where the relay
+  // requirement gets explained). Anything that fails to answer hides the link.
+  useEffect(() => {
+    const workspaceId = workspace?.id
+    if (!workspaceId) {
+      setSocial(false)
+      return
+    }
+    let cancelled = false
+    http
+      .get(`/api/workspaces/${workspaceId}/social/status`)
+      .then(() => {
+        if (!cancelled) setSocial(true)
+      })
+      .catch(() => {
+        if (!cancelled) setSocial(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [http, workspace?.id])
+
+  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace, workBoards: !!features.workBoards, social })
   const screen = variant === 'screen'
   return (
     <View className={cn(screen ? 'px-2' : 'px-2 pt-1')} testID="more-panel">

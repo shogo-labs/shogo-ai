@@ -3,8 +3,8 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ActiveChatTurn, AgentTask } from '../api'
-import type { InboxItem } from '../team-chat-api'
-import { activityBadge, buildFeed, inboxEntry, relativeTime, taskEntry } from '../activity-feed'
+import type { InboxItem, SentMessage } from '../team-chat-api'
+import { ACTIVITY_FILTERS, activityBadge, buildFeed, inboxEntry, matchesFilter, relativeTime, sentEntry, taskEntry } from '../activity-feed'
 
 const NOW = Date.parse('2026-10-01T12:00:00Z')
 const ago = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString()
@@ -55,6 +55,17 @@ const chat: ActiveChatTurn = {
   projectName: null,
   projectHidden: false,
   startedAt: ago(2),
+}
+
+function sentMessage(over: Partial<SentMessage> & Pick<SentMessage, 'id'>): SentMessage {
+  return {
+    conversationId: 'c1',
+    threadRootId: null,
+    text: 'shipped it',
+    createdAt: ago(10),
+    conversation: { id: 'c1', kind: 'public', name: 'eng', slug: 'eng' },
+    ...over,
+  }
 }
 
 describe('inbox entries', () => {
@@ -116,12 +127,24 @@ describe('buildFeed', () => {
       task({ id: 'run', status: 'running', updatedAt: ago(3) }),
     ],
     activeChats: [chat],
+    sent: [
+      sentMessage({ id: 's1', createdAt: ago(4) }),
+      sentMessage({ id: 's2', createdAt: ago(30), threadRootId: 'root-1' }),
+    ],
     now: NOW,
   }
   const ids = (f: ReturnType<typeof buildFeed>) => f.entries.map((e) => e.id)
 
   test('people and agents share one list, newest first', () => {
     expect(ids(buildFeed(input))).toEqual(['inbox:dm', 'task:failed', 'inbox:mention', 'task:done', 'inbox:thread'])
+  })
+
+  test('Sent swaps the list for what you sent, and is not mail', () => {
+    const feed = buildFeed({ ...input, filter: 'sent' })
+    expect(ids(feed)).toEqual(['sent:s1', 'sent:s2'])
+    // Agent work is not something you sent, and Sent has no running strip.
+    expect(feed.running).toEqual([])
+    expect(ids(buildFeed({ ...input, filter: 'all' }))).not.toContain('sent:s1')
   })
 
   test('work in progress is pulled into its own strip, not mixed into history', () => {
@@ -146,6 +169,52 @@ describe('buildFeed', () => {
     const feed = buildFeed({ ...input, unreadOnly: true })
     expect(ids(feed)).toEqual(['inbox:dm', 'task:failed', 'inbox:mention'])
     expect(feed.running).toEqual([])
+  })
+})
+
+describe('sent entries', () => {
+  test('Sent is the last chip, after the inbound ones', () => {
+    expect(ACTIVITY_FILTERS[ACTIVITY_FILTERS.length - 1]).toEqual({ id: 'sent', label: 'Sent' })
+  })
+
+  test('the conversation is the title; threads and DMs say where they went', () => {
+    const channel = sentEntry(sentMessage({ id: 's1' }))
+    expect(channel.title).toBe('#eng')
+    expect(channel.context).toBe('#eng')
+
+    const thread = sentEntry(sentMessage({ id: 's2', threadRootId: 'root-1' }))
+    expect(thread.context).toBe('Thread in #eng')
+
+    const dm = sentEntry(sentMessage({
+      id: 's3',
+      conversation: { id: 'c2', kind: 'dm', name: null, slug: null },
+    }))
+    expect(dm.title).toBe('Direct Message')
+    expect(dm.context).toBe('Direct Message')
+    expect(dm.private).toBe(false)
+  })
+
+  test('a private channel keeps its lock and nothing outbound is unread', () => {
+    const entry = sentEntry(sentMessage({
+      id: 's4',
+      conversation: { id: 'c3', kind: 'private', name: 'team-cyberdyne', slug: null },
+    }))
+    expect(entry.private).toBe(true)
+    expect(entry.title).toBe('#team-cyberdyne')
+    expect(entry.unread).toBe(false)
+    expect(entry.source).toBe('sent')
+    expect(entry.sent?.id).toBe('s4')
+  })
+
+  test('All never shows what you sent; Sent shows nothing else', () => {
+    const outbound = sentEntry(sentMessage({ id: 's5' }))
+    expect(matchesFilter(outbound, 'all')).toBe(false)
+    expect(matchesFilter(outbound, 'sent')).toBe(true)
+
+    const inbound = inboxEntry(inbox({ id: 'i5', kind: 'mention' }))
+    expect(matchesFilter(inbound, 'all')).toBe(true)
+    expect(matchesFilter(inbound, 'sent')).toBe(false)
+    expect(matchesFilter(taskEntry(task({ id: 'a5', status: 'completed' }), NOW), 'sent')).toBe(false)
   })
 })
 

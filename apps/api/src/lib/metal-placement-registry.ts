@@ -392,6 +392,41 @@ export class MetalPlacementRegistry {
     }
   }
 
+  /**
+   * Every live published placement this registry knows about. Used by the
+   * orphaned-published-site reconcile sweep (a deleted project's placement is
+   * still a routing entry until it's cleared). Redis TTLs already prune stale
+   * entries; the in-process map is the fallback when Redis isn't configured.
+   */
+  async listPublishedPlacements(): Promise<Array<{ subdomain: string } & PublishedPlacement>> {
+    const out = new Map<string, { subdomain: string } & PublishedPlacement>()
+    for (const [subdomain, rec] of this.memPubPlace) out.set(subdomain, { subdomain, ...rec })
+
+    const r = this.redis()
+    if (r) {
+      try {
+        let cursor = '0'
+        do {
+          const [next, keys] = (await r.scan(cursor, 'MATCH', `${PUB_PLACE_KEY}*`, 'COUNT', 200)) as any
+          cursor = next
+          for (const fullKey of keys as string[]) {
+            const raw = await r.get(fullKey)
+            if (!raw) continue
+            try {
+              const rec = JSON.parse(raw) as PublishedPlacement
+              out.set(fullKey.slice(PUB_PLACE_KEY.length), { subdomain: fullKey.slice(PUB_PLACE_KEY.length), ...rec })
+            } catch {
+              // A malformed entry can't be reconciled safely — leave it for the TTL.
+            }
+          }
+        } while (cursor !== '0')
+      } catch {
+        // Redis blip: fall back to whatever the in-process map holds.
+      }
+    }
+    return [...out.values()]
+  }
+
   // --- per-project lease (anti split brain) --------------------------------
 
   /** Acquire the lease iff free. Returns true on success. */

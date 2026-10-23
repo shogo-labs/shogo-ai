@@ -37,14 +37,17 @@ import {
 } from '../lib/ai-proxy-token'
 import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
+import { resolveApiKeyForRequest } from '../lib/api-key-request'
 import { getDbRoutingConfigSync, getMergedModelEntrySync, type ModelUpstreamFallback } from '../services/model-registry.service'
 import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
+import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 import {
   resolveVisibleModelsForWorkspace,
   isModelProviderConfigured,
 } from '../services/visible-models.service'
 import { wipeCloudKeyIfRejected } from '../lib/cloud-key-wipe'
+import { cloudPassthroughHeaders, forwardToShogoCloud } from '../lib/cloud-request-forward'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
 import { beginCapture } from '../lib/proxy-capture'
@@ -52,6 +55,7 @@ import {
   MODEL_CATALOG,
   MODEL_ALIASES,
   IMAGE_MODEL_CATALOG,
+  VIDEO_MODEL_CATALOG,
   AGENT_MODE_DEFAULTS,
   OPENROUTER_MODEL_PREFIX,
   resolveAgentModeDefault,
@@ -59,13 +63,44 @@ import {
   modelSupportsAudioInput,
   isLiveModel,
   isOpenRouterModel,
+  isAutoModel,
   stripOpenRouterPrefix,
   supportsAdaptiveThinking,
   type Provider,
   type ImageProvider,
+  type ImageModelEntry,
+  type ModelOptionField,
+  type VideoModelEntry,
+  getVideoModelEntry,
+  mergeModelOptions,
+  endpointsOf,
+  resolveMediaModelId,
   type AgentMode,
   type ModelTier,
 } from '@shogo/model-catalog'
+import { randomUUID } from 'node:crypto'
+import { resolveAutoTierModel } from '../lib/runtime/agent-model-defaults'
+import { putVideoJob, getVideoJob, claimVideoCharge, type VideoJobRecord } from '../lib/video-job-store'
+import { put3dJob, get3dJob, claim3dCharge } from '../lib/3d-job-store'
+import {
+  DEFAULT_TRIPO_MODEL,
+  DEFAULT_TRIPO_RIG_MODEL,
+  TRIPO_CONVERT_FORMATS,
+  TRIPO_MAX_ANIMATIONS,
+  TRIPO_MODELS,
+  TRIPO_OPS,
+  type TripoOp,
+  estimateTripoCredits,
+  getTripoModel,
+  isFileToken,
+  isHttpsUrl,
+  isTaskId,
+  parseDataUri,
+  tripoCreateTask,
+  tripoGetTask,
+  tripoUploadFile,
+  TripoApiError,
+} from '../lib/tripo-3d'
 
 // =============================================================================
 // Types
@@ -338,6 +373,24 @@ export function resolveModelApiKey(modelConfig: ModelConfig): string | null {
 }
 
 /**
+ * OpenAI-shaped 403 for a model the workspace admin has hidden. Used on the
+ * local path and before forwarding to Shogo Cloud, so a forwarded call can't
+ * skip this workspace's allowlist.
+ */
+function modelNotVisibleResponse(c: any, model: string) {
+  return c.json(
+    {
+      error: {
+        message: `Model '${model}' is not available for this workspace. A workspace admin has restricted the available models.`,
+        type: 'invalid_request_error',
+        code: 'model_not_visible',
+      },
+    },
+    403
+  )
+}
+
+/**
  * Resolve 'basic' / 'advanced' agent modes to actual model names.
  *
  * When local mode and LOCAL_LLM_BASE_URL are set: use admin-configured local models.
@@ -358,6 +411,38 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
     return { resolvedModel: resolveAgentModeDefault(model as AgentMode), isLocal: false }
   }
   return { resolvedModel: model, isLocal: false }
+}
+
+/**
+ * Resolve the model a request actually runs on.
+ *
+ * Every other Shogo surface accepts `auto` (the model picker, the agent
+ * runtime's `AGENT_AUTO_TIER_MAP`, `voice.ts`), but the gateway only mapped
+ * `basic`/`advanced`, so `auto` fell through to `resolveModel('auto')` and
+ * 400'd with `model_not_found`.
+ *
+ * `auto` means the workspace's Auto **standard** tier, resolved by
+ * `resolveAutoTierModel` — the same map agent runtimes are spawned with: the
+ * connected cloud's on a cloud-forwarding desktop, otherwise admin overrides
+ * (`getAutoTierOverrides()`) over `AUTO_MODEL_DEFAULTS`, capped to a model the
+ * workspace is entitled to. Everything else goes through `resolveAgentModel`
+ * unchanged.
+ *
+ * Call this before anything reads `request.model`, so visibility, tier
+ * gating, billing and capture all see the concrete id.
+ */
+export async function resolveRequestModel(
+  model: string,
+  workspaceId: string,
+): Promise<{ resolvedModel: string; isLocal: boolean }> {
+  if (!isAutoModel(model)) return resolveAgentModel(model)
+  // Local dev against an Ollama-style backend: same model `basic` maps to,
+  // since the tier map's ids do not exist there.
+  if (isLocalDev && process.env.LOCAL_LLM_BASE_URL) {
+    return { resolvedModel: process.env.LOCAL_LLM_BASIC_MODEL || 'llama3', isLocal: true }
+  }
+  const entry = await resolveAutoTierModel(workspaceId, 'standard')
+  return { resolvedModel: entry.id, isLocal: false }
 }
 
 // =============================================================================
@@ -1238,13 +1323,6 @@ function convertAnthropicResponseToOpenAI(anthropicResponse: any, model: string)
     }))
   }
 
-  // Same shape as the streaming path's terminal usage chunk: prompt_tokens
-  // includes cache reads; cache writes are reported separately for billing.
-  const inputTokens = anthropicResponse.usage?.input_tokens || 0
-  const cachedInputTokens = anthropicResponse.usage?.cache_read_input_tokens || 0
-  const cacheWriteTokens = anthropicResponse.usage?.cache_creation_input_tokens || 0
-  const outputTokens = anthropicResponse.usage?.output_tokens || 0
-  const promptTokens = inputTokens + cachedInputTokens
   return {
     id: anthropicResponse.id || `chatcmpl-${Date.now()}`,
     object: 'chat.completion',
@@ -1257,13 +1335,39 @@ function convertAnthropicResponseToOpenAI(anthropicResponse: any, model: string)
         finish_reason: mapAnthropicStopReason(anthropicResponse.stop_reason),
       },
     ],
-    usage: {
-      prompt_tokens: promptTokens,
-      completion_tokens: outputTokens,
-      total_tokens: promptTokens + outputTokens,
-      prompt_tokens_details: { cached_tokens: cachedInputTokens },
-      ...(cacheWriteTokens > 0 ? { cache_creation_input_tokens: cacheWriteTokens } : {}),
-    },
+    usage: anthropicUsageToOpenAI(
+      anthropicResponse.usage?.input_tokens || 0,
+      anthropicResponse.usage?.cache_read_input_tokens || 0,
+      anthropicResponse.usage?.cache_creation_input_tokens || 0,
+      anthropicResponse.usage?.output_tokens || 0,
+    ),
+  }
+}
+
+/**
+ * OpenAI-format usage for an Anthropic response, shared by the streaming
+ * terminal chunk and the non-stream converter. Follows OpenRouter's cache
+ * convention, which is what the runtime's OpenAI-completions parser reads:
+ * `prompt_tokens` and `cached_tokens` both include cache writes, and
+ * `cache_write_tokens` carries them separately. `splitOpenAIPromptUsage`
+ * reverses it. Top-level `cache_creation_input_tokens` stays for clients that
+ * read the older shape.
+ */
+export function anthropicUsageToOpenAI(
+  inputTokens: number,
+  cacheReadTokens: number,
+  cacheWriteTokens: number,
+  outputTokens: number,
+) {
+  const promptTokens = inputTokens + cacheReadTokens + cacheWriteTokens
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: outputTokens,
+    total_tokens: promptTokens + outputTokens,
+    prompt_tokens_details: cacheWriteTokens > 0
+      ? { cached_tokens: cacheReadTokens + cacheWriteTokens, cache_write_tokens: cacheWriteTokens }
+      : { cached_tokens: cacheReadTokens },
+    ...(cacheWriteTokens > 0 ? { cache_creation_input_tokens: cacheWriteTokens } : {}),
   }
 }
 
@@ -1562,7 +1666,6 @@ export async function proxyAnthropicStream(
       // it the agent runtime parses `completion_tokens: 0` and misreports a
       // fully-streamed answer as "Agent produced no output — possible provider
       // error" once the turn completes.
-      const promptTokens = inputTokens + cachedInputTokens
       controller.enqueue(
         encoder.encode(
           `data: ${JSON.stringify({
@@ -1571,12 +1674,7 @@ export async function proxyAnthropicStream(
             created: Math.floor(Date.now() / 1000),
             model: request.model,
             choices: [],
-            usage: {
-              prompt_tokens: promptTokens,
-              completion_tokens: outputTokens,
-              total_tokens: promptTokens + outputTokens,
-              prompt_tokens_details: { cached_tokens: cachedInputTokens },
-            },
+            usage: anthropicUsageToOpenAI(inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens),
           })}\n\n`,
         ),
       )
@@ -1870,15 +1968,46 @@ function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): R
  * understand `max_tokens`, so leave those untouched.
  */
 /**
- * Drop Anthropic `cache_control` markers from a chat-completions message.
- * pi-ai's anthropic compat turns string content into a single marked text
- * part; collapse that back to a string so strict upstreams see plain content.
+ * Remove the runtime's `<|CACHE_BOUNDARY|>` canary from wire text.
+ *
+ * The canary exists so the Anthropic request builder can split the system
+ * prompt into a cached stable block and an uncached dynamic block. Every other
+ * provider caches implicitly (OpenAI and DeepSeek by prefix, Gemini implicitly)
+ * so there is no breakpoint to place — the marker would just ride along inside
+ * the system message as literal prompt text, costing tokens and making the
+ * boundary useless as a canary. Stripping it here, at the proxy boundary, keeps
+ * that decision in one place instead of in every converter.
+ */
+const CACHE_BOUNDARY_RE = /\s*<\|CACHE_BOUNDARY\|>\s*/g
+
+export function stripCacheBoundaryText(text: string): string {
+  return text.includes(CACHE_BOUNDARY) ? text.replace(CACHE_BOUNDARY_RE, '\n\n') : text
+}
+
+/**
+ * Drop cache hints a chat-completions upstream has no use for: the Anthropic
+ * `cache_control` markers pi-ai's compat layer adds, and the
+ * `<|CACHE_BOUNDARY|>` canary described above. Collapses a single marked text
+ * part back to a plain string so strict upstreams see plain content.
  */
 function stripCacheMarkersFromMessage(
   message: ChatCompletionRequest['messages'][number],
 ): ChatCompletionRequest['messages'][number] {
-  if (!Array.isArray(message.content) || !message.content.some(p => p.cache_control)) return message
-  const parts = message.content.map(({ cache_control: _cc, ...part }) => part)
+  if (typeof message.content === 'string') {
+    if (!message.content.includes(CACHE_BOUNDARY)) return message
+    return { ...message, content: stripCacheBoundaryText(message.content) }
+  }
+  if (!Array.isArray(message.content)) return message
+  const hasCacheControl = message.content.some(p => p.cache_control)
+  const hasBoundary = message.content.some(
+    p => typeof (p as { text?: string }).text === 'string' && (p as { text: string }).text.includes(CACHE_BOUNDARY),
+  )
+  if (!hasCacheControl && !hasBoundary) return message
+  const parts = message.content.map(({ cache_control: _cc, ...part }) => (
+    part.type === 'text' && typeof part.text === 'string'
+      ? { ...part, text: stripCacheBoundaryText(part.text) }
+      : part
+  ))
   const only = parts.length === 1 ? parts[0] : undefined
   const content = only?.type === 'text' && Object.keys(only).length === 2 && typeof only.text === 'string'
     ? only.text
@@ -1960,7 +2089,7 @@ function buildOpenAICompatibleBody(
     }
     if (Array.isArray(body.messages)) {
       body.messages = body.messages.map((message: any) => {
-        const normalized = { ...message }
+        const normalized: any = { ...stripCacheMarkersFromMessage(message) }
         if (normalized.role === 'developer') normalized.role = 'system'
         if (normalized.role === 'assistant') {
           const text = typeof normalized.reasoning === 'string'
@@ -2163,6 +2292,34 @@ function rewriteOpenRouterSseLine(line: string): string {
 }
 
 /**
+ * Split an OpenAI-format `usage` object into non-cached input, cache-read and
+ * cache-write tokens so each is billed at its own rate.
+ *
+ * Cache writes follow OpenRouter's convention (also emitted by
+ * `anthropicUsageToOpenAI`): `prompt_tokens_details.cache_write_tokens` is
+ * counted inside both `prompt_tokens` and `cached_tokens`. This must parse
+ * the same way as the runtime's pi-ai OpenAI-completions parser so billing
+ * and the runtime's reported turn usage agree.
+ */
+export function splitOpenAIPromptUsage(usage: any): {
+  inputTokens: number
+  cachedInputTokens: number
+  cacheWriteTokens: number
+} {
+  const totalPrompt = usage?.prompt_tokens || 0
+  const reportedCached =
+    usage?.prompt_tokens_details?.cached_tokens ??
+    usage?.prompt_cache_hit_tokens ??
+    0
+  const cacheWriteTokens = usage?.prompt_tokens_details?.cache_write_tokens || 0
+  const cachedInputTokens = Math.max(0, reportedCached - cacheWriteTokens)
+  const inputTokens =
+    usage?.prompt_cache_miss_tokens ??
+    Math.max(0, totalPrompt - cachedInputTokens - cacheWriteTokens)
+  return { inputTokens, cachedInputTokens, cacheWriteTokens }
+}
+
+/**
  * Proxy a streaming request to an OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio).
  */
 export async function proxyOpenAIStream(
@@ -2174,6 +2331,7 @@ export async function proxyOpenAIStream(
     outputTokens: number,
     cachedInputTokens: number,
     reasoningTokens: number,
+    cacheWriteTokens: number,
   ) => void,
   signal?: AbortSignal,
 ): Promise<Response> {
@@ -2203,6 +2361,7 @@ export async function proxyOpenAIStream(
   let inputTokens = 0
   let outputTokens = 0
   let cachedInputTokens = 0
+  let cacheWriteTokens = 0
   let reasoningTokens = 0
   let loggedOpenRouterCost = false
   let sseBuffer = ''
@@ -2210,14 +2369,7 @@ export async function proxyOpenAIStream(
   const noteUsage = (parsed: any) => {
     if (!parsed?.usage) return
     const usage = parsed.usage
-    const totalPrompt = usage.prompt_tokens || 0
-    cachedInputTokens =
-      usage.prompt_tokens_details?.cached_tokens ??
-      usage.prompt_cache_hit_tokens ??
-      0
-    inputTokens =
-      usage.prompt_cache_miss_tokens ??
-      Math.max(0, totalPrompt - cachedInputTokens)
+    ;({ inputTokens, cachedInputTokens, cacheWriteTokens } = splitOpenAIPromptUsage(usage))
     outputTokens = usage.completion_tokens || 0
     reasoningTokens = usage.completion_tokens_details?.reasoning_tokens || 0
     if (rewriteReasoning && typeof usage.cost === 'number' && !loggedOpenRouterCost) {
@@ -2279,7 +2431,7 @@ export async function proxyOpenAIStream(
         }
         controller.enqueue(encoder.encode(`${rewritten}\n`))
       }
-      onComplete?.(inputTokens, outputTokens, cachedInputTokens, reasoningTokens)
+      onComplete?.(inputTokens, outputTokens, cachedInputTokens, reasoningTokens, cacheWriteTokens)
     },
   })
 
@@ -2432,36 +2584,11 @@ function normalizeThinkingForModel(parsed: any, apiModel: string): void {
 import { calculateUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing-runtime'
 import { getProjectUser } from '../lib/project-user-context'
-import { accumulateUsage, accumulateImageUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
-
-/**
- * Build the time-gating detail attached to a 402 "usage limit reached"
- * response. When a rolling window is exhausted this surfaces which window
- * gated the request and when it next resets, so clients can show a
- * "resets in X" countdown (mirroring Codex / Claude Code). Best-effort:
- * returns nulls if the windows can't be resolved.
- */
-export async function buildUsageLimitInfo(
-  workspaceId: string,
-): Promise<{ resetsAt: string | null; window: string | null; retryAfterSeconds: number | null }> {
-  try {
-    const w = await billingService.getUsageWindows(workspaceId)
-    const exhausted = [w.fiveHour, w.weekly].filter(
-      (s) => s.limitUsd != null && s.utilization >= 1 && s.resetsAt != null,
-    )
-    if (exhausted.length === 0) return { resetsAt: null, window: null, retryAfterSeconds: null }
-    const soonest = exhausted.reduce((a, b) =>
-      a.resetsAt!.getTime() <= b.resetsAt!.getTime() ? a : b,
-    )
-    return {
-      resetsAt: soonest.resetsAt!.toISOString(),
-      window: soonest.kind,
-      retryAfterSeconds: Math.max(0, Math.ceil((soonest.resetsAt!.getTime() - Date.now()) / 1000)),
-    }
-  } catch {
-    return { resetsAt: null, window: null, retryAfterSeconds: null }
-  }
-}
+import { accumulateUsage, accumulateImageUsage, accumulateVideoUsage, accumulate3dUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
+import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
+import { buildUsageLimitInfo } from '../lib/usage-limit-info'
+import { invalidateAnalyticsCache } from '../lib/analytics-cache'
+export { buildUsageLimitInfo }
 
 /**
  * Record token usage for billing.
@@ -2589,7 +2716,7 @@ export async function recordUsage(
         await billingService.ensureSystemWorkspace()
       }
       const billingModel = proxyModelToBillingModel(model)
-      const { rawUsd } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
+      const { rawUsd, pricingUnknown } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
       const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
       await prisma.usageEvent.create({
         data: {
@@ -2602,10 +2729,11 @@ export async function recordUsage(
           source: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
-          actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false },
+          actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false, ...(pricingUnknown ? { pricingUnknown } : {}) },
         },
       })
       console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${billingModel}) — not billed`)
+      invalidateAnalyticsCache({ workspaceId: tokenPayload.workspaceId, projectId: billingProjectId ?? undefined })
     } catch (err) {
       console.error('[AI Proxy] Failed to record internal usage:', err)
     }
@@ -2634,7 +2762,7 @@ export async function recordUsage(
     // model's own per-token pricing (custom providers / admin-added models).
     // Passing the collapsed `billingModel` bucket here billed every DB model at
     // the `sonnet` fallback rate. `billingModel` is kept only for display.
-    const { rawUsd, billedUsd } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
+    const { rawUsd, billedUsd, pricingUnknown } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
     if (billingUserId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
@@ -2647,7 +2775,7 @@ export async function recordUsage(
       actionType: 'ai_proxy_completion',
       rawUsd,
       billedUsd,
-      actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens },
+      actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, ...(pricingUnknown ? { pricingUnknown } : {}) },
     })
 
     if (result.success) {
@@ -2668,20 +2796,23 @@ interface ImageModelConfig {
   provider: ImageProvider
   apiModel: string
   displayName: string
+  /** Catalog entry; absent for the env-configured local model. */
+  entry?: ImageModelEntry
 }
 
 interface ImageGenerationResponse {
   created: number
-  data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>
+  data: Array<{ b64_json?: string; url?: string; revised_prompt?: string; content_type?: string }>
 }
 
 const IMAGE_MODEL_REGISTRY: Record<string, ImageModelConfig> = {}
 
-for (const entry of Object.values(IMAGE_MODEL_CATALOG)) {
+for (const entry of Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[]) {
   IMAGE_MODEL_REGISTRY[entry.id] = {
     provider: entry.provider,
     apiModel: entry.apiModel,
     displayName: entry.displayName,
+    entry,
   }
 }
 
@@ -2704,6 +2835,7 @@ function getImageProviderApiKey(provider: ImageProvider): string | null {
   switch (provider) {
     case 'openai': return getNativeProviderApiKeySync('openai')
     case 'google': return getNativeProviderApiKeySync('google')
+    case 'higgsfield': return getNativeProviderApiKeySync('higgsfield')
     case 'local': return 'local'
     default: return null
   }
@@ -2736,6 +2868,131 @@ export function normalizeSizeForModel(model: string, size: string): string {
   if (size === '1024x1792') return '1024x1536'
   if (size === '1792x1024') return '1536x1024'
   return size
+}
+
+const HIGGSFIELD_IMAGE_POLL_DEADLINE_MS = 5 * 60_000
+
+/**
+ * Charge for one Higgsfield request: the estimate captured at submit, marked
+ * up. Returns `null` when no estimate came back — the caller then refuses the
+ * request instead of running it unpriced, because a catalog guess is off by up
+ * to 23× and "no price" must never mean "free".
+ */
+function higgsfieldCharge(
+  estimateRawUsd: number | null,
+): { rawUsd: number; billedUsd: number } | null {
+  if (estimateRawUsd === null) return null
+  return calculateHiggsfieldUsageCost({ rawUsd: estimateRawUsd })
+}
+
+function recordHiggsfieldImageUsage(
+  tokenPayload: ProxyTokenPayload,
+  entry: ImageModelEntry,
+  charge: { rawUsd: number; billedUsd: number },
+  n: number,
+  chatSessionId?: string | null,
+) {
+  return recordMediaUsage(tokenPayload, {
+    kind: 'image',
+    model: entry.id,
+    rawUsd: charge.rawUsd,
+    billedUsd: charge.billedUsd,
+    actionType: 'ai_image_generation',
+    metadata: { n, provider: 'higgsfield', priceSource: 'estimate' },
+  }, chatSessionId)
+}
+
+/**
+ * Run a Higgsfield image model: price it, submit one request per output image,
+ * poll each to a terminal state, then download the outputs. Pricing happens
+ * *before* submitting, so a model whose price we cannot get never runs. A
+ * `failed`, `nsfw` or `canceled` request surfaces a readable error and is never
+ * billed.
+ */
+async function generateImageHiggsfield(
+  apiKey: string,
+  entry: ImageModelEntry,
+  params: {
+    prompt: string
+    size?: string
+    quality?: string
+    n?: number
+    referenceImages?: string[]
+    options?: Record<string, unknown>
+  },
+  signal?: AbortSignal,
+): Promise<{ result: ImageGenerationResponse; charge: { rawUsd: number; billedUsd: number } }> {
+  const n = Math.max(1, Math.min(4, params.n || 1))
+  const referenceUrls = await Promise.all(
+    (params.referenceImages ?? []).map((ref) => higgsfieldEnsurePublicUrl(apiKey, ref, signal)),
+  )
+  const request = buildHiggsfieldImageRequest(entry, {
+    prompt: params.prompt,
+    size: params.size,
+    quality: params.quality,
+    referenceUrls,
+    options: params.options,
+  })
+
+  const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, signal).catch((err) => {
+    throw new HiggsfieldError(
+      `Could not get a price for this image (${err?.message ?? 'no estimate'}). Nothing was generated or charged; try again.`,
+      'unavailable',
+    )
+  })
+  const charge = higgsfieldCharge(estimate.rawUsd * n)
+  if (!charge) {
+    throw new HiggsfieldError('Higgsfield returned no price for this image. Nothing was generated or charged; try again.', 'unavailable')
+  }
+
+  const submissions = await Promise.all(
+    Array.from({ length: n }, () =>
+      higgsfieldSubmit(apiKey, request.endpoint, request.input, {
+        idempotencyKey: `img_${randomUUID()}`,
+        signal,
+      }),
+    ),
+  )
+
+  let settled: Awaited<ReturnType<typeof pollHiggsfieldRequest>>[]
+  try {
+    settled = await Promise.all(
+      submissions.map((submission) =>
+        pollHiggsfieldRequest(apiKey, submission.statusUrl, {
+          deadlineMs: Date.now() + HIGGSFIELD_IMAGE_POLL_DEADLINE_MS,
+          signal,
+        }),
+      ),
+    )
+  } catch (err) {
+    // The caller went away mid-render: cancel upstream so we don't pay for an
+    // image nobody is waiting for. Best effort — a started request may refuse.
+    if (signal?.aborted) {
+      await Promise.allSettled(submissions.map((submission) => higgsfieldCancel(apiKey, submission.requestId)))
+    }
+    throw err
+  }
+
+  const failed = settled.find((outcome) => outcome.status !== 'completed')
+  if (failed) {
+    const reason = failed.error ?? `the request ended ${failed.status}`
+    throw new HiggsfieldError(`Image generation failed: ${reason}`, 'validation')
+  }
+
+  const urls = settled.flatMap((outcome) => outcome.imageUrls)
+  if (urls.length === 0) throw new HiggsfieldError('Higgsfield returned no images', 'http')
+
+  const data = await Promise.all(
+    urls.map(async (url) => {
+      const { b64, contentType } = await fetchAsBase64(url, signal)
+      return { b64_json: b64, revised_prompt: params.prompt, content_type: contentType }
+    }),
+  )
+
+  return {
+    result: { created: Math.floor(Date.now() / 1000), data },
+    charge,
+  }
 }
 
 async function generateImageOpenAI(
@@ -2862,20 +3119,53 @@ async function generateImageLocal(
   return await response.json() as ImageGenerationResponse
 }
 
-import { calculateImageUsageCost, calculateTranscriptionUsageCost } from '../lib/usage-cost'
+import {
+  calculateGenjutsuUsageCost,
+  calculateHiggsfieldUsageCost,
+  calculateImageUsageCost,
+  calculateTranscriptionUsageCost,
+  calculate3dUsageCost,
+  estimateTripoTaskCost,
+  TRIPO_USD_PER_CREDIT,
+} from '../lib/usage-cost'
+import {
+  HiggsfieldError,
+  HIGGSFIELD_UPLOAD_CONTENT_TYPES,
+  buildHiggsfieldEstimateBody,
+  buildHiggsfieldImageRequest,
+  buildHiggsfieldVideoRequest,
+  fetchAsBase64,
+  higgsfieldEnsurePublicUrl,
+  higgsfieldEstimate,
+  higgsfieldCancel,
+  higgsfieldPresets,
+  higgsfieldStatus,
+  higgsfieldSubmit,
+  higgsfieldUpload,
+  pollHiggsfieldRequest,
+  parseHiggsfieldEstimate,
+  type HiggsfieldEstimate,
+} from '../lib/higgsfield-media'
 
-async function recordImageUsage(
-  tokenPayload: ProxyTokenPayload,
-  model: string,
-  quality: string,
-  size: string,
-  n: number,
-  chatSessionId?: string | null,
-) {
+/**
+ * One billable media output. Images fold into the open billing session's image
+ * totals; video folds into its video totals; 3D folds into its own. With no
+ * session open, it is charged as its own usage event.
+ */
+interface MediaCharge {
+  kind: 'image' | 'video' | '3d'
+  model: string
+  rawUsd: number
+  billedUsd: number
+  /** Output seconds (video only). */
+  seconds?: number
+  actionType: 'ai_image_generation' | 'ai_video_generation' | 'ai_3d_generation'
+  metadata: Record<string, unknown>
+}
+
+async function recordMediaUsage(tokenPayload: ProxyTokenPayload, charge: MediaCharge, chatSessionId?: string | null) {
+  const { kind, model, rawUsd, billedUsd } = charge
   try {
-    const single = calculateImageUsageCost(model, quality, size)
-    const rawUsd = single.rawUsd * n
-    const billedUsd = single.billedUsd * n
     if (billedUsd === 0) return
 
     const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
@@ -2883,32 +3173,448 @@ async function recordImageUsage(
       : (tokenPayload.projectId || null)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
 
-    // If a billing session is open for this project, fold this image's USD
-    // into the session so the chat turn produces a single `chat_message`
-    // wallet debit instead of an extra `ai_image_generation` row.
-    if (billingProjectId && await accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)) {
-      console.log(`[AI Proxy] 🎨 Accumulated image gen for session ($${billedUsd.toFixed(4)}, model: ${model}, project: ${billingProjectId}${chatSessionId ? `, chat: ${chatSessionId}` : ''})`)
-      return
+    // If a billing session is open for this project, fold the USD into the
+    // session so the chat turn produces a single `chat_message` wallet debit
+    // instead of an extra per-media row.
+    if (billingProjectId) {
+      const accumulated = kind === 'video'
+        ? await accumulateVideoUsage(billingProjectId, charge.seconds ?? 0, rawUsd, billedUsd, chatSessionId)
+        : kind === '3d'
+          ? await accumulate3dUsage(billingProjectId, rawUsd, billedUsd, chatSessionId)
+          : await accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)
+      if (accumulated) {
+        console.log(`[AI Proxy] 🎨 Accumulated ${charge.actionType} for session ($${billedUsd.toFixed(4)}, model: ${model}, project: ${billingProjectId}${chatSessionId ? `, chat: ${chatSessionId}` : ''})`)
+        return
+      }
     }
 
     const result = await billingService.consumeUsage({
       workspaceId: tokenPayload.workspaceId,
       projectId: billingProjectId,
       memberId: billingUserId,
-      actionType: 'ai_image_generation',
+      actionType: charge.actionType,
       rawUsd,
       billedUsd,
-      actionMetadata: { model, quality, size, n, rawUsd },
+      actionMetadata: { model, ...charge.metadata, rawUsd },
     })
 
     if (result.success) {
-      console.log(`[AI Proxy] 🎨 Charged $${billedUsd.toFixed(4)} (image gen, model: ${model}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
+      console.log(`[AI Proxy] 🎨 Charged $${billedUsd.toFixed(4)} (${charge.actionType}, model: ${model}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
     } else {
-      console.warn(`[AI Proxy] ⚠️ Could not charge image usage: ${result.error}`)
+      console.warn(`[AI Proxy] ⚠️ Could not charge ${kind} usage: ${result.error}`)
     }
   } catch (err) {
-    console.error('[AI Proxy] Failed to charge image usage:', err)
+    console.error(`[AI Proxy] Failed to charge ${kind} usage:`, err)
   }
+}
+
+function recordImageUsage(
+  tokenPayload: ProxyTokenPayload,
+  model: string,
+  quality: string,
+  size: string,
+  n: number,
+  chatSessionId?: string | null,
+) {
+  const single = calculateImageUsageCost(model, quality, size)
+  return recordMediaUsage(tokenPayload, {
+    kind: 'image',
+    model,
+    rawUsd: single.rawUsd * n,
+    billedUsd: single.billedUsd * n,
+    actionType: 'ai_image_generation',
+    metadata: { quality, size, n },
+  }, chatSessionId)
+}
+
+const DEFAULT_VIDEO_MODEL = 'hf-hailuo-2.3'
+
+/** Video is Higgsfield-only; a server without its key answers 503 provider_not_configured. */
+function defaultVideoModel(): string {
+  return DEFAULT_VIDEO_MODEL
+}
+
+const DEFAULT_IMAGE_MODEL = 'hf-soul-v2'
+const FALLBACK_IMAGE_MODEL = 'gpt-image-2.5-flare'
+
+/** Higgsfield when its key is configured (the product default), else OpenAI. */
+function defaultImageModel(): string {
+  return getImageProviderApiKey('higgsfield') ? DEFAULT_IMAGE_MODEL : FALLBACK_IMAGE_MODEL
+}
+
+/** `genjutsu` workflow → model, so a caller can name the edit instead of the model id. */
+const GENJUTSU_MODEL_BY_WORKFLOW: Record<string, string> = {
+  motion_transfer: 'hf-genjutsu-motion-transfer',
+  object_swap: 'hf-genjutsu-object-swap',
+  restyle: 'hf-genjutsu-restyle',
+}
+
+function roundUsd(usd: number): number {
+  return Math.round(usd * 10_000) / 10_000
+}
+
+/** HTTP status for a media failure: Higgsfield's own semantics first, then the legacy string match. */
+type MediaErrorStatus = 400 | 402 | 429 | 502 | 503 | 504
+
+function mediaErrorStatus(error: any): MediaErrorStatus | 0 {
+  if (error instanceof HiggsfieldError) {
+    switch (error.code) {
+      case 'provider_busy': return 429
+      case 'credits': return 402
+      case 'validation':
+      case 'invalid_option':
+      case 'option_unsupported':
+      case 'invalid_duration':
+      case 'invalid_resolution':
+      case 'invalid_aspect_ratio':
+      case 'audio_not_supported':
+      case 'image_to_video_unsupported':
+      case 'text_to_video_unsupported':
+      case 'reference_images_unsupported':
+        return 400
+      case 'auth': case 'blocked': case 'unavailable': return 503
+      case 'timeout': return 504
+      default: return 502
+    }
+  }
+  if (error?.message?.includes('429')) return 429
+  if (error?.message?.includes('503')) return 503
+  return 0
+}
+
+/**
+ * `3–15` for a contiguous range, `6, 10` for a menu. Kling 3.0 documents 3–15 s
+ * as thirteen values, and listing them all reads worse than the range.
+ */
+function describeDurationMenu(durations: readonly number[]): string {
+  if (durations.length === 0) return '(none)'
+  const contiguous = durations.every((value, index) => index === 0 || value === durations[index - 1] + 1)
+  return contiguous && durations.length > 2
+    ? `${durations[0]}–${durations[durations.length - 1]}`
+    : durations.join(', ')
+}
+
+/** Error code for the OpenAI-shaped error body. */
+function mediaErrorCode(error: any, fallback: string): string {
+  return error instanceof HiggsfieldError ? error.code : fallback
+}
+
+/**
+ * Free `/estimate` lookups backing the listing's per-clip prices. Higgsfield
+ * prices per request and the amount depends on parameters, so the catalog's
+ * list price is only a fallback; the estimates are cached (they cost nothing
+ * but are still a round trip) and a failure degrades to the catalog value.
+ */
+const higgsfieldEstimateCache = new Map<string, { value: HiggsfieldEstimate | null; expiresAt: number }>()
+const HIGGSFIELD_LIST_ESTIMATE_TTL_MS = 10 * 60_000
+
+async function cachedHiggsfieldEstimate(
+  apiKey: string,
+  entry: ImageModelEntry | VideoModelEntry,
+  request: { endpoint: string; input: Record<string, unknown> },
+  signal?: AbortSignal,
+): Promise<HiggsfieldEstimate | null> {
+  const key = `${entry.id}:${JSON.stringify(request.input)}`
+  const hit = higgsfieldEstimateCache.get(key)
+  if (hit && hit.expiresAt > Date.now()) return hit.value
+  const body = buildHiggsfieldEstimateBody(entry, request.input)
+  if (!body) return null
+  let value: HiggsfieldEstimate | null = null
+  try {
+    value = await higgsfieldEstimate(apiKey, request.endpoint, body, signal)
+  } catch {
+    value = null
+  }
+  higgsfieldEstimateCache.set(key, { value, expiresAt: Date.now() + HIGGSFIELD_LIST_ESTIMATE_TTL_MS })
+  return value
+}
+
+/** Test seam — drops cached estimates between cases. */
+export const _resetHiggsfieldEstimateCache = () => higgsfieldEstimateCache.clear()
+
+/** JSON view of one documented option field, as `list_media_models` shows it. */
+function publicOption(field: ModelOptionField): Record<string, unknown> {
+  return {
+    name: field.name,
+    type: field.type,
+    ...(field.required ? { required: true } : {}),
+    ...(field.enum ? { values: field.enum } : {}),
+    ...(field.minimum !== undefined ? { min: field.minimum } : {}),
+    ...(field.maximum !== undefined ? { max: field.maximum } : {}),
+    ...(field.multipleOf !== undefined ? { multiple_of: field.multipleOf } : {}),
+    ...(field.default !== undefined ? { default: field.default } : {}),
+    ...(field.title ? { title: field.title } : {}),
+    ...(field.items ? { items: field.items } : {}),
+    ...(field.minItems !== undefined ? { min_items: field.minItems } : {}),
+    ...(field.maxItems !== undefined ? { max_items: field.maxItems } : {}),
+    ...(field.maxLength !== undefined ? { max_length: field.maxLength } : {}),
+    ...(field.itemFields
+      ? { item_fields: Object.values(field.itemFields).map((nested) => publicOption(nested)) }
+      : {}),
+    ...(field.endpoints ? { endpoints: field.endpoints } : {}),
+  }
+}
+
+/**
+ * Response body of `GET /ai/v1/media/models`. Exported for tests.
+ *
+ * `model` narrows the answer to one model's full option list, which is what an
+ * agent needs before filling in a call; without it every model is listed with
+ * its options, endpoints and price.
+ */
+export async function listMediaModels(
+  signal?: AbortSignal,
+  filter: { model?: string; kind?: 'image' | 'video' } = {},
+) {
+  const higgsfieldKey = getImageProviderApiKey('higgsfield')
+  const wanted = filter.model ? resolveMediaModelId(filter.model) : undefined
+
+  const images = filter.kind === 'video'
+    ? []
+    : await mapWithLimit(
+        (Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[])
+          .filter((entry) => !entry.retired && !!getImageProviderApiKey(entry.provider))
+          .filter((entry) => !wanted || entry.id === wanted),
+        4,
+        async (entry) => {
+          const options = mergeModelOptions(entry)
+          const base = {
+            id: entry.id,
+            name: entry.displayName,
+            provider: entry.provider,
+            best_for: entry.bestFor,
+            text_to_image: entry.capabilities.textToImage,
+            image_to_image: entry.capabilities.imageToImage,
+            max_reference_images: entry.capabilities.maxReferenceImages,
+            endpoints: endpointsOf(entry),
+            ...(entry.referenceField ? { reference_field: entry.referenceField.name } : {}),
+            options: options.map(publicOption),
+            parameters: {
+              size: entry.provider === 'openai'
+                ? '1024x1024, 1024x1792, 1792x1024'
+                : 'any WxH; mapped to the closest supported aspect ratio',
+              quality: ['standard', 'hd'],
+              options: '1-4',
+            },
+            ...(entry.deprecated ? { deprecated: true, replacement: entry.replacement } : {}),
+          }
+          if (entry.provider === 'higgsfield' && higgsfieldKey) {
+            // A catalog entry whose request shape is unknown (or whose estimate
+            // throws) must never blank the whole listing: one bad model falls back
+            // to its catalog price and the other seventeen still list.
+            let request: { endpoint: string; input: Record<string, unknown> } | null = null
+            try {
+              request = buildHiggsfieldImageRequest(entry, { prompt: 'a product photo on a plain background', size: '1024x1024', quality: 'standard' })
+            } catch (error) {
+              console.warn(`[AI Proxy] No image request shape for ${entry.id}; listing it from its catalog price only:`, error)
+            }
+            const estimate = request
+              ? await cachedHiggsfieldEstimate(higgsfieldKey, entry, request, signal)
+              : null
+            const rawUsd = estimate?.rawUsd ?? entry.usdPerRequest
+            return {
+              ...base,
+              price: {
+                unit: 'image',
+                usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
+                source: estimate?.rawUsd !== undefined ? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
+              },
+            }
+          }
+          // The price ladder is model × quality × size, so publish the marked-up
+          // numbers an agent needs to budget: `usd`/`hd_usd`/`low_usd` at 1024²
+          // (the keys agents already read) plus the standard price per size.
+          const priceAt = (quality: string, size: string) =>
+            roundUsd(calculateImageUsageCost(entry.id, quality, size).billedUsd)
+          return {
+            ...base,
+            price: {
+              unit: 'image',
+              usd: priceAt('standard', '1024x1024'),
+              hd_usd: priceAt('hd', '1024x1024'),
+              low_usd: priceAt('low', '1024x1024'),
+              usd_by_size: {
+                '1024x1024': priceAt('standard', '1024x1024'),
+                '1024x1536': priceAt('standard', '1024x1536'),
+                '1536x1024': priceAt('standard', '1536x1024'),
+              },
+            },
+          }
+        },
+      )
+
+  const videoEntries = (Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[])
+    .filter((entry) => !!getImageProviderApiKey(entry.provider))
+    .filter((entry) => !wanted || entry.id === wanted)
+  const videos = filter.kind === 'image'
+    ? []
+    : await mapWithLimit(videoEntries, 4, async (entry) => {
+      const base = {
+        id: entry.id,
+        name: entry.displayName,
+        provider: entry.provider,
+        best_for: entry.bestFor,
+        text_to_video: !!entry.textToVideoApiModel,
+        image_to_video: !!entry.imageToVideoApiModel,
+        source_video: !!entry.sourceVideo,
+        max_reference_images: entry.maxReferenceImages,
+        audio: !!entry.audio,
+        endpoints: endpointsOf(entry),
+        options: mergeModelOptions(entry).map(publicOption),
+        parameters: {
+          durations: entry.durations,
+          default_duration: entry.defaultDuration,
+          aspect_ratios: entry.aspectRatios,
+          ...(entry.resolutions ? { resolutions: entry.resolutions, default_resolution: entry.defaultResolution } : {}),
+          ...(entry.sourceVideo
+            ? { source_video: `workspace .mp4, ${entry.minSourceSeconds ?? 4}–${entry.maxSourceSeconds ?? 30} s` }
+            : {}),
+          ...(entry.genjutsu === 'restyle' ? { preset_id: 'required (see presets)' } : {}),
+        },
+        ...(entry.deprecated ? { deprecated: true, replacement: entry.replacement } : {}),
+      }
+      if (entry.provider === 'higgsfield' && higgsfieldKey) {
+        // Genjutsu bills per source second, so its price is a rate, not a clip
+        // total: show the marked-up per-second rate for each resolution.
+        if (entry.usdPerSecondByResolution) {
+          const byResolution: Record<string, number> = {}
+          for (const resolution of Object.keys(entry.usdPerSecondByResolution).sort()) {
+            const rate = calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, resolution, 1)
+            if (rate) byResolution[resolution] = roundUsd(rate.billedUsd)
+          }
+          const at = entry.defaultResolution ?? Object.keys(byResolution)[0]
+          return {
+            ...base,
+            price: {
+              unit: 'second',
+              usd: byResolution[at] ?? null,
+              by_resolution: byResolution,
+              source: 'rate_card',
+            },
+          }
+        }
+        let request: { endpoint: string; input: Record<string, unknown> } | null = null
+        // An image-to-video-only family has no text-to-video request to quote;
+        // its price comes from the catalog rather than a made-up start image.
+        if (entry.textToVideoApiModel) {
+          try {
+            request = buildHiggsfieldVideoRequest(entry, {
+              prompt: 'a product rotating on a table, soft studio light',
+              duration: entry.defaultDuration,
+              resolution: entry.defaultResolution,
+            })
+          } catch (error) {
+            console.warn(`[AI Proxy] No video request shape for ${entry.id}; listing it from its catalog price only:`, error)
+          }
+        }
+        const estimate = request
+          ? await cachedHiggsfieldEstimate(higgsfieldKey, entry, request, signal)
+          : null
+        const rawUsd = estimate?.rawUsd ?? entry.usdPerRequest
+        return {
+          ...base,
+          price: {
+            unit: 'clip',
+            usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
+            ...(estimate?.rawUsd !== undefined ? { default_clip_usd: roundUsd(calculateHiggsfieldUsageCost({ rawUsd: estimate.rawUsd }).billedUsd), default_duration: entry.defaultDuration } : {}),
+            source: estimate ? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
+          },
+        }
+      }
+      if (entry.usdPerRequest !== undefined) {
+        return {
+          ...base,
+          price: { unit: 'clip', usd: roundUsd(calculateHiggsfieldUsageCost({ rawUsd: entry.usdPerRequest }).billedUsd) },
+        }
+      }
+      return { ...base, price: { unit: 'clip', usd: null, source: 'unknown' } }
+    })
+
+  return {
+    images,
+    videos,
+    currency: 'USD',
+    default_image_model: defaultImageModel(),
+    default_video_model: defaultVideoModel(),
+    note: 'Prices include the Shogo markup and are what the workspace is charged. Higgsfield prices are quoted by its free /estimate for the default parameters; a `null` price means the vendor must be asked at submit time (Genjutsu prices depend on the source clip). Every model lists its documented options: pass model-specific ones as `options` on generate_image / generate_video.',
+  }
+}
+
+/** Run `fn` over `items` with at most `limit` in flight (the vendor rate-limits bursts). */
+async function mapWithLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const index = next++
+      if (index >= items.length) return
+      results[index] = await fn(items[index])
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+/**
+ * Bill a completed Higgsfield video job exactly once, at the estimate captured
+ * when it was submitted. `failed` / `nsfw` / `canceled` never reach here — the
+ * provider refunds them.
+ */
+function recordHiggsfieldVideoUsage(
+  tokenPayload: ProxyTokenPayload,
+  job: VideoJobRecord,
+  chatSessionId?: string | null,
+) {
+  const estimate = job.estimate
+  if (!estimate || estimate.billedUsd === 0) {
+    console.warn(`[AI Proxy] ⚠️ Higgsfield job ${job.id} completed without a captured price — not charged`)
+    return
+  }
+  return recordMediaUsage(tokenPayload, {
+    kind: 'video',
+    model: job.model,
+    rawUsd: estimate.rawUsd,
+    billedUsd: estimate.billedUsd,
+    seconds: job.duration,
+    actionType: 'ai_video_generation',
+    metadata: {
+      jobId: job.id,
+      endpoint: job.endpoint,
+      provider: 'higgsfield',
+      ...(job.requestId ? { requestId: job.requestId } : {}),
+      ...(job.resolution ? { resolution: job.resolution } : {}),
+      ...(job.sourceVideo ? { sourceVideo: true } : {}),
+      imageToVideo: job.imageToVideo,
+      priceSource: 'estimate',
+    },
+  }, chatSessionId)
+}
+
+/**
+ * Record billing for a finished Tripo3D task. Charged from the task's own
+ * `credits_consumed` (never the estimate), so a model with a different credit
+ * cost than the published table still bills correctly.
+ */
+function record3dUsage(
+  tokenPayload: ProxyTokenPayload,
+  params: { model: string; op: string; taskId: string; creditsConsumed: number; input: string },
+  chatSessionId?: string | null,
+) {
+  const cost = calculate3dUsageCost(params.creditsConsumed)
+  return recordMediaUsage(tokenPayload, {
+    kind: '3d',
+    model: params.model,
+    rawUsd: cost.rawUsd,
+    billedUsd: cost.billedUsd,
+    actionType: 'ai_3d_generation',
+    metadata: {
+      model: params.model,
+      op: params.op,
+      taskId: params.taskId,
+      creditsConsumed: params.creditsConsumed,
+      input: params.input,
+    },
+  }, chatSessionId)
 }
 
 /**
@@ -2957,6 +3663,46 @@ export async function recordTranscriptionUsage(
 // =============================================================================
 
 const isLocalDev = process.env.SHOGO_LOCAL_MODE === 'true'
+
+/**
+ * `/ai/v1` prefixes whose handlers only ever talk to a *local* provider key:
+ * images (OpenAI / Google / Higgsfield), the media catalogue + uploads, video,
+ * 3D and audio transcription. On a cloud-authed desktop those keys do not exist
+ * locally — they live in Shogo Cloud — so before this forwarder every one of
+ * these answered `provider_not_configured` (or an empty catalogue) even though
+ * the cloud held the key. That is SHO-74: *"3D provider 'tripo' is not
+ * configured"* on a machine whose Tripo key is saved in cloud admin.
+ *
+ * One forwarder covers all five instead of a branch per handler, because they
+ * are a family of routes that were added one at a time and the next one must
+ * not be local-only by accident (see the route-parity guard test). It is
+ * prefix-wide rather than per-route on purpose: a job created in cloud
+ * (`videos/generations`, `3d/files` → `3d/generations`) is polled in cloud
+ * (`videos/:id`, `3d/:id`), so handling the poll locally would orphan the job.
+ */
+export const CLOUD_FORWARDED_AI_PREFIXES = [
+  '/ai/v1/images/',
+  '/ai/v1/media/',
+  '/ai/v1/videos/',
+  '/ai/v1/3d/',
+  '/ai/v1/audio/',
+] as const
+
+/**
+ * Strip the mount base (`/api`) off a request pathname so it can be matched
+ * against the prefixes above and appended to `${cloud}/api`. The router is
+ * mounted at `/api` in `server.ts`, so `c.req.path` is `/api/ai/v1/…`.
+ */
+export function aiRelativePath(pathname: string): string {
+  const idx = pathname.indexOf('/ai/')
+  return idx >= 0 ? pathname.slice(idx) : pathname
+}
+
+/** True when a request belongs to a family the local proxy never serves. */
+export function isCloudForwardedAiPath(pathname: string): boolean {
+  const relative = aiRelativePath(pathname)
+  return CLOUD_FORWARDED_AI_PREFIXES.some((prefix) => relative.startsWith(prefix))
+}
 
 export function aiProxyRoutes() {
   const router = new Hono()
@@ -3064,7 +3810,8 @@ export function aiProxyRoutes() {
       // caller's header so the cloud Devices UI reflects upgrades without a
       // dedicated heartbeat round-trip.
       const deviceAppVersion = c.req.header('X-Shogo-Device-App-Version')
-      const resolved = await resolveApiKey(
+      const resolved = await resolveApiKeyForRequest(
+        c,
         token,
         deviceAppVersion ? { deviceAppVersion } : undefined,
       )
@@ -3087,26 +3834,6 @@ export function aiProxyRoutes() {
 
     const jwt = await verifyProxyToken(token)
     return jwt ? { ...jwt, authKind: 'proxy-jwt' } : null
-  }
-
-  /**
-   * Check if Shogo Cloud forwarding is active (local mode with SHOGO_API_KEY set
-   * and AI_MODE not overridden to 'api-keys' or 'local-llm').
-   */
-  function isShogoCloudForwarding(): boolean {
-    if (process.env.SHOGO_LOCAL_MODE !== 'true' || !process.env.SHOGO_API_KEY) return false
-    const aiMode = process.env.AI_MODE
-    if (aiMode === 'api-keys' || aiMode === 'local-llm') return false
-    return true
-  }
-
-  /**
-   * Request headers the local proxy relays to Shogo Cloud so cloud capture can
-   * group desktop calls by chat.
-   */
-  function cloudPassthroughHeaders(c: any): Record<string, string> {
-    const chatSessionId = c.req.header('x-chat-session-id')
-    return chatSessionId ? { 'x-chat-session-id': chatSessionId } : {}
   }
 
   /**
@@ -3281,6 +4008,54 @@ export function aiProxyRoutes() {
     return c.json(data, response.status as any)
   }
 
+  /**
+   * Forward a media / 3D / audio request to the Shogo Cloud AI proxy.
+   *
+   * `lib/cloud-request-forward.ts` owns the credential, the header set, the
+   * body streaming and the 401 self-heal — the same ones chat uses. The only
+   * thing this wrapper adds is where the request lands: everything after the
+   * `/api` mount, plus the query string.
+   */
+  async function forwardMediaToCloud(c: any): Promise<Response> {
+    const originalUrl = new URL(c.req.url)
+    return forwardToShogoCloud(c, {
+      pathname: aiRelativePath(originalUrl.pathname),
+      search: originalUrl.search,
+    })
+  }
+
+  /**
+   * Route-level cloud forwarding for the media / 3D / audio families, ahead of
+   * every handler that would otherwise resolve a local provider key.
+   *
+   * Precedence matches chat exactly: once the gate is on, the request goes to
+   * cloud and a local BYOK key is never consulted (BYOK-only setups run
+   * `AI_MODE=api-keys`, which turns the gate off for everything). Returning
+   * here is also what keeps a forwarded call from opening a local
+   * `BillingSession` — cloud bills it, and a local capture would charge the
+   * same generation twice.
+   */
+  router.use('*', async (c, next) => {
+    if (!isCloudForwardedAiPath(new URL(c.req.url).pathname)) return next()
+    if (!isShogoCloudForwarding()) return next()
+
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        {
+          error: {
+            message: 'Invalid or missing proxy token. Use Authorization: Bearer <token>',
+            type: 'authentication_error',
+            code: 'invalid_api_key',
+          },
+        },
+        401,
+      )
+    }
+
+    return forwardMediaToCloud(c)
+  })
+
   // =========================================================================
   // POST /ai/v1/chat/completions - OpenAI-compatible chat completions proxy
   // =========================================================================
@@ -3300,10 +4075,20 @@ export function aiProxyRoutes() {
       )
     }
 
+    // Read the body and resolve the requested model (incl. `auto`) before
+    // anything reads `request.model` — including the cloud-forwarding branch
+    // below, which must send the cloud a concrete id rather than `auto`.
+    const request: ChatCompletionRequest = await c.req.json()
+    if (request?.model) {
+      request.model = (await resolveRequestModel(request.model, tokenPayload.workspaceId)).resolvedModel
+    }
+
     // When Shogo Cloud key is configured, forward everything to the cloud
     if (isShogoCloudForwarding()) {
       try {
-        const request: ChatCompletionRequest = await c.req.json()
+        if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
+          return modelNotVisibleResponse(c, request.model)
+        }
         console.log(`[AI Proxy] Forwarding to Shogo Cloud: ${request.model} (stream: ${!!request.stream})`)
         return await forwardChatCompletionsToCloud(c, request, c.req.raw.signal)
       } catch (error: any) {
@@ -3344,19 +4129,10 @@ export function aiProxyRoutes() {
 
     let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
-      const request: ChatCompletionRequest = await c.req.json()
       // Forwarded by the chat-stream entry points (project-chat / agent-proxy
       // / instance-tunnel) so accumulateUsage can route to the right
       // `(projectId, chatSessionId)` billing-session slot.
       const chatSessionId = c.req.header('x-chat-session-id') || null
-
-      // Resolve agent-mode aliases (basic/advanced) to real model names
-      if (request.model) {
-        const { resolvedModel } = resolveAgentModel(request.model)
-        if (resolvedModel !== request.model) {
-          request.model = resolvedModel
-        }
-      }
 
       // Validate model
       if (!request.model) {
@@ -3429,17 +4205,8 @@ export function aiProxyRoutes() {
       // Enforce workspace model visibility: a workspace admin may restrict the
       // team to a subset of platform-visible models. Hidden models are blocked
       // here too, so a member can't bypass the picker via a direct API call.
-      if (!isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
-        return c.json(
-          {
-            error: {
-              message: `Model '${request.model}' is not available for this workspace. A workspace admin has restricted the available models.`,
-              type: 'invalid_request_error',
-              code: 'model_not_visible',
-            },
-          },
-          403
-        )
+      if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
+        return modelNotVisibleResponse(c, request.model)
       }
 
       // Enforce model tier: free/basic users can only use economy-tier models.
@@ -3534,8 +4301,8 @@ export function aiProxyRoutes() {
           }, c.req.raw.signal)
           return capture?.wrapStream(upstream, 'openai-chat') || upstream
         } else {
-          const upstream = await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok, reasoningTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId, internalUsage, reasoningTok)
+          const upstream = await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok, reasoningTok, cacheWriteTok) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage, reasoningTok)
           }, c.req.raw.signal)
           return capture?.wrapStream(upstream, 'openai-chat') || upstream
         }
@@ -3549,21 +4316,14 @@ export function aiProxyRoutes() {
 
         if (!isByokOpenRouter) {
           const usage = result.usage || {}
-          const totalPrompt = usage.prompt_tokens || 0
-          const cachedPrompt =
-            usage.prompt_tokens_details?.cached_tokens ??
-            usage.prompt_cache_hit_tokens ??
-            0
-          const inputPrompt =
-            usage.prompt_cache_miss_tokens ??
-            Math.max(0, totalPrompt - cachedPrompt)
+          const prompt = splitOpenAIPromptUsage(usage)
           recordUsage(
             tokenPayload,
             request.model,
-            inputPrompt,
+            prompt.inputTokens,
             usage.completion_tokens || 0,
-            cachedPrompt,
-            usage.cache_creation_input_tokens || 0,
+            prompt.cachedInputTokens,
+            prompt.cacheWriteTokens,
             chatSessionId,
             internalUsage,
             usage.completion_tokens_details?.reasoning_tokens || 0,
@@ -3619,15 +4379,24 @@ export function aiProxyRoutes() {
       )
     }
 
+    // Read the body and resolve the requested model (incl. `auto`) before the
+    // cloud-forwarding branch below (see chat/completions).
+    const body = await c.req.json()
+    if (body?.model) {
+      body.model = (await resolveRequestModel(body.model, tokenPayload.workspaceId)).resolvedModel
+    }
+
     // When a Shogo Cloud key is configured, forward to the cloud — the local
     // instance has no OpenAI key and the cloud resolves the model id. Mirrors
     // the chat-completions / anthropic-messages cloud paths; required for GPT
     // reasoning (Responses API) to work in cloud-proxy mode.
     if (isShogoCloudForwarding()) {
       try {
-        const request = await c.req.json()
-        console.log(`[AI Proxy] Forwarding Responses API to Shogo Cloud: ${request?.model} (stream: ${!!request?.stream})`)
-        return await forwardResponsesToCloud(c, request, c.req.raw.signal)
+        if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, body?.model))) {
+          return modelNotVisibleResponse(c, body?.model)
+        }
+        console.log(`[AI Proxy] Forwarding Responses API to Shogo Cloud: ${body?.model} (stream: ${!!body?.stream})`)
+        return await forwardResponsesToCloud(c, body, c.req.raw.signal)
       } catch (error: any) {
         console.error('[AI Proxy] Cloud forwarding error (responses):', error.message)
         return c.json({ error: { message: `Cloud proxy error: ${error.message}`, type: 'server_error', code: 'cloud_proxy_error' } }, 502)
@@ -3652,14 +4421,15 @@ export function aiProxyRoutes() {
 
     let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
-      const body = await c.req.json()
       const requestedModel = body.model
       if (!requestedModel) {
         return c.json({ error: { message: 'model is required', type: 'invalid_request_error' } }, 400)
       }
       const chatSessionId = c.req.header('x-chat-session-id') || null
 
-      const { resolvedModel } = resolveAgentModel(requestedModel)
+      // `auto` / `basic` / `advanced` were resolved above; `requestedModel` is
+      // already the concrete id.
+      const resolvedModel = requestedModel
       const modelConfig = resolveModel(resolvedModel)
       if (!modelConfig) {
         return c.json({ error: { message: `Model '${requestedModel}' is not supported.`, type: 'invalid_request_error' } }, 400)
@@ -3694,17 +4464,8 @@ export function aiProxyRoutes() {
         )
       }
 
-      if (!isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
-        return c.json(
-          {
-            error: {
-              message: `Model '${requestedModel}' is not available for this workspace. A workspace admin has restricted the available models.`,
-              type: 'invalid_request_error',
-              code: 'model_not_visible',
-            },
-          },
-          403
-        )
+      if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
+        return modelNotVisibleResponse(c, requestedModel)
       }
 
       const apiKey = getProviderApiKey(modelConfig.provider)
@@ -3876,8 +4637,28 @@ export function aiProxyRoutes() {
     const created = Math.floor(Date.now() / 1000)
     const visible = await resolveVisibleModelsForWorkspace(tokenPayload.workspaceId, { includeLive: true })
 
+    // A listed model must be one this plan can actually run, not just one whose
+    // provider is reachable. Without this a caller (the agent runtime, a tool
+    // such as `project_configure`) happily picks a model the chat routes would
+    // silently swap for Auto at request time (SHO-145) — better to report it
+    // `available:false` here so the tool refuses it up front with
+    // `model_unavailable`.
+    //
+    // One entitlement resolution per request, and only for a model that needs
+    // it: `hasAdvancedModelAccess` is workspace-wide, so it is memoised here
+    // rather than consulted once per model id.
+    let advancedAccess: boolean | undefined
+    const isAccessible = (id: string): Promise<boolean> =>
+      isModelAccessibleForWorkspace(tokenPayload.workspaceId, id, {
+        advancedAccess,
+        resolveAdvancedAccess: async () => {
+          advancedAccess ??= await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
+          return advancedAccess
+        },
+      })
+
     const models = [
-      ...visible.catalogModels.map((entry) => ({
+      ...(await Promise.all(visible.catalogModels.map(async (entry) => ({
         id: entry.id,
         object: 'model',
         created,
@@ -3886,16 +4667,16 @@ export function aiProxyRoutes() {
         ...(entry.kind ? { kind: entry.kind } : {}),
         ...(typeof entry.usdPerMinute === 'number' ? { usd_per_minute: entry.usdPerMinute } : {}),
         // Indicate if the provider is actually configured
-        available: isModelProviderConfigured(entry.provider),
-      })),
-      ...visible.openrouterModels.map((entry) => ({
+        available: isModelProviderConfigured(entry.provider) && (await isAccessible(entry.id)),
+      })))),
+      ...(await Promise.all(visible.openrouterModels.map(async (entry) => ({
         id: entry.id,
         object: 'model',
         created,
         owned_by: 'openrouter',
         display_name: entry.displayName,
-        available: isModelProviderConfigured('openrouter'),
-      })),
+        available: isModelProviderConfigured('openrouter') && (await isAccessible(entry.id)),
+      })))),
     ]
 
     return c.json({
@@ -4030,12 +4811,29 @@ export function aiProxyRoutes() {
     // When Shogo Cloud key is configured, forward everything to the cloud
     if (isShogoCloudForwarding()) {
       try {
-        const body = await c.req.text()
+        let body = await c.req.text()
+        // Same allowlist check as the local path below, using the same model
+        // resolution, before the request leaves this machine.
+        let forwardedModel: string | undefined
+        try { forwardedModel = JSON.parse(body)?.model } catch { /* cloud reports malformed bodies */ }
+        const { resolvedModel: forwardedResolved, isLocal: forwardedIsLocal } = await resolveRequestModel(forwardedModel || 'advanced', tokenPayload.workspaceId)
+        if (!forwardedIsLocal && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, forwardedResolved))) {
+          return c.json(
+            { type: 'error', error: { type: 'invalid_request_error', message: `Model '${forwardedResolved}' is not available for this workspace. A workspace admin has restricted the available models.` } },
+            403
+          )
+        }
         const headers: Record<string, string> = {}
         for (const [key, value] of Object.entries(c.req.header())) {
           if (value) headers[key] = value as string
         }
         const parsed = JSON.parse(body)
+        // Send the concrete id: a cloud that has not shipped `auto` yet would
+        // 400 on it, and `basic`/`advanced` resolve the same way there.
+        if (parsed.model && parsed.model !== forwardedResolved) {
+          parsed.model = forwardedResolved
+          body = JSON.stringify(parsed)
+        }
         console.log(`[AI Proxy] Forwarding Anthropic to Shogo Cloud: ${parsed.model || 'unknown'} (stream: ${!!parsed.stream})`)
         return await forwardAnthropicToCloud(c, body, headers, c.req.raw.signal)
       } catch (error: any) {
@@ -4071,12 +4869,12 @@ export function aiProxyRoutes() {
       const isStream = !!parsed.stream
       const chatSessionId = c.req.header('x-chat-session-id') || null
 
-      const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
+      const { resolvedModel, isLocal } = await resolveRequestModel(requestModel, tokenPayload.workspaceId)
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
       const resolvedModelConfig = resolveModel(resolvedModel)
 
       // Enforce workspace model visibility (see chat/completions for rationale).
-      if (!isLocal && !isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
+      if (!isLocal && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
         return c.json(
           { type: 'error', error: { type: 'invalid_request_error', message: `Model '${resolvedModel}' is not available for this workspace. A workspace admin has restricted the available models.` } },
           403
@@ -4239,18 +5037,17 @@ export function aiProxyRoutes() {
           return capture?.wrapStream(streamedResponse, 'anthropic') || streamedResponse
         } else {
           const openaiResult = await response.json() as any
-          const oaiTotalPrompt = openaiResult.usage?.prompt_tokens || 0
-          const oaiCachedPrompt = openaiResult.usage?.prompt_tokens_details?.cached_tokens || 0
-          recordUsage(tokenPayload, resolvedModel, oaiTotalPrompt - oaiCachedPrompt, openaiResult.usage?.completion_tokens || 0, oaiCachedPrompt, 0, chatSessionId, internalUsage)
+          const oaiPrompt = splitOpenAIPromptUsage(openaiResult.usage)
+          recordUsage(tokenPayload, resolvedModel, oaiPrompt.inputTokens, openaiResult.usage?.completion_tokens || 0, oaiPrompt.cachedInputTokens, oaiPrompt.cacheWriteTokens, chatSessionId, internalUsage)
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
           capture?.recordResponse({
             status: 200,
             body: anthropicResult,
             format: 'json',
             usage: {
-              inputTokens: oaiTotalPrompt - oaiCachedPrompt,
+              inputTokens: oaiPrompt.inputTokens,
               outputTokens: openaiResult.usage?.completion_tokens,
-              cachedInputTokens: oaiCachedPrompt,
+              cachedInputTokens: oaiPrompt.cachedInputTokens,
               reasoningTokens: openaiResult.usage?.completion_tokens_details?.reasoning_tokens,
             },
           })
@@ -4570,6 +5367,8 @@ export function aiProxyRoutes() {
         quality?: string
         n?: number
         response_format?: string
+        /** Model-specific documented fields (see list_media_models). */
+        options?: Record<string, unknown>
       }
 
       if (!body.prompt) {
@@ -4580,8 +5379,9 @@ export function aiProxyRoutes() {
       }
 
       // dall-e-3 is retired (OpenAI, 2026-09) — "The model 'dall-e-3' does
-      // not exist." gpt-image-2.5-flare is the current default.
-      const model = body.model || 'gpt-image-2.5-flare'
+      // not exist." Higgsfield's SOUL V2 is the default; without a Higgsfield
+      // key the route falls back to gpt-image-2.5-flare.
+      const model = body.model || defaultImageModel()
       const imageModel = resolveImageModel(model)
       if (!imageModel) {
         return c.json(
@@ -4615,12 +5415,24 @@ export function aiProxyRoutes() {
 
       const signal = c.req.raw.signal
       let result: ImageGenerationResponse
+      let billed = false
       if (imageModel.provider === 'openai') {
         result = await generateImageOpenAI(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'google') {
         result = await generateImageGoogle(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'local') {
         result = await generateImageLocal(imageModel.apiModel, body, signal)
+      } else if (imageModel.provider === 'higgsfield' && imageModel.entry) {
+        const generated = await generateImageHiggsfield(apiKey, imageModel.entry, body, signal)
+        result = generated.result
+        recordHiggsfieldImageUsage(
+          tokenPayload,
+          imageModel.entry,
+          generated.charge,
+          body.n || 1,
+          c.req.header('x-chat-session-id') || null,
+        )
+        billed = true
       } else {
         return c.json(
           { error: { message: `Unsupported image provider: ${imageModel.provider}`, type: 'server_error', code: 'unsupported_provider' } },
@@ -4628,33 +5440,40 @@ export function aiProxyRoutes() {
         )
       }
 
-      recordImageUsage(
-        tokenPayload,
-        model,
-        body.quality || 'standard',
-        body.size || '1024x1024',
-        body.n || 1,
-        c.req.header('x-chat-session-id') || null,
-      )
+      if (!billed) {
+        recordImageUsage(
+          tokenPayload,
+          imageModel.entry?.id ?? model,
+          body.quality || 'standard',
+          body.size || '1024x1024',
+          body.n || 1,
+          c.req.header('x-chat-session-id') || null,
+        )
+      }
 
       capture?.recordResponse({ status: 200, body: result, format: 'json' })
-      return c.json(result)
+      // `model` is the catalog id that actually ran: a retired id forwarded by a
+      // caller is reported as the model that replaced it.
+      return c.json({ ...result, model: imageModel.entry?.id ?? model })
     } catch (error: any) {
       capture?.finish({ errorType: 'generation_error' })
       console.error('[AI Proxy] Image generation error:', error.message)
-      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      const statusCode = mediaErrorStatus(error) || 500
       return c.json(
-        { error: { message: error.message || 'Image generation failed', type: 'server_error', code: 'generation_error' } },
+        { error: { message: error.message || 'Image generation failed', type: 'server_error', code: mediaErrorCode(error, 'generation_error') } },
         statusCode
       )
     }
   })
 
   /**
-   * POST /ai/v1/images/edits - Image editing proxy (reference image + prompt)
+   * POST /ai/v1/images/edits - Image editing proxy (reference images + prompt)
    *
-   * Accepts multipart/form-data with an image file and prompt.
-   * Routes to OpenAI's /v1/images/edits endpoint.
+   * Accepts multipart/form-data with one or more `image` files and a prompt.
+   * GPT image models go to OpenAI's /v1/images/edits; Higgsfield models upload
+   * the references and send them on whichever endpoint documents a reference
+   * field. The number of images is checked against the model's catalog
+   * `capabilities`.
    */
   router.post('/ai/v1/images/edits', async (c) => {
     const tokenPayload = await validateProxyAuth(c)
@@ -4683,11 +5502,25 @@ export function aiProxyRoutes() {
     try {
       const formData = await c.req.formData()
       const prompt = formData.get('prompt') as string
-      const imageFile = formData.get('image') as File | null
+      const imageFiles = formData.getAll('image').filter((v): v is File => typeof v !== 'string')
       const model = (formData.get('model') as string) || 'gpt-image-2.5-flare'
       const size = (formData.get('size') as string) || '1024x1024'
       const n = parseInt((formData.get('n') as string) || '1', 10)
       const quality = (formData.get('quality') as string) || 'standard'
+      const rawOptions = formData.get('options')
+      let options: Record<string, unknown> | undefined
+      if (typeof rawOptions === 'string' && rawOptions.trim().length > 0) {
+        try {
+          const parsed = JSON.parse(rawOptions)
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+          options = parsed as Record<string, unknown>
+        } catch {
+          return c.json(
+            { error: { message: 'options must be a JSON object of model-specific fields.', type: 'invalid_request_error', code: 'invalid_options' } },
+            400
+          )
+        }
+      }
 
       if (!prompt) {
         return c.json(
@@ -4695,85 +5528,1149 @@ export function aiProxyRoutes() {
           400
         )
       }
-      if (!imageFile) {
+      if (imageFiles.length === 0) {
         return c.json(
           { error: { message: 'image file is required for edits', type: 'invalid_request_error', code: 'missing_image' } },
           400
         )
       }
 
-      const openaiKey = process.env.OPENAI_API_KEY
-      if (!openaiKey) {
+      const imageModel = resolveImageModel(model)
+      if (!imageModel) {
         return c.json(
-          { error: { message: 'OpenAI is not configured on this server (required for image edits).', type: 'server_error', code: 'provider_not_configured' } },
+          { error: { message: `Image model '${model}' is not supported.`, type: 'invalid_request_error', code: 'model_not_found' } },
+          400
+        )
+      }
+      const maxRefs = imageModel.entry?.capabilities.imageToImage ? imageModel.entry.capabilities.maxReferenceImages : 0
+      if (maxRefs === 0 || (imageModel.provider !== 'openai' && imageModel.provider !== 'higgsfield')) {
+        return c.json(
+          { error: { message: `Image model '${model}' does not accept reference images. Call list_media_models to find one that does.`, type: 'invalid_request_error', code: 'reference_images_unsupported' } },
+          400
+        )
+      }
+      if (imageFiles.length > maxRefs) {
+        return c.json(
+          { error: { message: `Image model '${model}' accepts at most ${maxRefs} reference image(s); got ${imageFiles.length}.`, type: 'invalid_request_error', code: 'too_many_reference_images' } },
+          400
+        )
+      }
+
+      const apiKey = getImageProviderApiKey(imageModel.provider)
+      if (!apiKey) {
+        return c.json(
+          { error: { message: `Image provider '${imageModel.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
           503
         )
       }
 
-      console.log(`[AI Proxy] 🎨 Image edit: ${tokenPayload.projectId} → openai/${model}`)
+      console.log(`[AI Proxy] 🎨 Image edit: ${tokenPayload.projectId} → ${imageModel.provider}/${imageModel.apiModel} (${imageFiles.length} reference image(s))`)
 
-      // dall-e-2 (the previous edits-only model) is retired (OpenAI,
-      // 2026-09). gpt-image-1 supports /v1/images/edits too, so honor the
-      // caller's model instead of hardcoding a dead one — but gpt-image
-      // models reject `response_format` (400 unknown_parameter) and use
-      // different size tokens, same as the generations path above.
-      const editModel = model
-      const forwardForm = new FormData()
-      forwardForm.append('image', imageFile)
-      forwardForm.append('prompt', prompt)
-      forwardForm.append('model', editModel)
-      forwardForm.append('size', normalizeSizeForModel(editModel, size))
-      forwardForm.append('n', String(n))
-      const editQuality = normalizeQualityForModel(editModel, quality)
-      if (editQuality) forwardForm.append('quality', editQuality)
-      if (!editModel.startsWith('gpt-image')) forwardForm.append('response_format', 'b64_json')
-
-      const imageBytes = Buffer.from(await imageFile.arrayBuffer())
+      const imageDataUris = await Promise.all(imageFiles.map(async (file) => {
+        const bytes = Buffer.from(await file.arrayBuffer())
+        return `data:${file.type || 'image/png'};base64,${bytes.toString('base64')}`
+      }))
       capture = await beginCapture({
         tokenPayload,
         endpoint: 'images.edits',
-        requestBody: {
-          prompt,
-          model,
-          size,
-          n,
-          quality,
-          image: `data:${imageFile.type || 'application/octet-stream'};base64,${imageBytes.toString('base64')}`,
-        },
+        requestBody: { prompt, model, size, n, quality, images: imageDataUris },
         requestedModel: model,
-        resolvedModel: editModel,
-        provider: 'openai',
+        resolvedModel: imageModel.apiModel,
+        provider: imageModel.provider,
         stream: false,
         chatSessionId: c.req.header('x-chat-session-id') || null,
         client: c.req.header('x-shogo-client'),
         requestHeaders: c.req.raw.headers,
       })
 
-      const response = await fetch('https://api.openai.com/v1/images/edits', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${openaiKey}` },
-        body: forwardForm,
-        signal: c.req.raw.signal,
-      })
+      let result: ImageGenerationResponse
+      let billed = false
+      if (imageModel.provider === 'higgsfield') {
+        const generated = await generateImageHiggsfield(
+          apiKey,
+          imageModel.entry!,
+          { prompt, size, quality, n, referenceImages: imageDataUris, options },
+          c.req.raw.signal,
+        )
+        result = generated.result
+        recordHiggsfieldImageUsage(
+          tokenPayload,
+          imageModel.entry!,
+          generated.charge,
+          n,
+          c.req.header('x-chat-session-id') || null,
+        )
+        billed = true
+      } else {
+        // gpt-image models reject `response_format` (400 unknown_parameter)
+        // and use different size tokens, same as the generations path above.
+        const editModel = imageModel.apiModel
+        const forwardForm = new FormData()
+        if (imageFiles.length === 1) {
+          forwardForm.append('image', imageFiles[0])
+        } else {
+          for (const file of imageFiles) forwardForm.append('image[]', file)
+        }
+        forwardForm.append('prompt', prompt)
+        forwardForm.append('model', editModel)
+        forwardForm.append('size', normalizeSizeForModel(editModel, size))
+        forwardForm.append('n', String(n))
+        const editQuality = normalizeQualityForModel(editModel, quality)
+        if (editQuality) forwardForm.append('quality', editQuality)
+        if (!editModel.startsWith('gpt-image')) forwardForm.append('response_format', 'b64_json')
 
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`OpenAI image edit error (${response.status}): ${errorText}`)
+        const response = await fetch('https://api.openai.com/v1/images/edits', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${apiKey}` },
+          body: forwardForm,
+          signal: c.req.raw.signal,
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          throw new Error(`OpenAI image edit error (${response.status}): ${errorText}`)
+        }
+
+        result = await response.json() as ImageGenerationResponse
       }
 
-      const result = await response.json() as ImageGenerationResponse
-
-      recordImageUsage(tokenPayload, model, quality, size, n, c.req.header('x-chat-session-id') || null)
+      if (!billed) {
+        recordImageUsage(tokenPayload, imageModel.entry?.id ?? model, quality, size, n, c.req.header('x-chat-session-id') || null)
+      }
 
       capture?.recordResponse({ status: 200, body: result, format: 'json' })
-      return c.json(result)
+      return c.json({ ...result, model: imageModel.entry?.id ?? imageModel.apiModel })
     } catch (error: any) {
       capture?.finish({ errorType: 'edit_error' })
       console.error('[AI Proxy] Image edit error:', error.message)
-      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      const statusCode = mediaErrorStatus(error) || 500
       return c.json(
-        { error: { message: error.message || 'Image edit failed', type: 'server_error', code: 'edit_error' } },
+        { error: { message: error.message || 'Image edit failed', type: 'server_error', code: mediaErrorCode(error, 'edit_error') } },
         statusCode
+      )
+    }
+  })
+
+  /**
+   * GET /ai/v1/media/models - Image and video models this server can run,
+   * with their endpoints, every documented option and a Shogo (marked-up)
+   * price. Backs the `list_media_models` tool so agents can pick a model and
+   * budget a batch before generating. Models whose provider has no key are
+   * omitted. `?model=` narrows to one model, `?kind=image|video` to one kind.
+   */
+  router.get('/ai/v1/media/models', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+    const kind = c.req.query('kind')
+    if (kind !== undefined && kind !== 'image' && kind !== 'video') {
+      return c.json(
+        { error: { message: "kind must be 'image' or 'video'.", type: 'invalid_request_error', code: 'invalid_kind' } },
+        400
+      )
+    }
+    return c.json(await listMediaModels(c.req.raw.signal, { model: c.req.query('model'), kind }))
+  })
+
+  /**
+   * GET /ai/v1/media/presets - Genjutsu Restyle style presets (id, name,
+   * preview). Restyle requires one of these ids as `preset_id`; they are
+   * fetched live because the catalog changes.
+   */
+  router.get('/ai/v1/media/presets', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+    const apiKey = getImageProviderApiKey('higgsfield')
+    if (!apiKey) {
+      return c.json(
+        { error: { message: "Media provider 'higgsfield' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+        503
+      )
+    }
+    try {
+      return c.json({ presets: await higgsfieldPresets(apiKey, c.req.raw.signal) })
+    } catch (error: any) {
+      console.error('[AI Proxy] Preset listing error:', error.message)
+      return c.json(
+        { error: { message: error.message || 'Listing presets failed', type: 'server_error', code: mediaErrorCode(error, 'presets_error') } },
+        mediaErrorStatus(error) || 502
+      )
+    }
+  })
+
+  /**
+   * POST /ai/v1/media/estimate - What a generation would cost, without
+   * generating it. Free (Higgsfield's `/estimate` is free), and never creates a
+   * job or a charge. Agents and the live tests use this to budget before
+   * spending.
+   */
+  router.post('/ai/v1/media/estimate', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+    const invalid = (message: string, code: string) =>
+      c.json({ error: { message, type: 'invalid_request_error', code } }, 400)
+    try {
+      const body = await c.req.json() as {
+        model?: string
+        kind?: 'image' | 'video'
+        duration?: number
+        resolution?: string
+        aspect_ratio?: string
+        size?: string
+        quality?: string
+        prompt?: string
+        audio?: boolean
+        source_video_url?: string
+        source_duration_seconds?: number
+        preset_id?: string
+        options?: Record<string, unknown>
+      }
+      const videoEntry = body.kind !== 'image' && body.model ? getVideoModelEntry(body.model) : undefined
+      const imageEntry = body.kind !== 'video' && body.model ? resolveImageModel(body.model)?.entry : undefined
+      if (!body.model) return invalid('model is required', 'missing_model')
+      if (!videoEntry && !imageEntry) return invalid(`Unknown or retired model '${body.model}'.`, 'model_not_found')
+
+      if (videoEntry) {
+        const apiKey = getImageProviderApiKey(videoEntry.provider)
+        if (!apiKey) {
+          return c.json({ error: { message: `Video provider '${videoEntry.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } }, 503)
+        }
+        const duration = body.duration ?? videoEntry.defaultDuration
+        if (videoEntry.durations.length > 0 && !videoEntry.durations.includes(duration)) {
+          return invalid(
+            `${videoEntry.displayName} supports durations ${describeDurationMenu(videoEntry.durations)} seconds; got ${duration}.`,
+            'invalid_duration',
+          )
+        }
+        if (videoEntry.sourceVideo) {
+          // Genjutsu quotes a prose rate card rather than a `usd` figure, so
+          // price it from the vendor's per-second table times the clip length.
+          const seconds = body.source_duration_seconds
+          if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+            return invalid(
+              `${videoEntry.displayName} is billed per source second: pass source_duration_seconds (the clip's length).`,
+              'missing_source_duration',
+            )
+          }
+          const resolution = body.resolution ?? videoEntry.defaultResolution ?? '720p'
+          const billedSeconds = Math.min(seconds, videoEntry.maxSourceSeconds ?? 30)
+          const charge = calculateGenjutsuUsageCost(videoEntry.usdPerSecondByResolution, resolution, billedSeconds)
+          if (!charge) {
+            return invalid(`Cannot price ${videoEntry.displayName} at ${resolution}.`, 'estimate_unavailable')
+          }
+          return c.json({
+            model: videoEntry.id,
+            provider: 'higgsfield',
+            unit: 'second',
+            duration: billedSeconds,
+            resolution,
+            raw_usd: roundUsd(charge.rawUsd),
+            usd: roundUsd(charge.billedUsd),
+            source: 'rate_card',
+          })
+        }
+        // The vendor's schema requires a prompt even to quote a price; its
+        // content does not change the number.
+        const request = buildHiggsfieldVideoRequest(videoEntry, {
+          prompt: body.prompt || 'a product rotating on a table, studio light',
+          duration,
+          resolution: body.resolution,
+          aspectRatio: body.aspect_ratio,
+          audio: body.audio,
+          options: body.options,
+        })
+        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal)
+        const charge = higgsfieldCharge(estimate.rawUsd)
+        if (!charge) {
+          return c.json({ error: { message: 'Higgsfield returned no price for this request.', type: 'server_error', code: 'estimate_unavailable' } }, 503)
+        }
+        return c.json({ model: videoEntry.id, provider: 'higgsfield', unit: 'clip', duration, raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), credits: estimate.credits, source: 'estimate' })
+      }
+
+      const entry = imageEntry!
+      const apiKey = getImageProviderApiKey(entry.provider)
+      if (!apiKey) {
+        return c.json({ error: { message: `Image provider '${entry.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } }, 503)
+      }
+      if (entry.provider === 'higgsfield') {
+        const request = buildHiggsfieldImageRequest(entry, {
+          prompt: 'a product photo',
+          size: body.size,
+          quality: body.quality,
+          options: body.options,
+        })
+        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal)
+        const charge = higgsfieldCharge(estimate.rawUsd)
+        if (!charge) {
+          return c.json({ error: { message: 'Higgsfield returned no price for this image.', type: 'server_error', code: 'estimate_unavailable' } }, 503)
+        }
+        return c.json({ model: entry.id, provider: 'higgsfield', unit: 'image', raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), credits: estimate.credits, source: 'estimate' })
+      }
+      const charge = calculateImageUsageCost(entry.id, body.quality || 'standard', body.size || '1024x1024')
+      return c.json({ model: entry.id, provider: entry.provider, unit: 'image', raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), source: 'catalog' })
+    } catch (error: any) {
+      console.error('[AI Proxy] Media estimate error:', error.message)
+      return c.json(
+        { error: { message: error.message || 'Estimate failed', type: 'server_error', code: mediaErrorCode(error, 'estimate_error') } },
+        mediaErrorStatus(error) || 502
+      )
+    }
+  })
+
+  /**
+   * POST /ai/v1/media/uploads - Put bytes on the media provider's storage and
+   * return the public URL the generation endpoints require. Raw body (not
+   * multipart) with the real `Content-Type`; cap is the provider's 200 MiB
+   * input limit. Used for Genjutsu source clips, which are too large to base64
+   * through the JSON routes.
+   */
+  router.post('/ai/v1/media/uploads', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+    const apiKey = getImageProviderApiKey('higgsfield')
+    if (!apiKey) {
+      return c.json(
+        { error: { message: "Media provider 'higgsfield' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+        503
+      )
+    }
+    const contentType = (c.req.header('content-type') || '').split(';')[0].trim().toLowerCase()
+    if (!HIGGSFIELD_UPLOAD_CONTENT_TYPES.has(contentType)) {
+      return c.json(
+        { error: { message: `Unsupported upload type '${contentType || 'unknown'}'. Use one of: ${[...HIGGSFIELD_UPLOAD_CONTENT_TYPES].join(', ')}.`, type: 'invalid_request_error', code: 'unsupported_content_type' } },
+        400
+      )
+    }
+    try {
+      // The provider caps input media at 200 MiB; refuse before buffering a
+      // larger body, and never let an unbounded upload into memory.
+      const MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+      const declaredLength = Number(c.req.header('content-length') || 0)
+      if (declaredLength > MAX_UPLOAD_BYTES) {
+        return c.json(
+          { error: { message: `Upload is ${(declaredLength / (1024 * 1024)).toFixed(1)} MB; the limit is 200 MB.`, type: 'invalid_request_error', code: 'upload_too_large' } },
+          413
+        )
+      }
+      const bytes = new Uint8Array(await c.req.arrayBuffer())
+      if (bytes.byteLength === 0) {
+        return c.json({ error: { message: 'Upload body is empty.', type: 'invalid_request_error', code: 'empty_body' } }, 400)
+      }
+      if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+        return c.json(
+          { error: { message: `Upload is ${(bytes.byteLength / (1024 * 1024)).toFixed(1)} MB; the limit is 200 MB.`, type: 'invalid_request_error', code: 'upload_too_large' } },
+          413
+        )
+      }
+      const { publicUrl } = await higgsfieldUpload(apiKey, bytes, contentType, c.req.raw.signal)
+      return c.json({ url: publicUrl, content_type: contentType, bytes: bytes.byteLength })
+    } catch (error: any) {
+      console.error('[AI Proxy] Media upload error:', error.message)
+      return c.json(
+        { error: { message: error.message || 'Upload failed', type: 'server_error', code: mediaErrorCode(error, 'upload_error') } },
+        mediaErrorStatus(error) || 502
+      )
+    }
+  })
+
+  // =========================================================================
+  // Video Generation Endpoints (Higgsfield)
+  // =========================================================================
+
+  /**
+   * POST /ai/v1/videos/generations - Submit a video job.
+   *
+   * Body: `{ prompt, model, duration?, aspect_ratio?, resolution?, audio?,
+   * start_image?, reference_images?, source_video_url?, preset_id?, options? }`
+   * with images as data URIs (or public URLs). `options` carries model-specific
+   * fields (`cfg_scale`, `multi_shots`, `multi_prompt`, `seed`, …) — the proxy
+   * validates each against the endpoint's documented schema. Returns `{ id }`
+   * right away; poll `GET /ai/v1/videos/:id`. Nothing is charged until the job
+   * completes, and a failed / NSFW / canceled job is never charged.
+   */
+  router.post('/ai/v1/videos/generations', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    if (!(await isTurnInFlight(c, tokenPayload))) {
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
+      }
+    }
+
+    const invalid = (message: string, code: string) =>
+      c.json({ error: { message, type: 'invalid_request_error', code } }, 400)
+
+    try {
+      const body = await c.req.json() as {
+        prompt?: string
+        model?: string
+        duration?: number
+        aspect_ratio?: string
+        resolution?: string
+        audio?: boolean
+        start_image?: string
+        reference_images?: string[]
+        source_video_url?: string
+        source_duration_seconds?: number
+        preset_id?: string
+        genjutsu?: string
+        /** Model-specific documented fields (see list_media_models). */
+        options?: Record<string, unknown>
+      }
+      if (body.genjutsu && !GENJUTSU_MODEL_BY_WORKFLOW[body.genjutsu]) {
+        return invalid(`genjutsu must be one of ${Object.keys(GENJUTSU_MODEL_BY_WORKFLOW).join(', ')}; got '${body.genjutsu}'.`, 'invalid_genjutsu')
+      }
+      const modelId = body.model || (body.genjutsu ? GENJUTSU_MODEL_BY_WORKFLOW[body.genjutsu] : defaultVideoModel())
+      const entry = getVideoModelEntry(modelId)
+      if (!entry) return invalid(`Video model '${modelId}' is not supported. Call list_media_models for the list.`, 'model_not_found')
+      if (body.genjutsu && entry.genjutsu !== body.genjutsu) {
+        return invalid(
+          `${entry.displayName} is not the '${body.genjutsu}' workflow${entry.genjutsu ? ` (it is '${entry.genjutsu}')` : ''}.`,
+          'genjutsu_model_mismatch',
+        )
+      }
+
+      const prompt = (body.prompt ?? '').trim()
+      if (!prompt && !entry.sourceVideo) return invalid('prompt is required', 'missing_prompt')
+
+      // A Genjutsu edit's length is the source clip's; everything else has a
+      // duration menu the model documents. The list is a range for the newer
+      // families (Kling 3.0 documents 3–15 s), so it reads as one number.
+      const duration = entry.sourceVideo ? 0 : body.duration ?? entry.defaultDuration
+      /** Billed length of a Genjutsu source clip, in seconds. */
+      let sourceSeconds: number | undefined
+      if (!entry.sourceVideo && !entry.durations.includes(duration)) {
+        return invalid(
+          `${entry.displayName} supports durations ${describeDurationMenu(entry.durations)} seconds; got ${duration}.`,
+          'invalid_duration',
+        )
+      }
+      if (entry.sourceVideo) {
+        if (!body.source_video_url) {
+          return invalid(`${entry.displayName} edits a clip: pass source_video (a workspace video) or source_video_url.`, 'missing_source_video')
+        }
+        if (!/^https:\/\//i.test(body.source_video_url)) {
+          return invalid('source_video_url must be a public https URL.', 'invalid_source_video')
+        }
+        if (entry.genjutsu === 'restyle' && !body.preset_id) {
+          return invalid('Genjutsu Restyle needs a preset_id from GET /ai/v1/media/presets.', 'missing_preset_id')
+        }
+        // These workflows are billed per source second, and the vendor quotes
+        // no usable number up front, so the length has to come from the caller.
+        // Without it we would bill zero — refuse instead.
+        const declared = body.source_duration_seconds
+        if (typeof declared !== 'number' || !Number.isFinite(declared) || declared <= 0) {
+          return invalid(
+            `${entry.displayName} is billed per source second: pass source_duration_seconds (the clip's length).`,
+            'missing_source_duration',
+          )
+        }
+        const minSeconds = entry.minSourceSeconds ?? 4
+        if (declared < minSeconds) {
+          return invalid(`The source clip is ${declared.toFixed(1)} s; ${entry.displayName} needs at least ${minSeconds} s.`, 'source_too_short')
+        }
+        // The provider trims anything longer than its max, so bill the trimmed length.
+        sourceSeconds = Math.min(declared, entry.maxSourceSeconds ?? 30)
+      }
+      if (body.start_image !== undefined) {
+        const acceptable = typeof body.start_image === 'string'
+          && (body.start_image.startsWith('data:image/') || /^https:\/\//i.test(body.start_image))
+        if (!acceptable) return invalid('start_image must be an image data URI or an https URL', 'invalid_start_image')
+        if (!entry.imageToVideoApiModel) return invalid(`${entry.displayName} does not support image-to-video.`, 'image_to_video_unsupported')
+      }
+      const refs = body.reference_images ?? []
+      if (!Array.isArray(refs) || refs.some((r) => typeof r !== 'string' || !(r.startsWith('data:image/') || /^https:\/\//i.test(r)))) {
+        return invalid('reference_images must be image data URIs or https URLs', 'invalid_reference_images')
+      }
+      if (refs.length > entry.maxReferenceImages) {
+        return invalid(
+          entry.maxReferenceImages === 0
+            ? `${entry.displayName} does not accept reference images.`
+            : `${entry.displayName} accepts at most ${entry.maxReferenceImages} reference image(s); got ${refs.length}.`,
+          'too_many_reference_images',
+        )
+      }
+      if (entry.sourceVideo && entry.genjutsu !== 'restyle' && refs.length === 0) {
+        return invalid(`${entry.displayName} needs at least 1 reference image (the subject to drive or swap in).`, 'missing_reference_images')
+      }
+
+      const apiKey = getImageProviderApiKey(entry.provider)
+      if (!apiKey) {
+        return c.json(
+          { error: { message: `Video provider '${entry.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
+          503
+        )
+      }
+
+      const signal = c.req.raw.signal
+      const id = `vid_${randomUUID()}`
+      const audio = body.audio === true
+
+      // Higgsfield: input media must be public URLs, so data URIs are uploaded
+      // first (the API key stays server-side). The price is settled before we
+      // submit: a job we cannot price is refused, never run for free.
+      const referenceUrls = await Promise.all(refs.map((ref) => higgsfieldEnsurePublicUrl(apiKey, ref, signal)))
+      const startImageUrl = body.start_image
+        ? await higgsfieldEnsurePublicUrl(apiKey, body.start_image, signal)
+        : undefined
+      const request = buildHiggsfieldVideoRequest(entry, {
+        prompt: prompt || undefined,
+        duration: entry.sourceVideo ? undefined : duration,
+        aspectRatio: body.aspect_ratio,
+        resolution: body.resolution,
+        audio: body.audio,
+        startImageUrl,
+        referenceUrls,
+        sourceVideoUrl: body.source_video_url,
+        presetId: body.preset_id,
+        options: body.options,
+      })
+      // What the request actually carries, not what was asked for: a model whose
+      // audio field is absent reports false even if `audio` was sent.
+      const sentResolution = (request.input.resolution as string | undefined) ?? entry.defaultResolution ?? '720p'
+
+      let charge: { rawUsd: number; billedUsd: number } | null
+      let credits: number | undefined
+      if (entry.genjutsu) {
+        // Genjutsu answers `/estimate` with a prose rate card, not a `usd`
+        // figure, so price it from the vendor's per-second table instead.
+        charge = calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, sentResolution, sourceSeconds!)
+        if (!charge) {
+          return invalid(
+            `Cannot price ${entry.displayName} at ${sentResolution}; supported resolutions are ${(entry.resolutions ?? []).join(', ')}.`,
+            'estimate_unavailable',
+          )
+        }
+      } else {
+        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, signal).catch(() => null)
+        charge = higgsfieldCharge(estimate?.rawUsd ?? null)
+        credits = estimate?.credits
+        if (!charge) {
+          return c.json(
+            { error: { message: 'Higgsfield did not return a price for this request. Nothing was submitted or charged; try again.', type: 'server_error', code: 'estimate_unavailable' } },
+            503,
+          )
+        }
+      }
+
+      const submission = await higgsfieldSubmit(apiKey, request.endpoint, request.input, { idempotencyKey: id, signal })
+      const billedDuration = entry.sourceVideo ? sourceSeconds! : duration
+
+      await putVideoJob({
+        id,
+        provider: 'higgsfield',
+        workspaceId: tokenPayload.workspaceId,
+        projectId: tokenPayload.projectId,
+        userId: tokenPayload.userId,
+        chatSessionId: c.req.header('x-chat-session-id') || null,
+        model: entry.id,
+        endpoint: request.endpoint,
+        statusUrl: submission.statusUrl,
+        requestId: submission.requestId,
+        estimate: { rawUsd: charge.rawUsd, billedUsd: charge.billedUsd, ...(credits !== undefined ? { credits } : {}) },
+        duration: billedDuration,
+        audio: audio && !!entry.audio,
+        aspectRatio: body.aspect_ratio,
+        resolution: sentResolution,
+        ...(entry.sourceVideo ? { sourceVideo: true } : {}),
+        imageToVideo: !!body.start_image,
+        createdAt: Date.now(),
+      })
+      console.log(`[AI Proxy] 🎬 Video job ${id}: ${tokenPayload.projectId} → ${request.endpoint} (${billedDuration}s${audio && entry.audio ? ', audio' : ''}${entry.sourceVideo ? ', source clip' : ''}, $${charge.billedUsd.toFixed(3)})`)
+
+      return c.json({
+        id,
+        status: 'queued',
+        model: entry.id,
+        duration: billedDuration,
+        audio: audio && !!entry.audio,
+        provider: 'higgsfield',
+        estimated_usd: roundUsd(charge.billedUsd),
+        price_source: entry.genjutsu ? 'rate_card' : 'estimate',
+      })
+    } catch (error: any) {
+      console.error('[AI Proxy] Video submit error:', error.message)
+      const statusCode = mediaErrorStatus(error) || (error.message?.includes('422') ? 400 : 502)
+      return c.json(
+        { error: { message: error.message || 'Video submission failed', type: 'server_error', code: mediaErrorCode(error, 'video_submit_error') } },
+        statusCode
+      )
+    }
+  })
+
+  /**
+   * GET /ai/v1/videos/:id - Status of a video job. When it has completed,
+   * returns the video URL and charges for it, exactly once per job id no
+   * matter how many times (or on how many pods) it is polled.
+   */
+  router.get('/ai/v1/videos/:id', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    const id = c.req.param('id')
+    const job = await getVideoJob(id)
+    if (!job || job.workspaceId !== tokenPayload.workspaceId) {
+      return c.json({ error: { message: `Video job '${id}' not found.`, type: 'invalid_request_error', code: 'job_not_found' } }, 404)
+    }
+    const entry = getVideoModelEntry(job.model)
+    const apiKey = getImageProviderApiKey(entry?.provider ?? job.provider)
+    if (!entry || !apiKey) {
+      return c.json(
+        { error: { message: `Video provider '${job.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
+        503
+      )
+    }
+
+    const base = { id, model: job.model, duration: job.duration, audio: job.audio, created_at: job.createdAt }
+
+    if (job.provider === 'higgsfield') {
+      try {
+        const status = await higgsfieldStatus(apiKey, job.statusUrl, c.req.raw.signal)
+        if (status.status === 'completed') {
+          if (!status.videoUrl) {
+            return c.json({ ...base, status: 'failed', error: 'The provider finished without returning a video.' })
+          }
+          if (await claimVideoCharge(id)) {
+            recordHiggsfieldVideoUsage(
+              tokenPayload,
+              job,
+              c.req.header('x-chat-session-id') || job.chatSessionId || null,
+            )
+          }
+          return c.json({
+            ...base,
+            status: 'completed',
+            video: { url: status.videoUrl, content_type: 'video/mp4' },
+          })
+        }
+        if (status.status === 'failed' || status.status === 'nsfw' || status.status === 'canceled') {
+          // Not charged: the provider refunds these, so billing them would overcharge.
+          const reason = status.error
+            ?? (status.status === 'nsfw' ? 'The provider blocked this clip (content policy).' : `The provider ${status.status} the request.`)
+          return c.json({ ...base, status: 'failed', error: reason })
+        }
+        return c.json({ ...base, status: status.status === 'queued' ? 'queued' : 'in_progress' })
+      } catch (error: any) {
+        const message: string = error.message || 'Video status check failed'
+        if (error instanceof HiggsfieldError && (error.code === 'validation' || error.code === 'timeout')) {
+          return c.json({ ...base, status: 'failed', error: message })
+        }
+        console.error(`[AI Proxy] Video status error for ${id}:`, message)
+        return c.json({ error: { message, type: 'server_error', code: mediaErrorCode(error, 'video_status_error') } }, mediaErrorStatus(error) || 502)
+      }
+    }
+
+    return c.json(
+      { error: { message: `Video job '${id}' has no provider.`, type: 'server_error', code: 'provider_not_configured' } },
+      503
+    )
+  })
+
+  // =========================================================================
+  // 3D Endpoints (Tripo3D V3) — generation, post-processing, rigging
+  // =========================================================================
+
+  /** Texture quality levels the texture-bearing ops accept. */
+  const TRIPO_TEXTURE_QUALITIES = new Set(['fast', 'standard', 'detailed', 'extreme'])
+  /** Generation ops resolve `model` through Shogo's catalog; the rest pass a vendor version through. */
+  const TRIPO_GENERATION_OPS = new Set<string>(['text_to_model', 'image_to_model', 'multiview_to_model'])
+  /** Body keys that are the route's own, not op parameters. */
+  const TRIPO_CORE_FIELDS = new Set(['op', 'prompt', 'image', 'images', 'input', 'model'])
+  /** JSON upload cap for `POST /ai/v1/3d/files` (Tripo's own image limit). */
+  const TRIPO_FILE_MAX_BYTES = 25 * 1024 * 1024
+
+  const tripoOpList = Object.keys(TRIPO_OPS).join(', ')
+
+  /**
+   * `input` for a post-process op: a task id, a file token or an https URL
+   * forwards untouched; anything else (a data URI or raw base64) is uploaded
+   * and replaced by its `file_token`.
+   */
+  /** A `gen3d_…` job id from this proxy → the vendor task it wraps. */
+  async function resolve3dJobRef(
+    value: string,
+    workspaceId: string,
+  ): Promise<string | undefined> {
+    if (!value.startsWith('gen3d_')) return undefined
+    const job = await get3dJob(value)
+    return job && job.workspaceId === workspaceId ? job.taskId : undefined
+  }
+
+  async function resolveTripoModelInput(
+    apiKey: string,
+    value: string,
+    signal?: AbortSignal,
+  ): Promise<{ input: string } | { error: string; code: string }> {
+    if (isTaskId(value) || isFileToken(value) || isHttpsUrl(value)) return { input: value }
+    if (!value.startsWith('data:')) {
+      return { error: 'input must be a task id, a file_token, an https URL or a data URI', code: 'invalid_input' }
+    }
+    const { bytes, contentType } = parseDataUri(value)
+    try {
+      return { input: await tripoUploadFile(apiKey, bytes, contentType, undefined, signal) }
+    } catch (err: any) {
+      return { error: err.message || 'Upload failed', code: 'upload_failed' }
+    }
+  }
+
+  /** Same, for a single image (image-to-model, texture style image). */
+  async function resolveTripoImageInput(
+    apiKey: string,
+    value: string,
+    signal?: AbortSignal,
+  ): Promise<{ input: string } | { error: string; code: string }> {
+    if (isFileToken(value) || isHttpsUrl(value)) return { input: value }
+    if (!value.startsWith('data:')) {
+      return { error: 'image must be an image data URI, a file_token or an https URL', code: 'invalid_image' }
+    }
+    const { bytes, contentType } = parseDataUri(value)
+    if (!/^image\/(png|jpeg|webp)$/.test(contentType)) {
+      return { error: 'image data URI must be PNG, JPEG or WebP', code: 'invalid_image' }
+    }
+    try {
+      return { input: await tripoUploadFile(apiKey, bytes, contentType, undefined, signal) }
+    } catch (err: any) {
+      return { error: err.message || 'Upload failed', code: 'upload_failed' }
+    }
+  }
+
+  /**
+   * GET /ai/v1/3d/models - 3D models this server can run, with capabilities
+   * and Shogo (marked-up) price, plus the operations and their credit
+   * estimates so a caller can budget before spending. Empty when no Tripo key
+   * is configured.
+   */
+  router.get('/ai/v1/3d/models', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    const configured = !!getNativeProviderApiKeySync('tripo')
+    const models = configured
+      ? Object.values(TRIPO_MODELS).map((entry) => {
+          const text = estimateTripoTaskCost({ op: 'text_to_model', model: entry.id, textureQuality: 'standard' })
+          const bare = estimateTripoTaskCost({ op: 'text_to_model', model: entry.id, texture: false })
+          return {
+            id: entry.id,
+            name: entry.name,
+            text_to_model: entry.textToModel,
+            image_to_model: entry.imageToModel,
+            multiview_to_model: true,
+            price: {
+              unit: 'model',
+              usd: roundUsd(text.billedUsd),
+              untextured_usd: roundUsd(bare.billedUsd),
+            },
+          }
+        })
+      : []
+
+    const operations = configured
+      ? (Object.entries(TRIPO_OPS) as Array<[TripoOp, (typeof TRIPO_OPS)[TripoOp]]>).map(([op, spec]) => ({
+          op,
+          input: spec.input === 'prompt' ? 'text' : spec.input,
+          produces: spec.produces,
+          estimated_credits: estimateTripoCredits(op, {}),
+        }))
+      : []
+
+    return c.json({
+      models,
+      operations,
+      currency: 'USD',
+      note: 'Prices include the Shogo markup and are what the workspace is charged. Billing follows the credits each finished task reports; a free task (rig check) costs nothing.',
+    })
+  })
+
+  /**
+   * POST /ai/v1/3d/files - Upload an image or model for a later op.
+   *
+   * Body `{ filename, contentType, data_base64 }` → `{ file_token }`. JSON
+   * base64 keeps this a single-request hop for runtimes; anything over 25 MB
+   * gets a 413 with the limit spelled out (Tripo wants its large-file flow).
+   */
+  router.post('/ai/v1/3d/files', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    const apiKey = getNativeProviderApiKeySync('tripo')
+    if (!apiKey) {
+      return c.json(
+        { error: { message: "3D provider 'tripo' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+        503
+      )
+    }
+
+    try {
+      const body = await c.req.json() as { filename?: string; contentType?: string; data_base64?: string }
+      if (typeof body.data_base64 !== 'string' || !body.data_base64) {
+        return c.json(
+          { error: { message: 'data_base64 is required', type: 'invalid_request_error', code: 'missing_file' } },
+          400
+        )
+      }
+      const bytes = Buffer.from(body.data_base64, 'base64')
+      if (bytes.length > TRIPO_FILE_MAX_BYTES) {
+        return c.json(
+          {
+            error: {
+              message: `File is ${(bytes.length / 1024 / 1024).toFixed(1)}MB; this route accepts ${TRIPO_FILE_MAX_BYTES / 1024 / 1024}MB.`,
+              type: 'invalid_request_error',
+              code: 'file_too_large',
+            },
+          },
+          413
+        )
+      }
+      const contentType = body.contentType || 'application/octet-stream'
+      const fileToken = await tripoUploadFile(apiKey, bytes, contentType, body.filename, c.req.raw.signal)
+      return c.json({ file_token: fileToken, bytes: bytes.length, content_type: contentType })
+    } catch (error: any) {
+      console.error('[AI Proxy] 3D upload error:', error.message)
+      const upstream: number | undefined = error instanceof TripoApiError ? error.status : undefined
+      const statusCode = upstream !== undefined && upstream >= 400 && upstream < 500 ? 400 : 502
+      return c.json(
+        { error: { message: error.message || 'Upload failed', type: 'server_error', code: '3d_upload_error' } },
+        statusCode
+      )
+    }
+  })
+
+  /**
+   * POST /ai/v1/3d/generations - Submit a Tripo3D task.
+   *
+   * Body `{ op?, prompt?, image?, images?, input?, model?, ...opParams }`.
+   * `op` defaults from the input shape (prompt → text_to_model, image →
+   * image_to_model); every other op must be explicit. Each op accepts only
+   * the fields in `TRIPO_OPS[op].fields` — anything else is a 400, so a typo
+   * never becomes a silent extra charge.
+   */
+  router.post('/ai/v1/3d/generations', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    if (!(await isTurnInFlight(c, tokenPayload))) {
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
+      }
+    }
+
+    const invalid = (message: string, code: string) =>
+      c.json({ error: { message, type: 'invalid_request_error', code } }, 400)
+
+    try {
+      const body = await c.req.json() as Record<string, unknown>
+      const str = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v : undefined)
+      const prompt = typeof body.prompt === 'string' && body.prompt.trim() ? body.prompt : undefined
+      const image = str(body.image)
+      const images = Array.isArray(body.images) ? body.images as unknown[] : undefined
+      const input = str(body.input)
+
+      if (prompt && image) return invalid('Send either prompt or image, not both.', 'prompt_and_image')
+
+      let op = str(body.op) as TripoOp | undefined
+      if (!op) {
+        if (prompt && !image && !images && !input) op = 'text_to_model'
+        else if (image && !prompt && !images && !input) op = 'image_to_model'
+        else return invalid(`op is required here. Supported ops: ${tripoOpList}.`, 'missing_op')
+      }
+      const spec = TRIPO_OPS[op]
+      if (!spec) return invalid(`Unknown op '${op}'. Supported ops: ${tripoOpList}.`, 'unknown_op')
+
+      const unknown = Object.keys(body).filter((key) => !TRIPO_CORE_FIELDS.has(key) && !spec.fields.includes(key))
+      if (unknown.length > 0) {
+        return invalid(`Unsupported field(s) for ${op}: ${unknown.join(', ')}.`, 'unsupported_field')
+      }
+
+      if (body.texture_quality !== undefined && !TRIPO_TEXTURE_QUALITIES.has(String(body.texture_quality))) {
+        return invalid(`texture_quality must be one of ${[...TRIPO_TEXTURE_QUALITIES].join(', ')}.`, 'invalid_texture_quality')
+      }
+      if (body.face_limit !== undefined && (!Number.isInteger(body.face_limit) || (body.face_limit as number) <= 0)) {
+        return invalid('face_limit must be a positive integer', 'invalid_face_limit')
+      }
+
+      // Per-op required input.
+      if (spec.input === 'prompt' && !prompt) return invalid('prompt is required for text_to_model', 'missing_prompt')
+      if (spec.input === 'image' && !image) return invalid('image is required for image_to_model', 'missing_image')
+      if (spec.input === 'images') {
+        if (!images || images.length !== 4) {
+          return invalid(
+            'multiview_to_model needs exactly 4 images in the order front, left, back, right.',
+            'invalid_images',
+          )
+        }
+        if (images.some((img) => typeof img !== 'string' || !img)) return invalid('images must be strings', 'invalid_images')
+      }
+      if (spec.input === 'model' && !input) return invalid(`input is required for ${op} (task id, file_token, URL or data URI)`, 'missing_input')
+
+      if (op === 'convert') {
+        const format = str(body.format)?.toUpperCase()
+        if (!format) return invalid('format is required for convert', 'missing_format')
+        if (!(TRIPO_CONVERT_FORMATS as readonly string[]).includes(format)) {
+          return invalid(`format must be one of ${TRIPO_CONVERT_FORMATS.join(', ')}.`, 'unsupported_format')
+        }
+        body.format = format
+      }
+      if (op === 'retarget') {
+        const animation = str(body.animation)
+        const list = Array.isArray(body.animations) ? body.animations as unknown[] : undefined
+        if (animation && list) return invalid('Send either animation or animations, not both.', 'invalid_animation')
+        if (!animation && !list) return invalid('animation or animations is required for retarget', 'missing_animation')
+        if (list && (list.length === 0 || list.length > TRIPO_MAX_ANIMATIONS || list.some((a) => typeof a !== 'string'))) {
+          return invalid(`animations takes 1-${TRIPO_MAX_ANIMATIONS} preset ids.`, 'too_many_animations')
+        }
+      }
+
+      // Generation ops price and name a model from Shogo's catalog; every
+      // other op forwards its own vendor version through `fields`.
+      const isGeneration = TRIPO_GENERATION_OPS.has(op)
+      let jobModel = ''
+      let wireModel: string | undefined
+      if (isGeneration) {
+        const modelId = str(body.model) || DEFAULT_TRIPO_MODEL
+        const entry = getTripoModel(modelId)
+        if (!entry) return invalid(`3D model '${modelId}' is not supported.`, 'model_not_found')
+        jobModel = entry.id
+        wireModel = entry.apiModel
+      } else if (body.model !== undefined) {
+        jobModel = String(body.model)
+      }
+
+      const apiKey = getNativeProviderApiKeySync('tripo')
+      if (!apiKey) {
+        return c.json(
+          { error: { message: "3D provider 'tripo' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+          503
+        )
+      }
+
+      // Forward only what the caller set: Tripo's own defaults are the right
+      // ones when a field is absent.
+      const wire: Record<string, unknown> = {}
+      for (const field of spec.fields) {
+        if (body[field] !== undefined) wire[field] = body[field]
+      }
+      if (wireModel) wire.model = wireModel
+      // The animations endpoints have no usable default rig model: omitting it
+      // makes Tripo fall back to a retired version and reject the task.
+      if (op === 'rig' && wire.model === undefined) wire.model = DEFAULT_TRIPO_RIG_MODEL
+
+      if (spec.input === 'prompt') {
+        wire.prompt = prompt
+      } else if (spec.input === 'image') {
+        const resolved = await resolveTripoImageInput(apiKey, image!, c.req.raw.signal)
+        if ('error' in resolved) return invalid(resolved.error, resolved.code)
+        wire.input = resolved.input
+      } else if (spec.input === 'images') {
+        const resolvedImages: string[] = []
+        for (const img of images!) {
+          const resolved = await resolveTripoImageInput(apiKey, String(img), c.req.raw.signal)
+          if ('error' in resolved) return invalid(resolved.error, resolved.code)
+          resolvedImages.push(resolved.input)
+        }
+        wire.inputs = resolvedImages
+      } else {
+        // A job id from a previous call is the natural handle for edit ops.
+        const priorTask = await resolve3dJobRef(input!, tokenPayload.workspaceId)
+        if (input!.startsWith('gen3d_') && !priorTask) {
+          return invalid(`3D job '${input}' was not found in this workspace.`, 'input_not_found')
+        }
+        const resolved = await resolveTripoModelInput(apiKey, priorTask ?? input!, c.req.raw.signal)
+        if ('error' in resolved) return invalid(resolved.error, resolved.code)
+        wire.input = resolved.input
+      }
+
+      const taskId = await tripoCreateTask(apiKey, spec.path, wire, c.req.raw.signal)
+      // The registry's estimate reads the same body shape the caller sent.
+      const estimatedCredits = estimateTripoCredits(op, { ...body, model: jobModel || body.model })
+
+      const id = `gen3d_${randomUUID()}`
+      await put3dJob({
+        id,
+        workspaceId: tokenPayload.workspaceId,
+        projectId: tokenPayload.projectId,
+        userId: tokenPayload.userId,
+        chatSessionId: c.req.header('x-chat-session-id') || null,
+        model: jobModel,
+        op,
+        taskId,
+        input: spec.input === 'prompt' ? 'text' : spec.input,
+        texture: body.pbr === true ? true : body.texture !== false,
+        textureQuality: str(body.texture_quality),
+        estimatedCredits,
+        createdAt: Date.now(),
+      })
+      console.log(`[AI Proxy] 🧊 3D ${op} ${id}: ${tokenPayload.projectId} → tripo${spec.path} (task ${taskId}, ~${estimatedCredits} credits)`)
+
+      return c.json({
+        id,
+        op,
+        status: 'queued',
+        model: jobModel || undefined,
+        estimated_credits: estimatedCredits,
+        estimated_usd: roundUsd(estimatedCredits * TRIPO_USD_PER_CREDIT * 1.2),
+      })
+    } catch (error: any) {
+      console.error('[AI Proxy] 3D submit error:', error.message)
+      // A rejected request (bad prompt/params) is the caller's, not ours: pass
+      // Tripo's 4xx through so the runtime sees 400 rather than 502.
+      const upstream: number | undefined = error instanceof TripoApiError ? error.status : undefined
+      const statusCode = upstream === 429 ? 429 : upstream !== undefined && upstream >= 400 && upstream < 500 ? 400 : 502
+      return c.json(
+        { error: { message: error.message || '3D submission failed', type: 'server_error', code: '3d_submit_error' } },
+        statusCode
+      )
+    }
+  })
+
+  /**
+   * GET /ai/v1/3d/:id - Status of a 3D task.
+   *
+   * `model_url` on success is a signed Tripo URL that expires after ~5
+   * minutes; the caller downloads it immediately. Charged exactly once per
+   * job id, on any pod, and only when Tripo reports credits consumed — a free
+   * task (`rig_check`) never writes a wallet row.
+   */
+  router.get('/ai/v1/3d/:id', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    const id = c.req.param('id')
+    const job = await get3dJob(id)
+    if (!job || job.workspaceId !== tokenPayload.workspaceId) {
+      return c.json({ error: { message: `3D job '${id}' not found.`, type: 'invalid_request_error', code: 'job_not_found' } }, 404)
+    }
+
+    const apiKey = getNativeProviderApiKeySync('tripo')
+    if (!apiKey) {
+      return c.json(
+        { error: { message: "3D provider 'tripo' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+        503
+      )
+    }
+
+    const base = { id, op: job.op, model: job.model || undefined, created_at: job.createdAt }
+
+    try {
+      const task = await tripoGetTask(apiKey, job.taskId, c.req.raw.signal)
+
+      if (task.status === 'queued' || task.status === 'running') {
+        return c.json({
+          ...base,
+          status: task.status,
+          ...(task.progress !== undefined ? { progress: task.progress } : {}),
+        })
+      }
+
+      if (task.status === 'failed') {
+        const detail = task.errorMessage || (task.errorCode !== undefined ? `Tripo error ${task.errorCode}` : 'Task failed')
+        return c.json({ ...base, status: 'failed', error: detail })
+      }
+
+      const modelUrl = task.output?.model_url
+      const modelUrls = Array.isArray(task.output?.model_urls) ? task.output!.model_urls : undefined
+      // `segment` and `rig_check` answer without a model file.
+      const parts = Array.isArray(task.output?.part_names)
+        ? task.output!.part_names
+        : Array.isArray(task.output?.parts)
+          ? (task.output!.parts as string[])
+          : undefined
+
+      if (!modelUrl && !modelUrls && !parts && task.riggable === undefined) {
+        return c.json({ ...base, status: 'failed', error: 'Tripo reported success without an output' })
+      }
+
+      const creditsConsumed = task.creditsConsumed ?? 0
+      const billedUsd = roundUsd(calculate3dUsageCost(creditsConsumed).billedUsd)
+
+      // A free task (rig check, import) never touches the wallet — and the
+      // charge-once claim is skipped so no later poll can bill it either.
+      if (creditsConsumed > 0 && await claim3dCharge(id)) {
+        record3dUsage(
+          tokenPayload,
+          {
+            model: job.model || job.op,
+            op: job.op,
+            taskId: job.taskId,
+            creditsConsumed,
+            input: job.input,
+          },
+          c.req.header('x-chat-session-id') || job.chatSessionId || null,
+        )
+      }
+
+      return c.json({
+        ...base,
+        status: 'success',
+        progress: 100,
+        ...(modelUrl ? { model_url: modelUrl } : {}),
+        ...(modelUrls ? { model_urls: modelUrls } : {}),
+        ...(parts ? { parts } : {}),
+        ...(task.riggable !== undefined ? { riggable: task.riggable } : {}),
+        ...(task.rigType ? { rig_type: task.rigType } : {}),
+        credits_consumed: creditsConsumed,
+        billed_usd: billedUsd,
+      })
+    } catch (error: any) {
+      console.error(`[AI Proxy] 3D status error for ${id}:`, error.message)
+      return c.json(
+        { error: { message: error.message || '3D status check failed', type: 'server_error', code: '3d_status_error' } },
+        502
       )
     }
   })
@@ -5006,17 +6903,24 @@ export function aiProxyRoutes() {
   // GET /ai/proxy/health - Health check for the AI proxy
   // =========================================================================
   router.get('/ai/proxy/health', (c) => {
+    // Read through the credential resolver, not raw env: an admin-stored key
+    // (cloud) or a desktop BYOK file also counts as configured.
     const providers: Record<string, boolean> = {
-      anthropic: !!process.env.ANTHROPIC_API_KEY,
-      openai: !!process.env.OPENAI_API_KEY,
-      google: !!process.env.GOOGLE_API_KEY,
+      anthropic: !!getNativeProviderApiKeySync('anthropic'),
+      openai: !!getNativeProviderApiKeySync('openai'),
+      google: !!getNativeProviderApiKeySync('google'),
+      higgsfield: !!getNativeProviderApiKeySync('higgsfield'),
+      tripo: !!getNativeProviderApiKeySync('tripo'),
     }
 
     return c.json({
       status: 'ok',
       providers,
+      defaultImageModel: defaultImageModel(),
+      defaultVideoModel: defaultVideoModel(),
       modelCount: Object.keys(MODEL_REGISTRY).length,
       imageModelCount: Object.keys(IMAGE_MODEL_REGISTRY).length,
+      videoModelCount: Object.keys(VIDEO_MODEL_CATALOG).length,
     })
   })
 

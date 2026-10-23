@@ -20,6 +20,7 @@
 
 import { Hono } from 'hono'
 import type { Permission } from '@shogo/authz'
+import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import { decide, loadAccess, principalOf, resolveAgentActor, type AgentCaller, type Principal } from '../lib/authz'
 import { ConversationError, resolveNotifyConversation, resolveNotifyThread } from '../services/conversation.service'
 import { listActiveChatTurns } from '../services/chat-turn-state.service'
@@ -48,6 +49,7 @@ import {
 import {
   createGoal,
   createGoalEvent,
+  getAgentDefaultModel,
   getGoal,
   getOrCreateAgentProfile,
   isGoalEventKind,
@@ -57,10 +59,12 @@ import {
   listWorkspaceActivity,
   resolveGoalEventApproval,
   saveAgentAvatar as saveLocalAgentAvatar,
+  setAgentDefaultModel,
   updateAgentProfile,
   updateGoal,
   type GoalApprovalDecision,
 } from '../services/workspace-agent.service'
+import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
 
 export interface WorkspaceAgentAuthContext {
   workspaceId: string
@@ -231,6 +235,41 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     }
 
     return c.json({ profile: await updateAgentProfile(auth.workspaceId, changes) })
+  })
+
+  router.get('/workspaces/:workspaceId/agent-default-model', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const canManage = !auth.identity && !!auth.userId &&
+      (await userCan(c, auth.workspaceId, auth.userId, 'workspace.settings:manage'))
+    return c.json({ defaultModel: await getAgentDefaultModel(auth.workspaceId), canManage })
+  })
+
+  /**
+   * Only a signed-in workspace admin may change this: it is deliberately not on
+   * the agent-profile PATCH, which members and the agent runtime can call.
+   */
+  router.put('/workspaces/:workspaceId/agent-default-model', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    if (auth.identity || !auth.userId) {
+      return forbidden(c, 'Only a workspace admin can change the agent default model')
+    }
+    if (!(await userCan(c, auth.workspaceId, auth.userId, 'workspace.settings:manage'))) {
+      return forbidden(c, 'Only a workspace admin can change the agent default model')
+    }
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const raw = body && typeof body === 'object' ? body.defaultModel : undefined
+    if (raw !== null && typeof raw !== 'string') {
+      return c.json({ error: { code: 'invalid_field', message: 'defaultModel must be a string or null' } }, 400)
+    }
+    const trimmed = raw?.trim() || null
+    const model = trimmed && trimmed !== AUTO_MODEL_ID ? trimmed : null
+    if (model && !(await isModelVisibleForWorkspace(auth.workspaceId, model))) {
+      return c.json({ error: { code: 'model_not_available', message: 'That model is not available in this workspace' } }, 400)
+    }
+    return c.json({ defaultModel: await setAgentDefaultModel(auth.workspaceId, model), canManage: true })
   })
 
   /**

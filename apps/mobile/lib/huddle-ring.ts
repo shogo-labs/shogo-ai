@@ -8,7 +8,8 @@
 import { useSyncExternalStore } from 'react'
 import type { ActiveHuddle, ConversationKind, TeamChatEvent } from './team-chat-api'
 import { teamChatApi } from './team-chat-api'
-import { joinHuddleCall } from './huddle-call'
+import { getHuddleCall, joinHuddleCall, leaveHuddleCall } from './huddle-call'
+import { endNativeCall, markNativeCallAnswered, setNativeCallHandlers, type NativeCallEndReason, type NativeCallRing } from './native-call'
 
 export const RING_TIMEOUT_MS = 45_000
 
@@ -44,7 +45,16 @@ export function useIncomingRings(): IncomingRing[] {
   return useSyncExternalStore(subscribe, getRings, getRings)
 }
 
-export function dismissRing(conversationId: string): void {
+/** "Dana is calling you" in a DM, "Dana's huddle" in a group DM. */
+export function ringLabel(ring: { kind: ConversationKind; from: { name: string } }): string {
+  return ring.kind === 'dm' ? ring.from.name : `${ring.from.name}'s huddle`
+}
+
+/**
+ * Stops ringing for a conversation, here and on the system call screen. `reason`
+ * tells the system screen why it is closing.
+ */
+export function dismissRing(conversationId: string, reason: NativeCallEndReason = 'remote_ended'): void {
   const timer = timers.get(conversationId)
   if (timer) clearTimeout(timer)
   timers.delete(conversationId)
@@ -52,6 +62,7 @@ export function dismissRing(conversationId: string): void {
   if (!ring) return
   settled.add(ring.huddleId)
   rings = rings.filter((r) => r.conversationId !== conversationId)
+  endNativeCall(ring.huddleId, reason)
   emit()
 }
 
@@ -59,7 +70,7 @@ function startRing(ring: IncomingRing, remainingMs: number): void {
   if (settled.has(ring.huddleId) || rings.some((r) => r.huddleId === ring.huddleId)) return
   dismissRing(ring.conversationId)
   rings = [...rings, ring]
-  timers.set(ring.conversationId, setTimeout(() => dismissRing(ring.conversationId), remainingMs))
+  timers.set(ring.conversationId, setTimeout(() => dismissRing(ring.conversationId, 'missed'), remainingMs))
   emit()
 }
 
@@ -101,22 +112,37 @@ export function applyRingEvent(workspaceId: string, event: TeamChatEvent, me: st
   }
   const ring = 'conversationId' in event ? rings.find((r) => r.conversationId === event.conversationId) : undefined
   if (!ring) return
-  if (event.type === 'huddle.declined' && event.userId === me) dismissRing(ring.conversationId)
+  if (event.type === 'huddle.declined' && event.userId === me) dismissRing(ring.conversationId, 'declined_elsewhere')
   if (event.type === 'huddle.updated') {
     const huddle = event.huddle
-    if (!huddle || huddle.id !== ring.huddleId || huddle.participants.some((p) => p.userId === me)) dismissRing(ring.conversationId)
+    if (!huddle || huddle.id !== ring.huddleId) {
+      dismissRing(ring.conversationId)
+    } else if (huddle.participants.some((p) => p.userId === me)) {
+      dismissRing(ring.conversationId, 'answered_elsewhere')
+    }
   }
 }
 
-export function answerRing(ring: IncomingRing, label: string): Promise<void> {
-  dismissRing(ring.conversationId)
+export function answerRing(ring: IncomingRing | NativeCallRing, label: string = ringLabel(ring)): Promise<void> {
+  // Answered: the system call screen (if any) becomes an active call, so the dismiss below leaves it up.
+  markNativeCallAnswered(ring.huddleId)
+  dismissRing(ring.conversationId, 'answered_elsewhere')
   return joinHuddleCall({ conversationId: ring.conversationId, workspaceId: ring.workspaceId, label, kind: ring.kind })
 }
 
-export async function declineRing(ring: IncomingRing): Promise<void> {
-  dismissRing(ring.conversationId)
+export async function declineRing(ring: IncomingRing | NativeCallRing): Promise<void> {
+  dismissRing(ring.conversationId, 'declined_elsewhere')
   await teamChatApi().declineHuddle(ring.conversationId).catch(() => {})
 }
+
+// Answers and declines on the system call screen reach the same actions as the in-app ring.
+setNativeCallHandlers({
+  onAnswer: (ring) => void answerRing(ring),
+  onDecline: (ring) => void declineRing(ring),
+  onHangUp: (ring) => {
+    if (getHuddleCall().conversationId === ring.conversationId) void leaveHuddleCall()
+  },
+})
 
 export function _resetRingsForTests(): void {
   for (const timer of timers.values()) clearTimeout(timer)

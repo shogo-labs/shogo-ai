@@ -5,17 +5,57 @@
  * applied before the server confirms it, and the badges a column or card
  * shows for its health issues.
  */
-import type { Mentionables } from './team-chat-api'
-import { agentRefProjectId, type BoardColumn, type BoardView, type HealthIssue, type WorkItem } from './work-boards-api'
+import type { ChatMessage, Mentionables } from './team-chat-api'
+import { agentRefProjectId, type BoardColumn, type BoardView, type HealthIssue, type WorkingAgent, type WorkItem } from './work-boards-api'
 
-export function itemsByColumn(view: Pick<BoardView, 'board' | 'items'>): Map<string, WorkItem[]> {
+/** Newest / Oldest follow creation time; Manual is the drag order the server stores. */
+export type BoardSort = 'newest' | 'oldest' | 'manual'
+
+export const DEFAULT_BOARD_SORT: BoardSort = 'newest'
+
+export const BOARD_SORT_LABELS: Record<BoardSort, string> = { newest: 'Newest', oldest: 'Oldest', manual: 'Manual' }
+
+export const BOARD_SORT_OPTIONS: BoardSort[] = ['newest', 'oldest', 'manual']
+
+function createdTime(item: WorkItem): number {
+  const at = Date.parse(item.createdAt ?? '')
+  return Number.isNaN(at) ? 0 : at
+}
+
+/** Newest first, the card number breaking ties so several cards made in one go keep a stable order. */
+function compareNewest(a: WorkItem, b: WorkItem): number {
+  const byTime = createdTime(b) - createdTime(a)
+  if (byTime) return byTime
+  if (b.number !== a.number) return b.number - a.number
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+}
+
+/** Cards in the order the board shows them. */
+export function sortCards(items: WorkItem[], sort: BoardSort): WorkItem[] {
+  if (sort === 'manual') return items.slice().sort((a, b) => a.position - b.position)
+  const newest = items.slice().sort(compareNewest)
+  return sort === 'newest' ? newest : newest.reverse()
+}
+
+export function itemsByColumn(view: Pick<BoardView, 'board' | 'items'>, sort: BoardSort = DEFAULT_BOARD_SORT): Map<string, WorkItem[]> {
   const out = new Map<string, WorkItem[]>(view.board.columns.map((c) => [c.id, []]))
   for (const item of view.items) {
     if (item.archivedAt) continue
     out.get(item.columnId)?.push(item)
   }
-  for (const list of out.values()) list.sort((a, b) => a.position - b.position)
+  for (const [columnId, list] of out) out.set(columnId, sortCards(list, sort))
   return out
+}
+
+/**
+ * One flat list for the list view: Newest and Oldest span every column,
+ * Manual keeps the column-then-position order the columns are drawn in.
+ */
+export function orderedItems(view: Pick<BoardView, 'board' | 'items'>, sort: BoardSort = DEFAULT_BOARD_SORT): WorkItem[] {
+  const live = view.items.filter((i) => !i.archivedAt)
+  if (sort !== 'manual') return sortCards(live, sort)
+  const grouped = itemsByColumn(view, sort)
+  return view.board.columns.flatMap((c) => grouped.get(c.id) ?? [])
 }
 
 export interface MoveIntent {
@@ -51,6 +91,31 @@ export function applyMove(items: WorkItem[], move: MoveIntent): { items: WorkIte
   }
   const next = items.map((i) => (i.id === move.itemId ? { ...i, columnId: move.columnId, position } : i))
   return { items: next, request: at >= 0 ? { column: move.columnId, before: move.beforeId! } : { column: move.columnId } }
+}
+
+/**
+ * A team chat message as it arrives live. When it is an agent reply in a
+ * card's thread, the card's `working` list gains it while it runs and loses it
+ * once it settles. Returns null when no card changed.
+ */
+export function applyAgentMessage(view: BoardView, message: Pick<ChatMessage, 'id' | 'authorType' | 'threadRootId' | 'agentStatus' | 'authorAgent'>): BoardView | null {
+  if (message.authorType !== 'agent' || !message.threadRootId) return null
+  const card = view.items.find((i) => i.threadRootMessageId === message.threadRootId)
+  if (!card) return null
+  const current = card.working ?? []
+  const running = message.agentStatus === 'running'
+  const tracked = current.some((w) => w.messageId === message.id)
+  if (running === tracked) return null
+  const working = running
+    ? [...current, { messageId: message.id, name: message.authorAgent?.name ?? 'Agent' }]
+    : current.filter((w) => w.messageId !== message.id)
+  return { ...view, items: view.items.map((i) => (i.id === card.id ? { ...i, working } : i)) }
+}
+
+/** "Billing Bot is working", or "2 agents working" when several replies run in one card. */
+export function workingLabel(working: WorkingAgent[]): string {
+  if (working.length === 1) return `${working[0]!.name} is working`
+  return `${working.length} agents working`
 }
 
 export interface ColumnBadges {

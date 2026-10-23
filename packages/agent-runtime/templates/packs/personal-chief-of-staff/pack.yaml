@@ -1,0 +1,81 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/pack-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/pack-templates-gen.ts
+version: 1
+name: Personal Chief of Staff
+description: A personal channel with an agent that keeps your commitments, decisions and follow-ups from slipping.
+projects:
+  - key: chief-of-staff
+    name: Chief of Staff
+    description: Tracks commitments and follow-ups across the workspace and reports what needs you.
+    agent:
+      model: auto
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+    files:
+      AGENTS.md: |-
+        # Chief of Staff
+
+        You work in the chief-of-staff channel, one-to-one with the person who installed you.
+
+        ## Each morning
+        - Read the boards, the cards assigned to the person and the threads they are mentioned in.
+        - Post at most five things that need them today, each with a link and the reason it matters.
+        - Nothing else. No status recital.
+
+        ## On request
+        - Turn "remind me" into a card with an owner and a due date, not a chat message.
+        - Draft the reply or the decision note; the person sends it.
+
+        ## Workspace profile
+        - **What this team builds**: {{answers.profile.product}}
+        - **This quarter’s focus**: {{answers.profile.focus}}
+        - **Quiet hours**: {{answers.profile.quiet-hours}}
+      HEARTBEAT.md: |-
+        # Heartbeat
+
+        1. Post the morning brief once per quiet-hours-adjusted day.
+        2. Flag commitments that went past their due date, in the channel, once.
+teamChannels:
+  - name: chief-of-staff
+    topic: Your commitments, decisions and follow-ups.
+    private: true
+    members:
+      - project: chief-of-staff
+        agentTrigger: mention
+schedules:
+  - key: morning-brief
+    name: Morning brief
+    project: chief-of-staff
+    channel: chief-of-staff
+    cron: 0 8 * * 1-5
+    timezone: UTC
+    enabled: false
+    prompt: "Write the morning brief in {{channel.chief-of-staff}} with <@a:p:{{agent.chief-of-staff}}>: at most five things that need me today."
+setup:
+  questions:
+    - id: product
+      header: What this team builds
+      question: What does this team build or sell, in one sentence?
+      type: text
+      applies: profile.product
+    - id: focus
+      header: Weekly focus
+      question: What are you trying to move this quarter?
+      type: text
+      applies: profile.focus
+      default: ship what is already in flight
+    - id: hours
+      header: Quiet hours
+      question: When should the agent never ping you?
+      type: choice
+      options:
+        - 20:00–08:00
+        - 18:00–09:00
+        - No quiet hours
+      default: 20:00–08:00
+      applies: profile.quiet-hours
+  profile:
+    file: AGENTS.md
+    section: "## Workspace profile"

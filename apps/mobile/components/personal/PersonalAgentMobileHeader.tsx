@@ -52,7 +52,7 @@ export function PersonalAgentMobileHeader({
             {...triggerProps}
             accessibilityRole="button"
             accessibilityLabel={`${profile.name} profile and settings`}
-            accessibilityState={{ expanded: menuOpen }}
+            aria-expanded={menuOpen}
             className="h-12 w-12 items-center justify-end active:opacity-80"
             style={{
               shadowColor: "#000",

@@ -6,6 +6,8 @@
  * `/api/conversation-messages/:id`).
  */
 import type { BuddyLook } from '@shogo/shared-app/buddy-look'
+import type { HttpClient } from '@shogo-ai/sdk'
+import { getSDKHttpClient } from '@shogo/shared-app/domain'
 import { Platform } from 'react-native'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
@@ -24,6 +26,32 @@ export interface WorkspaceChatMode {
   isDefault: boolean
   canManage: boolean
   installations: Array<{ provider: ExternalChatProvider; tenantName: string | null; createdAt: string }>
+}
+
+/** How many agent replies may work at once, and how busy the queue is now. */
+export interface AgentCapacity {
+  /** Slots a new run is admitted against right now. */
+  limit: number
+  /** The most this workspace may be configured to. */
+  max: number
+  /** What a workspace with no explicit setting gets. */
+  defaultLimit: number
+  /** The workspace's own setting, or null when it uses the default. */
+  configured: number | null
+  source: 'plan' | 'local'
+  planId: string
+  running: number
+  parked: number
+  queued: number
+  canManage: boolean
+}
+
+/** Where a queued reply stands: 1 is next in line. */
+export interface QueuePosition {
+  position: number
+  ahead: number
+  running: number
+  limit: number
 }
 
 /** Whether the Shogo chat UI (sidebar, channels, DMs) is available in this mode. */
@@ -142,6 +170,43 @@ export interface ConversationFilePage {
   nextCursor: string | null
 }
 
+/**
+ * What the file viewer needs to decide how to show a file, from
+ * `GET /api/conversation-files/:id/meta`. Deliberately not the capability
+ * URL's response: that one redirects to storage, which is what sent people to
+ * a browser tab in the first place.
+ */
+export interface ConversationFileMeta {
+  id: string
+  conversationId: string
+  messageId: string | null
+  name: string
+  mimeType: string
+  size: number
+  width: number | null
+  height: number | null
+  durationMs: number | null
+  peaks: string | null
+  preview: AttachmentPreview | null
+  createdAt: string
+  /** Capability URL, still needed to download or to open outside the app. */
+  url: string
+  /** The server holds this file's text, or can extract it on demand. */
+  hasText: boolean
+}
+
+/** A page of a file's text, from `GET /api/conversation-files/:id/text`. */
+export interface ConversationFileText {
+  fileId: string
+  name: string
+  mimeType: string
+  /** Null when nothing could be read out of the file. */
+  text: string | null
+  offset: number
+  totalChars: number
+  nextOffset: number | null
+}
+
 export interface ChatMessage {
   id: string
   conversationId: string
@@ -166,6 +231,11 @@ export interface ChatMessage {
   editedAt: string | null
   deletedAt: string | null
   createdAt: string
+  /**
+   * Where the message lives. Only the single-message fetch returns this (a
+   * quote labels itself from it); list responses leave it off.
+   */
+  conversation?: { id: string; name: string | null; kind: ConversationKind } | null
   /** Client-only: optimistic send not yet acknowledged, or failed. */
   pending?: 'sending' | 'failed'
 }
@@ -243,8 +313,27 @@ export interface AgentCard {
   /** The viewer may change the agent's look. */
   canEdit?: boolean
   role: string | null
+  /** The model the agent runs with, already labelled by the API (`Auto`, `Claude Sonnet 4.6`). */
+  model: { id: string; label: string }
   owner: { id: string; name: string } | null
   channels: Array<{ conversationId: string; kind: string; name: string | null; slug: string | null; agentTrigger: string; muted: boolean }>
+}
+
+/** A person's profile: who they are, their local time, and their status. */
+export interface UserCard {
+  id: string
+  name: string
+  email: string
+  /** Email local part — the exact token search's `in:@` / `from:@` resolves. */
+  handle: string
+  image: string | null
+  role: string
+  isSelf: boolean
+  timezone: string | null
+  /** `HH:MM` on their clock. */
+  localTime: string | null
+  localTimeLabel: string | null
+  status: UserStatus | null
 }
 
 export interface UserGroup {
@@ -284,7 +373,23 @@ export interface ChatSettings {
   notifyDefault: NotifyLevel
   keywords: string[]
   emailDigest: 'off' | 'daily'
+  messageSound: MessageSound
+  /** Which sound a chat message plays on web and desktop. */
+  messageTone: MessageTone
+  huddleSound: HuddleSound
+  /** Direct messages also appear in the Activity inbox. */
+  dmInActivity: boolean
+  /** Unread thread replies count toward the Activity badge. */
+  threadRepliesInBadge: boolean
+  /** When a phone push goes out. */
+  mobilePushDelay: MobilePushDelay
 }
+
+export type MobilePushDelay = 'immediate' | 'inactive' | 'inactive_5m' | 'inactive_10m'
+
+export type MessageSound = 'default' | 'subtle' | 'off'
+export type MessageTone = 'knock' | 'chirp' | 'pristine' | 'definite' | 'juntos' | 'confirmation' | 'question' | 'glass'
+export type HuddleSound = 'ring' | 'chime' | 'off'
 
 export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message' | 'question'
 
@@ -366,6 +471,24 @@ export interface Reminder {
 export interface InboxPage {
   items: InboxItem[]
   unread: number
+  /** The unread items that are thread replies. */
+  unreadThreads?: number
+  hasMore: boolean
+}
+
+/** One team-chat message the viewer sent — the Activity panel's Sent view. */
+export interface SentMessage {
+  id: string
+  conversationId: string
+  threadRootId: string | null
+  /** Sliced to a single-row preview server-side. */
+  text: string
+  createdAt: string
+  conversation: ConversationRef | null
+}
+
+export interface SentPage {
+  items: SentMessage[]
   hasMore: boolean
 }
 
@@ -395,7 +518,8 @@ export type TeamChatEvent =
   | { type: 'message.created'; conversationId: string; message: ChatMessage; moved?: boolean }
   | { type: 'message.updated'; conversationId: string; message: ChatMessage }
   | { type: 'reaction.changed'; conversationId: string; messageId: string; reactions: ReactionSummary[] }
-  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> }
+  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }>; queue?: QueuePosition | null; waiting?: { tool: string | null } | null }
+  | { type: 'agent.capacity'; workspaceId: string; limit: number; running: number; parked: number; queued: number }
   | { type: 'conversation.created'; conversationId: string; conversation: ConversationSummary }
   | { type: 'conversation.updated'; conversationId: string; conversation: ConversationSummary }
   | { type: 'conversation.deleted'; conversationId: string }
@@ -413,9 +537,10 @@ export type TeamChatEvent =
       title: string
       body: string
     }
+  | { type: 'settings.changed'; settings: ChatSettings }
   | { type: 'status.changed'; userId: string; status: UserStatus | null }
   | { type: 'inbox.created'; item: InboxItem }
-  | { type: 'inbox.read'; unread: number }
+  | { type: 'inbox.read'; unread: number; unreadThreads?: number }
   | { type: 'saved.changed'; messageId: string; saved: boolean }
   | { type: 'draft.changed'; draft: Draft }
   | { type: 'scheduled.failed'; id: string; error: string | null }
@@ -455,9 +580,33 @@ export interface ChannelDoc {
   content: string
   version: number
   locked: boolean
+  /** How full the doc is; the doc is injected into every agent's prompt, so full is expensive. */
+  budget?: DocBudget
   updatedBy: DocAuthor | null
   createdAt: string
   updatedAt: string
+}
+
+export type DocBudgetLevel = 'ok' | 'warn' | 'critical'
+
+export interface DocBudget {
+  chars: number
+  limit: number
+  /** Percent used, one decimal. */
+  pct: number
+  level: DocBudgetLevel
+}
+
+/** A section archived out of a channel doc. `content` is only on a single-archive read. */
+export interface ChannelDocArchive {
+  id: string
+  conversationId: string
+  title: string
+  heading: string
+  chars: number
+  content?: string
+  archivedBy: DocAuthor | null
+  createdAt: string
 }
 
 export interface ChannelDocState {
@@ -550,11 +699,35 @@ export function isSelfDm(c: Pick<ConversationSummary, 'kind' | 'participants'>):
   return c.kind === 'dm' && (c.participants ?? []).some((p) => p.type === 'user' && p.self === true)
 }
 
+/**
+ * A lazily-resolved client, so team chat is routed like the rest of the app.
+ *
+ * The domain client is the SDK interceptor's insert point: it sends a
+ * workspace's conversations to a paired desktop when one of that desktop's own
+ * workspaces is open (and rewrites the workspace id on the way), and to this
+ * app's API otherwise. Resolving it per call rather than once matters — many
+ * callers build an api at module scope, before the domain provider has mounted,
+ * and a client captured then would never see a machine.
+ */
+function teamChatHttp() {
+  return getSDKHttpClient() ?? createHttpClient()
+}
+
 export function teamChatApi() {
-  const http = createHttpClient()
+  // Forward each call to whichever client exists when it is made (see
+  // `teamChatHttp` above). Inheriting the client's methods through a proxy keeps
+  // every existing `api.get(...)` / `api.patch(...)` call site untouched.
+  const http = new Proxy({} as HttpClient, {
+    get(_target, prop) {
+      const client = teamChatHttp() as unknown as Record<string | symbol, unknown>
+      const value = client[prop]
+      return typeof value === 'function' ? value.bind(client) : value
+    },
+  })
   const ws = (workspaceId: string) => `/api/workspaces/${encodeURIComponent(workspaceId)}`
   const conv = (id: string) => `/api/conversations/${encodeURIComponent(id)}`
   const msg = (id: string) => `/api/conversation-messages/${encodeURIComponent(id)}`
+  const file = (id: string) => `/api/conversation-files/${encodeURIComponent(id)}`
   return {
     async list(workspaceId: string): Promise<ConversationSummary[]> {
       return (await http.get<{ conversations: ConversationSummary[] }>(`${ws(workspaceId)}/conversations`)).data
@@ -595,6 +768,13 @@ export function teamChatApi() {
     async setChatMode(workspaceId: string, input: { mode: ChatModeValue; provider?: ExternalChatProvider | null }): Promise<WorkspaceChatMode> {
       return (await http.patch<WorkspaceChatMode>(`${ws(workspaceId)}/chat-mode`, input)).data
     },
+    /** How many agents may work at once here, and how many are running or queued. */
+    async agentCapacity(workspaceId: string): Promise<AgentCapacity> {
+      return (await http.get<AgentCapacity>(`${ws(workspaceId)}/agent-capacity`)).data
+    },
+    async setAgentCapacity(workspaceId: string, agentReplyConcurrency: number | null): Promise<AgentCapacity> {
+      return (await http.put<AgentCapacity>(`${ws(workspaceId)}/agent-capacity`, { agentReplyConcurrency })).data
+    },
     async chatConnectCode(workspaceId: string, provider: ExternalChatProvider): Promise<{ code: string; command: string; expiresAt: string }> {
       return (await http.post<{ code: string; command: string; expiresAt: string }>(
         `${ws(workspaceId)}/chat-installations/${provider}/connect-code`,
@@ -616,6 +796,16 @@ export function teamChatApi() {
       if (opts.before) q.set('before', opts.before)
       if (opts.limit) q.set('limit', String(opts.limit))
       return (await http.get<InboxPage>(`${ws(workspaceId)}/inbox?${q}`)).data
+    },
+    async sentMessages(
+      workspaceId: string,
+      opts: { before?: string; beforeId?: string; limit?: number } = {},
+    ): Promise<SentPage> {
+      const q = new URLSearchParams()
+      if (opts.before) q.set('before', opts.before)
+      if (opts.beforeId) q.set('beforeId', opts.beforeId)
+      if (opts.limit) q.set('limit', String(opts.limit))
+      return (await http.get<SentPage>(`${ws(workspaceId)}/sent-messages?${q}`)).data
     },
     async markInboxRead(
       workspaceId: string,
@@ -654,6 +844,38 @@ export function teamChatApi() {
     },
     async lockDoc(conversationId: string, locked: boolean): Promise<ChannelDoc> {
       return (await http.post<{ doc: ChannelDoc }>(`${conv(conversationId)}/doc/lock`, { locked })).data.doc
+    },
+    async listDocArchives(conversationId: string): Promise<ChannelDocArchive[]> {
+      return (await http.get<{ archives: ChannelDocArchive[] }>(`${conv(conversationId)}/doc/archives`)).data.archives ?? []
+    },
+    async getDocArchive(conversationId: string, archiveId: string): Promise<ChannelDocArchive> {
+      return (await http.get<{ archive: ChannelDocArchive }>(
+        `${conv(conversationId)}/doc/archives/${encodeURIComponent(archiveId)}`,
+      )).data.archive
+    },
+    async archiveDocSection(
+      conversationId: string,
+      section: string,
+      baseVersion: number,
+    ): Promise<{ doc: ChannelDoc; archive: ChannelDocArchive }> {
+      try {
+        return (await http.post<{ doc: ChannelDoc; archive: ChannelDocArchive }>(
+          `${conv(conversationId)}/doc/archives`,
+          { section, baseVersion },
+        )).data
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
+    },
+    async restoreDocArchive(conversationId: string, archiveId: string, baseVersion: number): Promise<ChannelDoc> {
+      try {
+        return (await http.post<{ doc: ChannelDoc }>(
+          `${conv(conversationId)}/doc/archives/${encodeURIComponent(archiveId)}/restore`,
+          { baseVersion },
+        )).data.doc
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
     },
     async save(messageId: string, on: boolean) {
       await http.post(`${msg(messageId)}/save`, { on })
@@ -732,6 +954,9 @@ export function teamChatApi() {
       const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
       return (await http.get<{ card: AgentCard }>(`${ws(workspaceId)}/agent-card${qs}`)).data.card
     },
+    async userCard(workspaceId: string, userId: string): Promise<UserCard> {
+      return (await http.get<{ card: UserCard }>(`${ws(workspaceId)}/user-card?userId=${encodeURIComponent(userId)}`)).data.card
+    },
     /** Save an agent's buddy look; `null` goes back to the look generated from its id. */
     async setAgentBuddyLook(workspaceId: string, projectId: string | null, look: BuddyLook | null): Promise<BuddyLook | null> {
       const key = projectId ?? 'ws'
@@ -804,7 +1029,7 @@ export function teamChatApi() {
     },
     async post(
       id: string,
-      input: { text: string; threadRootId?: string | null; alsoSentToChannel?: boolean; clientMsgId: string; attachmentIds?: string[] },
+      input: { text: string; threadRootId?: string | null; alsoSentToChannel?: boolean; clientMsgId: string; attachmentIds?: string[]; linkPreviewsOff?: string[] },
     ): Promise<ChatMessage> {
       return (await http.post<{ message: ChatMessage }>(`${conv(id)}/messages`, input)).data.message
     },
@@ -829,6 +1054,33 @@ export function teamChatApi() {
     async message(messageId: string): Promise<ChatMessage> {
       return (await http.get<{ message: ChatMessage }>(msg(messageId))).data.message
     },
+    /** What a file is, for the viewer. Never redirects to storage. */
+    async fileMeta(
+      attachmentId: string,
+    ): Promise<{ file: ConversationFileMeta; conversation: { id: string; name: string | null; kind: string } }> {
+      return (
+        await http.get<{ file: ConversationFileMeta; conversation: { id: string; name: string | null; kind: string } }>(
+          `${file(attachmentId)}/meta`,
+        )
+      ).data
+    },
+    /**
+     * A page of a file's text, extracted server-side when needed.
+     *
+     * `raw` returns the body as written (blank lines and indentation intact)
+     * instead of the tidied search text — what a markdown renderer needs.
+     */
+    async fileText(
+      attachmentId: string,
+      opts: { offset?: number; limit?: number; raw?: boolean } = {},
+    ): Promise<ConversationFileText> {
+      const q = new URLSearchParams()
+      if (opts.offset !== undefined) q.set('offset', String(opts.offset))
+      if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+      if (opts.raw) q.set('raw', '1')
+      const suffix = q.toString() ? `?${q}` : ''
+      return (await http.get<ConversationFileText>(`${file(attachmentId)}/text${suffix}`)).data
+    },
     async catchUp(id: string): Promise<CatchUpResult> {
       return (await http.post<CatchUpResult>(`${conv(id)}/catch-up`, {})).data
     },
@@ -843,6 +1095,18 @@ export function teamChatApi() {
     },
     async stopAgent(messageId: string) {
       await http.post(`${msg(messageId)}/stop`, {})
+    },
+    /**
+     * Start a queued team-chat message now: it goes to the front of the queue
+     * and the reply in front of it is stopped, the same as the chat queue's
+     * Send now. A wake that already ran throws, so the row can say why.
+     */
+    async sendWakeNow(wakeId: string) {
+      await http.post(`/api/agent-wakes/${encodeURIComponent(wakeId)}/send-now`, {})
+    },
+    /** Take a queued team-chat message off the queue. It never runs. */
+    async removeWake(wakeId: string) {
+      await http.delete(`/api/agent-wakes/${encodeURIComponent(wakeId)}`)
     },
     /** What an agent did before its final message: its turn's parts, trimmed for the channel. */
     async workLog(messageId: string): Promise<AgentWorkLog> {
@@ -859,9 +1123,13 @@ export function teamChatApi() {
       if (opts.scope) q.set('scope', opts.scope)
       return (await http.get<QuestionInbox>(`${ws(workspaceId)}/questions?${q}`)).data
     },
-    /** Answer an agent's question; posts the answer in its thread. The first answer wins; later ones throw. */
-    async answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<{ message: ChatMessage; question: Question; reply: ChatMessage }> {
-      return (await http.post<{ message: ChatMessage; question: Question; reply: ChatMessage }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/answer`, input)).data
+    /**
+     * Answer an agent's question. The first answer wins; later ones throw. The
+     * person's answers on a card go to its thread together: `relay` is `held`
+     * while they still have questions open there, and `reply` is null then.
+     */
+    async answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<{ message: ChatMessage; question: Question; relay: 'sent' | 'held'; reply: ChatMessage | null }> {
+      return (await http.post<{ message: ChatMessage; question: Question; relay: 'sent' | 'held'; reply: ChatMessage | null }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/answer`, input)).data
     },
     async dismissQuestion(messageId: string, questionId: string): Promise<{ message: ChatMessage; question: Question }> {
       return (await http.post<{ message: ChatMessage; question: Question }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/dismiss`, {})).data
@@ -930,7 +1198,25 @@ export function nativeCookieHeader(): Record<string, string> {
   return cookie ? { Cookie: cookie } : {}
 }
 
-export function realtimeUrls(workspaceId: string): { ws: string; sse: string } {
+/**
+ * Where this workspace's live team-chat traffic comes from.
+ *
+ * A paired desktop's own workspace is served by that desktop: its events come
+ * from the machine relay, and there is no socket URL — the tunnel carries HTTP,
+ * not a WebSocket upgrade — so the connection goes straight to the SSE stream,
+ * which the relay forwards chunk by chunk.
+ */
+export function realtimeUrls(
+  workspaceId: string,
+  machine?: { instanceId: string; localWorkspaceId: string } | null,
+): { ws: string; sse: string } {
+  if (machine?.instanceId && machine.localWorkspaceId) {
+    const localId = encodeURIComponent(machine.localWorkspaceId)
+    return {
+      ws: '',
+      sse: `${API_URL}/api/machines/${encodeURIComponent(machine.instanceId)}/w/${localId}/api/workspaces/${localId}/conversations/events`,
+    }
+  }
   const base = `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}`
   return {
     // WebSockets bypass the fetch router; the desktop API relays this one.

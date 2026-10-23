@@ -11,6 +11,8 @@ type Handler = (...args: any[]) => void
 
 const redisInstances: FakeRedis[] = []
 const kv = new Map<string, string>()
+/** TTLs carried by `SET key value EX ttl` — the shape the ownership heartbeat writes. */
+const ttls = new Map<string, number>()
 const hashes = new Map<string, Record<string, string>>()
 const subscriptions = new Map<string, Set<FakeRedis>>()
 const publishCalls: Array<{ channel: string; message: string }> = []
@@ -32,8 +34,10 @@ class FakeRedis {
   })
   unsubscribe = mock(async () => {})
   ping = mock(async () => 'PONG')
-  set = mock(async (key: string, value: string) => {
+  set = mock(async (key: string, value: string, ...rest: any[]) => {
     kv.set(key, value)
+    if (String(rest[0]).toUpperCase() === 'EX') ttls.set(key, Number(rest[1]))
+    return 'OK'
   })
   get = mock(async (key: string) => kv.get(key) ?? null)
   del = mock(async (key: string) => {
@@ -108,6 +112,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   kv.clear()
+  ttls.clear()
   hashes.clear()
   publishCalls.length = 0
   for (const client of redisInstances) {
@@ -140,8 +145,12 @@ describe('tunnel redis cross-pod helpers', () => {
     await tunnelRedis.registerTunnelOwnership('inst-1')
     expect(kv.get('tunnel:inst-1:pod')).toBe('pod-a')
 
+    // Re-assert, not extend: a `SET … EX` is the one write that also repairs a
+    // key another pod evicted (SHO-185 §4), so the refresh is asserted on the
+    // value + TTL it lands rather than on an `EXPIRE` that no longer happens.
     await tunnelRedis.refreshTunnelOwnership('inst-1')
-    expect(redisInstances[0].expire).toHaveBeenCalledWith('tunnel:inst-1:pod', 600)
+    expect(redisInstances[0].set).toHaveBeenCalledWith('tunnel:inst-1:pod', 'pod-a', 'EX', 600)
+    expect(ttls.get('tunnel:inst-1:pod')).toBe(600)
     await expect(tunnelRedis.getTunnelOwner('inst-1')).resolves.toBe('pod-a')
     await expect(tunnelRedis.isTunnelConnectedAnywhere('inst-1')).resolves.toBe(true)
 
@@ -154,6 +163,21 @@ describe('tunnel redis cross-pod helpers', () => {
 
     await tunnelRedis.evictTunnelOwnership('inst-2')
     expect(kv.has('tunnel:inst-2:pod')).toBe(false)
+  })
+
+  // SHO-185 AC6: the heartbeat is the only thing that can repair a wrong
+  // eviction. `EXPIRE` on a deleted key was a silent no-op, so one slow relay
+  // took a live tunnel out of cross-pod routing for the life of the socket.
+  test('the heartbeat recreates an owner key another pod evicted, with its TTL', async () => {
+    await tunnelRedis.registerTunnelOwnership('inst-ac6')
+    await tunnelRedis.evictTunnelOwnership('inst-ac6')
+    expect(kv.has('tunnel:inst-ac6:pod')).toBe(false)
+
+    await tunnelRedis.refreshTunnelOwnership('inst-ac6')
+
+    expect(kv.get('tunnel:inst-ac6:pod')).toBe('pod-a')
+    expect(ttls.get('tunnel:inst-ac6:pod')).toBe(600)
+    await expect(tunnelRedis.getTunnelOwner('inst-ac6')).resolves.toBe('pod-a')
   })
 
   test('relays normal requests to remote pods and handles incoming local relay requests', async () => {

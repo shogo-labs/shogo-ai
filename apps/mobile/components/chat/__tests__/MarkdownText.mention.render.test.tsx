@@ -6,7 +6,7 @@
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test"
-import { cleanup, render } from "@testing-library/react"
+import { cleanup, fireEvent, render } from "@testing-library/react"
 import React from "react"
 import { createReactNativeMock } from "../../../test/react-native-mock"
 
@@ -50,5 +50,44 @@ describe("a mention in a rendered message", () => {
 
     expect(container.querySelector('[data-testid="chat-mention"]')?.textContent).toBe("@Ana Lopez")
     expect(container.querySelector('[data-testid="chat-file-link"]')?.textContent).toBe("src/app.ts")
+  })
+})
+
+describe("a file path in a rendered message", () => {
+  function renderFiles(text: string, existing: string[], onFilePress = mock((_: string) => {})) {
+    const fileExists = (path: string) => existing.includes(path)
+    const { container } = render(
+      <MarkdownText isStreaming={false} onFilePress={onFilePress} fileExists={fileExists}>
+        {text}
+      </MarkdownText>,
+    )
+    return { container, onFilePress }
+  }
+
+  test("is a file chip link when the file exists", () => {
+    const { container, onFilePress } = renderFiles("Updated `src/app.tsx` and docs/guide.md.", [
+      "src/app.tsx",
+      "docs/guide.md",
+    ])
+
+    const chips = Array.from(container.querySelectorAll<HTMLAnchorElement>('[data-testid="chat-file-chip"]'))
+    expect(chips.map((c) => c.textContent)).toEqual(["app.tsx", "guide.md"])
+    expect(chips.map((c) => c.title)).toEqual(["src/app.tsx", "docs/guide.md"])
+    expect(chips.every((c) => c.tagName === "A" && c.querySelector("code") === null)).toBe(true)
+    expect(chips.map((c) => c.querySelector("[data-file-icon]")?.getAttribute("data-file-icon"))).toEqual([
+      "atom",
+      "M↓",
+    ])
+
+    fireEvent.click(chips[0]!)
+    expect(onFilePress).toHaveBeenCalledWith("src/app.tsx")
+  })
+
+  test("stays inline code when the file can't be found", () => {
+    const { container } = renderFiles("See `src/missing.ts`.", ["src/app.tsx"])
+
+    expect(container.querySelector('[data-testid="chat-file-chip"]')).toBeNull()
+    const link = container.querySelector('[data-testid="chat-file-link"]')
+    expect(link?.querySelector("code")?.textContent).toBe("src/missing.ts")
   })
 })

@@ -5,11 +5,49 @@ import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 
 const STORAGE_KEY = 'shogo:active-workspace-id'
 const KIND_STORAGE_KEY = 'shogo:active-workspace-kind'
+const SWITCH_INTENT_STORAGE_KEY = 'shogo:active-workspace-switch'
 
 export type CachedWorkspaceKind = 'personal' | 'team'
 
+/**
+ * How long a person's own switch outranks an automatic writer.
+ *
+ * A switch is applied in place and then reloads the page (~½s on web), and
+ * every other tab sees the new id through `storage` at the same moment. In
+ * that window a still-mounted screen can resolve a stale workspace — the chat
+ * it has open, a projects list that has not caught up, a cross-tab echo — and
+ * write the workspace the person just left back. That write is the whole bug
+ * SHO-157: staging landed in the old workspace every time, ~10 ms after the
+ * switch and before the reload. Long enough to cover the reload plus the
+ * first renders after it; short enough that an automatic self-heal (a stale id
+ * from another account, a deleted workspace) is only deferred, never lost.
+ */
+export const WORKSPACE_SWITCH_INTENT_TTL_MS = 10_000
+
+/**
+ * Who is writing the active workspace.
+ *
+ * - `user` (default): the person picked it — the switcher, `openInWorkspace`,
+ *   a chat chip, onboarding, creating or deleting a workspace. Records the
+ *   switch intent below, so it wins over everything for its TTL.
+ * - `automatic`: a screen reacting to data it already has (`adoptChatWorkspace`,
+ *   the ChatPanel restore, `resolveActiveWorkspaceId`'s fallback). It cannot put
+ *   back a workspace the person just left. A third workspace it has a real
+ *   reason to select — a chip, a newly created workspace — is still allowed, so
+ *   only the ids the person switched *away from* are blocked.
+ */
+export type ActiveWorkspaceWriteReason = 'user' | 'automatic'
+
+interface WorkspaceSwitchIntent {
+  id: string
+  /** Workspaces the person switched away from while this intent has been live. */
+  left: string[]
+  at: number
+}
+
 let nativeActiveWorkspaceId: string | null = null
 let nativeActiveWorkspaceKind: { id: string; kind: CachedWorkspaceKind } | null = null
+let nativeSwitchIntent: WorkspaceSwitchIntent | null = null
 const listeners = new Set<() => void>()
 
 /** Another window (e.g. the desktop island) switched workspace. */
@@ -49,11 +87,102 @@ export function getActiveWorkspaceId(): string | null {
   return safeGetItem(STORAGE_KEY)
 }
 
-export function setActiveWorkspaceId(id: string): void {
-  if (getActiveWorkspaceId() === id) return
+function readSwitchIntent(): WorkspaceSwitchIntent | null {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') {
+    return nativeSwitchIntent
+  }
+  const raw = safeGetItem(SWITCH_INTENT_STORAGE_KEY)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown; left?: unknown; at?: unknown }
+    if (typeof parsed.id === 'string' && typeof parsed.at === 'number') {
+      const left = Array.isArray(parsed.left)
+        ? parsed.left.filter((value): value is string => typeof value === 'string')
+        : []
+      return { id: parsed.id, left, at: parsed.at }
+    }
+  } catch {
+    // Ignore a corrupt record; it must never block a write.
+  }
+  return null
+}
+
+function persistSwitchIntent(intent: WorkspaceSwitchIntent | null): void {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') {
+    nativeSwitchIntent = intent
+    return
+  }
+  if (intent == null) safeRemoveItem(SWITCH_INTENT_STORAGE_KEY)
+  else safeSetItem(SWITCH_INTENT_STORAGE_KEY, JSON.stringify(intent))
+}
+
+function isIntentFresh(intent: WorkspaceSwitchIntent): boolean {
+  return Date.now() - intent.at < WORKSPACE_SWITCH_INTENT_TTL_MS
+}
+
+/**
+ * Whether a fresh user switch outranks an automatic write of `id`: the person
+ * just left that workspace, so a screen that still refers to it is stale.
+ * Read from storage rather than memory so every tab agrees, including the one
+ * that did not make the switch.
+ */
+function isOverriddenByUserSwitch(id: string | null): boolean {
+  if (id == null) return false
+  const intent = readSwitchIntent()
+  if (!intent || !isIntentFresh(intent)) return false
+  return intent.left.includes(id)
+}
+
+/**
+ * Persist the active workspace, refusing an automatic write that would undo a
+ * switch the person just made. Returns whether the id was accepted. The one
+ * place the id is written, so no caller has to remember this rule.
+ */
+function writeActiveWorkspaceId(
+  id: string | null,
+  reason: ActiveWorkspaceWriteReason,
+): boolean {
+  if (reason === 'automatic' && isOverriddenByUserSwitch(id)) return false
   persistActiveWorkspaceId(id)
+  return true
+}
+
+export interface SetActiveWorkspaceIdOptions {
+  /** Defaults to `user`; see `ActiveWorkspaceWriteReason`. */
+  reason?: ActiveWorkspaceWriteReason
+}
+
+/**
+ * Make `id` the active workspace. Returns false when the write was refused
+ * because a switch the person made a moment ago outranks it.
+ */
+export function setActiveWorkspaceId(
+  id: string,
+  options: SetActiveWorkspaceIdOptions = {},
+): boolean {
+  const reason = options.reason ?? 'user'
+  const previous = getActiveWorkspaceId()
+  if (previous === id) return true
+  if (!writeActiveWorkspaceId(id, reason)) return false
+  if (reason === 'user') {
+    // Carry the chain of workspaces this person has left while the intent is
+    // live, so a fast second switch does not reopen the first one to a stale
+    // automatic writer.
+    const pending = readSwitchIntent()
+    const left = [
+      ...(pending && isIntentFresh(pending) ? pending.left : []),
+      ...(previous ? [previous] : []),
+    ].filter((leftId) => leftId !== id)
+    persistSwitchIntent({ id, left: [...new Set(left)], at: Date.now() })
+  }
   // `resolveActiveWorkspaceId` may persist a fallback during render.
   queueMicrotask(emitActiveWorkspaceId)
+  return true
+}
+
+/** Drop the switch intent. Tests, and anything that abandons a switch. */
+export function clearWorkspaceSwitchIntent(): void {
+  persistSwitchIntent(null)
 }
 
 /**
@@ -71,9 +200,13 @@ export function setActiveWorkspaceId(id: string): void {
 export function clearActiveWorkspaceId(): void {
   const hadId = getActiveWorkspaceId() != null
   const hadKind = readCachedWorkspaceKind() != null
-  if (!hadId && !hadKind) return
+  // A pending switch belongs to the account that made it: clear it with the id
+  // or it would outrank the next account's first resolution.
+  const hadIntent = readSwitchIntent() != null
+  if (!hadId && !hadKind && !hadIntent) return
   persistActiveWorkspaceId(null)
   persistCachedWorkspaceKind(null)
+  persistSwitchIntent(null)
   queueMicrotask(emitActiveWorkspaceId)
 }
 
@@ -186,12 +319,15 @@ export function resolveActiveWorkspaceId(
   // Persist the self-healing fallback without emitting a subscription update;
   // notifying here schedules another render from inside render and can loop
   // indefinitely when the browser has no active workspace cached yet.
+  //
+  // An automatic write: a fallback derived from a list that has not caught up
+  // must not undo a workspace the person picked a moment ago (SHO-157).
   if (
     options.persistFallback !== false &&
     fallback &&
     fallback !== id
   ) {
-    persistActiveWorkspaceId(fallback)
+    writeActiveWorkspaceId(fallback, 'automatic')
   }
   return fallback
 }

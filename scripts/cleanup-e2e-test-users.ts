@@ -39,6 +39,7 @@
  */
 
 import { prisma } from "../apps/api/src/lib/prisma"
+import { deleteE2eTestUsers, isE2eTestEmail } from "../apps/api/src/services/e2e-test-accounts"
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
@@ -78,11 +79,9 @@ async function main() {
     orderBy: { createdAt: "asc" },
   })
 
-  const matching = users.filter((u: UserRow) =>
-    // Poor-man's wildcard — `contains` above is already narrow, but be
-    // defensive about accidental matches like `notice-e2e-foo@…`.
-    u.email.startsWith("e2e-") && u.email.endsWith("@mailnull.com"),
-  )
+  // `contains` above is already narrow; be defensive about accidental matches
+  // like `notice-e2e-foo@…`.
+  const matching = users.filter((u: UserRow) => isE2eTestEmail(u.email))
 
   // eslint-disable-next-line no-console
   console.log(`[cleanup-e2e] matched ${matching.length} users (from ${users.length} candidates)`)
@@ -152,35 +151,16 @@ async function main() {
     return
   }
 
-  // Execute deletes. User cascade covers sessions/accounts/members/apiKeys/
-  // notifications/starredProjects/signupAttribution/creatorProfile.
-  // Workspace cascade covers projects/billing/usage events/wallets.
-  let userDeletes = 0
-  for (const u of matching) {
-    try {
-      await prisma.user.delete({ where: { id: u.id } })
-      userDeletes++
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[cleanup-e2e] user delete failed for ${u.email}:`, err)
-    }
-  }
-
-  let workspaceDeletes = 0
-  for (const wid of orphanWorkspaces) {
-    try {
-      await prisma.workspace.delete({ where: { id: wid } })
-      workspaceDeletes++
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[cleanup-e2e] workspace delete failed for ${wid}:`, err)
-    }
-  }
+  // User cascade covers sessions/accounts/members/apiKeys/notifications/
+  // starredProjects/signupAttribution/creatorProfile. Workspace cascade covers
+  // projects/billing/usage events/wallets; their runtimes are torn down first.
+  const result = await deleteE2eTestUsers(matching.map((u: UserRow) => u.id))
 
   // eslint-disable-next-line no-console
   console.log(
-    `[cleanup-e2e] done. deleted users=${userDeletes}/${matching.length} ` +
-      `workspaces=${workspaceDeletes}/${orphanWorkspaces.length}`,
+    `[cleanup-e2e] done. deleted users=${result.users}/${matching.length} ` +
+      `workspaces=${result.workspaces}/${orphanWorkspaces.length} projects=${result.projects}` +
+      (result.failed.length ? ` failed=${result.failed.join(",")}` : ""),
   )
 }
 

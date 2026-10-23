@@ -32,6 +32,28 @@ mock.module("lucide-react-native", () => {
 })
 
 mock.module(resolve(import.meta.dir, "../../../../contexts/posthog"), () => ({ usePostHogSafe: () => null }))
+mock.module(resolve(import.meta.dir, "../../../../contexts/auth"), () => ({
+  useAuth: () => ({ user: { id: "user-1", email: "user@example.com" } }),
+  useAuthOptional: () => ({ user: { id: "user-1", email: "user@example.com" } }),
+  getAuthUserSnapshot: () => ({ id: "user-1", email: "user@example.com" }),
+}))
+mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
+  useDomainHttpOptional: () => null,
+  getDomainHttpClient: () => null,
+  useDomainOptional: () => null,
+  getDomainStore: () => null,
+  useDomainActions: () => ({
+    acceptInvitation: async () => ({}),
+    declineInvitation: async () => ({}),
+  }),
+  useDomainActionsOptional: () => ({
+    acceptInvitation: async () => ({}),
+    declineInvitation: async () => ({}),
+  }),
+  getDomainActionsInstance: () => null,
+  useWorkspaceCollection: () => ({ all: [], loadAll: async () => {} }),
+  useWorkspaceCollectionOptional: () => null,
+}))
 mock.module(resolve(import.meta.dir, "../../../../lib/billing-config"), () => ({ getPlanDisplayName: () => "Free" }))
 mock.module(resolve(import.meta.dir, "../../../../lib/analytics"), () => ({ EVENTS: {}, trackEvent: () => {} }))
 mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({ CompactUsageWindows: () => null }))
@@ -39,6 +61,15 @@ mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({ 
 let cloud = { signedIn: false, cloudUrl: null, reachable: true, user: null as any, workspaces: [] as any[] }
 const cloudIds = () => new Set(cloud.workspaces.map((w) => w.id))
 mock.module(resolve(import.meta.dir, "../../../../lib/workspace-route"), () => ({
+  routeUrl: (url: string) => url,
+  routePath: (path: string) => path,
+  isActiveWorkspaceCloud: () => false,
+  installWorkspaceFetchRouter: () => {},
+  refreshCloudWorkspaces: async () => cloud,
+  setCloudWorkspacesState: () => {},
+  getCloudWorkspacesState: () => cloud,
+  subscribeCloudWorkspaces: () => () => {},
+  _resetWorkspaceRouteForTests: () => {},
   useCloudWorkspaces: () => cloud,
   isCloudWorkspace: (id: string) => cloudIds().has(id),
 }))
@@ -49,17 +80,31 @@ mock.module(resolve(import.meta.dir, "../../../../hooks/useCloudSession"), () =>
   useCloudSession: () => ({ cloud, pending: null, error: null, signIn, signOut }),
 }))
 
+// The header names the open machine workspace, so the section reads the active
+// instance. No machine is selected here — the cloud workspace's name is used.
+let activeMachine: { localWorkspaceName?: string } | null = null
+mock.module(resolve(import.meta.dir, "../../../../contexts/active-instance"), () => ({
+  useActiveInstance: () => ({
+    instance: activeMachine ? { source: "machine", ...activeMachine } : null,
+  }),
+}))
+
 const { WorkspaceMenuSection, workspaceKindBadge } = await import("../WorkspaceMenuSection")
+const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")
 
 const localWorkspaces = [
   { id: "local-personal", name: "Personal", kind: "personal" },
   { id: "local-team", name: "My Workspace", kind: "team" },
 ]
 
+const createWorkspace = mock(() => {})
+
 function renderSection(workspaces: any[]) {
   return render(
     <WorkspaceMenuSection
-      workspaces={workspaces}
+      entries={buildWorkspaceEntries({ workspaces })}
+      currentKey={cloudWorkspaceKey(workspaces[0]?.id)}
+      onSelect={() => {}}
       currentWorkspace={workspaces[0]}
       billingData={{ hasActiveSubscription: false }}
       workspacePlan={null}
@@ -67,7 +112,7 @@ function renderSection(workspaces: any[]) {
       showBilling={false}
       onNavigate={() => {}}
       onSwitchWorkspace={() => {}}
-      onCreateWorkspace={() => {}}
+      onCreateWorkspace={createWorkspace}
       localMode
       onClose={() => {}}
     />,
@@ -75,9 +120,11 @@ function renderSection(workspaces: any[]) {
 }
 
 beforeEach(() => {
+  activeMachine = null
   cloud = { signedIn: false, cloudUrl: null, reachable: true, user: null, workspaces: [] }
   signIn.mockClear()
   signOut.mockClear()
+  createWorkspace.mockClear()
 })
 
 describe("workspaceKindBadge", () => {
@@ -98,9 +145,19 @@ describe("WorkspaceMenuSection in local mode", () => {
     renderSection(localWorkspaces)
     expect(screen.getAllByText("Local")).toHaveLength(2)
     expect(screen.queryByText("Cloud")).toBeNull()
-    expect(screen.queryByText("Create new workspace")).toBeNull()
+    fireEvent.click(screen.getByText("Create new workspace"))
+    expect(createWorkspace).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByLabelText("Sign in to Shogo Cloud"))
     expect(signIn).toHaveBeenCalledTimes(1)
+  })
+
+  test("names the machine workspace that is open, not the cloud one behind it", () => {
+    activeMachine = { localWorkspaceName: "Samsara" }
+    renderSection(localWorkspaces)
+    // The identity header names the machine workspace; the list below still
+    // lists the local ones.
+    expect(screen.getAllByText("Samsara")).toHaveLength(1)
+    expect(screen.getAllByText("Personal").length).toBeGreaterThan(0)
   })
 
   test("signed in: local and cloud side by side, with the account and Sign out", () => {

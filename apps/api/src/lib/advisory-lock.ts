@@ -17,9 +17,12 @@
  *
  * This module fixes that on two axes:
  *
- *  1. NON-BLOCKING WAIT. `pollAdvisoryLock` polls `pg_try_advisory_lock`
- *     with capped exponential backoff and sleeps between attempts, so a
- *     waiter never holds a connection across the wait.
+ *  1. NON-BLOCKING WAIT. `withAdvisoryLock` polls `pg_try_advisory_lock`
+ *     with capped exponential backoff, leasing a lock connection for each
+ *     attempt and returning it before sleeping. Only the winner keeps its
+ *     connection. Holding it across the wait let a handful of slow holders
+ *     plus their waiters drain the small lock pool, and every other key on
+ *     the pod then failed to connect (2026-10-17 us-ashburn-1 rewarm).
  *
  *  2. DEDICATED CONNECTION. `withAdvisoryLock` acquires the lock on its own
  *     `pg.Pool` (on `DATABASE_DIRECT_URL`, bypassing PgBouncer) rather than
@@ -107,10 +110,12 @@ export async function pollAdvisoryLock(
   const initial = opts.initialIntervalMs ?? DEFAULT_INITIAL_INTERVAL_MS
   const max = opts.maxIntervalMs ?? DEFAULT_MAX_INTERVAL_MS
 
+  // The budget covers the first attempt too: under pool pressure that one
+  // can itself take a full connect timeout.
+  const deadline = now() + budgetMs
   // Fast path: one round-trip in the common uncontended case.
   if (await deps.tryLock(key)) return true
 
-  const deadline = now() + budgetMs
   let interval = initial
   while (now() < deadline) {
     const remaining = deadline - now()
@@ -157,9 +162,25 @@ export interface WithAdvisoryLockResult<T> {
   held: boolean
   /** Present iff `held` is true. */
   result?: T
+  /**
+   * Present iff `held` is false. `contended`: another session held the key
+   * for the whole budget. `unavailable`: no lock connection could be obtained
+   * (pool exhausted, DB unreachable) on the last attempt.
+   */
+  reason?: 'contended' | 'unavailable'
 }
 
 let lockPool: PgPool | null = null
+
+/**
+ * Max dedicated lock connections per process — i.e. the max number of locks
+ * this process can HOLD at once. Callers that fan out lock-holding work (the
+ * metal rewarm drain) must stay below this so user-facing spawns keep a slot.
+ */
+export function getAdvisoryLockPoolSize(): number {
+  const n = parseInt(process.env.ADVISORY_LOCK_POOL_SIZE || '', 10)
+  return Number.isFinite(n) && n > 0 ? n : 6
+}
 
 /**
  * Lazily create the dedicated advisory-lock pool. Uses `DATABASE_DIRECT_URL`
@@ -177,12 +198,20 @@ async function getLockPool(): Promise<PgPool> {
   const { Pool } = await import('pg')
   lockPool = new Pool({
     connectionString,
-    // Small, mostly-idle pool: only in-flight lock holders consume a slot.
-    max: parseInt(process.env.ADVISORY_LOCK_POOL_SIZE || '6', 10),
+    // Only lock HOLDERS keep a slot; waiters lease one per attempt. The short
+    // connect timeout keeps a saturated pool from eating a waiter's budget in
+    // one attempt — withAdvisoryLock retries the connect until the deadline.
+    max: getAdvisoryLockPoolSize(),
     idleTimeoutMillis: 10_000,
-    connectionTimeoutMillis: 15_000,
+    connectionTimeoutMillis: 2_000,
   })
   return lockPool
+}
+
+/** Lock connections currently leased out of the dedicated pool (tests, diagnostics). */
+export function getAdvisoryLockPoolUsage(): { leased: number; waiting: number } {
+  if (!lockPool) return { leased: 0, waiting: 0 }
+  return { leased: lockPool.totalCount - lockPool.idleCount, waiting: lockPool.waitingCount }
 }
 
 /**
@@ -225,13 +254,18 @@ async function defaultAcquireClient(): Promise<AdvisoryLockClient> {
  * Contract:
  *   - `{ held: true, result }`  — lock acquired, `fn` ran exactly once. If
  *     `fn` throws, the error propagates (lock is released first).
- *   - `{ held: false }`         — lock NOT acquired within budget OR the lock
- *     connection could not be obtained. `fn` did NOT run; the caller decides
- *     the fallback (cold start, run un-serialized, etc.).
+ *   - `{ held: false, reason }` — lock NOT acquired within budget, either
+ *     because another session held it (`contended`) or because no lock
+ *     connection could be obtained (`unavailable`). `fn` did NOT run; the
+ *     caller decides the fallback (cold start, run un-serialized, etc.).
  *
- * Infra failures (no connection, poll error) are surfaced as `held: false`
- * rather than thrown, so callers can cleanly distinguish "couldn't lock" from
- * "fn threw".
+ * Each attempt leases its own connection and returns it unless it won, so a
+ * waiter holds no connection while it sleeps. A failed connect is retried
+ * like a contended lock until the budget runs out: a saturated pool frees a
+ * slot as soon as any holder finishes.
+ *
+ * Infra failures are surfaced as `held: false` rather than thrown, so callers
+ * can cleanly distinguish "couldn't lock" from "fn threw".
  */
 export async function withAdvisoryLock<T>(
   key: bigint,
@@ -240,30 +274,50 @@ export async function withAdvisoryLock<T>(
 ): Promise<WithAdvisoryLockResult<T>> {
   const acquireClient = opts.deps?.acquireClient ?? acquireClientOverride ?? defaultAcquireClient
 
-  let client: AdvisoryLockClient | null = null
-  let held = false
-  try {
-    client = await acquireClient()
-    held = await pollAdvisoryLock(
-      key,
-      { tryLock: (k) => client!.tryLock(k), sleep: opts.deps?.sleep, now: opts.deps?.now },
-      opts,
-    )
-  } catch (err) {
-    console.error(
-      `[advisory-lock] failed to acquire dedicated lock connection for key=${key}; treating as not-held:`,
-      err,
-    )
-    if (client) {
-      try { await client.release(true) } catch { /* already gone */ }
+  let client = null as AdvisoryLockClient | null
+  let lastErr: unknown = null
+  const attempt = async (k: bigint): Promise<boolean> => {
+    let c: AdvisoryLockClient
+    try {
+      c = await acquireClient()
+    } catch (err) {
+      lastErr = err
+      return false
     }
-    return { held: false }
+    try {
+      if (await c.tryLock(k)) {
+        client = c
+        return true
+      }
+      lastErr = null
+      try { await c.release(false) } catch { /* ignore */ }
+    } catch (err) {
+      lastErr = err
+      try { await c.release(true) } catch { /* already gone */ }
+    }
+    return false
   }
 
-  if (!held) {
-    try { await client.release(false) } catch { /* ignore */ }
-    return { held: false }
+  await pollAdvisoryLock(key, { tryLock: attempt, sleep: opts.deps?.sleep, now: opts.deps?.now }, opts)
+
+  if (!client) {
+    if (lastErr) {
+      console.error(
+        `[advisory-lock] failed to acquire dedicated lock connection for key=${key}; treating as not-held:`,
+        lastErr,
+      )
+      return { held: false, reason: 'unavailable' }
+    }
+    return { held: false, reason: 'contended' }
   }
+  return runHeld(client, key, fn)
+}
+
+async function runHeld<T>(
+  client: AdvisoryLockClient,
+  key: bigint,
+  fn: () => Promise<T>,
+): Promise<WithAdvisoryLockResult<T>> {
 
   // We hold the lock. Run fn exactly once; its errors propagate.
   let poisoned = false

@@ -32,6 +32,16 @@ describe('sortSideChats', () => {
     expect(sorted.map((s) => s.id)).toEqual(['pinned', 'recent'])
   })
 
+  test('ranks a freshly created chat above older ones but below pinned chats', () => {
+    const now = new Date().toISOString()
+    const sorted = sortSideChats([
+      { id: 'old', lastActiveAt: '2026-01-01T00:00:00Z' },
+      { id: 'new', createdAt: now, lastActiveAt: now },
+      { id: 'pinned', lastActiveAt: '2026-01-01T00:00:00Z', isPinned: true },
+    ])
+    expect(sorted.map((s) => s.id)).toEqual(['pinned', 'new', 'old'])
+  })
+
   test('does not mutate its input', () => {
     const input = [{ id: 'a', createdAt: '2026-01-01' }, { id: 'b', createdAt: '2026-02-01' }]
     sortSideChats(input)

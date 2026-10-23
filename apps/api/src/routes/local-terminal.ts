@@ -203,6 +203,7 @@ export async function upgradeLocalPtySocket(
     const podUrl = await resolveTerminalPodUrl(projectId, runtimeManager)
     const data: PtyPodBridgeData = buildPtyPodBridgeData({
       podUrl,
+      projectId,
       sessionId,
       since,
       runtimeToken: await deriveProjectRuntimeToken(projectId),

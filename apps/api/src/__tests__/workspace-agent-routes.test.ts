@@ -28,6 +28,12 @@ const profile = {
   statusUpdatedAt: null,
 }
 
+let agentDefaultModel: string | null = null
+
+mock.module('../services/workspace-models.service', () => ({
+  isModelVisibleForWorkspace: async (_workspaceId: string, modelId: string) => modelId !== 'hidden-model',
+}))
+
 const memberRoles: Record<string, string> = {
   'user-1': 'member',
   'user-admin': 'admin',
@@ -51,6 +57,11 @@ mock.module('../services/workspace-agent.service', () => ({
   createGoal: async () => ({ id: 'goal-1', title: 'Habit tracker', status: 'active' }),
   createGoalEvent: async () => ({ id: 'event-1', kind: 'progress', message: 'Started' }),
   getOrCreateAgentProfile: async () => profile,
+  getAgentDefaultModel: async () => agentDefaultModel,
+  setAgentDefaultModel: async (_workspaceId: string, model: string | null) => {
+    agentDefaultModel = model
+    return model
+  },
   saveAgentAvatar: async (workspaceId: string, buffer: Buffer) =>
     buffer.byteLength > 0 ? `https://artifacts.example.com/avatars/${workspaceId}.png` : null,
   updateAgentProfile: async (_workspaceId: string, changes: Record<string, unknown>) => ({
@@ -145,6 +156,33 @@ describe('workspace agent routes (session-authorized mount)', () => {
     expect(await patchResponse.json()).toMatchObject({
       profile: { statusText: 'Planning your next step' },
     })
+  })
+
+  test('only workspace admins can set the agent default model', async () => {
+    const put = (userId: string, body: unknown) =>
+      appFor(userId).request('/api/workspaces/workspace-1/agent-default-model', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+    const memberGet = await appFor('user-1').request('/api/workspaces/workspace-1/agent-default-model')
+    expect(memberGet.status).toBe(200)
+    expect(await memberGet.json()).toEqual({ defaultModel: null, canManage: false })
+
+    expect((await put('user-1', { defaultModel: 'claude-sonnet-4-6' })).status).toBe(403)
+    expect((await put('user-admin', { defaultModel: 'hidden-model' })).status).toBe(400)
+    expect((await put('user-admin', { defaultModel: 42 })).status).toBe(400)
+
+    const set = await put('user-admin', { defaultModel: 'claude-sonnet-4-6' })
+    expect(set.status).toBe(200)
+    expect(await set.json()).toEqual({ defaultModel: 'claude-sonnet-4-6', canManage: true })
+
+    const adminGet = await appFor('user-admin').request('/api/workspaces/workspace-1/agent-default-model')
+    expect(await adminGet.json()).toEqual({ defaultModel: 'claude-sonnet-4-6', canManage: true })
+
+    const cleared = await put('user-admin', { defaultModel: 'auto' })
+    expect(await cleared.json()).toEqual({ defaultModel: null, canManage: true })
   })
 
   test('returns active chats scoped to an authorized workspace', async () => {
@@ -389,6 +427,16 @@ describe('workspace agent routes (authorize-strategy agnostic)', () => {
     const res = await app.request('/api/internal/workspaces/workspace-1/agent-profile')
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ profile: { name: 'Shogo' } })
+  })
+
+  test('the runtime cannot change the agent default model, even naming an admin', async () => {
+    const app = appWithAuthorize(async (c) => ({ workspaceId: c.req.param('workspaceId') }))
+    const res = await app.request('/api/internal/workspaces/workspace-1/agent-default-model', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ defaultModel: 'claude-sonnet-4-6', userId: 'user-admin' }),
+    })
+    expect(res.status).toBe(403)
   })
 
   describe('internal schedule mutations', () => {

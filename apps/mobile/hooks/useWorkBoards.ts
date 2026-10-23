@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTeamChatEvents } from '../lib/team-chat-connection'
 import { workBoardsApi, type Board, type BoardView, type WorkItemDetail } from '../lib/work-boards-api'
+import { applyAgentMessage } from '../lib/board-layout'
 
 const api = workBoardsApi()
 
@@ -92,6 +93,11 @@ export function useBoardView(boardId: string | null | undefined, workspaceId: st
   useTeamChatEvents(workspaceId, (event) => {
     if (event.type === 'ready') return soon()
     if (event.type === 'board.changed' && event.boardId === boardId) soon()
+    // Agent replies start and settle in a card's thread: show the spinner without a reload.
+    if (event.type === 'message.created' || event.type === 'message.updated') {
+      const message = event.message
+      setView((v) => (v && applyAgentMessage(v, message)) || v)
+    }
   })
 
   return { view, error, reload, setView }

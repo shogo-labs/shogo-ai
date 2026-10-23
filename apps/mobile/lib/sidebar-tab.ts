@@ -25,6 +25,9 @@ const strip = (pathname: string) => pathname.replace(/^\/\(app\)/, '').replace(/
 export function tabForPathname(pathname: string, conversations: TabConversation[] = []): SidebarTabId | null {
   const path = strip(pathname)
   if (path === '/') return 'home'
+  // The pre-landing home moved to an explicit route; it belongs to the same
+  // sidebar tab the landing used to be.
+  if (path === '/home') return 'home'
   const chat = path.match(/^\/c(?:\/([^/?]+))?\/?$/)
   if (chat) {
     const segment = chat[1] ? decodeURIComponent(chat[1]) : null

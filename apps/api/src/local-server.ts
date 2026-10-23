@@ -23,29 +23,37 @@ import {
   isLocalPtyBridgeData,
   upgradeLocalPtySocket,
 } from './routes/local-terminal'
+import { countTerminalSession } from './lib/terminal-session-pin'
 import { createLocalApp } from './app/create-local-app'
 import { stopAllPrismaStudios } from './routes/database'
-import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
-import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-event-delivery-dispatch'
-import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
-import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
+import { startLocalBackgroundWorkers, stopLocalBackgroundWorkers } from './lib/local-background-workers'
 import { resolveLocalApiPort } from './lib/local-api-port'
 import { prisma } from './lib/prisma'
+import { isSecretCryptoConfigured } from './lib/secret-crypto'
 import { ensureTranscriptionEngine } from './services/transcription-install.service'
 import { startCloudWorkspaceSync } from './services/cloud-workspaces'
+import { startInstanceTunnel, stopInstanceTunnel } from './lib/instance-tunnel'
+import { startMachineSync, stopMachineSync } from './lib/machine-sync/local-sync'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 import { cloudSocketRelayHandlers, isCloudSocketRelayData } from './routes/local-cloud-proxy'
 
 const API_PORT = resolveLocalApiPort()
+// Desktop provisions SECRETS_ENCRYPTION_KEY at API-bootstrap time; docker and
+// self-host local mode do not (docker-compose.yml never sets it and
+// .env.local.template leaves it blank), where it used to surface only as a UI
+// error on the first credential write. Never log the key itself.
+console.log(
+  `[LocalAPI] secrets encryption: ${isSecretCryptoConfigured()
+    ? 'configured'
+    : 'NOT configured (SECRETS_ENCRYPTION_KEY unset or malformed) — provider keys, GitHub, Slack and integration credentials cannot be stored'}`,
+)
 const { app, runtimeManager, resetCaches: resetLocalCaches } = createLocalApp()
 
 await bootstrapLocalDatabase()
 resetLocalCaches()
-// Fire due agent-owned recurring schedules in the local workspace runtime.
-startAgentScheduleWorker(runtimeManager)
-// Deliver workspace events to their subscriptions. The desktop has no public URL
-// for Composio webhooks, so it receives trigger events over Composio's realtime channel.
-startEventDeliveryWorker(runtimeManager)
+// Every polling worker this process needs — the same list the cloud composer
+// runs, so the slim local entrypoint cannot silently drop one again (SHO-36).
+await startLocalBackgroundWorkers({ runtimeManager })
 let stopComposioListener: (() => Promise<void>) | null = null
 void import('./services/composio-triggers.service').then(async (m) => {
   const { installScriptedEventAgentFromEnv } = await import('./services/event-agent-script')
@@ -53,8 +61,6 @@ void import('./services/composio-triggers.service').then(async (m) => {
   m.startComposioTriggerReconciler()
   stopComposioListener = await m.startComposioTriggerListener()
 }).catch((err) => console.warn('[LocalAPI] Composio trigger listener unavailable:', err?.message ?? err))
-startChatQueueWorker()
-startChannelWorkers()
 // Keep the cloud team workspaces this desktop is signed in to current.
 startCloudWorkspaceSync()
 
@@ -78,7 +84,10 @@ const server = Bun.serve({
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
       else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.open(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamOpen(ws)
-      else if (isLocalPtyBridgeData(ws.data)) ptyBridge.open(ws)
+      else if (isLocalPtyBridgeData(ws.data)) {
+        countTerminalSession(runtimeManager, ws.data, 1)
+        ptyBridge.open(ws)
+      }
     },
     message(ws: any, message: any) {
       if (isConversationSocketData(ws.data)) void conversationSocketHandlers.message(ws, message)
@@ -90,7 +99,10 @@ const server = Bun.serve({
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
       else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.close(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamClose(ws)
-      else if (isLocalPtyBridgeData(ws.data)) ptyBridge.close(ws, code, reason)
+      else if (isLocalPtyBridgeData(ws.data)) {
+        countTerminalSession(runtimeManager, ws.data, -1)
+        ptyBridge.close(ws, code, reason)
+      }
     },
   },
   idleTimeout: 255,
@@ -98,6 +110,17 @@ const server = Bun.serve({
 
 console.log(`🚀 Local API server running on http://localhost:${server.port}`)
 console.log(`   Workspace runtime: ws:proj:<anchor>`)
+
+// Registers this machine with Shogo Cloud (heartbeat + on-demand WS). The
+// tunnel proxies cloud requests back to this server, so start it after listen.
+if (process.env.SHOGO_API_KEY) startInstanceTunnel()
+// Keeps the cloud's copy of this machine's records current over HTTPS, off every
+// request path (SHO-185). Waits for the first heartbeat to learn its id.
+if (process.env.SHOGO_API_KEY) {
+  void startMachineSync().catch((err) => {
+    console.warn('[LocalAPI] Machine sync did not start:', err?.message ?? err)
+  })
+}
 
 async function startBackgroundTranscriptionSetup(): Promise<void> {
   try {
@@ -121,11 +144,10 @@ void startBackgroundTranscriptionSetup()
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`[LocalAPI] Received ${signal}, stopping runtimes...`)
-  stopAgentScheduleWorker()
-  stopEventDeliveryWorker()
+  stopLocalBackgroundWorkers()
+  stopMachineSync()
+  stopInstanceTunnel()
   void stopComposioListener?.()
-  stopChatQueueWorker()
-  stopChannelWorkers()
   try {
     await runtimeManager.stopAll()
     stopAllPrismaStudios()

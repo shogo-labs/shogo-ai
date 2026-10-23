@@ -3,10 +3,25 @@
 
 import { describe, expect, test } from "bun:test"
 import {
+  isPlanStreamOwner,
   planToPublishToStream,
   shouldListInMemoryPlan,
   shouldPublishPlanToStream,
 } from "../plan-stream-publish"
+
+describe("isPlanStreamOwner", () => {
+  test("the active project tab owns the stream via onMessagesChange", () => {
+    expect(isPlanStreamOwner({ hasMessagesListener: true, ownsPlanStream: false })).toBe(true)
+  })
+
+  test("the workspace chat owns the stream by opting in", () => {
+    expect(isPlanStreamOwner({ hasMessagesListener: false, ownsPlanStream: true })).toBe(true)
+  })
+
+  test("a nested chat without either flag never publishes", () => {
+    expect(isPlanStreamOwner({ hasMessagesListener: false, ownsPlanStream: false })).toBe(false)
+  })
+})
 
 describe("planToPublishToStream", () => {
   test("keeps the dock plan after streaming ends so Plans is not empty", () => {

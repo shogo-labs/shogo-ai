@@ -15,15 +15,18 @@
 /* ── Streamdown overrides for chat markdown ── */
 
 /* Semantic markdown palette. Mirrors the native palette in
-   components/chat/MarkdownText.tsx: GitHub grays for structure, orange
-   for inline code, blue for links. Dark values apply under `.dark`. */
+   components/chat/MarkdownText.tsx: GitHub grays for structure, blue for
+   links, and body-colored text on a neutral grey chip for inline code.
+   Dark values apply under `.dark`. */
 .chat-md {
   --md-text: #1f2328;
   --md-heading: #111827;
   --md-muted: #59636e;
   --md-link: #0969da;
-  --md-code-text: #b45309;
-  --md-code-bg: #f6f8fa;
+  /* Resolves against this element's own --md-text, so inline code follows
+     the body color in both themes with no dark override to keep in sync. */
+  --md-code-text: var(--md-text);
+  --md-code-bg: #e4e4e7;
   --md-border: #d1d9e0;
   --md-quote-border: #d1d9e0;
   --md-table-header-bg: #f6f8fa;
@@ -35,8 +38,7 @@
   --md-heading: #ffffff;
   --md-muted: #8b949e;
   --md-link: #4493f8;
-  --md-code-text: #fb923c;
-  --md-code-bg: #161b22;
+  --md-code-bg: #333333;
   --md-border: #30363d;
   --md-quote-border: #30363d;
   --md-table-header-bg: #161b22;
@@ -63,6 +65,61 @@
   background-color: var(--md-code-bg) !important;
 }
 
+.chat-md a.chat-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  max-width: 100%;
+  padding: 0 0.45em;
+  border: 1px solid var(--md-border);
+  border-radius: 6px;
+  background-color: var(--md-code-bg);
+  color: var(--md-text) !important;
+  font-size: 0.92em;
+  line-height: 1.5;
+  text-decoration: none !important;
+  vertical-align: baseline;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chat-md a.chat-file-chip > svg,
+.chat-md a.chat-file-chip > .file-type-badge {
+  flex-shrink: 0;
+}
+
+.file-type-badge {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border-radius: 22%;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  user-select: none;
+}
+
+/* Absolutely positioned so the label doesn't set the chip's baseline. */
+.file-type-badge::before {
+  content: attr(data-file-icon);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-md a.chat-file-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-md a.chat-file-chip:hover {
+  border-color: var(--md-link);
+  color: var(--md-link) !important;
+}
 .chat-md del,
 .chat-md s {
   color: var(--md-muted) !important;

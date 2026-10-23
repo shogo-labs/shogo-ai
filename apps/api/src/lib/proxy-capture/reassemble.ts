@@ -70,12 +70,16 @@ function updateUsage(state: StreamAccumulator, usage: any): void {
   const output = usage.output_tokens ?? usage.completion_tokens
   if (typeof input === 'number') state.usage.inputTokens = input
   if (typeof output === 'number') state.usage.outputTokens = output
+  // OpenRouter-style usage counts `cache_write_tokens` inside `cached_tokens`.
+  const includedCacheWrite = usage.prompt_tokens_details?.cache_write_tokens
   const cached =
     usage.cache_read_input_tokens ??
-    usage.prompt_tokens_details?.cached_tokens ??
+    (typeof usage.prompt_tokens_details?.cached_tokens === 'number'
+      ? Math.max(0, usage.prompt_tokens_details.cached_tokens - (includedCacheWrite || 0))
+      : undefined) ??
     usage.prompt_cache_hit_tokens
   if (typeof cached === 'number') state.usage.cachedInputTokens = cached
-  const cacheWrite = usage.cache_creation_input_tokens ?? usage.prompt_cache_creation_tokens
+  const cacheWrite = usage.cache_creation_input_tokens ?? includedCacheWrite ?? usage.prompt_cache_creation_tokens
   if (typeof cacheWrite === 'number') state.usage.cacheWriteTokens = cacheWrite
   const reasoning = usage.completion_tokens_details?.reasoning_tokens ?? usage.reasoning_tokens
   if (typeof reasoning === 'number') state.usage.reasoningTokens = reasoning

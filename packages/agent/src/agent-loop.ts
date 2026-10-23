@@ -47,6 +47,14 @@ import {
 } from './inference-retry'
 import { waitForConnectivity, type ConnectivityWaitInfo } from './connectivity'
 import type { RetryReason } from './retry-classifier'
+import {
+  createVisionDescriber,
+  resolveVisionFallbackOptions,
+  type ImageDescription,
+  type VisionDescriber,
+  type VisionFallbackOptions,
+  type VisionSkipReason,
+} from './vision-fallback'
 
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { OrchestrationOptions }
@@ -105,7 +113,17 @@ export interface AgentLoopOptions {
   /** Called when a tool is invoked */
   onToolCall?: (name: string, input: any) => void
   /** Called at each iteration */
-  onIteration?: (iteration: number) => void
+  onIteration?: (
+    iteration: number,
+    info?: {
+      /** Usage reported by the assistant message that ended this iteration. */
+      usage?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }
+      /** Messages in the loop's transcript at this point. */
+      messageCount?: number
+      /** Tool calls this iteration emitted. */
+      toolCallCount?: number
+    },
+  ) => void
   /** Messages to add before the next model step (e.g. finished background tasks). They extend the turn. */
   takeInjectedMessages?: () => Message[]
   /** Called after tool results with only messages not reported by an earlier callback. */
@@ -134,6 +152,14 @@ export interface AgentLoopOptions {
   loopDetection?: Partial<LoopDetectorConfig> | false
   /** Custom stream function (for testing — replaces Pi's streamSimple) */
   streamFn?: StreamFn
+  /**
+   * Which registered tools are advertised to the provider on each API call.
+   * A tool that is not advertised stays callable — the loop dispatches it by
+   * name — but its schema is left out of the request. Read once per API call
+   * (not once per run), so a tool activated during a turn is advertised on the
+   * loop's next request.
+   */
+  isAdvertisedTool?: (tool: AgentTool) => boolean
   /**
    * Time-to-first-token stall fallback. When the active model produces no
    * streamed content within the configured window, the in-flight request is
@@ -223,6 +249,14 @@ export interface AgentLoopOptions {
    */
   transformContext?: (messages: Message[], signal?: AbortSignal) => Promise<Message[]> | Message[]
   /**
+   * Last-resort repair when a provider rejects an image: called with the
+   * current transcript and must return a copy in which images the provider
+   * cannot decode are replaced by text placeholders. The runtime injects
+   * `scrubInvalidImages` from image-size-guard; without it the loop falls back
+   * to dropping image blocks outright (history first, then this turn's too).
+   */
+  scrubInvalidImages?: (messages: Message[]) => Message[]
+  /**
    * Extra HTTP headers to attach to every outbound LLM request inside this
    * loop. Merged into the resolved Model's `headers` so pi-ai forwards them
    * on every `stream()` / `complete()` call.
@@ -233,12 +267,41 @@ export interface AgentLoopOptions {
    * independently.
    */
   extraHeaders?: Record<string, string>
+  /**
+   * How to let a model that cannot accept images still *inspect* one: a
+   * catalog-picked vision model describes the image and the description takes
+   * its place in the request. Enabled by default on models without `image`
+   * input; `false` (or `SHOGO_VISION_FALLBACK=0`) restores SHO-41's note-only
+   * behaviour. Ignored entirely on a vision model — those get the pixels.
+   */
+  visionFallback?: VisionFallbackOptions | false
 }
 
 export interface ToolCallRecord {
   name: string
   input: Record<string, any>
   output: any
+}
+
+/**
+ * Usage of a single model call inside one turn — one entry per assistant
+ * message, in call order. The turn's totals are the sum of these, so a
+ * cache-hit ratio can be computed per call instead of only per turn (a
+ * per-iteration cache rewrite used to be invisible: turn totals hide it).
+ */
+export interface PerCallUsage {
+  /** 1-based position of the assistant message in this turn's transcript; 0 for a dropped attempt. */
+  iteration: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  /**
+   * True for a call whose assistant message the retry ladder dropped after a
+   * failed/partial stream. The provider still billed it, so its usage is kept
+   * here (and in the turn totals) even though it never reaches the transcript.
+   */
+  discarded?: boolean
 }
 
 export interface AgentLoopResult {
@@ -249,6 +312,8 @@ export interface AgentLoopResult {
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  /** Per-model-call breakdown of the token counts above. */
+  perCallUsage: PerCallUsage[]
   /** All new messages produced during this loop (user prompt + assistant + tool results) */
   newMessages: Message[]
   /** Set if the loop was terminated by the circuit breaker */
@@ -311,7 +376,7 @@ export function buildUsageLimitNotice(toolCallCount: number, info: UsageLimitInf
   const progress = toolCallCount > 0
     ? `I completed ${toolCallCount} step${toolCallCount === 1 ? '' : 's'} before stopping, and that work is saved.`
     : 'Nothing from this step was lost.'
-  let when = 'once your usage resets or you upgrade'
+  let when = ''
   const resetsAt = info.resetsAt ? new Date(info.resetsAt) : null
   if (resetsAt && !Number.isNaN(resetsAt.getTime()) && resetsAt.getTime() > now.getTime()) {
     const minutes = Math.ceil((resetsAt.getTime() - now.getTime()) / 60_000)
@@ -320,11 +385,14 @@ export function buildUsageLimitNotice(toolCallCount: number, info: UsageLimitInf
       : minutes < 48 * 60
         ? `about ${Math.round(minutes / 60)} hour${Math.round(minutes / 60) === 1 ? '' : 's'}`
         : `about ${Math.round(minutes / (24 * 60))} days`
-    when = `when your usage resets (in ${inText}), or sooner if you upgrade or turn on usage-based pricing in Settings > Billing`
+    when = ` Upgrade in **Settings > Billing** to keep going now, or wait until your usage resets (in ${inText}).`
   } else {
-    when += ' or turn on usage-based pricing in Settings > Billing'
+    when = ' Upgrade in **Settings > Billing** to keep going now, or wait until your usage resets.'
   }
-  return `**You've reached your usage limit, so I had to stop partway through this task.** ${progress} Send "continue" ${when} and I'll pick up exactly where I left off.`
+  // The billing action is the way out. Telling the user to send "continue" made
+  // a hard limit look like a stalled turn, and they answered it over and over
+  // instead of upgrading (SHO-121).
+  return `**You've reached your usage limit, so I had to stop partway through this task.** ${progress}${when} Your work is saved and picks up exactly where it stopped.`
 }
 
 export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoopResult> {
@@ -360,6 +428,62 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   let model = maxTokens ? { ...resolvedModel, maxTokens } : resolvedModel
   if (options.extraHeaders && Object.keys(options.extraHeaders).length > 0) {
     model = { ...model, headers: { ...(model.headers || {}), ...options.extraHeaders } }
+  }
+
+  // pi-ai's openai-completions / google converters forward image blocks only
+  // when the model's catalog entry advertises image input; otherwise they drop
+  // them without a word. Know which case we're in before the first call.
+  const modelAcceptsImages =
+    Array.isArray((model as any).input) && ((model as any).input as string[]).includes('image')
+
+  // A model with no `image` input still has to *see* a screenshot, not just be
+  // told it cannot. Route those images through a catalog-picked vision model
+  // once per distinct image; anything that cannot be described (no vision
+  // model, no key, over the per-run cap, provider error) falls back to
+  // SHO-41's note, so the failure mode is never worse than before.
+  const visionConfig = modelAcceptsImages ? false : resolveVisionFallbackOptions(options.visionFallback)
+  const vision: VisionDescriber | null = visionConfig
+    ? createVisionDescriber({
+        ...visionConfig,
+        log: (line) => console.warn(`[AgentLoop] ${line}`),
+      })
+    : null
+  const visionContext = (signal?: AbortSignal) => ({
+    provider,
+    modelId,
+    apiKey,
+    extraHeaders: options.extraHeaders,
+    signal: signal ?? options.signal,
+  })
+
+  // Same rule for images attached to the prompt itself: fold a description
+  // into the text rather than let the provider converter bin them.
+  let promptText = prompt
+  let promptImages = images
+  if (images && images.length > 0 && !modelAcceptsImages) {
+    let described = 0
+    const parts: string[] = []
+    for (const image of images) {
+      const outcome = vision ? await vision.describe(image, visionContext()) : null
+      if (outcome?.ok) {
+        described += 1
+        parts.push(formatDescribedImage({ description: outcome.description, modelId }))
+      } else {
+        parts.push(
+          buildImageOmittedNote({
+            modelId,
+            reason: outcome ? skipReasonText(outcome.reason) : 'this model only accepts text input',
+          }),
+        )
+      }
+    }
+    promptText = `${prompt}\n\n${parts.join('\n\n')}`
+    promptImages = undefined
+    if (described === 0) {
+      console.warn(
+        `[AgentLoop] MODEL_NO_IMAGE_INPUT model=${modelId} — ${images.length} attached image(s) not sent`,
+      )
+    }
   }
 
   const loopDetector = options.loopDetection !== false
@@ -402,16 +526,63 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // unchanged, so custom messages flow through safely. We cast at the
   // boundary. Wrapped with a try/catch per pi-agent-core's "must not throw"
   // contract.
-  const wrappedTransformContext = options.transformContext
-    ? async (msgs: Message[], signal?: AbortSignal): Promise<Message[]> => {
-        try {
-          return await options.transformContext!(msgs, signal)
-        } catch (err: any) {
-          console.warn(`[AgentLoop] transformContext threw — falling back to raw messages: ${err?.message}`)
-          return msgs
-        }
+  //
+  // It also enforces what the routed model can actually accept: pi-ai's
+  // openai-completions and google converters silently discard image blocks
+  // when the catalog entry for the model has no `image` input, which is how a
+  // screenshot ended up reaching the agent as nothing but the tool's JSON
+  // `path`. Replacing those blocks with a note keeps the fact — and the path —
+  // in the transcript instead of dropping it on the floor.
+  let warnedNoImageInput = false
+  const omittedNote = (msg: Message, reason: string) =>
+    buildImageOmittedNote({
+      modelId,
+      toolName: msg.role === 'toolResult' ? msg.toolName : undefined,
+      pathHint: extractPathHint(msg),
+      reason,
+    })
+  const applyModelImageSupport = async (msgs: Message[], signal?: AbortSignal): Promise<Message[]> => {
+    if (modelAcceptsImages) return msgs
+
+    if (vision) {
+      return replaceImageBlocksAsync(msgs, async (image, msg) => {
+        const outcome = await vision.describe(image, visionContext(signal))
+        const text = outcome.ok
+          ? formatDescribedImage({
+              description: outcome.description,
+              modelId,
+              toolName: msg.role === 'toolResult' ? msg.toolName : undefined,
+              pathHint: extractPathHint(msg),
+            })
+          : omittedNote(msg, skipReasonText(outcome.reason))
+        return [{ type: 'text', text }]
+      })
+    }
+
+    const stripped = replaceImageBlocks(msgs, () => true, (msg) =>
+      omittedNote(msg, 'this model only accepts text input'),
+    )
+    if (stripped !== msgs && !warnedNoImageInput) {
+      warnedNoImageInput = true
+      console.warn(
+        `[AgentLoop] MODEL_NO_IMAGE_INPUT model=${modelId} — image blocks replaced with text notes ` +
+          '(the provider would have dropped them silently)',
+      )
+    }
+    return stripped
+  }
+  const wrappedTransformContext = async (msgs: Message[], signal?: AbortSignal): Promise<Message[]> => {
+    let next: Message[] = msgs
+    if (options.transformContext) {
+      try {
+        next = await options.transformContext(msgs, signal)
+      } catch (err: any) {
+        console.warn(`[AgentLoop] transformContext threw — falling back to raw messages: ${err?.message}`)
+        next = msgs
       }
-    : undefined
+    }
+    return await applyModelImageSupport(next, signal)
+  }
 
   // Resolve the effective stream function. Tests/mocks pass an explicit
   // `streamFn` and must run unwrapped. When using Pi's default `streamSimple`,
@@ -427,8 +598,11 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       })
     }
   }
-  if (orchestrated.tools.some(isHiddenTool)) {
-    effectiveStreamFn = withoutHiddenTools(effectiveStreamFn ?? streamSimple)
+  // Legacy tools flagged `hidden`, plus the caller's advertised set (SHO-97),
+  // are stripped from every provider request. Hidden tools stay dispatchable.
+  const advertisedTool = options.isAdvertisedTool
+  if (orchestrated.tools.some(isHiddenTool) || advertisedTool) {
+    effectiveStreamFn = withoutUnadvertisedTools(effectiveStreamFn ?? streamSimple, advertisedTool)
   }
 
   const agent = new Agent({
@@ -530,7 +704,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         }
         const turnToolResults = (event as any).toolResults
         lastTurnHadToolCalls = Array.isArray(turnToolResults) && turnToolResults.length > 0
-        onIteration?.(iterations)
+        const turnToolCalls = Array.isArray(turnMsg?.content)
+          ? turnMsg.content.filter((block: any) => block?.type === 'toolCall').length
+          : 0
+        onIteration?.(iterations, {
+          usage: turnMsg?.usage,
+          messageCount: agent.state.messages.length,
+          toolCallCount: turnToolCalls,
+        })
         for (const message of takeInjectedMessages?.() ?? []) agent.steer(message)
         const iterationMessages = agent.state.messages.slice(historyLength)
         if (iterationMessages.length > lastProgressMessageCount - historyLength) {
@@ -574,7 +755,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     if (abortTriggered) {
       promptError = new Error('Aborted before prompt')
     } else {
-      await agent.prompt(prompt, images && images.length > 0 ? images : undefined)
+      await agent.prompt(promptText, promptImages && promptImages.length > 0 ? promptImages : undefined)
     }
   } catch (err: any) {
     if (!abortTriggered) {
@@ -588,7 +769,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
             agent.state.messages = [...compactedHistory]
             historyLength = compactedHistory.length
             lastProgressMessageCount = historyLength
-            await agent.prompt(prompt, images && images.length > 0 ? images : undefined)
+            await agent.prompt(promptText, promptImages && promptImages.length > 0 ? promptImages : undefined)
           } else {
             promptError = err
           }
@@ -635,6 +816,22 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // (connection dropped, 5xx, overloaded) never reaches the user.
   let unresolvedFailureText: string | undefined
 
+  // Strip a failed assistant tail so `continue()` can re-issue from the last
+  // user/tool-result message, folding the dropped attempt's usage into the
+  // totals we report (the provider billed for it).
+  const trimFailedAssistantTail = (): Message[] => {
+    const trimmed = stripTrailingFailedAssistants(agent.state.messages) ?? agent.state.messages
+    if (trimmed !== agent.state.messages) {
+      const removedUsage = sumUsage(agent.state.messages.slice(trimmed.length))
+      discardedUsage.input += removedUsage.input
+      discardedUsage.output += removedUsage.output
+      discardedUsage.cacheRead += removedUsage.cacheRead
+      discardedUsage.cacheWrite += removedUsage.cacheWrite
+      agent.state.messages = trimmed
+    }
+    return trimmed
+  }
+
   // Rebuilds the transcript on compacted history + this turn's messages and
   // re-issues. Returns false when compaction produced nothing to retry with.
   const compactAfterOverflow = async (errorText: string): Promise<boolean> => {
@@ -674,6 +871,41 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     }
     return true
   }
+
+  // Image rejections (`400 ... You have uploaded an unsupported image`) are not
+  // retryable as-is: the offending block lives in the transcript, so re-issuing
+  // the same request fails identically — this turn and every later one. Repair
+  // the transcript instead, escalating: remove images we can prove are
+  // undecodable, then every image in history, then this turn's as well. Each
+  // stage that actually changes something buys exactly one retry.
+  let imageRecoveryStage = 0
+  const imageRecoveryStages: Array<() => Message[] | null> = []
+  const imageNote = (msg: Message) =>
+    buildImageOmittedNote({
+      modelId,
+      toolName: msg.role === 'toolResult' ? msg.toolName : undefined,
+      pathHint: extractPathHint(msg),
+      reason: 'the provider rejected this image',
+    })
+  if (options.scrubInvalidImages) {
+    imageRecoveryStages.push(() => {
+      try {
+        const scrubbed = options.scrubInvalidImages!(agent.state.messages)
+        return scrubbed === agent.state.messages ? null : scrubbed
+      } catch (err: any) {
+        console.warn(`[AgentLoop] IMAGE_RECOVERY scrub threw: ${err?.message}`)
+        return null
+      }
+    })
+  }
+  imageRecoveryStages.push(() => {
+    const next = replaceImageBlocks(agent.state.messages, (i) => i < historyLength, imageNote)
+    return next === agent.state.messages ? null : next
+  })
+  imageRecoveryStages.push(() => {
+    const next = replaceImageBlocks(agent.state.messages, () => true, imageNote)
+    return next === agent.state.messages ? null : next
+  })
 
   if (inferenceRetry && !abortTriggered) {
     let retryAttempt = 0
@@ -741,6 +973,41 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       }
       unresolvedFailureText = failure.errorText
 
+      if (IMAGE_REJECTION_RE.test(failure.errorText)) {
+        let retried = false
+        while (imageRecoveryStage < imageRecoveryStages.length) {
+          const stage = ++imageRecoveryStage
+          const before = trimFailedAssistantTail()
+          const imageIndexes = imageBlockIndexes(before)
+          const repaired = imageRecoveryStages[stage - 1]()
+          if (!repaired) continue
+          console.warn(
+            `[AgentLoop] IMAGE_RECOVERY stage=${stage}/${imageRecoveryStages.length} model=${modelId} ` +
+              `imagesAt=[${imageIndexes.join(',')}] error=${failure.errorText.slice(0, 200)}`,
+          )
+          agent.state.messages = repaired
+          promptError = undefined
+          try {
+            await agent.continue()
+          } catch (err: any) {
+            promptError = err
+          }
+          retried = true
+          break
+        }
+        if (retried) continue
+        console.warn(
+          `[AgentLoop] IMAGE_RECOVERY exhausted after ${imageRecoveryStages.length} stage(s) — surfacing image failure: ` +
+            failure.errorText.slice(0, 300),
+        )
+        promptError = new Error(
+          'The model provider rejected the images in this conversation, and the turn could not continue. ' +
+            `Provider said: ${failure.errorText}`,
+        )
+        endEpisode('failed_non_transient')
+        break
+      }
+
       const classification = classifyRetryability({
         message: failure.errorText,
         stopReason: failure.stopReason,
@@ -767,21 +1034,12 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       // assistant message (e.g. a synchronous stream throw on the very first
       // call), there's nothing to strip and the transcript already ends on a
       // user/tool-result message — continue() can re-issue directly.
-      const trimmed = stripTrailingFailedAssistants(agent.state.messages) ?? agent.state.messages
+      const trimmed = trimFailedAssistantTail()
       const last = trimmed[trimmed.length - 1]
       // Can't continue from a clean assistant tail (continue() rejects) — bail.
       if (!last || last.role === 'assistant') {
         endEpisode('failed_non_transient')
         break
-      }
-      if (trimmed !== agent.state.messages) {
-        // Preserve the usage of the stripped failed attempt for billing parity.
-        const removedUsage = sumUsage(agent.state.messages.slice(trimmed.length))
-        discardedUsage.input += removedUsage.input
-        discardedUsage.output += removedUsage.output
-        discardedUsage.cacheRead += removedUsage.cacheRead
-        discardedUsage.cacheWrite += removedUsage.cacheWrite
-        agent.state.messages = trimmed
       }
 
       // A re-issued call succeeded and later work failed anew: the new failure
@@ -990,22 +1248,22 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   const coreErrorMsg = newMessages.find((m: any) => m.errorMessage)
   const rawCoreError = (coreErrorMsg as any)?.errorMessage ?? (promptError ? undefined : unresolvedFailureText)
   const coreError = rawCoreError ? parseProviderError(rawCoreError) : undefined
+
+  // A usage limit ends the turn with a notice (and the client's Upgrade
+  // prompt) whether or not the turn made progress first.
+  const usageLimit = !abortTriggered
+    ? detectUsageLimit(rawCoreError) ?? detectUsageLimit(promptError?.message)
+    : null
+  if (usageLimit && promptError) promptError = undefined
+
   const implicitError =
-    !promptError && usage.output === 0 && toolCalls.length === 0 && !abortTriggered
+    !usageLimit && !promptError && usage.output === 0 && toolCalls.length === 0 && !abortTriggered
       ? new Error(
           coreError
             ? `Provider error: ${coreError}`
             : 'Agent produced no output — possible provider error'
         )
       : undefined
-
-  // A usage limit that cuts off a turn which already made progress ends the
-  // turn with a notice. With no progress it stays a hard error, same as the
-  // API's pre-flight limit check.
-  const usageLimit =
-    !abortTriggered && !implicitError && (toolCalls.length > 0 || finalText.trim())
-      ? detectUsageLimit(rawCoreError) ?? detectUsageLimit(promptError?.message)
-      : null
 
   // If there was a core error but the agent DID make progress (tool calls executed),
   // don't treat it as a hard error — mark as exhausted so the caller can continue.
@@ -1104,7 +1362,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       console.warn(`[AgentLoop] Iteration limit reached after ${toolCalls.length} tool calls — emitting explicit incomplete-turn fallback`)
     }
 
-    if (!finalText.trim() || stoppedByIterationLimit) {
+    // An empty turn with no tool calls has nothing to preserve, so leave it
+    // empty and let the caller retry or explain, not claim tool work happened.
+    if ((!finalText.trim() && !emptyNoToolTurn) || stoppedByIterationLimit) {
       finalText = buildIncompleteTurnFallback(toolCalls.length, maxIterationsExhausted, coreError || promptError?.message)
       onTextDelta?.(finalText)
       const fallbackMessage: AssistantMessage = {
@@ -1173,6 +1433,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     outputTokens: usage.output + discardedUsage.output,
     cacheReadTokens: usage.cacheRead + discardedUsage.cacheRead,
     cacheWriteTokens: usage.cacheWrite + discardedUsage.cacheWrite,
+    perCallUsage: collectPerCallUsage(newMessages, discardedUsage),
     newMessages,
     loopBreak,
     error: promptError || implicitError,
@@ -1187,6 +1448,193 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   await onAgentEnd?.(result)
 
   return result
+}
+
+/**
+ * Provider errors that mean "there is an image in this request I cannot
+ * decode". Anthropic: `messages[N].image[0]: You have uploaded an unsupported
+ * image`; OpenAI-compatible providers: `invalid image` / `unsupported image`.
+ */
+const IMAGE_REJECTION_RE =
+  /You have uploaded an unsupported image|unsupported image|invalid image|image\[\d+\]/i
+
+/** Indexes of messages carrying at least one image block (for the logs). */
+function imageBlockIndexes(messages: ReadonlyArray<Message>): number[] {
+  const out: number[] = []
+  messages.forEach((msg, index) => {
+    if (msg.role !== 'user' && msg.role !== 'toolResult') return
+    if (!Array.isArray(msg.content)) return
+    if (msg.content.some((block) => block.type === 'image')) out.push(index)
+  })
+  return out
+}
+
+/** Best-effort image path from a message's sibling text block. */
+function extractPathHint(msg: Message): string | undefined {
+  if (!Array.isArray(msg.content)) return undefined
+  for (const block of msg.content as Array<{ type: string; text?: string }>) {
+    if (block.type !== 'text' || typeof block.text !== 'string') continue
+    const match = block.text.match(/"path"\s*:\s*"([^"]+)"/)
+    if (match) return match[1]
+  }
+  return undefined
+}
+
+/**
+ * One entry per model call: pi-agent-core appends one assistant message per
+ * request, so the assistant messages in this turn's slice ARE the calls. Entries
+ * with no tokens at all are skipped (the synthetic max-turns notice, mocked
+ * turns), and a dropped retry attempt is appended once with `discarded: true`
+ * so the sum of `perCallUsage` always equals the turn's reported totals.
+ */
+function collectPerCallUsage(
+  messages: ReadonlyArray<Message>,
+  discarded: { input: number; output: number; cacheRead: number; cacheWrite: number },
+): PerCallUsage[] {
+  const out: PerCallUsage[] = []
+  let call = 0
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue
+    call++
+    const entry: PerCallUsage = {
+      iteration: call,
+      input: msg.usage.input,
+      output: msg.usage.output,
+      cacheRead: msg.usage.cacheRead ?? 0,
+      cacheWrite: msg.usage.cacheWrite ?? 0,
+    }
+    if (entry.input + entry.output + entry.cacheRead + entry.cacheWrite === 0) continue
+    out.push(entry)
+  }
+  if (discarded.input + discarded.output + discarded.cacheRead + discarded.cacheWrite > 0) {
+    out.push({ iteration: 0, ...discarded, discarded: true })
+  }
+  return out
+}
+
+function buildImageOmittedNote(opts: {
+  modelId: string
+  toolName?: string
+  pathHint?: string
+  reason: string
+}): string {
+  const source = opts.toolName ? `from ${opts.toolName}` : 'attached here'
+  const where = opts.pathHint ? ` The image file is still at "${opts.pathHint}".` : ''
+  return (
+    `[Image omitted — ${source}] This image was not sent to ${opts.modelId} (${opts.reason}).${where} ` +
+    'Do not describe or guess what it shows; tell the user the image could not be viewed and where it is saved.'
+  )
+}
+
+/**
+ * What the model reads instead of an image that could not be described. Same
+ * shape as SHO-41's note, so the agent still learns where the file is — but it
+ * says which fallback failed rather than "do not describe".
+ */
+function formatDescribedImage(opts: {
+  description: ImageDescription
+  modelId: string
+  toolName?: string
+  pathHint?: string
+}): string {
+  const source = opts.toolName ? `from ${opts.toolName}` : 'attached here'
+  const where = opts.pathHint
+    ? `\nThe image file is still at "${opts.pathHint}". Ask for a re-read if you need a second look.`
+    : ''
+  return (
+    `[Image ${source}, described by ${opts.description.modelId} because ${opts.modelId} only accepts text input]\n` +
+    `${opts.description.text}${where}`
+  )
+}
+
+function skipReasonText(reason: VisionSkipReason): string {
+  switch (reason) {
+    case 'no-vision-model':
+      return 'no vision model is available to describe it'
+    case 'no-api-key':
+      return 'no API key is available for the vision model'
+    case 'cap-reached':
+      return 'this run already used its image-description budget'
+    case 'too-large':
+      return 'the image is too large to send to another model'
+    case 'unsupported-format':
+      return 'the image format is not supported'
+    case 'describe-failed':
+      return 'another model could not describe it'
+  }
+}
+
+/**
+ * Async sibling of `replaceImageBlocks` for the describe path: each image block
+ * becomes one or more text blocks, in place, keeping the block order the model
+ * sees stable across transform passes.
+ */
+async function replaceImageBlocksAsync(
+  messages: ReadonlyArray<Message>,
+  buildBlocks: (image: ImageContent, msg: Message) => Promise<Array<{ type: 'text'; text: string }>>,
+): Promise<Message[]> {
+  let mutated = false
+  const out: Message[] = []
+  for (const msg of messages) {
+    const carriesImages =
+      (msg.role === 'user' || msg.role === 'toolResult') &&
+      Array.isArray(msg.content) &&
+      msg.content.some((block) => block.type === 'image')
+    if (!carriesImages) {
+      out.push(msg)
+      continue
+    }
+    const next: Array<{ type: string; text?: string;[key: string]: unknown }> = []
+    for (const block of msg.content as Array<{ type: string }>) {
+      if (block.type !== 'image') {
+        next.push(block)
+        continue
+      }
+      next.push(...(await buildBlocks(block as ImageContent, msg)))
+      mutated = true
+    }
+    out.push({ ...msg, content: next } as Message)
+  }
+  return mutated ? out : (messages as Message[])
+}
+
+/**
+ * Replace every image block in the selected messages with one text note per
+ * message. Returns the input array unchanged when nothing was replaced, so
+ * callers can use reference equality to decide whether a retry is worth it.
+ */
+function replaceImageBlocks(
+  messages: ReadonlyArray<Message>,
+  shouldReplace: (index: number) => boolean,
+  buildNote: (msg: Message) => string,
+): Message[] {
+  let mutated = false
+  const out: Message[] = []
+  messages.forEach((msg, index) => {
+    const carriesImages =
+      (msg.role === 'user' || msg.role === 'toolResult') &&
+      Array.isArray(msg.content) &&
+      shouldReplace(index) &&
+      msg.content.some((block) => block.type === 'image')
+    if (!carriesImages) {
+      out.push(msg)
+      return
+    }
+    const note = buildNote(msg)
+    const next: Array<{ type: string; text?: string }> = []
+    let noted = false
+    for (const block of msg.content as Array<{ type: string }>) {
+      if (block.type !== 'image') {
+        next.push(block)
+      } else if (!noted) {
+        next.push({ type: 'text', text: note })
+        noted = true
+      }
+    }
+    out.push({ ...msg, content: next } as Message)
+    mutated = true
+  })
+  return mutated ? out : (messages as Message[])
 }
 
 function buildIncompleteTurnFallback(toolCallCount: number, maxIterationsExhausted: boolean, error?: string): string {
@@ -1234,7 +1682,24 @@ export function isHiddenTool(tool: AgentTool): boolean {
   return (tool as AgentTool & { hidden?: boolean }).hidden === true
 }
 
-function withoutHiddenTools(streamFn: StreamFn): StreamFn {
+/**
+ * Strip hidden tools and anything the caller's advertised set defers from every
+ * provider request. Evaluated per request, so activating a tool mid-turn takes
+ * effect on the loop's next API call.
+ */
+function withoutUnadvertisedTools(
+  streamFn: StreamFn,
+  isAdvertisedTool?: (tool: AgentTool) => boolean,
+): StreamFn {
   return (model, context, opts) =>
-    streamFn(model, { ...context, tools: context.tools?.filter((t) => !isHiddenTool(t as AgentTool)) }, opts)
+    streamFn(
+      model,
+      {
+        ...context,
+        tools: context.tools?.filter(
+          (t) => !isHiddenTool(t as AgentTool) && (isAdvertisedTool ? isAdvertisedTool(t as AgentTool) : true),
+        ),
+      },
+      opts,
+    )
 }

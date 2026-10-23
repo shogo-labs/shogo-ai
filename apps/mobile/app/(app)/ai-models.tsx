@@ -4,7 +4,7 @@
 import { Pressable, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { ArrowLeft, BrainCircuit } from "lucide-react-native";
-import AdminSettingsPage from "../(admin)/settings";
+import AdminSettingsPage from "../(admin)/admin/settings";
 
 /**
  * Mobile entry point for the super-admin model catalog. It deliberately

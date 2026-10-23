@@ -39,6 +39,31 @@ export interface WsData {
   cleanup?: () => void
 }
 
+/** Match a path like `/terminal/sessions/<id>/ws`; the id segment is opaque. */
+export const PTY_WS_PATH_RE = /^\/terminal\/sessions\/([^/]+)\/ws$/
+
+/**
+ * Upgrade decision for `/terminal/sessions/:id/ws`. Returns `null` when the
+ * request isn't a PTY upgrade (caller keeps routing), `undefined` once
+ * upgraded, or the error response. An unknown session is a plain 404 before
+ * the upgrade rather than an accept-then-close.
+ */
+export function handlePtyUpgrade(
+  req: Request,
+  server: { upgrade(req: Request, opts: { data: WsData }): boolean },
+  manager: PtySessionManager,
+): Response | undefined | null {
+  if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket') return null
+  const url = new URL(req.url)
+  const match = PTY_WS_PATH_RE.exec(url.pathname)
+  if (!match) return null
+  const sessionId = match[1]
+  if (!manager.get(sessionId)) return new Response('Unknown session', { status: 404 })
+  const since = Number(url.searchParams.get('since')) || 0
+  if (server.upgrade(req, { data: { manager, sessionId, since } })) return undefined
+  return new Response('WebSocket upgrade failed', { status: 500 })
+}
+
 export interface PtyWsHandlers {
   open(ws: MinimalWs): void
   message(ws: MinimalWs, msg: ArrayBufferView | ArrayBuffer | string): void

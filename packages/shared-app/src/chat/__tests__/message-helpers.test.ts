@@ -10,9 +10,42 @@ import {
   getToolCategory,
   ERROR_CODE_MESSAGES,
   parseTaskUpdates,
+  parseUsageLimitError,
   projectCallOf,
   taskNotificationOf,
 } from '../message-helpers'
+
+describe('parseUsageLimitError', () => {
+  it('reads the code and reset time from a 402 chat response body', () => {
+    const body = JSON.stringify({
+      error: {
+        code: 'usage_limit_reached',
+        message: "You've reached your usage limit.",
+        resetsAt: '2099-01-01T00:00:00.000Z',
+        window: 'fiveHour',
+      },
+    })
+    expect(parseUsageLimitError(body)).toEqual({
+      code: 'usage_limit_reached',
+      resetsAt: '2099-01-01T00:00:00.000Z',
+    })
+  })
+
+  it('recognizes the billing codes and the legacy insufficient_credits alias', () => {
+    for (const code of ['entitlement_expired', 'overage_cap_reached', 'overage_payment_pending']) {
+      expect(parseUsageLimitError(JSON.stringify({ error: { code } }))).toEqual({ code })
+    }
+    expect(parseUsageLimitError('{"error":{"code":"insufficient_credits"}}')).toEqual({
+      code: 'usage_limit_reached',
+    })
+  })
+
+  it('ignores other errors and non-JSON text', () => {
+    expect(parseUsageLimitError('{"error":{"code":"pod_unavailable"}}')).toBeNull()
+    expect(parseUsageLimitError('usage_limit_reached')).toBeNull()
+    expect(parseUsageLimitError('Failed to fetch')).toBeNull()
+  })
+})
 
 describe('extractTextContent', () => {
   it('returns content string when present', () => {

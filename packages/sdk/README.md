@@ -903,6 +903,70 @@ through a server-side sideband.
 - `@shogo-ai/sdk/voice/react` — web React hook (`useVoiceConversation`, `useShogoVoice`, `useChatConversation`, `useShogoChat`) + `<ShogoVoiceProvider>` + `<OrganicSphere>` / `<OrganicParticles>` visualizations, all wrapping `@elevenlabs/react` (voice) and `@ai-sdk/react` (chat).
 - `@shogo-ai/sdk/voice/native` — React Native (Expo) sister export with the same API surface, wrapping `@elevenlabs/react-native` and rendering visualizations through `expo-gl` + `expo-three`. See [Voice on React Native](#voice-on-react-native) below.
 
+### TTS models
+
+`VOICE_TTS_MODELS` is the single model table (`id`, `label`, `realtime`,
+`maxChars`). `modelId` is never silently swapped: a model that cannot be
+used fails loudly, and a genuine model-related failure comes back as a
+reported fallback.
+
+| Model | Realtime (convai) | Max chars / request |
+| --- | --- | --- |
+| `eleven_v4` | — | 10 000 |
+| `eleven_v4_turbo` | yes | 10 000 |
+| `eleven_v3` | — | 5 000 |
+| `eleven_v3_conversational` | yes | 5 000 |
+| `eleven_multilingual_v2` | — | 10 000 |
+| `eleven_flash_v2_5` | yes | 40 000 |
+| `eleven_flash_v2` | yes | 30 000 |
+| `eleven_turbo_v2_5` | yes | 40 000 |
+| `eleven_turbo_v2` | yes (deprecated) | 30 000 |
+
+- One-shot `textToSpeech()` defaults to `eleven_v4`; convai agents default to
+  `eleven_v4_turbo` (`CONVAI_TTS_MODEL_FALLBACK`).
+- `resolveConvaiTtsModelDetailed(requested)` reports `{ modelId, requested,
+  downgraded, reason }` so an unsupported convai model is visible instead of
+  quietly becoming another model.
+- `textToSpeech()` only retries on the fallback model when the failure is
+  model-related (402, or 400/403/404/422 whose body mentions
+  model/plan/permission). 401, 429, 5xx and network errors are surfaced. The
+  result carries `requestedModel`, `fellBack` and `fallbackReason`.
+
+### Hosted media through the proxy
+
+In a pod (`RUNTIME_AUTH_SECRET` + `PROJECT_ID`) the handlers go through the
+Shogo API, which holds the pooled ElevenLabs key:
+
+- `POST /api/voice/tts` — `{ text, voiceId?, modelId?, voiceSettings? }`,
+  returns raw audio with `x-tts-model-used` / `x-tts-model-requested`.
+  `voiceId` defaults to the project's default agent voice, `modelId` to
+  `eleven_v4_turbo`. Unknown model → 400 with the allowed list, text over the
+  model cap → 413, missing server key → 503.
+- `POST /api/voice/music` — same `ComposeMusicParams` body as `composeMusic()`.
+
+`createVoiceHandlers()` exposes these both as the `tts` / `music` handlers and
+through `voice.elevenLabs.textToSpeech()` / `.composeMusic()`. Everything else
+on `elevenLabs` (agent provisioning, phone numbers) needs a BYO key.
+
+**Credential precedence:** an explicit `apiKey` wins over an ambient pod
+runtime token — `createVoiceHandlers({ apiKey })` uses the key you passed even
+inside a pod. Use `mode: 'proxy'` to force the runtime token, or `mode: 'byo'`
+to force your key; `'auto'` (default) prefers `apiKey` and otherwise
+auto-detects the runtime token. `apiKey` + `getUser` + `companionStore` are
+only needed for the user-scoped handlers (`signedUrl`, `agent.*`); `tts` and
+`music` work with just an `apiKey`.
+
+```ts
+// TTS only — no user context, no stores.
+const voice = createVoiceHandlers({ apiKey: process.env.ELEVENLABS_API_KEY! })
+const res = await voice.elevenLabs.textToSpeech({
+  voiceId: 'EXAVITQu4vr4xnSDxMaL',
+  text: 'Narration check.',
+  modelId: 'eleven_v4_turbo',
+})
+if (res.fellBack) console.warn(`model fallback: ${res.fallbackReason}`)
+```
+
 ### Install peer deps
 
 ```bash

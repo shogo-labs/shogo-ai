@@ -45,6 +45,11 @@ process.env.WORKSPACES_DIR = tmpRoot
 // ─── Toggle flags driven by individual tests (k8s + S3 branches) ────────────
 let bundleResponse: any = { files: { 'README.md': Buffer.from('hello').toString('base64') } }
 let bundleThrows = false
+// Fail this many bundle calls before succeeding (a stale metal URL that the
+// retry re-resolves).
+let bundleFailuresBeforeSuccess = 0
+let bundleCalls = 0
+const agentClientConfigs: any[] = []
 let s3UploadResult: { errors?: string[]; archiveSize?: number } = { errors: [], archiveSize: 0 }
 let s3SyncReturnsNull = false
 
@@ -204,8 +209,15 @@ mock.module('../lib/knative-project-manager', () => ({
 
 mock.module('@shogo-ai/sdk/agent', () => ({
   AgentClient: class StubAgentClient {
+    constructor(config: any) {
+      agentClientConfigs.push(config)
+    }
     async getWorkspaceBundle() {
+      bundleCalls++
       if (bundleThrows) throw new Error('pod unreachable')
+      if (bundleCalls <= bundleFailuresBeforeSuccess) {
+        throw Object.assign(new Error('Unable to connect'), { code: 'ECONNREFUSED' })
+      }
       return bundleResponse
     }
   },
@@ -227,6 +239,9 @@ beforeEach(() => {
   delete process.env.S3_WORKSPACES_BUCKET
   bundleResponse = { files: { 'README.md': Buffer.from('hello').toString('base64') } }
   bundleThrows = false
+  bundleFailuresBeforeSuccess = 0
+  bundleCalls = 0
+  agentClientConfigs.length = 0
   s3UploadResult = { errors: [], archiveSize: 0 }
   s3SyncReturnsNull = false
   workspaceInstanceSize = undefined
@@ -236,6 +251,7 @@ beforeEach(() => {
 // Imports AFTER mocks.
 const exportImportMod = await import('../routes/project-export-import')
 const { runImport, projectExportImportRoutes } = exportImportMod
+exportImportMod._setRuntimeBundleRetryDelaysForTests([0, 0, 0])
 
 function makeProjectJson(): string {
   return JSON.stringify({
@@ -829,15 +845,62 @@ describe('POST /:projectId/export — k8s source mode', () => {
     expect(res.status).toBe(200)
   })
 
-  test('k8s mode: AgentClient throws → sourceMode falls back to k8s-fallback-empty', async () => {
+  test('k8s mode: requests the project-scoped bundle, not the merged workspace root', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    seedProject('p-scope')
+    const app = new Hono()
+    app.route('/api/projects', projectExportImportRoutes())
+    const res = await app.fetch(exportReq('p-scope'))
+    expect(res.status).toBe(200)
+    expect(agentClientConfigs.at(-1)?.workspaceScope).toBe('project')
+  })
+
+  test('k8s mode: a refused connection is retried against a re-resolved runtime URL', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    seedProject('p-stale-url')
+    bundleResponse = { files: { 'src/App.tsx': Buffer.from('export default 1').toString('base64') } }
+    bundleFailuresBeforeSuccess = 2
+    const app = new Hono()
+    app.route('/api/projects', projectExportImportRoutes())
+    const res = await app.fetch(exportReq('p-stale-url'))
+    expect(res.status).toBe(200)
+    expect(bundleCalls).toBe(3)
+    const entries = unzipSync(new Uint8Array(await res.arrayBuffer()))
+    expect(Object.keys(entries)).toContain('workspace/src/App.tsx')
+    const manifest = JSON.parse(new TextDecoder().decode(entries['manifest.json']))
+    expect(manifest.sourceMode).toBe('k8s')
+  })
+
+  test('k8s mode: unreachable runtime → 503 instead of a chat-only archive', async () => {
     process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
     seedProject('p-pod-down')
     bundleThrows = true
     const app = new Hono()
     app.route('/api/projects', projectExportImportRoutes())
-    const res = await app.fetch(exportReq('p-pod-down'))
-    expect(res.status).toBe(200)
-    expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0)
+    const res = await app.fetch(new Request('http://x/api/projects/p-pod-down/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ includeChats: true }),
+    }))
+    expect(res.status).toBe(503)
+    expect(bundleCalls).toBe(4)
+    const body = await res.json() as any
+    expect(body.error.code).toBe('runtime_unavailable')
+    expect(body.error.retryable).toBe(true)
+  })
+
+  test('k8s mode: source-only ZIP also refuses to ship when the runtime is unreachable', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    seedProject('p-pod-down-zip')
+    bundleThrows = true
+    const app = new Hono()
+    app.route('/api/projects', projectExportImportRoutes())
+    const res = await app.fetch(new Request('http://x/api/projects/p-pod-down-zip/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceOnly: true }),
+    }))
+    expect(res.status).toBe(503)
   })
 
   test('k8s mode: bundle filenames matching excluded patterns are skipped', async () => {

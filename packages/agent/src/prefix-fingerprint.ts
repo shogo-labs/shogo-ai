@@ -51,7 +51,7 @@ export function shortHash(str: string): string {
 // System prompt fingerprint
 // ---------------------------------------------------------------------------
 
-const CACHE_BOUNDARY = '\n\n<|CACHE_BOUNDARY|>\n\n'
+export const CACHE_BOUNDARY = '\n\n<|CACHE_BOUNDARY|>\n\n'
 
 /**
  * Split the system string on the boundary marker and return separate hashes

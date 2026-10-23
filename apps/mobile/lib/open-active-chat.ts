@@ -44,8 +44,8 @@ export function openAgentWork(router: Router, target: WorkTarget) {
  * sessions open in the project surface; workspace sessions open in the
  * workspace agent.
  *
- * The workspace agent opens at `/agent`, not `/`: wide team workspaces render
- * the project builder at `/`.
+ * The workspace agent opens at `/agent`, not `/`: `/` is the landing, which
+ * resolves to the workspace agent on an empty chat.
  */
 export function openActiveChat(router: Router, chat: ActiveChatTarget) {
   if (chat.conversationId) {

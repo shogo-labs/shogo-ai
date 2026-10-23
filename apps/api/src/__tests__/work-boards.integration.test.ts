@@ -7,10 +7,10 @@
  * permissions, and the agent-facing routes the board tools call.
  */
 
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { rmSync } from 'fs'
 import { Hono } from 'hono'
-import { seedWorkspace, setupChannelsTestDb, waitFor, type SeededWorkspace } from './helpers/channels-test-db'
+import { seedWorkspace, setupChannelsTestDb, sseResponse, waitFor, type SeededWorkspace } from './helpers/channels-test-db'
 
 const { dir } = setupChannelsTestDb()
 
@@ -19,6 +19,7 @@ const { conversationRoutes } = await import('../routes/conversations')
 const { workBoardRoutes, agentBoardRoutes } = await import('../routes/work-boards')
 const bus = await import('../lib/conversation-bus')
 const service = await import('../services/work-boards.service')
+const dispatcher = await import('../services/conversation-agent-dispatcher')
 
 const db = prisma as any
 let seed: SeededWorkspace
@@ -98,6 +99,26 @@ describe('boards', () => {
     expect((await call(seed.outsider, 'POST', `/workspaces/${seed.workspaceId}/boards`, { conversationId: channelId, name: 'Nope' })).status).toBe(403)
   })
 
+  test('the arming rule is set and cleared through the column route', async () => {
+    const board = await createBoard({ conversationId: channelId, name: 'Arming' })
+    const columnId = board.columns[2].id
+
+    const on = await call(seed.member, 'PATCH', `/boards/${board.id}/columns/${columnId}`, { rules: { allowAutoMerge: true } })
+    expect(on.status).toBe(200)
+    expect(on.json.column.rules).toEqual({ allowAutoMerge: true })
+
+    const off = await call(seed.member, 'PATCH', `/boards/${board.id}/columns/${columnId}`, { rules: { allowAutoMerge: false } })
+    expect(off.json.column.rules).toEqual({ allowAutoMerge: false })
+
+    // `rules: null` clears the rule rather than reading as "leave it alone".
+    // The column payload always carries an object, so a cleared rule is `{}`.
+    const cleared = await call(seed.member, 'PATCH', `/boards/${board.id}/columns/${columnId}`, { rules: null })
+    expect(cleared.status).toBe(200)
+    expect(cleared.json.column.rules).toEqual({})
+    const row = await db.boardColumn.findUnique({ where: { id: columnId } })
+    expect(row.rules).toBeNull()
+  })
+
   test('columns insert after a named column and refuse to delete while cards remain', async () => {
     const board = await createBoard({ conversationId: channelId, name: 'Deals', itemType: 'deal' })
     const added = await call(seed.member, 'POST', `/boards/${board.id}/columns`, { name: 'Legal review', category: 'review', after: 'Proposal' })
@@ -144,6 +165,11 @@ describe('cards', () => {
     const blocks = typeof root.blocks === 'string' ? JSON.parse(root.blocks) : root.blocks
     expect(blocks.type).toBe('status_card')
     expect(blocks.workItem.key).toBe('ESC-1')
+    expect(blocks.workItem).toMatchObject({
+      id: item.id, boardId: board.id, boardName: 'Escalations', title: 'Refund stuck',
+      column: { name: 'Backlog', category: 'backlog' }, priority: 'high', assignee: null, dueAt: null,
+    })
+    expect(blocks.workItem.path).toBe(`/work?card=${item.id}`)
     const chain = typeof root.agentChain === 'string' ? JSON.parse(root.agentChain) : root.agentChain
     expect(chain.runId).toBe(item.id)
   })
@@ -160,12 +186,38 @@ describe('cards', () => {
     const root = await db.conversationMessage.findUnique({ where: { id: json.item.threadRootMessageId } })
     const blocks = typeof root.blocks === 'string' ? JSON.parse(root.blocks) : root.blocks
     expect(blocks.card.status).toBe('done')
+    expect(blocks.workItem.column).toEqual({ name: 'Done', category: 'done' })
     const doneLine = await db.conversationMessage.findFirst({ where: { threadRootId: json.item.threadRootMessageId, alsoSentToChannel: true } })
     expect(doneLine?.text).toContain('Done')
 
     const reopened = await call(seed.member, 'POST', `/work-items/${id}/move`, { column: 'Backlog' })
     expect(reopened.json.item.completedAt).toBeNull()
     expect(await db.workItemEvent.count({ where: { workItemId: id, type: 'regressed' } })).toBe(1)
+  })
+
+  test('moving a card to another board’s channel posts the same card with the destination as a note', async () => {
+    const target = await createBoard({ conversationId: otherChannelId, name: 'Escalated', keyPrefix: 'ESCX' })
+    const { json } = await call(seed.member, 'POST', `/boards/${board.id}/items`, { title: 'Wrong team' })
+    const moved = await call(seed.member, 'POST', `/work-items/${json.item.id}/move`, { board: target.id, column: 'Backlog' })
+    expect(moved.status).toBe(200)
+
+    const link = await waitFor(() => db.workItemLink.findFirst({ where: { workItemId: json.item.id, reason: 'escalation' } }))
+    const pointer = await db.conversationMessage.findUnique({ where: { id: link.refId } })
+    expect(pointer.conversationId).toBe(otherChannelId)
+    const blocks = typeof pointer.blocks === 'string' ? JSON.parse(pointer.blocks) : pointer.blocks
+    expect(blocks.type).toBe('status_card')
+    expect(blocks.workItem).toMatchObject({
+      id: json.item.id, key: json.item.key, boardId: target.id, boardName: 'Escalated', title: 'Wrong team',
+      column: { name: 'Backlog', category: 'backlog' },
+    })
+    expect(blocks.workItem.note).toBe('Moved to Escalated from #support')
+
+    // Its home thread's card moves with it, in place — no second root message.
+    const root = await db.conversationMessage.findUnique({ where: { id: json.item.threadRootMessageId } })
+    const rootBlocks = typeof root.blocks === 'string' ? JSON.parse(root.blocks) : root.blocks
+    expect(rootBlocks.workItem.boardName).toBe('Escalated')
+    expect(rootBlocks.workItem.column).toEqual({ name: 'Backlog', category: 'backlog' })
+    expect(await db.conversationMessage.count({ where: { clientMsgId: `card:${json.item.id}` } })).toBe(1)
   })
 
   test('agents cannot close cards on boards that need human review, but people can', async () => {
@@ -258,6 +310,59 @@ describe('cards', () => {
     const titles = res.json.items.map((i: any) => i.title)
     expect(titles).toContain('Mine 1')
     expect(titles[0]).toBe('Mine 2')
+  })
+
+  test('a board bigger than the row cap keeps its newest cards, not an arbitrary set', async () => {
+    const big = await createBoard({ conversationId: channelId, name: 'Big board' })
+    const base = Date.parse('2026-01-01T00:00:00Z')
+    await db.workItem.createMany({
+      data: Array.from({ length: 505 }, (_, i) => ({
+        workspaceId: seed.workspaceId,
+        boardId: big.id,
+        columnId: big.columns[0].id,
+        key: `BIG-${i + 1}`,
+        number: i + 1,
+        title: `Card ${i + 1}`,
+        position: i + 1,
+        createdAt: new Date(base + i * 60_000),
+      })),
+    })
+    const res = await call(seed.member, 'GET', `/boards/${big.id}`)
+    const numbers = res.json.items.map((i: any) => i.number).sort((a: number, b: number) => a - b)
+    expect(numbers.length).toBe(500)
+    expect(numbers[0]).toBe(6)
+    expect(numbers[numbers.length - 1]).toBe(505)
+  })
+})
+
+describe('working agents', () => {
+  test('a card lists the agent replies running in its thread until they settle', async () => {
+    const board = await createBoard({ conversationId: channelId, name: 'Live status' })
+    const card = (await call(seed.member, 'POST', `/boards/${board.id}/items`, { title: 'Agent on it' })).json.item
+    const viewCard = async () => {
+      const view = await call(seed.member, 'GET', `/boards/${board.id}`)
+      return view.json.items.find((i: any) => i.id === card.id)
+    }
+    expect((await viewCard()).working).toEqual([])
+
+    // Allocate the seq the way the service does, so later messages in the channel do not collide with it.
+    const bumped = await db.conversation.update({ where: { id: channelId }, data: { lastSeq: { increment: 1 } }, select: { lastSeq: true } })
+    const reply = await db.conversationMessage.create({
+      data: {
+        conversationId: channelId,
+        workspaceId: seed.workspaceId,
+        seq: bumped.lastSeq,
+        threadRootId: card.threadRootMessageId,
+        authorType: 'agent',
+        authorAgentRef: { projectId: seed.projectId, name: 'Support bot' },
+        text: '',
+        agentStatus: 'running',
+      },
+    })
+    expect((await viewCard()).working).toEqual([{ messageId: reply.id, name: 'Support bot' }])
+
+    await db.conversationMessage.update({ where: { id: reply.id }, data: { agentStatus: 'done', text: 'Fixed' } })
+    expect((await viewCard()).working).toEqual([])
   })
 })
 
@@ -482,4 +587,144 @@ describe('#activity', () => {
     const detail = await call(seed.member, 'GET', `/work-items/${created.json.item.id}`)
     expect(detail.json.board.columns.map((c: any) => c.name)).toEqual(board.columns.map((c: any) => c.name))
   })
+})
+
+describe('waking the agent that owns a card', () => {
+  const tag = (projectId: string) => `<@a:p:${projectId}>`
+  let calls: Array<{ projectId: string | null; prompt: string; release: (text: string) => void }> = []
+
+  /** The runs one card's wake produced, whatever else in the file is in flight. */
+  const runsOf = (key: string) => calls.filter((c) => c.prompt.includes(`work_item_get("${key}")`))
+
+  beforeEach(async () => {
+    calls = []
+    dispatcher._resetDispatcherForTests()
+    // An earlier test's deferred nudge would otherwise fire into this one's log.
+    await db.agentWake.deleteMany({})
+    dispatcher.configureConversationAgentDispatcher({
+      retryDelaysMs: [0],
+      retryBudgetMs: 60_000,
+      invoke: (args) => new Promise<Response>((resolve) => {
+        calls.push({
+          projectId: args.projectId,
+          prompt: args.prompt,
+          release: (text) => resolve(sseResponse([
+            { type: 'text-start', id: 't1' },
+            { type: 'text-delta', id: 't1', delta: text },
+            { type: 'finish' },
+          ])),
+        })
+      }),
+    })
+  })
+
+  afterAll(() => { dispatcher._resetDispatcherForTests() })
+
+  /**
+   * A card owned by the agent, with nothing running on it. The ownership is
+   * written straight to the row: creating the card with an assignee wakes the
+   * agent, and a run that ends without moving its card is now re-handed, which
+   * would put a run of its own in this file's counts.
+   */
+  async function cardOwnedByAgent(board: any, title: string): Promise<any> {
+    const card = (await call(seed.member, 'POST', `/boards/${board.id}/items`, { title })).json.item
+    await db.workItem.update({ where: { id: card.id }, data: { assigneeAgentRef: `project:${seed.projectId}` } })
+    expect(runsOf(card.key)).toHaveLength(0)
+    return card
+  }
+
+  test('a move into an agent column while that agent is live in the card thread queues the wake', async () => {
+    const board = await createBoard({ conversationId: channelId, name: 'Wake queue' })
+    const column = await call(seed.member, 'POST', `/boards/${board.id}/columns`, { name: 'Agent queue', category: 'active', agentRef: seed.projectId })
+    expect(column.status).toBe(201)
+    const card = (await call(seed.member, 'POST', `/boards/${board.id}/items`, { title: 'Queued hand-off', column: 'Backlog' })).json.item
+    const root = card.threadRootMessageId
+
+    // The agent is already working this card's thread.
+    await call(seed.member, 'POST', `/conversations/${channelId}/messages`, { text: `${tag(seed.projectId)} start on this`, threadRootId: root })
+    await waitFor(() => calls.length === 1)
+    // A person's tag is itself a wake the board knows about (SHO-59's other half).
+    await waitFor(async () => {
+      const events = await db.workItemEvent.findMany({ where: { workItemId: card.id, type: 'agent_woken' } })
+      return events.some((e: any) => (typeof e.eventData === 'string' ? JSON.parse(e.eventData) : e.eventData)?.reason === 'thread_tag') ? true : null
+    })
+
+    expect((await call(seed.member, 'POST', `/work-items/${card.id}/move`, { column: 'Agent queue' })).status).toBe(200)
+
+    // The move does not start a second run: it is acknowledged in the thread.
+    await new Promise((r) => setTimeout(r, 150))
+    expect(calls).toHaveLength(1)
+    const rows = await db.conversationMessage.findMany({ where: { threadRootId: root } })
+    const ack = rows
+      .map((r: any) => ({ ...r, blocks: typeof r.blocks === 'string' ? JSON.parse(r.blocks) : r.blocks }))
+      .find((r: any) => r.blocks?.wakeQueued)
+    expect(ack?.text).toContain('Queued for')
+    expect(ack.blocks.wakeQueued.agentRef).toBe(`project:${seed.projectId}`)
+    expect(await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_wake_queued' } })).toBe(1)
+
+    // It still runs, once the live one ends, with the card in its prompt.
+    calls[0]!.release('Started.')
+    await waitFor(() => calls.length === 2, 5000)
+    expect(calls[1]!.prompt).toContain(card.key)
+    calls[1]!.release('On it.')
+    await waitFor(() => db.agentWake.findFirst({ where: { conversationId: channelId, status: 'done' } }), 5000)
+  })
+
+  test('a move into a column that binds no agent wakes the card’s developer once, after the hint window', async () => {
+    const board = await createBoard({ conversationId: channelId, name: 'Handback' })
+    const card = await cardOwnedByAgent(board, 'Back to you')
+    const before = await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_woken' } })
+
+    // 'In progress' binds no agent, so the card's own developer is the one who
+    // acts on it — as a hint first: the move records it, and nothing runs yet.
+    expect((await call(seed.member, 'POST', `/work-items/${card.id}/move`, { column: 'In progress' })).status).toBe(200)
+    expect(await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_wake_deferred' } })).toBe(1)
+    await new Promise((r) => setTimeout(r, 500))
+    expect(runsOf(card.key)).toHaveLength(0)
+    expect(await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_woken' } })).toBe(before)
+
+    // Nobody tagged it, so when the window closes the developer is woken — once.
+    await waitFor(async () => (await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_woken' } })) === before + 1, 9000)
+    await waitFor(() => runsOf(card.key).length === 1, 5000)
+    runsOf(card.key)[0]!.release('Picked it back up.')
+    await new Promise((r) => setTimeout(r, 500))
+    expect(runsOf(card.key)).toHaveLength(1)
+    expect(await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_woken' } })).toBe(before + 1)
+
+    // A second bounce of the same card re-arms the same row instead of being
+    // swallowed by the unique key — the hint has to work every time.
+    expect((await call(seed.member, 'POST', `/work-items/${card.id}/move`, { column: 'Backlog' })).status).toBe(200)
+    await waitFor(async () => (await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_wake_deferred' } })) === 2, 3000)
+    await waitFor(() => runsOf(card.key).length === 2, 9000)
+    runsOf(card.key)[1]!.release('Back in the backlog.')
+    await new Promise((r) => setTimeout(r, 500))
+    expect(runsOf(card.key)).toHaveLength(2)
+  }, 40_000)
+
+  test('a tag in the same breath supersedes the move hint, so one bounce is one run', async () => {
+    const board = await createBoard({ conversationId: channelId, name: 'Bounce' })
+    const card = await cardOwnedByAgent(board, 'Bounce me')
+    const before = await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_woken' } })
+
+    // The way a bounce really happens: move it back, then say why in a comment.
+    expect((await call(seed.member, 'POST', `/work-items/${card.id}/move`, { column: 'In progress' })).status).toBe(200)
+    await call(seed.member, 'POST', `/conversations/${channelId}/messages`, {
+      text: `${tag(seed.projectId)} the citation on line 586 is wrong`,
+      threadRootId: card.threadRootMessageId,
+    })
+    // The tag's own run — the hint must not add a second one.
+    const tagged = () => calls.filter((c) => c.prompt.includes('citation on line 586'))
+    await waitFor(() => tagged().length === 1, 5000)
+
+    const nudge = await db.agentWake.findFirst({ where: { threadRootId: card.threadRootMessageId, agentRef: `project:${seed.projectId}`, reason: 'move_nudge' } })
+    expect(nudge.reason).toBe('move_nudge')
+    expect(nudge.status).toBe('superseded')
+
+    // The hint is dead, so the window closing does not run the agent a second time.
+    tagged()[0]!.release('Fixed it.')
+    await new Promise((r) => setTimeout(r, 6_000))
+    expect(tagged()).toHaveLength(1)
+    expect(runsOf(card.key)).toHaveLength(0)
+    expect(await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_woken' } })).toBe(before + 1)
+  }, 30_000)
 })

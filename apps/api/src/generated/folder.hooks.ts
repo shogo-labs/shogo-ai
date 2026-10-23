@@ -9,6 +9,7 @@
 
 import type { Principal } from "../lib/authz"
 import { hookAuthorize, hookRequire } from "../lib/authz/hooks"
+import { resolveTunnelWorkspaceId } from "../lib/tunnel-workspace"
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -73,10 +74,10 @@ export const folderHooks: FolderHooks = {
 
     let workspaceId = ctx.query.workspaceId
 
-    // Remap cloud workspaceId to local workspace for tunnel-authenticated requests
+    // Remap a cloud workspaceId to a local one for tunnel-authenticated
+    // requests, keeping a machine workspace id this desktop already knows.
     if (ctx.tunnelAuthenticated && workspaceId) {
-      const localWs = await ctx.prisma.workspace.findFirst({ select: { id: true } })
-      if (localWs) workspaceId = localWs.id
+      workspaceId = await resolveTunnelWorkspaceId(ctx.prisma, workspaceId)
     }
 
     if (workspaceId) {
@@ -165,10 +166,10 @@ export const folderHooks: FolderHooks = {
       }
     }
 
-    // Remap cloud workspaceId to local workspace for tunnel-authenticated requests
+    // Remap a cloud workspaceId to a local one for tunnel-authenticated
+    // requests, keeping a machine workspace id this desktop already knows.
     if (ctx.tunnelAuthenticated) {
-      const localWs = await ctx.prisma.workspace.findFirst({ select: { id: true } })
-      if (localWs) input.workspaceId = localWs.id
+      input.workspaceId = await resolveTunnelWorkspaceId(ctx.prisma, input.workspaceId)
     }
 
     const workspaceId = input.workspaceId

@@ -39,6 +39,7 @@ import type { UIMessage } from "@ai-sdk/react";
 import type { MessagePart, GroupedMessagePart } from "./types";
 import { type ToolCallData, isIntegrationTool } from "../tools/types";
 import { getToolSummary, LOOKUP_TOOL_NAMES } from "../tools/summary";
+import { isPublishPlanGate } from "./publish-plan-gate";
 
 // Verbs (from tools/summary.ts) that classify a tool call as a
 // read-only "exploration" action for the purposes of grouping. Note
@@ -92,6 +93,7 @@ const UNGROUPABLE_TOOLS = new Set([
   "browser",
   "create_plan",
   "update_plan",
+  "share_file",
 ]);
 
 const MIN_WORK_GROUP_SIZE = 1;
@@ -124,7 +126,10 @@ function isShellRunCommand(tool: ToolCallData): boolean {
  * covered by `UNGROUPABLE_TOOLS` or the work-tool rules below. They keep
  * their own card instead of joining a work-group.
  */
-const CUSTOM_RENDER_TOOLS = new Set(["generate_image", "share_file"]);
+const CUSTOM_RENDER_TOOLS = new Set([
+  "generate_image",
+  "generate_video",
+]);
 
 /**
  * A tool call with no dedicated card and no bespoke grouping, e.g.
@@ -137,7 +142,8 @@ export function isGenericTool(tool: ToolCallData): boolean {
   if (
     UNGROUPABLE_TOOLS.has(name) ||
     HIDDEN_TOOLS.has(name) ||
-    CUSTOM_RENDER_TOOLS.has(name)
+    CUSTOM_RENDER_TOOLS.has(name) ||
+    isPublishPlanGate(tool)
   ) {
     return false;
   }
@@ -258,7 +264,7 @@ export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
       }
     }
 
-    if (UNGROUPABLE_TOOLS.has(part.tool.toolName)) {
+    if (UNGROUPABLE_TOOLS.has(part.tool.toolName) || isPublishPlanGate(part.tool)) {
       result.push(part);
       i++;
       continue;

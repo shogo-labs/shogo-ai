@@ -237,3 +237,16 @@ Never log `x-runtime-token`, `Authorization`, `Cookie`, or the three
 any request-logging code path. The `[authMiddleware] runtime-token
 derive failed` log line is already sanitized (logs `projectId` +
 `path` + `err.message`, never the token).
+
+### 11. Workspace tokens reach only the Git LFS routes
+
+Workspace runtimes hold a workspace token (`wrt_v1_<workspaceId>_…`),
+which `verifyRuntimeToken` rejects. `authMiddleware` accepts one on
+`POST /api/projects/:projectId/git/info/lfs/objects/{batch,verify}`
+alone, and only when that project is in the token's workspace; the
+result is the same `via: 'runtimeToken'` context a project token for
+that project would get. Without this, `git lfs push` from a workspace
+runtime gets 401, and its large-file bytes are durable only inside the
+legacy `.git` tarball. Every other project route still needs a project
+token. Widen `WORKSPACE_TOKEN_PROJECT_ROUTE` deliberately, not by
+loosening the match.

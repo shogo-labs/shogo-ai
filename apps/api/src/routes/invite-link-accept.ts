@@ -22,16 +22,19 @@ export interface InviteLinkAcceptConfig {
   resolveUserId: (c: any) => Promise<string | null> | string | null
   /** Seat sync and emails; runs after the membership exists. */
   afterAccept?: (accepted: InviteLinkAccepted) => Promise<void>
+  /** DB handle for tests; defaults to the app client. */
+  prisma?: any
 }
 
 export function inviteLinkAcceptRoutes(config: InviteLinkAcceptConfig): Hono {
   const router = new Hono()
+  const db: any = config.prisma ?? prisma
 
   router.post('/invite-links/:token/accept', async (c) => {
     const userId = await config.resolveUserId(c)
     if (!userId) return c.json({ error: 'Unauthorized' }, 401)
 
-    const link = await prisma.inviteLink.findUnique({ where: { token: c.req.param('token') } })
+    const link = await db.inviteLink.findUnique({ where: { token: c.req.param('token') } })
     if (!link || !link.enabled) {
       return c.json({ error: 'Invite link not found or disabled' }, 404)
     }
@@ -41,12 +44,12 @@ export function inviteLinkAcceptRoutes(config: InviteLinkAcceptConfig): Hono {
 
     let workspaceId = link.workspaceId
     if (link.projectId) {
-      const project = await prisma.project.findUnique({ where: { id: link.projectId }, select: { workspaceId: true } })
+      const project = await db.project.findUnique({ where: { id: link.projectId }, select: { workspaceId: true } })
       if (!project) return c.json({ error: 'Invite link not found or disabled' }, 404)
       workspaceId = project.workspaceId
     }
 
-    const existingMember = await prisma.member.findFirst({
+    const existingMember = await db.member.findFirst({
       where: {
         userId,
         ...(link.projectId ? { projectId: link.projectId } : { workspaceId, projectId: null }),
@@ -67,15 +70,15 @@ export function inviteLinkAcceptRoutes(config: InviteLinkAcceptConfig): Hono {
 
     let member
     try {
-      member = await prisma.member.create({ data: memberData })
+      member = await db.member.create({ data: memberData })
     } catch (err: any) {
       if (err?.code !== 'P2002') throw err
-      const raced = await prisma.member.findFirst({
+      const raced = await db.member.findFirst({
         where: link.projectId ? { userId, projectId: link.projectId } : { userId, workspaceId, projectId: null },
       })
       return c.json({ ok: true, data: raced, alreadyMember: true })
     }
-    await prisma.inviteLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 } } })
+    await db.inviteLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 } } })
 
     if (memberData.workspaceId && !memberData.projectId) {
       const { onWorkspaceMemberJoined } = await import('../services/workspace-events')
@@ -85,6 +88,8 @@ export function inviteLinkAcceptRoutes(config: InviteLinkAcceptConfig): Hono {
         memberId: member.id,
         role: member.role,
         source: 'invite_link',
+        invitedBy: link.createdBy,
+        prisma: db,
       })
     }
 

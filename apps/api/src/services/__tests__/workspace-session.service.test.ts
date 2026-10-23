@@ -43,6 +43,9 @@ mock.module('../../lib/prisma', () => ({
         return {
           id: 'sess-1',
           ...args.data,
+          // Prisma fills these from column defaults (now()) on insert.
+          createdAt: new Date('2026-04-01T00:00:00Z'),
+          lastActiveAt: new Date('2026-04-01T00:00:00Z'),
           attachedProjects: attached.map((a: any, i: number) => ({
             id: `csp-${i}`,
             projectId: a.projectId,
@@ -144,6 +147,15 @@ describe('createWorkspaceSession', () => {
     expect(s.createCalls[0].data.contextType).toBe('workspace')
     expect(s.createCalls[0].data.workspaceId).toBe('ws-1')
     expect(s.createCalls[0].data.inferredName).toBe('My chat')
+  })
+
+  it('returns the row name and timestamps so clients can rank the new chat', async () => {
+    const res = await svc.createWorkspaceSession('ws-1', { name: 'My chat', createdByUserId: 'user-1' })
+    expect(res.id).toBe('sess-1')
+    expect(res.name).toBe('My chat')
+    expect(res.inferredName).toBe('My chat')
+    expect(res.createdAt).toBe('2026-04-01T00:00:00.000Z')
+    expect(res.lastActiveAt).toBe('2026-04-01T00:00:00.000Z')
   })
 
   it('attaches valid projects on create', async () => {
@@ -267,15 +279,31 @@ describe('getOrCreateDefaultWorkspaceSession', () => {
 })
 
 describe('listWorkspaceSessions', () => {
-  it('returns only the caller\'s chats', async () => {
+  it("returns only the caller's chats", async () => {
     s.listedSessions = [{ id: 'mine' }]
     const sessions = await svc.listWorkspaceSessions('ws-1', 'user-1')
-    expect(sessions).toEqual([{ id: 'mine' }])
+    expect(sessions).toEqual([{ id: 'mine', messageCount: 0 }])
     expect(s.findManySessionCalls[0].where).toMatchObject({
       workspaceId: 'ws-1',
       createdByUserId: 'user-1',
       contextType: 'workspace',
     })
+  })
+
+  it('reports how many messages each chat has, so an empty one is reusable', async () => {
+    s.listedSessions = [
+      { id: 'used', inferredName: 'Chat', _count: { messages: 4 } },
+      { id: 'empty', inferredName: 'Chat', _count: { messages: 0 } },
+    ]
+    const sessions = await svc.listWorkspaceSessions('ws-1', 'user-1')
+    expect(sessions.map((row: any) => [row.id, row.messageCount])).toEqual([
+      ['used', 4],
+      ['empty', 0],
+    ])
+    // The count is folded into `messageCount`; the raw `_count` stays internal.
+    expect(sessions[0]).not.toHaveProperty('_count')
+    expect(sessions[0]).toMatchObject({ inferredName: 'Chat' })
+    expect(s.findManySessionCalls[0].include._count).toEqual({ select: { messages: true } })
   })
 })
 

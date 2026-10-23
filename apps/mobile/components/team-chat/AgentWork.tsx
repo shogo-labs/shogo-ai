@@ -3,19 +3,19 @@
 /**
  * What an agent is doing, and did, behind its channel message.
  *
- * A channel reply shows only the agent's closing words. While it works the row shows the same
- * live status project chat does (`WorkGroup` labels that tick, `PlanningStatusLine` between
- * steps). Once it has finished, "Worked for X" folds the turn away and expands to the work log,
+ * A channel reply shows only the agent's closing words. While it works the row shows its live
+ * tool activity (`WorkGroup` labels that tick); the "X is typing…" indicator reports that it is
+ * running. Once it has finished, "Worked for X" folds the turn away and expands to the work log,
  * rendered by project chat's own `AssistantContent`.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Text, View } from 'react-native'
-import { PlanningStatusLine } from '../chat/turns/PlanningStatusLine'
+import { Clock } from 'lucide-react-native'
 import { WorkGroup } from '../chat/turns/WorkGroup'
 import { WorkedForGroup } from '../chat/turns/WorkedForGroup'
 import { AssistantContent } from '../chat/turns/AssistantContent'
-import { groupWorkParts, shouldShowPlanningStatus } from '../chat/turns/turnShaping'
+import { groupWorkParts } from '../chat/turns/turnShaping'
 import { buildFallbackWorkedLabel } from '../chat/turns/workSummary'
 import type { MessagePart } from '../chat/turns/types'
 import { getToolCategory } from '../chat/tools/types'
@@ -58,7 +58,23 @@ export function AgentWorkingStatus({ tools }: { tools: Array<{ name: string; don
           />
         ) : null,
       )}
-      {shouldShowPlanningStatus(parts, true) ? <PlanningStatusLine /> : null}
+    </View>
+  )
+}
+
+/**
+ * A reply that is not working yet: it is in line for an agent slot, or it parked
+ * on an open tool (a `wait`, a subagent) and gave its slot back. Deliberately
+ * plain text rather than the working shimmer — nothing is generating.
+ */
+export function AgentQueueStatus({ position, waiting }: { position?: number | null; waiting?: { tool: string | null } | null }) {
+  const text = waiting
+    ? `Waiting on ${waiting.tool ?? 'an open tool'}…`
+    : position ? `Queued · #${position} in line` : 'Queued'
+  return (
+    <View className="mt-1 flex-row items-center gap-1.5" testID="agent-queue-status">
+      <Clock size={11} className="text-muted-foreground" />
+      <Text className="text-xs text-muted-foreground">{text}</Text>
     </View>
   )
 }

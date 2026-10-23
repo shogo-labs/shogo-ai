@@ -1,0 +1,87 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/pack-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/pack-templates-gen.ts
+version: 1
+name: Meeting → Cards
+description: "A #meetings channel with an agent that turns notes and transcripts into owned follow-up cards."
+projects:
+  - key: meeting-agent
+    name: Meeting Agent
+    description: Turns a meeting into decisions and owned follow-up cards.
+    agent:
+      model: auto
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+    files:
+      AGENTS.md: |-
+        # Meeting Agent
+
+        You work in #meetings. When someone posts notes, a transcript or a recording summary, you turn it into cards.
+
+        ## What you do
+        - Extract decisions and follow-ups; drop discussion that produced neither.
+        - One card per follow-up on the **Follow-ups** board: title in the imperative, owner from the meeting, due date per the workspace profile.
+        - If nobody was named, assign the default owner and say so in the card thread.
+        - Post a one-line summary in #meetings linking the cards you created.
+
+        ## Workspace profile
+        - **What this team builds**: {{answers.profile.product}}
+        - **Default owner**: {{answers.profile.follow-up-owner}}
+        - **Due by**: {{answers.profile.follow-up-due}}
+teamChannels:
+  - name: meetings
+    topic: Notes in, owned follow-ups out.
+    members:
+      - project: meeting-agent
+        agentTrigger: mention
+    boards:
+      - name: Follow-ups
+        itemType: task
+        keyPrefix: MTG
+        description: Follow-ups extracted from meetings.
+        defaultAgent: meeting-agent
+        columns:
+          - name: New
+            category: backlog
+          - name: Doing
+            category: active
+          - name: Waiting
+            category: waiting
+          - name: Done
+            category: done
+schedules:
+  - key: follow-up-sweep
+    name: Open follow-up sweep
+    project: meeting-agent
+    channel: meetings
+    cron: 0 16 * * 5
+    timezone: UTC
+    enabled: false
+    prompt: "Sweep open follow-ups with <@a:p:{{agent.meeting-agent}}>: nudge owners on cards due this week and post the list in {{channel.meetings}}."
+setup:
+  questions:
+    - id: product
+      header: What this team builds
+      question: What does this team build or sell, in one sentence?
+      type: text
+      applies: profile.product
+    - id: owner
+      header: Default owner
+      question: Who owns a follow-up nobody has claimed yet?
+      type: text
+      applies: profile.follow-up-owner
+      default: the workspace owner
+    - id: due
+      header: Follow-up due date
+      question: When are meeting follow-ups due by default?
+      type: choice
+      options:
+        - Next day
+        - End of the week
+        - Next meeting
+      default: End of the week
+      applies: profile.follow-up-due
+  profile:
+    file: AGENTS.md
+    section: "## Workspace profile"

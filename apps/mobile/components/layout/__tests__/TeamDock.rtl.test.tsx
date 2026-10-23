@@ -16,7 +16,7 @@ let tasks: any[] = []
 mock.module("react-native", () =>
   createReactNativeMock({
     Platform: { OS: "ios" },
-    Pressable: ({ accessibilityLabel, accessibilityRole, accessibilityState, children, onPress, ...props }: any) =>
+    Pressable: ({ accessibilityLabel, accessibilityRole, children, onPress, ...props }: any) =>
       createElement(
         "button",
         { ...props, "aria-label": accessibilityLabel, onClick: onPress, role: accessibilityRole },
@@ -40,13 +40,22 @@ mock.module(resolve(import.meta.dir, "../../../hooks/useAgentActivity"), () => (
 
 const { TeamDock } = await import("../TeamDock")
 
+/** The RN mock renders testID as a data attribute, so query that. */
+const allTestIds = (id: string) => Array.from(document.querySelectorAll(`[data-rn-shim="${id}"]`))
+const queryTestId = (id: string) => document.querySelector(`[data-rn-shim="${id}"]`)
+const testId = (id: string) => {
+  const el = queryTestId(id)
+  if (!el) throw new Error(`no element with testID ${id}`)
+  return el
+}
+
 beforeEach(() => {
   cleanup()
   replace.mockClear()
   push.mockClear()
   pathname = "/(app)"
   tasks = []
-  chat = { enabled: true, list: [], counts: { channels: 0, dms: 0, inbox: 0 } }
+  chat = { enabled: true, list: [], counts: { channels: 0, dms: 0, inbox: 0, activityDot: false } }
 })
 
 describe("TeamDock", () => {
@@ -63,6 +72,18 @@ describe("TeamDock", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Activity" }))
     fireEvent.click(screen.getByRole("tab", { name: "More" }))
     expect(replace.mock.calls.map((c) => c[0])).toEqual(["/(app)/c/dms", "/(app)/activity", "/(app)/more"])
+  })
+
+  test("Home opens the feed, not the landing", () => {
+    render(<TeamDock maxWidth={640} />)
+    fireEvent.click(screen.getByRole("tab", { name: "Home" }))
+    expect(replace.mock.calls.map((c) => c[0])).toEqual(["/(app)/home"])
+  })
+
+  test("the feed route highlights Home", () => {
+    pathname = "/(app)/home"
+    render(<TeamDock maxWidth={640} />)
+    expect(screen.getByRole("tab", { name: "Home" }).getAttribute("aria-selected")).toBe("true")
   })
 
   test("the search button is separate from the tabs and opens search", () => {
@@ -88,5 +109,20 @@ describe("TeamDock", () => {
     render(<TeamDock maxWidth={640} />)
     expect(screen.getByRole("tab", { name: "DMs, 4 unread" })).toBeTruthy()
     expect(screen.getByRole("tab", { name: "Activity, 2 unread" })).toBeTruthy()
+  })
+
+  test("a thread-only unread shows a dot on Activity, not a number", () => {
+    chat.counts = { channels: 0, dms: 0, inbox: 0, activityDot: true }
+    render(<TeamDock maxWidth={640} />)
+    expect(screen.getByRole("tab", { name: "Activity, unread" })).toBeTruthy()
+    expect(queryTestId("dock-badge")).toBeNull()
+    expect(testId("dock-dot")).toBeTruthy()
+  })
+
+  test("no dot when there is a count to show or nothing is unread", () => {
+    chat.counts = { channels: 0, dms: 0, inbox: 3, activityDot: false }
+    render(<TeamDock maxWidth={640} />)
+    expect(queryTestId("dock-dot")).toBeNull()
+    expect(testId("dock-badge")).toBeTruthy()
   })
 })

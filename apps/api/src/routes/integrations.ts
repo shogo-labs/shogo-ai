@@ -20,6 +20,7 @@
 import { Hono } from 'hono'
 import { Composio } from '@composio/core'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
+import { isShogoCloudAuthed } from '../lib/cloud-forwarding'
 import { shouldSkipForwardedHeader } from '../lib/proxy-headers'
 
 async function disableTriggersForConnections(input: { connectedAccountIds?: string[]; entityIds?: string[]; toolkit?: string }) {
@@ -32,12 +33,12 @@ async function disableTriggersForConnections(input: { connectedAccountIds?: stri
 }
 
 // =============================================================================
-// Cloud forwarding for local mode with SHOGO_API_KEY
+// Cloud forwarding for a cloud-authed desktop
 // =============================================================================
-
-function shouldForwardToCloud(): boolean {
-  return !!process.env.SHOGO_API_KEY
-}
+//
+// Integrations always relay through Shogo Cloud on a cloud-authed desktop,
+// whatever `AI_MODE` says — the Composio key and every OAuth client config live
+// on the cloud, so there is no local path to fall back to.
 
 async function forwardIntegrationsToCloud(
   method: string,
@@ -367,7 +368,7 @@ export function integrationRoutes() {
   const router = new Hono()
 
   router.get('/integrations/providers', async (c) => {
-    if (shouldForwardToCloud()) {
+    if (isShogoCloudAuthed()) {
       return forwardIntegrationsToCloud('GET', 'integrations/providers', c.req.raw)
     }
 
@@ -410,7 +411,7 @@ export function integrationRoutes() {
       return c.json({ error: 'toolkit is required' }, 400)
     }
 
-    if (shouldForwardToCloud()) {
+    if (isShogoCloudAuthed()) {
       const redirectParam = callbackUrl ? extractRedirectFromCallbackUrl(callbackUrl) : null
       const cloudCallbackUrl = buildCloudCallbackUrl(redirectParam)
 
@@ -493,7 +494,7 @@ export function integrationRoutes() {
       return c.json({ error: 'projectId or workspaceId query parameter required' }, 400)
     }
 
-    if (shouldForwardToCloud()) {
+    if (isShogoCloudAuthed()) {
       const qs = projectId
         ? `projectId=${encodeURIComponent(projectId)}`
         : `workspaceId=${encodeURIComponent(workspaceIdParam!)}`
@@ -559,7 +560,7 @@ export function integrationRoutes() {
     const projectId = c.req.query('projectId')
     const workspaceIdParam = c.req.query('workspaceId')
 
-    if (shouldForwardToCloud()) {
+    if (isShogoCloudAuthed()) {
       const qs = new URLSearchParams()
       if (projectId) qs.set('projectId', projectId)
       if (workspaceIdParam) qs.set('workspaceId', workspaceIdParam)
@@ -626,7 +627,7 @@ export function integrationRoutes() {
       return c.json({ error: 'projectId or workspaceId query parameter required' }, 400)
     }
 
-    if (shouldForwardToCloud()) {
+    if (isShogoCloudAuthed()) {
       const qs = projectId
         ? `projectId=${encodeURIComponent(projectId)}`
         : `workspaceId=${encodeURIComponent(workspaceIdParam!)}`

@@ -8,7 +8,7 @@
  * and usage/cost figures for a linked cloud plan come from the cloud summary.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { View, Pressable, Platform, Linking } from "react-native";
 import { useRouter } from "expo-router";
 import {
@@ -27,6 +27,7 @@ import { useCloudBillingSummary } from "../../hooks/useCloudBillingSummary";
 import { useBillingData } from "@shogo/shared-app/hooks";
 import { getWindowDisplays } from "../../lib/billing-config";
 import { api } from "../../lib/api";
+import { useUsageLogCsvUrl } from "../../lib/usage-log-csv";
 import { usePlatformConfig } from "../../lib/platform-config";
 import { useVisibleModels } from "../../lib/visible-models";
 import { BillingProgressCard } from "../billing/BillingProgressCard";
@@ -46,6 +47,7 @@ import {
   UsageTimeseriesChart,
 } from "./SharedAnalytics";
 import { DateRangePills } from "./DateRangePills";
+import { LoadErrorNotice, type LoadErrors } from "./LoadErrorNotice";
 import { UsageLeaderboard } from "./UsageLeaderboard";
 import { WorkspaceActivitySection } from "./WorkspaceActivitySection";
 
@@ -73,11 +75,46 @@ interface SpendTimeseriesPayload {
   metric: "spend" | "tokens" | "requests";
 }
 
+/** One request now carries the whole tab; `chat` and `usage` are null below Business. */
+interface UsageDashboardPayload {
+  window: { from: string; to: string; period: string };
+  summary: UsageSummaryData;
+  timeseries: SpendTimeseriesPayload;
+  usage: UsageBreakdownData | null;
+  logCount: number;
+  chat: ChatAnalyticsData | null;
+}
+
 function fmtUsd(n: number): string {
   if (n === 0) return "$0.00";
   if (n < 0.01) return `$${n.toFixed(4)}`;
   if (n < 1000) return `$${n.toFixed(2)}`;
   return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
+
+/** A labelled block of the Usage tab, so the long scroll reads as distinct parts. */
+function Section({
+  title,
+  subtitle,
+  children,
+  testID,
+}: {
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
+  testID?: string;
+}) {
+  return (
+    <View className="gap-3" testID={testID}>
+      <View>
+        <Text className="text-base font-semibold text-foreground">{title}</Text>
+        {subtitle ? (
+          <Text className="text-xs text-muted-foreground">{subtitle}</Text>
+        ) : null}
+      </View>
+      {children}
+    </View>
+  );
 }
 
 export function WorkspaceUsagePanel() {
@@ -102,6 +139,7 @@ export function WorkspaceUsagePanel() {
 
   const [period, setPeriod] = useState<AnalyticsPeriod>("7d");
   const [logPage, setLogPage] = useState(1);
+  const [summaryPage, setSummaryPage] = useState(1);
   const [groupBy, setGroupBy] = useState<SpendGroupBy>("model");
   const [metric, setMetric] = useState<SpendMetric>("spend");
   const [spendLimitOpen, setSpendLimitOpen] = useState(false);
@@ -127,80 +165,105 @@ export function WorkspaceUsagePanel() {
     loading: boolean;
   }>({ data: null, loading: true });
 
-  const loadAll = useCallback(async () => {
+  const [loadErrors, setLoadErrors] = useState<LoadErrors>({});
+
+  // Each loader only answers for the newest request it started, so a slow
+  // earlier response can never overwrite a newer one.
+  const dashboardSeq = useRef(0);
+  const logSeq = useRef(0);
+
+  // One request for the summary, the chart, the breakdown and the chat stats
+  // (it used to take four, and toggling the chart refetched all of them).
+  const loadDashboard = useCallback(async () => {
     if (!workspaceId) return;
-    const p = { period };
+    const seq = (dashboardSeq.current += 1);
+    const dim = (state: { data: unknown }) => ({ loading: state.data === null });
+    setUsageSummary((s) => ({ ...s, ...dim(s) }));
+    setSpend((s) => ({ ...s, ...dim(s) }));
+    setUsage((s) => ({ ...s, ...dim(s) }));
+    setChatStats((s) => ({ ...s, ...dim(s) }));
 
-    setUsageSummary((s) => ({ ...s, loading: true }));
-    setUsageLog((s) => ({ ...s, loading: true }));
-    setSpend((s) => ({ ...s, loading: true }));
-
-    const basicFetches = [
-      api
-        .getWorkspaceAnalytics<UsageSummaryData>(
-          http,
-          workspaceId,
-          "usage-summary",
-          p
-        )
-        .catch(() => null),
-      api
-        .getWorkspaceAnalytics<UsageLogData>(http, workspaceId, "usage-log", {
-          ...p,
-          page: String(logPage),
+    try {
+      const data = await api.getWorkspaceAnalytics<UsageDashboardPayload>(
+        http,
+        workspaceId,
+        "dashboard",
+        {
+          period,
+          groupBy,
+          metric,
+          page: String(summaryPage),
           limit: "50",
-        })
-        .catch(() => null),
-      api
-        .getWorkspaceAnalytics<SpendTimeseriesPayload>(
-          http,
-          workspaceId,
-          "spend-timeseries",
-          { ...p, groupBy, metric }
-        )
-        .catch(() => null),
-    ] as const;
-
-    if (isBusinessOrHigher) {
-      setUsage((s) => ({ ...s, loading: true }));
-      setChatStats((s) => ({ ...s, loading: true }));
-
-      const [uSum, uLog, sp, us, ch] = await Promise.all([
-        ...basicFetches,
-        api
-          .getWorkspaceAnalytics<UsageBreakdownData>(
-            http,
-            workspaceId,
-            "usage",
-            p
-          )
-          .catch(() => null),
-        api
-          .getWorkspaceAnalytics<ChatAnalyticsData>(
-            http,
-            workspaceId,
-            "chat",
-            p
-          )
-          .catch(() => null),
-      ]);
-
-      setUsageSummary({ data: uSum, loading: false });
-      setUsageLog({ data: uLog, loading: false });
-      setSpend({ data: sp, loading: false });
-      setUsage({ data: us, loading: false });
-      setChatStats({ data: ch, loading: false });
-    } else {
-      const [uSum, uLog, sp] = await Promise.all(basicFetches);
-      setUsageSummary({ data: uSum, loading: false });
-      setUsageLog({ data: uLog, loading: false });
-      setSpend({ data: sp, loading: false });
+        }
+      );
+      if (seq !== dashboardSeq.current) return;
+      setUsageSummary({ data: data.summary, loading: false });
+      setSpend({ data: data.timeseries, loading: false });
+      setUsage({ data: data.usage, loading: false });
+      setChatStats({ data: data.chat ?? null, loading: false });
+      setLoadErrors((errors) => {
+        if (!errors.usage) return errors;
+        const { usage: _cleared, ...rest } = errors;
+        return rest;
+      });
+    } catch (err: any) {
+      if (seq !== dashboardSeq.current) return;
+      setUsageSummary((s) => ({ ...s, loading: false }));
+      setSpend((s) => ({ ...s, loading: false }));
+      setUsage((s) => ({ ...s, loading: false }));
+      setChatStats((s) => ({ ...s, loading: false }));
+      setLoadErrors((errors) => ({
+        ...errors,
+        usage: err?.message || "Request failed",
+      }));
     }
-  }, [http, workspaceId, period, logPage, groupBy, metric, isBusinessOrHigher]);
+  }, [http, workspaceId, period, groupBy, metric, summaryPage]);
+
+  // Paging the event log refetches only the log.
+  const loadLog = useCallback(async () => {
+    if (!workspaceId) return;
+    const seq = (logSeq.current += 1);
+    setUsageLog((s) => ({ ...s, loading: s.data === null }));
+
+    try {
+      const data = await api.getWorkspaceAnalytics<UsageLogData>(
+        http,
+        workspaceId,
+        "usage-log",
+        { period, page: String(logPage), limit: "50" }
+      );
+      if (seq !== logSeq.current) return;
+      setUsageLog({ data, loading: false });
+      setLoadErrors((errors) => {
+        if (!errors["event log"]) return errors;
+        const { "event log": _cleared, ...rest } = errors;
+        return rest;
+      });
+    } catch (err: any) {
+      if (seq !== logSeq.current) return;
+      setUsageLog((s) => ({ ...s, loading: false }));
+      setLoadErrors((errors) => ({
+        ...errors,
+        "event log": err?.message || "Request failed",
+      }));
+    }
+  }, [http, workspaceId, period, logPage]);
 
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    void loadLog();
+  }, [loadLog]);
+
+  const handlePeriodChange = useCallback((next: AnalyticsPeriod) => {
+    // A new window starts both lists over.
+    setPeriod(next);
+    setLogPage(1);
+    setSummaryPage(1);
+  }, []);
+
 
   if (!workspaceId) {
     return (
@@ -239,7 +302,9 @@ export function WorkspaceUsagePanel() {
   const includedSpend = spend.data?.totals.totalIncludedUsd ?? 0;
   const onDemandSpend = spend.data?.totals.totalOnDemandUsd ?? 0;
 
-  const csvUrl = api.getUsageLogCsvUrl(workspaceId, { period });
+  // The tab and the download describe one workspace: while a paired computer's
+  // workspace is open, both come from that machine (SHO-108/SHO-91).
+  const csvUrl = useUsageLogCsvUrl(workspaceId, { period });
   const handleExportCsv = () => {
     if (typeof window !== "undefined") {
       window.open(csvUrl, "_blank", "noopener");
@@ -249,7 +314,7 @@ export function WorkspaceUsagePanel() {
   };
 
   return (
-    <View className="gap-4">
+    <View className="gap-6">
       <View>
         <Text className="text-lg font-bold text-foreground mb-1">Usage</Text>
         <Text className="text-xs text-muted-foreground">
@@ -259,136 +324,163 @@ export function WorkspaceUsagePanel() {
         </Text>
       </View>
 
-      {/* Who is doing what: team table + dashboard for admins, own stats for members */}
-      {workspaceId ? (
-        <WorkspaceActivitySection
-          workspaceId={workspaceId}
-          isBusinessOrHigher={isBusinessOrHigher}
-        />
-      ) : null}
-
-      {/* Progress cards */}
-      <View className="flex-row flex-wrap gap-3">
-        {(["fiveHour", "weekly"] as const).map((key) => {
-          const w = displayWindows?.[key];
-          const label = key === "fiveHour" ? "5-hour usage" : "Weekly usage";
-          const { pct, uncapped, countdown } = analyticsWindowDisplays[key];
-          return (
-            <BillingProgressCard
-              key={key}
-              title={label}
-              current={!w ? "—" : uncapped ? "Unlimited" : `${pct}%`}
-              total={null}
-              percent={uncapped ? 0 : pct}
-              tone={
-                pct >= 100 ? "destructive" : pct >= 90 ? "warning" : "primary"
-              }
-              helper={
-                uncapped
-                  ? "Unlimited — no usage window"
-                  : countdown
-                  ? pct >= 100
-                    ? `Limit reached — resets in ${countdown}`
-                    : `Resets in ${countdown}`
-                  : "Window not started"
-              }
-            />
-          );
-        })}
-        <BillingProgressCard
-          title="On-Demand Usage (Team)"
-          current={fmtUsd(onDemandUsed)}
-          total={onDemandLimit != null ? fmtUsd(onDemandLimit) : null}
-          percent={onDemandPct}
-          tone={onDemandPct > 80 ? "warning" : "primary"}
-          helper="Pay for extra usage beyond your plan limits."
-          subHelper={
-            onDemandLimit != null
-              ? `${fmtUsd(onDemandLimit)} team spend cap`
-              : "No spend cap set"
-          }
-          {...(Platform.OS !== "ios" &&
-          (!localMode ||
-            (cloudBilling.summary?.signedIn === true &&
-              cloudBilling.summary.plan?.paidTier === true))
-            ? {
-                actionLabel: "Set Limit",
-                onActionPress: () => setSpendLimitOpen(true),
-              }
-            : {})}
-        />
-      </View>
-
-      {/* Date range pills */}
+      {/* Date range pills: one period drives every section below */}
       <View className="flex-row items-center justify-between flex-wrap gap-3">
-        <DateRangePills value={period} onChange={setPeriod} />
+        <DateRangePills value={period} onChange={handlePeriodChange} />
       </View>
 
-      {/* Summary cards */}
-      <View className="flex-row flex-wrap gap-2">
-        <StatCard label="Total spend" value={fmtUsd(totalSpend)} icon={Coins} />
-        <StatCard
-          label="Included"
-          value={fmtUsd(includedSpend)}
-          icon={CreditCard}
-        />
-        <StatCard label="On-demand" value={fmtUsd(onDemandSpend)} icon={Zap} />
-      </View>
+      <LoadErrorNotice errors={loadErrors} />
 
-      {/* Team Usage chart */}
-      <UsageTimeseriesChart
-        data={spend.data}
-        loading={spend.loading}
-        groupBy={groupBy}
-        metric={metric}
-        onGroupByChange={setGroupBy}
-        onMetricChange={setMetric}
-        isLocalMode={localMode}
-        title="Team Usage"
-        subtitle="Team usage per day across this billing period"
-        groupByOptions={["model", "user", "source"]}
-        showTotals={false}
-      />
-
-      {/* Event log + CSV export */}
-      <View className="gap-2">
-        <View className="flex-row items-center justify-end">
-          <Pressable
-            onPress={handleExportCsv}
-            className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background active:bg-muted"
-          >
-            <Download size={14} className="text-foreground" />
-            <Text className="text-xs font-medium text-foreground">
-              Export CSV
-            </Text>
-          </Pressable>
+      <Section
+        title="Plan & limits"
+        subtitle="Rolling usage windows and on-demand spend for this workspace."
+        testID="usage-section-plan"
+      >
+        <View className="flex-row flex-wrap gap-3">
+          {(["fiveHour", "weekly"] as const).map((key) => {
+            const w = displayWindows?.[key];
+            const label = key === "fiveHour" ? "5-hour usage" : "Weekly usage";
+            const { pct, uncapped, countdown } = analyticsWindowDisplays[key];
+            return (
+              <BillingProgressCard
+                key={key}
+                title={label}
+                current={!w ? "—" : uncapped ? "Unlimited" : `${pct}%`}
+                total={null}
+                percent={uncapped ? 0 : pct}
+                tone={
+                  pct >= 100 ? "destructive" : pct >= 90 ? "warning" : "primary"
+                }
+                helper={
+                  uncapped
+                    ? "Unlimited — no usage window"
+                    : countdown
+                    ? pct >= 100
+                      ? `Limit reached — resets in ${countdown}`
+                      : `Resets in ${countdown}`
+                    : "Window not started"
+                }
+              />
+            );
+          })}
+          <BillingProgressCard
+            title="On-Demand Usage (Team)"
+            current={fmtUsd(onDemandUsed)}
+            total={onDemandLimit != null ? fmtUsd(onDemandLimit) : null}
+            percent={onDemandPct}
+            tone={onDemandPct > 80 ? "warning" : "primary"}
+            helper="Pay for extra usage beyond your plan limits."
+            subHelper={
+              onDemandLimit != null
+                ? `${fmtUsd(onDemandLimit)} team spend cap`
+                : "No spend cap set"
+            }
+            {...(Platform.OS !== "ios" &&
+            (!localMode ||
+              (cloudBilling.summary?.signedIn === true &&
+                cloudBilling.summary.plan?.paidTier === true))
+              ? {
+                  actionLabel: "Set Limit",
+                  onActionPress: () => setSpendLimitOpen(true),
+                }
+              : {})}
+          />
         </View>
-        <UsageTableSection
-          summaryData={usageSummary.data}
-          logData={usageLog.data}
-          summaryLoading={usageSummary.loading}
-          logLoading={usageLog.loading}
-          onLogPageChange={setLogPage}
-          logPage={logPage}
-          isLocalMode={localMode}
-        />
-      </View>
+      </Section>
 
-      {/* Leaderboard (Image 2) */}
-      <UsageLeaderboard
-        data={usageSummary.data}
-        loading={usageSummary.loading}
-      />
+      <Section
+        title="Spend"
+        subtitle="What this workspace spent in the selected period."
+        testID="usage-section-spend"
+      >
+        <View className="flex-row flex-wrap gap-2">
+          <StatCard label="Total spend" value={fmtUsd(totalSpend)} icon={Coins} />
+          <StatCard
+            label="Included"
+            value={fmtUsd(includedSpend)}
+            icon={CreditCard}
+          />
+          <StatCard label="On-demand" value={fmtUsd(onDemandSpend)} icon={Zap} />
+        </View>
+
+        <UsageTimeseriesChart
+          data={spend.data}
+          loading={spend.loading}
+          groupBy={groupBy}
+          metric={metric}
+          onGroupByChange={setGroupBy}
+          onMetricChange={setMetric}
+          isLocalMode={localMode}
+          title="Team Usage"
+          subtitle="Team usage per day across this billing period"
+          groupByOptions={["model", "user", "source"]}
+          showTotals={false}
+        />
+      </Section>
+
+      <Section
+        title="Usage"
+        subtitle="Every billable event in the period, and who used the most."
+        testID="usage-section-usage"
+      >
+        <View className="gap-2">
+          <View className="flex-row items-center justify-end">
+            <Pressable
+              onPress={handleExportCsv}
+              className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background active:bg-muted"
+            >
+              <Download size={14} className="text-foreground" />
+              <Text className="text-xs font-medium text-foreground">
+                Export CSV
+              </Text>
+            </Pressable>
+          </View>
+          <UsageTableSection
+            summaryData={usageSummary.data}
+            logData={usageLog.data}
+            summaryLoading={usageSummary.loading}
+            logLoading={usageLog.loading}
+            onLogPageChange={setLogPage}
+            logPage={logPage}
+            onSummaryPageChange={setSummaryPage}
+            summaryPage={summaryPage}
+            isLocalMode={localMode}
+          />
+        </View>
+
+        <UsageLeaderboard
+          data={usageSummary.data}
+          loading={usageSummary.loading}
+        />
+      </Section>
 
       {isBusinessOrHigher && (
-        <>
+        <Section
+          title="Chat & agents"
+          subtitle="Chat traffic and the models behind it."
+          testID="usage-section-chat"
+        >
           <ChatAnalyticsSection
             data={chatStats.data}
             loading={chatStats.loading}
           />
           <UsageBreakdownSection data={usage.data} loading={usage.loading} />
-        </>
+        </Section>
       )}
+
+      {/* Who is doing what: team table + dashboard for admins, own stats for members */}
+      {workspaceId ? (
+        <Section
+          title="Team"
+          subtitle="Activity, streaks and work done per member."
+          testID="usage-section-team"
+        >
+          <WorkspaceActivitySection
+            workspaceId={workspaceId}
+            isBusinessOrHigher={isBusinessOrHigher}
+          />
+        </Section>
+      ) : null}
 
       {Platform.OS !== "ios" && (
         <SetSpendLimitDialog

@@ -132,6 +132,30 @@ export function useConversationDoc(workspaceId: string | null | undefined, conve
     }
   }, [conversationId])
 
+  /** Move one section out of the doc into its archive (leaves a pointer line behind). */
+  const archiveSection = useCallback(async (section: string) => {
+    if (!conversationId) return null
+    try {
+      const result = await api.archiveDocSection(conversationId, section, baseVersionOf(stateRef.current))
+      dispatch({ type: 'reset', doc: result.doc })
+      return result.archive
+    } catch (err) {
+      if (err instanceof DocConflictError) dispatch({ type: 'save-conflict', theirs: err.current })
+      throw err
+    }
+  }, [conversationId])
+
+  const restoreArchive = useCallback(async (archiveId: string) => {
+    if (!conversationId) return
+    try {
+      const doc = await api.restoreDocArchive(conversationId, archiveId, baseVersionOf(stateRef.current))
+      dispatch({ type: 'reset', doc })
+    } catch (err) {
+      if (err instanceof DocConflictError) dispatch({ type: 'save-conflict', theirs: err.current })
+      else throw err
+    }
+  }, [conversationId])
+
   return {
     state,
     doc: visibleDoc(state),
@@ -141,6 +165,8 @@ export function useConversationDoc(workspaceId: string | null | undefined, conve
     resolve,
     setLocked,
     restore,
+    archiveSection,
+    restoreArchive,
     reload: load,
   }
 }

@@ -354,6 +354,7 @@ describe('PreviewManager.getStatus (apiReady gate)', () => {
   // every mount.
   for (const [techStack, devServer] of [
     ['custom', 'static-build'],
+    ['video-editor', 'static-build'],
     ['docker-compose', 'compose'],
   ] as const) {
     test(`apiReady is true after start() for devServer=${devServer} (${techStack}) — no sidecar is ever spawned`, async () => {

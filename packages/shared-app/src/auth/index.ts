@@ -13,6 +13,8 @@ export {
 export {
   AuthProvider,
   useAuth,
+  useAuthOptional,
+  getAuthUserSnapshot,
   EmailNotVerifiedError,
   type AuthProviderProps,
   type AuthContextValue,

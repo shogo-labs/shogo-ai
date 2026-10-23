@@ -45,6 +45,7 @@ import { isWorkspaceBudgetEnabled } from '../workspace-compute-budget'
 import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-registry'
 import { resolveAgentModelEnv } from './agent-model-defaults'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
+import { HOME_STATE_KEY_PURPOSE, HOME_STATE_KEY_VERSION } from './home-state-key'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
@@ -400,6 +401,22 @@ export async function buildWorkspaceEnv(
 
   // Workspace-scoped runtime capability (NOT a project token).
   env.RUNTIME_AUTH_SECRET = deriveWorkspaceRuntimeToken(workspaceId)
+
+  // Encrypted home-directory archive, keyed by the metal runtime key so the
+  // archive (`<runtimeKey>/home-state.enc`), the key and the AAD all name the
+  // same runtime. HOME_STATE_ID is needed because a workspace bind sets the
+  // guest's PROJECT_ID to its first member, not to the runtime key.
+  if (opts.forMetal) {
+    const homeStateId = opts.anchorProjectId ? `ws:proj:${opts.anchorProjectId}` : `ws:${workspaceId}`
+    const { deriveProjectKey, isSecretCryptoConfigured } = await import('../secret-crypto')
+    if (isSecretCryptoConfigured()) {
+      env.HOME_STATE_KEY = deriveProjectKey(HOME_STATE_KEY_PURPOSE, homeStateId).toString('base64')
+      env.HOME_STATE_KEY_VERSION = HOME_STATE_KEY_VERSION
+      env.HOME_STATE_ID = homeStateId
+    } else {
+      console.warn(`[${prefix}] SECRETS_ENCRYPTION_KEY unset — home-directory persistence disabled for ${homeStateId}`)
+    }
+  }
 
   // AI proxy URLs — identical resolution to build-project-env.ts, including the
   // metal case: Firecracker guests run OUTSIDE the OKE cluster, so in-cluster

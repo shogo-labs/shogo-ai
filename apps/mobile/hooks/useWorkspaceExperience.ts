@@ -4,6 +4,7 @@ import { useMemo, useSyncExternalStore } from 'react'
 import { reaction } from 'mobx'
 import { useWorkspaceCollection } from '../contexts/domain'
 import { useActiveWorkspace } from './useActiveWorkspace'
+import { useActiveInstance } from '../contexts/active-instance'
 import { getActiveWorkspaceId } from '../lib/workspace-store'
 import {
   cachedKindForActiveWorkspace,
@@ -46,11 +47,20 @@ function useWorkspaceListVersion(): string {
  */
 export function useWorkspaceExperience(): WorkspaceExperienceState {
   const workspace = useActiveWorkspace()
+  const { instance } = useActiveInstance()
   const listVersion = useWorkspaceListVersion()
   const activeId = getActiveWorkspaceId()
   const cachedKind = cachedKindForActiveWorkspace(workspace, activeId)
+  const machine =
+    instance?.source === 'machine' && instance.localWorkspaceId
+      ? {
+          instanceId: instance.instanceId,
+          localWorkspaceId: instance.localWorkspaceId,
+          kind: instance.localWorkspaceKind,
+        }
+      : null
   return useMemo(
-    () => deriveWorkspaceExperience(workspace, cachedKind),
-    [workspace, cachedKind, listVersion],
+    () => deriveWorkspaceExperience(workspace, cachedKind, machine),
+    [workspace, cachedKind, listVersion, machine?.instanceId, machine?.localWorkspaceId, machine?.kind],
   )
 }

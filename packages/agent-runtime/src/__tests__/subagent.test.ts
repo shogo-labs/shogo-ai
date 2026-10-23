@@ -51,6 +51,7 @@ import {
   resolveSubagentModel,
   runSubagent,
   runSubagentsParallel,
+  BUILTIN_SUBAGENT_TYPES,
 } from '../subagent'
 
 afterEach(() => {
@@ -62,7 +63,7 @@ afterEach(() => {
 describe('getBuiltinSubagentConfig', () => {
   const cases = [
     'explore', 'general-purpose', 'code-reviewer', 'browser',
-    'browser_qa', 'channel', 'media', 'devops',
+    'browser_qa', 'channel', 'media',
   ] as const
 
   for (const name of cases) {
@@ -76,6 +77,17 @@ describe('getBuiltinSubagentConfig', () => {
 
   it('returns null for an unknown type', () => {
     expect(getBuiltinSubagentConfig('mystery', {} as any, [])).toBeNull()
+  })
+
+  it('devops is no longer a built-in type (SHO-184)', () => {
+    expect(getBuiltinSubagentConfig('devops', {} as any, [])).toBeNull()
+  })
+
+  it('BUILTIN_SUBAGENT_TYPES matches the switch exactly', () => {
+    for (const name of BUILTIN_SUBAGENT_TYPES) {
+      expect(getBuiltinSubagentConfig(name, {} as any, [])).not.toBeNull()
+    }
+    expect([...BUILTIN_SUBAGENT_TYPES].sort()).toEqual([...cases].sort())
   })
 
   it('explore is auto + 100 turns + readonly tool set', () => {
@@ -439,6 +451,50 @@ function makeCtx(over: Partial<any> = {}): any {
     ...over,
   }
 }
+
+describe('runSubagent — a failed run carries its cause', () => {
+  it('keeps the loop error with the empty response instead of dropping it', async () => {
+    runAgentLoopImpl = async () => ({
+      text: '',
+      toolCalls: [],
+      iterations: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      newMessages: [],
+      effectiveModelId: 'parent-model',
+      error: new Error('provider 400: bad tool schema'),
+    })
+    const cfg = { name: 'browser_qa', description: 'check it', systemPrompt: 's' } as any
+
+    const result = await runSubagent(cfg, 'check the page', makeCtx(), [])
+
+    expect(result.responseEmpty).toBe(true)
+    expect(result.error?.message).toBe('provider 400: bad tool schema')
+  })
+
+  it('a thrown run reports its message as the error', async () => {
+    runAgentLoopImpl = async () => {
+      throw new Error('browser tool missing')
+    }
+    const cfg = { name: 'browser_qa', description: 'check it', systemPrompt: 's' } as any
+
+    const result = await runSubagent(cfg, 'check the page', makeCtx(), [])
+
+    expect(result.error?.message).toBe('browser tool missing')
+    expect(result.responseText).toContain('browser tool missing')
+  })
+
+  it('a successful run carries no error', async () => {
+    runAgentLoopImpl = async () => ({
+      text: 'all good', toolCalls: [], iterations: 1, inputTokens: 1, outputTokens: 1,
+      cacheReadTokens: 0, cacheWriteTokens: 0, newMessages: [], effectiveModelId: 'parent-model',
+    })
+    const cfg = { name: 'explore', description: 'look', systemPrompt: 's' } as any
+    expect((await runSubagent(cfg, 'p', makeCtx(), [])).error).toBeUndefined()
+  })
+})
 
 describe('runSubagent — success paths', () => {
   beforeEach(() => {

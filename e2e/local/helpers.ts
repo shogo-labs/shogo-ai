@@ -32,12 +32,17 @@ export async function coveredBy(target: Locator): Promise<string | null> {
  * Local mode opens the Personal workspace (the companion chat); the project
  * home ("What are we building") lives in the Team workspace. Make the team
  * workspace active and land on its home.
+ *
+ * The home is `/home` since SHO-4: `/` is now the workspace agent chat with a
+ * fresh session for a team workspace.
  */
 export async function openTeamHome(page: Page, timeout = 30_000): Promise<void> {
   await page.goto("/")
-  const home = page.getByText("What are we building", { exact: false }).first()
-  await page.getByRole("navigation", { name: "App sidebar" }).or(home).first().waitFor({ state: "visible", timeout })
-  if (await home.isVisible().catch(() => false)) return
+  await page
+    .getByRole("navigation", { name: "App sidebar" })
+    .or(page.getByRole("tab", { name: "Sign Up" }))
+    .first()
+    .waitFor({ state: "visible", timeout })
 
   const teamId = await page.evaluate(async (apiBase) => {
     const res = await fetch(`${apiBase}/api/workspaces`, { credentials: "include" })
@@ -51,8 +56,8 @@ export async function openTeamHome(page: Page, timeout = 30_000): Promise<void> 
     localStorage.setItem("shogo:active-workspace-id", id)
     localStorage.setItem("shogo:active-workspace-kind", "team")
   }, teamId)
-  await page.goto("/")
-  await home.waitFor({ state: "visible", timeout })
+  await page.goto("/home")
+  await page.getByText("What are we building", { exact: false }).first().waitFor({ state: "visible", timeout })
 }
 
 /** Start a project from the home composer and wait for its (mocked) bootstrap turn. */

@@ -5,6 +5,7 @@
 // to license or bundle.
 
 import { islandSessionKey, type IslandMeetingState, type IslandSnapshot } from "./types"
+import { scheduleTones, sharedAudioContext, type Tone } from "../../lib/notification-sound"
 
 export type IslandSound = "needs-you" | "done" | "error" | "sent"
 
@@ -42,9 +43,7 @@ export function meetingSoundForTransition(
   return null
 }
 
-type Note = { frequency: number; start: number; duration: number; type?: OscillatorType }
-
-const SOUNDS: Record<IslandSound, Note[]> = {
+const SOUNDS: Record<IslandSound, Tone[]> = {
   "needs-you": [
     { frequency: 880, start: 0, duration: 0.14 },
     { frequency: 1318.5, start: 0.12, duration: 0.22 },
@@ -60,35 +59,10 @@ const SOUNDS: Record<IslandSound, Note[]> = {
   sent: [{ frequency: 1567.98, start: 0, duration: 0.07 }],
 }
 
-let context: AudioContext | null = null
-
-function audioContext(): AudioContext | null {
-  if (typeof window === "undefined") return null
-  const Ctor =
-    window.AudioContext ??
-    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-  if (!Ctor) return null
-  context ??= new Ctor()
-  return context
-}
-
 export function playIslandSound(sound: IslandSound, volume: number): void {
-  const ctx = audioContext()
-  if (!ctx || volume <= 0) return
+  if (volume <= 0) return
+  const ctx = sharedAudioContext()
+  if (!ctx) return
   if (ctx.state === "suspended") void ctx.resume().catch(() => undefined)
-  const peak = Math.min(1, volume) * 0.18
-  const now = ctx.currentTime + 0.01
-  for (const note of SOUNDS[sound]) {
-    const osc = ctx.createOscillator()
-    const gain = ctx.createGain()
-    osc.type = note.type ?? "sine"
-    osc.frequency.value = note.frequency
-    const start = now + note.start
-    gain.gain.setValueAtTime(0, start)
-    gain.gain.linearRampToValueAtTime(peak, start + 0.012)
-    gain.gain.exponentialRampToValueAtTime(0.0001, start + note.duration)
-    osc.connect(gain).connect(ctx.destination)
-    osc.start(start)
-    osc.stop(start + note.duration + 0.02)
-  }
+  scheduleTones(ctx, SOUNDS[sound], Math.min(1, volume) * 0.18)
 }

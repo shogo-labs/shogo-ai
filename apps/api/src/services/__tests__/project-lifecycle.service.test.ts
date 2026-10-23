@@ -2,6 +2,9 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { setDockerClassOverride } from '../../lib/runtime-class-setting'
 
 // ─── @shogo/shared-runtime mock ────────────────────────────────────────
@@ -42,6 +45,16 @@ mock.module('../../generated/project.hooks', () => ({
   },
 }))
 
+// ─── git-repo-store mock (durable repo probe, dynamic import) ──────────
+let durableRepoAnswer = false
+const durableRepoCalls: string[] = []
+mock.module('../git-repo-store', () => ({
+  durableRepoExists: async (projectId: string) => {
+    durableRepoCalls.push(projectId)
+    return durableRepoAnswer
+  },
+}))
+
 // ─── lib/prisma mock ────────────────────────────────────────────────────
 interface FakeProject {
   id: string
@@ -56,6 +69,7 @@ interface FakeProject {
 
 const projects = new Map<string, FakeProject>()
 const agentConfigs = new Map<string, Record<string, unknown>>()
+const projectFolders: Array<{ id: string; projectId: string; path: string; isPrimary: boolean }> = []
 let createIdCounter = 0
 
 const prismaStub = {
@@ -115,13 +129,27 @@ const prismaStub = {
       return data
     },
   },
+  projectFolder: {
+    findMany: async ({ where }: { where: { projectId: string } }) =>
+      projectFolders.filter((folder) => folder.projectId === where.projectId),
+    create: async ({ data }: { data: { projectId: string; path: string; isPrimary?: boolean } }) => {
+      const row = {
+        id: `folder_${++createIdCounter}`,
+        projectId: data.projectId,
+        path: data.path,
+        isPrimary: data.isPrimary === true,
+      }
+      projectFolders.push(row)
+      return row
+    },
+  },
 }
 
 mock.module('../../lib/prisma', () =>
   require('../../__tests__/helpers/prisma-mock-exports').withPrismaExports({ prisma: prismaStub }),
 )
 
-const { createProjectInWorkspace, configureProject, ProjectLifecycleError } = await import(
+const { createProjectInWorkspace, configureProject, readProjectConfig, ProjectLifecycleError } = await import(
   '../project-lifecycle.service'
 )
 
@@ -145,7 +173,10 @@ function seedProject(overrides: Partial<FakeProject> = {}): FakeProject {
 beforeEach(() => {
   projects.clear()
   agentConfigs.clear()
+  projectFolders.length = 0
   createIdCounter = 0
+  durableRepoAnswer = false
+  durableRepoCalls.length = 0
   tierGateAnswer = { allowed: true, currentSize: 'micro', requiredSize: null }
   tierGateCalls.length = 0
   paidAnswer = true
@@ -283,6 +314,79 @@ describe('configureProject — Docker-class minimum compute tier', () => {
       name: 'ProjectLifecycleError',
       code: 'not_found',
     })
+  })
+})
+
+describe('configureProject — workingMode flip (managed → external)', () => {
+  let workspacesDir: string
+  let previousWorkspacesDir: string | undefined
+
+  beforeEach(() => {
+    workspacesDir = mkdtempSync(join(tmpdir(), 'sho-ws-'))
+    previousWorkspacesDir = process.env.WORKSPACES_DIR
+    process.env.WORKSPACES_DIR = workspacesDir
+  })
+
+  afterEach(() => {
+    if (previousWorkspacesDir === undefined) delete process.env.WORKSPACES_DIR
+    else process.env.WORKSPACES_DIR = previousWorkspacesDir
+    rmSync(workspacesDir, { recursive: true, force: true })
+  })
+
+  it('adds a primary folder at the workspace the project already uses and leaves the files alone', async () => {
+    const p = seedProject()
+    const projectDir = join(workspacesDir, p.id)
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(join(projectDir, 'AGENTS.md'), '# keep me\n')
+
+    const result = await configureProject(p.id, { workingMode: 'external' })
+
+    expect(result.workingMode).toBe('external')
+    expect(projects.get(p.id)!.workingMode).toBe('external')
+    // The folder row points at the directory the project already renders
+    // from — nothing was moved, copied or re-cloned.
+    expect(projectFolders).toEqual([
+      { id: expect.any(String), projectId: p.id, path: projectDir, isPrimary: true },
+    ])
+    expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf-8')).toBe('# keep me\n')
+    // A later read of the config reflects the new mode.
+    expect((await readProjectConfig(p.id)).workingMode).toBe('external')
+  })
+
+  it('is idempotent: re-applying external keeps one primary folder', async () => {
+    const p = seedProject()
+    await configureProject(p.id, { workingMode: 'external' })
+    await configureProject(p.id, { workingMode: 'external' })
+    expect(projectFolders).toHaveLength(1)
+    expect(durableRepoCalls).toHaveLength(1)
+  })
+
+  it('refuses external → managed with a typed error', async () => {
+    const p = seedProject({ workingMode: 'external' })
+    await expect(configureProject(p.id, { workingMode: 'managed' })).rejects.toMatchObject({
+      name: 'ProjectLifecycleError',
+      code: 'working_mode_flip_not_supported',
+    })
+    expect(projects.get(p.id)!.workingMode).toBe('external')
+  })
+
+  it('rejects an unknown workingMode literal', async () => {
+    const p = seedProject()
+    await expect(
+      configureProject(p.id, { workingMode: 'cloud' as unknown as 'external' }),
+    ).rejects.toMatchObject({ code: 'invalid_working_mode' })
+    expect(projectFolders).toHaveLength(0)
+  })
+
+  it('refuses the flip when the project has a durable git repo, without writing folder rows', async () => {
+    durableRepoAnswer = true
+    const p = seedProject()
+    await expect(configureProject(p.id, { workingMode: 'external' })).rejects.toMatchObject({
+      name: 'ProjectLifecycleError',
+      code: 'durable_repo_external_flip',
+    })
+    expect(projectFolders).toHaveLength(0)
+    expect(projects.get(p.id)!.workingMode).toBe('managed')
   })
 })
 

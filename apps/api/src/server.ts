@@ -27,6 +27,7 @@ import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-re
 import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
+import { workspaceExportRoutes } from './routes/workspace-export'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
@@ -34,7 +35,7 @@ import { workBoardRoutes } from './routes/work-boards'
 // local mode too. Loading them via server-cloud-deps left local 404ing.
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { costAnalyticsRoutes } from './routes/cost-analytics'
-import { AGENT_REPLY_TIMEOUT_MS, configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
+import { configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
 import { registerBuiltInChatProviders } from './services/chat-providers'
 import { chatProviderRoutes } from './routes/chat-providers'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
@@ -43,7 +44,9 @@ import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
 import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-event-delivery-dispatch'
 import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
+import { createInviteLinkAfterAccept } from './routes/invite-link-after-accept'
 import { inviteLinkRoutes } from './routes/invite-links'
+import { invitationInfoRoutes } from './routes/invitation-info'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
@@ -84,7 +87,9 @@ import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from './routes/chat-message-feedback'
 import { createChatSessionForkRoutes } from './routes/chat-session-fork'
 import { chatQueuedMessageActionsRoutes } from './routes/chat-queued-message-actions'
+import { agentWakeRoutes } from './routes/agent-wakes'
 import { toolsProxyRoutes } from './routes/tools-proxy'
+import { socialRelayRoutes, socialRoutes, socialWebhookRoutes } from './routes/social'
 import {
   generateTitleCompletion,
   setTitleGenerationModelId,
@@ -141,6 +146,7 @@ import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
 import { localLogsRoutes } from './routes/local-logs'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
+import { publishedSiteSweepRoutes } from './routes/internal-published-sites'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
 import { DOCKER_CLASS_SETTING_KEY, setDockerClassOverride, loadDockerClassOverride } from './lib/runtime-class-setting'
@@ -151,12 +157,17 @@ import {
 } from './lib/workspace-compute-budget'
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { historyRoutes } from './routes/history'
+// Hosted voice media — imported directly (not via the cloud-only island) so
+// desktop/local mode serves /api/voice/tts and /api/voice/music too.
+import { voiceMediaRoutes } from './routes/voice-media'
+import { chatMentionRoutes } from './routes/chat-mentions'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
-import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
+import { createRuntimeManager, resolveRuntimeMaxCount, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
+import { deployedAppVersionOrUnknown } from './lib/app-version'
 // Auth middleware for generated routes
 import {
   authMiddleware,
@@ -172,6 +183,7 @@ import {
   isTokenGatedThumbnailPath,
 } from './middleware/api-auth-gate'
 import { homeRegionWriteProxy } from './middleware/home-region-router'
+import { machineWorkspaceWriteGuard } from './lib/machine-workspace'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
 
@@ -214,8 +226,6 @@ const trialService: any = cloud.trialService ?? {}
 const signupCreditService: any = cloud.signupCreditService ?? {}
 const sendInvitationEmail: any = cloud.sendInvitationEmail ?? (async () => {})
 const sendProjectInviteEmail: any = cloud.sendProjectInviteEmail ?? (async () => {})
-const sendInviteAcceptedEmail: any = cloud.sendInviteAcceptedEmail ?? (async () => {})
-const sendMemberJoinedEmail: any = cloud.sendMemberJoinedEmail ?? (async () => {})
 const sendMemberRemovedEmail: any = cloud.sendMemberRemovedEmail ?? (async () => {})
 const sendAccountDeletedEmail: any = cloud.sendAccountDeletedEmail ?? (async () => {})
 const identifyUser: any = cloud.identifyUser ?? (async () => {})
@@ -246,6 +256,7 @@ const evalAdminRoutes: any = cloud.evalAdminRoutes ?? emptyRouter
 const evalInternalRoutes: any = cloud.evalInternalRoutes ?? emptyRouter
 const cliAuthRoutes: any = cloud.cliAuthRoutes ?? emptyRouter
 const instanceRoutes: any = cloud.instanceRoutes ?? emptyRouter
+const machineRoutes: any = cloud.machineRoutes ?? emptyRouter
 const authenticateInstanceWs: any = cloud.authenticateInstanceWs ?? (async () => false)
 const handleInstanceWsOpen: any = cloud.handleInstanceWsOpen ?? (() => {})
 const handleInstanceWsMessage: any = cloud.handleInstanceWsMessage ?? (() => {})
@@ -356,15 +367,17 @@ async function verifyProjectAccess(
  * Get or create the RuntimeManager singleton.
  *
  * Configurable via environment variables:
- * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: 10)
+ * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: preview + background pools + headroom,
+ *   see resolveRuntimeMaxCount)
  * - RUNTIME_DOMAIN_SUFFIX: Domain suffix for URLs (default: localhost)
  * - WORKSPACES_DIR: Directory containing project workspaces (default: PROJECT_ROOT/workspaces)
  */
 function getRuntimeManager(): IRuntimeManager {
   if (!runtimeManager) {
     const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    const maxRuntimes = resolveRuntimeMaxCount()
     runtimeManager = createRuntimeManager({
-      maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
+      maxRuntimes,
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
       templateDir: '_template',
@@ -380,7 +393,7 @@ function getRuntimeManager(): IRuntimeManager {
     setRuntimeManager(runtimeManager as ReturnType<typeof createRuntimeManager>)
     console.log('[Runtime] RuntimeManager initialized:', {
       portRange: '37100-37900 (random)',
-      maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
+      maxRuntimes,
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
     })
@@ -833,6 +846,12 @@ app.use('/api/projects/:projectId/*', pinProjectRoutesToHomeRegion({ skip: isPro
 // project routes have already cached c.get('workspaceId').
 app.use('/api/*', homeRegionWriteProxy)
 
+// A workspace whose rows live on a paired desktop is read-only here: the desktop
+// is its only writer, so a cloud write that names one is refused with
+// `409 machine_workspace_write_via_tunnel` instead of silently diverging from
+// the machine the user is looking at (SHO-185).
+app.use('/api/*', machineWorkspaceWriteGuard())
+
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
 app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
@@ -850,6 +869,9 @@ const healthHandler = async (c: any) => {
   const ok = !degraded && redis.healthy
   const body = {
     ok,
+    // The release this pod runs. Deploys fail their rollout gate on 0.0.0, so
+    // admin analytics can always compare installs against the deployed tag.
+    version: deployedAppVersionOrUnknown(),
     redis: { healthy: redis.healthy, latencyMs: redis.latencyMs, degraded },
   }
   return c.json(body, ok ? 200 : 503)
@@ -859,7 +881,7 @@ app.get('/health', healthHandler)
 
 // Version endpoint for frontend update detection
 app.get('/api/version', (c) => c.json({
-  version: process.env.APP_VERSION || '0.0.0',
+  version: deployedAppVersionOrUnknown(),
   buildHash: process.env.BUILD_HASH || 'dev',
 }))
 
@@ -1151,6 +1173,8 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     { id: 'openai',     envKey: 'OPENAI_API_KEY' },
     { id: 'google',     envKey: 'GOOGLE_API_KEY' },
     { id: 'openrouter', envKey: 'OPENROUTER_API_KEY' },
+    { id: 'tripo',      envKey: 'TRIPO_API_KEY' },
+    { id: 'higgsfield', envKey: 'HIGGSFIELD_API_KEY' },
   ] as const
 
   const PROVIDER_BY_ID: Map<string, string> = new Map(PROVIDER_KEYS.map((p) => [p.id, p.envKey]))
@@ -1592,6 +1616,8 @@ app.route('/api', cliAuthRoutes())
 
 // Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
+// A paired desktop's own workspaces, owner-only (`/api/machines…`).
+app.route('/api', machineRoutes())
 app.route('/api', remoteAuditRoutes())
 app.route('/api', mobilePushRoutes())
 app.route('/api', appInstallRoutes())
@@ -1605,12 +1631,17 @@ app.route('/api', workspaceAgentRoutes({
   authorize: sessionAuthorize(getAuthUserId),
   saveAgentAvatar: cloud.saveAgentAvatar,
 }))
+// Workspace-level export/import (one archive of every model + every project's
+// files). Mounted before the rest of the `/api/workspaces` routes so
+// `POST /api/workspaces/import` is never shadowed by a `:workspaceId` route.
+app.route('/api/workspaces', workspaceExportRoutes())
 app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
 app.route('/api', sharedMeetingRoutes())
 // Workspace channels (team chat with @mentionable agents).
 configureConversationAgentDispatcher({ runtimeManager: getRuntimeManager() })
-// Other pods may still be writing replies; only settle those past the longest a run can take.
-void settleOrphanedAgentReplies(AGENT_REPLY_TIMEOUT_MS + 60_000).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
+// A reply another pod is still writing keeps its turn heartbeated, so the
+// heartbeat — not a fixed age — is what tells a dead run from a live one.
+void settleOrphanedAgentReplies(0).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
 registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
@@ -1629,10 +1660,32 @@ startChannelWorkers()
 // Forward chat realtime events and presence to sibling regions (no-op in single-region mode).
 startConversationRelay()
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
 app.route('/api', slackAgentRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
 startTunnelHeartbeat()
+
+// A blocked event loop here is invisible from the outside except as a tunnel
+// dropping with 1006 and `/health` missing its probes — which is how the SHO-185
+// incident looked. Log it at the moment the stall ends, with the size of the
+// stall, so the next one is diagnosable. `SHOGO_EVENT_LOOP_LAG_MS=0` disables it.
+if (process.env.SHOGO_EVENT_LOOP_LAG_MS !== '0') {
+  void import('./lib/event-loop-lag').then(({ startEventLoopLagMonitor }) => {
+    startEventLoopLagMonitor({
+      thresholdMs: Number(process.env.SHOGO_EVENT_LOOP_LAG_THRESHOLD_MS) || undefined,
+    })
+  }).catch(() => {})
+}
+
+// SHO-105 / #1597: checkpoint repos seeded before this build still carry
+// `.shogo/sessions.db` (+ its live WAL) in their history and in `.git/lfs`.
+// `repairCheckpointRepo` rewrites the refs without touching a file on disk and
+// prunes the orphaned LFS objects; the marker it writes makes every later boot a
+// no-op. Off the readiness path, and killable with SHOGO_SKIP_CHECKPOINT_REPAIR=1.
+void import('./services/checkpoint-repo-repair.service')
+  .then((m) => m.startCheckpointRepoRepair(WORKSPACES_DIR))
+  .catch((err) => console.warn('[checkpoint-repair] could not start:', err?.message ?? err))
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
 app.get('/api/warm-pool/status', async (c) => {
@@ -5840,6 +5893,30 @@ app.post('/api/projects/:projectId/chat/stop', async (c) => {
   return router.fetch(newReq)
 })
 
+// POST /api/projects/:projectId/chat/compact - Summarize this chat's context now
+// (the context-usage dock's "Summarize now"). The inner router under
+// `projectChatRoutes` is only reachable through explicit forwarders, so this
+// registration is what makes the route exist at all.
+app.post('/api/projects/:projectId/chat/compact', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  // Region-pin: the session's history lives in the runtime that owns the turn.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
+
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/compact`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
 // POST /api/projects/:projectId/chat/wake - Wake up a scaled-to-zero pod
 app.post('/api/projects/:projectId/chat/wake', async (c) => {
   const authResult = await requireProjectAuth(c)
@@ -8770,11 +8847,26 @@ app.route('/api/v1', publicApi)
 // Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
 const toolsProxy = toolsProxyRoutes()
 app.route('/api', toolsProxy)
+// Social management (Zernio). People talk to the workspace-scoped routes; a
+// desktop forwards its provider calls to the relay, which is the only place
+// the master Zernio key is used.
+app.route('/api', socialRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', socialRelayRoutes())
+// Zernio's webhooks (comments, DMs, account health). Cloud only: the desktop
+// half of the relay applies local-scope events in its own DB.
+app.route('/api', socialWebhookRoutes())
 
 // EZ Mode / voice translator routes (session-auth'd via authMiddleware
 // above). Keeps ELEVENLABS_API_KEY on the server and serves the shared
 // translator persona for both voice (signed URL) and text (streaming chat).
 app.route('/api', voiceRoutes())
+
+// Hosted voice media (`/api/voice/tts`, `/api/voice/music`). Mounted
+// unconditionally — unlike `voiceRoutes()` this module has no cloud-only
+// imports, so desktop (`SHOGO_LOCAL_MODE`) serves the same endpoints and the
+// SDK's runtime-token proxy works there too. Without ELEVENLABS_API_KEY the
+// handlers answer 503 with a specific message.
+app.route('/api', voiceMediaRoutes())
 
 // Public streaming chat route — text-only sibling of the voice signed-
 // URL endpoint. Lets external SDK consumers (`useShogoChat`) drive the
@@ -8929,6 +9021,13 @@ app.route('/api/internal/e2e', metalE2eRoutes())
 // bearer-token auth (METAL_REGISTER_TOKEN / SHOGO_INTERNAL_SECRET). See
 // apps/api/src/routes/metal.ts and lib/metal-warm-pool-controller.ts.
 app.route('/api/internal/metal', metalRoutes())
+
+// Orphaned published-site reconcile sweep (SHO-138). Mounted under
+// /api/internal/published-sites so it inherits the /api/internal/* auth-skip;
+// every handler requires the PUBLISHED_SITE_SWEEP_SECRET shared secret and is a
+// dry run unless it is explicitly asked to apply. See
+// apps/api/src/routes/internal-published-sites.ts.
+app.route('/api/internal/published-sites', publishedSiteSweepRoutes())
 
 // User/profile routes are shared by the local and cloud composers.
 app.route('/api', userProfileRoutes())
@@ -9143,61 +9242,9 @@ app.route('/api', inviteLinkRoutes({
 // Accept invite link (public-ish - requires auth but not membership)
 app.route('/api', inviteLinkAcceptRoutes({
   resolveUserId: (c) => (c.get('auth') as any)?.userId ?? null,
-  afterAccept: async ({ link, userId, workspaceId: resolvedWorkspaceId, member }) => {
-    // Active-seat billing: workspace-level invite-link acceptance must bump
-    // the Stripe seat quantity (project-only memberships don't bill seats).
-    if (resolvedWorkspaceId && !member.projectId) {
-      billingService.syncSeatsFromMembership(resolvedWorkspaceId).catch((err: any) =>
-        console.error('[Billing] invite-link accept seat sync failed:', err.message ?? err),
-      )
-    }
-
-    // Send notification emails (non-blocking — errors are logged internally)
-    const baseUrl = getFrontendUrl()
-    const [acceptingUser, workspace, project] = await Promise.all([
-      prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } }),
-      resolvedWorkspaceId ? prisma.workspace.findUnique({ where: { id: resolvedWorkspaceId }, select: { name: true } }) : null,
-      link.projectId ? prisma.project.findUnique({ where: { id: link.projectId }, select: { name: true } }) : null,
-    ])
-    const acceptingName = acceptingUser?.name || acceptingUser?.email || 'Someone'
-    const acceptingEmail = acceptingUser?.email || ''
-    const resourceName = project?.name || workspace?.name || 'your workspace'
-    const resourceType = link.projectId ? 'project' : 'workspace'
-    const workspaceName = workspace?.name || 'your workspace'
-
-    if (link.createdBy) {
-      const creator = await prisma.user.findUnique({ where: { id: link.createdBy }, select: { email: true } })
-      if (creator?.email) {
-        await sendInviteAcceptedEmail({
-          to: creator.email,
-          inviteeName: acceptingName,
-          inviteeEmail: acceptingEmail,
-          resourceName,
-          resourceType,
-          dashboardUrl: baseUrl,
-        })
-      }
-    }
-
-    if (resolvedWorkspaceId) {
-      const owners = await prisma.member.findMany({
-        where: { workspaceId: resolvedWorkspaceId, role: 'owner', projectId: null, userId: { not: userId } },
-        include: { user: { select: { email: true } } },
-      })
-      for (const owner of owners) {
-        if (owner.user?.email) {
-          await sendMemberJoinedEmail({
-            to: owner.user.email,
-            memberName: acceptingName,
-            memberEmail: acceptingEmail,
-            workspaceName,
-            role: link.role,
-            dashboardUrl: baseUrl,
-          })
-        }
-      }
-    }
-  },
+  afterAccept: createInviteLinkAfterAccept({
+    syncSeats: (workspaceId) => billingService.syncSeatsFromMembership(workspaceId),
+  }),
 }))
 
 // Get invite link info (for accept page - minimal auth)
@@ -9226,12 +9273,22 @@ app.get('/api/invite-links/:token/info', async (c) => {
   })
 })
 
+// Get invitation info for the emailed accept link (`/invitations/<id>/accept`).
+// Public on purpose — the page renders before the invitee signs in — and the
+// payload carries no email address. Mounted BEFORE the generated routers so
+// `/:id/info` can't fall through to the generated `GET /:id` (which requires
+// an authenticated session and the invitation to belong to the caller).
+app.route('/api/invitations', invitationInfoRoutes())
+
 // Custom chat-message extension endpoints (truncate-from, etc.).
 // MUST be mounted BEFORE the generated routes so Hono matches the
 // more specific `/:id/truncate-from` here instead of falling through
 // to the generated `/:id` PATCH/DELETE handlers in chat-message.routes.ts.
 app.route('/api/chat-messages', createChatMessageEditRoutes())
 app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
+// The queue of team-chat wakes waiting behind a live reply: send one now, or
+// take it off the queue (SHO-167). No generated router claims `/agent-wakes`.
+app.route('/api', agentWakeRoutes({ resolveUserId: getAuthUserId }))
 
 // Turn feedback (thumbs up/down) — PUT/DELETE /:id/feedback on a message,
 // GET /:id/feedback on a session (the caller's own reactions, keyed by
@@ -9335,6 +9392,20 @@ async function gracefulShutdown(signal: string) {
   stopChannelWorkers()
   stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
+
+  // Hand chat turns this pod is following to another replica's reattach job
+  // before the trackers die with the process.
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    try {
+      const { stopChatTurnReattachJob } = await import('./jobs/chat-turn-reattach')
+      await stopChatTurnReattachJob()
+      const { releaseTurnsForHandoff } = await import('./services/chat-turn-state.service')
+      const handedOff = await releaseTurnsForHandoff()
+      if (handedOff > 0) console.log(`[Server] Handed off ${handedOff} active chat turn(s)`)
+    } catch (err: any) {
+      console.error('[Server] Chat turn handoff failed:', err?.message ?? err)
+    }
+  }
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain
   if (isKubernetes()) {
@@ -9632,6 +9703,7 @@ import {
   isPtyPodBridgeData,
   type PtyPodBridgeData,
 } from './lib/pty-pod-bridge'
+import { countTerminalSession } from './lib/terminal-session-pin'
 const ptyPodBridge = createPtyPodBridgeHandlers()
 
 // Match a path like `/api/projects/<projectId>/ports/<port>/tunnel`.
@@ -9750,6 +9822,7 @@ export default {
           const podUrl = await resolveRuntimeBaseUrl(projectId)
           const data: PtyPodBridgeData = buildPtyPodBridgeData({
             podUrl,
+            projectId,
             sessionId,
             since,
             runtimeToken: await deriveProjectRuntimeToken(projectId),
@@ -9853,8 +9926,10 @@ export default {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
       else if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamOpen(ws)
-      else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
-      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
+      else if (isPtyPodBridgeData(ws.data)) {
+        countTerminalSession(getRuntimeManager(), ws.data, 1)
+        ptyPodBridge.open(ws)
+      } else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
       else handleInstanceWsOpen(ws)
     },
     message(ws: any, msg: any) {
@@ -9869,8 +9944,10 @@ export default {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
       else if (isLiveRelayData(ws.data)) liveRelayClose(ws)
       else if (isMeetingStreamSocketData(ws.data)) meetingStreamClose(ws)
-      else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
-      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
+      else if (isPtyPodBridgeData(ws.data)) {
+        countTerminalSession(getRuntimeManager(), ws.data, -1)
+        ptyPodBridge.close(ws, code, reason)
+      } else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)
     },
   },
@@ -9984,9 +10061,18 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
   setTimeout(async () => {
     try {
       const { resolveWorkspaceRuntimeUrl } = await import('./lib/resolve-workspace-runtime-url')
-      const previewMax = parseInt(process.env.WORKSPACE_PREVIEW_MAX || '3', 10)
-      const take = Number.isFinite(previewMax) && previewMax > 0 ? previewMax : 3
+      const { resolveWorkspacePreviewMax } = await import('./lib/runtime/manager')
+      // The SAME cap the manager evicts down to. Reading
+      // `WORKSPACE_PREVIEW_MAX || '3'` here instead warmed more workspaces than
+      // the manager keeps on a `low`-tier host (cap 1), so boot guaranteed an
+      // eviction right after boot — and the eviction could land on the runtime
+      // hosting the user's terminal (SHO-107).
+      const previewMax = resolveWorkspacePreviewMax()
+      const take = previewMax
       const workspaces = await prisma.workspace.findMany({
+        // A machine workspace's runtime is on the desktop (SHO-185): warming it
+        // here would spawn a runtime for a workspace this process cannot serve.
+        where: { machineInstanceId: null },
         orderBy: { updatedAt: 'desc' },
         take,
         select: { id: true },
@@ -10003,7 +10089,10 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
           )
       }
 
-      const projectCount = Math.max(0, parseInt(process.env.DESKTOP_STARTUP_PREWARM_PROJECTS || '1', 10))
+      const projectCount = Math.min(
+        Math.max(0, parseInt(process.env.DESKTOP_STARTUP_PREWARM_PROJECTS || '1', 10)),
+        previewMax,
+      )
       if (projectCount > 0) {
         const projects = await prisma.project.findMany({
           orderBy: { updatedAt: 'desc' },
@@ -10044,6 +10133,19 @@ if (isKubernetes()) {
   }, 10_000)
 }
 
+// Reattach chat turns whose tracking API pod died or drained mid-stream.
+// Desktop runs one process whose runtimes stop with it, so there is nothing to reattach.
+if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+  setTimeout(async () => {
+    try {
+      const { startChatTurnReattachJob } = await import('./jobs/chat-turn-reattach')
+      startChatTurnReattachJob()
+    } catch (err: any) {
+      console.error('[ChatTurnReattach] Failed to start (non-fatal):', err?.message ?? err)
+    }
+  }, 10_000)
+}
+
 // Close meeting recording drafts whose recorder went away (closed tab, crash).
 setTimeout(async () => {
   try {
@@ -10066,6 +10168,26 @@ setTimeout(async () => {
     } catch (err: any) {
       console.error(
         '[VoiceRebill] failed to schedule monthly rebill (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Social account monthly meter — `social_account_monthly`. Daily on purpose:
+// the per-account watermark makes an extra tick a no-op, and a monthly-only job
+// misses the 1st after any deploy window. Wrapped in
+// `withGlobalJobLock('social-account-monthly')` so one region charges.
+{
+  ;(async () => {
+    try {
+      const { startSocialAccountMonthlyCron } = await import(
+        './jobs/social-account-monthly'
+      )
+      startSocialAccountMonthlyCron()
+    } catch (err: any) {
+      console.error(
+        '[SocialAccountMonthly] failed to schedule the account meter (non-fatal):',
         err?.message ?? err,
       )
     }
@@ -10127,6 +10249,23 @@ setTimeout(async () => {
     } catch (err: any) {
       console.error(
         '[Affiliate] failed to schedule cron jobs (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Cards that know their PR — sweeps stale PR links (a dropped webhook, a repo
+// connected with a personal token rather than the App) so a card never sits on
+// yesterday's checks. Wrapped in withGlobalJobLock: one region per tick.
+{
+  ;(async () => {
+    try {
+      const { startSyncPrLinksCron } = await import('./jobs/sync-pr-links')
+      startSyncPrLinksCron()
+    } catch (err: any) {
+      console.error(
+        '[SyncPrLinks] failed to schedule sweep (non-fatal):',
         err?.message ?? err,
       )
     }

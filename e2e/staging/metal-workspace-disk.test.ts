@@ -36,7 +36,7 @@ const MIN_WORKSPACE_BYTES = 15 * 1024 ** 3
 const BIG_MIB = 6144
 
 async function ensureAuthenticated(page: Page, user: TestUser): Promise<void> {
-  await page.goto("/")
+  await page.goto("/home")
   const home = page.getByText("What are we building", { exact: false }).first()
   const signUpTab = page.getByRole("tab", { name: "Sign Up" })
   await Promise.race([

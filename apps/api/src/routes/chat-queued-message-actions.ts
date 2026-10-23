@@ -32,6 +32,21 @@ function hookError(c: any, result: any): Response {
   return c.json({ error: result.error }, status)
 }
 
+function parseJsonBody(value: string | null | undefined): Record<string, any> {
+  if (!value) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, any>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function taskNotificationOf(value: string | null | undefined): Record<string, any> {
+  const tn = parseJsonBody(value).taskNotification
+  return tn && typeof tn === 'object' ? (tn as Record<string, any>) : {}
+}
+
 /** Both actions reorder or dispatch the queue, so they need write access to the session. */
 async function getAuthorizedRow(c: any, id: string): Promise<any | Response> {
   const queued = await (prisma as any).chatQueuedMessage.findUnique({ where: { id }, select: { sessionId: true } })
@@ -168,6 +183,39 @@ export function chatQueuedMessageActionsRoutes(): Hono {
         },
       }, 502)
     }
+    void dispatchNext(row.sessionId)
+    const updated = await (prisma as any).chatQueuedMessage.findUnique({ where: { id } })
+    return c.json({ ok: true, data: updated })
+  })
+
+  router.post('/:id/resume', async (c) => {
+    const id = c.req.param('id')
+    const row = await getAuthorizedRow(c, id)
+    if (row instanceof Response) return row
+    if (row.kind !== 'task_notification') {
+      return c.json({ error: { code: 'bad_request', message: 'Only a waiting background update can be resumed' } }, 400)
+    }
+    if (row.status === 'dispatching') {
+      return c.json({ error: { code: 'busy', message: 'Queued message is already being dispatched' } }, 409)
+    }
+    // Resuming a paused wake is the same thing a person writing does, without
+    // writing: the row goes back to pending, and it is marked so the dispatcher
+    // does not re-pause it (`wakeRunReset` ends the run of automatic wakes that
+    // hit the cap). `consecutiveWakeWaits` reads the mark off the persisted
+    // message and starts counting again.
+    const body = { ...parseJsonBody(row.body), taskNotification: { ...taskNotificationOf(row.body), paused: false, wakeRunReset: true } }
+    const parts = (Array.isArray(parseJsonBody(row.parts) as unknown as any[])
+      ? (parseJsonBody(row.parts) as Array<Record<string, any>>)
+      : [{ type: 'text', text: row.content }]
+    ).map((part) =>
+      part?.type === 'data-task-notification'
+        ? { ...part, data: { ...(part.data ?? {}), wakeRunReset: true } }
+        : part,
+    )
+    await (prisma as any).chatQueuedMessage.update({
+      where: { id },
+      data: { status: 'pending', error: null, body: JSON.stringify(body), parts: JSON.stringify(parts) },
+    })
     void dispatchNext(row.sessionId)
     const updated = await (prisma as any).chatQueuedMessage.findUnique({ where: { id } })
     return c.json({ ok: true, data: updated })

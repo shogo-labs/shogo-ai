@@ -82,6 +82,18 @@ describe('tech-stack-registry', () => {
     expect(stackSeedsItself('python-data')).toBe(true)
     expect(stackSeedsItself('unity-game')).toBe(true)
     expect(stackSeedsItself('none')).toBe(true)
+    expect(stackSeedsItself('video-editor')).toBe(true)
+  })
+
+  test('video-editor: a web stack that seeds its own Remotion template', () => {
+    const entry = getStackEntry('video-editor')
+    expect(entry?.target).toBe('web')
+    expect(stackSeedsItself('video-editor')).toBe(true)
+    // No new target, so pod sizing / image / publish rules are untouched.
+    expect(isMobileTechStack('video-editor')).toBe(false)
+    expect(usesMetroBundler('video-editor')).toBe(false)
+    expect(entry?.vmClass).toBeUndefined()
+    expect(entry?.minimumInstanceSize).toBeUndefined()
   })
 
   test('stackSeedsItself: unknown / nullish ids return false (safe default)', () => {

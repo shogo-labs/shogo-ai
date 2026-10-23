@@ -20,6 +20,8 @@ export const CHANNEL_TOOL_NAMES = [
   'team_directory',
   'member_activity',
   'team_chat_question_secret',
+  'agent_runs_list',
+  'agent_run_stop',
 ] as const
 
 /** Working cards: `boardsEnabled`. */

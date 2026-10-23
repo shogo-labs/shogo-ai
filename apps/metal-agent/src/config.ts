@@ -217,6 +217,14 @@ export const config = {
    * 0 = no cap.
    */
   reapMaxPerPass: parseInt(env('METAL_REAP_MAX_PER_PASS', '20'), 10),
+  /**
+   * Rootfs rollout. A VM still on a superseded image is rotated onto the new
+   * one once it has been idle this long, whatever the idle-suspend window
+   * (always-on VMs included). 0 disables rotation.
+   */
+  rolloutIdleMs: parseInt(env('METAL_ROLLOUT_IDLE_MS', String(15 * 60_000)), 10),
+  /** A superseded VM that never goes idle is rotated anyway this long after its image was replaced, between agent turns. */
+  rolloutDeadlineMs: parseInt(env('METAL_ROLLOUT_DEADLINE_MS', String(24 * 60 * 60_000)), 10),
   /** The control plane's per-host VM cap (its METAL_MAX_VMS_PER_HOST). */
   maxVmsPerHost: parseInt(env('METAL_MAX_VMS_PER_HOST', '80'), 10),
   /** Above this % of `maxVmsPerHost` assigned, use the aggressive idle window regardless of region. */

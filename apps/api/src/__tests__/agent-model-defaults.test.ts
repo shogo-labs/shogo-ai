@@ -13,10 +13,13 @@ mock.module('../services/public-models.service', () => ({
   resolvePublicModelSync: (id: string) =>
     id === 'hoshi-1.0'
       ? { publicId: id, displayName: 'Hoshi 1.0', backingModelId: 'mimo-v2.5', enabled: true }
-      : null,
+      : id === 'hoshi-2-0'
+        ? { publicId: id, displayName: 'Hoshi 2.0', backingModelId: HOSHI_2_UUID, enabled: true }
+        : null,
 }))
 
 const OPUS_UUID = '8947628a-1415-4b3a-90c3-63f8a85c16b7'
+const HOSHI_2_UUID = 'a6f55a2b-2ef6-4543-8b78-9745af477ba2'
 
 // Like the real registry on the local/desktop entry point: empty until the
 // first load completes.
@@ -25,7 +28,9 @@ mock.module('../services/model-registry.service', () => ({
   getMergedModelEntrySync: (id: string) =>
     id === 'local-premium'
       ? { id, provider: 'local', tier: 'premium' }
-      : undefined,
+      : id === HOSHI_2_UUID
+        ? { id, provider: 'custom', tier: 'economy' }
+        : undefined,
   ensureModelRegistryLoaded: async () => {
     await Promise.resolve()
     registryLoaded = true
@@ -107,6 +112,12 @@ describe('agent model defaults', () => {
 
   test('keeps DB-defined local models accessible regardless of their tier', async () => {
     expect(await isModelAccessibleForWorkspace('ws-free', 'local-premium')).toBe(true)
+  })
+
+  test('uses DB tiers for admin-managed models the static catalog does not know', async () => {
+    expect(await isModelAccessibleForWorkspace('ws-free', HOSHI_2_UUID)).toBe(true)
+    expect(await isModelAccessibleForWorkspace('ws-free', 'hoshi-2-0')).toBe(true)
+    expect(await isModelAccessibleForWorkspace('ws-free', 'claude-sonnet-4-6')).toBe(false)
   })
 
   test('serializes all configured Auto tiers for the runtime gateway', () => {

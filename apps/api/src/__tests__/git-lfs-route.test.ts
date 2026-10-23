@@ -136,6 +136,23 @@ describe('git-lfs batch route — upload', () => {
     expect(body.objects[0].actions.verify.href).toContain('/git/info/lfs/objects/verify')
   })
 
+  it('points verify at the public API origin, not the in-cluster request host', async () => {
+    const saved = process.env.SHOGO_PUBLIC_API_URL
+    process.env.SHOGO_PUBLIC_API_URL = 'https://studio.example.test/'
+    try {
+      const res = await batch(makeApp({ userId: 'u', isAuthenticated: true }), 'p1', {
+        operation: 'upload', objects: [{ oid: OID_A, size: 10 }],
+      })
+      const body: any = await res.json()
+      expect(body.objects[0].actions.verify.href).toBe(
+        'https://studio.example.test/api/projects/p1/git/info/lfs/objects/verify',
+      )
+    } finally {
+      if (saved === undefined) delete process.env.SHOGO_PUBLIC_API_URL
+      else process.env.SHOGO_PUBLIC_API_URL = saved
+    }
+  })
+
   it('omits actions (dedup) when the object already exists', async () => {
     heads.set(OID_B, 10)
     const res = await batch(makeApp({ userId: 'u', isAuthenticated: true }), 'p1', {

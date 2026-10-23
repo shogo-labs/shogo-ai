@@ -106,6 +106,12 @@ export const TECH_STACK_REGISTRY: Record<string, StackRegistryEntry> = {
   'threejs-game': { id: 'threejs-game', target: 'web' },
   'phaser-game': { id: 'phaser-game', target: 'web' },
 
+  // Video (Remotion). `target: 'web'` because the canvas preview is the
+  // Remotion Player page the runtime serves from `dist/`; the stack's own
+  // `stack.json` declares `runtime.devServer: 'static-build'`, so no new
+  // target value (and therefore no new sizing/publish rules) is needed.
+  'video-editor': { id: 'video-editor', target: 'web', seedsOwnTemplate: true },
+
   // Mobile (Metro/Expo) — agent-runtime owns the seed.
   'expo-app': { id: 'expo-app', target: 'mobile', metro: true, seedsOwnTemplate: true },
   'expo-three': { id: 'expo-three', target: 'mobile', metro: true, seedsOwnTemplate: true },

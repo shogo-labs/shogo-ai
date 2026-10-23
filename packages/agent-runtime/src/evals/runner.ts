@@ -18,7 +18,14 @@ import type {
   ToolCallRecord,
   EvalMetrics,
   PromptBreakdown,
+  PerCallUsage,
+  CachePrefix,
+  CachePrefixProbe,
+  TurnUsage,
+  SubagentUsage,
 } from './types'
+import { mkdirSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 
 export interface EvalRunnerConfig {
   agentEndpoint: string
@@ -67,6 +74,12 @@ export interface ParsedAgentResponse {
   responseEmpty?: boolean
   /** Agent-loop iteration count reported by the gateway for this turn. */
   gatewayIterations?: number
+  /** Per-model-call usage from `data-usage.perCallUsage`. */
+  perCallUsage?: PerCallUsage[]
+  /** Prompt-cache prefix the turn was sent with, from `data-usage.prefix`. */
+  prefix?: CachePrefix
+  /** Usage frames emitted by subagent spawns during this turn. */
+  subagentUsage?: SubagentUsage[]
 }
 
 /**
@@ -234,6 +247,9 @@ async function parseSSEStream(
   let hitMaxTurns: boolean | undefined
   let responseEmpty: boolean | undefined
   let gatewayIterations = 0
+  let perCallUsage: PerCallUsage[] | undefined
+  let prefix: CachePrefix | undefined
+  const subagentUsage: SubagentUsage[] = []
 
   const reader = response.body?.getReader()
   if (!reader) throw new Error('No response body')
@@ -281,9 +297,23 @@ async function parseSSEStream(
               if (typeof u.hitMaxTurns === 'boolean') hitMaxTurns = u.hitMaxTurns
               if (typeof u.responseEmpty === 'boolean') responseEmpty = u.responseEmpty
               if (typeof u.iterations === 'number') gatewayIterations = u.iterations
+              if (Array.isArray(u.perCallUsage)) perCallUsage = u.perCallUsage
+              if (u.prefix && typeof u.prefix.stableHash === 'string') prefix = u.prefix
+              if (typeof u.subagent === 'string') {
+                subagentUsage.push({
+                  subagent: u.subagent,
+                  input: u.inputTokens || 0,
+                  output: u.outputTokens || 0,
+                  cacheRead: u.cacheReadTokens || 0,
+                  cacheWrite: u.cacheWriteTokens || 0,
+                })
+              }
               if (verbose) {
                 const total = (u.inputTokens || 0) + (u.cacheReadTokens || 0) + (u.cacheWriteTokens || 0)
                 console.log(`      Usage: ${total}+${u.outputTokens} tokens (${u.cacheReadTokens || 0} cached), ${u.iterations} iterations, ${u.toolCallCount} tools`)
+                if (prefix) {
+                  console.log(`      Prefix: turn=${prefix.turn} stable=${prefix.stableHash} dynamic=${prefix.dynamicHash} tools=${prefix.toolsHash} history=${prefix.historyHash}`)
+                }
               }
               break
             }
@@ -366,7 +396,7 @@ async function parseSSEStream(
     console.log(`      [SSE] Complete: ${toolCalls.length} tools, ${stepCount} steps`)
   }
 
-  return { text, toolCalls, stepCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, promptBreakdown, loopDetected, hitMaxTurns, responseEmpty, gatewayIterations }
+  return { text, toolCalls, stepCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, promptBreakdown, loopDetected, hitMaxTurns, responseEmpty, gatewayIterations, perCallUsage, prefix, subagentUsage: subagentUsage.length > 0 ? subagentUsage : undefined }
 }
 
 // ---------------------------------------------------------------------------
@@ -552,16 +582,104 @@ export async function runEval(
   let hitMaxTurns = false
   let responseEmpty: boolean | undefined
   let gatewayIterations = 0
+  // Per-turn / per-call cache accounting. The run totals above are what a
+  // report shows; these are what a cache ratio is computed from.
+  const perTurnUsage: TurnUsage[] = []
+  const perCallUsage: PerCallUsage[] = []
+  const subagentUsage: SubagentUsage[] = []
+  const cachePrefixSamples: CachePrefixProbe[] = []
+  let executedTurns = 0
 
   const askUserResponseQueue = [...(eval_.askUserResponses ?? [])]
 
   function accumulate(resp: ParsedAgentResponse) {
+    executedTurns++
     stepCount += resp.stepCount
     inputTokens += resp.inputTokens
     outputTokens += resp.outputTokens
     cacheReadTokens += resp.cacheReadTokens
     cacheWriteTokens += resp.cacheWriteTokens
     if (!promptBreakdown && resp.promptBreakdown) promptBreakdown = resp.promptBreakdown
+    perTurnUsage.push({
+      turn: executedTurns,
+      input: resp.inputTokens,
+      output: resp.outputTokens,
+      cacheRead: resp.cacheReadTokens,
+      cacheWrite: resp.cacheWriteTokens,
+      iterations: resp.gatewayIterations ?? 0,
+      prefix: resp.prefix,
+      perCallUsage: resp.perCallUsage ?? [],
+    })
+    if (resp.perCallUsage) perCallUsage.push(...resp.perCallUsage)
+    if (resp.subagentUsage) subagentUsage.push(...resp.subagentUsage)
+  }
+
+  /** `betweenTurns` actions: mutate the workspace, or rewrite the prefix, then carry on. */
+  async function applyBetweenTurnHooks(): Promise<void> {
+    const hook = eval_.betweenTurns?.find((h) => h.afterTurn === executedTurns)
+    if (!hook) return
+    const base = cfg.agentEndpoint.replace(/\/agent\/chat\/?$/, '/agent/')
+    if (hook.writeFiles && Object.keys(hook.writeFiles).length > 0) {
+      try {
+        const res = await fetch(`${base}workspace/seed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: hook.writeFiles }),
+          signal: AbortSignal.timeout(30_000),
+        })
+        if (!res.ok) errors.push(`betweenTurns seed: HTTP ${res.status}`)
+      } catch (e: any) {
+        errors.push(`betweenTurns seed: ${e.message}`)
+      }
+    }
+    if (hook.compact) {
+      try {
+        const res = await fetch(`${base}tool-mocks/compact`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: 'chat' }),
+          signal: AbortSignal.timeout(120_000),
+        })
+        const body = await res.json().catch(() => null) as
+          | { compacted?: boolean; reason?: string; messagesBefore?: number; messagesAfter?: number }
+          | null
+        if (!res.ok) errors.push(`betweenTurns compact: HTTP ${res.status}`)
+        else if (!body?.compacted) errors.push(`betweenTurns compact: ${body?.reason ?? 'not compacted'}`)
+        else if (cfg.verbose) {
+          console.log(`      [cache] compacted ${body.messagesBefore} -> ${body.messagesAfter} messages`)
+        }
+      } catch (e: any) {
+        errors.push(`betweenTurns compact: ${e.message}`)
+      }
+    }
+  }
+
+  /**
+   * Structural tests: never spend a token, just ask the runtime what prefix it
+   * would send (twice, for the byte-stability check) on one session per id.
+   */
+  async function probeCachePrefix(): Promise<void> {
+    const base = cfg.agentEndpoint.replace(/\/agent\/chat\/?$/, '/agent/')
+    const sessions = eval_.cacheProbeSessions?.length ? eval_.cacheProbeSessions : ['chat']
+    for (const sessionId of sessions) {
+      const res = await fetch(`${base}tool-mocks/cache-prefix?sessionId=${encodeURIComponent(sessionId)}`, {
+        signal: AbortSignal.timeout(60_000),
+      })
+      const body = await res.json().catch(() => null) as (CachePrefixProbe & { error?: string }) | null
+      if (!res.ok || !body || body.error || !Array.isArray(body.builds)) {
+        errors.push(`cache-prefix probe (${sessionId}): ${body?.error ?? `HTTP ${res.status}`}`)
+        continue
+      }
+      cachePrefixSamples.push(body)
+      if (cfg.verbose) {
+        const b = body.builds[0]
+        console.log(
+          `      [cache] probe ${sessionId}: stable=${b?.stableHash} (${b?.stableChars} chars) ` +
+          `tools=${b?.toolsHash} (${b?.toolCount}) identical=${body.identical}` +
+          (body.drift ? ` drift=${body.drift.label}` : ''),
+        )
+      }
+    }
   }
 
   function responseHasAskUser(resp: ParsedAgentResponse): boolean {
@@ -593,6 +711,7 @@ export async function runEval(
       perTurnToolCalls.push(execResp.toolCalls)
       perTurnResponseText.push(execResp.text)
       accumulate(execResp)
+      await applyBetweenTurnHooks()
       lastExecResp = execResp
       current = execResp
     }
@@ -634,92 +753,100 @@ export async function runEval(
   try {
     const messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }> = []
 
-    // Execute conversation history turns first (for multi-turn evals)
-    // If a user message is followed by an assistant message in the history,
-    // use the assistant message directly (scripted response) instead of
-    // generating one via the LLM. This allows evals to control exactly what
-    // the agent "said" in prior turns so the final turn tests the right thing.
-    if (eval_.conversationHistory?.length) {
-      const history = eval_.conversationHistory
-      if (cfg.verbose) {
-        console.log(`    [Multi-turn] Executing ${history.length} history turns...`)
-      }
-      for (let i = 0; i < history.length; i++) {
-        const turn = history[i]
-        if (turn.role === 'user') {
-          await advanceSim()
-          messages.push({ role: 'user', parts: [{ type: 'text', text: turn.content }] })
-          const nextTurn = history[i + 1]
-          if (nextTurn?.role === 'assistant') {
-            messages.push({ role: 'assistant', parts: [{ type: 'text', text: nextTurn.content }] })
-            i++
-          } else {
-            try {
-              const resp = await sendTurn(messages, cfg)
-              messages.push({ role: 'assistant', parts: [{ type: 'text', text: resp.text }] })
-              toolCalls.push(...resp.toolCalls)
-              perTurnToolCalls.push(resp.toolCalls)
-              perTurnResponseText.push(resp.text)
-              accumulate(resp)
-
-              // If the agent asked clarifying questions, send eval-defined responses
+    // Structural tests never call a model: probe the prefix and stop there.
+    if (eval_.noLlm) {
+      await probeCachePrefix()
+    } else {
+      // Execute conversation history turns first (for multi-turn evals)
+      // If a user message is followed by an assistant message in the history,
+      // use the assistant message directly (scripted response) instead of
+      // generating one via the LLM. This allows evals to control exactly what
+      // the agent "said" in prior turns so the final turn tests the right thing.
+      if (eval_.conversationHistory?.length) {
+        const history = eval_.conversationHistory
+        if (cfg.verbose) {
+          console.log(`    [Multi-turn] Executing ${history.length} history turns...`)
+        }
+        for (let i = 0; i < history.length; i++) {
+          const turn = history[i]
+          if (turn.role === 'user') {
+            await advanceSim()
+            messages.push({ role: 'user', parts: [{ type: 'text', text: turn.content }] })
+            const nextTurn = history[i + 1]
+            if (nextTurn?.role === 'assistant') {
+              messages.push({ role: 'assistant', parts: [{ type: 'text', text: nextTurn.content }] })
+              i++
+            } else {
               try {
-                await handleAskUserFollowUps(messages, resp)
+                const resp = await sendTurn(messages, cfg)
+                messages.push({ role: 'assistant', parts: [{ type: 'text', text: resp.text }] })
+                toolCalls.push(...resp.toolCalls)
+                perTurnToolCalls.push(resp.toolCalls)
+                perTurnResponseText.push(resp.text)
+                accumulate(resp)
+                await applyBetweenTurnHooks()
+
+                // If the agent asked clarifying questions, send eval-defined responses
+                try {
+                  await handleAskUserFollowUps(messages, resp)
+                } catch (e: any) {
+                  errors.push(`ask_user follow-up error: ${e.message}`)
+                }
               } catch (e: any) {
-                errors.push(`ask_user follow-up error: ${e.message}`)
+                errors.push(`History turn error: ${e.message}`)
               }
-            } catch (e: any) {
-              errors.push(`History turn error: ${e.message}`)
             }
           }
         }
       }
-    }
 
-    // Final eval turn
-    await advanceSim()
-    messages.push({ role: 'user', parts: [{ type: 'text', text: eval_.input }] })
-    const response = await sendTurn(messages, cfg)
-    responseText = response.text
-    finalTurnToolCalls = response.toolCalls
-    toolCalls.push(...response.toolCalls)
-    perTurnToolCalls.push(response.toolCalls)
-    perTurnResponseText.push(response.text)
-    accumulate(response)
-    loopDetected = !!response.loopDetected
-    hitMaxTurns = !!response.hitMaxTurns
-    responseEmpty = response.responseEmpty
-    gatewayIterations = response.gatewayIterations ?? gatewayIterations
+      // Final eval turn
+      await advanceSim()
+      messages.push({ role: 'user', parts: [{ type: 'text', text: eval_.input }] })
+      const response = await sendTurn(messages, cfg)
+      responseText = response.text
+      finalTurnToolCalls = response.toolCalls
+      toolCalls.push(...response.toolCalls)
+      perTurnToolCalls.push(response.toolCalls)
+      perTurnResponseText.push(response.text)
+      accumulate(response)
+      await applyBetweenTurnHooks()
+      loopDetected = !!response.loopDetected
+      hitMaxTurns = !!response.hitMaxTurns
+      responseEmpty = response.responseEmpty
+      gatewayIterations = response.gatewayIterations ?? gatewayIterations
 
-    // Handle ask_user on the final turn too
-    try {
-      const execResp = await handleAskUserFollowUps(messages, response)
-      if (execResp) {
-        responseText = execResp.text
-        finalTurnToolCalls = execResp.toolCalls
-        loopDetected = !!execResp.loopDetected
-        hitMaxTurns = !!execResp.hitMaxTurns
-        responseEmpty = execResp.responseEmpty
-        gatewayIterations = execResp.gatewayIterations ?? gatewayIterations
+      // Handle ask_user on the final turn too
+      try {
+        const execResp = await handleAskUserFollowUps(messages, response)
+        if (execResp) {
+          responseText = execResp.text
+          finalTurnToolCalls = execResp.toolCalls
+          loopDetected = !!execResp.loopDetected
+          hitMaxTurns = !!execResp.hitMaxTurns
+          responseEmpty = execResp.responseEmpty
+          gatewayIterations = execResp.gatewayIterations ?? gatewayIterations
+        }
+      } catch (e: any) {
+        errors.push(`ask_user follow-up error: ${e.message}`)
       }
-    } catch (e: any) {
-      errors.push(`ask_user follow-up error: ${e.message}`)
-    }
 
-    // Wakes after the user's turn: [Task update]s, schedules and heartbeats, as production sends them.
-    if (eval_.sim?.wakes) {
-      const max = eval_.sim.wakes.maxWakes ?? 12
-      for (let n = 0; n < max; n++) {
-        const wake = await nextSimWake()
-        if (!wake) break
-        if (cfg.verbose) console.log(`      [wake ${n + 1}] ${wake.at} ${wake.kind}: ${wake.text.split('\n')[0].slice(0, 100)}`)
-        messages.push({ role: 'user', parts: [{ type: 'text', text: wake.text }] })
-        const wakeResp = await sendTurn(messages, cfg)
-        messages.push({ role: 'assistant', parts: [{ type: 'text', text: wakeResp.text }] })
-        toolCalls.push(...wakeResp.toolCalls)
-        perTurnToolCalls.push(wakeResp.toolCalls)
-        perTurnResponseText.push(wakeResp.text)
-        accumulate(wakeResp)
+      // Wakes after the user's turn: [Task update]s, schedules and heartbeats, as production sends them.
+      if (eval_.sim?.wakes) {
+        const max = eval_.sim.wakes.maxWakes ?? 12
+        for (let n = 0; n < max; n++) {
+          const wake = await nextSimWake()
+          if (!wake) break
+          if (cfg.verbose) console.log(`      [wake ${n + 1}] ${wake.at} ${wake.kind}: ${wake.text.split('\n')[0].slice(0, 100)}`)
+          messages.push({ role: 'user', parts: [{ type: 'text', text: wake.text }] })
+          const wakeResp = await sendTurn(messages, cfg)
+          messages.push({ role: 'assistant', parts: [{ type: 'text', text: wakeResp.text }] })
+          toolCalls.push(...wakeResp.toolCalls)
+          perTurnToolCalls.push(wakeResp.toolCalls)
+          perTurnResponseText.push(wakeResp.text)
+          accumulate(wakeResp)
+          await applyBetweenTurnHooks()
+        }
       }
     }
   } catch (err: any) {
@@ -793,6 +920,10 @@ export async function runEval(
     errors: errors.length > 0 ? errors : undefined,
     workspaceDir: cfg.workspaceDir,
     promptBreakdown,
+    perTurnUsage,
+    perCallUsage,
+    ...(subagentUsage.length > 0 ? { subagentUsage } : {}),
+    ...(cachePrefixSamples.length > 0 ? { cachePrefixSamples } : {}),
     loopDetected,
     hitMaxTurns,
     responseEmpty,

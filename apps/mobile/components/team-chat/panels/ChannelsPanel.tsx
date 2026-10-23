@@ -36,7 +36,7 @@ export function ChannelsPanel({ onNavPress }: { onNavPress?: () => void }) {
       )}
       <PanelSection label="Find and tune" fixed>
         <PanelLink icon={Search} label="Search messages" onPress={() => go('/(app)/c/search')} />
-        <PanelLink icon={Bell} label="Chat preferences" onPress={() => go('/(app)/c/settings')} />
+        <PanelLink icon={Bell} label="Chat preferences" onPress={() => go('/(app)/settings?tab=chat')} />
         {Platform.OS === 'web' && <PanelLink icon={Keyboard} label="Keyboard shortcuts" onPress={chat.openShortcuts} />}
       </PanelSection>
     </View>

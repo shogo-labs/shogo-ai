@@ -389,7 +389,7 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
                     onPress={() => setSelectedNumber(n.phoneNumber)}
                     className={`flex-row items-center gap-3 px-3 py-2 border-t border-border/50 ${selected ? 'bg-primary/10' : ''}`}
                     accessibilityLabel={`Select ${n.phoneNumber}`}
-                    accessibilityState={{ selected }}
+                    aria-selected={selected}
                   >
                     <View
                       className={`w-4 h-4 rounded-full border ${selected ? 'border-primary bg-primary' : 'border-border'}`}

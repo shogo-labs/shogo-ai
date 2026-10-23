@@ -67,9 +67,9 @@ tracker comment to merged PR.
    loop (a two-agent back-and-forth would trip the chain's ping-pong limit
    after one fix round; Done Gate posts its verdict to the thread instead),
    and the whole pipeline when team chat is off for the workspace.
-   Hand-off chains are bounded: `SHOGO_AGENT_CHAIN_MAX_DEPTH` (12 hand-offs),
+   Hand-off chains are bounded: `SHOGO_AGENT_CHAIN_MAX_DEPTH` (24 hand-offs),
    `SHOGO_AGENT_CHAIN_MAX_THREAD_TURNS` (40 agent replies since the last
-   human message), and `SHOGO_AGENT_CHAIN_MAX_PING_PONG` (4 alternating
+   human message), and `SHOGO_AGENT_CHAIN_MAX_PING_PONG` (12 alternating
    replies between two agents). Hitting one posts a paused note tagging the
    person who started the run; their reply resets the counters. Every
    hand-off is billed to that person.

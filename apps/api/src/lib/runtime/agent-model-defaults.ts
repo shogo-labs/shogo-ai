@@ -12,7 +12,6 @@
 import {
   getAgentModeOverrides,
   getAutoTierOverrides,
-  getModelTier,
   inferProviderFromModel,
   resolveAgentModeDefault,
 } from '@shogo/model-catalog'
@@ -25,6 +24,9 @@ import { getMergedModelEntrySync } from '../../services/model-registry.service'
 import { prisma } from '../prisma'
 import { fetchCloudAgentModelDefaults } from '../federated-upstream'
 import { getSummarizerModelId } from '../summarizer-model'
+import { isModelAccessibleForWorkspace } from '../model-access'
+
+export { isModelAccessibleForWorkspace }
 
 export type AgentModelTier = 'economy' | 'standard' | 'premium'
 
@@ -62,10 +64,6 @@ const AUTO_MODEL_DEFAULTS: Record<AgentModelTier, string> = {
   premium: 'claude-sonnet-4-6',
 }
 
-function resolveModelTierForAccess(modelId: string): string {
-  return getMergedModelEntrySync(modelId)?.tier ?? getModelTier(modelId)
-}
-
 function resolveModelEntry(raw: string): AgentModelEntry {
   const trimmed = raw.trim()
   const publicModel = resolvePublicModelSync(trimmed)
@@ -81,24 +79,6 @@ function resolveModelEntry(raw: string): AgentModelEntry {
       ? { upstream: mergedEntry.capabilities.upstream }
       : {}),
   }
-}
-
-/**
- * Keep this rule identical to public-api.ts's per-request tier gate.
- *
- * Economy, local, and OpenRouter models are available to every plan. Other
- * provider models require advanced model access. This function is also used
- * before Auto routing, so a local runtime never deliberately selects a model
- * that the connected cloud will reject.
- */
-export async function isModelAccessibleForWorkspace(
-  workspaceId: string,
-  modelId: string,
-): Promise<boolean> {
-  const entry = resolveModelEntry(modelId)
-  if (entry.provider === 'local' || entry.provider === 'openrouter') return true
-  if (resolveModelTierForAccess(entry.id) === 'economy') return true
-  return billingService.hasAdvancedModelAccess(workspaceId)
 }
 
 async function readDefaultMode(): Promise<string | null> {

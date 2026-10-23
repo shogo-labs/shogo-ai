@@ -4,6 +4,7 @@
 import { expect, mock, test } from "bun:test";
 import React from "react";
 import { createReactNativeMock } from "../../../../test/react-native-mock";
+import * as lucideStub from "../../../../test/stubs/lucide-react-native";
 import type { ToolCallData } from "../../tools/types";
 
 mock.module("react-native", () => createReactNativeMock());
@@ -11,11 +12,11 @@ mock.module("@shogo/shared-ui/primitives", () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
 }));
 const Icon = () => null;
-mock.module("lucide-react-native", () => ({
-  Check: Icon,
-  Copy: Icon,
-  Download: Icon,
-}));
+// The shared stub, not a hand-picked subset: the viewer the widget opens on
+// web now renders through the app's one file body, which draws the IDE's
+// media previews too (SHO-165).
+mock.module("lucide-react-native", () => lucideStub);
+mock.module("../../FileTypeIcon", () => ({ FileTypeIcon: Icon }));
 
 const { render, screen } = await import("@testing-library/react");
 const { FileDeliveryWidget } = await import("../FileDeliveryWidget");
@@ -36,11 +37,11 @@ const tool = {
   timestamp: 0,
 } as ToolCallData;
 
-test("renders the direct download URL and delivery actions", () => {
+test("renders a download chip with a copy-link action", () => {
   render(<FileDeliveryWidget tool={tool} />);
 
   expect(screen.getByText("report.pdf")).toBeTruthy();
-  expect(screen.getByText("https://api.example/f/signed-token")).toBeTruthy();
-  expect(screen.getByText("Download")).toBeTruthy();
-  expect(screen.getByText("Copy link")).toBeTruthy();
+  expect(screen.getByTitle(/^Download report\.pdf · Link expires/)).toBeTruthy();
+  expect(screen.getByTitle("Copy link")).toBeTruthy();
+  expect(screen.queryByText("https://api.example/f/signed-token")).toBeNull();
 });

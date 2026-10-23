@@ -127,6 +127,34 @@ export function buildChatTurnUrl(
 }
 
 /**
+ * Build the URL that lists a chat's still-running tasks.
+ *
+ * The list is how a window learns that background work is in flight and, when
+ * it empties, that a `[Task update]` wake is about to be queued for this
+ * session — so it has to exist for a workspace chat too, which resolves its
+ * runtime differently from a project chat.
+ *
+ * Returns null when the caller has no chat scope at all.
+ */
+export function buildChatTasksUrl(
+  apiBaseUrl: string,
+  projectId: string | undefined,
+  localAgentUrl: string | null | undefined,
+  chatSessionId: string,
+  workspaceId?: string | undefined,
+): string | null {
+  const session = encodeURIComponent(chatSessionId)
+  if (localAgentUrl) return `${localAgentUrl.replace(/\/+$/, '')}/agent/chat/${session}/tasks`
+  if (workspaceId) {
+    return `${apiBaseUrl.replace(/\/+$/, '')}/api/workspaces/${workspaceId}/chat/${session}/tasks`
+  }
+  if (projectId) {
+    return `${apiBaseUrl.replace(/\/+$/, '')}/api/projects/${projectId}/agent-proxy/agent/chat/${session}/tasks`
+  }
+  return null
+}
+
+/**
  * Hook that returns a memoized chat transport config for DefaultChatTransport.
  */
 export function useChatTransportConfig({

@@ -29,7 +29,7 @@ export function ThemeChoiceList({
       onPress={() => onSelect(value)}
       accessibilityRole="radio"
       accessibilityLabel={label}
-      accessibilityState={{ checked: theme === value }}
+      aria-checked={theme === value}
       className={
         variant === "grouped"
           ? cn(

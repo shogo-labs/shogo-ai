@@ -1,0 +1,83 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/pack-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/pack-templates-gen.ts
+version: 1
+name: Daily Standup
+description: "A #standup channel and an agent that posts what moved, what is stuck and what needs a decision, every weekday."
+projects:
+  - key: standup-agent
+    name: Standup Agent
+    description: Writes the daily standup from boards, cards and yesterday’s threads.
+    agent:
+      model: auto
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+    files:
+      AGENTS.md: |-
+        # Standup Agent
+
+        You post the weekday standup in #standup.
+
+        ## What goes in it
+        1. **Moved** — cards that changed column since yesterday, one line each.
+        2. **Stuck** — cards with no activity past their SLA, or blocked on someone outside the team.
+        3. **Decisions** — at most three things a person has to choose today.
+
+        Keep it under 15 lines. Link cards by key, never paste a whole thread.
+
+        ## Workspace profile
+        - **What this team builds**: {{answers.profile.product}}
+        - **Standup time**: {{answers.profile.standup-time}} ({{answers.profile.timezone}})
+teamChannels:
+  - name: standup
+    topic: The daily standup.
+    members:
+      - project: standup-agent
+        agentTrigger: mention
+schedules:
+  - key: daily-standup
+    name: Daily standup
+    project: standup-agent
+    channel: standup
+    hour: "{{answers.profile.standup-time}}"
+    days: 1-5
+    timezone: "{{answers.profile.timezone}}"
+    enabled: false
+    prompt: "Write today’s standup in {{channel.standup}} with <@a:p:{{agent.standup-agent}}>: moved, stuck, decisions."
+setup:
+  questions:
+    - id: product
+      header: What this team builds
+      question: What does this team build or sell, in one sentence?
+      type: text
+      applies: profile.product
+    - id: hour
+      header: Standup time
+      question: What time should the daily standup be posted?
+      type: choice
+      options:
+        - 08:00
+        - 09:00
+        - 10:00
+        - 17:00
+      default: 09:00
+      applies: profile.standup-time
+    - id: timezone
+      header: Timezone
+      question: Which timezone is that in?
+      type: choice
+      options:
+        - UTC
+        - America/Los_Angeles
+        - America/New_York
+        - Europe/London
+        - Europe/Berlin
+        - Asia/Singapore
+        - Asia/Tokyo
+        - Australia/Sydney
+      default: UTC
+      applies: profile.timezone
+  profile:
+    file: AGENTS.md
+    section: "## Workspace profile"

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Onboarding flow with the desktop permission steps: they only exist for the
- * local macOS shell, sit between `ai-config` and `destination`, and Skip on
+ * local macOS shell, sit between `ai-config` and `team-setup`, and Skip on
  * them advances instead of finishing onboarding.
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
@@ -76,9 +76,6 @@ mock.module('../../steps/AIConfigForm', () => ({
     return <div data-testid="ai-config-body" />
   },
 }))
-mock.module('../DestinationStep', () => ({
-  DestinationStep: () => <div data-testid="destination-body" />,
-}))
 mock.module('../TeamSetupStep', () => ({ TeamSetupStep: () => null }))
 mock.module('../JoinedStep', () => ({ JoinedStep: () => null }))
 mock.module('../BuildPromptStep', () => ({ BuildPromptStep: () => null }))
@@ -121,14 +118,14 @@ describe('CloudOnboarding desktop permission steps', () => {
   test('omitted outside the macOS desktop shell', async () => {
     render(<CloudOnboarding localMode />)
     await click('onboarding-continue-ai-config')
-    await screen.findByTestId('destination-body')
+    await screen.findByText('Set up your team workspace')
     expect(screen.queryByTestId('onboarding-skip-computer-use')).toBeNull()
   })
 
   test('omitted in cloud mode even on the macOS desktop', async () => {
     installMacBridge()
     render(<CloudOnboarding />)
-    await screen.findByTestId('destination-body')
+    await screen.findByText('Set up your team workspace')
     expect(screen.queryByTestId('onboarding-skip-computer-use')).toBeNull()
   })
 
@@ -145,7 +142,7 @@ describe('CloudOnboarding desktop permission steps', () => {
     await click('onboarding-skip-files-apps')
     await click('onboarding-skip-dictation')
 
-    await screen.findByTestId('destination-body')
+    await screen.findByText('Set up your team workspace')
     expect(screen.queryByTestId('setting-up')).toBeNull()
     expect(replace).not.toHaveBeenCalled()
     // Only computer-use persists on skip; files/dictation have nothing granted.
@@ -159,6 +156,6 @@ describe('CloudOnboarding desktop permission steps', () => {
     await click('onboarding-continue-computer-use')
     await click('onboarding-continue-files-apps')
     await click('onboarding-continue-dictation')
-    await screen.findByTestId('destination-body')
+    await screen.findByText('Set up your team workspace')
   })
 })

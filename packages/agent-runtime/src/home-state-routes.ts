@@ -43,8 +43,10 @@ export interface HomeStateConfig {
 export function homeStateConfigFromEnv(env: NodeJS.ProcessEnv = process.env): HomeStateConfig | null {
   const mediated = env.SHOGO_DURABILITY_HOST_MEDIATED
   if (mediated !== '1' && mediated !== 'true') return null
-  const projectId = env.PROJECT_ID
-  if (!projectId || projectId === '__POOL__') return null
+  if (!env.PROJECT_ID || env.PROJECT_ID === '__POOL__') return null
+  // A workspace runtime's PROJECT_ID is its first member; the archive belongs
+  // to the runtime key, which the API passes as HOME_STATE_ID.
+  const projectId = env.HOME_STATE_ID || env.PROJECT_ID
   const key = parseHomeStateKey(env)
   if (!key) return null
   return { homeDir: resolveHomeDir(env), key, projectId }

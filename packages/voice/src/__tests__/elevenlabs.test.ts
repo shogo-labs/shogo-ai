@@ -2,11 +2,16 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
 import {
+  CONVAI_SUPPORTED_TTS_MODELS,
   CONVAI_TTS_MODEL_FALLBACK,
+  DEFAULT_TTS_MODEL,
   ElevenLabsApiError,
   ElevenLabsClient,
   MEMORY_CLIENT_TOOLS,
+  VOICE_TTS_MODELS,
+  VOICE_TTS_MODEL_IDS,
   resolveConvaiTtsModel,
+  resolveConvaiTtsModelDetailed,
 } from '../elevenlabs'
 
 interface RecordedCall {
@@ -61,11 +66,61 @@ describe('resolveConvaiTtsModel', () => {
   test('accepts supported ids', () => {
     expect(resolveConvaiTtsModel('eleven_turbo_v2_5')).toBe('eleven_turbo_v2_5')
     expect(resolveConvaiTtsModel('eleven_flash_v2')).toBe('eleven_flash_v2')
+    expect(resolveConvaiTtsModel('eleven_v4_turbo')).toBe('eleven_v4_turbo')
+    expect(resolveConvaiTtsModel('eleven_v3_conversational')).toBe('eleven_v3_conversational')
   })
   test('falls back for unsupported or missing ids', () => {
     expect(resolveConvaiTtsModel(null)).toBe(CONVAI_TTS_MODEL_FALLBACK)
     expect(resolveConvaiTtsModel('eleven_v3')).toBe(CONVAI_TTS_MODEL_FALLBACK)
+    expect(resolveConvaiTtsModel('eleven_v4')).toBe(CONVAI_TTS_MODEL_FALLBACK)
     expect(resolveConvaiTtsModel('')).toBe(CONVAI_TTS_MODEL_FALLBACK)
+  })
+})
+
+describe('resolveConvaiTtsModelDetailed', () => {
+  test('reports no downgrade for a realtime model', () => {
+    expect(resolveConvaiTtsModelDetailed('eleven_v4_turbo')).toEqual({
+      modelId: 'eleven_v4_turbo',
+      requested: 'eleven_v4_turbo',
+      downgraded: false,
+    })
+  })
+
+  test('reports a downgrade with a reason for a known but non-realtime model', () => {
+    const out = resolveConvaiTtsModelDetailed('eleven_v4')
+    expect(out.modelId).toBe(CONVAI_TTS_MODEL_FALLBACK)
+    expect(out.requested).toBe('eleven_v4')
+    expect(out.downgraded).toBe(true)
+    expect(out.reason).toContain('not supported by the convai')
+  })
+
+  test('reports a downgrade with a reason for an unknown model', () => {
+    const out = resolveConvaiTtsModelDetailed('eleven_nope')
+    expect(out.modelId).toBe(CONVAI_TTS_MODEL_FALLBACK)
+    expect(out.downgraded).toBe(true)
+    expect(out.reason).toContain('unknown TTS model eleven_nope')
+  })
+
+  test('does not call a missing request a downgrade', () => {
+    const out = resolveConvaiTtsModelDetailed(undefined)
+    expect(out.modelId).toBe(CONVAI_TTS_MODEL_FALLBACK)
+    expect(out.requested).toBeNull()
+    expect(out.downgraded).toBe(false)
+  })
+})
+
+describe('VOICE_TTS_MODELS', () => {
+  test('covers the v4 generation and marks which models are realtime', () => {
+    const byId = new Map(VOICE_TTS_MODELS.map((m) => [m.id, m]))
+    expect(byId.get('eleven_v4')?.realtime).toBe(false)
+    expect(byId.get('eleven_v4_turbo')?.realtime).toBe(true)
+    expect(byId.get('eleven_v4')?.maxChars).toBe(10_000)
+    expect(byId.get('eleven_v3')?.maxChars).toBe(5_000)
+    for (const id of CONVAI_SUPPORTED_TTS_MODELS) {
+      expect(byId.get(id)?.realtime).toBe(true)
+    }
+    expect(CONVAI_SUPPORTED_TTS_MODELS.has('eleven_multilingual_v2')).toBe(false)
+    expect(VOICE_TTS_MODEL_IDS).toContain('eleven_v4')
   })
 })
 
@@ -177,6 +232,19 @@ describe('ElevenLabsClient.getSignedUrl', () => {
 })
 
 describe('ElevenLabsClient.textToSpeech', () => {
+  test('defaults to eleven_v4 and reports no fallback', async () => {
+    const { impl, calls } = mockFetch([
+      { status: 200, body: 'ok', headers: { 'content-type': 'audio/mpeg' } },
+    ])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    const res = await el.textToSpeech({ voiceId: 'v', text: 'hello' })
+    expect(res.modelId).toBe(DEFAULT_TTS_MODEL)
+    expect(res.requestedModel).toBe(DEFAULT_TTS_MODEL)
+    expect(res.fellBack).toBe(false)
+    expect(res.contentType).toBe('audio/mpeg')
+    expect((calls[0]!.body as { model_id: string }).model_id).toBe('eleven_v4')
+  })
+
   test('returns audio bytes and the model actually used', async () => {
     const bytes = new Uint8Array([1, 2, 3, 4])
     const { impl } = mockFetch([
@@ -189,23 +257,47 @@ describe('ElevenLabsClient.textToSpeech', () => {
       modelId: 'eleven_flash_v2_5',
     })
     expect(res.modelId).toBe('eleven_flash_v2_5')
+    expect(res.fellBack).toBe(false)
     expect(res.contentType).toBe('audio/mpeg')
   })
 
-  test('falls back to eleven_turbo_v2_5 if the first attempt fails', async () => {
+  test('falls back only on a model-related failure, and says so', async () => {
     const { impl, calls } = mockFetch([
-      { status: 500, body: { error: 'nope' } },
+      { status: 400, body: { detail: { status: 'model_not_available', message: 'model not in plan' } } },
       { status: 200, body: 'ok', headers: { 'content-type': 'audio/mpeg' } },
     ])
     const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
     const res = await el.textToSpeech({
       voiceId: 'v',
       text: 'hi',
-      modelId: 'eleven_v3',
+      modelId: 'eleven_multilingual_v2',
     })
-    expect(res.modelId).toBe('eleven_turbo_v2_5')
+    expect(res.modelId).toBe(CONVAI_TTS_MODEL_FALLBACK)
+    expect(res.requestedModel).toBe('eleven_multilingual_v2')
+    expect(res.fellBack).toBe(true)
+    expect(res.fallbackReason).toContain('400')
     expect(calls).toHaveLength(2)
-    expect((calls[1]!.body as { model_id: string }).model_id).toBe('eleven_turbo_v2_5')
+    expect((calls[1]!.body as { model_id: string }).model_id).toBe(CONVAI_TTS_MODEL_FALLBACK)
+  })
+
+  for (const status of [401, 429, 500, 503]) {
+    test(`rethrows ${status} without retrying another model`, async () => {
+      const { impl, calls } = mockFetch([{ status, body: 'upstream said no' }])
+      const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+      await expect(
+        el.textToSpeech({ voiceId: 'v', text: 'hi', modelId: 'eleven_multilingual_v2' }),
+      ).rejects.toBeInstanceOf(ElevenLabsApiError)
+      expect(calls).toHaveLength(1)
+    })
+  }
+
+  test('does not fall back on a 400 that is not about the model', async () => {
+    const { impl, calls } = mockFetch([{ status: 400, body: { detail: 'text must not be empty' } }])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    await expect(
+      el.textToSpeech({ voiceId: 'v', text: 'hi', modelId: 'eleven_multilingual_v2' }),
+    ).rejects.toBeInstanceOf(ElevenLabsApiError)
+    expect(calls).toHaveLength(1)
   })
 })
 

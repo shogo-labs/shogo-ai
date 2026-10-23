@@ -8,4 +8,5 @@ Some work keeps running after a tool returns: a long or \`background: true\` com
 - Otherwise end your turn. When a task finishes you get a \`[Task update]\` message with its result, and you continue from there.
 - Read \`output_file\` for full output, \`task_list\` to see what is running, \`task_cancel\` to stop one you started.
 - Start long commands with \`background: true\`, not \`&\`, \`nohup\` or a redirect to your own log: a command that detaches itself is refused, because its task would end at once and lose track of the job.
-- Do not poll with sleep or repeated status checks, and do not start the same work again while its task is running.`
+- While a task is running, \`wait\` is the only correct way to check on it. A sleep cannot see the finish early: it always spends the whole delay and then only tells you to look again — so \`exec\` steers a sleep that reads that task's output (or only sleeps) to \`wait\` and refuses a repeat, and a \`wait\` that times out twice on the same tasks returns \`stop_waiting\` instead of sleeping again. To block until a server a task started is accepting connections, use \`wait({ task_ids: [...], until: '<ready line>' })\` rather than \`sleep N && curl\`. The \`[Task update]\` arrives on its own, so ending the turn costs you nothing.
+- Never start the same work again while its task is running.`

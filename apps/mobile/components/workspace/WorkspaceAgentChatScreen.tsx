@@ -20,22 +20,39 @@ import {
   useWorkspaceCollection,
 } from "../../contexts/domain"
 import {
-  GetStartedChecklist,
-  useGettingStarted,
-} from "../onboarding/GetStartedChecklist"
-import { openInWorkspace } from "../../lib/switch-workspace"
+  openInWorkspace,
+  adoptChatWorkspace,
+  shouldAdoptChatWorkspace,
+} from "../../lib/switch-workspace"
 import { pickTeamWorkspace } from "../../lib/team-workspace"
-import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
+import { useWorkspaceInView } from "../../hooks/useWorkspaceInView"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
+import { useWorkspaceAgentBase } from "../../hooks/useWorkspaceAgentBase"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
-import { chatSessionEvents } from "../../lib/chat-session-events"
+import {
+  chatActivityEvents,
+  chatSessionEvents,
+} from "../../lib/chat-session-events"
+import {
+  emptyWorkspaceChatActivity,
+  nextWorkspaceChatActivity,
+  workspaceChatActivityEvent,
+  type WorkspaceChatActivityState,
+} from "../../lib/workspace-chat-activity"
+import { chatMentionMetaFor } from "../../lib/chat-mention-meta"
+import { agentSessionSource } from "../../lib/root-destination"
+import { ensureLandingSession, LANDING_SESSION_NAME } from "../../lib/landing-session"
 import { ChatPanel } from "../chat/ChatPanel"
 import type { OpenProjectPaneRequest } from "../chat/ChatContext"
 import type { PlanData } from "../chat/PlanCard"
 import { PlanStreamProvider } from "../chat/PlanStreamContext"
 import { PlansPanel } from "../project/panels/PlansPanel"
+import { ShareFileProvider, type ShareFileTarget } from "../chat/share-file-context"
+import { ShareFileView } from "../chat/ShareFileViewer"
+import { WorkspaceFileViewer } from "./WorkspaceFileViewer"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
+import { TaskThreadPaneHost } from "../chat/task/TaskThreadPaneHost"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { NativePhoneSheet } from "../phone/NativePhoneSheet"
 import { PersonalAgentHeader } from "../personal/PersonalAgentHeader"
@@ -59,6 +76,21 @@ interface ProjectPaneState extends OpenProjectPaneRequest {
   nonce: number
 }
 
+/**
+ * The right-hand file pane. Both kinds of link land here — a workspace path the
+ * assistant mentioned and a `share_file` link — so the pane Russell calls the
+ * preview panel is the one place a file opens.
+ */
+type FilePaneState =
+  | {
+      kind: "path"
+      /** Workspace-relative path the assistant mentioned. */
+      path: string
+      /** Changes on every open so re-opening the same file reloads it. */
+      nonce: number
+    }
+  | { kind: "share"; target: ShareFileTarget; nonce: number }
+
 interface PlanPaneState {
   filepath: string | null
   /** Changes on every open so the Plans panel re-selects the requested plan. */
@@ -74,6 +106,11 @@ interface BuildPlanRequest {
 export interface WorkspaceAgentChatScreenProps {
   /** Open this workspace session instead of the primary one (e.g. a session a DM reply ran in). */
   initialSessionId?: string
+  /**
+   * Start a new, empty session instead of resuming the primary one. The
+   * landing (`/`) sets this; an explicit `?chatSessionId=` still wins.
+   */
+  startNewSession?: boolean
   /** Sent as the first message when the opened session is still empty. */
   initialMessage?: string
   /** Rendered above the chat, e.g. the breadcrumb back to the conversation it was opened from. */
@@ -81,19 +118,28 @@ export interface WorkspaceAgentChatScreenProps {
 }
 
 export const WorkspaceAgentChatScreen = observer(
-  function WorkspaceAgentChatScreen({ initialSessionId, initialMessage, header }: WorkspaceAgentChatScreenProps = {}) {
+  function WorkspaceAgentChatScreen({ initialSessionId, startNewSession, initialMessage, header }: WorkspaceAgentChatScreenProps = {}) {
     const [capturedInitialMessage] = useState(() => initialMessage)
     const router = useRouter()
     const { user } = useAuth()
     const http = useDomainHttp()
-    const workspace = useActiveWorkspace()
+    // The workspace in view: a paired computer's own workspace while it is
+    // open, so its id and kind — not the cloud workspace that happens to be
+    // selected — decide this chat's sessions, its scope and its chrome
+    // (SHO-130).
+    const workspace = useWorkspaceInView()
     const projects = useProjectCollection()
     const experience = useWorkspaceExperience()
+    // Set only while a paired desktop's own workspace is open: its agent,
+    // sessions and team chat live on that machine, not in the cloud workspace
+    // that happens to be selected.
+    const machineRoute = useWorkspaceAgentBase()
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
     const insets = useSafeAreaInsets()
     const { width, height } = useWindowDimensions()
     const [projectPane, setProjectPane] = useState<ProjectPaneState | null>(null)
     const [planPane, setPlanPane] = useState<PlanPaneState | null>(null)
+    const [filePane, setFilePane] = useState<FilePaneState | null>(null)
     const [buildPlanRequest, setBuildPlanRequest] = useState<BuildPlanRequest | null>(null)
     const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
     const [sessionId, setSessionId] = useState<string | null>(null)
@@ -118,13 +164,32 @@ export const WorkspaceAgentChatScreen = observer(
     )
     const [scopeError, setScopeError] = useState<string | null>(null)
     const loadVersion = useRef(0)
+    // The `?chatSessionId=` whose owning workspace this screen already adopted,
+    // so a re-run of the load does not switch (or reload projects) twice.
+    const adoptedChat = useRef<string | null>(null)
+    // The workspace this screen mounted in. Adoption only applies while the
+    // screen is still on it: a workspace change means the person left the chat
+    // this screen was opened for (SHO-157).
+    const screenWorkspace = useRef<string | null>(null)
+    // The empty chat the landing opens. Single-flight per workspace so a
+    // re-running load (a new `http` identity, a re-render) cannot mint a
+    // second empty session; the session itself is reused across cold starts
+    // (see `lib/landing-session`).
+    const landingSession = useRef<{
+      workspaceId: string
+      promise: Promise<{ id: string }>
+    } | null>(null)
     const reloadAttachments = useRef<(() => void) | null>(null)
     const avatarFinishedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
     const avatarStreaming = useRef(false)
+    // What the sidebar paints: the spinner on this chat's row while its turn
+    // runs, then the new-activity dot if the turn lands out of view.
+    const [chatActivity, setChatActivity] = useState<WorkspaceChatActivityState>(
+      emptyWorkspaceChatActivity,
+    )
     const crossTabPrefill = useChatPrefill()
     const { showWelcome, dismissWelcome } = useWelcomeMessage(workspace?.id)
     const isPersonalWorkspace = experience.kind === "personal"
-    const gettingStarted = useGettingStarted()
     const workspaces = useWorkspaceCollection()
     const members = useMemberCollection()
     const teamWorkspaceId = pickTeamWorkspace(
@@ -152,6 +217,7 @@ export const WorkspaceAgentChatScreen = observer(
         return
       }
       const version = ++loadVersion.current
+      if (screenWorkspace.current == null) screenWorkspace.current = workspace.id
       try {
         setError(null)
         // Never render the previous workspace's transcript/profile while the
@@ -161,10 +227,61 @@ export const WorkspaceAgentChatScreen = observer(
         setSessionId(null)
         setAttachments([])
         setFocusedProjectId(null)
+        const sessionSource = agentSessionSource({
+          initialSessionId,
+          startNewSession,
+          // The workspace the session belongs to, not the resolved
+          // experience: they can disagree for a frame during a switch.
+          kind: workspace.kind,
+        })
+        // `?chatSessionId=` comes from a chat chip, which can point at a chat
+        // in another workspace. The session's workspace, not the URL, decides:
+        // adopt it here — after boot, with the fact in hand — and return, so
+        // this load re-runs against the right workspace instead of opening a
+        // chat the server would refuse to take a send for.
+        if (
+          sessionSource === "url" &&
+          initialSessionId &&
+          shouldAdoptChatWorkspace({
+            initialSessionId,
+            adoptedSessionId: adoptedChat.current,
+            screenWorkspaceId: screenWorkspace.current,
+            workspaceId: workspace.id,
+          })
+        ) {
+          const owner = await chatMentionMetaFor(initialSessionId)
+          if (version !== loadVersion.current) return
+          if (adoptChatWorkspace(owner?.workspaceId, workspace.id, projects)) {
+            adoptedChat.current = initialSessionId
+            return
+          }
+        }
+        const openLandingSession = () => {
+          const cached = landingSession.current
+          if (cached && cached.workspaceId === workspace.id) {
+            return cached.promise
+          }
+          const promise = ensureLandingSession(workspace.id, {
+            list: (workspaceId) => api.listWorkspaceSessions(http, workspaceId),
+            create: (workspaceId) =>
+              api.createWorkspaceSession(http, workspaceId, {
+                inferredName: LANDING_SESSION_NAME,
+              }),
+          })
+          landingSession.current = { workspaceId: workspace.id, promise }
+          promise.catch(() => {
+            if (landingSession.current?.promise === promise) {
+              landingSession.current = null
+            }
+          })
+          return promise
+        }
         const [session, nextProfile] = await Promise.all([
-          initialSessionId
-            ? Promise.resolve({ id: initialSessionId })
-            : api.getPrimaryWorkspaceSession(http, workspace.id),
+          sessionSource === "url"
+            ? Promise.resolve({ id: initialSessionId as string })
+            : sessionSource === "new"
+              ? openLandingSession()
+              : api.getPrimaryWorkspaceSession(http, workspace.id),
           api.getAgentProfile(http, workspace.id),
         ])
         if (version !== loadVersion.current) return
@@ -179,23 +296,37 @@ export const WorkspaceAgentChatScreen = observer(
             : "Could not load Workspace Agent Chat",
         )
       }
-    }, [http, workspace?.id, initialSessionId])
+    }, [http, workspace?.id, workspace?.kind, initialSessionId, startNewSession, projects])
 
     useEffect(() => {
       void loadWorkspaceChat()
     }, [loadWorkspaceChat])
 
     const hasSidePane = width >= PROJECT_SIDE_PANE_MIN_WIDTH && !usesMobileWorkspaceChrome
+    // Plan, project, and file panes share one slot: opening any of them closes the others.
     const openProjectPane = useCallback((request: OpenProjectPaneRequest) => {
       setPlanPane(null)
+      setFilePane(null)
       setProjectPane({ ...request, nonce: Date.now() })
     }, [])
     const closeProjectPane = useCallback(() => setProjectPane(null), [])
     const openPlanPane = useCallback((filepath?: string | null) => {
       setProjectPane(null)
+      setFilePane(null)
       setPlanPane({ filepath: filepath ?? null, nonce: Date.now() })
     }, [])
     const closePlanPane = useCallback(() => setPlanPane(null), [])
+    const openFilePane = useCallback((path: string) => {
+      setProjectPane(null)
+      setPlanPane(null)
+      setFilePane({ kind: "path", path, nonce: Date.now() })
+    }, [])
+    const openShareFile = useCallback((target: ShareFileTarget) => {
+      setProjectPane(null)
+      setPlanPane(null)
+      setFilePane({ kind: "share", target, nonce: Date.now() })
+    }, [])
+    const closeFilePane = useCallback(() => setFilePane(null), [])
     const handleBuildPlan = useCallback(
       (plan: PlanData, modelId: string) => {
         setBuildPlanRequest({ plan, modelId, nonce: Date.now() })
@@ -279,37 +410,81 @@ export const WorkspaceAgentChatScreen = observer(
         current?.nonce === nonce ? null : current,
       )
     }, [])
-    const handleStreamingChange = useCallback((isStreaming: boolean) => {
-      if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
-      if (isStreaming) {
-        avatarStreaming.current = true
-        setAvatarState("working")
-        return
-      }
-      if (!avatarStreaming.current) {
-        setAvatarState("idle")
-        return
-      }
-      if (workspace?.id && sessionId) {
-        chatSessionEvents.emit({
-          workspaceId: workspace.id,
-          activeSessionId: sessionId,
-          refresh: true,
-        })
-      }
-      avatarStreaming.current = false
-      setAvatarState("finished")
-      avatarFinishedTimer.current = setTimeout(() => {
-        avatarFinishedTimer.current = null
-        setAvatarState("idle")
-      }, 1800)
-    }, [sessionId, workspace?.id])
+    const handleStreamingChange = useCallback(
+      (isStreaming: boolean) => {
+        if (avatarFinishedTimer.current)
+          clearTimeout(avatarFinishedTimer.current)
+        // Mirror the turn into the sidebar rows, the same way the project
+        // workspace publishes its per-tab streaming state.
+        if (sessionId) {
+          setChatActivity((current) =>
+            nextWorkspaceChatActivity(current, {
+              sessionId,
+              isStreaming,
+              activeSessionId: sessionId,
+            }),
+          )
+        }
+        if (isStreaming) {
+          avatarStreaming.current = true
+          setAvatarState("working")
+          return
+        }
+        if (!avatarStreaming.current) {
+          setAvatarState("idle")
+          return
+        }
+        if (workspace?.id && sessionId) {
+          chatSessionEvents.emit({
+            workspaceId: workspace.id,
+            activeSessionId: sessionId,
+            refresh: true,
+          })
+        }
+        avatarStreaming.current = false
+        setAvatarState("finished")
+        avatarFinishedTimer.current = setTimeout(() => {
+          avatarFinishedTimer.current = null
+          setAvatarState("idle")
+        }, 1800)
+      },
+      [sessionId, workspace?.id],
+    )
     useEffect(
       () => () => {
-        if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
+        if (avatarFinishedTimer.current)
+          clearTimeout(avatarFinishedTimer.current)
       },
       [],
     )
+
+    // Publish this chat's activity so the Home panel and the phone drawer can
+    // paint the spinner + new-activity dot. Kept off `chatSessionEvents` so a
+    // stream tick never triggers a chat-list re-fetch.
+    useEffect(() => {
+      if (!workspace?.id) return
+      chatActivityEvents.emit(
+        workspaceChatActivityEvent(workspace.id, chatActivity),
+      )
+    }, [chatActivity, workspace?.id])
+
+    // A turn belongs to the chat that is on screen: switching chats (or leaving
+    // the screen) drops the old state so a stale row cannot spin forever.
+    useEffect(() => {
+      setChatActivity(emptyWorkspaceChatActivity)
+    }, [sessionId])
+
+    useEffect(() => {
+      if (!workspace?.id) return
+      const workspaceId = workspace.id
+      return () => {
+        chatActivityEvents.emit({
+          workspaceId,
+          streamingSessionIds: [],
+          completedSessionIds: [],
+        })
+      }
+    }, [workspace?.id])
 
     if (!workspace?.id || !sessionId || !profile) {
       return (
@@ -479,7 +654,8 @@ export const WorkspaceAgentChatScreen = observer(
     }
 
     const activePane = hasSidePane ? projectPane : null
-    const workspaceAgentUrl = `${API_URL}/api/workspaces/${workspace.id}/agent-proxy`
+    const workspaceAgentUrl =
+      machineRoute?.agentBase ?? `${API_URL}/api/workspaces/${workspace.id}/agent-proxy`
     const plansPanel = planPane ? (
       <PlansPanel
         visible
@@ -489,9 +665,27 @@ export const WorkspaceAgentChatScreen = observer(
         onClose={closePlanPane}
       />
     ) : null
+    const filePaneContent = filePane ? (
+      filePane.kind === "share" ? (
+        <ShareFileView
+          key={`${filePane.target.href}:${filePane.nonce}`}
+          target={filePane.target}
+          embedded
+          onClose={closeFilePane}
+        />
+      ) : (
+        <WorkspaceFileViewer
+          agentUrl={workspaceAgentUrl}
+          path={filePane.path}
+          nonce={filePane.nonce}
+          onClose={closeFilePane}
+        />
+      )
+    ) : null
 
     return (
       <PlanStreamProvider>
+      <ShareFileProvider open={openShareFile}>
       <View className="flex-1 flex-row bg-background">
       <View className="min-w-0 flex-1 bg-background">
         {usesMobileWorkspaceChrome ? (
@@ -517,9 +711,7 @@ export const WorkspaceAgentChatScreen = observer(
         ) : null}
         {usesMobileWorkspaceChrome &&
         !header &&
-        ((isPersonalWorkspace && showWelcome) ||
-          gettingStarted.visible ||
-          attachments.length > 0) ? (
+        ((isPersonalWorkspace && showWelcome) || attachments.length > 0) ? (
           // `PersonalAgentMobileHeader` floats above this content instead of
           // reserving layout space, so the welcome card / working-set chip —
           // the first normal-flow content on this screen — need their own
@@ -572,11 +764,6 @@ export const WorkspaceAgentChatScreen = observer(
             </View>
           </View>
         ) : null}
-        {gettingStarted.visible ? (
-          <View className="mx-auto mt-3 w-full max-w-2xl px-4">
-            <GetStartedChecklist state={gettingStarted} />
-          </View>
-        ) : null}
         {attachments.length > 0 ? (
           <View className="mx-auto w-full max-w-[760px] flex-row items-center gap-2 px-4 pb-2 pt-3">
             <Text className="text-xs font-medium text-muted-foreground">
@@ -608,6 +795,7 @@ export const WorkspaceAgentChatScreen = observer(
             featureName={profile.name}
             phase={null}
             workspaceId={workspace.id}
+            localAgentUrl={machineRoute?.agentBase ?? null}
             userId={user?.id}
             focusedProjectId={focusedProjectId}
             chatScope="workspace"
@@ -619,6 +807,7 @@ export const WorkspaceAgentChatScreen = observer(
             presentation="agent"
             onOpenProjectPane={hasSidePane ? openProjectPane : undefined}
             onOpenPlan={isPersonalWorkspace ? undefined : openPlanPane}
+            onOpenFilePath={openFilePane}
             buildPlanRequest={buildPlanRequest}
             onBuildPlanConsumed={handleBuildPlanConsumed}
             prefillRequest={prefillRequest}
@@ -626,6 +815,7 @@ export const WorkspaceAgentChatScreen = observer(
             initialMessage={capturedInitialMessage}
             className="flex-1"
             isActive
+            ownsPlanStream
             phoneTranscriptTopPadding={
               usesMobileWorkspaceChrome ? "floating-agent" : "chrome"
             }
@@ -763,10 +953,38 @@ export const WorkspaceAgentChatScreen = observer(
             <View style={{ height: Math.round(height * 0.8) }}>{plansPanel}</View>
           </NativePhoneSheet>
         ) : null}
+        {!hasSidePane && filePane?.kind === "path" ? (
+          <NativePhoneSheet
+            visible
+            onClose={closeFilePane}
+            grabber={false}
+            testID="workspace-file-sheet"
+          >
+            <View style={{ height: Math.round(height * 0.8) }}>{filePaneContent}</View>
+          </NativePhoneSheet>
+        ) : null}
+        {!hasSidePane && filePane?.kind === "share" ? (
+          <NativePhoneSheet
+            visible
+            onClose={closeFilePane}
+            grabber={false}
+            testID="workspace-share-file-sheet"
+          >
+            <View style={{ height: Math.round(height * 0.8) }}>{filePaneContent}</View>
+          </NativePhoneSheet>
+        ) : null}
       </View>
       {hasSidePane && plansPanel ? (
         <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-plan-pane">
           {plansPanel}
+        </View>
+      ) : null}
+      {hasSidePane && filePane ? (
+        <View
+          className="w-[45%] min-w-[420px] border-l border-border"
+          testID={filePane.kind === "share" ? "workspace-share-file-pane" : "workspace-file-pane"}
+        >
+          {filePaneContent}
         </View>
       ) : null}
       {activePane ? (
@@ -782,7 +1000,11 @@ export const WorkspaceAgentChatScreen = observer(
           />
         </View>
       ) : null}
+      {/* The thread a pressed background task runs in — beside the chat on
+          desktop, in a sheet on phones. Never replaces this chat. */}
+      <TaskThreadPaneHost />
       </View>
+      </ShareFileProvider>
       </PlanStreamProvider>
     )
   },

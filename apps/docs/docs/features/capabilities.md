@@ -24,23 +24,30 @@ generation, and dropping them keeps the agent focused and cheaper to run.
 
 :::info Tools and prompt stay in sync
 A disabled capability is removed **everywhere** — the main agent and every
-delegated subagent (media, devops, channel, integration). The agent can't reach
-a tool you've turned off, and it won't be told the tool exists.
+delegated subagent (channel, integration). The agent can't reach a tool
+you've turned off, and it won't be told the tool exists. Image generation is the
+one capability whose tools the agent calls **directly** — a project's own agent
+generates images with `generate_image`, it does not hand the job to a subagent.
+The same goes for `server_sync`, which regenerates and restarts the project's API
+server: every agent calls it directly.
 :::
 
 ## The capabilities
 
 Most capabilities default to **on**; set a flag to `false` to disable it. Opt-in
-ones (Git worktrees, Social media, and some of the
-[work capabilities](#work-capabilities)) default to off.
+ones (Git worktrees, Social media, Video generation, 3D generation, and some of
+the [work capabilities](#work-capabilities)) default to off — the two generation
+modes that bill per output are off until you turn them on.
 
 | Capability | Flag | Gates (tools) | Also trims from prompt |
 |------------|------|---------------|------------------------|
 | Web search | `webEnabled` | `web` | — |
 | Browser control | `browserEnabled` | `browser` | Browser guide (delegated) |
 | Shell | `shellEnabled` | `exec`, `exec_wait` | — |
-| Image generation | `imageGenEnabled` | `generate_image` | `media` capability line |
-| Heartbeat | `heartbeatToolsEnabled` | `heartbeat_configure`, `heartbeat_status` | `devops` line + Action Tools reminder |
+| Image generation | `imageGenEnabled` | `generate_image`, `list_media_models` | `media` capability line |
+| Video generation (opt-in) | `videoGenEnabled` | `generate_video` | Video tools in the `media` line |
+| 3D generation (opt-in) | `threeDGenEnabled` | `generate_3d_model`, `edit_3d_model` | 3D tools in the `media` line |
+| Heartbeat | `heartbeatToolsEnabled` | `heartbeat_configure`, `heartbeat_status` | `heartbeat` line + Action Tools reminder |
 | Memory | `memoryEnabled` | `memory_read`, `memory_search` | — |
 | Quick actions | `quickActionsEnabled` | `quick_action` | Quick Action guide |
 | Channels | `channelsEnabled` | `channel_connect`, `channel_disconnect`, `channel_list`, `send_message` | `channel` line + Action Tools bullet |
@@ -194,3 +201,19 @@ back on the next turn. Shell stays off on a personal workspace.
 For most capabilities the tool and its prompt guidance are linked — that's the
 point. The exceptions are the prompt-only toggles like the **Shogo SDK Guide**,
 which trim context without removing any tool.
+
+## Which tool schemas reach the model
+
+A fully-enabled agent registers well over 100 tools, and sending every JSON
+schema on every API call costs ~28k tokens before the conversation starts. So
+the runtime advertises a **core set** (read/write/edit, `exec`, `todo_write`,
+`web`, `read_guide`, `ask_user`, `share_file`, `agent_spawn`, …) plus **the
+tools this agent actually uses**, learned from its last 30 days of tool calls.
+Everything else is *deferred*: it stays callable, and it is listed by name in
+the agent's **Deferred Tools** prompt section, but its schema is only loaded
+when the agent asks for it (`read_guide({ tool })`) or calls it directly.
+
+Both tracks behave identically, and the deferred set is capped by an 8,000-token
+budget. To turn it off for a project, set `deferredToolsEnabled: false` in
+`config.json` (or `SHOGO_DEFERRED_TOOLS=0` in the runtime's environment).
+

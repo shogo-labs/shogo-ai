@@ -18,7 +18,7 @@
  *   TWILIO_ACCOUNT_SID        required for twilio:* commands
  *   TWILIO_AUTH_TOKEN         required for twilio:* and test:twilio
  *   ELEVENLABS_WEBHOOK_SECRET required for test:elevenlabs (auto-populated by el:create)
- *   API_PORT                  defaults to 8002
+ *   SHOGO_DEV_API_PORT        defaults to 8002 (same variable `bun dev:all` uses)
  *   NGROK_AUTHTOKEN           optional — if unset, uses whatever is in ~/.ngrok2
  *
  * Usage:
@@ -48,7 +48,10 @@ import { resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dir, '..')
 const ENV_PATH = resolve(ROOT, '.env.local')
-const API_PORT = Number(process.env.API_PORT ?? 8002)
+// `SHOGO_DEV_API_PORT`, like `scripts/dev-all.ts` and `scripts/watch-api.ts`:
+// the bare `API_PORT` belongs to the desktop app's own API child (SHO-26), and
+// there is no longer an `API_PORT` in `.env.local` to read (SHO-28).
+const API_PORT = Number(process.env.SHOGO_DEV_API_PORT ?? 8002)
 const NGROK_API = 'http://127.0.0.1:4040/api/tunnels'
 
 /**

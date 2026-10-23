@@ -6,7 +6,10 @@ import {
   CAPABILITY_INFO,
   CAPABILITY_KEYS,
   mergeCapabilitySettingsIntoConfig,
+  mergeCapabilitySettingsIntoWorkspaceSettings,
   normalizeCapabilitySettings,
+  parseWorkspaceSettings,
+  resolveCapabilities,
 } from '../capability-settings'
 
 describe('normalizeCapabilitySettings', () => {
@@ -94,5 +97,83 @@ describe('mergeCapabilitySettingsIntoConfig', () => {
     expect(first.changed).toBe(true)
     expect(second.changed).toBe(false)
     expect(Object.keys(second.config).sort()).toEqual([...CAPABILITY_KEYS].sort())
+  })
+})
+
+
+describe('resolveCapabilities', () => {
+  test('project scope leaves the workspace-agent opt-ins off unless stored', () => {
+    const caps = resolveCapabilities({}, { scope: 'project' })
+    expect(caps.boardAdminEnabled).toBe(false)
+    expect(caps.companyOpsEnabled).toBe(false)
+    expect(caps.problemsEnabled).toBe(false)
+  })
+
+  test('workspace scope turns the workspace-agent opt-ins on for unset keys', () => {
+    const caps = resolveCapabilities({}, { scope: 'workspace' })
+    expect(caps.boardAdminEnabled).toBe(true)
+    expect(caps.companyOpsEnabled).toBe(true)
+    expect(caps.problemsEnabled).toBe(true)
+    // Everything else keeps its normal default.
+    expect(caps.webEnabled).toBe(true)
+    expect(caps.socialMediaEnabled).toBe(false)
+  })
+
+  test('an explicit workspace setting wins over the workspace defaults', () => {
+    const caps = resolveCapabilities({ boardAdminEnabled: false, problemsEnabled: false }, { scope: 'workspace' })
+    expect(caps.boardAdminEnabled).toBe(false)
+    expect(caps.problemsEnabled).toBe(false)
+    expect(caps.companyOpsEnabled).toBe(true)
+  })
+
+  test('an unset scope resolves as project (the pre-split behaviour)', () => {
+    const caps = resolveCapabilities({})
+    expect(caps.boardAdminEnabled).toBe(false)
+  })
+
+  test('the runtime\'s active mode is authoritative for canvas', () => {
+    // A stale `canvasEnabled: false` (e.g. an anchor project's toggle synced
+    // into a runtime that is composing a canvas) must not render canvas off.
+    const caps = resolveCapabilities({ canvasEnabled: false, activeMode: 'canvas' })
+    expect(caps.canvasEnabled).toBe(true)
+    const off = resolveCapabilities({ canvasEnabled: true, activeMode: 'none' })
+    expect(off.canvasEnabled).toBe(false)
+    // No mode recorded: the stored toggle stands.
+    expect(resolveCapabilities({ canvasEnabled: false }).canvasEnabled).toBe(false)
+  })
+})
+
+describe('workspace settings helpers', () => {
+  test('parseWorkspaceSettings accepts a JSON string, an object, or nothing', () => {
+    expect(parseWorkspaceSettings('{"boardAdminEnabled":true}')).toEqual({ boardAdminEnabled: true })
+    expect(parseWorkspaceSettings({ boardAdminEnabled: false })).toEqual({ boardAdminEnabled: false })
+    expect(parseWorkspaceSettings(null)).toEqual({})
+    expect(parseWorkspaceSettings('not-json')).toEqual({})
+  })
+
+  test('merging a capability patch preserves the workspace\'s other settings', () => {
+    const { settings, changed } = mergeCapabilitySettingsIntoWorkspaceSettings(
+      { theme: 'dark', boardAdminEnabled: true },
+      { boardAdminEnabled: false, canvasEnabled: false, activeMode: 'none' },
+    )
+    expect(changed).toBe(true)
+    expect(settings.theme).toBe('dark')
+    expect(settings.boardAdminEnabled).toBe(false)
+    expect(settings.canvasEnabled).toBe(false)
+    expect(settings.activeMode).toBe('none')
+    // Keys the patch does not mention are not invented.
+    expect(settings.shellEnabled).toBeUndefined()
+  })
+
+  test('a patch that changes nothing reports changed: false', () => {
+    const first = mergeCapabilitySettingsIntoWorkspaceSettings({}, { shellEnabled: true })
+    const second = mergeCapabilitySettingsIntoWorkspaceSettings(first.settings, { shellEnabled: true })
+    expect(first.changed).toBe(true)
+    expect(second.changed).toBe(false)
+  })
+
+  test('unknown keys in a patch are ignored, not stored', () => {
+    const { settings } = mergeCapabilitySettingsIntoWorkspaceSettings({}, { notACapability: true } as never)
+    expect(settings.notACapability).toBeUndefined()
   })
 })

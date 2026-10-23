@@ -7,7 +7,7 @@
  * Uses child_process.spawn with random port allocation in range 37100-37900.
  */
 
-import { execSync, type ChildProcess } from '@shogo/shared-runtime/child-process'
+import { exec, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import {
   existsSync,
   cpSync,
@@ -21,18 +21,28 @@ import {
   realpathSync,
   renameSync,
   copyFileSync,
+  readdirSync,
 } from 'fs'
 import { join, dirname, resolve, basename } from 'path'
+import { connect } from 'node:net'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { pkg } from '../../../../../packages/cli/src/pkg'
 import { stackSeedsItself } from '../../../../../packages/core/src/tech-stack-registry'
 import { cloneTree, defaultCloneMode, type CloneMode } from './clone-tree'
+import { reapChildLedger } from '@shogo-ai/sdk/child-ledger'
 import {
   WorkerRuntimeManager,
   type ProjectSpawnConfig,
   type RuntimeGoneInfo,
 } from '@shogo-ai/worker/runtime-manager'
+import {
+  decideBusy,
+  describeBusyReason,
+  type BusyDecision,
+} from '@shogo-ai/worker/runtime-activity'
+import { sampleHostMemory } from './host-memory'
+import { inflightCallCount } from './inflight-calls'
 import type {
   IRuntimeManager,
   IProjectRuntime,
@@ -200,6 +210,22 @@ const RUNTIME_SERVER = process.env.AGENT_RUNTIME_ENTRY
   || join(PROJECT_ROOT, 'packages', 'agent-runtime', 'src', 'server.ts')
 
 /** Port range for random allocation (obscure high range to avoid conflicts) */
+/**
+ * Promise form of `exec`, for the process-table scans and kills that used to be
+ * `execSync`. Those run on the runtime manager's start path (and from the
+ * constructor), which shares an event loop with the local API's tunnel: a
+ * blocking `ps`/`lsof`/`kill` froze `/health` long enough for the desktop
+ * supervisor to kill the API mid-request (SHO-185).
+ */
+function execAsync(command: string, options: { maxBuffer?: number } = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(command, { encoding: 'utf-8', maxBuffer: options.maxBuffer ?? 8 * 1024 * 1024 }, (err: any, stdout: any) => {
+      if (err) reject(err)
+      else resolve(String(stdout ?? ''))
+    })
+  })
+}
+
 const PORT_RANGE_START = 37100
 const PORT_RANGE_END = 37900
 const AGENT_PORT_OFFSET = 1000
@@ -253,15 +279,78 @@ export function projectWorkspaceRuntimeKey(anchorProjectId: string): string {
   return `ws:proj:${anchorProjectId}`
 }
 
+/**
+ * How many workspace/project previews this host is allowed to keep warm.
+ *
+ * The single source of truth for the warm-preview cap: the manager evicts
+ * down to it, and the desktop startup prewarm must warm no more than it
+ * (SHO-107 — boot used to warm `WORKSPACE_PREVIEW_MAX || 3` while the manager
+ * kept 1 on a low-tier host, so an eviction right after boot was guaranteed).
+ * A `low` tier host is ≤8 GB RAM / ≤4 cores (see
+ * `apps/desktop/src/runtime-memory.ts`) — a normal laptop, where one warm
+ * preview is all the machine can carry.
+ */
+export function resolveWorkspacePreviewMax(): number {
+  const defaultMax = process.env.SHOGO_HOST_TIER === 'low' ? 1 : 3
+  const n = parseInt(process.env.WORKSPACE_PREVIEW_MAX || String(defaultMax), 10)
+  return Number.isFinite(n) && n > 0 ? n : defaultMax
+}
+
+/**
+ * How many BACKGROUND (heartbeat/schedule) runtimes this host keeps warm.
+ *
+ * The default used to be 2. With ~8 board agents waking on cards that meant
+ * nearly every wake LRU-evicted another agent's runtime: one Windows desktop
+ * evicted a background runtime 146 times in a day and kept one 0 times, killing
+ * in-flight merge waiters and builds each time (SHO-143). The cap is a policy
+ * number now sized for a real board; actual RAM is bounded by the free-memory
+ * guard ({@link ./host-memory}), not by this number.
+ */
+export function resolveWorkspaceBackgroundMax(): number {
+  const n = parseInt(process.env.WORKSPACE_BACKGROUND_MAX || '10', 10)
+  return Number.isFinite(n) && n > 0 ? n : 10
+}
+
+/**
+ * The worker's global runtime ceiling (`maxRuntimes`), one source of truth.
+ *
+ * It has to be at least preview + background + one workspace-session runtime,
+ * or the global LRU starts evicting the pools the API deliberately keeps warm —
+ * with a background cap of 10 that ceiling would take an open preview (SHO-143).
+ * Extra headroom covers a workspace session plus a start in flight.
+ */
+export function resolveRuntimeMaxCount(): number {
+  const explicit = parseInt(process.env.RUNTIME_MAX_COUNT || '', 10)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  return resolveWorkspacePreviewMax() + resolveWorkspaceBackgroundMax() + 3
+}
+
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
   basePort: PORT_RANGE_START,
-  maxRuntimes: 10,
+  maxRuntimes: 16,
   healthCheckInterval: 30000,
   workspacesDir: join(PROJECT_ROOT, 'workspaces'),
   domainSuffix: 'localhost',
   templateDir: '_template',
 }
+
+/**
+ * How long a workspace-level resolve waits for an anchored start that has
+ * claimed its key but not yet published its runtime record before deciding the
+ * anchor is not coming and spawning its own merged root (SHO-107).
+ */
+const ANCHORED_REUSE_WAIT_MS = 5_000
+const ANCHORED_REUSE_POLL_MS = 25
+
+/**
+ * When host memory is below the floor, how long a background start waits for
+ * room (and how often it re-checks) before it gives the wake back to the
+ * scheduler. Long enough to ride out a build finishing, short enough that a
+ * heartbeat is only delayed by one cycle (SHO-143).
+ */
+const BACKGROUND_START_MEMORY_WAIT_MS = 30_000
+const BACKGROUND_START_MEMORY_RETRY_MS = 2_000
 
 /** Internal runtime state with process handles */
 interface InternalRuntime extends IProjectRuntime {
@@ -386,11 +475,7 @@ export class RuntimeManager implements IRuntimeManager {
    * zero owns teardown there) — see warm-pool keep-warm.
    */
   private workspacePreviewMru: string[] = []
-  private readonly workspacePreviewMax: number = (() => {
-    const defaultMax = process.env.SHOGO_HOST_TIER === 'low' ? 1 : 3
-    const n = parseInt(process.env.WORKSPACE_PREVIEW_MAX || String(defaultMax), 10)
-    return Number.isFinite(n) && n > 0 ? n : defaultMax
-  })()
+  private readonly workspacePreviewMax: number = resolveWorkspacePreviewMax()
 
   /**
    * Completely separate pool for BACKGROUND (local heartbeat) runtimes. The
@@ -398,21 +483,38 @@ export class RuntimeManager implements IRuntimeManager {
    * the warm preview set (handled in {@link enforceWorkspacePreviewCap}), and —
    * crucially — they must not be able to crowd the embedded worker's global
    * `maxRuntimes` ceiling to the point where it LRU-evicts a foreground
-   * preview. We therefore bound the background pool with its own small cap and
-   * LRU-evict among background runtimes only. With foreground (3) + background
-   * ({@link workspaceBackgroundMax}) kept well under the worker's `maxRuntimes`
-   * (default 10), the worker's global cap never targets an open preview.
+   * preview. We therefore bound the background pool with its own cap and
+   * LRU-evict among background runtimes only. {@link resolveRuntimeMaxCount}
+   * keeps the worker ceiling above preview + background + one workspace
+   * session, so the global cap never targets an open preview.
    * Promoted out of this pool the moment the project is opened in the UI.
    */
   private workspaceBackgroundMru: string[] = []
-  private readonly workspaceBackgroundMax: number = (() => {
-    const n = parseInt(process.env.WORKSPACE_BACKGROUND_MAX || '2', 10)
-    return Number.isFinite(n) && n > 0 ? n : 2
-  })()
+  private readonly workspaceBackgroundMax: number = resolveWorkspaceBackgroundMax()
+
+  /**
+   * Which workspace (and, for an anchored runtime, which anchor project) each
+   * runtime key serves. Registered when a start BEGINS — before the merged root
+   * is built, i.e. before the record exists in {@link runtimes} — because
+   * cross-key dedup has to see an IN-FLIGHT start too. Pruned on `stop`.
+   * See {@link findAnchoredRuntimeFor}.
+   */
+  private runtimeOwners: Map<string, { workspaceId: string; anchorProjectId?: string }> = new Map()
+
+  /**
+   * Open PTY terminal WebSocket sessions per runtime key, counted by the
+   * gateway's terminal socket open/close (`noteTerminalSession`). A runtime
+   * with a shell attached is never LRU-evicted: evicting it kills the user's
+   * terminal mid-command with "Connection ended" (SHO-107).
+   */
+  private readonly liveTerminalSessions: Map<string, number> = new Map()
 
   constructor(config: Partial<IRuntimeConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
-    this.cleanupStaleProcesses()
+    // Fire and forget: the sweep shells out to `ps`/`lsof`, and awaiting it in
+    // the constructor would block this API's event loop (and, on the desktop, its
+    // tunnel) for the whole scan (SHO-185).
+    void this.cleanupStaleProcesses()
     this.agentManager = new WorkerRuntimeManager({
       // Spawn `bun run <RUNTIME_SERVER>` so the desktop dev path can
       // use the source bundle / TS entry directly without depending on
@@ -499,11 +601,16 @@ export class RuntimeManager implements IRuntimeManager {
    * stack — allocates from this same port range, so a listener whose owning
    * API is still alive belongs to someone else and must be left running.
    */
-  private cleanupStaleProcesses(): void {
+  private async cleanupStaleProcesses(): Promise<void> {
     if (cleanupRanAtModuleScope) return
     cleanupRanAtModuleScope = true
     if (process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP === '1') return
 
+    await this.cleanupOrphanedRuntimeListeners()
+    if (process.platform !== 'win32') await this.cleanupOrphanedViteWatchers()
+  }
+
+  private async cleanupOrphanedRuntimeListeners(): Promise<void> {
     const rangesToClean = [
       { start: PORT_RANGE_START, end: PORT_RANGE_END },
       { start: PORT_RANGE_START + AGENT_PORT_OFFSET, end: PORT_RANGE_END + AGENT_PORT_OFFSET + 1 },
@@ -516,13 +623,13 @@ export class RuntimeManager implements IRuntimeManager {
     const candidates = new Set<string>()
     for (const range of rangesToClean) {
       const pids = isWindows
-        ? this.findStalePidsWindows(range.start, range.end, selfPid, parentPid)
-        : this.findStalePidsPosix(range.start, range.end, selfPid, parentPid)
+        ? await this.findStalePidsWindows(range.start, range.end, selfPid, parentPid)
+        : await this.findStalePidsPosix(range.start, range.end, selfPid, parentPid)
       for (const pid of pids) candidates.add(pid)
     }
     if (candidates.size === 0) return
 
-    const parentOf = isWindows ? this.readParentPidsWindows() : this.readParentPidsPosix()
+    const parentOf = isWindows ? await this.readParentPidsWindows() : await this.readParentPidsPosix()
     if (!parentOf) {
       console.warn(`[RuntimeManager] Could not read the process table — leaving ${candidates.size} listener(s) on the runtime port range alone`)
       return
@@ -539,14 +646,14 @@ export class RuntimeManager implements IRuntimeManager {
     for (const pid of stale) {
       try {
         if (isWindows) {
-          // taskkill is the Windows equivalent of `kill -9`. We
-          // intentionally swallow stderr and stdio to keep the
-          // module-level cleanup quiet on a normal boot where
-          // every PID we found has already exited by the time
-          // we get here.
-          execSync(`taskkill /F /PID ${pid}`, { stdio: ['pipe', 'pipe', 'pipe'] })
+          // taskkill is the Windows equivalent of SIGKILL. Failures are
+          // swallowed: on a normal boot every PID we found has already exited.
+          await execAsync(`taskkill /F /PID ${pid}`)
         } else {
-          execSync(`kill -9 ${pid} 2>/dev/null || true`)
+          // process.kill, not a shelled-out signal: the pid is already a number
+          // we validated, and spawning sh to signal our own child is 5-20ms of
+          // blocked event loop per pid (SHO-185).
+          process.kill(Number(pid), 'SIGKILL')
         }
       } catch {
         // Process already exited / permission denied — fine.
@@ -554,13 +661,82 @@ export class RuntimeManager implements IRuntimeManager {
     }
   }
 
-  /** `pid -> ppid` for every process, or `null` when `ps` is unavailable. */
-  private readParentPidsPosix(): Map<string, string> | null {
+  /**
+   * Preview watchers are only reaped per-project when that project starts a
+   * new one, so watchers for projects that are never reopened leak forever
+   * (observed: 120 orphans, ~18GB). Scoped to this API's workspaces dir so
+   * another Shogo instance's watchers are untouched.
+   */
+  private async cleanupOrphanedViteWatchers(): Promise<void> {
+    const workspacesDir = this.resolvedWorkspacesDir()
+    const dirs = [workspacesDir]
     try {
-      const stdout = execSync('ps -A -o pid= -o ppid=', {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
+      const real = realpathSync(workspacesDir)
+      if (real !== workspacesDir) dirs.push(real)
+    } catch {
+      // Not created yet — nothing can be running under it.
+    }
+
+    let psOutput = ''
+    try {
+      psOutput = await execAsync('ps -A -o pid=,ppid=,pgid=,command=')
+    } catch {
+      return
+    }
+
+    const pgids = selectOrphanedViteWatcherPgids(psOutput, dirs)
+    if (pgids.length > 0) {
+      console.log(`[RuntimeManager] Cleaning up ${pgids.length} orphaned vite watcher group(s): ${pgids.join(', ')}`)
+      for (const pgid of pgids) {
+        try {
+          process.kill(-pgid, 'SIGKILL')
+        } catch {
+          // Group already gone — fine.
+        }
+      }
+    }
+    this.reapOrphanedChildLedgers(workspacesDir)
+  }
+
+  /**
+   * Reap the detached groups each project's runtime recorded before it died
+   * (SHO-144). `cleanupOrphanedViteWatchers` only ever knew about vite, which
+   * is the one child that leaves a pidfile; an exec shell or an API sidecar of
+   * a runtime that was SIGKILLed had no trail at all and survived to launchd.
+   *
+   * The ledger is per project workspace, so this walks one level down. Each
+   * entry is only signalled while its command line still matches what was
+   * recorded — a reused pid is dropped, never killed.
+   */
+  private reapOrphanedChildLedgers(workspacesDir: string): void {
+    if (process.platform === 'win32') return
+    let entries: Array<{ name: string; isDirectory: () => boolean }>
+    try {
+      entries = readdirSync(workspacesDir, { withFileTypes: true }) as any
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+      const workspaceDir = join(workspacesDir, entry.name)
+      try {
+        const { reaped } = reapChildLedger(workspaceDir)
+        if (reaped.length > 0) {
+          console.log(
+            `[RuntimeManager] Reaped ${reaped.length} orphaned child group(s) for ${entry.name}: ` +
+              reaped.map((child) => `${child.label}(pgid=${child.pgid})`).join(', '),
+          )
+        }
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] Child ledger reap failed for ${entry.name}: ${err?.message ?? err}`)
+      }
+    }
+  }
+
+  /** `pid -> ppid` for every process, or `null` when `ps` is unavailable. */
+  private async readParentPidsPosix(): Promise<Map<string, string> | null> {
+    try {
+      const stdout = await execAsync('ps -A -o pid= -o ppid=')
       const table = parsePidTable(stdout)
       return table.size > 0 ? table : null
     } catch {
@@ -572,11 +748,10 @@ export class RuntimeManager implements IRuntimeManager {
    * Windows never reparents orphans, so a dead owner shows up as a
    * `ParentProcessId` that is absent from the table.
    */
-  private readParentPidsWindows(): Map<string, string> | null {
+  private async readParentPidsWindows(): Promise<Map<string, string> | null> {
     try {
-      const stdout = execSync(
+      const stdout = await execAsync(
         `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.ParentProcessId }"`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
       )
       const table = parsePidTable(stdout)
       return table.size > 0 ? table : null
@@ -594,17 +769,14 @@ export class RuntimeManager implements IRuntimeManager {
    * `/bin/sh: syntax error: unexpected "("` into the logs.
    * Defensively keep only pure integer PIDs.
    */
-  private findStalePidsPosix(
+  private async findStalePidsPosix(
     start: number,
     end: number,
     selfPid: string,
     parentPid: string,
-  ): string[] {
+  ): Promise<string[]> {
     try {
-      const result = execSync(
-        `lsof -iTCP:${start}-${end} -sTCP:LISTEN -t 2>/dev/null || true`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-      ).trim()
+      const result = (await execAsync(`lsof -iTCP:${start}-${end} -sTCP:LISTEN -t 2>/dev/null || true`)).trim()
       return [...new Set(
         result
           .split(/\s+/)
@@ -633,18 +805,15 @@ export class RuntimeManager implements IRuntimeManager {
    * and then filter the port number ourselves so we can match a
    * range rather than a single port.
    */
-  private findStalePidsWindows(
+  private async findStalePidsWindows(
     start: number,
     end: number,
     selfPid: string,
     parentPid: string,
-  ): string[] {
+  ): Promise<string[]> {
     let stdout = ''
     try {
-      stdout = execSync(
-        'netstat -ano | findstr LISTENING',
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-      )
+      stdout = await execAsync('netstat -ano | findstr LISTENING')
     } catch {
       // findstr exits 1 when nothing matches — i.e. nothing is
       // listening anywhere. Treat as empty rather than fatal.
@@ -672,22 +841,28 @@ export class RuntimeManager implements IRuntimeManager {
 
   /**
    * TCP-level check whether a port is listening (faster and more reliable than HTTP fetch).
+   *
+   * Never shells out: this runs on the runtime start path, which the desktop's
+   * tunnel can trigger many times at once, and `execSync('lsof')` froze the
+   * whole event loop (~65 ms per call here, seconds on a loaded machine). That
+   * stall starved `/health`, the desktop supervisor killed the API after three
+   * missed probes, and the tunnel dropped as 1006 at the cloud (SHO-185).
    */
   private async isPortListening(port: number): Promise<boolean> {
-    try {
-      const result = execSync(
-        process.platform === 'win32'
-          ? `netstat -ano | findstr :${port} | findstr LISTENING`
-          : `lsof -ti :${port} 2>/dev/null || true`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-      ).trim()
-      const pids = result.split('\n').filter(l => l.trim().length > 0)
-      const selfPid = String(process.pid)
-      const parentPid = String(process.ppid)
-      return pids.some(pid => pid !== selfPid && pid !== parentPid)
-    } catch {
-      return false
-    }
+    return await new Promise<boolean>((resolve) => {
+      let settled = false
+      const done = (listening: boolean) => {
+        if (settled) return
+        settled = true
+        try { socket.destroy() } catch { /* already closed */ }
+        resolve(listening)
+      }
+      const socket = connect({ host: '127.0.0.1', port })
+      socket.setTimeout(350)
+      socket.once('connect', () => done(true))
+      socket.once('timeout', () => done(false))
+      socket.once('error', () => done(false))
+    })
   }
 
   /**
@@ -1627,9 +1802,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     }
     const key = workspaceRuntimeKey(workspaceId)
 
-    const existing = this.runtimes.get(key)
+    let existing = this.runtimes.get(key)
     if (existing && existing.status === 'running' && existing.agentPort) {
-      if (this.isAgentAlive(key, existing)) return this.toPublicRuntime(existing)
+      if (this.isAgentAlive(key, existing)) {
+        // Switching back to a workspace whose runtime is still warm counts as
+        // an open: keep it warmest and let the shared cap bound the rest.
+        this.recordWorkspaceMru(key)
+        return this.toPublicRuntime(existing)
+      }
       await this.dropStaleRuntime(key, 'stale-agent')
     }
 
@@ -1637,6 +1817,36 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     if (inflight) {
       console.log(`[RuntimeManager] Waiting on in-flight workspace start for ${key}`)
       return inflight
+    }
+
+    // One folder, one runtime (SHO-107). A workspace-level resolve that mounts
+    // no members of its own is served by the workspace's project-anchored
+    // runtime if one is running or starting — spawning `ws:<workspaceId>` as
+    // well puts two merged roots and two agent-runtime processes on the same
+    // folder, and the preview LRU then evicts whichever it warmed first (the
+    // one the user's terminal is attached to, as often as not).
+    //
+    // Only entered when the workspace actually has an anchored runtime, so the
+    // common path stays await-free between the checks above and the spawn.
+    if ((opts.attachedProjectIds ?? []).length === 0 && this.hasAnchoredRuntime(workspaceId)) {
+      const anchored = await this.findAnchoredRuntimeFor(workspaceId)
+      if (anchored) {
+        console.log(
+          `[RuntimeManager] startWorkspace(${key}): reusing project-anchored runtime ${anchored.key} (one folder, one runtime)`,
+        )
+        if (anchored.inflight) return anchored.inflight
+        this.recordWorkspaceMru(anchored.key)
+        return this.toPublicRuntime(anchored.runtime!)
+      }
+      // That wait can yield to a sibling caller of this same key, so re-check
+      // our own slot before respawning: concurrent starts must still dedupe.
+      const raced = this.startingPromises.get(key)
+      if (raced) return raced
+      existing = this.runtimes.get(key)
+      if (existing && existing.status === 'running' && existing.agentPort && this.isAgentAlive(key, existing)) {
+        this.recordWorkspaceMru(key)
+        return this.toPublicRuntime(existing)
+      }
     }
 
     if (existing && (existing.status === 'error' || existing.status === 'starting')) {
@@ -1658,7 +1868,15 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     })
     this.startingPromises.set(key, promise)
     try {
-      return await promise
+      const result = await promise
+      // A workspace-session runtime is a foreground open, exactly like a
+      // project-anchored preview: record it in the shared MRU and apply the
+      // same warm cap, so N open workspaces can't pile up unbounded processes.
+      // A runtime with an in-flight turn is never evicted (`hasActiveWork`), so
+      // switching away keeps its work running (Decision 3).
+      this.recordWorkspaceMru(key)
+      await this.enforceWorkspacePreviewCap().catch(() => {})
+      return result
     } finally {
       this.startingPromises.delete(key)
     }
@@ -1720,19 +1938,20 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       (id, i, arr) => id && arr.indexOf(id) === i,
     )
 
-    const anchorProjectInfo = await this.getProjectInfo(anchorProjectId)
-    const isRemote = !!anchorProjectInfo.remoteHostId
-    if (!isRemote && memberProjectIds.length > 1) {
-      const attachedInfos = await Promise.all(
-        memberProjectIds.slice(1).map((projectId) => this.getProjectInfo(projectId)),
-      )
-      if (attachedInfos.some((info) => !!info.remoteHostId)) {
-        throw new Error(
-          'Remote-SSH projects cannot be attached to a local project runtime; ' +
-            'open the remote project directly.',
-        )
-      }
-    }
+    // Claim this workspace's anchor for the key *before* the lookups below: a
+    // workspace-level resolve in this window must join this start instead of
+    // spawning a second merged root for the same folder (SHO-107).
+    this.runtimeOwners.set(key, { workspaceId: opts.workspaceId, anchorProjectId })
+
+    // A throw before anything is spawned must release that claim, or every
+    // later workspace-level resolve waits out ANCHORED_REUSE_WAIT_MS for a
+    // start that is never coming.
+    const { isRemote, anchorProjectInfo } = await this
+      .assertSingleTransport(anchorProjectId, memberProjectIds)
+      .catch((err) => {
+        this.releaseRuntimeOwner(key)
+        throw err
+      })
     let existing = this.runtimes.get(key)
     // A project can be rebound between local and Remote-SSH storage while its
     // old runtime is still cached. Never reuse a runtime with the wrong
@@ -1799,6 +2018,18 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         await this.stop(key, 'pre-respawn')
       } catch (err: any) {
         console.warn(`[RuntimeManager] startProjectWorkspace(${key}): pre-respawn stop failed: ${err?.message ?? err}`)
+      }
+    }
+
+    // A background start yields to host memory. Raising the pool cap only
+    // helps if RAM, not the cap, decides when an agent may stay warm — and the
+    // one thing this may never do is evict a runtime that is working (SHO-143).
+    if (opts.background) {
+      try {
+        await this.admitBackgroundStart(key)
+      } catch (err) {
+        this.releaseRuntimeOwner(key)
+        throw err
       }
     }
 
@@ -2195,6 +2426,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     logLabel: string
   }): Promise<IProjectRuntime> {
     const { key, rootName, workspaceId, memberProjectIds, localFolders } = spec
+    // Publish the owner before the first await so a concurrent resolve can see
+    // this start (see findAnchoredRuntimeFor) even while the merged root is
+    // still being built.
+    this.runtimeOwners.set(key, { workspaceId, anchorProjectId: spec.anchorProjectId })
     const startedAtMs = Date.now()
     const phase = (name: string, extra?: Record<string, unknown>) => {
       console.log(
@@ -2394,6 +2629,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     } catch (err) {
       runtime.status = 'error'
       this.releasePort(port)
+      this.runtimeOwners.delete(key)
       if (this.agentManagedProjects.has(key)) {
         this.agentManagedProjects.delete(key)
         await this.agentManager.stop(key).catch(() => {})
@@ -2830,14 +3066,109 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
-   * Move an anchored workspace key to the front of the warm-preview MRU.
-   * No-ops for background (heartbeat) runtimes so a heartbeat-triggered agent
-   * turn — whose AI-proxy calls flow through {@link touch} — can't quietly pull
-   * a background runtime into the foreground preview set and count it against
-   * the cap.
+   * Validate that the anchor and every attached project share one transport.
+   * Extracted so {@link startProjectWorkspace} can release its runtime-key claim
+   * when this throws (a remote project attached to a local runtime) — the claim
+   * is made before the lookups this needs.
+   */
+  private async assertSingleTransport(
+    anchorProjectId: string,
+    memberProjectIds: string[],
+  ): Promise<{ isRemote: boolean; anchorProjectInfo: ProjectInfo }> {
+    const anchorProjectInfo = await this.getProjectInfo(anchorProjectId)
+    const isRemote = !!anchorProjectInfo.remoteHostId
+    if (!isRemote && memberProjectIds.length > 1) {
+      const attachedInfos = await Promise.all(
+        memberProjectIds.slice(1).map((projectId) => this.getProjectInfo(projectId)),
+      )
+      if (attachedInfos.some((info) => !!info.remoteHostId)) {
+        throw new Error(
+          'Remote-SSH projects cannot be attached to a local project runtime; ' +
+            'open the remote project directly.',
+        )
+      }
+    }
+    return { isRemote, anchorProjectInfo }
+  }
+
+  /**
+   * Drop a start claim that will never produce a runtime — a lookup or
+   * validation throw before the spawn. A claim that already published a
+   * runtime or an in-flight promise is left alone; those clean up themselves.
+   */
+  private releaseRuntimeOwner(key: string): void {
+    if (this.runtimes.has(key) || this.startingPromises.has(key)) return
+    this.runtimeOwners.delete(key)
+  }
+
+  /**
+   * Whether this workspace has a project-anchored runtime slot at all — live,
+   * starting, or claimed but not yet published. Synchronous so
+   * {@link startWorkspace} can skip its anchored-reuse wait entirely (and stay
+   * race-free against concurrent starts of its own key) when there is nothing
+   * to join.
+   */
+  private hasAnchoredRuntime(workspaceId: string): boolean {
+    for (const [key, owner] of this.runtimeOwners) {
+      if (key.startsWith('ws:proj:') && owner.workspaceId === workspaceId) return true
+    }
+    return false
+  }
+
+  /**
+   * The workspace's project-anchored runtime (`ws:proj:<anchor>`), live or
+   * starting, if there is one. Backs the cross-key dedup in
+   * {@link startWorkspace}: one folder must be served by one merged root, one
+   * agent-runtime process and one PTY tree (SHO-107).
+   *
+   * An anchored start publishes itself in `runtimeOwners` before its first
+   * await but only reaches `startingPromises` / `runtimes` a moment later, so a
+   * concurrent resolve can find an owner with nothing published yet. That is a
+   * start in progress, not a missing runtime: wait (briefly) for it to publish
+   * instead of spawning a duplicate. If nothing appears — the start failed —
+   * the caller falls through to a normal spawn.
+   */
+  private async findAnchoredRuntimeFor(
+    workspaceId: string,
+  ): Promise<{ key: string; inflight?: Promise<IProjectRuntime>; runtime?: InternalRuntime } | null> {
+    const deadline = Date.now() + ANCHORED_REUSE_WAIT_MS
+    for (;;) {
+      let pending = false
+      for (const [key, owner] of this.runtimeOwners) {
+        if (!key.startsWith('ws:proj:') || owner.workspaceId !== workspaceId) continue
+        const inflight = this.startingPromises.get(key)
+        if (inflight) return { key, inflight }
+        const runtime = this.runtimes.get(key)
+        // Owner registered, record not published yet: mid pre-spawn awaits.
+        if (!runtime) {
+          pending = true
+          continue
+        }
+        // Never adopt a remote runtime for a local workspace, and never adopt a
+        // runtime that is on its way out or already dead.
+        if (runtime.remoteRuntime || runtime.status === 'stopped' || runtime.status === 'error') continue
+        if (runtime.status === 'starting' || runtime.status === 'stopping') {
+          pending = pending || runtime.status === 'starting'
+          continue
+        }
+        if (runtime.agentPort && this.isAgentAlive(key, runtime)) return { key, runtime }
+      }
+      if (!pending || Date.now() >= deadline) return null
+      await new Promise((resolve) => setTimeout(resolve, ANCHORED_REUSE_POLL_MS))
+    }
+  }
+
+  /**
+   * Move a warm-preview key to the front of the MRU. Covers both runtime
+   * flavours the cap protects: a project-anchored preview (`ws:proj:<id>`) and
+   * a workspace-session runtime (`ws:<id>` — one per open workspace, see
+   * {@link startWorkspace}). No-ops for background (heartbeat) runtimes so a
+   * heartbeat-triggered agent turn — whose AI-proxy calls flow through
+   * {@link touch} — can't quietly pull a background runtime into the foreground
+   * preview set and count it against the cap.
    */
   private recordWorkspaceMru(key: string): void {
-    if (!key.startsWith('ws:proj:')) return
+    if (!key.startsWith('ws:')) return
     if (this.runtimes.get(key)?.background) return
     const i = this.workspacePreviewMru.indexOf(key)
     if (i >= 0) this.workspacePreviewMru.splice(i, 1)
@@ -2864,6 +3195,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * heartbeat pool so it can never push the embedded worker's global
    * `maxRuntimes` ceiling high enough to evict a foreground preview. Idempotent
    * and best-effort.
+   *
+   * A runtime that is busy — or whose activity cannot be verified — is never
+   * the victim: the pool simply sits over its cap and says so (SHO-143).
    */
   private async enforceWorkspaceBackgroundCap(): Promise<void> {
     const cap = this.workspaceBackgroundMax
@@ -2873,17 +3207,42 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       return !!rt && rt.status !== 'stopped' && rt.background === true
     })
     if (liveBackground.length <= cap) return
-    for (const key of liveBackground.slice(cap)) {
-      if (await this.hasActiveWork(key)) {
-        console.log(`[RuntimeManager] Workspace background LRU: keeping ${key} over cap=${cap} (work in progress)`)
+    // Oldest first: the tail of the MRU is the coldest, and it should go
+    // before a newer one just because the list happens to be walked forwards.
+    const evictable = liveBackground.slice(cap).reverse()
+    await this.refreshActivityFor(evictable)
+    let overBy = liveBackground.length - cap
+    for (const key of evictable) {
+      const verdict = await this.isBusy(key)
+      if (verdict.dead) {
+        await this.reapDeadRuntime(key, 'background LRU', verdict)
+        overBy--
         continue
       }
-      console.log(`[RuntimeManager] Workspace background LRU: evicting ${key} (cap=${cap})`)
+      if (verdict.busy) {
+        console.log(
+          `[RuntimeManager] Workspace background LRU: keeping ${key} over cap=${cap}: ` +
+            `${verdict.reason} (${describeBusyReason(verdict)})`,
+        )
+        continue
+      }
+      const idleMs = this.idleMs(key)
+      console.log(
+        `[RuntimeManager] Workspace background LRU: evicting ${key}: ` +
+          `${describeBusyReason(verdict, idleMs)} (cap=${cap})`,
+      )
       try {
         await this.stop(key, 'background-lru')
+        overBy--
       } catch (err: any) {
         console.warn(`[RuntimeManager] background LRU evict stop(${key}) failed: ${err?.message ?? err}`)
       }
+    }
+    if (overBy > 0) {
+      console.log(
+        `[RuntimeManager] Workspace background LRU: ${liveBackground.length} live over cap=${cap}, ` +
+          `${overBy} kept busy or unverifiable — going over the cap rather than killing work`,
+      )
     }
   }
 
@@ -2897,7 +3256,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * heartbeat runtimes are a completely separate system: they are never in the
    * MRU, so they neither count toward the cap nor get evicted here, and — just
    * as importantly — they can never push a real, open preview out of the warm
-   * set. (They're bounded by the embedded worker's idle/maxRuntimes lifecycle.)
+   * set. (They're bounded by the background pool above.)
    */
   private async enforceWorkspacePreviewCap(): Promise<void> {
     const cap = this.workspacePreviewMax
@@ -2909,28 +3268,281 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     })
     if (livePreviews.length <= cap) return
     // Evict the tail (oldest opens) beyond the cap.
-    for (const key of livePreviews.slice(cap)) {
-      if (await this.hasActiveWork(key)) {
-        console.log(`[RuntimeManager] Workspace preview LRU: keeping ${key} over cap=${cap} (work in progress)`)
+    const evictable = livePreviews.slice(cap).reverse()
+    await this.refreshActivityFor(evictable)
+    let overBy = livePreviews.length - cap
+    for (const key of evictable) {
+      const verdict = await this.isBusy(key)
+      if (verdict.dead) {
+        await this.reapDeadRuntime(key, 'preview LRU', verdict)
+        overBy--
         continue
       }
-      console.log(`[RuntimeManager] Workspace preview LRU: evicting ${key} (cap=${cap})`)
+      if (verdict.busy) {
+        console.log(
+          `[RuntimeManager] Workspace preview LRU: keeping ${key} over cap=${cap}: ` +
+            `${verdict.reason} (${describeBusyReason(verdict)})`,
+        )
+        continue
+      }
+      console.log(
+        `[RuntimeManager] Workspace preview LRU: evicting ${key}: ` +
+          `${describeBusyReason(verdict, this.idleMs(key))} (cap=${cap})`,
+      )
       try {
         await this.stop(key, 'preview-lru')
+        overBy--
       } catch (err: any) {
         console.warn(`[RuntimeManager] LRU evict stop(${key}) failed: ${err?.message ?? err}`)
       }
     }
+    if (overBy > 0) {
+      console.log(
+        `[RuntimeManager] Workspace preview LRU: ${livePreviews.length} live over cap=${cap}, ` +
+          `${overBy} kept busy or unverifiable`,
+      )
+    }
+  }
+
+  /** ms since this runtime was last used, for the decision log. */
+  private idleMs(key: string): number | undefined {
+    const status = this.agentManager?.status
+    if (typeof status !== 'function') return undefined
+    let slot: { startedAt?: number; lastUsedAt?: number } | null | undefined
+    try {
+      slot = status.call(this.agentManager, key)
+    } catch {
+      return undefined
+    }
+    const since = slot?.lastUsedAt ?? slot?.startedAt
+    return since ? Date.now() - since : undefined
+  }
+
+  /**
+   * Make room before a background runtime starts, and refuse to start one the
+   * host cannot carry.
+   *
+   * Order of preference: do nothing if memory is fine; stop a background
+   * runtime that is provably idle; otherwise wait a short while for memory to
+   * free up and hand the wake back to the scheduler. It never stops a busy
+   * runtime to make room — a queued heartbeat retries, a killed build does not
+   * come back (SHO-143).
+   */
+  private async admitBackgroundStart(key: string): Promise<void> {
+    let memory = sampleHostMemory()
+    if (!memory.low) return
+    console.log(
+      `[RuntimeManager] background start ${key} waiting: ${memory.freeMb}MB free < ${memory.floorMb}MB floor ` +
+        `(${memory.totalMb}MB host)`,
+    )
+    if (await this.evictIdleBackgroundForMemory(key)) {
+      memory = sampleHostMemory()
+      if (!memory.low) return
+    }
+    const deadline = Date.now() + BACKGROUND_START_MEMORY_WAIT_MS
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, BACKGROUND_START_MEMORY_RETRY_MS))
+      if (await this.evictIdleBackgroundForMemory(key)) {
+        memory = sampleHostMemory()
+        if (!memory.low) {
+          console.log(`[RuntimeManager] background start ${key} proceeding: ${memory.freeMb}MB free`)
+          return
+        }
+      } else {
+        memory = sampleHostMemory()
+        if (!memory.low) {
+          console.log(`[RuntimeManager] background start ${key} proceeding: ${memory.freeMb}MB free`)
+          return
+        }
+      }
+    }
+    console.log(
+      `[RuntimeManager] background start ${key} queued, not started: host memory low ` +
+        `(${memory.freeMb}MB free < ${memory.floorMb}MB floor) — will retry on the next wake`,
+    )
+    throw new Error(
+      `Host memory low (${memory.freeMb}MB free, ${memory.floorMb}MB needed): background start for ${key} queued`,
+    )
+  }
+
+  /**
+   * Stop ONE background runtime that is provably idle, to make room. Returns
+   * true when it stopped (or reaped) something.
+   */
+  private async evictIdleBackgroundForMemory(exceptKey: string): Promise<boolean> {
+    const live = this.workspaceBackgroundMru.filter((k) => {
+      const rt = this.runtimes.get(k)
+      return !!rt && rt.status !== 'stopped' && rt.background === true && k !== exceptKey
+    })
+    if (live.length === 0) return false
+    // Oldest (MRU tail) first.
+    const candidates = [...live].reverse()
+    await this.refreshActivityFor(candidates)
+    for (const key of candidates) {
+      const verdict = await this.isBusy(key)
+      if (verdict.dead) {
+        await this.reapDeadRuntime(key, 'memory guard', verdict)
+        return true
+      }
+      if (verdict.busy) continue
+      console.log(
+        `[RuntimeManager] memory guard: evicting idle ${key}: ${describeBusyReason(verdict, this.idleMs(key))}`,
+      )
+      try {
+        await this.stop(key, 'background-memory')
+        return true
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] memory guard stop(${key}) failed: ${err?.message ?? err}`)
+      }
+    }
+    return false
+  }
+
+  /**
+   * Re-read the activity of every runtime about to be considered for eviction,
+   * in PARALLEL, so the loops below decide on current data instead of whatever
+   * the sampling timer last cached (up to one sampling interval ago).
+   *
+   * Parallel on purpose: the verdicts are probed concurrently, so an
+   * unresponsive runtime costs one probe timeout for the whole pass rather than
+   * one per candidate. A probe that fails leaves the cached `unknown` verdict,
+   * which keeps the runtime alive — never evicts it.
+   */
+  private async refreshActivityFor(keys: string[]): Promise<void> {
+    const managed = keys.filter(
+      (k) => this.agentManagedProjects.has(k) && !this.runtimes.get(k)?.remoteRuntime,
+    )
+    if (managed.length === 0) return
+    await Promise.all(managed.map((k) => this.agentManager.refreshActivity(k).catch(() => null)))
+  }
+
+  /**
+   * Whether this runtime may be evicted — the ONE verdict all three eviction
+   * paths use (background LRU, preview LRU, and the worker's global LRU via
+   * {@link WorkerRuntimeManager.activityDecision}).
+   *
+   * Unknown is BUSY. The old version returned "idle" for anything it could not
+   * see — a key the worker didn't manage, a probe that threw — which is how a
+   * host with 21 GB free and no OOMs evicted a working runtime 146 times in a
+   * day (SHO-143). Only a provably dead runtime is `dead`; everything else we
+   * cannot verify is kept.
+   */
+  private async isBusy(key: string): Promise<BusyDecision> {
+    const runtime = this.runtimes.get(key)
+    const terminalSessions = this.liveTerminalSessions.get(key) ?? 0
+    const inflightCalls = inflightCallCount(this.projectIdForRuntimeKey(key) ?? key)
+    const now = Date.now()
+    if (!runtime) {
+      return decideBusy({ now, startedAt: now, status: 'stopped', processExited: true })
+    }
+    // The worker owns this runtime's lifecycle and its activity cache.
+    if (!runtime.remoteRuntime && this.agentManagedProjects.has(key)) {
+      return this.agentManager.activityDecision(key, { terminalSessions, inflightCalls })
+    }
+    if (runtime.remoteRuntime) {
+      // A remote runtime is not something this host may silently kill: we
+      // cannot see its work, so it counts as busy unless it is already down.
+      const remote = runtime.remoteRuntime.status()
+      // `error` is a remote runtime that failed to start or lost its tunnel —
+      // the record is stale, so it is reaped rather than evicted.
+      const gone = remote.status === 'stopped' || remote.status === 'error'
+      return decideBusy({
+        now,
+        startedAt: runtime.startedAt ?? now,
+        status: gone ? 'stopped' : 'running',
+        processExited: gone,
+        terminalSessions,
+        inflightCalls,
+      })
+    }
+    // Not managed by the worker (legacy inline process, or a record whose
+    // worker slot is gone). The record itself is all we have: a live process
+    // handle means it may be working, so keep it; no process at all means the
+    // record is stale, so reap it.
+    const proc = runtime.agentProcess as unknown as
+      | { exitCode?: number | null; signalCode?: string | null; killed?: boolean }
+      | null
+      | undefined
+    if (proc && proc.exitCode == null && proc.signalCode == null) {
+      return decideBusy({
+        now,
+        startedAt: runtime.startedAt ?? now,
+        status: runtime.status,
+        sample: null,
+        terminalSessions,
+        inflightCalls,
+      })
+    }
+    if (runtime.process && runtime.process.exitCode == null && !runtime.process.killed) {
+      return decideBusy({
+        now,
+        startedAt: runtime.startedAt ?? now,
+        status: runtime.status,
+        sample: null,
+        terminalSessions,
+        inflightCalls,
+      })
+    }
+    return decideBusy({
+      now,
+      startedAt: runtime.startedAt ?? now,
+      status: 'stopped',
+      processExited: true,
+      terminalSessions,
+      inflightCalls,
+    })
+  }
+
+  /**
+   * Drop a runtime whose process is provably gone. Deleting the record is not
+   * an eviction — nothing is killed — so it never counts against a cap and is
+   * never blocked by "it might be busy".
+   */
+  private async reapDeadRuntime(key: string, pool: string, verdict: BusyDecision): Promise<void> {
+    console.log(
+      `[RuntimeManager] ${pool}: reaping dead ${key} (${describeBusyReason(verdict)}) — not an eviction`,
+    )
+    try {
+      await this.stop(key, 'dead')
+    } catch (err: any) {
+      console.warn(`[RuntimeManager] reap stop(${key}) failed: ${err?.message ?? err}`)
+    }
+  }
+
+  /** The project id a runtime key belongs to, when it carries one. */
+  private projectIdForRuntimeKey(key: string): string | null {
+    return this.runtimeOwners.get(key)?.anchorProjectId ?? null
   }
 
   /** Whether the runtime reports in-flight turns, background tasks or streams. */
   private async hasActiveWork(key: string): Promise<boolean> {
-    if (!this.agentManagedProjects.has(key)) return false
-    try {
-      return await this.agentManager.hasActiveWork(key)
-    } catch {
-      return false
-    }
+    // A user's shell is the strongest possible "someone is working" signal: the
+    // connected PTY lives in this runtime, so evicting it kills their terminal
+    // mid-command with "Connection ended" (SHO-107).
+    if (this.terminalSessionCount(key) > 0) return true
+    const verdict = await this.isBusy(key)
+    // `hasActiveWork` describes a runtime to humans ("Working in N other
+    // workspaces"): unverifiable is not work. Eviction uses `isBusy`, where
+    // unverifiable means keep.
+    return !verdict.dead && verdict.busy && verdict.reason !== 'unknown'
+  }
+
+  /**
+   * Count a PTY terminal WebSocket opening (+1) or closing (-1) for a project.
+   * Called by the gateway's terminal bridge; a non-zero count pins the runtime
+   * against LRU eviction (see {@link hasActiveWork}).
+   */
+  noteTerminalSession(projectId: string, delta: 1 | -1): void {
+    if (!projectId) return
+    const key = this.resolveRuntimeKey(projectId)
+    const next = Math.max(0, (this.liveTerminalSessions.get(key) ?? 0) + delta)
+    if (next === 0) this.liveTerminalSessions.delete(key)
+    else this.liveTerminalSessions.set(key, next)
+  }
+
+  /** Open PTY terminal sessions attached to a runtime key. */
+  terminalSessionCount(projectId: string): number {
+    return this.liveTerminalSessions.get(this.resolveRuntimeKey(projectId)) ?? 0
   }
 
   /**
@@ -3047,6 +3659,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     runtime.status = 'stopped'
     this.releasePort(runtime.port)
     this.runtimes.delete(key)
+    this.runtimeOwners.delete(key)
+    // A leaked count must not pin the next runtime for this key forever. If a
+    // terminal socket is somehow still open, its close event clamps at zero.
+    this.liveTerminalSessions.delete(key)
     const mi = this.workspacePreviewMru.indexOf(key)
     if (mi >= 0) this.workspacePreviewMru.splice(mi, 1)
     this.dropBackgroundMru(key)
@@ -3065,6 +3681,22 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   /** Public status of a workspace runtime, or null when not running. */
   workspaceStatus(workspaceId: string): IProjectRuntime | null {
     return this.status(workspaceRuntimeKey(workspaceId))
+  }
+
+  /**
+   * Is this workspace's runtime up, and is it mid-turn?
+   *
+   * Switching workspaces deliberately leaves runtimes warm (Decision 3), so the
+   * switcher asks this to show "Working in N other workspaces" — otherwise the
+   * agent keeps working somewhere the user can't see.
+   */
+  async workspaceActivity(
+    workspaceId: string,
+  ): Promise<{ running: boolean; inFlight: boolean }> {
+    const key = workspaceRuntimeKey(workspaceId)
+    const running = this.runtimes.get(key)?.status === 'running'
+    if (!running) return { running: false, inFlight: false }
+    return { running, inFlight: await this.hasActiveWork(key) }
   }
 
   async restart(projectId: string): Promise<IProjectRuntime> {
@@ -3400,11 +4032,7 @@ export function createRuntimeManager(overrides?: Partial<IRuntimeConfig>): Runti
   // PROJECT_ROOT above.
   const config: Partial<IRuntimeConfig> = {
     basePort: PORT_RANGE_START,
-    maxRuntimes: parseInt(
-      process.env.RUNTIME_MAX_COUNT ||
-        (process.env.SHOGO_HOST_TIER === 'low' ? '2' : '10'),
-      10,
-    ),
+    maxRuntimes: resolveRuntimeMaxCount(),
     healthCheckInterval: parseInt(process.env.RUNTIME_HEALTH_INTERVAL || '30000', 10),
     workspacesDir: process.env.WORKSPACES_DIR || join(PROJECT_ROOT, 'workspaces'),
     domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
@@ -3463,6 +4091,34 @@ export function selectOrphanedRuntimePids(
     }
     return false
   })
+}
+
+/**
+ * Picks the `vite build --watch` process groups under `workspacesDirs` that
+ * were reparented to init. PreviewManager spawns each watcher as its own
+ * group leader, so it outlives an agent-runtime (or API) that dies without
+ * a graceful stop, and it holds no port for the listener sweep to find.
+ * Parses `ps -A -o pid=,ppid=,pgid=,command=` output.
+ */
+export function selectOrphanedViteWatcherPgids(
+  psOutput: string,
+  workspacesDirs: string[],
+  selfPid: number = process.pid,
+): number[] {
+  const prefixes = workspacesDirs.map((dir) => dir.replace(/\/+$/, '') + '/')
+  const pgids = new Set<number>()
+  for (const line of psOutput.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line)
+    if (!match) continue
+    const pid = Number(match[1])
+    const pgid = Number(match[3])
+    const command = match[4]
+    if (match[2] !== '1' || pid !== pgid || pid === selfPid) continue
+    if (!command.includes(' build --watch')) continue
+    if (!prefixes.some((prefix) => command.includes(prefix))) continue
+    pgids.add(pgid)
+  }
+  return [...pgids]
 }
 
 /** Default singleton instance (lazy initialized) */

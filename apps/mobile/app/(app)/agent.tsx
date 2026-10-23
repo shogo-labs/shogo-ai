@@ -9,14 +9,16 @@
 import { useLocalSearchParams } from 'expo-router'
 import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
 import { SessionBreadcrumb } from '../../components/team-chat/SessionBreadcrumb'
-import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
 }
 
 export default function AgentChatRoute() {
-  const workspace = useActiveWorkspace()
+  // The workspace in view, so a paired computer's own workspace remounts this
+  // chat under its own id rather than the cloud workspace that is selected.
+  const workspace = useWorkspaceInView()
   const params = useLocalSearchParams<{
     chatSessionId?: string | string[]
     fromConversation?: string | string[]

@@ -9,9 +9,28 @@
  * - Project-level analytics (scope = { workspaceId, projectId })
  */
 
+import { createHash } from 'crypto'
 import { prisma, Prisma } from '../lib/prisma'
 import { resolveModelLabels } from './model-registry.service'
 import { countLineChanges } from '../lib/tool-line-stats'
+import {
+  ANALYTICS_CACHE_DEFAULT_TTL_MS,
+  analyticsCacheKey,
+  withAnalyticsCache,
+} from '../lib/analytics-cache'
+import {
+  compareSemver,
+  deviceOsLabel,
+  isSameRelease,
+  parseChannel,
+  parseClient,
+  parseDevicePlatform,
+  type DeviceArch,
+  type DeviceClient,
+  type DeviceOs,
+  type ReleaseChannel,
+} from '../lib/device-platform'
+import { deployedAppVersion } from '../lib/app-version'
 
 /** Parse actionMetadata that may have been double-JSON-stringified. */
 function parseMeta(raw: unknown): Record<string, any> {
@@ -120,6 +139,22 @@ function scopeWhere(scope: AnalyticsScope) {
   }
 }
 
+/**
+ * The action types the Usage tab meters (token / voice usage). Internal,
+ * non-billable events (`ai_proxy_internal`, …) are deliberately outside it: the
+ * log, the summary, the spend chart and the dashboard's group scan must agree
+ * on exactly one set, so it is defined once.
+ */
+export const USAGE_METERED_ACTION_TYPES = [
+  'ai_proxy_completion',
+  'chat_message',
+  'voice_minutes_inbound',
+  'voice_minutes_outbound',
+  'voice_number_setup',
+  'voice_number_monthly',
+  'ai_live_session_minutes',
+] as const
+
 interface UsageModelAggregate {
   userId: string
   model: string
@@ -131,6 +166,12 @@ interface UsageModelAggregate {
   totalBilledUsd: number
   totalRawUsd: number
   totalDurationMs: number
+  /** Prompt tokens served from the provider's cache (per model, per user). */
+  totalCachedInputTokens: number
+  /** Prompt tokens written to the cache — Anthropic only; 0 elsewhere. */
+  totalCacheWriteTokens: number
+  /** Desktop events recorded without rates for their model (cost 0, not a guess). */
+  unpricedRequests: number
 }
 
 interface UsageAggregateEvent {
@@ -139,6 +180,19 @@ interface UsageAggregateEvent {
   rawUsd?: number | null
   actionMetadata: unknown
   actionType?: string
+}
+
+/**
+ * Prompt-cache hit ratio: cached / (uncached + cached + cache-write).
+ *
+ * One definition for every surface that reports it — the org-wide daily series,
+ * the per-model usage row, and the `cache-efficiency` eval report all use this
+ * shape, so a drop means the same thing everywhere. 0 when there was no prompt
+ * at all (a run with no model call has no ratio to report).
+ */
+export function promptCacheHitRatio(cached: number, uncached: number, cacheWrite: number): number {
+  const total = cached + uncached + cacheWrite
+  return total > 0 ? cached / total : 0
 }
 
 function aggregateUsageByModel(
@@ -165,8 +219,14 @@ function aggregateUsageByModel(
     const key = `${event.memberId}::${model}`
     const inputTokens = Number(meta.inputTokens || 0)
     const outputTokens = Number(meta.outputTokens || 0)
-    const totalTokens = Number(meta.totalTokens || inputTokens + outputTokens)
+    const cachedInputTokens = Number(meta.cachedInputTokens || 0)
+    const cacheWriteTokens = Number(meta.cacheWriteTokens || 0)
+    const totalTokens = Number(
+      meta.totalTokens ||
+        inputTokens + outputTokens + Number(meta.cachedInputTokens || 0) + Number(meta.cacheWriteTokens || 0),
+    )
     const rawForEvent = event.rawUsd ?? Number(meta.rawUsd ?? meta.dollarCost ?? 0)
+    const unpriced = meta.pricingUnknown === true ? 1 : 0
     const existing = aggregateMap.get(key)
 
     if (existing) {
@@ -177,6 +237,9 @@ function aggregateUsageByModel(
       existing.totalBilledUsd += Number(event.billedUsd || 0)
       existing.totalRawUsd += Number(rawForEvent || 0)
       existing.totalDurationMs += Number(meta.durationMs || 0)
+      existing.totalCachedInputTokens += cachedInputTokens
+      existing.totalCacheWriteTokens += cacheWriteTokens
+      existing.unpricedRequests += unpriced
     } else {
       aggregateMap.set(key, {
         userId: event.memberId,
@@ -193,6 +256,9 @@ function aggregateUsageByModel(
         totalBilledUsd: Number(event.billedUsd || 0),
         totalRawUsd: Number(rawForEvent || 0),
         totalDurationMs: Number(meta.durationMs || 0),
+        totalCachedInputTokens: cachedInputTokens,
+        totalCacheWriteTokens: cacheWriteTokens,
+        unpricedRequests: unpriced,
       })
     }
   }
@@ -704,15 +770,7 @@ export async function getMemberInsights(
     workspaceId,
     createdAt: { gte: since },
     actionType: {
-      in: [
-        'ai_proxy_completion',
-        'chat_message',
-        'voice_minutes_inbound',
-        'voice_minutes_outbound',
-        'voice_number_setup',
-        'voice_number_monthly',
-        'ai_live_session_minutes',
-      ],
+      in: [...USAGE_METERED_ACTION_TYPES],
     },
     ...(options.userId ? { memberId: options.userId } : {}),
   }
@@ -1061,15 +1119,7 @@ export async function getSpendTimeseries(
   const where: any = {
     ...scopeWhere(scope),
     actionType: {
-      in: [
-        'ai_proxy_completion',
-        'chat_message',
-        'voice_minutes_inbound',
-        'voice_minutes_outbound',
-        'voice_number_setup',
-        'voice_number_monthly',
-        'ai_live_session_minutes',
-      ],
+      in: [...USAGE_METERED_ACTION_TYPES],
     },
     createdAt: { gte: from, lt: to },
   }
@@ -1297,6 +1347,44 @@ export async function getActiveUsers(
 // App Installs
 // ============================================================================
 
+/** How many devices of a segment sit on one OS, split out so the admin card
+ * can show "macOS / Windows / Linux" columns instead of 8 raw spellings. */
+export interface InstallOsCounts {
+  macos: number
+  windows: number
+  linux: number
+  unknown: number
+}
+
+export interface InstallVersionRow {
+  version: string
+  channel: ReleaseChannel
+  devices: number
+  activeD7: number
+  /** Earliest key creation seen for a device on this version. */
+  firstSeenAt: string | null
+  lastSeenAt: string | null
+  os: InstallOsCounts
+}
+
+export interface InstallOsRow {
+  os: DeviceOs
+  arch: DeviceArch
+  devices: number
+  active1d: number
+  active7d: number
+  active30d: number
+}
+
+export interface InstallOnLatest {
+  version: string
+  devices: number
+  /** Rounded percentage of the segment's devices on `version`. */
+  pct: number
+  /** `deployed` = the tag this API is running; `inferred` = newest stable seen. */
+  source: 'deployed' | 'inferred'
+}
+
 export interface InstallSegment {
   totalDevices: number
   active: {
@@ -1305,16 +1393,23 @@ export interface InstallSegment {
     d30: number
   }
   newLast30d: number
+  /** Legacy shape: one entry per version string, unsplit by channel. */
   byVersion: Array<{
     version: string
     count: number
     activeD7: number
   }>
+  /** Legacy shape: raw `devicePlatform` spellings, kept for existing callers. */
   byPlatform: Array<{
     platform: string
     count: number
   }>
   distinctUsers: number
+  /** Normalised OS buckets (`darwin-arm64` and `darwin` land together). */
+  byOs: InstallOsRow[]
+  /** Full (version, channel) matrix — never truncated. */
+  versions: InstallVersionRow[]
+  onLatest: InstallOnLatest | null
 }
 
 /** Backwards-compatible name for callers of the desktop-only endpoint. */
@@ -1322,6 +1417,8 @@ export type DesktopInstallsData = InstallSegment
 
 export interface AppInstallsData {
   desktop: InstallSegment
+  /** Worker/CLI device keys, kept out of every desktop total and OS count. */
+  cli: InstallSegment
   ios: InstallSegment
   android: InstallSegment
   totals: {
@@ -1345,58 +1442,247 @@ type InstallAggregateRow = {
   userId: string | null
 }
 
+interface DeviceSnapshot {
+  deviceId: string
+  /** Newest row: drives activity, platform and creation date. */
+  row: InstallAggregateRow
+  /** Newest row that actually carries a version: drives the version bucket. */
+  versionRow: InstallAggregateRow | null
+  version: string
+  channel: ReleaseChannel
+  client: DeviceClient
+  os: DeviceOs
+  arch: DeviceArch
+}
+
+function hasVersion(row: InstallAggregateRow): boolean {
+  return typeof row.version === 'string' && row.version.trim() !== ''
+}
+
+function isNewer(a: Date | null, b: Date | null): boolean {
+  if (!a) return false
+  if (!b) return true
+  return a > b
+}
+
+/**
+ * Pick the row that decides a device's version.
+ *
+ * Highest version wins, not the newest timestamp: `lastSeenAt` is bumped by
+ * callers that send no version at all (the ai-proxy `lastUsedAt` touch, a bare
+ * heartbeat), so the newest-timestamp row can be an older version the device
+ * already moved off — that mislabelled 6 devices in production. A device only
+ * moves forward, so the newest version it has ever reported is the one it
+ * runs. Timestamps only break ties (e.g. two betas of the same base version
+ * compare equal in the numeric parts).
+ */
+function preferredVersionRow(
+  candidate: InstallAggregateRow,
+  current: InstallAggregateRow,
+): boolean {
+  const byVersion = compareSemver(candidate.version, current.version)
+  if (byVersion !== 0) return byVersion > 0
+  const a = candidate.lastSeenAt?.getTime() ?? 0
+  const b = current.lastSeenAt?.getTime() ?? 0
+  return a > b
+}
+
+/**
+ * One entry per physical device. Device API keys are minted per workspace, so
+ * a stable deviceId is what keeps one machine from being counted 34 times.
+ */
+function buildDeviceSnapshots(rows: InstallAggregateRow[]): DeviceSnapshot[] {
+  const byDevice = new Map<string, { row: InstallAggregateRow; versionRow: InstallAggregateRow | null }>()
+  for (const row of rows) {
+    if (!row.deviceId) continue
+    let entry = byDevice.get(row.deviceId)
+    if (!entry) {
+      entry = { row, versionRow: null }
+      byDevice.set(row.deviceId, entry)
+    } else if (isNewer(row.lastSeenAt, entry.row.lastSeenAt)) {
+      entry.row = row
+    }
+    if (hasVersion(row)) {
+      if (!entry.versionRow || preferredVersionRow(row, entry.versionRow)) {
+        entry.versionRow = row
+      }
+    }
+  }
+
+  return [...byDevice.entries()].map(([deviceId, entry]) => {
+    const version = entry.versionRow?.version?.trim() || 'unknown'
+    const { os, arch } = parseDevicePlatform(entry.row.platform)
+    return {
+      deviceId,
+      row: entry.row,
+      versionRow: entry.versionRow,
+      version,
+      channel: parseChannel(entry.versionRow?.version),
+      client: parseClient(entry.versionRow?.version, entry.row.platform),
+      os,
+      arch,
+    }
+  })
+}
+
+function emptyOsCounts(): InstallOsCounts {
+  return { macos: 0, windows: 0, linux: 0, unknown: 0 }
+}
+
+function newestStableVersion(snapshots: DeviceSnapshot[]): string | null {
+  let newest: string | null = null
+  for (const snapshot of snapshots) {
+    if (snapshot.version === 'unknown') continue
+    if (snapshot.channel !== 'stable') continue
+    if (newest === null || compareSemver(snapshot.version, newest) > 0) newest = snapshot.version
+  }
+  return newest
+}
+
+type LatestMode = 'deploy' | 'infer' | 'none'
+
+interface AggregateOptions {
+  /**
+   * `deploy` (default) uses the release this API runs, `infer` the newest
+   * stable version any device reports, `none` leaves `onLatest` null.
+   */
+  latestMode?: LatestMode
+  /** Override for tests / callers that already resolved the tag. */
+  deployedVersion?: string | null
+}
+
 /**
  * Aggregate install and activity metrics for a set of physical devices.
  *
- * Device API keys are minted per workspace, so a stable deviceId is used to
- * count each physical desktop once across workspaces. The latest-seen row is
- * retained for its current version, platform, and activity state.
+ * Every dimension is picked from the row that actually carries it, so the
+ * version shown for a device is always the newest version it reported and the
+ * OS counts never split one operating system across several spellings.
  */
-function aggregateInstalls(rows: InstallAggregateRow[]): InstallSegment {
+function aggregateInstalls(
+  rows: InstallAggregateRow[],
+  options: AggregateOptions = {},
+): InstallSegment {
   const now = new Date()
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
   const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const latestByDevice = new Map<string, InstallAggregateRow>()
-  for (const row of rows) {
-    if (!row.deviceId) continue
-    const existing = latestByDevice.get(row.deviceId)
-    if (!existing || (
-      row.lastSeenAt &&
-      (!existing.lastSeenAt || row.lastSeenAt > existing.lastSeenAt)
-    )) {
-      latestByDevice.set(row.deviceId, row)
-    }
-  }
-
-  const devices = [...latestByDevice.values()]
-  const activeSince = (row: InstallAggregateRow, since: Date) =>
-    row.lastSeenAt !== null && row.lastSeenAt >= since
-  const versionFor = (row: InstallAggregateRow) => row.version || 'unknown'
-  const platformFor = (row: InstallAggregateRow) => row.platform || 'unknown'
+  const snapshots = buildDeviceSnapshots(rows)
+  const activeSince = (snapshot: DeviceSnapshot, since: Date) =>
+    snapshot.row.lastSeenAt !== null && snapshot.row.lastSeenAt >= since
 
   const versionCounts = new Map<string, { count: number; activeD7: number }>()
   const platformCounts = new Map<string, number>()
-  for (const device of devices) {
-    const version = versionFor(device)
-    const versionCount = versionCounts.get(version) ?? { count: 0, activeD7: 0 }
-    versionCount.count += 1
-    if (activeSince(device, weekAgo)) versionCount.activeD7 += 1
-    versionCounts.set(version, versionCount)
+  const versionRows = new Map<string, {
+    version: string
+    channel: ReleaseChannel
+    devices: number
+    activeD7: number
+    firstSeenAt: Date | null
+    lastSeenAt: Date | null
+    os: InstallOsCounts
+  }>()
+  const osRows = new Map<string, InstallOsRow>()
 
-    const platform = platformFor(device)
+  for (const snapshot of snapshots) {
+    const versionCount = versionCounts.get(snapshot.version) ?? { count: 0, activeD7: 0 }
+    versionCount.count += 1
+    if (activeSince(snapshot, weekAgo)) versionCount.activeD7 += 1
+    versionCounts.set(snapshot.version, versionCount)
+
+    const platform = snapshot.row.platform || 'unknown'
     platformCounts.set(platform, (platformCounts.get(platform) ?? 0) + 1)
+
+    const versionKey = `${snapshot.version}\u0000${snapshot.channel}`
+    let versionRow = versionRows.get(versionKey)
+    if (!versionRow) {
+      versionRow = {
+        version: snapshot.version,
+        channel: snapshot.channel,
+        devices: 0,
+        activeD7: 0,
+        firstSeenAt: null,
+        lastSeenAt: null,
+        os: emptyOsCounts(),
+      }
+      versionRows.set(versionKey, versionRow)
+    }
+    versionRow.devices += 1
+    if (activeSince(snapshot, weekAgo)) versionRow.activeD7 += 1
+    versionRow.os[snapshot.os] += 1
+    const firstSeen = snapshot.versionRow?.createdAt ?? null
+    if (firstSeen && (!versionRow.firstSeenAt || firstSeen < versionRow.firstSeenAt)) {
+      versionRow.firstSeenAt = firstSeen
+    }
+    const lastSeen = snapshot.versionRow?.lastSeenAt ?? null
+    if (lastSeen && (!versionRow.lastSeenAt || lastSeen > versionRow.lastSeenAt)) {
+      versionRow.lastSeenAt = lastSeen
+    }
+
+    const osKey = `${snapshot.os}\u0000${snapshot.arch ?? ''}`
+    let osRow = osRows.get(osKey)
+    if (!osRow) {
+      osRow = {
+        os: snapshot.os,
+        arch: snapshot.arch,
+        devices: 0,
+        active1d: 0,
+        active7d: 0,
+        active30d: 0,
+      }
+      osRows.set(osKey, osRow)
+    }
+    osRow.devices += 1
+    if (activeSince(snapshot, dayAgo)) osRow.active1d += 1
+    if (activeSince(snapshot, weekAgo)) osRow.active7d += 1
+    if (activeSince(snapshot, monthAgo)) osRow.active30d += 1
+  }
+
+  const versions: InstallVersionRow[] = [...versionRows.values()]
+    .map((entry) => ({
+      version: entry.version,
+      channel: entry.channel,
+      devices: entry.devices,
+      activeD7: entry.activeD7,
+      firstSeenAt: entry.firstSeenAt ? entry.firstSeenAt.toISOString() : null,
+      lastSeenAt: entry.lastSeenAt ? entry.lastSeenAt.toISOString() : null,
+      os: entry.os,
+    }))
+    .sort((a, b) => b.devices - a.devices || compareSemver(b.version, a.version))
+
+  const byOs = [...osRows.values()].sort(
+    (a, b) =>
+      b.devices - a.devices ||
+      a.os.localeCompare(b.os) ||
+      (a.arch ?? '').localeCompare(b.arch ?? ''),
+  )
+
+  const latestMode: LatestMode = options.latestMode ?? 'deploy'
+  let onLatest: InstallOnLatest | null = null
+  if (latestMode !== 'none' && snapshots.length > 0) {
+    const deployed = latestMode === 'deploy'
+      ? options.deployedVersion ?? deployedAppVersion()
+      : null
+    const target = deployed ?? newestStableVersion(snapshots)
+    if (target) {
+      const devices = snapshots.filter((snapshot) => isSameRelease(snapshot.version, target)).length
+      onLatest = {
+        version: target,
+        devices,
+        pct: Math.round((devices / snapshots.length) * 100),
+        source: deployed ? 'deployed' : 'inferred',
+      }
+    }
   }
 
   return {
-    totalDevices: devices.length,
+    totalDevices: snapshots.length,
     active: {
-      d1: devices.filter((device) => activeSince(device, dayAgo)).length,
-      d7: devices.filter((device) => activeSince(device, weekAgo)).length,
-      d30: devices.filter((device) => activeSince(device, monthAgo)).length,
+      d1: snapshots.filter((snapshot) => activeSince(snapshot, dayAgo)).length,
+      d7: snapshots.filter((snapshot) => activeSince(snapshot, weekAgo)).length,
+      d30: snapshots.filter((snapshot) => activeSince(snapshot, monthAgo)).length,
     },
-    newLast30d: devices.filter((device) => device.createdAt >= monthAgo).length,
+    newLast30d: snapshots.filter((snapshot) => snapshot.row.createdAt >= monthAgo).length,
     byVersion: [...versionCounts.entries()]
       .map(([version, counts]) => ({ version, ...counts }))
       .sort((a, b) => b.count - a.count || a.version.localeCompare(b.version)),
@@ -1404,11 +1690,68 @@ function aggregateInstalls(rows: InstallAggregateRow[]): InstallSegment {
       .map(([platform, count]) => ({ platform, count }))
       .sort((a, b) => b.count - a.count || a.platform.localeCompare(b.platform)),
     distinctUsers: new Set(rows.map((row) => row.userId).filter(Boolean)).size,
+    byOs,
+    versions,
+    onLatest,
   }
 }
 
 /**
+ * Split raw key rows by the client that reported them, using the same
+ * device-level decision the aggregation makes (one row can be the CLI's while
+ * another row of the same device is stale).
+ */
+function partitionRowsByClient(rows: InstallAggregateRow[]): {
+  desktop: InstallAggregateRow[]
+  cli: InstallAggregateRow[]
+} {
+  const clientByDevice = new Map<string, DeviceClient>()
+  for (const snapshot of buildDeviceSnapshots(rows)) {
+    clientByDevice.set(snapshot.deviceId, snapshot.client)
+  }
+
+  const desktop: InstallAggregateRow[] = []
+  const cli: InstallAggregateRow[] = []
+  for (const row of rows) {
+    const client = row.deviceId ? clientByDevice.get(row.deviceId) : undefined
+    if (client === 'cli') cli.push(row)
+    else desktop.push(row)
+  }
+  return { desktop, cli }
+}
+
+function toInstallRows(
+  keys: Array<{
+    deviceId: string | null
+    devicePlatform: string | null
+    deviceAppVersion: string | null
+    lastSeenAt: Date | null
+    createdAt: Date
+    userId: string | null
+  }>,
+): InstallAggregateRow[] {
+  return keys.map((key) => ({
+    deviceId: key.deviceId,
+    platform: key.devicePlatform,
+    version: key.deviceAppVersion,
+    lastSeenAt: key.lastSeenAt,
+    createdAt: key.createdAt,
+    userId: key.userId,
+  }))
+}
+
+const DEVICE_KEY_SELECT = {
+  deviceId: true,
+  devicePlatform: true,
+  deviceAppVersion: true,
+  lastSeenAt: true,
+  createdAt: true,
+  userId: true,
+} as const
+
+/**
  * Get install and activity metrics for desktops that have signed in to Cloud.
+ * Worker/CLI device keys are excluded — they are not desktop installs.
  */
 export async function getDesktopInstalls(): Promise<DesktopInstallsData> {
   const keys = await prisma.apiKey.findMany({
@@ -1417,28 +1760,18 @@ export async function getDesktopInstalls(): Promise<DesktopInstallsData> {
       revokedAt: null,
       deviceId: { not: null },
     },
-    select: {
-      deviceId: true,
-      devicePlatform: true,
-      deviceAppVersion: true,
-      lastSeenAt: true,
-      createdAt: true,
-      userId: true,
-    },
+    select: DEVICE_KEY_SELECT,
   })
 
-  return aggregateInstalls(keys.map((key) => ({
-    deviceId: key.deviceId,
-    platform: key.devicePlatform,
-    version: key.deviceAppVersion,
-    lastSeenAt: key.lastSeenAt,
-    createdAt: key.createdAt,
-    userId: key.userId,
-  })))
+  const { desktop } = partitionRowsByClient(toInstallRows(keys))
+  return aggregateInstalls(desktop)
 }
 
 /**
- * Get combined signed-in install metrics for desktop, iOS, and Android.
+ * Get combined signed-in install metrics for desktop, CLI, iOS, and Android.
+ *
+ * Additive: every field that existed before is still here, plus the OS×version
+ * matrix (`byOs`, `versions`, `onLatest`) and a `cli` segment.
  */
 export async function getAppInstalls(): Promise<AppInstallsData> {
   const [keys, appInstalls] = await Promise.all([
@@ -1448,14 +1781,7 @@ export async function getAppInstalls(): Promise<AppInstallsData> {
         revokedAt: null,
         deviceId: { not: null },
       },
-      select: {
-        deviceId: true,
-        devicePlatform: true,
-        deviceAppVersion: true,
-        lastSeenAt: true,
-        createdAt: true,
-        userId: true,
-      },
+      select: DEVICE_KEY_SELECT,
     }),
     prisma.appInstall.findMany({
       where: { platform: { in: ['ios', 'android'] } },
@@ -1471,14 +1797,7 @@ export async function getAppInstalls(): Promise<AppInstallsData> {
     }),
   ])
 
-  const desktopRows: InstallAggregateRow[] = keys.map((key) => ({
-    deviceId: key.deviceId,
-    platform: key.devicePlatform,
-    version: key.deviceAppVersion,
-    lastSeenAt: key.lastSeenAt,
-    createdAt: key.createdAt,
-    userId: key.userId,
-  }))
+  const desktopRows = toInstallRows(keys)
   const mobileRows: InstallAggregateRow[] = appInstalls.map((install) => ({
     deviceId: install.deviceId,
     platform: install.osVersion,
@@ -1488,13 +1807,22 @@ export async function getAppInstalls(): Promise<AppInstallsData> {
     userId: install.userId,
   }))
 
-  const desktop = aggregateInstalls(desktopRows)
-  const ios = aggregateInstalls(mobileRows.filter((row, index) => appInstalls[index]?.platform === 'ios'))
-  const android = aggregateInstalls(mobileRows.filter((row, index) => appInstalls[index]?.platform === 'android'))
+  const partitioned = partitionRowsByClient(desktopRows)
+  const desktop = aggregateInstalls(partitioned.desktop, { latestMode: 'deploy' })
+  const cli = aggregateInstalls(partitioned.cli, { latestMode: 'none' })
+  const ios = aggregateInstalls(
+    mobileRows.filter((row, index) => appInstalls[index]?.platform === 'ios'),
+    { latestMode: 'infer' },
+  )
+  const android = aggregateInstalls(
+    mobileRows.filter((row, index) => appInstalls[index]?.platform === 'android'),
+    { latestMode: 'infer' },
+  )
   const allDevices = [...desktopRows, ...mobileRows]
 
   return {
     desktop,
+    cli,
     ios,
     android,
     totals: {
@@ -1507,6 +1835,244 @@ export async function getAppInstalls(): Promise<AppInstallsData> {
       newLast30d: desktop.newLast30d + ios.newLast30d + android.newLast30d,
       distinctUsers: new Set(allDevices.map((row) => row.userId).filter(Boolean)).size,
     },
+  }
+}
+
+// ============================================================================
+// App version adoption
+// ============================================================================
+
+export interface AppVersionAdoptionPoint {
+  /** UTC day, `YYYY-MM-DD`. */
+  date: string
+  version: string
+  channel: ReleaseChannel
+  devices: number
+}
+
+export interface AppVersionsData {
+  generatedAt: string
+  /** The release this API runs, or null when the deployment does not pin one. */
+  deployedVersion: string | null
+  windowDays: number
+  desktop: InstallSegment
+  cli: InstallSegment
+  /**
+   * Devices on each version per UTC day, from `device_version_events` — the
+   * history `api_keys` cannot provide because it only keeps the current row.
+   */
+  adoption: AppVersionAdoptionPoint[]
+}
+
+/**
+ * The OS×version matrix plus the daily adoption series.
+ *
+ * This is the reference data behind "N of M on <tag>": it is computed from the
+ * same normalisation the admin card renders, so a direct SQL check on
+ * `api_keys` (grouped by OS, not by platform spelling) matches it.
+ */
+export async function getAppVersions(options: { days?: number } = {}): Promise<AppVersionsData> {
+  const days = Math.min(Math.max(Math.trunc(options.days ?? 30) || 30, 1), 365)
+  const now = new Date()
+  const windowStart = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000)
+  windowStart.setUTCHours(0, 0, 0, 0)
+
+  const [keys, events] = await Promise.all([
+    prisma.apiKey.findMany({
+      where: {
+        kind: 'device',
+        revokedAt: null,
+        deviceId: { not: null },
+      },
+      select: DEVICE_KEY_SELECT,
+    }),
+    prisma.deviceVersionEvent.findMany({
+      where: { lastSeenAt: { gte: windowStart } },
+      select: {
+        deviceId: true,
+        version: true,
+        channel: true,
+        firstSeenAt: true,
+        lastSeenAt: true,
+      },
+    }),
+  ])
+
+  const partitioned = partitionRowsByClient(toInstallRows(keys))
+  const deployedVersion = deployedAppVersion()
+
+  const byDay = new Map<string, { version: string; channel: ReleaseChannel; devices: Set<string> }>()
+  for (const event of events) {
+    let cursor = new Date(event.firstSeenAt)
+    cursor.setUTCHours(0, 0, 0, 0)
+    if (cursor < windowStart) cursor = new Date(windowStart)
+
+    // The device reported this version between firstSeenAt and lastSeenAt, so
+    // it counts as "on it" for those days only — a device that moved to 2.3.6
+    // last week should not keep inflating 2.3.5 today.
+    const lastDay = new Date(event.lastSeenAt)
+    lastDay.setUTCHours(0, 0, 0, 0)
+    while (cursor <= lastDay) {
+      const day = isoDay(cursor)
+      const key = `${day}\u0000${event.version}`
+      let bucket = byDay.get(key)
+      if (!bucket) {
+        bucket = {
+          version: event.version,
+          channel: (event.channel as ReleaseChannel) || parseChannel(event.version),
+          devices: new Set<string>(),
+        }
+        byDay.set(key, bucket)
+      }
+      bucket.devices.add(event.deviceId)
+      cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000)
+    }
+  }
+
+  const adoption: AppVersionAdoptionPoint[] = [...byDay.entries()]
+    .map(([key, bucket]) => ({
+      date: key.slice(0, key.indexOf('\u0000')),
+      version: bucket.version,
+      channel: bucket.channel,
+      devices: bucket.devices.size,
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.devices - a.devices)
+
+  return {
+    generatedAt: now.toISOString(),
+    deployedVersion,
+    windowDays: days,
+    desktop: aggregateInstalls(partitioned.desktop, { latestMode: 'deploy', deployedVersion }),
+    cli: aggregateInstalls(partitioned.cli, { latestMode: 'none' }),
+    adoption,
+  }
+}
+
+// ============================================================================
+// Active devices (per-machine list)
+// ============================================================================
+
+/**
+ * How stale a heartbeat can be and still count as "online".
+ *
+ * The desktop pings `/api/api-keys/heartbeat` every 5 minutes while it runs, so
+ * three missed beats is a closed laptop; mobile reports on foreground only.
+ */
+export const ONLINE_WINDOW_MINUTES = 15
+
+export interface ActiveDeviceRow {
+  /** `sha256(deviceId)` prefix — the raw id never leaves the server. */
+  id: string
+  client: DeviceClient
+  os: DeviceOs
+  osLabel: string
+  arch: DeviceArch
+  version: string
+  channel: ReleaseChannel
+  userId: string | null
+  firstSeenAt: string
+  lastSeenAt: string | null
+  online: boolean
+  /** Hours since the last heartbeat, or null when the device never reported. */
+  idleHours: number | null
+}
+
+export interface ActiveDevicesData {
+  generatedAt: string
+  onlineWindowMinutes: number
+  windowDays: number
+  includeDormant: boolean
+  totals: { devices: number; online: number; active: number; dormant: number }
+  devices: ActiveDeviceRow[]
+}
+
+function deviceHandle(deviceId: string): string {
+  return createHash('sha256').update(deviceId).digest('hex').slice(0, 10)
+}
+
+/**
+ * Which machine is alive, not just how many.
+ *
+ * `getAppInstalls` answers "how many"; this answers "which" — one row per
+ * device with its last heartbeat and an `online` flag, so an operator can tell
+ * a live install from a key nobody has touched since July. Version and OS come
+ * from the same snapshots the aggregates use, so a device's row here always
+ * agrees with the count it contributes to.
+ */
+export async function getActiveDevices(
+  options: {
+    days?: number
+    includeDormant?: boolean
+    limit?: number
+    client?: DeviceClient
+  } = {},
+): Promise<ActiveDevicesData> {
+  const days = Math.min(Math.max(Math.trunc(options.days ?? 30) || 30, 1), 365)
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 500) || 500, 1), 1000)
+  const includeDormant = options.includeDormant ?? false
+  const now = new Date()
+  const activeCutoff = now.getTime() - days * 24 * 60 * 60 * 1000
+  const onlineCutoff = now.getTime() - ONLINE_WINDOW_MINUTES * 60 * 1000
+
+  const keys = await prisma.apiKey.findMany({
+    where: { kind: 'device', revokedAt: null, deviceId: { not: null } },
+    select: DEVICE_KEY_SELECT,
+  })
+  const rows = toInstallRows(keys)
+
+  const firstSeen = new Map<string, number>()
+  for (const row of rows) {
+    if (!row.deviceId) continue
+    const at = row.createdAt.getTime()
+    const previous = firstSeen.get(row.deviceId)
+    if (previous === undefined || at < previous) firstSeen.set(row.deviceId, at)
+  }
+
+  const scoped = buildDeviceSnapshots(rows)
+    .map<ActiveDeviceRow>((snapshot) => {
+      const last = snapshot.row.lastSeenAt ? snapshot.row.lastSeenAt.getTime() : null
+      return {
+        id: deviceHandle(snapshot.deviceId),
+        client: snapshot.client,
+        os: snapshot.os,
+        osLabel: deviceOsLabel(snapshot.os),
+        arch: snapshot.arch,
+        version: snapshot.version,
+        channel: snapshot.channel,
+        userId: snapshot.row.userId ?? null,
+        firstSeenAt: new Date(
+          firstSeen.get(snapshot.deviceId) ?? snapshot.row.createdAt.getTime(),
+        ).toISOString(),
+        lastSeenAt: last === null ? null : new Date(last).toISOString(),
+        online: last !== null && last >= onlineCutoff,
+        idleHours: last === null ? null : Math.round(((now.getTime() - last) / 3_600_000) * 10) / 10,
+      }
+    })
+    .filter((device) => (options.client ? device.client === options.client : true))
+
+  const isActive = (device: ActiveDeviceRow): boolean =>
+    device.lastSeenAt !== null && new Date(device.lastSeenAt).getTime() >= activeCutoff
+
+  const online = scoped.filter((device) => device.online).length
+  const active = scoped.filter(isActive).length
+
+  const devices = scoped
+    .filter((device) => includeDormant || isActive(device))
+    .sort(
+      (a, b) =>
+        Number(b.online) - Number(a.online) ||
+        (b.lastSeenAt ?? '').localeCompare(a.lastSeenAt ?? '') ||
+        a.id.localeCompare(b.id),
+    )
+    .slice(0, limit)
+
+  return {
+    generatedAt: now.toISOString(),
+    onlineWindowMinutes: ONLINE_WINDOW_MINUTES,
+    windowDays: days,
+    includeDormant,
+    totals: { devices: scoped.length, online, active, dormant: scoped.length - active },
+    devices,
   }
 }
 
@@ -1643,13 +2209,14 @@ export async function getQualityTimeseries(
     }),
     prisma.agentCostMetric.findMany({
       where: agentWhere,
-      select: { createdAt: true, escalated: true, loopDetected: true, hitMaxTurns: true },
+      select: { createdAt: true, escalated: true, loopDetected: true, hitMaxTurns: true, metadata: true },
     }),
   ])
 
   // Per-day accumulators.
   interface Acc {
     cached: number
+    cacheWrite: number
     input: number
     spend: number
     activeUsers: Set<string>
@@ -1663,7 +2230,7 @@ export async function getQualityTimeseries(
   const ensure = (d: string): Acc => {
     let a = acc.get(d)
     if (!a) {
-      a = { cached: 0, input: 0, spend: 0, activeUsers: new Set(), messages: 0, runs: 0, escalated: 0, loop: 0, maxTurns: 0 }
+      a = { cached: 0, cacheWrite: 0, input: 0, spend: 0, activeUsers: new Set(), messages: 0, runs: 0, escalated: 0, loop: 0, maxTurns: 0 }
       acc.set(d, a)
     }
     return a
@@ -1673,6 +2240,7 @@ export async function getQualityTimeseries(
     const meta = parseMeta(e.actionMetadata)
     const a = ensure(isoDay(e.createdAt))
     a.cached += (meta.cachedInputTokens as number) || 0
+    a.cacheWrite += (meta.cacheWriteTokens as number) || 0
     a.input += (meta.inputTokens as number) || 0
     const cost = e.billedUsd > 0
       ? e.billedUsd
@@ -1684,6 +2252,7 @@ export async function getQualityTimeseries(
   }
   for (const m of messages) ensure(isoDay(m.createdAt)).messages += 1
   for (const r of agentRuns) {
+    if (parseMeta(r.metadata).qualityUnknown === true) continue
     const a = ensure(isoDay(r.createdAt))
     a.runs += 1
     if (r.escalated) a.escalated += 1
@@ -1704,7 +2273,7 @@ export async function getQualityTimeseries(
     const activeUsers = a?.activeUsers.size ?? 0
     days.push({
       date: key,
-      cacheHitRatio: a ? pct(a.cached, a.cached + a.input) : 0,
+      cacheHitRatio: a ? promptCacheHitRatio(a.cached, a.input, a.cacheWrite) : 0,
       costPerMessage: a && a.messages > 0 ? a.spend / a.messages : 0,
       costPerActiveUser: a && activeUsers > 0 ? a.spend / activeUsers : 0,
       agentEscalatedRate: a ? pct(a.escalated, a.runs) : 0,
@@ -1764,6 +2333,16 @@ export interface UsageSummaryEntry {
   totalBilledUsd: number
   totalRawUsd: number
   avgDurationMs: number
+  /** Prompt tokens served from the provider's cache. */
+  totalCachedInputTokens: number
+  /**
+   * Cache-hit ratio for this model: cached / (uncached + cached + cache-write).
+   * Same formula as the org-wide daily figure in `getQualityTimeseries`, but per
+   * model — `hoshi-2-0` is the one to watch, because DeepSeek caches implicitly
+   * and gives us no breakpoint to set (SHO-82).
+   */
+  cacheHitRatio: number
+  unpricedRequests: number
 }
 
 /**
@@ -1781,15 +2360,7 @@ export async function getUsageLog(
 
   const where: any = {
     actionType: {
-      in: [
-        'ai_proxy_completion',
-        'chat_message',
-        'voice_minutes_inbound',
-        'voice_minutes_outbound',
-        'voice_number_setup',
-        'voice_number_monthly',
-        'ai_live_session_minutes',
-      ],
+      in: [...USAGE_METERED_ACTION_TYPES],
     },
     createdAt: { gte: since },
   }
@@ -1878,15 +2449,7 @@ export async function getUsageSummary(
 
   const where: any = {
     actionType: {
-      in: [
-        'ai_proxy_completion',
-        'chat_message',
-        'voice_minutes_inbound',
-        'voice_minutes_outbound',
-        'voice_number_setup',
-        'voice_number_monthly',
-        'ai_live_session_minutes',
-      ],
+      in: [...USAGE_METERED_ACTION_TYPES],
     },
     createdAt: { gte: since },
   }
@@ -1929,19 +2492,9 @@ export async function getUsageSummary(
 
   // Also get tool call counts per user (from ToolCallLog → ChatSession → Project)
   // We aggregate tool calls through the workspace scope if available
-  const toolCallWhere: any = { status: 'complete' }
-  if (scope.workspaceId) {
-    toolCallWhere.chatSession = { project: { workspaceId: scope.workspaceId } }
-  }
-  if (scope.projectId) {
-    toolCallWhere.chatSession = { contextId: scope.projectId }
-  }
-  if (since) {
-    toolCallWhere.createdAt = { gte: since }
-  }
-
-  // Get total tool calls at platform or workspace level
-  const totalToolCalls = await prisma.toolCallLog.count({ where: toolCallWhere })
+  const totalToolCalls = await prisma.toolCallLog.count({
+    where: toolCallWhereFor(scope, since),
+  })
 
   const summaries: UsageSummaryEntry[] = [...aggregateMap.values()]
     .map((agg) => {
@@ -1960,6 +2513,13 @@ export async function getUsageSummary(
         totalBilledUsd: agg.totalBilledUsd,
         totalRawUsd: agg.totalRawUsd,
         avgDurationMs: agg.requestCount > 0 ? Math.round(agg.totalDurationMs / agg.requestCount) : 0,
+        totalCachedInputTokens: agg.totalCachedInputTokens,
+        cacheHitRatio: promptCacheHitRatio(
+          agg.totalCachedInputTokens,
+          agg.totalInputTokens,
+          agg.totalCacheWriteTokens,
+        ),
+        unpricedRequests: agg.unpricedRequests,
       }
     })
     .sort((a, b) => b.totalTokens - a.totalTokens)
@@ -1972,6 +2532,7 @@ export async function getUsageSummary(
     totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
     totalBilledUsd: summaries.reduce((s, e) => s + e.totalBilledUsd, 0),
     totalRawUsd: summaries.reduce((s, e) => s + e.totalRawUsd, 0),
+    unpricedRequests: summaries.reduce((s, e) => s + e.unpricedRequests, 0),
     totalToolCalls,
     uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
     uniqueModels: new Set([...aggregateMap.values()].map((a) => a.model)).size,
@@ -1982,6 +2543,651 @@ export async function getUsageSummary(
   const paged = summaries.slice((page - 1) * limit, (page - 1) * limit + limit)
 
   return { summaries: paged, totals, total, page, limit }
+}
+
+/**
+ * `ToolCallLog` has no workspace column: it reaches the workspace through its
+ * chat session. A session can belong to a workspace directly (`workspaceId`
+ * set, `contextId` null) or through a project, and the old project-only join
+ * silently dropped the first kind — so a workspace's tool-call total was
+ * low (SHO-140).
+ */
+function toolCallWhereFor(scope: AnalyticsScope, since?: Date): any {
+  const where: any = { status: 'complete' }
+  if (scope.projectId) {
+    where.chatSession = { contextId: scope.projectId }
+  } else if (scope.workspaceId) {
+    where.chatSession = {
+      OR: [
+        { workspaceId: scope.workspaceId },
+        { project: { workspaceId: scope.workspaceId } },
+      ],
+    }
+  }
+  if (since) where.createdAt = { gte: since }
+  return where
+}
+
+// ============================================================================
+// Usage Dashboard (the whole Usage tab from one scan)
+// ============================================================================
+
+/**
+ * One aggregated row of `usage_events` for a workspace over a window.
+ *
+ * The Usage tab used to `findMany` every event three times and aggregate in JS
+ * — 42 MB of `actionMetadata` out of Postgres per scan on a 148k-event
+ * workspace (SHO-140). Everything the tab shows is a sum over these rows, so
+ * the JSON is opened inside the database and only the roll-up travels.
+ */
+interface UsageGroupRow {
+  day: string
+  memberId: string
+  actionType: string
+  source: string
+  model: string
+  provider: string
+  requests: number
+  billedUsd: number
+  rawUsd: number
+  metaRawUsd: number
+  costUsd: number
+  inputTokens: number
+  outputTokens: number
+  /**
+   * `meta.totalTokens` exactly as recorded (0 when absent) — the chart's rule
+   * (`getSpendTimeseries` uses `meta.totalTokens || 0`).
+   */
+  totalTokensField: number
+  /**
+   * What the summary reports: the recorded field, else input + output + cached
+   * + cache-write, matching `aggregateUsageByModel`.
+   */
+  totalTokens: number
+  cachedInputTokens: number
+  cacheWriteTokens: number
+  durationMs: number
+  unpricedRequests: number
+}
+
+export interface UsageDashboardOptions {
+  period?: AnalyticsPeriod
+  fromIso?: string
+  toIso?: string
+  groupBy?: 'model' | 'user' | 'source'
+  metric?: 'spend' | 'tokens' | 'requests'
+  topN?: number
+  page?: number
+  limit?: number
+}
+
+/**
+ * Every number the Usage tab renders, derived from a single scan of
+ * `usage_events`. Shapes are identical to `getUsageSummary`,
+ * `getSpendTimeseries` and `getUsageAnalytics` so the existing UI components
+ * need no change (the totals are covered by the golden fixture test).
+ */
+export async function getUsageDashboard(
+  scope: AnalyticsScope = {},
+  options: UsageDashboardOptions = {},
+) {
+  const { from, to } = periodToWindow(options.period, options.fromIso, options.toIso)
+  const page = Math.max(1, options.page ?? 1)
+  const limit = Math.min(Math.max(1, options.limit ?? 50), 1000)
+  const groupBy = options.groupBy ?? 'model'
+  const metric = options.metric ?? 'spend'
+  const topN = options.topN ?? 8
+
+  const groups = await loadUsageGroups(scope, from, to)
+
+  // Everything below is a roll-up of `groups`: no further database reads except
+  // the two label lookups (users, model names) and the tool-call count.
+  const metered = groups.filter((g) => METERED_ACTION_TYPE_SET.has(g.actionType))
+
+  const memberIds = [...new Set(groups.map((g) => g.memberId))].filter((id) => id !== 'system')
+  const models = [...new Set(metered.map((g) => g.model))]
+  const [users, modelLabels, totalToolCalls] = await Promise.all([
+    memberIds.length === 0
+      ? Promise.resolve([] as { id: string; name: string | null; email: string; image: string | null }[])
+      : prisma.user.findMany({
+        where: { id: { in: memberIds } },
+        select: { id: true, name: true, email: true, image: true },
+      }),
+    resolveModelLabels(models),
+    prisma.toolCallLog.count({ where: toolCallWhereFor(scope, from) }),
+  ])
+  const userMap = new Map(users.map((u) => [u.id, u]))
+  const labelFor = (model: string) => modelLabels.get(model) ?? model
+
+  return {
+    window: { from: from.toISOString(), to: to.toISOString(), period: options.period ?? '30d' },
+    summary: buildUsageDashboardSummary(metered, {
+      userMap,
+      labelFor,
+      totalToolCalls,
+      page,
+      limit,
+    }),
+    timeseries: buildUsageDashboardTimeseries(groups, {
+      from,
+      to,
+      groupBy,
+      metric,
+      topN,
+      labelFor,
+      userMap,
+    }),
+    usage: buildUsageDashboardBreakdown(groups),
+    logCount: metered.reduce((sum, g) => sum + g.requests, 0),
+  }
+}
+
+/** The metered action types as a Set, for the in-memory roll-ups. */
+const METERED_ACTION_TYPE_SET: Set<string> = new Set(USAGE_METERED_ACTION_TYPES)
+
+/**
+ * One grouped scan of `usage_events` for a scope + window, cached for the
+ * Analytics TTL so an open, a chart toggle and a re-render share it.
+ */
+export async function loadUsageGroups(
+  scope: AnalyticsScope,
+  from: Date,
+  to: Date,
+): Promise<UsageGroupRow[]> {
+  const key = analyticsCacheKey({ ...scope, from, to, shape: 'usage-groups' })
+  return withAnalyticsCache(key, ANALYTICS_CACHE_DEFAULT_TTL_MS, () =>
+    scanUsageGroups(scope, from, to),
+  )
+}
+
+async function scanUsageGroups(
+  scope: AnalyticsScope,
+  from: Date,
+  to: Date,
+): Promise<UsageGroupRow[]> {
+  // Which engine decides how the JSON is read, because the two disagree about
+  // the cost (measured, SHO-140):
+  //  - Postgres: `jsonb` operators roll the whole window up in the database, so
+  //    ~42 MB of `actionMetadata` per scan never crosses the wire. That is the
+  //    cloud fix.
+  //  - SQLite (desktop): `json_extract` cannot use an index, so reading ten
+  //    keys per row costs more than shipping the row to Node — the plan's own
+  //    measurement was 93 ms in SQL against 33 ms for the scan underneath. Here
+  //    the JSON is parsed in Node instead, but from **one** scan: the old code
+  //    scanned the same window three times for the three shapes.
+  // Either way this is one statement/one pass over `usage_events`, and it is the
+  // same function for both tracks — no desktop-only vs cloud-only behaviour, the
+  // numbers are identical (golden fixture test).
+  if (process.env.SHOGO_LOCAL_MODE === 'true') return scanUsageGroupsInNode(scope, from, to)
+  return scanUsageGroupsInSql(scope, from, to)
+}
+
+/**
+ * The desktop path: one row scan, rolled up in Node. `actionMetadata` is read
+ * here on purpose — on a local SQLite file there is no wire to protect, and
+ * `json_extract` per key over every row is measurably slower than `JSON.parse`.
+ */
+async function scanUsageGroupsInNode(
+  scope: AnalyticsScope,
+  from: Date,
+  to: Date,
+): Promise<UsageGroupRow[]> {
+  const where: Prisma.UsageEventWhereInput = { createdAt: { gte: from, lt: to } }
+  if (scope.workspaceId) where.workspaceId = scope.workspaceId
+  if (scope.projectId) where.projectId = scope.projectId
+  if (scope.userId) where.memberId = scope.userId
+
+  const events = await prisma.usageEvent.findMany({
+    where,
+    select: {
+      memberId: true,
+      actionType: true,
+      source: true,
+      billedUsd: true,
+      rawUsd: true,
+      createdAt: true,
+      actionMetadata: true,
+    },
+  })
+
+  const groups = new Map<string, UsageGroupRow>()
+  for (const event of events) {
+    const meta = parseMeta(event.actionMetadata)
+    // A JSON number only, so a legacy string value counts as 0 — the same rule
+    // as the `jsonb_typeof(...) = 'number'` / `typeof(json_extract(...))` guard
+    // on the SQL paths.
+    const numOrNull = (key: string): number | null => {
+      const value = meta[key]
+      return typeof value === 'number' && Number.isFinite(value) ? value : null
+    }
+    const num = (key: string) => numOrNull(key) ?? 0
+
+    const billedUsd = Number(event.billedUsd ?? 0)
+    const metaRaw = numOrNull('rawUsd') ?? numOrNull('dollarCost') ?? 0
+    // `??`, not `||`: `aggregateUsageByModel` reads
+    // `event.rawUsd ?? Number(meta.rawUsd ?? meta.dollarCost ?? 0)`, so a
+    // row that only carries the cost in `actionMetadata` (the
+    // `ai_live_session_minutes` shape) must still contribute its money.
+    const rawUsd = event.rawUsd ?? metaRaw
+    const costUsd = billedUsd > 0 ? billedUsd : rawUsd > 0 ? rawUsd : metaRaw
+    const inputTokens = num('inputTokens')
+    const outputTokens = num('outputTokens')
+    const cachedInputTokens = num('cachedInputTokens')
+    const cacheWriteTokens = num('cacheWriteTokens')
+    const totalTokensField = num('totalTokens')
+
+    const day = isoDay(event.createdAt)
+    const memberId = String(event.memberId)
+    const actionType = String(event.actionType)
+    const source = String(event.source)
+    const model = String(meta.model ?? meta.modelUsed ?? 'unknown')
+    const provider = String(meta.provider ?? 'anthropic')
+    const key = `${day}::${memberId}::${actionType}::${source}::${model}::${provider}`
+
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        day,
+        memberId,
+        actionType,
+        source,
+        model,
+        provider,
+        requests: 0,
+        billedUsd: 0,
+        rawUsd: 0,
+        metaRawUsd: 0,
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokensField: 0,
+        totalTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+        durationMs: 0,
+        unpricedRequests: 0,
+      }
+      groups.set(key, group)
+    }
+
+    group.requests += 1
+    group.billedUsd += billedUsd
+    group.rawUsd += rawUsd
+    group.metaRawUsd += metaRaw
+    group.costUsd += costUsd
+    group.inputTokens += inputTokens
+    group.outputTokens += outputTokens
+    group.totalTokensField += totalTokensField
+    group.totalTokens += totalTokensField !== 0
+      ? totalTokensField
+      : inputTokens + outputTokens + cachedInputTokens + cacheWriteTokens
+    group.cachedInputTokens += cachedInputTokens
+    group.cacheWriteTokens += cacheWriteTokens
+    group.durationMs += num('durationMs')
+    if (meta.pricingUnknown === true) group.unpricedRequests += 1
+  }
+
+  return [...groups.values()]
+}
+
+async function scanUsageGroupsInSql(
+  scope: AnalyticsScope,
+  from: Date,
+  to: Date,
+): Promise<UsageGroupRow[]> {
+  // The JSON keys live in `actionMetadata`. Reading them in the aggregation
+  // keeps ~42 MB of JSON per scan in the database instead of shipping it to Node
+  // to be summed — the whole reason the cloud page is slow.
+  //
+  // Postgres only: `scanUsageGroups` sends SQLite down the Node path above.
+  // Written as one parameterised statement rather than through the `Prisma.sql`
+  // tag so this module keeps importing only `prisma` (tests in this package
+  // replace `lib/prisma` wholesale, and the tag would need the `Prisma`
+  // namespace from it). Values are always bound, never interpolated.
+  const params: unknown[] = []
+  const bind = (value: unknown) => {
+    params.push(value)
+    return `$${params.length}`
+  }
+
+  const where: string[] = []
+  if (scope.workspaceId) where.push(`"workspaceId" = ${bind(scope.workspaceId)}`)
+  if (scope.projectId) where.push(`"projectId" = ${bind(scope.projectId)}`)
+  if (scope.userId) where.push(`"memberId" = ${bind(scope.userId)}`)
+  where.push(`"createdAt" >= ${bind(from)}`, `"createdAt" < ${bind(to)}`)
+
+  const day = `DATE_TRUNC('day', "createdAt")`
+
+  // A JSON number only, so a legacy string value counts as 0 like the old
+  // `Number(meta.x || 0)` path did. `numOrNull` keeps the difference between
+  // "absent" and "zero" for the cost fallback below.
+  const numOrNull = (key: string) => `(CASE WHEN jsonb_typeof("actionMetadata"->'${key}') = 'number'`
+    + ` THEN ("actionMetadata"->>'${key}')::numeric ELSE NULL END)`
+  const num = (key: string) => `COALESCE(${numOrNull(key)}, 0)`
+
+  const rawModel = `COALESCE("actionMetadata"->>'model', "actionMetadata"->>'modelUsed', 'unknown')`
+  const rawProvider = `COALESCE("actionMetadata"->>'provider', 'anthropic')`
+  const rawUnpriced = `CASE WHEN jsonb_typeof("actionMetadata"->'pricingUnknown') = 'boolean' AND ("actionMetadata"->>'pricingUnknown')::boolean THEN 1 ELSE 0 END`
+
+  const input = num('inputTokens')
+  const output = num('outputTokens')
+  const cached = num('cachedInputTokens')
+  const cacheWrite = num('cacheWriteTokens')
+  const totalTokens = num('totalTokens')
+  // Same per-event fallback as `eventCostUsd` in `getSpendTimeseries`: the
+  // billed amount when it exists, else the recorded provider cost.
+  const metaRaw = `COALESCE(${numOrNull('rawUsd')}, ${numOrNull('dollarCost')}, 0)`
+
+  const sql = `SELECT
+      ${day}                          AS "day",
+      "memberId"                      AS "memberId",
+      "actionType"                    AS "actionType",
+      "source"                        AS "source",
+      ${rawModel}                     AS "model",
+      ${rawProvider}                  AS "provider",
+      COUNT(*)                        AS "requests",
+      COALESCE(SUM("billedUsd"), 0)   AS "billedUsd",
+      COALESCE(SUM(COALESCE("rawUsd", ${metaRaw})), 0) AS "rawUsd",
+      COALESCE(SUM(${metaRaw}), 0)    AS "metaRawUsd",
+      COALESCE(SUM(
+        CASE
+          WHEN "billedUsd" > 0 THEN "billedUsd"
+          WHEN COALESCE("rawUsd", 0) > 0 THEN "rawUsd"
+          ELSE ${metaRaw}
+        END
+      ), 0)                           AS "costUsd",
+      COALESCE(SUM(${input}), 0)      AS "inputTokens",
+      COALESCE(SUM(${output}), 0)     AS "outputTokens",
+      COALESCE(SUM(${totalTokens}), 0) AS "totalTokensField",
+      COALESCE(SUM(
+        CASE WHEN ${totalTokens} <> 0 THEN ${totalTokens}
+             ELSE ${input} + ${output} + ${cached} + ${cacheWrite} END
+      ), 0)                           AS "totalTokens",
+      COALESCE(SUM(${cached}), 0)     AS "cachedInputTokens",
+      COALESCE(SUM(${cacheWrite}), 0) AS "cacheWriteTokens",
+      COALESCE(SUM(${num('durationMs')}), 0) AS "durationMs",
+      COALESCE(SUM(${rawUnpriced}), 0) AS "unpricedRequests"
+    FROM "usage_events"
+    WHERE ${where.join(' AND ')}
+    GROUP BY 1, 2, 3, 4, 5, 6`
+
+  const rows = await prisma.$queryRawUnsafe<any[]>(sql, ...params)
+
+  return rows.map((r) => ({
+    // `DATE_TRUNC` comes back as a Date through the pg driver; a driver (or a
+    // test double) handing back the raw timestamp string must not lose the
+    // bucket, or the day would never merge with the zero-filled series.
+    day: r.day instanceof Date ? isoDay(r.day) : isoDay(new Date(String(r.day))),
+    memberId: String(r.memberId),
+    actionType: String(r.actionType),
+    source: String(r.source),
+    model: String(r.model ?? 'unknown'),
+    provider: String(r.provider ?? 'anthropic'),
+    requests: Number(r.requests),
+    billedUsd: Number(r.billedUsd),
+    rawUsd: Number(r.rawUsd),
+    metaRawUsd: Number(r.metaRawUsd),
+    costUsd: Number(r.costUsd),
+    inputTokens: Number(r.inputTokens),
+    outputTokens: Number(r.outputTokens),
+    totalTokensField: Number(r.totalTokensField),
+    totalTokens: Number(r.totalTokens),
+    cachedInputTokens: Number(r.cachedInputTokens),
+    cacheWriteTokens: Number(r.cacheWriteTokens),
+    durationMs: Number(r.durationMs),
+    unpricedRequests: Number(r.unpricedRequests),
+  }))
+}
+
+interface UsageDashboardLabels {
+  userMap: Map<string, { name: string | null; email: string; image: string | null }>
+  labelFor: (model: string) => string
+  totalToolCalls: number
+  page: number
+  limit: number
+}
+
+/** Same rows, totals and pagination as `getUsageSummary`. */
+function buildUsageDashboardSummary(
+  groups: UsageGroupRow[],
+  { userMap, labelFor, totalToolCalls, page, limit }: UsageDashboardLabels,
+) {
+  const byMemberModel = new Map<string, {
+    memberId: string
+    model: string
+    provider: string
+    requests: number
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+    billedUsd: number
+    rawUsd: number
+    durationMs: number
+    cachedInputTokens: number
+    cacheWriteTokens: number
+    unpricedRequests: number
+  }>()
+
+  for (const g of groups) {
+    const key = `${g.memberId}::${g.model}`
+    const agg = byMemberModel.get(key)
+    if (agg) {
+      agg.requests += g.requests
+      agg.inputTokens += g.inputTokens
+      agg.outputTokens += g.outputTokens
+      agg.totalTokens += g.totalTokens
+      agg.billedUsd += g.billedUsd
+      agg.rawUsd += g.rawUsd
+      agg.durationMs += g.durationMs
+      agg.cachedInputTokens += g.cachedInputTokens
+      agg.cacheWriteTokens += g.cacheWriteTokens
+      agg.unpricedRequests += g.unpricedRequests
+    } else {
+      byMemberModel.set(key, {
+        memberId: g.memberId,
+        model: g.model,
+        provider: g.provider,
+        requests: g.requests,
+        inputTokens: g.inputTokens,
+        outputTokens: g.outputTokens,
+        totalTokens: g.totalTokens,
+        billedUsd: g.billedUsd,
+        rawUsd: g.rawUsd,
+        durationMs: g.durationMs,
+        cachedInputTokens: g.cachedInputTokens,
+        cacheWriteTokens: g.cacheWriteTokens,
+        unpricedRequests: g.unpricedRequests,
+      })
+    }
+  }
+
+  const summaries: UsageSummaryEntry[] = [...byMemberModel.values()]
+    .map((agg): UsageSummaryEntry => {
+      const user = userMap.get(agg.memberId)
+      return {
+        userId: agg.memberId,
+        userName: user?.name ?? null,
+        userEmail: user?.email ?? agg.memberId,
+        userImage: user?.image ?? null,
+        model: labelFor(agg.model),
+        provider: agg.provider,
+        requestCount: agg.requests,
+        totalInputTokens: agg.inputTokens,
+        totalOutputTokens: agg.outputTokens,
+        totalTokens: agg.totalTokens,
+        totalBilledUsd: agg.billedUsd,
+        totalRawUsd: agg.rawUsd,
+        avgDurationMs: agg.requests > 0 ? Math.round(agg.durationMs / agg.requests) : 0,
+        totalCachedInputTokens: agg.cachedInputTokens,
+        cacheHitRatio: promptCacheHitRatio(
+          agg.cachedInputTokens,
+          agg.inputTokens,
+          agg.cacheWriteTokens,
+        ),
+        unpricedRequests: agg.unpricedRequests,
+      }
+    })
+    .sort((a, b) => b.totalTokens - a.totalTokens)
+
+  const totals = {
+    totalRequests: groups.reduce((s, g) => s + g.requests, 0),
+    totalInputTokens: summaries.reduce((s, e) => s + e.totalInputTokens, 0),
+    totalOutputTokens: summaries.reduce((s, e) => s + e.totalOutputTokens, 0),
+    totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
+    totalBilledUsd: summaries.reduce((s, e) => s + e.totalBilledUsd, 0),
+    totalRawUsd: summaries.reduce((s, e) => s + e.totalRawUsd, 0),
+    unpricedRequests: summaries.reduce((s, e) => s + e.unpricedRequests, 0),
+    totalToolCalls,
+    uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
+    uniqueModels: new Set([...byMemberModel.values()].map((a) => a.model)).size,
+  }
+
+  return {
+    summaries: summaries.slice((page - 1) * limit, (page - 1) * limit + limit),
+    totals,
+    total: summaries.length,
+    page,
+    limit,
+  }
+}
+
+/** Same series, totals and zero-filled days as `getSpendTimeseries`. */
+function buildUsageDashboardTimeseries(
+  groups: UsageGroupRow[],
+  {
+    from,
+    to,
+    groupBy,
+    metric,
+    topN,
+    labelFor,
+    userMap,
+  }: {
+    from: Date
+    to: Date
+    groupBy: 'model' | 'user' | 'source'
+    metric: 'spend' | 'tokens' | 'requests'
+    topN: number
+    labelFor: (model: string) => string
+    userMap: UsageDashboardLabels['userMap']
+  },
+): SpendTimeseriesData {
+  const byDay = new Map<string, Map<string, number>>()
+  const seriesTotals = new Map<string, number>()
+  let totalSpendUsd = 0
+  let totalIncludedUsd = 0
+  let totalOnDemandUsd = 0
+
+  for (const g of groups) {
+    if (!METERED_ACTION_TYPE_SET.has(g.actionType)) continue
+    const series = groupBy === 'user'
+      ? (userMap.get(g.memberId)?.email || userMap.get(g.memberId)?.name || g.memberId)
+      : groupBy === 'source'
+        ? g.source
+        : labelFor(g.model)
+    // The chart has always read the recorded `totalTokens` field only
+    // (`meta.totalTokens || 0` in `getSpendTimeseries`), so a row with no
+    // `totalTokens` contributes nothing here even though the summary derives a
+    // value from its input/output counts.
+    const value = metric === 'tokens'
+      ? g.totalTokensField
+      : metric === 'requests'
+        ? g.requests
+        : g.costUsd
+
+    if (!byDay.has(g.day)) byDay.set(g.day, new Map())
+    const dayMap = byDay.get(g.day)!
+    dayMap.set(series, (dayMap.get(series) ?? 0) + value)
+    seriesTotals.set(series, (seriesTotals.get(series) ?? 0) + value)
+
+    totalSpendUsd += g.costUsd
+    if (g.source === 'overage') totalOnDemandUsd += g.costUsd
+    else totalIncludedUsd += g.costUsd
+  }
+
+  const ranked = [...seriesTotals.entries()].sort((a, b) => b[1] - a[1])
+  const top = new Set(ranked.slice(0, topN).map(([k]) => k))
+  const collapsed = new Set(ranked.slice(topN).map(([k]) => k))
+  const includeOther = collapsed.size > 0
+  const models = ranked.slice(0, topN).map(([k]) => k)
+  if (includeOther) models.push('Other')
+
+  const days: SpendTimeseriesPoint[] = []
+  for (const key of zeroFilledDays(from, to)) {
+    const sourceMap = byDay.get(key) ?? new Map<string, number>()
+    const byModel: Record<string, number> = {}
+    for (const m of models) byModel[m] = 0
+    let dayTotal = 0
+    for (const [series, value] of sourceMap.entries()) {
+      const targetKey = top.has(series) ? series : (collapsed.has(series) ? 'Other' : series)
+      byModel[targetKey] = (byModel[targetKey] ?? 0) + value
+      dayTotal += value
+    }
+    days.push({ date: key, byModel, total: dayTotal })
+  }
+
+  return {
+    days,
+    totals: {
+      totalSpendUsd,
+      totalIncludedUsd,
+      totalOnDemandUsd,
+      uniqueModels: seriesTotals.size,
+    },
+    models,
+    groupBy,
+    metric,
+  }
+}
+
+/** Same breakdown as `getUsageAnalytics` (which counts every event type). */
+function buildUsageDashboardBreakdown(groups: UsageGroupRow[]) {
+  const byActionType: Record<string, { count: number; totalSpendUsd: number }> = {}
+  const bySource: Record<string, number> = {}
+  const byMember = new Map<string, number>()
+  const daily = new Map<string, number>()
+  let totalSpendUsd = 0
+  let totalEvents = 0
+
+  for (const g of groups) {
+    totalEvents += g.requests
+    totalSpendUsd += g.billedUsd
+    const action = byActionType[g.actionType] ?? { count: 0, totalSpendUsd: 0 }
+    action.count += g.requests
+    action.totalSpendUsd += g.billedUsd
+    byActionType[g.actionType] = action
+    bySource[g.source] = (bySource[g.source] ?? 0) + g.billedUsd
+    byMember.set(g.memberId, (byMember.get(g.memberId) ?? 0) + g.billedUsd)
+    daily.set(g.day, (daily.get(g.day) ?? 0) + g.requests)
+  }
+
+  return {
+    totalEvents,
+    totalSpendUsd,
+    byActionType,
+    bySource,
+    topConsumers: [...byMember.entries()]
+      .map(([memberId, spend]) => ({ memberId, totalSpendUsd: spend }))
+      .sort((a, b) => b.totalSpendUsd - a.totalSpendUsd)
+      .slice(0, 10),
+    dailyUsage: [...daily.entries()]
+      .map(([date, count]) => ({ date, count }))
+      .sort((a, b) => a.date.localeCompare(b.date)),
+  }
+}
+
+/** Every UTC day key from `from` to `to` inclusive, in order. */
+function zeroFilledDays(from: Date, to: Date): string[] {
+  const keys: string[] = []
+  const cursor = new Date(from)
+  cursor.setUTCHours(0, 0, 0, 0)
+  const last = new Date(to)
+  last.setUTCHours(0, 0, 0, 0)
+  while (cursor <= last) {
+    keys.push(isoDay(cursor))
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return keys
 }
 
 // ============================================================================

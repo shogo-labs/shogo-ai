@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { afterEach, beforeEach, describe, expect, test, mock } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, test, mock } from 'bun:test'
+import { rmSync } from 'fs'
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -84,6 +85,15 @@ mock.module('../../lib/project-runtime-token', () => ({
   deriveProjectRuntimeToken: async (_projectId: string, _opts?: any) => 'mock-project-runtime-token',
 }))
 
+// The call store reads its two tables from the real database; everything else
+// in this file keeps using the mocked project/member client below.
+const { setupChannelsTestDb } = await import('../../__tests__/helpers/channels-test-db')
+const { dir } = setupChannelsTestDb()
+const { prisma: realPrisma } = await import('../../lib/prisma')
+// Bound to SQLite above; drop the helper's local-mode flag so the routes below
+// take their cloud branches (the resolver/tunnel mocks) instead of the local one.
+delete process.env.SHOGO_LOCAL_MODE
+
 mock.module('../../lib/prisma', () => ({
   prisma: {
     project: {
@@ -106,6 +116,8 @@ mock.module('../../lib/prisma', () => ({
         return candidates[0] ?? null
       },
     },
+    agentCall: realPrisma.agentCall,
+    agentCallSessionLink: realPrisma.agentCallSessionLink,
   },
 }))
 
@@ -172,6 +184,14 @@ mock.module('../../lib/metal-warm-pool-controller', () => ({
 const app = (await import('../internal')).default
 const { _setRbacModeForTests } = await import('../../lib/authz')
 const agentCallStore = await import('../../lib/agent-call-store')
+const callDbClient = realPrisma as any
+
+afterAll(async () => {
+  await callDbClient.agentCall.deleteMany({})
+  await callDbClient.agentCallSessionLink.deleteMany({})
+  await callDbClient.$disconnect?.()
+  rmSync(dir, { recursive: true, force: true })
+})
 
 const SA = { Authorization: 'Bearer sa-token' }
 const JSON_H = { 'content-type': 'application/json' }
@@ -557,6 +577,46 @@ describe('PATCH /projects/:projectId/config', () => {
     })
     expect(res.status).toBe(402)
   })
+
+  test('200 forwards workingMode to configureProject', async () => {
+    store.projects.set('proj-1', { workspaceId: 'ws-1' })
+    const res = await app.request('/projects/proj-1/config', {
+      method: 'PATCH',
+      headers: { ...SA, ...JSON_H },
+      body: JSON.stringify({ workingMode: 'external' }),
+    })
+    expect(res.status).toBe(200)
+    expect(store.configureCalledWith).toMatchObject({
+      projectId: 'proj-1',
+      patch: { workingMode: 'external' },
+    })
+  })
+
+  test('400 for a workingMode outside the allowlist', async () => {
+    store.projects.set('proj-1', { workspaceId: 'ws-1' })
+    const res = await app.request('/projects/proj-1/config', {
+      method: 'PATCH',
+      headers: { ...SA, ...JSON_H },
+      body: JSON.stringify({ workingMode: 'cloud' }),
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('invalid_working_mode')
+    expect(store.configureCalledWith).toBeNull()
+  })
+
+  test('409 when the flip is refused (unsupported direction or durable repo)', async () => {
+    store.projects.set('proj-1', { workspaceId: 'ws-1' })
+    for (const code of ['working_mode_flip_not_supported', 'durable_repo_external_flip']) {
+      store.configureThrow = ProjectLifecycleErrorLike(code)
+      const res = await app.request('/projects/proj-1/config', {
+        method: 'PATCH',
+        headers: { ...SA, ...JSON_H },
+        body: JSON.stringify({ workingMode: 'external' }),
+      })
+      expect(res.status).toBe(409)
+      expect((await res.json()).error.code).toBe(code)
+    }
+  })
 })
 
 // ─── GET /projects/:projectId/app-runtime-token ─────────────────────────────
@@ -714,7 +774,10 @@ describe('POST /projects/:projectId/agent-call', () => {
 // ─── GET /projects/:projectId/agent-call/:runId ─────────────────────────────
 
 describe('GET /projects/:projectId/agent-call/:runId', () => {
-  beforeEach(() => agentCallStore._testing.records.clear())
+  beforeEach(async () => {
+    await callDbClient.agentCall.deleteMany({})
+    await callDbClient.agentCallSessionLink.deleteMany({})
+  })
 
   test('401 with no credentials', async () => {
     store.projects.set('proj-2', { workspaceId: 'ws-1' })
@@ -739,7 +802,7 @@ describe('GET /projects/:projectId/agent-call/:runId', () => {
 
   test('a running call waits waitMs and then returns running', async () => {
     store.projects.set('proj-2', { workspaceId: 'ws-1' })
-    await agentCallStore.putAgentCall('proj-2', { runId: 'run-r', status: 'running', startedAt: 1, updatedAt: 1 })
+    await agentCallStore.putAgentCall('proj-2', { runId: 'run-r', status: 'running', startedAt: Date.now(), updatedAt: Date.now() })
     const t0 = Date.now()
     const res = await app.request('/projects/proj-2/agent-call/run-r?waitMs=50', { headers: { ...SA, 'X-Shogo-Keepalive': '1' } })
     expect(res.status).toBe(200)

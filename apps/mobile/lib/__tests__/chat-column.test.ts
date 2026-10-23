@@ -8,6 +8,7 @@ import {
   STUDIO_CHAT_COLUMN_GUTTER,
   chatColumn,
   chatColumnStyle,
+  composerColumnStyle,
 } from '../chat-column'
 import { CHAT_TRANSCRIPT_MAX_WIDTH } from '../native-composer-keyboard'
 import { NATIVE_PHONE_GUTTER } from '../native-phone-layout'
@@ -66,5 +67,26 @@ describe('chatColumnStyle', () => {
       alignSelf: 'center',
       paddingHorizontal: NATIVE_PHONE_GUTTER,
     })
+  })
+})
+
+describe('composerColumnStyle', () => {
+  test('a flush or in-column composer adds no placement of its own', () => {
+    expect(composerColumnStyle({ presentation: 'agent', flush: true })).toBeUndefined()
+    expect(composerColumnStyle({ presentation: 'agent', insideChatColumn: true })).toBeUndefined()
+  })
+
+  test('a desktop composer is inset by the agent gutter, uncapped', () => {
+    expect(composerColumnStyle({ presentation: 'agent' })).toEqual({ paddingHorizontal: AGENT_CHAT_COLUMN_GUTTER })
+  })
+
+  test('a prominent phone composer uses the full phone column', () => {
+    expect(composerColumnStyle({ presentation: 'agent', phone: true, prominent: true })).toEqual(
+      chatColumnStyle({ presentation: 'agent', phone: true }),
+    )
+  })
+
+  test('a phone composer that is not prominent uses the phone gutter', () => {
+    expect(composerColumnStyle({ presentation: 'agent', phone: true })).toEqual({ paddingHorizontal: NATIVE_PHONE_GUTTER })
   })
 })

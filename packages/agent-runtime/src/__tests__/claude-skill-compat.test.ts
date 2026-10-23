@@ -448,6 +448,51 @@ Old instructions.
       expect(section.length).toBeLessThanOrEqual(550)
     })
 
+    // SHO-57: the loop used to `break` at the budget, silently dropping every
+    // remaining skill — a skill at the tail of a 117-skill list never reached
+    // the prompt and was therefore never invoked.
+    test('names the omission instead of silently dropping the tail', () => {
+      const skills: Skill[] = Array.from({ length: 117 }, (_, i) => ({
+        name: `skill-${String(i + 1).padStart(3, '0')}`,
+        description: 'A'.repeat(110),
+        content: '',
+        skillDir: '',
+        disableModelInvocation: false,
+        userInvocable: true,
+      }))
+      const seen: Array<{ included: number; omitted: number; omittedNames: string[] }> = []
+
+      const section = buildSkillsPromptSection(skills, 4000, (info) => seen.push(info))
+
+      expect(section.length).toBeLessThanOrEqual(4000)
+      expect(section).toMatch(/…and \d+ more installed skills not listed here/)
+      expect(section).not.toContain('skill-117')
+      expect(seen).toHaveLength(1)
+      expect(seen[0].included + seen[0].omitted).toBe(117)
+      expect(seen[0].omittedNames).toHaveLength(seen[0].omitted)
+      expect(seen[0].omittedNames).toContain('skill-117')
+      expect(seen[0].omitted).toBeGreaterThan(0)
+      // The footer names the first omitted skills so the model can ask for them.
+      expect(section).toContain(seen[0].omittedNames[0])
+    })
+
+    test('does not fire the truncation callback when everything fits', () => {
+      const skills: Skill[] = [
+        {
+          name: 'only-skill',
+          description: 'Small',
+          content: '',
+          skillDir: '',
+          disableModelInvocation: false,
+          userInvocable: true,
+        },
+      ]
+      let called = false
+      const section = buildSkillsPromptSection(skills, 4000, () => { called = true })
+      expect(called).toBe(false)
+      expect(section).not.toContain('more installed skills')
+    })
+
     test('annotates skills with scripts', () => {
       const skills: Skill[] = [
         {

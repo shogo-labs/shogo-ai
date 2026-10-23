@@ -267,6 +267,39 @@ export function taskNotificationOf(message: { parts?: unknown } | null | undefin
   return { taskIds, updates: parseTaskUpdates(text) }
 }
 
+export type UsageLimitCode =
+  | 'usage_limit_reached'
+  | 'entitlement_expired'
+  | 'overage_cap_reached'
+  | 'overage_payment_pending'
+
+const USAGE_LIMIT_CODES: Record<string, UsageLimitCode> = {
+  usage_limit_reached: 'usage_limit_reached',
+  insufficient_credits: 'usage_limit_reached',
+  entitlement_expired: 'entitlement_expired',
+  overage_cap_reached: 'overage_cap_reached',
+  overage_payment_pending: 'overage_payment_pending',
+}
+
+/**
+ * The usage-limit detail of a chat request the API refused with a 402
+ * (`{ error: { code, message, resetsAt? } }`), or null for any other error.
+ */
+export function parseUsageLimitError(
+  rawMessage: string,
+): { code: UsageLimitCode; resetsAt?: string } | null {
+  let parsed: any
+  try {
+    parsed = JSON.parse(stripInternalErrorMarkers(rawMessage))
+  } catch {
+    return null
+  }
+  const code = typeof parsed?.error?.code === 'string' ? USAGE_LIMIT_CODES[parsed.error.code] : undefined
+  if (!code) return null
+  const resetsAt = parsed.error.resetsAt
+  return typeof resetsAt === 'string' && resetsAt ? { code, resetsAt } : { code }
+}
+
 const GENERIC_REQUEST_FAILED = 'The request failed. Please tap Retry to try again.'
 
 export function formatErrorMessage(rawMessage: string): string {

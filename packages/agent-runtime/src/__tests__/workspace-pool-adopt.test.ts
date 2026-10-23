@@ -113,6 +113,18 @@ describe('writePoolPreseedManifest', () => {
     expect(manifest.entries).not.toContain('linked-folder')
   })
 
+  test('never records the git layer repo seeded during the pre-seed', () => {
+    const before = preseedRoot()
+    write(join(root, '.git', 'HEAD'), 'ref: refs/heads/main')
+    const manifest = writePoolPreseedManifest(root, { entriesBefore: before, techStackId: 'react-app', distBuilt: false })
+    expect(manifest.entries).not.toContain('.git')
+  })
+
+  test('an older manifest that lists .git does not hand it out', () => {
+    write(join(root, '.shogo', 'pool-preseed.json'), JSON.stringify({ entries: ['.git', 'src'] }))
+    expect(readPoolPreseedManifest(root)?.entries).toEqual(['src'])
+  })
+
   test('distBuilt is false when no build landed', () => {
     const manifest = writePoolPreseedManifest(root, { entriesBefore: preseedRoot(), techStackId: null, distBuilt: true })
     expect(manifest.distBuilt).toBe(false)
@@ -157,6 +169,20 @@ describe('adoptPoolPreseedIntoMember', () => {
 
     expect(readPoolPreseedManifest(root)).toBeNull()
     expect(existsSync(poolDistDir(root))).toBe(false)
+  })
+
+  test('leaves the root repo in place instead of nesting it in the anchor', () => {
+    const before = preseedRoot()
+    write(join(root, '.git', 'HEAD'), 'ref: refs/heads/main')
+    writePoolPreseedManifest(root, { entriesBefore: before, techStackId: 'react-app', distBuilt: false })
+    const anchorDir = join(root, ANCHOR)
+
+    const result = adoptPoolPreseedIntoMember(root, anchorDir, { basePath: `/preview/${ANCHOR}/` })
+
+    expect(result.adopted).toBe(true)
+    expect(existsSync(join(root, '.git', 'HEAD'))).toBe(true)
+    expect(existsSync(join(anchorDir, '.git'))).toBe(false)
+    expect(existsSync(join(anchorDir, 'src', 'App.tsx'))).toBe(true)
   })
 
   test('adopts without a dist when the pool did not build one', () => {
@@ -211,6 +237,19 @@ describe('discardPoolPreseed', () => {
     }
     expect(readPoolPreseedManifest(root)).toBeNull()
     expect(existsSync(poolDistDir(root))).toBe(false)
+  })
+
+  test('a pre-seed that finishes after assign keeps the adopted repo', () => {
+    const before = preseedRoot()
+    write(join(root, '.git', 'HEAD'), 'ref: refs/heads/main')
+    write(join(root, '.git', 'refs', 'heads', 'main'), 'durable')
+    writePoolPreseedManifest(root, { entriesBefore: before, techStackId: 'react-app', distBuilt: false })
+
+    const removed = discardPoolPreseed(root)
+
+    expect(removed).not.toContain('.git')
+    expect(readFileSync(join(root, '.git', 'refs', 'heads', 'main'), 'utf-8')).toBe('durable')
+    expect(existsSync(join(root, 'src'))).toBe(false)
   })
 
   test('is a no-op without a manifest', () => {

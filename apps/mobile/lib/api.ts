@@ -6,6 +6,8 @@ import type { Permission, ProjectRole, WorkspaceRole } from '@shogo/authz'
 import { API_URL } from './api-url'
 import { authClient } from './auth-client'
 import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
+import { routeUrl } from './workspace-route'
+import { usageLogCsvUrl } from './usage-log-csv'
 
 export { API_URL } from './api-url'
 
@@ -41,6 +43,31 @@ export function isInvitationExpired(invitation: { status?: string; expiresAt?: s
 // available via `useDomainHttp()`.
 
 export type ProjectVisibility = 'workspace' | 'restricted'
+
+/**
+ * `GET /api/workspaces/:id/deletion-preview` payload — exactly what a delete
+ * removes, so the confirm dialog can list the directories instead of warning
+ * vaguely that "all data" goes away.
+ */
+export interface WorkspaceDeletionPreview {
+  workspaceId: string
+  workspaceName: string
+  projects: Array<{
+    id: string
+    name: string
+    /** App-owned directory, or null for a folder-linked project. */
+    path: string | null
+    sizeBytes: number | null
+    folderLinked: boolean
+    /** The user's own folder; never deleted. */
+    folderPath: string | null
+  }>
+  removedDirs: string[]
+  channelCount: number
+  boardCount: number
+  chatCount: number
+  totalBytes: number | null
+}
 
 /** `GET /api/workspaces/:id/permissions` payload. */
 export interface WorkspacePermissionsData {
@@ -769,6 +796,12 @@ export const api = {
     return res.data
   },
 
+  /** Tells the server this iPhone's PushKit token, so huddle calls can ring it (null turns that off). */
+  async putVoipToken(http: HttpClient, body: { pushToken: string; voipToken: string | null }) {
+    const res = await http.put<{ ok?: boolean }>('/api/mobile-push-subscriptions/voip', body)
+    return res.data
+  },
+
   async unregisterMobilePushSubscription(http: HttpClient, pushToken: string) {
     const res = await http.delete<{ ok?: boolean }>('/api/mobile-push-subscriptions', { pushToken })
     return res.data
@@ -870,6 +903,83 @@ export const api = {
     return res.data
   },
 
+  // ─── Workspace export / import ─────────────────────────────────
+  /**
+   * Absolute download URL for the whole-workspace archive (native streams this
+   * with `downloadAsync`). Routed so a cloud workspace's archive goes through
+   * the desktop relay, and kept query-free so the password never lands in a URL:
+   * every option rides in `getWorkspaceExportHeaders`.
+   */
+  getWorkspaceExportUrl(workspaceId: string): string {
+    const url = `${API_URL}/api/workspaces/${workspaceId}/export`
+    return API_URL ? routeUrl(url, API_URL) : url
+  },
+
+  /**
+   * Headers for a native archive download. `downloadAsync` cannot send a body,
+   * so the export options and the auth cookie ride in headers instead.
+   */
+  getWorkspaceExportHeaders(
+    options: { includeAllDms?: boolean; includeAttachments?: boolean; password?: string } = {},
+  ): Record<string, string> {
+    const headers: Record<string, string> = {}
+    if (options.includeAllDms) headers['x-workspace-export-all-dms'] = 'true'
+    if (options.includeAttachments === false) headers['x-workspace-export-attachments'] = 'false'
+    if (options.password) headers['x-workspace-export-password'] = options.password
+    const cookie = getNativeAuthCookie()
+    if (cookie) headers.Cookie = cookie
+    return headers
+  },
+
+  /** Counts + bytes for the settings screen; never builds the archive. */
+  async getWorkspaceExportEstimate(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{
+      workspace: { id: string; name: string; kind: string }
+      models: Array<{ model: string; rows: number }>
+      projects: Array<{ id: string; name: string; files: number; bytes: number }>
+      totals: { rows: number; files: number; bytes: number }
+      warnings: string[]
+      limits: { bytes: number }
+    }>(`/api/workspaces/${workspaceId}/export/estimate`)
+    return res.data
+  },
+
+  /**
+   * Import a workspace archive (web). Native posts the same multipart body
+   * through `fetch` in the settings section — this helper stays platform-neutral
+   * by taking a `File`/`Blob` the caller already has.
+   */
+  async importWorkspaceArchive(
+    file: Blob & { name?: string },
+    options: { name?: string; password?: string; dryRun?: boolean } = {},
+  ) {
+    const form = new FormData()
+    form.append('file', file, file.name || 'workspace.zip')
+    if (options.name) form.append('name', options.name)
+    if (options.password) form.append('password', options.password)
+    if (options.dryRun) form.append('dryRun', 'true')
+
+    const headers: Record<string, string> = {}
+    const cookie = getNativeAuthCookie()
+    if (cookie) headers.Cookie = cookie
+    const res = await fetch(`${API_URL}/api/workspaces/import`, {
+      method: 'POST',
+      body: form,
+      headers,
+      credentials: Platform.OS === 'web' ? 'include' : 'omit',
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      const error = (body as any)?.error
+      throw new Error(
+        typeof error === 'string'
+          ? error
+          : error?.message || `Import failed (${res.status})`,
+      )
+    }
+    return body
+  },
+
   async getWorkspaceMetrics(http: HttpClient, workspaceId: string, period = '24h') {
     const res = await http.get<any>(`/api/workspaces/${workspaceId}/metrics`, { period })
     return res.data
@@ -905,18 +1015,17 @@ export const api = {
    * Build the absolute CSV download URL for a workspace's usage event log.
    * Filters mirror `analytics/usage-log` (period, userId, model). The route
    * sets `content-disposition: attachment` so the browser downloads it.
+   *
+   * The base is not `${API_URL}`: a download is a raw URL, so it has to learn
+   * the same host the JSON analytics call gets (`lib/usage-log-csv`). Prefer
+   * `useUsageLogCsvUrl()` in components — it knows which workspace is in view.
    */
   getUsageLogCsvUrl(
     workspaceId: string,
     params: { period?: string; userId?: string; model?: string; limit?: number } = {},
+    opts: { machine?: { relayBaseUrl: string; localWorkspaceId: string } | null } = {},
   ): string {
-    const qs = new URLSearchParams()
-    if (params.period) qs.set('period', params.period)
-    if (params.userId) qs.set('userId', params.userId)
-    if (params.model) qs.set('model', params.model)
-    if (params.limit) qs.set('limit', String(params.limit))
-    const suffix = qs.toString()
-    return `${API_URL}/api/workspaces/${workspaceId}/analytics/usage-log.csv${suffix ? `?${suffix}` : ''}`
+    return usageLogCsvUrl({ workspaceId, params, machine: opts.machine })
   },
 
   async getMyAnalytics<T>(
@@ -1564,6 +1673,38 @@ export const api = {
     return res.data.workspace
   },
 
+  /**
+   * What deleting this workspace would destroy: its project directories (and
+   * their sizes), the merged runtime root, and how many channels, boards and
+   * chats go with it. Read-only; drives the type-to-confirm dialog.
+   */
+  async getWorkspaceDeletionPreview(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ ok: boolean; preview?: WorkspaceDeletionPreview }>(
+      `/api/workspaces/${workspaceId}/deletion-preview`,
+    )
+    if (!res.data?.preview) throw new Error('getWorkspaceDeletionPreview: no preview returned')
+    return res.data.preview
+  },
+
+  /** Local-only: a true wipe (rows, runtimes, project dirs, attachments). */
+  async deleteWorkspace(http: HttpClient, workspaceId: string) {
+    const res = await http.delete<{ ok: boolean; removedDirs?: string[]; warnings?: string[] }>(
+      `/api/workspaces/${workspaceId}`,
+    )
+    return {
+      removedDirs: res.data?.removedDirs ?? [],
+      warnings: res.data?.warnings ?? [],
+    }
+  },
+
+  /** Which local workspaces have a runtime up and work in flight. */
+  async getWorkspaceActivity(http: HttpClient) {
+    const res = await http.get<{
+      items?: Array<{ workspaceId: string; running?: boolean; inFlight?: boolean }>
+    }>('/api/workspaces/activity')
+    return res.data?.items ?? []
+  },
+
   // ─── Members ──────────────────────────────────────────
 
   async getWorkspaceMembers(http: HttpClient, workspaceId: string) {
@@ -1730,8 +1871,26 @@ export const api = {
       /** Pin the session to this project so chat runs on the runtime serving its preview. */
       anchorProjectId?: string
     } = {},
-  ): Promise<{ id: string; workspaceId: string; attached: Array<{ id: string; projectId: string; attachMode: string }> }> {
-    const res = await http.post<{ session: { id: string; workspaceId: string; attached: Array<{ id: string; projectId: string; attachMode: string }> } }>(
+  ): Promise<{
+    id: string
+    workspaceId: string
+    name?: string | null
+    inferredName?: string | null
+    createdAt?: string | null
+    lastActiveAt?: string | null
+    attached: Array<{ id: string; projectId: string; attachMode: string }>
+  }> {
+    const res = await http.post<{
+      session: {
+        id: string
+        workspaceId: string
+        name?: string | null
+        inferredName?: string | null
+        createdAt?: string | null
+        lastActiveAt?: string | null
+        attached: Array<{ id: string; projectId: string; attachMode: string }>
+      }
+    }>(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
       opts,
     )
@@ -1756,11 +1915,12 @@ export const api = {
 
   /**
    * List the signed-in user's personal workspace-agent chats, newest first.
+   * `messageCount` lets a caller tell an empty chat from a used one.
    */
   async listWorkspaceSessions(
     http: HttpClient,
     workspaceId: string,
-  ): Promise<Array<{ id: string; workspaceId: string; isPrimary?: boolean; isPinned?: boolean; isArchived?: boolean; name?: string | null; inferredName?: string | null; createdAt?: string; lastActiveAt?: string }>> {
+  ): Promise<Array<{ id: string; workspaceId: string; isPrimary?: boolean; isPinned?: boolean; isArchived?: boolean; name?: string | null; inferredName?: string | null; createdAt?: string; lastActiveAt?: string; messageCount?: number }>> {
     const res = await http.get<{
       sessions?: Array<{
         id: string
@@ -1772,6 +1932,7 @@ export const api = {
         inferredName?: string | null
         createdAt?: string
         lastActiveAt?: string
+        messageCount?: number
       }>
     }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`)
     return res.data?.sessions ?? []
@@ -1797,6 +1958,23 @@ export const api = {
     )
     if (!res.data?.profile) throw new Error('updateAgentProfile: no profile returned')
     return res.data.profile
+  },
+
+  /** Model the workspace agent uses when tagged in team chat (`null` = Auto). */
+  async getAgentDefaultModel(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ defaultModel: string | null; canManage: boolean }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-default-model`,
+    )
+    return { defaultModel: res.data?.defaultModel ?? null, canManage: !!res.data?.canManage }
+  },
+
+  /** Workspace owners/admins only; pass `null` to go back to Auto. */
+  async setAgentDefaultModel(http: HttpClient, workspaceId: string, defaultModel: string | null) {
+    const res = await http.request<{ defaultModel: string | null; canManage: boolean }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-default-model`,
+      { method: 'PUT', body: { defaultModel } },
+    )
+    return res.data?.defaultModel ?? null
   },
 
   async listWorkspaceGoals(
@@ -1919,11 +2097,12 @@ export const api = {
    * Best-effort: warm the merged-root workspace runtime. Mirrors
    * prewarmProjectRuntime. Pass the workspace session id (and/or explicit
    * attach project ids) so the runtime mounts the right subfolders.
+   * `source` labels the warm in the server's `runtime.prewarm_ms` metric.
    */
   async prewarmWorkspaceRuntime(
     http: HttpClient,
     workspaceId: string,
-    opts: { sessionId?: string; attachProjectIds?: string[] } = {},
+    opts: { sessionId?: string; attachProjectIds?: string[]; source?: 'onboarding' | 'home_draft' } = {},
   ): Promise<void> {
     try {
       await http.post(`/api/workspaces/${encodeURIComponent(workspaceId)}/runtime/prewarm`, opts)
@@ -2680,7 +2859,14 @@ export const api = {
     })
     if (!res.ok) {
       const text = await res.text()
-      throw new Error(text || `Export failed with status ${res.status}`)
+      let message = text
+      try {
+        const body = JSON.parse(text)
+        message = body?.error?.message ?? (typeof body?.error === 'string' ? body.error : text)
+      } catch {
+        // Non-JSON body; surface it verbatim.
+      }
+      throw new Error(message || `Export failed with status ${res.status}`)
     }
 
     const disposition = res.headers.get('content-disposition') || ''
@@ -3119,6 +3305,8 @@ export interface TechStackSummary {
     shellEnabled?: boolean
     heartbeatToolsEnabled?: boolean
     imageGenEnabled?: boolean
+    videoGenEnabled?: boolean
+    threeDGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
     sdkGuideEnabled?: boolean

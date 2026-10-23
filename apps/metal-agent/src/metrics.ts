@@ -67,6 +67,8 @@ export const M = {
   // idle VMs on a superseded rootfs backed up and stopped instead of snapshotted.
   stagedSnapshotsPromoted: 'metal_staged_snapshots_promoted_total',
   suspendRetiredStale: 'metal_suspend_retired_stale_total',
+  // VMs moved off a superseded rootfs by the rollout rotation (pool.rotateStale).
+  rolloutRotated: 'metal_rollout_rotated_total',
   resumeLocalHits: 'metal_resume_local_hits_total',
   resumeStoreHits: 'metal_resume_store_hits_total',
   resumeColdMiss: 'metal_resume_cold_miss_total',
@@ -222,6 +224,13 @@ export const M = {
   repoPromoted: 'metal_repo_unlinked_promoted_total',
   repoRefused: 'metal_repo_refused_untrusted_total',
   repoTooLarge: 'metal_repo_too_large_total',
+  repoBundleBytes: 'metal_repo_bundle_bytes_total',
+  repoBundleFull: 'metal_repo_bundle_full_total',
+  repoManifestConflict: 'metal_repo_manifest_conflict_total',
+  repoBundleCompactions: 'metal_repo_bundle_compactions_total',
+  repoBundlesGced: 'metal_repo_bundle_gc_deleted_total',
+  // Unmigrated projects kept on the tarball because the guest's LFS push failed.
+  repoBundleLfsFallback: 'metal_repo_bundle_lfs_fallback_total',
   repoExportUnchanged: 'metal_repo_export_unchanged_total',
   // Guest-side failures scraped from the per-VM serial console by serial-watcher.
   // These are the ONLY fleet-wide signal for in-guest breakage that survives a

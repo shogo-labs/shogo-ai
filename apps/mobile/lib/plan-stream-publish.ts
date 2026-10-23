@@ -21,6 +21,17 @@ export function planToPublishToStream<T>(opts: {
 }
 
 /**
+ * Multi-tab hosts mark the active tab by passing `onMessagesChange`;
+ * single-chat hosts without it opt in with `ownsPlanStream`.
+ */
+export function isPlanStreamOwner(opts: {
+  hasMessagesListener: boolean
+  ownsPlanStream: boolean
+}): boolean {
+  return opts.hasMessagesListener || opts.ownsPlanStream
+}
+
+/**
  * Only the active chat panel owns the shared PlanStreamContext. Background
  * panels keep their own plan state and must never clear or overwrite it.
  */

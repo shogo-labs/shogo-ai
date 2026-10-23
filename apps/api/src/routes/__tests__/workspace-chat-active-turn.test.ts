@@ -68,6 +68,9 @@ mock.module('@shogo/model-catalog', () => ({
   calculateDollarCost: () => 0,
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
+  AUTO_MODEL_ID: 'auto',
+  isAutoModel: (id: string) => id === 'auto',
+  inferProviderFromModel: (_id: string, fallback: string) => fallback,
 }))
 
 mock.module('../../services/cost-analytics.service', () => ({
@@ -144,6 +147,7 @@ mock.module('../../lib/proxy-billing-session-runtime', () => ({
   hasActiveSession: async () => false,
   accumulateUsage: async () => false,
   accumulateImageUsage: async () => false,
+  recordTurnUsage: async () => ({ billedUsd: 0, rawUsd: 0, totalTokens: 0 }),
 }))
 
 mock.module('../../services/git.service', () => ({

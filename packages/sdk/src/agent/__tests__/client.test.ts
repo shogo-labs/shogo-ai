@@ -819,6 +819,12 @@ describe("AgentClient — workspaceScope: 'project'", () => {
     expect(c.workspaceFileDownloadUrl('img.png')).toBe('http://x.test/agent/workspace/download/img.png?scope=project')
   })
 
+  test('scopes the export bundle to the project', async () => {
+    const calls: Call[] = []
+    await scopedClient(calls).getWorkspaceBundle()
+    expect(calls[0]?.url).toBe('http://x.test/agent/workspace/bundle?scope=project')
+  })
+
   test('scopes the live workspace event stream', () => {
     const dispose = scopedClient([]).subscribeToWorkspace(() => {})
     expect(esInstances[0]?.url).toBe('http://x.test/agent/canvas/stream?scope=project')

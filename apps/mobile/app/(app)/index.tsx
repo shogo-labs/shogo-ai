@@ -33,9 +33,14 @@ import {
 } from '../../contexts/domain'
 import { ComposerPlusSection } from '../../components/chat/ComposerPlusMenu'
 import {
+  MachineWorkspaceBanner,
+  useMachineWorkspace,
+} from '../../components/instance/MachineWorkspaceBanner'
+import { isMachineConditionError } from '@shogo/shared-app/services'
+import { useActiveInstance } from '../../contexts/active-instance'
+import {
   ChatInput,
-  DEFAULT_MODEL_PRO,
-  DEFAULT_MODEL_FREE,
+  DEFAULT_MODEL,
   type FileAttachment,
   type InteractionMode,
 } from '../../components/chat/ChatInput'
@@ -47,11 +52,13 @@ import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-p
 import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig, isWorkspaceRuntimeEnabled } from '../../lib/platform-config'
+import { appHomeSurface } from '../../lib/root-destination'
 import { resolveChatScope } from '../../lib/chat-scope'
 import { api, getOnboardingMessage } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
@@ -76,7 +83,6 @@ import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
 import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
 import { MobileHomeFeed } from '../../components/home/MobileHomeFeed'
 import { CreatePersonalSpaceBanner } from '../../components/personal/CreatePersonalSpaceBanner'
-import { GetStartedChecklist, useGettingStarted } from '../../components/onboarding/GetStartedChecklist'
 import { useMobileWorkspaceChrome } from '../../components/layout/MobileWorkspaceChromeContext'
 
 /**
@@ -235,9 +241,12 @@ const styles = StyleSheet.create({
 
 export const HomeScreen = observer(function HomeScreen({
   forceBuilder = false,
+  explicitHome = false,
   originWorkspaceSessionId,
 }: {
   forceBuilder?: boolean
+  /** `/(app)/home`: the pre-landing home, not the landing itself. */
+  explicitHome?: boolean
   originWorkspaceSessionId?: string
 }) {
   const router = useRouter()
@@ -275,7 +284,7 @@ export const HomeScreen = observer(function HomeScreen({
   })
 
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
-  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL)
   // Gate stale-selection reconciliation until the persisted preference has
   // loaded. Otherwise the reconciler runs against the initial slug default
   // (which isn't a catalog UUID id), resets to Auto, and persists that — which
@@ -325,6 +334,13 @@ export const HomeScreen = observer(function HomeScreen({
   const draftRef = useRef<HomeDraft | null>(null)
   const draftPromiseRef = useRef<Promise<HomeDraft | null> | null>(null)
   const draftPrewarmedRef = useRef<Set<string>>(new Set())
+  // The last submission the machine refused, kept only long enough for the
+  // banner's Try again (and the waking auto-retry) to re-run it.
+  const lastRefusedRef = useRef<{
+    text: string
+    files?: FileAttachment[]
+    mode: InteractionMode
+  } | null>(null)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   // APP_MODE_DISABLED: homeAppTemplates state removed
 
@@ -334,15 +350,24 @@ export const HomeScreen = observer(function HomeScreen({
     })
   }, [])
 
+  // The cloud workspace: identity, billing and membership are the cloud
+  // account's even while a paired computer's workspace is open.
   const currentWorkspace = useActiveWorkspace()
+  // The workspace on screen — the machine's own while one is open, which is
+  // what the agent screen, its projects and its composer belong to (SHO-130).
+  const workspaceInView = useWorkspaceInView()
   const currentExperience = useWorkspaceExperience()
-  // Personal (and narrow) surfaces render `WorkspaceAgentChatScreen`, which
-  // mounts its own checklist.
-  const rendersAgentChat =
-    !forceBuilder &&
-    isWorkspaceRuntimeEnabled() &&
-    (isNarrowAgentSurface || currentExperience.kind === 'personal')
-  const gettingStarted = useGettingStarted(!rendersAgentChat)
+  // `/` lands on the workspace agent on an empty chat for every workspace
+  // kind and width; `/(app)/home` keeps the pre-landing layout (phone feed /
+  // wide builder) and `/(app)/new-project` pins the builder.
+  const homeSurface = appHomeSurface({
+    forceBuilder,
+    explicitHome,
+    kind: currentExperience.kind,
+    narrow: isNarrowAgentSurface,
+    runtimeEnabled: isWorkspaceRuntimeEnabled(),
+  })
+  const rendersAgentChat = homeSurface === 'agent'
 
   // Whether the user already has a `kind: 'personal'` workspace. `false`
   // surfaces `CreatePersonalSpaceBanner` below — see that component for why
@@ -368,7 +393,7 @@ export const HomeScreen = observer(function HomeScreen({
       // Workspaces load from the app layout. This effect re-runs when
       // `currentWorkspace?.id` appears, so the first project load happens
       // after that id is known.
-      const projectFilter = workspaceProjectFilter(currentWorkspace?.id)
+      const projectFilter = workspaceProjectFilter(workspaceInView?.id)
       const results = await Promise.allSettled([
         projectFilter ? projects.loadAll(projectFilter) : Promise.resolve(),
         user?.id ? membersColl.loadAll({ userId: user.id }) : Promise.resolve(),
@@ -393,20 +418,16 @@ export const HomeScreen = observer(function HomeScreen({
     loadData()
 
     return () => { cancelled = true }
-  }, [isAuthenticated, user?.id, currentWorkspace?.id])
+  }, [isAuthenticated, user?.id, workspaceInView?.id])
   const billingData = useBillingData(currentWorkspace?.id)
   const hasAdvancedModelAccess = billingData.hasAdvancedModelAccess
 
   useEffect(() => {
     loadModelPreference().then((stored) => {
-      if (stored) {
-        setSelectedModel(stored)
-      } else if (hasAdvancedModelAccess) {
-        setSelectedModel(DEFAULT_MODEL_PRO)
-      }
+      if (stored) setSelectedModel(stored)
       setModelPrefLoaded(true)
     })
-  }, [hasAdvancedModelAccess])
+  }, [])
 
   // Deep-link: auto-install a marketplace listing referred from the
   // marketing site. The storage slot is still named
@@ -465,7 +486,7 @@ export const HomeScreen = observer(function HomeScreen({
   // loads.
   useReconcileStaleModelSelection(
     selectedModel,
-    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    DEFAULT_MODEL,
     handleHomeModelChange,
     modelPrefLoaded,
   )
@@ -529,6 +550,7 @@ export const HomeScreen = observer(function HomeScreen({
         void api.prewarmWorkspaceRuntime(http, workspaceId, {
           sessionId: draft.chatSessionId,
           attachProjectIds: [draft.projectId],
+          source: 'home_draft',
         })
       } else {
         void api.prewarmProjectRuntime(http, draft.projectId)
@@ -649,6 +671,13 @@ export const HomeScreen = observer(function HomeScreen({
             prewarmHomeDraft(draft, currentWorkspace.id)
           }
         } catch (err: any) {
+          if (isMachineConditionError(err)) {
+            // The machine is asleep or still waking: the banner says so and
+            // offers Try again, so keep the submission to re-run rather than
+            // showing a second, worse explanation in an alert.
+            lastRefusedRef.current = { text, files, mode: submissionInteractionMode }
+            return
+          }
           const detail = err?.message || err?.details?.error?.message || String(err)
           console.error('[Home] Failed to create project:', detail, err)
           Alert.alert('Error', `Failed to create project: ${detail}`)
@@ -882,6 +911,26 @@ export const HomeScreen = observer(function HomeScreen({
     }
   }, [isAuthenticated, localMode, router])
 
+  // A machine workspace cannot take a write while its Mac is asleep, so the
+  // composer is disabled from the same state the banner renders — and the banner
+  // says which of the two things is true, waking or offline.
+  //
+  // These three hooks stay above every early return below: `homeSurface` and
+  // `rendersAgentChat` both flip while the workspace loads, and a hook that only
+  // runs on the second render throws "Rendered more hooks than during the
+  // previous render" — which blanks the whole app behind the error boundary.
+  const { instance: machineInstance } = useActiveInstance()
+  const retryMachineRequest = useCallback(() => {
+    const refused = lastRefusedRef.current
+    if (!refused) return
+    lastRefusedRef.current = null
+    return createProjectFromPrompt(refused.text, refused.files, refused.mode)
+  }, [createProjectFromPrompt])
+  const machineView = useMachineWorkspace({
+    machineName: machineInstance?.name,
+    onRetry: retryMachineRequest,
+  })
+
   if (!isAuthenticated) {
     if (localMode) {
       return null
@@ -909,16 +958,19 @@ export const HomeScreen = observer(function HomeScreen({
     )
   }
 
-  // Personal workspaces use the agent chat surface on every platform.
-  // Shared workspaces use it on narrow surfaces while wide web retains the
-  // established builder home.
-  // Team workspaces on a phone open on a work-first feed; the workspace agent
-  // chat is one tap away at `/agent`.
-  if (rendersAgentChat && currentExperience.kind === 'team' && isNarrowAgentSurface) {
+  // `/(app)/home` keeps the pre-landing team home: the work-first feed on a
+  // phone and the "What are we building" builder on wide web. The landing
+  // itself is the workspace agent on an empty chat (see `appHomeSurface`).
+  if (homeSurface === 'feed') {
     return <MobileHomeFeed />
   }
   if (rendersAgentChat) {
-    return <WorkspaceAgentChatScreen key={currentWorkspace?.id ?? 'workspace-loading'} />
+    return (
+      <WorkspaceAgentChatScreen
+        key={workspaceInView?.id ?? 'workspace-loading'}
+        startNewSession
+      />
+    )
   }
 
   const greeting = (
@@ -929,11 +981,6 @@ export const HomeScreen = observer(function HomeScreen({
             userId={user?.id}
             onCreate={handleCreatePersonalWorkspace}
           />
-        </View>
-      ) : null}
-      {gettingStarted.visible ? (
-        <View className={isNativePhone ? 'mb-6 w-full' : 'mb-8 w-full max-w-2xl'}>
-          <GetStartedChecklist state={gettingStarted} />
         </View>
       ) : null}
       {isNativePhone ? (
@@ -976,7 +1023,7 @@ export const HomeScreen = observer(function HomeScreen({
   const composer = usesMobileWorkspaceChrome ? (
     <ChatInput
       onSubmit={(text, files) => handlePromptSubmit(text, files)}
-      disabled={isCreating}
+      disabled={isCreating || machineView.composeDisabled}
       placeholder="Describe the project you want to build..."
       composer={currentExperience.composer}
       presentation="agent"
@@ -987,6 +1034,7 @@ export const HomeScreen = observer(function HomeScreen({
       <ChatInput
         onSubmit={(text, files) => handlePromptSubmit(text, files)}
         submitting={isCreating}
+        disabled={machineView.composeDisabled}
         placeholder={homeComposerPlaceholder}
         typingPlaceholder={interactionMode === 'agent'}
         composer={currentExperience.composer}
@@ -1091,6 +1139,10 @@ export const HomeScreen = observer(function HomeScreen({
                 : restComposerSidePad,
             }}
           >
+            <MachineWorkspaceBanner
+              machineName={machineInstance?.name}
+              onRetry={retryMachineRequest}
+            />
             {composer}
           </Animated.View>
         </View>

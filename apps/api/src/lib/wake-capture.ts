@@ -14,7 +14,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 
 export interface WakeInfo {
-  /** reused | resumed | assigned | assign_timeout | owner_unreachable | failed */
+  /** reused | resumed | assigned | assign_timeout | assign_failed_owner | owner_unreachable | failed */
   mode: string
   source?: string
   staleReason?: string

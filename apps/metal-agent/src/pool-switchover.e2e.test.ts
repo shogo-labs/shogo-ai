@@ -18,7 +18,7 @@ import { mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { metrics, M } from './metrics'
-import { MetalWarmPool, StagedRootfsUnavailableError } from './pool'
+import { MetalWarmPool, ROTATE_RETRY_MS, StagedRootfsUnavailableError } from './pool'
 import { activateStagedImages, stagedRootfsPath } from './self-update'
 import { computeRootfsIdentity, type SnapshotStore } from './snapshot-store'
 import { FakeHost, FakeS3, fakeHostConfig, tarOf, useFakeS3Env } from './test-harness/fake-metal-host'
@@ -276,6 +276,96 @@ describe('retire on a superseded image', () => {
     expect(woke.bootRootfsIdentity).toBe(B)
     expect(r.host.guestFor(woke.handle)!.read('src/App.tsx')).toBe('edited on the old image\n')
   }, 30_000)
+
+  describe('rollout rotation', () => {
+    const MIN = 60_000
+    /** p1 running on the old image, which has just been replaced under it. */
+    async function onReplacedImage(opts: { alwaysOn?: boolean } = {}) {
+      const r = rig()
+      r.cfg.rolloutIdleMs = 15 * MIN
+      r.cfg.rolloutDeadlineMs = 24 * 60 * MIN
+      r.s3.put(SRC, tarOf({ 'src/App.tsx': 'v1\n' }))
+      const pool = await r.agent()
+      const a = await pool.open('p1', opts.alwaysOn ? { ...ENV, SHOGO_ALWAYS_ON: '1' } : ENV)
+      r.host.guestFor(a.handle)!.edit('src/App.tsx', 'edited on the old image\n')
+      const B = r.stage()
+      renameSync(stagedRootfsPath(r.baseRootfs), r.baseRootfs)
+      ;(pool as any).rootfsIds.standard = B
+      return { r, pool, B, vm: pool.getAssigned('p1')! }
+    }
+
+    test('an idle VM on a replaced image is retired, and its next open runs the new image with its work', async () => {
+      const { r, pool, B, vm } = await onReplacedImage()
+      const t0 = Date.now()
+      vm.lastRealActivityAt = t0
+      expect(await pool.rotateStale(t0 + 14 * MIN)).toEqual({ retired: [], alwaysOn: [] })
+      expect(pool.getAssigned('p1')).toBeDefined()
+
+      const before = metrics.getCounter(M.rolloutRotated)
+      expect(await pool.rotateStale(t0 + 15 * MIN)).toEqual({ retired: ['p1'], alwaysOn: [] })
+      expect(metrics.getCounter(M.rolloutRotated)).toBe(before + 1)
+      expect(pool.getProjectStatus('p1').state).toBe('none')
+
+      const woke = await pool.open('p1', ENV)
+      expect(woke.bootRootfsIdentity).toBe(B)
+      expect(r.host.guestFor(woke.handle)!.read('src/App.tsx')).toBe('edited on the old image\n')
+    }, 30_000)
+
+    test('an always-on VM rotates too, and is reported apart so it is booted again', async () => {
+      const { pool, vm } = await onReplacedImage({ alwaysOn: true })
+      expect(vm.alwaysOn).toBe(true)
+      vm.lastRealActivityAt = Date.now() - 20 * MIN
+      expect(await pool.rotateStale()).toEqual({ retired: [], alwaysOn: ['p1'] })
+    }, 30_000)
+
+    test('a VM mid agent turn is never rotated, even past the deadline', async () => {
+      const { pool, vm } = await onReplacedImage()
+      const t0 = Date.now()
+      vm.lastRealActivityAt = t0 - 60 * MIN
+      vm.activeStreams = 1
+      await pool.rotateStale(t0)
+      expect(await pool.rotateStale(t0 + 25 * 60 * MIN)).toEqual({ retired: [], alwaysOn: [] })
+      expect(pool.getAssigned('p1')).toBeDefined()
+    }, 30_000)
+
+    test('a VM that is never idle for long is rotated at the deadline, between turns', async () => {
+      const { pool, vm } = await onReplacedImage()
+      const t0 = Date.now()
+      vm.lastRealActivityAt = t0
+      expect((await pool.rotateStale(t0)).retired).toEqual([])
+      vm.lastRealActivityAt = t0 + 24 * 60 * MIN - MIN
+      expect(await pool.rotateStale(t0 + 24 * 60 * MIN)).toEqual({ retired: ['p1'], alwaysOn: [] })
+    }, 30_000)
+
+    test('a rotation whose backup fails leaves the VM running and waits before trying again', async () => {
+      const { pool, vm } = await onReplacedImage()
+      const t0 = Date.now()
+      vm.lastRealActivityAt = t0 - 20 * MIN
+      let attempts = 0
+      const recycle = pool.recycle.bind(pool)
+      ;(pool as any).recycle = async () => {
+        attempts++
+        return { aborted: true, steps: [{ step: 'repo', ok: false, detail: 'lfs push failed' }] }
+      }
+      expect(await pool.rotateStale(t0)).toEqual({ retired: [], alwaysOn: [] })
+      expect(await pool.rotateStale(t0 + ROTATE_RETRY_MS - 1)).toEqual({ retired: [], alwaysOn: [] })
+      expect(attempts).toBe(1)
+      expect(pool.getAssigned('p1')).toBeDefined()
+
+      ;(pool as any).recycle = recycle
+      expect(await pool.rotateStale(t0 + ROTATE_RETRY_MS)).toEqual({ retired: ['p1'], alwaysOn: [] })
+    }, 30_000)
+
+    test('a VM on the current image is left alone', async () => {
+      const r = rig()
+      r.cfg.rolloutIdleMs = 15 * MIN
+      const pool = await r.agent()
+      await pool.open('p1', ENV)
+      pool.getAssigned('p1')!.lastRealActivityAt = Date.now() - 60 * MIN
+      expect(await pool.rotateStale()).toEqual({ retired: [], alwaysOn: [] })
+      expect(pool.getAssigned('p1')).toBeDefined()
+    }, 30_000)
+  })
 
   test('a VM on the current image suspends normally', async () => {
     const r = rig()

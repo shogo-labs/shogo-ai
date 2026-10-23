@@ -7,7 +7,7 @@
  * Uses a fake subclass with stubbed fetchDueAgents/triggerAgent so we don't
  * need a live database.
  */
-import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, mock, setSystemTime } from 'bun:test'
 import {
   BaseHeartbeatScheduler,
   CircuitBreaker,
@@ -328,26 +328,32 @@ describe('BaseHeartbeatScheduler admin controls', () => {
   })
 
   test('tick advances quiet-hours agents without triggering them', async () => {
-    await scheduler.start()
-    scheduler.dueAgents = [{
-      id: 'agent-quiet',
-      projectId: 'proj-quiet',
-      heartbeatInterval: 60,
-      quietHoursStart: '00:00',
-      quietHoursEnd: '23:59',
-      quietHoursTimezone: 'UTC',
-    }]
+    // The window ends at 23:59, so the real clock falls outside it for one minute a day.
+    setSystemTime(new Date('2026-01-01T12:00:00Z'))
+    try {
+      await scheduler.start()
+      scheduler.dueAgents = [{
+        id: 'agent-quiet',
+        projectId: 'proj-quiet',
+        heartbeatInterval: 60,
+        quietHoursStart: '00:00',
+        quietHoursEnd: '23:59',
+        quietHoursTimezone: 'UTC',
+      }]
 
-    await scheduler.tick()
+      await scheduler.tick()
 
-    expect(scheduler.triggerCalls).toEqual([])
-    expect(scheduler.quietSkips.map((agent) => agent.projectId)).toEqual(['proj-quiet'])
-    expect(scheduler.getStats().totalQuietSkips).toBe(1)
-    expect(agentConfigUpdateMock).toHaveBeenCalledWith({
-      where: { id: 'agent-quiet' },
-      data: { nextHeartbeatAt: expect.any(Date) },
-    })
-    scheduler.stop()
+      expect(scheduler.triggerCalls).toEqual([])
+      expect(scheduler.quietSkips.map((agent) => agent.projectId)).toEqual(['proj-quiet'])
+      expect(scheduler.getStats().totalQuietSkips).toBe(1)
+      expect(agentConfigUpdateMock).toHaveBeenCalledWith({
+        where: { id: 'agent-quiet' },
+        data: { nextHeartbeatAt: expect.any(Date) },
+      })
+      scheduler.stop()
+    } finally {
+      setSystemTime()
+    }
   })
 
   test('trigger failures during a tick are settled and reflected in stats', async () => {

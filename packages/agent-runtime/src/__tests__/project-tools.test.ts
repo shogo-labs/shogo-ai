@@ -12,6 +12,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 import * as realInternalApi from '../internal-api'
+import { setTechStackPreviewRestarter, type PreviewRestartRequest } from '../tech-stack-switch'
 
 // ─── internal-api fakes ─────────────────────────────────────────────────
 
@@ -26,8 +27,10 @@ const api = {
   detach: { ok: true, status: 200, data: { removed: true } } as any,
   getConfig: { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } } as any,
   configure: { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } } as any,
+  workspaceConfig: { ok: true, status: 200, data: { id: 'ws-1', name: 'WS', kind: 'team', settings: {} } } as any,
   call: { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } } as any,
   teamChannels: { ok: true, status: 200, data: { channels: [], groups: {} } } as any,
+  workspaceProjects: { ok: true, status: 200, data: [] as any[] } as any,
   upsertChannel: { ok: true, status: 201, data: { created: true, changes: ['created'], channel: { id: 'conv-1', name: 'ops' } } } as any,
   ownership: { ok: true, status: 200, data: { claimed: [], released: [] } } as any,
   boards: { ok: true, status: 200, data: { boards: [] } } as any,
@@ -61,6 +64,14 @@ mock.module('../internal-api', () => ({
     calls.push({ fn: 'configureProject', args: [projectId, patch] })
     return api.configure
   },
+  configureWorkspace: (workspaceId: string, patch: any) => {
+    calls.push({ fn: 'configureWorkspace', args: [workspaceId, patch] })
+    return api.workspaceConfig
+  },
+  getWorkspaceConfig: (workspaceId: string) => {
+    calls.push({ fn: 'getWorkspaceConfig', args: [workspaceId] })
+    return api.workspaceConfig
+  },
   callProjectAgent: (targetId: string, req: any) => {
     calls.push({ fn: 'callProjectAgent', args: [targetId, req] })
     return api.call
@@ -68,6 +79,10 @@ mock.module('../internal-api', () => ({
   listTeamChannels: (workspaceId: string) => {
     calls.push({ fn: 'listTeamChannels', args: [workspaceId] })
     return api.teamChannels
+  },
+  listWorkspaceProjects: (workspaceId: string, opts: unknown) => {
+    calls.push({ fn: 'listWorkspaceProjects', args: [workspaceId, opts] })
+    return api.workspaceProjects
   },
   upsertTeamChannel: (workspaceId: string, name: string, input: any) => {
     calls.push({ fn: 'upsertTeamChannel', args: [workspaceId, name, input] })
@@ -115,6 +130,8 @@ type ToolContext = import('../gateway-tools').ToolContext
 // ─── Test harness ──────────────────────────────────────────────────────
 
 let workspaceDir = ''
+/** Preview restarts requested by a stack switch (a stub stands in for server.ts). */
+let restarts: PreviewRestartRequest[] = []
 
 function baseCtx(over: Partial<ToolContext> = {}): ToolContext {
   return {
@@ -142,14 +159,18 @@ beforeEach(() => {
   calls.length = 0
   internalApiCredentials = false
   workspaceDir = mkdtempSync(join(tmpdir(), 'project-tools-test-'))
+  restarts = []
+  setTechStackPreviewRestarter((req) => void restarts.push(req))
   api.graph = { ok: true, status: 200, data: [] }
   api.create = { ok: true, status: 201, data: { id: 'proj-new', name: 'New', description: null, workingMode: 'managed', settings: null } }
   api.attach = { ok: true, status: 201, data: { attachment: { id: 'att-1', attachedProjectId: 'target', attachedProjectName: 'Target', attachMode: 'readwrite' }, mounted: true } }
   api.detach = { ok: true, status: 200, data: { removed: true } }
   api.getConfig = { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } }
   api.configure = { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } }
+  api.workspaceConfig = { ok: true, status: 200, data: { id: 'ws-1', name: 'WS', kind: 'team', settings: {} } }
   api.call = { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } }
   api.teamChannels = { ok: true, status: 200, data: { channels: [], groups: {} } }
+  api.workspaceProjects = { ok: true, status: 200, data: [] }
   api.upsertChannel = { ok: true, status: 201, data: { created: true, changes: ['created'], channel: { id: 'conv-1', name: 'ops' } } }
   api.ownership = { ok: true, status: 200, data: { claimed: [], released: [] } }
   api.boards = { ok: true, status: 200, data: { boards: [] } }
@@ -177,9 +198,18 @@ describe('project_list', () => {
     expect(out.currentProjectId).toBe('caller-1')
     const worker = out.projects.find((p: any) => p.id === 'proj-2')
     expect(worker.manifestKey).toBe('worker')
+    expect(worker.techStackId).toBeNull()
     const caller = out.projects.find((p: any) => p.id === 'caller-1')
     expect(caller.isCurrent).toBe(true)
     expect(caller.onDisk).toBe(true) // resolveProjectDir(ctx, ctx.projectId) === ctx.workspaceDir
+  })
+
+  test('includes each project\'s tech stack id', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: { techStackId: 'video-editor' }, attachments: [], agent: null },
+    ]
+    const out = await run(createProjectListTool(baseCtx()))
+    expect(out.projects[0].techStackId).toBe('video-editor')
   })
 })
 
@@ -220,6 +250,26 @@ describe('project_create', () => {
     expect(out.ok).toBe(true)
     expect(out.attachment).toMatchObject({ code: 'cross_workspace' })
     expect(out.mounted).toBe(false)
+  })
+
+  test('describes every project type the runtime ships (id, name, description)', async () => {
+    const tool = createProjectCreateTool(baseCtx())
+    for (const id of ['react-app', 'expo-app', 'python-data', 'video-editor', 'custom', 'none']) {
+      expect(tool.description).toContain(`"${id}"`)
+    }
+    expect(tool.description).toContain('Video Editor')
+    // The param description carries the ids too, so the model can pick blind.
+    const param = (tool.parameters as any).properties.techStackId
+    expect(param.description).toContain('video-editor')
+  })
+
+  test('fails an unknown techStackId with the valid ids instead of copying the Vite template', async () => {
+    const ctx = baseCtx()
+    const out = await run(createProjectCreateTool(ctx), { name: 'Mystery', techStackId: 'video-editr' })
+    expect(out.code).toBe('unknown_tech_stack')
+    expect(out.validTechStackIds).toContain('video-editor')
+    expect(out.validTechStackIds).toContain('react-app')
+    expect(calls.find((c) => c.fn === 'createProject')).toBeUndefined()
   })
 })
 
@@ -331,6 +381,23 @@ describe('project_configure', () => {
     expect(out.warning).toBeUndefined()
   })
 
+  test('forwards an explicit workingMode to configureProject, including on its own', async () => {
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { workingMode: 'external' })
+    expect(out.changed).toBe(true)
+    expect(calls.find((c) => c.fn === 'configureProject')?.args).toEqual([
+      'proj-1',
+      { workingMode: 'external' },
+    ])
+  })
+
+  test('rejects a workingMode outside managed/external before calling the API', async () => {
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { workingMode: 'cloud' })
+    expect(out.error).toMatch(/managed.*external|external.*managed/)
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+  })
+
   test('targets another project by manifest key resolved through the lock', async () => {
     api.graph.data = [
       { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
@@ -340,6 +407,138 @@ describe('project_configure', () => {
     writeFileSync(join(workspaceDir, '.shogo/system.lock.json'), JSON.stringify({ version: 1, name: 'sys', bindings: { worker: 'proj-2' } }))
     const ctx = baseCtx()
     const out = await run(createProjectConfigureTool(ctx), { project: 'worker', name: 'Renamed Worker' })
+    expect(calls.find((c) => c.fn === 'configureProject')?.args[0]).toBe('proj-2')
+  })
+
+  // ── project type (`techStackId` / `resetFiles`) ──────────────────────────
+
+  test('rejects an unknown techStackId before patching anything', async () => {
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { techStackId: 'nope' })
+    expect(out.code).toBe('unknown_tech_stack')
+    expect(out.validTechStackIds).toContain('video-editor')
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+  })
+
+  test('is a no-op when the project is already on that stack (and still applies other fields)', async () => {
+    api.getConfig.data.settings = { techStackId: 'video-editor' }
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const same = await run(createProjectConfigureTool(ctx), { techStackId: 'video-editor' })
+    expect(same.changed).toBe(false)
+    expect(same.techStackId).toBe('video-editor')
+    expect(same.stackNote).toContain('Already on "video-editor"')
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+
+    const renamed = await run(createProjectConfigureTool(ctx), { techStackId: 'video-editor', name: 'Renamed' })
+    expect(renamed.changed).toBe(true)
+    expect(calls.find((c) => c.fn === 'configureProject')?.args).toEqual(['proj-1', { name: 'Renamed' }])
+  })
+
+  test('switches the stack: patches settings + the stack capabilities, seeds the files, restarts once', async () => {
+    api.getConfig.data.settings = { techStackId: 'react-app' }
+    api.configure.data.settings = { techStackId: 'video-editor' }
+    const ctx = baseCtx({ projectId: 'proj-1' })
+
+    const out = await run(createProjectConfigureTool(ctx), { techStackId: 'video-editor' })
+
+    const patch = calls.find((c) => c.fn === 'configureProject')?.args[1] as any
+    expect(patch.settings.techStackId).toBe('video-editor')
+    // Stack capabilities ride along in the same PATCH.
+    expect(patch.settings.videoGenEnabled).toBe(true)
+    expect(patch.settings.browserEnabled).toBe(true)
+
+    expect(out.stack).toMatchObject({
+      from: 'react-app',
+      to: 'video-editor',
+      applied: 'local',
+      seeded: true,
+      collisions: [],
+      leftInPlace: [],
+      stackDocUpdated: true,
+    })
+    expect(out.stack.previewRestarted).toBe(true)
+    expect(restarts).toHaveLength(1)
+    expect(restarts[0]).toMatchObject({ projectId: 'proj-1', stackId: 'video-editor' })
+    // Seeded into the mounted project folder.
+    expect(existsSync(join(workspaceDir, '.tech-stack'))).toBe(true)
+    expect(readFileSync(join(workspaceDir, '.tech-stack'), 'utf-8').trim()).toBe('video-editor')
+    expect(existsSync(join(workspaceDir, 'remotion.config.ts'))).toBe(true)
+  })
+
+  test('a colliding switch is refused, patches nothing and writes nothing', async () => {
+    api.getConfig.data.settings = { techStackId: 'react-app' }
+    api.configure.data.settings = { techStackId: 'video-editor' }
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    await run(createProjectConfigureTool(ctx), { techStackId: 'video-editor' })
+    const patchesAfterSeed = calls.filter((c) => c.fn === 'configureProject').length
+
+    api.getConfig.data.settings = { techStackId: 'video-editor' }
+    api.configure.data.settings = { techStackId: 'react-app' }
+    // The other field in the same call must not apply either.
+    const out = await run(createProjectConfigureTool(ctx), { techStackId: 'react-app', name: 'Should not apply' })
+
+    expect(out.ok).toBe(false)
+    expect(out.code).toBe('stack_change_needs_reset')
+    expect(out.collisions).toContain('package.json')
+    expect(out.collisions).toContain('index.html')
+    expect(out.collisions).toContain('src')
+    expect(out.hint).toContain('resetFiles: true')
+    expect(out.error).toContain('Nothing was changed')
+    // No PATCH at all — not the stack, not the name.
+    expect(calls.filter((c) => c.fn === 'configureProject')).toHaveLength(patchesAfterSeed)
+    // And the folder is as the previous stack left it.
+    expect(readFileSync(join(workspaceDir, '.tech-stack'), 'utf-8').trim()).toBe('video-editor')
+    expect(readFileSync(join(workspaceDir, '.shogo', 'STACK.md'), 'utf-8')).toContain('Video Editor')
+    expect(readFileSync(join(workspaceDir, 'package.json'), 'utf-8')).not.toContain('@shogo-ai/sdk')
+    expect(existsSync(join(workspaceDir, 'prisma'))).toBe(false)
+  })
+
+  test('resetFiles is the way through a collision: it wipes, seeds and swaps the doc', async () => {
+    api.getConfig.data.settings = { techStackId: 'react-app' }
+    api.configure.data.settings = { techStackId: 'video-editor' }
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    await run(createProjectConfigureTool(ctx), { techStackId: 'video-editor' })
+
+    api.getConfig.data.settings = { techStackId: 'video-editor' }
+    api.configure.data.settings = { techStackId: 'react-app' }
+    const out = await run(createProjectConfigureTool(ctx), { techStackId: 'react-app', resetFiles: true })
+
+    expect(out.ok).toBe(true)
+    expect(out.stack.wiped).toBeGreaterThan(0)
+    expect(out.stack.stackDocUpdated).toBe(true)
+    expect(existsSync(join(workspaceDir, 'src', 'videos', 'Main.tsx'))).toBe(false)
+    expect(readFileSync(join(workspaceDir, '.shogo', 'STACK.md'), 'utf-8')).toContain('Tech Stack — React App')
+    expect(readFileSync(join(workspaceDir, '.tech-stack'), 'utf-8').trim()).toBe('react-app')
+  })
+
+  test('a switch to a stack that ships no files says so instead of nothing', async () => {
+    api.getConfig.data.settings = { techStackId: 'react-app' }
+    api.configure.data.settings = { techStackId: 'none' }
+    const ctx = baseCtx({ projectId: 'proj-1' })
+
+    const out = await run(createProjectConfigureTool(ctx), { techStackId: 'none' })
+
+    expect(out.stack.collisions).toEqual([])
+    expect(out.stack.leftInPlace).toEqual([])
+    expect(out.stack.note).toContain('ships no files of its own')
+    expect(out.stack.note).toContain('resetFiles: true')
+  })
+
+  test('reports appliesOnNextStart when the project is not mounted here', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: { techStackId: 'react-app' }, attachments: [], agent: null },
+    ]
+    api.getConfig.data.settings = { techStackId: 'react-app' }
+    const ctx = baseCtx()
+
+    const out = await run(createProjectConfigureTool(ctx), { project: 'proj-2', techStackId: 'video-editor' })
+
+    expect(out.stack.applied).toBe('next-start')
+    expect(out.stack.appliesOnNextStart).toBe(true)
+    expect(out.stack.seeded).toBeUndefined()
+    expect(restarts).toHaveLength(0)
+    // Settings were still persisted.
     expect(calls.find((c) => c.fn === 'configureProject')?.args[0]).toBe('proj-2')
   })
 })
@@ -481,6 +680,52 @@ describe('project_call', () => {
     expect(out.code).toBe('agent_call_timeout')
     expect(out.hint).toMatch(/wait=false/)
   })
+
+  test('a waiting call that produced no reply is a failure, not ok with reply:null', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = {
+      ok: true,
+      status: 200,
+      data: {
+        status: 'accepted',
+        chatSessionId: 'chat-9',
+        error: { code: 'callee_turn_never_started', message: 'The target agent never started this run (its chat was busy).' },
+      },
+    }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go' })
+
+    expect(out.ok).toBe(false)
+    expect(out.code).toBe('callee_turn_never_started')
+    expect(out.error).toContain('never started')
+    expect(out.reply).toBeUndefined()
+  })
+
+  test('a waiting call with a plain 202 and no error says where to read the reply', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = { ok: true, status: 202, data: { status: 'accepted', chatSessionId: 'chat-9' } }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go' })
+
+    expect(out.ok).toBe(false)
+    expect(out.code).toBe('call_without_reply')
+    expect(out.error).toContain('chat-9')
+  })
+
+  test('a background call with no reply is still accepted', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = { ok: true, status: 202, data: { status: 'accepted', sessionId: 'run:abc' } }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go', wait: false })
+    expect(out.ok).not.toBe(false)
+    expect(out.wait).toBe(false)
+  })
 })
 
 // ─── system_apply ────────────────────────────────────────────────────────────
@@ -596,13 +841,83 @@ projects:
     expect(out.ok).toBe(false)
   })
 
-  test('skips writing files for a project not yet reachable on disk, and reports it instead of erroring', async () => {
+  test('a project created in this apply but not reachable on disk is skipped, warns, and still reports ok:true', async () => {
     api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
     const ctx = baseCtx()
     // Do not create the sibling dir for proj-intake — it "isn't mounted yet".
     const out = await run(createSystemApplyTool(ctx), { manifest: MANIFEST_YAML })
     expect(out.ok).toBe(true)
-    expect(out.skipped.some((l: string) => l.includes('not reachable on disk'))).toBe(true)
+    expect(out.errors).toEqual([])
+    expect(out.warnings).toEqual(['files intake/AGENTS.md: skipped — project not mounted in this runtime; re-run after it mounts'])
+    expect(out.applied.some((l: string) => l.startsWith('create intake/'))).toBe(false)
+    expect(existsSync(join(workspaceDir, 'proj-intake/AGENTS.md'))).toBe(false)
+  })
+
+  test('a bound project that is not on this disk is a skip in the plan, never a create', async () => {
+    mkdirSync(join(workspaceDir, '.shogo'), { recursive: true })
+    writeFileSync(join(workspaceDir, '.shogo/system.lock.json'), JSON.stringify({
+      version: 1, name: 'issue-pipeline', bindings: { intake: 'proj-intake' },
+    }))
+    api.graph.data = [
+      { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest: MANIFEST_YAML, dryRun: true })
+    expect(out.plan).toContain('files intake/AGENTS.md: skipped — project not mounted in this runtime; re-run after it mounts')
+    expect(out.plan.some((l: string) => l.startsWith('create intake/'))).toBe(false)
+    expect(out.warnings).toEqual(['files intake/AGENTS.md: skipped — project not mounted in this runtime; re-run after it mounts'])
+  })
+
+  test('a lock binding the graph does not show but the workspace does is a configure, not a duplicate create', async () => {
+    mkdirSync(join(workspaceDir, '.shogo'), { recursive: true })
+    writeFileSync(join(workspaceDir, '.shogo/system.lock.json'), JSON.stringify({
+      version: 1, name: 'issue-pipeline', bindings: { intake: 'proj-intake' },
+    }))
+    api.graph.data = []
+    api.workspaceProjects = { ok: true, status: 200, data: [{ id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null }] }
+    const manifest = `version: 1
+name: issue-pipeline
+projects:
+  - key: intake
+    name: Intake
+    description: Triage incoming issues.
+`
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest })
+    expect(calls.find((c) => c.fn === 'listWorkspaceProjects')).toBeDefined()
+    expect(calls.find((c) => c.fn === 'createProject')).toBeUndefined()
+    expect(out.applied).toContain('configure intake')
+    expect(out.plan.join('\n')).not.toContain('not_accessible')
+    expect(out.bindings.intake).toBe('proj-intake')
+  })
+
+  test('a lock binding no one can see stays inaccessible and creates nothing', async () => {
+    mkdirSync(join(workspaceDir, '.shogo'), { recursive: true })
+    writeFileSync(join(workspaceDir, '.shogo/system.lock.json'), JSON.stringify({
+      version: 1, name: 'issue-pipeline', bindings: { intake: 'proj-gone' },
+    }))
+    api.graph.data = []
+    api.workspaceProjects = { ok: true, status: 200, data: [{ id: 'proj-other', name: 'Other', description: null, workingMode: 'managed', settings: null }] }
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest: MANIFEST_YAML })
+    expect(calls.find((c) => c.fn === 'createProject')).toBeUndefined()
+    expect(out.errors.join('\n')).toContain('not_accessible')
+  })
+
+  test('the workspace agent gets no implicit caller attach and a clean warning instead of six Unauthorized errors', async () => {
+    api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
+    const prev = { runtime: process.env.WORKSPACE_RUNTIME, anchor: process.env.WORKSPACE_ANCHOR_PROJECT_ID }
+    process.env.WORKSPACE_RUNTIME = 'true'
+    delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    try {
+      const out = await run(createSystemApplyTool(baseCtx()), { manifest: MANIFEST_YAML })
+      expect(calls.find((c) => c.fn === 'attachProject')).toBeUndefined()
+      expect(out.ok).toBe(true)
+      expect(out.warnings).toContain('attach: skipped for the workspace agent — no project identity to attach')
+      expect(out.plan.join('\n')).not.toContain('attach (caller)')
+    } finally {
+      if (prev.runtime === undefined) delete process.env.WORKSPACE_RUNTIME
+      else process.env.WORKSPACE_RUNTIME = prev.runtime
+      if (prev.anchor === undefined) delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+      else process.env.WORKSPACE_ANCHOR_PROJECT_ID = prev.anchor
+    }
   })
 
   test('collects per-op errors without throwing when create fails, and still reports ok:false', async () => {
@@ -811,6 +1126,14 @@ describe('capabilities_configure', () => {
     expect(saved.model).toEqual({ name: 'kept' })
   })
 
+  test('advertises threeDGenEnabled in the changes schema', () => {
+    const tool = createCapabilitiesConfigureTool(baseCtx())
+    const properties = (tool.parameters as any).properties.changes.properties
+    expect(Object.keys(properties)).toContain('threeDGenEnabled')
+    expect(properties.threeDGenEnabled.description).toBe('3D generation')
+    expect(properties.videoGenEnabled.description).toBe('Video generation')
+  })
+
   test('rejects an unknown capability', async () => {
     const out = await run(createCapabilitiesConfigureTool(baseCtx()), { changes: { notACapability: true } })
     expect(out.code).toBe('unknown_capability')
@@ -826,6 +1149,90 @@ describe('capabilities_configure', () => {
     expect(out.code).toBe('capability_locked')
     expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
     expect(existsSync(join(workspaceDir, 'config.json'))).toBe(false)
+  })
+
+  test('in a workspace chat the read reports the workspace scope by default', async () => {
+    const ctx = baseCtx({
+      capabilityScope: 'workspace',
+      capabilityConfigs: {
+        workspace: { channels: [], model: { provider: 'anthropic', name: 'x' }, boardAdminEnabled: false } as any,
+        project: { channels: [], model: { provider: 'anthropic', name: 'x' }, boardAdminEnabled: true } as any,
+      },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx))
+    expect(out.scope).toBe('workspace')
+    expect(out.disabled).toContain('boardAdminEnabled')
+  })
+
+  test('a project chat reads project scope even when a scope default exists', async () => {
+    const ctx = baseCtx({
+      capabilityScope: 'project',
+      capabilityConfigs: {
+        workspace: { channels: [], model: { provider: 'anthropic', name: 'x' }, boardAdminEnabled: false } as any,
+        project: { channels: [], model: { provider: 'anthropic', name: 'x' }, boardAdminEnabled: true } as any,
+      },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx))
+    expect(out.scope).toBe('project')
+    expect(out.enabled).toContain('boardAdminEnabled')
+  })
+
+  test('workspace scope writes Workspace.settings, never the anchor project', async () => {
+    internalApiCredentials = true
+    let reloaded = 0
+    const ctx = baseCtx({
+      capabilityScope: 'workspace',
+      onCapabilitiesChanged: async () => { reloaded++ },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx), {
+      changes: { boardAdminEnabled: false },
+    })
+    expect(out.changed).toBe(true)
+    expect(out.scope).toBe('workspace')
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+    expect(calls.find((c) => c.fn === 'configureWorkspace')?.args).toEqual([
+      'ws-1',
+      { settings: { boardAdminEnabled: false } },
+    ])
+    expect(reloaded).toBe(1)
+  })
+
+  test('workspace scope caches under workspaceCapabilities and leaves the project keys alone', async () => {
+    const ctx = baseCtx({ capabilityScope: 'workspace' })
+    await run(createCapabilitiesConfigureTool(ctx), { changes: { boardAdminEnabled: false } })
+    const saved = JSON.parse(readFileSync(join(workspaceDir, 'config.json'), 'utf-8'))
+    expect(saved.workspaceCapabilities.boardAdminEnabled).toBe(false)
+    // The flat keys are the project's cache; a workspace toggle must not land there.
+    expect(saved.boardAdminEnabled).toBeUndefined()
+  })
+
+  test('an explicit project scope from a workspace chat patches the project', async () => {
+    internalApiCredentials = true
+    const ctx = baseCtx({ capabilityScope: 'workspace' })
+    const out = await run(createCapabilitiesConfigureTool(ctx), {
+      scope: 'project',
+      changes: { shellEnabled: false },
+    })
+    expect(out.scope).toBe('project')
+    expect(calls.find((c) => c.fn === 'configureProject')?.args).toEqual([
+      'caller-1',
+      { settings: { shellEnabled: false } },
+    ])
+    expect(calls.find((c) => c.fn === 'configureWorkspace')).toBeUndefined()
+  })
+
+  test('a locked capability is refused on the workspace scope too', async () => {
+    internalApiCredentials = true
+    const ctx = baseCtx({
+      capabilityScope: 'workspace',
+      capabilityConfigs: {
+        workspace: { channels: [], model: { provider: 'anthropic', name: 'x' }, capabilityProfile: 'personal', shellEnabled: false } as any,
+        project: { channels: [], model: { provider: 'anthropic', name: 'x' } } as any,
+      },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { shellEnabled: true } })
+    expect(out.code).toBe('capability_locked')
+    expect(calls.find((c) => c.fn === 'configureWorkspace')).toBeUndefined()
   })
 
   test('a failed API write does not update the local cache', async () => {

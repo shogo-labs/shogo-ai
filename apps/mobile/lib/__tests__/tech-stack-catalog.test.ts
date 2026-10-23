@@ -11,8 +11,16 @@ describe('techStackDisplayName', () => {
   test('resolves known ids from the fallback catalog', () => {
     expect(techStackDisplayName('react-app')).toBe('React App')
     expect(techStackDisplayName('expo-app')).toBe('Expo (React Native)')
+    expect(techStackDisplayName('video-editor')).toBe('Video Editor')
     expect(techStackDisplayName('missing')).toBe('Stack')
     expect(techStackDisplayName(undefined)).toBe('Stack')
+  })
+
+  test('the fallback catalog includes every project type the picker offers', () => {
+    const ids = FALLBACK_TECH_STACKS.map((stack) => stack.id)
+    for (const id of ['react-app', 'expo-app', 'python-data', 'video-editor', 'custom', 'none']) {
+      expect(ids).toContain(id)
+    }
   })
 })
 

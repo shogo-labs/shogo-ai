@@ -41,6 +41,7 @@
  */
 
 import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
+import { MEDIA_TOOL_NAMES } from './media-tool-names'
 
 export type CapabilityProfileName = 'team' | 'personal'
 
@@ -99,11 +100,16 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
  * still remove these; `CAPABILITY_PROFILES` never does.
  */
 export const CORE_TOOL_NAMES = [
-  'ask_user', 'skill', 'quick_action', 'generate_image',
+  'ask_user', 'skill', 'quick_action',
+  // Conversation plumbing: handing a turn to another chat (SHO-52). Both
+  // profiles keep it — the tag is a chat affordance, not a team-only verb.
+  'chat_handoff',
+  // Media generation; gated by imageGenEnabled / videoGenEnabled / threeDGenEnabled.
+  ...MEDIA_TOOL_NAMES,
   // Background tasks: every async source (shell, subagents, project_call, team chat, boards) shares these.
   'wait', 'task_list', 'task_cancel',
   'search_history', 'read_history', 'read_guide', 'worktree_list',
-  'project_list', 'project_create', 'project_call', 'project_configure', 'capabilities_configure', 'connect_project',
+  'project_list', 'project_create', 'project_call', 'project_configure', 'capabilities_configure', 'connect_project', 'copy_to_project', 'list_models',
   'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list',
   'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'set_status',
   'trigger_types_list', 'trigger_create', 'trigger_list', 'trigger_update', 'trigger_delete', 'trigger_test',
@@ -113,6 +119,8 @@ export const CORE_TOOL_NAMES = [
   'team_chat_list', 'team_chat_read', 'team_chat_post', 'team_chat_update', 'team_chat_search', 'team_chat_dm', 'team_chat_add_member',
   'fetch_chat_files', 'team_chat_doc_read', 'team_chat_doc_update', 'team_directory', 'member_activity',
   'team_chat_question_secret',
+  // Team chat, workspace agent only (not a project-anchored runtime).
+  'agent_runs_list', 'agent_run_stop',
   // Work boards; registered for non-personal workspace runtimes and gated by the work capabilities.
   ...BOARD_TOOL_NAMES, ...BOARD_ADMIN_TOOL_NAMES, ...PROBLEM_TOOL_NAMES,
 ]

@@ -16,7 +16,7 @@
 
 import { Database } from 'bun:sqlite'
 import { join } from 'path'
-import { existsSync, mkdirSync, renameSync } from 'fs'
+import { existsSync, mkdirSync, renameSync, statSync } from 'fs'
 import type { SessionPersistence, SerializedSession } from './session-manager'
 import type { Message } from '@mariozechner/pi-ai'
 
@@ -105,11 +105,13 @@ const TEAM_COORDINATION_SCHEMA = `
 
 export class SqliteSessionPersistence implements SessionPersistence {
   private db!: Database
+  private dbPath!: string
 
   constructor(workspaceDir: string) {
     const shogoDir = join(workspaceDir, '.shogo')
     mkdirSync(shogoDir, { recursive: true })
     const dbPath = join(shogoDir, 'sessions.db')
+    this.dbPath = dbPath
 
     // Migrate from legacy location at workspace root
     const legacyPath = join(workspaceDir, 'sessions.db')
@@ -192,6 +194,42 @@ export class SqliteSessionPersistence implements SessionPersistence {
       }
     }
     return sessions
+  }
+
+  /**
+   * Ids of stored sessions untouched since `cutoffMs` that hold no messages.
+   *
+   * The reclamation sweep runs every few minutes, so it must not parse the
+   * whole store: this filters on the indexed `updated_at` column first and only
+   * parses the rows that are actually old.
+   */
+  async listMessageLessIds(cutoffMs: number): Promise<string[]> {
+    const rows = this.db
+      .prepare('SELECT id, data FROM sessions WHERE updated_at < ?')
+      .all(Math.floor(cutoffMs / 1000)) as Array<{ id: string; data: string }>
+    const ids: string[] = []
+    for (const row of rows) {
+      try {
+        const data = JSON.parse(row.data) as SerializedSession
+        if ((data.messages?.length ?? 0) === 0) ids.push(row.id)
+      } catch {
+        // unreadable row: leave it, it may be recoverable
+      }
+    }
+    return ids
+  }
+
+  /** Size of the store on disk, for the growth warning. */
+  sizeBytes(): number {
+    let total = 0
+    for (const suffix of ['', '-wal', '-shm']) {
+      try {
+        total += statSync(this.dbPath + suffix).size
+      } catch {
+        // absent sidecar
+      }
+    }
+    return total
   }
 
   // ---------------------------------------------------------------------------

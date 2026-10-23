@@ -9,7 +9,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, mock } from 'bun:test'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -32,7 +32,7 @@ mock.module('../packages/agent-runtime/src/composio-auto-bind', () => ({
   fetchComposioToolSchemas: async () => mockedSchemas,
 }))
 
-import { createTools, type ToolContext } from '../packages/agent-runtime/src/gateway-tools'
+import { createTools, projectNotAttachedMessage, type ToolContext } from '../packages/agent-runtime/src/gateway-tools'
 import { FileStateCache } from '../packages/agent-runtime/src/file-state-cache'
 import { runSubagent } from '../packages/agent-runtime/src/subagent'
 import { createMockStreamFn, buildTextResponse, buildToolUseResponse } from '../packages/agent-runtime/src/__tests__/helpers/mock-anthropic'
@@ -75,7 +75,9 @@ let previewStarts = 0
 const tempDirs: string[] = []
 
 function tempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix))
+  // Canonical path: the trust check compares real paths, and on macOS the
+  // tmpdir itself is a symlink (/var → /private/var).
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)))
   tempDirs.push(dir)
   return dir
 }
@@ -123,6 +125,16 @@ beforeAll(async () => {
     if (mode === 'preview' && url.includes('/members') && req.method === 'POST') {
       mountAttempts++
       return send(res, 200, { ok: true, mounted: true })
+    }
+
+    if (mode === 'remote' && url.includes('/projects/graph')) {
+      return send(res, 200, {
+        workspaceId: 'ws-int',
+        projects: [{ id: 'proj-other', name: 'Other', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null }],
+      })
+    }
+    if (mode === 'remote' && url.includes('/remote-tool')) {
+      return send(res, 404, { error: 'project_not_attached', message: "Project proj-other is not attached to this runtime" })
     }
 
     if (url.includes('/shared-files') && req.method === 'POST') {
@@ -198,15 +210,18 @@ function armWorkspaceEnv(extra: Record<string, string | undefined> = {}) {
 }
 
 describe('workspace tools talk to a real API with a real project id', () => {
-  test('share_file and publish send the anchor id, never ws:', async () => {
+  test('publish sends the anchor id, never ws:', async () => {
     armWorkspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: 'proj-anchor', WORKSPACE_PROJECT_IDS: 'proj-anchor,proj-other' })
     const dir = tempDir('ws-tools-')
     writeFileSync(join(dir, 'report.pdf'), 'pdf')
     const ctx = workspace(dir)
     mode = 'share'
+    // `report.pdf` sits at the merged root, outside every mounted project, so
+    // only the workspace route can serve it — a project route reads the same
+    // path from the project root (SHO-67).
     const shared = await tool(ctx, 'share_file').execute('t', { path: 'report.pdf' })
     expect(shared.details.url).toBe('https://files.test/report')
-    expect(hits.some((h) => h.url === '/api/internal/projects/proj-anchor/shared-files')).toBe(true)
+    expect(hits.some((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')).toBe(true)
     expect(hits.some((h) => h.url.includes('/projects/ws:'))).toBe(false)
 
     const timeouts: number[] = []
@@ -247,7 +262,7 @@ describe('workspace tools talk to a real API with a real project id', () => {
     expect(notify?.body.title).toBe('Due')
   })
 
-  test('share_file asks for project_id when several projects are attached', async () => {
+  test('share_file links from the workspace when several projects are attached and none is picked', async () => {
     armWorkspaceEnv({
       WORKSPACE_ANCHOR_PROJECT_ID: undefined,
       WORKSPACE_PROJECT_IDS: 'proj-a,proj-b',
@@ -255,8 +270,63 @@ describe('workspace tools talk to a real API with a real project id', () => {
     const dir = tempDir('ws-ask-')
     writeFileSync(join(dir, 'a.txt'), 'a')
     const result = await tool(workspace(dir), 'share_file').execute('t', { path: 'a.txt' })
-    expect(result.details.error).toMatch(/project_id/)
-    expect(hits.filter((h) => h.url.includes('/shared-files'))).toHaveLength(0)
+    expect(result.details.url).toBe('https://files.test/report')
+    expect(hits.some((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')).toBe(true)
+    expect(hits.some((h) => h.url.includes('/projects/') && h.url.includes('/shared-files'))).toBe(false)
+  })
+
+  // The runtime's `path` is workspace-relative but a project link is read from
+  // the project root, which is `<workspaceDir>/<projectId>` — signing the
+  // workspace path under the project scope used to 404 (SHO-67).
+  test('share_file signs a project-relative path for a file inside a mounted project', async () => {
+    armWorkspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: undefined, WORKSPACE_PROJECT_IDS: 'proj-a,proj-b' })
+    const dir = tempDir('ws-project-file-')
+    mkdirSync(join(dir, 'proj-b', 'out'), { recursive: true })
+    writeFileSync(join(dir, 'proj-b', 'out', 'report.mp4'), 'video')
+
+    const picked = await tool(workspace(dir), 'share_file').execute('t', {
+      path: 'proj-b/out/report.mp4',
+      project_id: 'proj-b',
+    })
+    expect(picked.details.url).toBe('https://files.test/report')
+    expect(picked.details.path).toBe('out/report.mp4')
+    expect(picked.details.projectId).toBe('proj-b')
+    const projectHit = hits.find((h) => h.url === '/api/internal/projects/proj-b/shared-files')
+    expect(projectHit?.body.path).toBe('out/report.mp4')
+
+    // No project_id: the file's own location still picks the project.
+    hits.length = 0
+    const unpicked = await tool(workspace(dir), 'share_file').execute('t', { path: 'proj-b/out/report.mp4' })
+    expect(unpicked.details.path).toBe('out/report.mp4')
+    expect(hits.find((h) => h.url === '/api/internal/projects/proj-b/shared-files')?.body.path).toBe('out/report.mp4')
+    expect(hits.some((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')).toBe(false)
+  })
+
+  test('share_file mints a workspace link for a workspace-root file even with a project_id', async () => {
+    armWorkspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: undefined, WORKSPACE_PROJECT_IDS: 'proj-a,proj-b' })
+    const dir = tempDir('ws-root-file-')
+    mkdirSync(join(dir, 'proj-b'), { recursive: true })
+    writeFileSync(join(dir, 'summary.csv'), 'a,b')
+
+    const result = await tool(workspace(dir), 'share_file').execute('t', {
+      path: 'summary.csv',
+      project_id: 'proj-b',
+    })
+    expect(result.details.path).toBe('summary.csv')
+    expect(result.details.projectId).toBeUndefined()
+    expect(result.details.note).toContain('not inside any mounted project')
+    const workspaceHit = hits.find((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')
+    expect(workspaceHit?.body.path).toBe('summary.csv')
+    expect(hits.some((h) => h.url.includes('/projects/') && h.url.includes('/shared-files'))).toBe(false)
+  })
+
+  test('share_file reports a missing file instead of handing out a dead URL', async () => {
+    armWorkspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: undefined, WORKSPACE_PROJECT_IDS: 'proj-anchor' })
+    const dir = tempDir('ws-missing-file-')
+    const result = await tool(workspace(dir), 'share_file').execute('t', { path: 'out/nope.mp4' })
+    expect(result.details.url).toBeUndefined()
+    expect(String(result.details.error)).toContain('File not found')
+    expect(hits.some((h) => h.url.includes('/shared-files'))).toBe(false)
   })
 })
 
@@ -281,6 +351,37 @@ describe('mount and preview against the workspace API', () => {
     expect(mountAttempts).toBe(1)
     expect(result.details.ready).toBe(true)
     expect(result.details.url).toBe(`http://localhost:${port}/p/proj-anchor/`)
+  })
+
+  test('every file and shell tool aimed at an unreachable project returns the attach remedy', async () => {
+    armWorkspaceEnv()
+    mode = 'remote'
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ['read_file', { path: 'src/App.tsx' }],
+      ['write_file', { path: 'src/App.tsx', content: 'export {}\n' }],
+      ['edit_file', { path: 'src/App.tsx', old_string: 'a', new_string: 'b' }],
+      ['delete_file', { path: 'src/App.tsx' }],
+      ['search', { query: 'useEffect' }],
+      ['exec', { command: 'ls' }],
+    ]
+    const ctx = workspace(tempDir('ws-unattached-'), 'proj-anchor')
+    const registered = createTools(ctx)
+    const checked: string[] = []
+    for (const [name, args] of calls) {
+      const found = registered.find((t) => t.name === name)
+      // `search` is only registered when local indexing is on.
+      if (!found) continue
+      const result = await found.execute('t', { ...args, project: 'proj-other' })
+      expect(result.details.code).toBe('project_not_attached')
+      expect(result.details.error).toBe(projectNotAttachedMessage('proj-other'))
+      // The remedy, not the raw code the API answered with.
+      expect(result.details.error).toContain('project_attach')
+      expect(result.details.error).toContain('project_call')
+      expect(JSON.stringify(result.details)).not.toContain('HTTP 404')
+      checked.push(name)
+    }
+    expect(checked).toContain('read_file')
+    expect(checked).toContain('exec')
   })
 })
 

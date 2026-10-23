@@ -44,6 +44,8 @@ export interface AgentTemplate {
     browserEnabled?: boolean
     shellEnabled?: boolean
     imageGenEnabled?: boolean
+    videoGenEnabled?: boolean
+    threeDGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
     [key: string]: unknown

@@ -183,4 +183,26 @@ describe('metalRoutes switch-over', () => {
     expect(res.status).toBe(200)
     expect((await getRefreshStatus(store)).queued).toBe(1)
   })
+
+  it('queues an always-on VM rotated off a superseded rootfs to run again with no delay', async () => {
+    const { getRefreshStatus } = await import('../lib/metal-rewarm')
+    await req('/placement', {
+      method: 'POST',
+      body: { hostId: 'ash-1', projectId: 'ws:proj:ao', event: 'cold', refresh: 'stale-rootfs-always-on' },
+      token: 'secret-tok',
+    })
+    expect(JSON.parse((await store.get('refresh:item:ws:proj:ao'))!)).toMatchObject({ reason: 'stale-rootfs-always-on' })
+    expect(await store.zdue('refresh', Date.now(), 10)).toContain('ws:proj:ao')
+    expect((await getRefreshStatus(store)).queued).toBeGreaterThan(0)
+  })
+
+  it('forwards host memory from the heartbeat', async () => {
+    await req('/register', {
+      method: 'POST',
+      body: { ...REG, load: { available: 1, assigned: 2, suspended: 0, mem: { totalMiB: 1000, availableMiB: 400 } } },
+      token: 'secret-tok',
+    })
+    const body = (await (await req('/fleet', { token: 'secret-tok' })).json()) as any
+    expect(body.hosts.find((h: any) => h.hostId === REG.hostId).load.mem).toEqual({ totalMiB: 1000, availableMiB: 400 })
+  })
 })

@@ -62,6 +62,9 @@ const SKIP_DIRS = new Set([
   '.expo',
   '.expo-shared',
   '.metro-cache',
+  // Shogo's own state — see shogo-state-paths.ts (SHO-105).
+  '.shogo',
+  '.tmp',
 ])
 
 const MANAGED_EXCLUDE_HEADER = '# >>> shogo large-file offload (managed) >>>'

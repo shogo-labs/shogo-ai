@@ -51,6 +51,7 @@ export type EvalCategory =
   | 'company-ops'
   | 'orchestration'
   | 'reactive'
+  | 'cache-efficiency'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
@@ -108,6 +109,26 @@ export interface AgentEval {
    * order, then the final turn). Scripted teammates act while time passes.
    */
   simAdvanceHours?: number[]
+  /**
+   * Structural test: never send a turn to the model, only probe the runtime's
+   * prompt-cache prefix (`GET /agent/tool-mocks/cache-prefix`). Used by the
+   * `cache-efficiency` tests that assert on prompt bytes rather than on tokens.
+   */
+  noLlm?: boolean
+  /** Session ids to probe when `noLlm` is set (default `['chat']`). */
+  cacheProbeSessions?: string[]
+  /**
+   * Actions applied between executed turns (1-based `afterTurn`), before the
+   * next turn starts. Lets an eval mutate the workspace — or force a
+   * compaction — and then measure the effect on the next turn's cache.
+   */
+  betweenTurns?: Array<{
+    afterTurn: number
+    /** Files written into the workspace (path relative to the workspace root). */
+    writeFiles?: Record<string, string>
+    /** Force one compaction pass on the session. */
+    compact?: boolean
+  }>
 }
 
 export interface ConversationTurn {
@@ -207,6 +228,71 @@ export interface PromptBreakdownSection {
   estTokens: number
 }
 
+/** Usage of one model call (one assistant message) inside a turn. */
+export interface PerCallUsage {
+  iteration: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  /** True for a dropped retry attempt the provider still billed. */
+  discarded?: boolean
+}
+
+/** The prompt-cache prefix a turn was sent with (hashes, from `data-usage.prefix`). */
+export interface CachePrefix {
+  turn: number
+  stableHash: string
+  dynamicHash: string
+  toolsHash: string
+  historyHash: string
+  stableChars: number
+  dynamicChars: number
+  toolCount: number
+  messageCount: number
+}
+
+/** A prompt-cache prefix probe taken without calling a model. */
+export interface CachePrefixProbe {
+  sessionId: string
+  identical: boolean
+  drift: { label: string; chars: number } | null
+  builds: Array<{
+    stableHash: string
+    dynamicHash: string
+    stableChars: number
+    dynamicChars: number
+    toolsHash: string
+    toolCount: number
+  }>
+  sections: PromptBreakdownSection[]
+}
+
+/** One turn's worth of usage, as reported by the gateway's `data-usage` frame. */
+export interface TurnUsage {
+  /** 1-based turn index within this eval run. */
+  turn: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  iterations: number
+  /** Prompt-cache prefix hashes; absent on gateways that don't report them. */
+  prefix?: CachePrefix
+  /** Per-model-call breakdown for this turn. */
+  perCallUsage: PerCallUsage[]
+}
+
+/** Usage reported by a subagent's own `data-usage` frame. */
+export interface SubagentUsage {
+  /** `fork` or `sync` — which spawn mode produced it. */
+  subagent: string
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+
 /**
  * UI-facing category rollup (mirrors the client's context-usage popover):
  * System prompt, Tool definitions, Skills, MCP & dynamic tools, Subagent
@@ -293,6 +379,19 @@ export interface EvalResult {
   runtimeWarnings?: string[]
   /** Per-section prompt token breakdown from the first turn. */
   promptBreakdown?: PromptBreakdown
+  /**
+   * Per-turn usage, in order, with each turn's prompt-cache prefix hashes.
+   * Cache-hit ratios are computed from this (see `cacheHitRatio` /
+   * `prefixTokens` in eval-helpers) rather than from the run totals, because
+   * a turn that re-wrote the cache is invisible in an aggregate.
+   */
+  perTurnUsage: TurnUsage[]
+  /** Flat per-model-call usage across every turn. */
+  perCallUsage: PerCallUsage[]
+  /** Usage emitted by subagent `data-usage` frames (fork/sync spawns). */
+  subagentUsage?: SubagentUsage[]
+  /** Prefix probes, for `noLlm` structural tests. */
+  cachePrefixSamples?: CachePrefixProbe[]
   /**
    * Gateway quality signals from the final evaluated turn's `data-usage`
    * frame. Captured by the runner so evals can assert on loop/iteration/empty

@@ -34,7 +34,7 @@ mock.module('@aws-sdk/client-s3', () => {
       if (cmd instanceof GetObjectCommand) {
         const o = objects.get(cmd.input.Key)
         if (!o) throw new Error('NoSuchKey')
-        return { Body: Readable.from(o.body) }
+        return { Body: Readable.from(o.body), ETag: o.etag }
       }
       throw new Error(`unexpected command ${cmd?.constructor?.name}`)
     }
@@ -43,6 +43,9 @@ mock.module('@aws-sdk/client-s3', () => {
 })
 
 const { hydrateRepo } = await import('../git-repo-store')
+const { buildRepoBundle, parseRepoManifest, readRepoSnapshotFields, REPO_MANIFEST_VERSION } = await import(
+  '@shogo/shared-runtime/repo-bundles'
+)
 
 function tmp(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))
@@ -130,6 +133,116 @@ describe('hydrateRepo — ETag freshness', () => {
       expect(existsSync(join(dir, '.git'))).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * Store a repo in the incremental format: one base bundle plus a manifest, the
+ * way the metal writer does. Returns the work dir so tests can clean it up.
+ */
+async function putIncrementalRepo(projectId: string, repo: string): Promise<void> {
+  const work = tmp('hydrate-bundle-work-')
+  const built = await buildRepoBundle(repo, { previous: null, workDir: work })
+  if (!built) throw new Error('expected a bundle for a non-empty repo')
+  const bundle = readFileSync(built.path)
+  objects.set(`${projectId}/repo/bundles/${built.entry.sha256}.bundle`, { body: bundle, etag: '"b"' })
+  const fields = await readRepoSnapshotFields(repo)
+  const manifest = parseRepoManifest({
+    v: REPO_MANIFEST_VERSION,
+    head: fields.head,
+    refs: fields.refs,
+    config: fields.config,
+    rootCommitAt: null,
+    bundles: [built.entry],
+  })
+  objects.set(`${projectId}/repo/manifest.json`, {
+    body: Buffer.from(JSON.stringify(manifest)),
+    etag: '"m1"',
+  })
+  rmSync(work, { recursive: true, force: true })
+}
+
+function makeSourceRepo(file: string, contents: string): string {
+  const repo = tmp('hydrate-manifest-src-')
+  execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'pipe' })
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repo, stdio: 'pipe' })
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo, stdio: 'pipe' })
+  writeFileSync(join(repo, file), contents)
+  execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' })
+  execFileSync('git', ['commit', '-m', 'c', '--no-verify'], { cwd: repo, stdio: 'pipe' })
+  return repo
+}
+
+describe('hydrateRepo — incremental manifest', () => {
+  test('restores the repo from the manifest and its bundles', async () => {
+    objects.clear()
+    const src = makeSourceRepo('app.ts', 'from-bundle\n')
+    const dst = tmp('hydrate-manifest-dst-')
+    try {
+      await putIncrementalRepo('p-manifest', src)
+      const r = await hydrateRepo('p-manifest', dst)
+      expect(r).toEqual({ ok: true, changed: true })
+      expect(readFileSync(join(dst, 'app.ts'), 'utf-8')).toBe('from-bundle\n')
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dst, encoding: 'utf-8' }).trim()).toBe(
+        execFileSync('git', ['rev-parse', 'HEAD'], { cwd: src, encoding: 'utf-8' }).trim(),
+      )
+      // Same manifest etag again: serve the warm copy.
+      expect((await hydrateRepo('p-manifest', dst)).reason).toBe('already-local-fresh')
+    } finally {
+      rmSync(src, { recursive: true, force: true })
+      rmSync(dst, { recursive: true, force: true })
+    }
+  })
+
+  test('the manifest wins over a legacy tarball that is older', async () => {
+    objects.clear()
+    const stale = makeRepoTarball('app.ts', 'stale-tarball\n')
+    objects.set('p-precedence/repo.git.tar.gz', { body: stale.buf, etag: '"tar"' })
+    const src = makeSourceRepo('app.ts', 'current\n')
+    const dst = tmp('hydrate-precedence-dst-')
+    try {
+      await putIncrementalRepo('p-precedence', src)
+      await hydrateRepo('p-precedence', dst)
+      expect(readFileSync(join(dst, 'app.ts'), 'utf-8')).toBe('current\n')
+    } finally {
+      rmSync(src, { recursive: true, force: true })
+      rmSync(dst, { recursive: true, force: true })
+    }
+  })
+
+  test('a corrupt bundle fails closed and leaves no .git behind', async () => {
+    objects.clear()
+    const src = makeSourceRepo('app.ts', 'x\n')
+    const dst = tmp('hydrate-corrupt-dst-')
+    try {
+      await putIncrementalRepo('p-corrupt', src)
+      const manifest = JSON.parse(objects.get('p-corrupt/repo/manifest.json')!.body.toString())
+      const key = `p-corrupt/repo/bundles/${manifest.bundles[0].sha256}.bundle`
+      objects.set(key, { body: Buffer.from('not a bundle'), etag: '"bad"' })
+      const r = await hydrateRepo('p-corrupt', dst)
+      expect(r.ok).toBe(false)
+      expect(r.reason).toMatch(/checksum|bytes/)
+      expect(existsSync(join(dst, '.git'))).toBe(false)
+    } finally {
+      rmSync(src, { recursive: true, force: true })
+      rmSync(dst, { recursive: true, force: true })
+    }
+  })
+
+  test('an unreadable manifest fails closed instead of falling back to the tarball', async () => {
+    objects.clear()
+    const legacy = makeRepoTarball('app.ts', 'legacy\n')
+    objects.set('p-broken/repo.git.tar.gz', { body: legacy.buf, etag: '"tar"' })
+    objects.set('p-broken/repo/manifest.json', { body: Buffer.from('{"v":99}'), etag: '"m"' })
+    const dst = tmp('hydrate-broken-dst-')
+    try {
+      const r = await hydrateRepo('p-broken', dst)
+      expect(r.ok).toBe(false)
+      expect(r.reason).toMatch(/manifest unreadable/)
+      expect(existsSync(join(dst, '.git'))).toBe(false)
+    } finally {
+      rmSync(dst, { recursive: true, force: true })
     }
   })
 })

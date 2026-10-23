@@ -22,7 +22,9 @@
 
 import { Hono } from 'hono'
 import { prisma, InstanceKind } from '../lib/prisma'
+import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 import { can } from '../lib/authz'
+import { deleteMachineCopy } from '../lib/machine-sync/ingest'
 import { resolveApiKey } from './api-keys'
 import { logRemoteAction, classifyAction } from './remote-audit'
 import {
@@ -44,6 +46,8 @@ import {
   verifyPodAlive,
 } from '../lib/tunnel-redis'
 import { sendPushToInstance } from '../lib/push-notifications'
+import { PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
+import { RelayTimeoutError } from '../lib/tunnel-errors'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
 import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
 import { trackUsageFromStream } from './project-chat'
@@ -80,7 +84,6 @@ const POLL_INTERVAL_VIEWER_S = 5
 const POLL_INTERVAL_WS_REQUESTED_S = 3
 const WS_REQUEST_TTL_MS = 2 * 60 * 1000
 const VIEWER_ACTIVE_TTL_MS = 2 * 60 * 1000
-const PROXY_TIMEOUT_MS = 30_000
 const STREAM_FIRST_CHUNK_TIMEOUT_MS = 90_000
 const STREAM_IDLE_TIMEOUT_MS = 120_000
 const STREAM_MAX_TIMEOUT_MS = 600_000
@@ -90,6 +93,13 @@ const TUNNEL_WAIT_POLL_MS = 500
 const STREAMING_POST_PATTERNS = ['/agent/chat', '/agent/logs/stream']
 const STREAMING_GET_PATTERNS = ['/agent/canvas/stream', '/agent/logs/stream']
 const CHAT_RESUME_STREAM_RE = /^\/agent\/chat\/[^/]+\/stream$/
+/**
+ * A workspace's team-chat event stream (SSE). Long-lived by design: it carries
+ * new messages, typing and presence until the client disconnects, so it must go
+ * through the streaming pipeline — buffered, it would sit there until the 30 s
+ * proxy timeout and deliver nothing.
+ */
+const WORKSPACE_EVENT_STREAM_RE = /^\/api\/workspaces\/[^/]+\/conversations\/events$/
 
 // ─── Viewer tracking (Redis-primary, in-memory fallback) ────────────────────
 
@@ -108,7 +118,7 @@ export async function isViewerActive(workspaceId: string): Promise<boolean> {
   return true
 }
 
-async function markViewerActive(workspaceId: string) {
+export async function markViewerActive(workspaceId: string) {
   activeViewers.set(workspaceId, Date.now())
   await markViewerActiveRedis(workspaceId).catch((err) => {
     console.warn('[RemoteControl] markViewerActiveRedis failed:', (err as Error).message)
@@ -158,7 +168,8 @@ async function getActiveControllers(instanceId: string): Promise<ActiveControlle
 // ─── In-memory tunnel registry ──────────────────────────────────────────────
 
 interface TunnelConnection {
-  ws: WebSocket
+  /** Bun attaches `.data` to the socket; we keep the socket's last pong there. */
+  ws: WebSocket & { data?: any }
   instanceId: string
   workspaceId: string
   pendingRequests: Map<string, {
@@ -225,19 +236,28 @@ function isWsRequested(wsRequestedAt: Date | null): boolean {
 }
 
 /**
- * Strip the /api/projects/:pid/agent-proxy wrapper from a tunneled path,
- * returning the clean agent path (e.g. "/agent/quick-actions").
+ * Strip the agent-proxy wrapper from a tunneled path, returning the clean agent
+ * path (e.g. "/agent/quick-actions").
+ *
+ * Two wrappers exist: `/api/projects/:pid/agent-proxy` for a project chat and
+ * `/api/workspaces/:wsId/agent-proxy` for a workspace chat (the personal
+ * companion, and a paired desktop's own workspace). A workspace agent turn is
+ * the same SSE stream as a project one, so both are unwrapped here — otherwise
+ * `isStreamingRequest` says "not streaming" and the relay buffers the whole
+ * turn instead of forwarding it.
  *
  * IMPORTANT: only strips query-free path segments. Callers must handle
  * query strings separately (append after normalization).
  */
-function normalizeTransparentProxyPath(path: string): string {
+export function normalizeTransparentProxyPath(path: string): string {
   const pathWithoutQuery = path.split('?')[0] || path
-  const wrappedProjectPath = pathWithoutQuery.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/.*)?$/)
-  if (wrappedProjectPath) {
+  const wrapped = pathWithoutQuery.match(
+    /^\/api\/(?:projects|workspaces)\/[^/]+\/agent-proxy(\/.*)?$/,
+  )
+  if (wrapped) {
     // group 1 is undefined when the path ends exactly at /agent-proxy —
     // forward to /agent (the runtime's root) rather than "/" which 404s.
-    return wrappedProjectPath[1] || '/agent'
+    return wrapped[1] || '/agent'
   }
   return pathWithoutQuery
 }
@@ -249,7 +269,7 @@ function normalizeTransparentProxyPath(path: string): string {
  * query string).  We intentionally do NOT call normalizeTransparentProxyPath
  * again here to avoid double-normalization bugs.
  */
-function isStreamingRequest(method: string, cleanPath: string): boolean {
+export function isStreamingRequest(method: string, cleanPath: string): boolean {
   // Strip query string defensively in case a caller still passes one.
   const pathOnly = cleanPath.split('?')[0] || cleanPath
 
@@ -262,7 +282,7 @@ function isStreamingRequest(method: string, cleanPath: string): boolean {
   if (method === 'GET') {
     return STREAMING_GET_PATTERNS.some((pattern) =>
       pathOnly === pattern || pathOnly.startsWith(`${pattern}/`),
-    ) || CHAT_RESUME_STREAM_RE.test(pathOnly)
+    ) || CHAT_RESUME_STREAM_RE.test(pathOnly) || WORKSPACE_EVENT_STREAM_RE.test(pathOnly)
   }
 
   return false
@@ -536,14 +556,20 @@ export async function sendTunnelRequest(instanceId: string, req: TunnelRequest):
     throw new Error('Instance is offline')
   }
 
+  // The owner pod is demonstrably alive (it answered the probe), so a relay
+  // timeout means the *machine* was slow, not that the pod died. Evicting here
+  // used to delete a live tunnel's owner key, and the heartbeat could not put
+  // it back — every later call then 503'd "Machine is offline" (SHO-185).
   try {
     const response = await relayTunnelRequest(ownerPod, instanceId, req)
     if (!response) throw new Error('Empty relay response')
     return response as TunnelResponse
   } catch (err: any) {
-    if (err.message === 'Cross-pod relay timed out') {
-      await evictTunnelOwnership(instanceId).catch(() => {})
-      console.warn(`[RemoteControl] Evicted stale tunnel owner ${ownerPod} for instance ${instanceId} after relay timeout`)
+    if (err?.message === 'Cross-pod relay timed out') {
+      console.warn(
+        `[RemoteControl] Relay to ${ownerPod} for instance ${instanceId} timed out; pod answered our probe, keeping ownership`,
+      )
+      throw new RelayTimeoutError(instanceId, RELAY_TIMEOUT_MS)
     }
     throw err
   }
@@ -636,7 +662,6 @@ export function sendTunnelStreamRequest(
   }).catch((err) => {
     onChunk({ type: 'stream-error', requestId: req.requestId, error: (err as Error).message })
   })
-
   return { cancel: () => cancelRef.cancel() }
 }
 
@@ -719,7 +744,7 @@ export function instanceRoutes() {
 
     const wsRequested = isWsRequested(instance.wsRequestedAt)
     const nextPollIn = await computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
-    const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
+    const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })
 
     // Where the desktop should open its on-demand WebSocket. In staging
     // / production this points at a non-DomainMapping host
@@ -789,7 +814,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
     }
 
-    if (tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)) {
+    if (tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })) {
       return c.json({ ok: true, status: 'already_connected' })
     }
 
@@ -805,37 +830,63 @@ export function instanceRoutes() {
     return c.json({ ok: true, status: 'requested' })
   })
 
-  // GET /instances — List all instances for the authenticated user's workspace
+  // GET /instances — List all instances for the authenticated user.
+  //
+  // `?workspaceId=` scopes to one cloud workspace (a project's runtime picker).
+  // `?scope=owner` is the Settings → Remote control list: every machine this
+  // user registered, whichever cloud workspace the app happens to be showing —
+  // the same owner-scoped list the workspace switcher reads from
+  // `GET /api/machines`. Each row carries the name of the workspace its key was
+  // issued in, which is information only (one tunnel serves all of them).
   router.get('/instances', async (c) => {
     const auth = c.get('auth') as any
     if (!auth?.userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
+    const ownerScoped = c.req.query('scope') === 'owner'
     const workspaceId = c.req.query('workspaceId')
-    if (!workspaceId) {
-      return c.json({ error: { code: 'invalid_request', message: 'workspaceId query param required' } }, 400)
-    }
 
-    if (!(await can(c, 'workspace:read', { workspaceId }))) {
-      return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    if (!ownerScoped) {
+      if (!workspaceId) {
+        return c.json({ error: { code: 'invalid_request', message: 'workspaceId query param required' } }, 400)
+      }
+
+      if (!(await can(c, 'workspace:read', { workspaceId }))) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
     }
 
     // Scope to the machines this user paired. Ownership is stamped from the
     // API key used to register/heartbeat the machine (see resolveApiKey), so
     // each member only sees their own machines, not everyone's in the workspace.
     const instances = await prisma.instance.findMany({
-      where: { workspaceId, userId: auth.userId },
+      where: ownerScoped ? { userId: auth.userId } : { workspaceId, userId: auth.userId },
       orderBy: { lastSeenAt: 'desc' },
     })
 
-    const withLiveStatus = await Promise.all(instances.map(async (inst) => ({
+    const workspaceNames = await workspaceNamesById(instances.map((inst) => inst.workspaceId))
+
+    // Owner scope is a machine list, so a machine registered in several
+    // workspaces appears once, carrying every workspace it is in — the same
+    // grouping `GET /api/machines` (the workspace switcher) applies. The
+    // workspace-scoped list asks for one workspace's row and stays 1:1.
+    const grouped = ownerScoped
+      ? groupMachinesByHostname(instances, {
+          preferWorkspaceId: workspaceId,
+          nameFor: (id) => workspaceNames.get(id),
+        })
+      : instances.map((inst) => ({ row: inst, workspaces: [], rows: [inst] }))
+
+    const withLiveStatus = await Promise.all(grouped.map(async ({ row: inst, workspaces, rows: machineRows }) => ({
       ...inst,
       kind: formatInstanceKind(inst.kind),
-      status: tunnels.has(inst.id) || await isTunnelConnectedAnywhere(inst.id)
-        ? 'online'
-        : (isRecentlySeenViaHeartbeat(inst.lastSeenAt) ? 'heartbeat' : 'offline'),
+      // Any live tunnel counts: with one row per workspace, the row picked as the
+      // representative is not necessarily the one that is connected.
+      status: await getMachineGroupStatus(machineRows),
       origin: 'local' as const,
+      workspaceName: workspaceNames.get(inst.workspaceId) ?? null,
+      workspaces,
     })))
 
     // Local mode: merge in any instances registered against the cloud
@@ -844,7 +895,9 @@ export function instanceRoutes() {
     // the UI can render a badge.
     let merged: Array<Record<string, unknown>> = withLiveStatus
     if (await isFederatedEnabled()) {
-      const cloud = await listCloudInstancesForWorkspace(workspaceId)
+      const cloud = ownerScoped
+        ? await listCloudInstancesForWorkspace(workspaceId ?? '', { ownerScope: true })
+        : await listCloudInstancesForWorkspace(workspaceId ?? '')
       if (cloud.length) {
         const origin = getUpstreamOrigin()
         const localIds = new Set(withLiveStatus.map((i) => i.id))
@@ -882,7 +935,7 @@ export function instanceRoutes() {
 
     const online = (await Promise.all(
       instances.map(async (inst) => {
-        const isOnline = tunnels.has(inst.id) || (await isTunnelConnectedAnywhere(inst.id))
+        const isOnline = tunnels.has(inst.id) || (await isTunnelConnectedAnywhere(inst.id, { retry: false }))
         return isOnline ? inst : null
       })
     )).filter((x): x is NonNullable<typeof x> => x !== null)
@@ -939,7 +992,7 @@ export function instanceRoutes() {
     return c.json({
       ...instance,
       kind: formatInstanceKind(instance.kind),
-      status: tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
+      status: tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })
         ? 'online'
         : (isRecentlySeenViaHeartbeat(instance.lastSeenAt) ? 'heartbeat' : 'offline'),
       origin: 'local' as const,
@@ -1009,6 +1062,12 @@ export function instanceRoutes() {
     if (conn) {
       conn.ws.close(4000, 'Instance removed')
     }
+
+    // Unpairing takes the cloud copy with it (SHO-185): a machine that is gone
+    // must not leave its records readable in the workspace it was copied into.
+    await deleteMachineCopy(prisma, instance.id).catch((err: any) => {
+      console.warn(`[Instances] could not remove the copy for ${instance.id}: ${err?.message ?? err}`)
+    })
 
     await prisma.instance.delete({ where: { id: instance.id } })
     return c.json({ ok: true })
@@ -1633,9 +1692,76 @@ export function instanceRoutes() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
+export function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
   if (!lastSeenAt) return false
   return Date.now() - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
+}
+
+/**
+ * Live status of one machine. Same three states the `/instances` list renders:
+ * `online` while its tunnel WebSocket is up, `heartbeat` while it has polled
+ * recently (offline app, or a tunnel that has not been opened yet), `offline`
+ * otherwise.
+ */
+export async function getMachineLiveStatus(
+  instanceId: string,
+  lastSeenAt: Date | null,
+): Promise<'online' | 'heartbeat' | 'offline'> {
+  if (tunnels.has(instanceId) || (await isTunnelConnectedAnywhere(instanceId, { retry: false }))) return 'online'
+  return isRecentlySeenViaHeartbeat(lastSeenAt) ? 'heartbeat' : 'offline'
+}
+
+/**
+ * One status for a machine, across every row it has.
+ *
+ * A machine registered in three workspaces keeps three tunnels; the list shows
+ * one entry, so the entry is online when *any* of them is — reading only the
+ * representative row would call a live machine offline whenever the row that
+ * happened to be picked had not connected yet.
+ */
+export async function getMachineGroupStatus(
+  rows: Array<{ id: string; lastSeenAt: Date | null }>,
+): Promise<'online' | 'heartbeat' | 'offline'> {
+  const statuses = await Promise.all(rows.map((row) => getMachineLiveStatus(row.id, row.lastSeenAt)))
+  if (statuses.includes('online')) return 'online'
+  return statuses.includes('heartbeat') ? 'heartbeat' : 'offline'
+}
+
+/**
+ * Wake an instance's tunnel if it is asleep and wait up to `timeoutMs` for it.
+ * Used by the machine-workspace relay, which has to be honest about "offline"
+ * instead of forwarding into a void.
+ */
+export async function ensureTunnelConnected(
+  instanceId: string,
+  timeoutMs: number = TUNNEL_WAIT_TIMEOUT_MS,
+): Promise<boolean> {
+  if (tunnels.has(instanceId)) return true
+
+  let remotePod = await getTunnelOwner(instanceId)
+  if (remotePod === getPodId()) {
+    await evictTunnelOwnership(instanceId).catch(() => {})
+    remotePod = null
+  }
+  if (remotePod) {
+    const alive = await verifyPodAlive(remotePod)
+    if (alive) return true
+    await evictTunnelOwnership(instanceId).catch(() => {})
+  }
+
+  await prisma.instance
+    .update({ where: { id: instanceId }, data: { wsRequestedAt: new Date() } })
+    .catch(() => {})
+  void sendPushToInstance(instanceId, { type: 'ws-requested', priority: 'high' })
+
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, TUNNEL_WAIT_POLL_MS))
+    if (tunnels.has(instanceId)) return true
+    // The loop re-polls every TUNNEL_WAIT_POLL_MS, so the cold-start retry would only add delay.
+    if (await getTunnelOwner(instanceId, { retry: false })) return true
+  }
+  return false
 }
 
 // ─── Heartbeat ping for all connected tunnels ───────────────────────────────

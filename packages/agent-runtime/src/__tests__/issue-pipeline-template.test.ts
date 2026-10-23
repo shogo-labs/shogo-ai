@@ -125,10 +125,11 @@ describe('issue-pipeline (multi-project) manifest', () => {
     for (const spec of manifest.projects) {
       fileContents.set(spec.key, new Map(Object.entries(spec.files)))
     }
-    const readFile = (projectId: string, path: string): string | null => {
+    const readFile = (projectId: string, path: string) => {
       const key = Object.keys(lock.bindings).find((k) => lock.bindings[k] === projectId)
-      if (!key) return null
-      return fileContents.get(key)?.get(path) ?? null
+      if (!key) return { status: 'missing' } as const
+      const content = fileContents.get(key)?.get(path)
+      return content === undefined ? ({ status: 'missing' } as const) : ({ status: 'ok', content } as const)
     }
 
     const teamChannels = {

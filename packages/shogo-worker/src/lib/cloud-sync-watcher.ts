@@ -47,9 +47,6 @@ export interface WatcherGitOptions {
   projectId: string;
   /** Branch to push to. Default `HEAD` (current). */
   branch?: string;
-  /** Optional author identity for the auto-commits. */
-  authorEmail?: string;
-  authorName?: string;
 }
 
 /** Signature of `commitAndPush` from `./git-cloner`. Extracted so tests
@@ -62,8 +59,6 @@ export type CommitAndPushFn = (opts: {
   localDir: string;
   message: string;
   branch?: string;
-  authorEmail?: string;
-  authorName?: string;
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
 }) => Promise<{ committed: boolean; commitSha?: string }>;
 
@@ -301,8 +296,6 @@ export class CloudSyncWatcher {
           localDir: this.rootDir,
           message,
           branch: this.git.branch,
-          authorEmail: this.git.authorEmail,
-          authorName: this.git.authorName,
           logger: this.logger,
         });
         committed = res.committed;

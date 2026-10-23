@@ -305,8 +305,10 @@ describe('withAdvisoryLock', () => {
     expect(server.heldBy.size).toBe(0)
   })
 
-  it('treats a failed connection acquire as held=false (does not throw)', async () => {
+  it('treats a connection that never comes as held=false, reason=unavailable (does not throw)', async () => {
+    const clock = fakeClock()
     let ran = false
+    let connects = 0
     const out = await withAdvisoryLock(
       KEY,
       async () => {
@@ -314,14 +316,75 @@ describe('withAdvisoryLock', () => {
         return 'x'
       },
       {
+        budgetMs: 1000,
         deps: {
           acquireClient: async () => {
+            connects++
             throw new Error('no db')
           },
+          now: clock.now,
+          sleep: clock.sleep,
         },
       },
     )
-    expect(out.held).toBe(false)
+    expect(out).toEqual({ held: false, reason: 'unavailable' })
     expect(ran).toBe(false)
+    expect(connects).toBeGreaterThan(1)
+  })
+
+  it('retries a failed connect within budget and runs fn once a slot frees', async () => {
+    const server = makeFakeLockServer()
+    const clock = fakeClock()
+    let connects = 0
+    const out = await withAdvisoryLock(KEY, async () => 'ok', {
+      budgetMs: 5000,
+      deps: {
+        acquireClient: async () => {
+          if (++connects < 3) throw new Error('timeout exceeded when trying to connect')
+          return server.acquireClient()
+        },
+        now: clock.now,
+        sleep: clock.sleep,
+      },
+    })
+    expect(out).toEqual({ held: true, result: 'ok' })
+    expect(connects).toBe(3)
+  })
+
+  it('reports reason=contended when the key stays held elsewhere', async () => {
+    const server = makeFakeLockServer()
+    expect(await server.acquireClient().tryLock(KEY)).toBe(true)
+    const clock = fakeClock()
+    const out = await withAdvisoryLock(KEY, async () => 'nope', {
+      budgetMs: 500,
+      deps: { acquireClient: async () => server.acquireClient(), now: clock.now, sleep: clock.sleep },
+    })
+    expect(out).toEqual({ held: false, reason: 'contended' })
+  })
+
+  it('returns the connection after every losing attempt instead of holding it across the wait', async () => {
+    const server = makeFakeLockServer()
+    expect(await server.acquireClient().tryLock(KEY)).toBe(true)
+    let open = 0
+    let maxOpen = 0
+    const clock = fakeClock()
+    await withAdvisoryLock(KEY, async () => 'nope', {
+      budgetMs: 2000,
+      deps: {
+        acquireClient: async () => {
+          const c = server.acquireClient()
+          open++
+          maxOpen = Math.max(maxOpen, open)
+          return { ...c, release: (p: boolean) => { open--; return c.release(p) } }
+        },
+        now: clock.now,
+        sleep: async (ms) => {
+          expect(open).toBe(0)
+          await clock.sleep(ms)
+        },
+      },
+    })
+    expect(maxOpen).toBe(1)
+    expect(open).toBe(0)
   })
 })

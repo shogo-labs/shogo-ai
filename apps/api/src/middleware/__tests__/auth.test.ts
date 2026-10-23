@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it, mock, beforeAll, afterAll } from 'bun
 // Mocks for every collaborator imported by auth.ts.
 // ---------------------------------------------------------------------------
 
-let resolveApiKeyImpl: (key: string) => Promise<any> = async () => null
+let resolveApiKeyImpl: (key: string, opts?: any) => Promise<any> = async () => null
 let verifyRuntimeTokenImpl: (token: string, fallback?: string) => any = () => ({ ok: false })
 let getSessionImpl: (args: any) => Promise<any> = async () => null
 
@@ -46,7 +46,7 @@ function project(id: string, workspaceId: string, visibility = 'workspace') {
 }
 
 mock.module('../../routes/api-keys', () => ({
-  resolveApiKey: (key: string) => resolveApiKeyImpl(key),
+  resolveApiKey: (key: string, opts?: any) => resolveApiKeyImpl(key, opts),
 }))
 
 mock.module('../../lib/runtime-token', () => ({
@@ -162,6 +162,17 @@ describe('authMiddleware — apiKey path', () => {
       isAuthenticated: true,
       via: 'apiKey',
     })
+  })
+
+  it('remembers the resolution (and forwards the device version) for route-level auth (SHO-160)', async () => {
+    let seenOpts: any
+    resolveApiKeyImpl = async (_key, opts) => { seenOpts = opts; return { userId: 'u1', workspaceId: 'w1' } }
+    const c = makeContext({
+      headers: { authorization: 'Bearer shogo_sk_abc', 'x-shogo-device-app-version': '2.3.10' },
+    })
+    await authMiddleware(c, next)
+    expect(seenOpts).toEqual({ deviceAppVersion: '2.3.10' })
+    expect(c.get('apiKeyResolution')).toEqual({ key: 'shogo_sk_abc', result: { userId: 'u1', workspaceId: 'w1' } })
   })
 
   it('falls through when resolveApiKey returns null', async () => {

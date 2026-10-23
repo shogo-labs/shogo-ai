@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test as base, type Browser, type BrowserContext } from "@playwright/test"
+import { deleteRecordedTestUsers } from "./test-accounts"
 
 export * from "@playwright/test"
 
@@ -54,7 +55,7 @@ function patchNewContext(browser: Browser, baseURL: string | undefined): () => v
   }
 }
 
-export const test = base.extend<object, { browser: Browser }>({
+export const test = base.extend<object, { browser: Browser; e2eAccountCleanup: void }>({
   browser: [
     async ({ browser }, use, workerInfo) => {
       const restore = BYPASS_KEY ? patchNewContext(browser, workerInfo.project.use.baseURL) : () => {}
@@ -65,5 +66,13 @@ export const test = base.extend<object, { browser: Browser }>({
       }
     },
     { scope: "worker" },
+  ],
+  // Accounts this worker signed up are deleted when it finishes (see test-accounts.ts).
+  e2eAccountCleanup: [
+    async ({}, use) => {
+      await use()
+      await deleteRecordedTestUsers()
+    },
+    { scope: "worker", auto: true, timeout: 10 * 60_000 },
   ],
 })

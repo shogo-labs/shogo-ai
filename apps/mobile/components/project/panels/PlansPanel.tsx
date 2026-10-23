@@ -27,7 +27,7 @@ import { MarkdownText } from "../../chat/MarkdownText"
 import { AgentClient, type AgentPlanSummary } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../../lib/agent-fetch"
 import { API_URL } from "../../../lib/api"
-import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
+import { DEFAULT_MODEL } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
 import { PlanBuildActions } from "../../chat/PlanBuildActions"
 import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
@@ -140,7 +140,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const [planContent, setPlanContent] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
+  const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL)
   const [buildStarted, setBuildStarted] = useState(false)
   const [activeTab, setActiveTab] = useState<"technical" | "summary">("technical")
   // Mirror of the global Dual Plan preference — singleton-backed so any
@@ -173,7 +173,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       prev === "__streaming__" && selectedPlan !== "__streaming__"
 
     if (enteredFromList || switchedBetweenPlans || leftStreamingToFile) {
-      setBuildMode(selectedModel || DEFAULT_MODEL_PRO)
+      setBuildMode(selectedModel || DEFAULT_MODEL)
     }
   }, [selectedPlan, selectedModel])
 
@@ -265,16 +265,25 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
     }
   }, [selectedPlan, fetchPlanDetail, planStream?.planRefreshNonce])
 
+  // Each open request selects its plan once; later stream updates must not
+  // pull the user back out of the list.
+  const handledRequestNonceRef = useRef<number | null>(null)
   useEffect(() => {
-    if (!visible) return
-    const requestedFilename = planFilenameFromPath(requestedPlanPath?.filepath)
+    if (!visible) {
+      handledRequestNonceRef.current = null
+      return
+    }
+    if (!requestedPlanPath || handledRequestNonceRef.current === requestedPlanPath.nonce) return
+    const requestedFilename = planFilenameFromPath(requestedPlanPath.filepath)
     if (requestedFilename) {
+      handledRequestNonceRef.current = requestedPlanPath.nonce
       setSelectedPlan(requestedFilename)
       setPlanContent(null)
       setBuildStarted(false)
       return
     }
-    if (requestedPlanPath && planStream?.streamingPlan) {
+    if (planStream?.streamingPlan) {
+      handledRequestNonceRef.current = requestedPlanPath.nonce
       setSelectedPlan("__streaming__")
       setPlanContent(null)
       setBuildStarted(false)
@@ -412,6 +421,8 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               setSelectedPlan(null)
               setPlanContent(null)
             }}
+            accessibilityRole="button"
+            accessibilityLabel="Back to plans"
             className={cn(
               "items-center justify-center rounded-lg",
               planHitClass,

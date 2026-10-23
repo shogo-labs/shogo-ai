@@ -52,7 +52,7 @@ const MARKER = `Reopen Marker ${Date.now().toString(36)}`
 // ── Auth (mirrors project-preview-boot.test.ts) ─────────────────────────────
 
 async function ensureAuthenticated(page: Page, user: TestUser): Promise<void> {
-  await page.goto("/")
+  await page.goto("/home")
   const home = page.getByText("What are we building", { exact: false }).first()
   const signUpTab = page.getByRole("tab", { name: "Sign Up" })
   await Promise.race([
@@ -217,7 +217,7 @@ test.describe("Reopen existing project", () => {
 
     // 3. Reopen: leave the project entirely, then navigate back so the runtime
     //    is resolved + resumed from scratch.
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 30_000 })
     await page.goto(`/projects/${projectId}`)
 
