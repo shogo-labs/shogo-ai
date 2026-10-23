@@ -10,6 +10,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { Hono } from 'hono'
 import { rmSync } from 'fs'
 import { seedWorkspace, setupChannelsTestDb, type SeededWorkspace } from './helpers/channels-test-db'
 
@@ -280,6 +281,126 @@ describe('the fallback agent', () => {
     await huddles.notesLivekitFallback({ huddleId, identity: seed.member, seconds: 60, streamNo: 1, flushNo: 1, totalSeconds: 60 })
     const row = await db.huddle.findUnique({ where: { id: huddleId } })
     expect(row.notesLivekitSeconds).toBe(300)
+  })
+})
+
+describe('a fallback final, written through the API', () => {
+  /** The draft's transcript as stored right now. */
+  async function transcriptOf(meetingId: string) {
+    const row = await db.meeting.findUnique({ where: { id: meetingId } })
+    return meetings.readTranscript(row.transcript)!
+  }
+
+  test('lands under the speaker’s name and user id, not their raw identity', async () => {
+    const { huddleId } = await liveHuddle()
+    const draft = await meetings.ensureHuddleNotesDraft(huddleId)
+
+    const written = await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.member,
+      itemId: `lk:${seed.member}:1:1`,
+      text: 'we should ship friday',
+      start: 4,
+      end: 7,
+    })
+
+    expect(written).toEqual({ ok: true, stored: true })
+    const transcript = await transcriptOf(draft.id)
+    expect(transcript.segments).toHaveLength(1)
+    expect(transcript.segments[0].speaker).toBe('member')
+    expect(transcript.segments[0].speakerId).toBe(seed.member)
+    expect(transcript.segments[0].itemId).toBe(`lk:${seed.member}:1:1`)
+  })
+
+  test('three finals from one worker stream are three stored lines', async () => {
+    const { huddleId } = await liveHuddle()
+    const draft = await meetings.ensureHuddleNotesDraft(huddleId)
+    for (const [n, text] of ['one line', 'two lines', 'three lines'].entries()) {
+      await huddles.appendHuddleNoteFinal({
+        huddleId,
+        identity: seed.member,
+        itemId: `lk:${seed.member}:1:${n + 1}`,
+        text,
+        start: n * 3,
+        end: n * 3 + 2,
+      })
+    }
+    expect((await transcriptOf(draft.id)).segments).toHaveLength(3)
+  })
+
+  test('the same final posted twice is stored once', async () => {
+    const { huddleId } = await liveHuddle()
+    const draft = await meetings.ensureHuddleNotesDraft(huddleId)
+    const final = { huddleId, identity: seed.member, itemId: `lk:${seed.member}:1:1`, text: 'only once', start: 1, end: 3 }
+    expect(await huddles.appendHuddleNoteFinal(final)).toEqual({ ok: true, stored: true })
+    expect(await huddles.appendHuddleNoteFinal(final)).toEqual({ ok: true, stored: false })
+    expect((await transcriptOf(draft.id)).segments).toHaveLength(1)
+  })
+
+  test('a handover duplicate is removed at finalize, through the writers production uses', async () => {
+    const { huddleId } = await liveHuddle()
+    const draft = await meetings.ensureHuddleNotesDraft(huddleId)
+
+    // The client's own stream stores the line first (`c:…`, as the stream
+    // session writes it), then the fallback's final for the same utterance
+    // arrives through the API (`lk:…`) while the track changes hands.
+    await meetings.appendStreamFinal(draft.id, {
+      itemId: `c:${seed.owner}:item-1`,
+      segment: { start: 10, end: 12, text: 'ship it friday' },
+      speaker: 'owner',
+      speakerId: seed.owner,
+    })
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: `lk:${seed.owner}:1:1`,
+      text: 'Ship it Friday',
+      start: 11,
+      end: 13,
+    })
+    expect((await transcriptOf(draft.id)).segments).toHaveLength(2)
+
+    // Promote the live transcript the way the end of a call does, then finalize.
+    await meetings.finalizeLiveTranscript(draft.id, 60)
+    await db.meeting.update({ where: { id: draft.id }, data: { enhanceStatus: 'ready', enhancedNotes: '## Notes\n- ship it' } })
+    await db.huddle.update({ where: { id: huddleId }, data: { startedAt: new Date(Date.now() - 120_000), endedAt: new Date() } })
+    await huddles.finalizeHuddleNotes(huddleId)
+
+    const view = await huddles.getHuddleNotes(huddleId, seed.owner)
+    expect(view.transcript.segments).toHaveLength(1)
+    expect(view.transcript.segments[0]).toMatchObject({ text: 'ship it friday', speaker: 'owner', itemId: `c:${seed.owner}:item-1` })
+  })
+
+  test('the internal route refuses a call without the worker token, and takes one with it', async () => {
+    const { huddleId } = await liveHuddle()
+    const { default: internal } = await import('../routes/internal')
+    const app = new Hono()
+    app.route('/api/internal', internal)
+    const body = JSON.stringify({ huddleId, identity: seed.member, itemId: `lk:${seed.member}:2:1`, text: 'hello from the worker', start: 2, end: 4 })
+
+    delete process.env.SHOGO_NOTES_WORKER_TOKEN
+    const refused = await app.request('/api/internal/huddle-notes/finals', { method: 'POST', body, headers: { 'content-type': 'application/json' } })
+    expect(refused.status).toBe(401)
+
+    process.env.SHOGO_NOTES_WORKER_TOKEN = 'worker-token-for-test'
+    try {
+      const wrong = await app.request('/api/internal/huddle-notes/finals', {
+        method: 'POST',
+        body,
+        headers: { 'content-type': 'application/json', 'x-shogo-notes-worker': 'nope' },
+      })
+      expect(wrong.status).toBe(401)
+
+      const accepted = await app.request('/api/internal/huddle-notes/finals', {
+        method: 'POST',
+        body,
+        headers: { 'content-type': 'application/json', 'x-shogo-notes-worker': 'worker-token-for-test' },
+      })
+      expect(accepted.status).toBe(200)
+      expect(await accepted.json()).toEqual({ ok: true, stored: true })
+    } finally {
+      delete process.env.SHOGO_NOTES_WORKER_TOKEN
+    }
   })
 })
 

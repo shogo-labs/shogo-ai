@@ -376,6 +376,33 @@ describe('huddle notes on a stream session', () => {
     expect(counted[0][0]).toBe('huddle-1')
     expect(counted[0][1]).toBeCloseTo(1, 1)
   })
+
+  test('each final is stored under `c:<speakerId>:<item>`, with the speaker id on the segment', async () => {
+    const saved: Array<{ itemId: string; speaker?: string; speakerId?: string }> = []
+    const h = huddleSession({
+      appendFinal: async (_id, input) => {
+        saved.push({ itemId: input.itemId, speaker: input.speaker, speakerId: input.speakerId })
+        return { ok: true, stored: true, finals: saved.length }
+      },
+    })
+    // A coverer's ticket names the person it transcribes, not itself.
+    const session = new stream.LiveStreamSession(
+      { ...huddleTicket, speakerId: 'user-2', speaker: 'Ben' },
+      0,
+      () => {},
+      { name: h.backend.name, create: () => h.backend },
+      h.deps,
+    )
+    expect(await session.begin()).toBe(true)
+    session.onAudio(pcm(2))
+    await session.finish(50)
+
+    expect(saved.length).toBeGreaterThan(0)
+    // The prefix says which path wrote the line: the fallback writes `lk:`.
+    expect(saved[0].itemId).toMatch(/^c:user-2:/)
+    expect(saved[0].speaker).toBe('Ben')
+    expect(saved[0].speakerId).toBe('user-2')
+  })
 })
 
 describe('runHttpAudioStream (WAV fixture, end to end)', () => {

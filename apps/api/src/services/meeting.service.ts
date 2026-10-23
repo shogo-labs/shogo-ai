@@ -84,7 +84,12 @@ export interface TranscriptSegment {
   start: number
   end: number
   text: string
+  /** Display name of whoever said it. */
   speaker?: string
+  /** Their user id (or `guest_…`): what a handover compares, so two people with one name never merge. */
+  speakerId?: string
+  /** The dedupe key this line was stored under (`c:…` from a client, `lk:…` from the fallback). */
+  itemId?: string
 }
 
 export interface ParsedTranscript {
@@ -652,6 +657,8 @@ export interface LiveChunkInput {
   seq: number
   /** Who is speaking. Set for huddle notes, where several people share one draft. */
   speaker?: string
+  /** Their user id (or `guest_…`), stored on the segment so a handover can compare people. */
+  speakerId?: string
   /**
    * Dedupe key that is unique across everyone streaming into this draft. Huddle
    * chunk uploads use `<speakerId>:chunk-<seq>`, because plain `seq` numbers
@@ -731,8 +738,16 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
   const text = result.text.trim()
   const chunkDuration = Math.max(0, getWavDurationFromBuffer(input.audio))
   const speaker = input.speaker?.trim().slice(0, 80) || undefined
+  const speakerId = input.speakerId?.trim().slice(0, 80) || undefined
   const segment: TranscriptSegment | null = text
-    ? { start: input.start, end: input.start + chunkDuration, text, ...(speaker ? { speaker } : {}) }
+    ? {
+        start: input.start,
+        end: input.start + chunkDuration,
+        text,
+        ...(speaker ? { speaker } : {}),
+        ...(speakerId ? { speakerId } : {}),
+        ...(input.itemKey ? { itemId: input.itemKey } : {}),
+      }
     : null
 
   // Chunks can land out of order (or on different API pods): merge with an
@@ -792,11 +807,19 @@ export type StreamFinalResult = { ok: true; stored: boolean; finals: number } | 
  */
 export async function appendStreamFinal(
   meetingId: string,
-  input: { itemId: string; segment: TranscriptSegment; language?: string; speaker?: string },
+  input: { itemId: string; segment: TranscriptSegment; language?: string; speaker?: string; speakerId?: string },
   options: { attempts?: number } = {},
 ): Promise<StreamFinalResult> {
   const speaker = input.speaker?.trim().slice(0, 80) || undefined
-  const segment: TranscriptSegment = speaker ? { ...input.segment, speaker } : input.segment
+  const speakerId = input.speakerId?.trim().slice(0, 80) || undefined
+  // The item id travels with the line: a handover's de-duplication needs to
+  // know which path wrote it, after the live bookkeeping is gone.
+  const segment: TranscriptSegment = {
+    ...input.segment,
+    ...(speaker ? { speaker } : {}),
+    ...(speakerId ? { speakerId } : {}),
+    itemId: input.itemId,
+  }
   const attempts = Math.max(1, options.attempts ?? 8)
   for (let attempt = 0; attempt < attempts; attempt++) {
     const row = await db.meeting.findUnique({

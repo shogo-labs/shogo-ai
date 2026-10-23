@@ -158,11 +158,19 @@ export interface HandoverSegment {
   end?: number | null
   text: string
   speaker?: string | null
+  /** The person, when the writer knew it: two "Alex"es in one call stay separate. */
+  speakerId?: string | null
+  /** `c:…` or `lk:…` — which path wrote this line. */
   itemId?: string | null
 }
 
 /** Same speaker, overlapping time, near-identical words — one line said once. */
 const SIMILARITY_THRESHOLD = 0.6
+
+function sameSpeaker(a: HandoverSegment, b: HandoverSegment): boolean {
+  if (a.speakerId && b.speakerId) return a.speakerId === b.speakerId
+  return (a.speaker ?? '') === (b.speaker ?? '')
+}
 
 function overlaps(a: HandoverSegment, b: HandoverSegment): boolean {
   if (a.start == null || b.start == null) return false
@@ -188,7 +196,7 @@ export function dedupeHandoverSegments<T extends HandoverSegment>(segments: T[])
     for (let j = i + 1; j < segments.length; j++) {
       if (dropped.has(j)) continue
       const other = segments[j]
-      if ((candidate.speaker ?? '') !== (other.speaker ?? '')) continue
+      if (!sameSpeaker(candidate, other)) continue
       const a = notesItemSource(candidate.itemId)
       const b = notesItemSource(other.itemId)
       if (!a || !b || a === b) continue
