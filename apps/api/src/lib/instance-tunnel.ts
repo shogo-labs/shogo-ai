@@ -271,12 +271,12 @@ class ThreadedTunnel implements TunnelHandle {
   start(): void {
     if (this.stopped || this.host || this.fallback) return
     if (forceInProcessTunnel) {
-      this.fallback = new WorkerTunnel(this.options)
-      this.fallback.start()
+      this.startInProcess()
       return
     }
+    let host: ReturnType<typeof startTunnelInWorker>
     try {
-      this.host = startTunnelInWorker({
+      host = startTunnelInWorker({
         apiKey: this.options.apiKey,
         cloudUrl: this.options.cloudUrl,
         name: this.options.name,
@@ -290,14 +290,51 @@ class ThreadedTunnel implements TunnelHandle {
         onConnection: (connected) => {
           this.connected = connected
         },
+        onWorkerError: (error) => this.demoteToInProcess(error),
       })
     } catch (err: any) {
-      console.warn(
-        `[InstanceTunnel] no worker available (${err?.message ?? err}); running the tunnel in-process`,
-      )
-      this.fallback = new WorkerTunnel(this.options)
-      this.fallback.start()
+      this.demoteToInProcess(err)
+      return
     }
+
+    this.host = host
+    // Spawning a worker is not proof it came up: a packaging step that forgets
+    // the entry file leaves `new Worker()` raising nothing until later, so
+    // readiness is what decides the mode. Until then the machine has no tunnel
+    // at all, which is exactly what the user saw.
+    void host.ready().catch((err: any) => this.demoteToInProcess(err))
+  }
+
+  /**
+   * Drop the worker and run the tunnel here instead.
+   *
+   * Remote control is worth losing the thread isolation for; it is not worth
+   * losing altogether, so a worker that cannot start (or cannot come up) hands
+   * the tunnel back to this process.
+   */
+  private demoteToInProcess(reason: unknown): void {
+    if (this.stopped || this.fallback) return
+    const host = this.host
+    this.host = null
+    this.connected = false
+    this.instanceIdValue = null
+    try {
+      host?.stop()
+    } catch {
+      // nothing to do
+    }
+    console.warn(
+      `[InstanceTunnel] no worker available (${
+        (reason as any)?.message ?? reason
+      }); running the tunnel in-process`,
+    )
+    this.startInProcess()
+  }
+
+  private startInProcess(): void {
+    if (this.stopped || this.fallback) return
+    this.fallback = new WorkerTunnel(this.options)
+    this.fallback.start()
   }
 
   stop(): void {

@@ -10,8 +10,51 @@
  * local API cannot cost the machine its connection any more.
  */
 
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { ResolveRejection, RuntimeResolver } from './tunnel'
 import type { HostProjectStatus, HostReply, WorkerEvent, WorkerRequest } from './tunnel-worker'
+
+/**
+ * How long the worker gets to answer `ready` before it is written off.
+ *
+ * The worker posts `ready` from its `init` handler, before it touches the
+ * network, so this is only ever spent on a worker that never came up at all
+ * (crashed on load, wrong entry file, a runtime that quietly refuses to spawn
+ * one). A tunnel that is slow to connect is not slow to be ready.
+ */
+const READY_TIMEOUT_MS = 10_000
+
+/** This module's directory: `resources/bundle/` once packaged, `src/lib/` in a checkout. */
+const HOST_DIR = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * The Worker entry file that sits next to this module.
+ *
+ * A source checkout has only `tunnel-worker.ts`; the desktop ships the compiled
+ * `resources/bundle/tunnel-worker.js` (see `apps/desktop/scripts/bundle-api.mjs`)
+ * and no source tree at all. Relative to `import.meta.url` — which inside
+ * `resources/bundle/api.js` is the bundle itself — `new URL('./tunnel-worker.ts')`
+ * could only ever name the checkout, so the packaged app asked for a `.ts` file
+ * that was never shipped, the worker never started, and the tunnel vanished.
+ *
+ * `SHOGO_TUNNEL_WORKER_PATH` overrides the search for packagers that relocate
+ * the bundle.
+ */
+export function resolveTunnelWorkerEntry(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.SHOGO_TUNNEL_WORKER_PATH?.trim()
+  if (override) return override
+
+  const candidates = [join(HOST_DIR, 'tunnel-worker.js'), join(HOST_DIR, 'tunnel-worker.ts')]
+  const found = candidates.find((candidate) => existsSync(candidate))
+  if (found) return found
+
+  throw new Error(
+    `no tunnel worker entry next to ${HOST_DIR} (looked for ${candidates.join(', ')}); ` +
+      `packaging must ship the tunnel-worker build output beside the API bundle`,
+  )
+}
 
 export interface TunnelHostOptions {
   apiKey: string
@@ -27,6 +70,10 @@ export interface TunnelHostOptions {
   onInstanceId?: (instanceId: string | null) => void
   /** Called when the socket's connected state changes. */
   onConnection?: (connected: boolean) => void
+  /** The worker died (on load or later). The host is not usable after this. */
+  onWorkerError?: (error: Error) => void
+  /** Overrides the readiness deadline. Tests only. */
+  readyTimeoutMs?: number
 }
 
 export interface TunnelHost {
@@ -42,22 +89,47 @@ export interface TunnelHost {
  *
  * Throws if the worker cannot be created (a bundle without the entry file, a
  * runtime that will not spawn one), which is the caller's cue to fall back to an
- * in-process tunnel rather than lose remote control entirely.
+ * in-process tunnel rather than lose remote control entirely. A worker that is
+ * created but never answers `ready` rejects `ready()` for the same reason — the
+ * throw alone is not enough, because a missing entry file does not always fail
+ * synchronously.
  */
 export function startTunnelInWorker(options: TunnelHostOptions): TunnelHost {
   const log = options.logger ?? console
+  const entry = resolveTunnelWorkerEntry()
   // The web Worker API, which is what Bun implements (and what the worker file
   // uses on its side with `self.postMessage`). `node:worker_threads` needs
   // `parentPort` instead, and mixing the two silently never delivers a message.
-  const worker = new Worker(new URL('./tunnel-worker.ts', import.meta.url))
+  const worker = new Worker(pathToFileURL(entry))
 
+  const readyTimeoutMs = options.readyTimeoutMs ?? READY_TIMEOUT_MS
   let instanceId: string | null = null
   let connected = false
   let stopped = false
+  let readySettled = false
   let settleReady: () => void = () => {}
-  const ready = new Promise<void>((resolve) => {
+  let failReady: (error: Error) => void = () => {}
+  const ready = new Promise<void>((resolve, reject) => {
     settleReady = resolve
+    failReady = reject
   })
+  // Nobody is obliged to await `ready()`; an unobserved rejection would take the
+  // process down instead of letting the caller fall back.
+  void ready.catch(() => {})
+
+  const readyTimer = setTimeout(() => {
+    failReady(new Error(`tunnel worker (${entry}) did not answer ready within ${readyTimeoutMs}ms`))
+  }, readyTimeoutMs)
+  void ready.then(
+    () => {
+      readySettled = true
+      clearTimeout(readyTimer)
+    },
+    () => {
+      readySettled = true
+      clearTimeout(readyTimer)
+    },
+  )
 
   /** What the last `resolve` decided, so a rejection needs no extra round trip. */
   const rejections = new Map<string, ResolveRejection>()
@@ -94,7 +166,15 @@ export function startTunnelInWorker(options: TunnelHostOptions): TunnelHost {
   }
 
   worker.onerror = (event: any) => {
-    log.error(`[TunnelHost] worker error: ${event?.message ?? event}`)
+    const message = event?.message ?? event
+    log.error(`[TunnelHost] worker error: ${message}`)
+    const error = new Error(`tunnel worker failed: ${message}`)
+    // A worker that dies on load never posts `ready`. Reject now so the caller
+    // can fall back instead of waiting out the whole deadline.
+    if (!readySettled) failReady(error)
+    // A worker that dies later leaves a socket nobody is watching, which looks
+    // exactly like an offline machine. Same answer: hand it back to the caller.
+    options.onWorkerError?.(error)
   }
 
   async function answer(request: WorkerRequest): Promise<void> {
@@ -163,6 +243,7 @@ export function startTunnelInWorker(options: TunnelHostOptions): TunnelHost {
   return {
     stop() {
       stopped = true
+      clearTimeout(readyTimer)
       void worker.terminate()
     },
     instanceId: () => instanceId,
