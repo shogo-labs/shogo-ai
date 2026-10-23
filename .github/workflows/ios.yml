@@ -654,12 +654,12 @@ jobs:
           # this IPA — keep in sync with the post-archive sourcemap upload
           # below so events are matchable to bundles.
           EXPO_PUBLIC_BUILD_HASH: ${{ needs.check-fingerprint.outputs.sha }}
-          # Expo Updates resolves this monorepo as the project root during
-          # archive. Make the root/entry explicit so the generated resource
-          # script does not fall back to /index.js at the repository root.
-          # ENTRY_FILE must be absolute: the RN bundle phase re-exports
-          # PROJECT_ROOT as apps/mobile and resolves a relative entry from there.
-          PROJECT_ROOT: ${{ github.workspace }}
+          # expo-updates' "Generate updates resources" phase runs Metro from
+          # PROJECT_ROOT. It must be the app (apps/mobile), not the repo root:
+          # from the repo root Metro skips apps/mobile/metro.config.js and
+          # cannot resolve metro-runtime/src/modules/asyncRequire, so any
+          # dynamic import() fails the archive. ENTRY_FILE stays absolute.
+          PROJECT_ROOT: ${{ github.workspace }}/apps/mobile
           ENTRY_FILE: ${{ github.workspace }}/apps/mobile/index.js
         run: |
           set -o pipefail
