@@ -12,7 +12,7 @@
 
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
-import { finishAgentReply, startAgentReply, streamAgentReply } from './chat-providers/outbound'
+import { finishAgentReply, queueAgentReplyNotice, startAgentReply, streamAgentReply } from './chat-providers/outbound'
 import {
   agentKey,
   loadNamesForTexts,
@@ -30,10 +30,13 @@ import {
   replaceMentions,
   setAgentMuted,
   serializeMessage,
+  updateMessageInternal,
   type PostMessageResult,
 } from './conversation.service'
 import type { IRuntimeManager } from '../lib/runtime'
-import { tryAcquireSharedSlot } from '../lib/chat-limits'
+import { publishConversationEvent } from '../lib/conversation-bus'
+import { enqueueAgentReplySlot, agentReplySlotState, type AgentReplySlot, type QueuedPosition } from './agent-reply-slots'
+import { resolveAgentReplyCapacity } from './agent-reply-capacity'
 import {
   agentTurnsSinceHuman,
   chainLimitHit,
@@ -60,6 +63,12 @@ import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conv
 import { publishReplyMedia } from './agent-reply-media'
 import { resolveAgentRunModel } from './agent-run-model.service'
 import {
+  fitThreadBudget,
+  historySeedFor,
+  newSinceLastAgentReply,
+  noteCarriedContext,
+} from './chat-history-seed.service'
+import {
   DEFAULT_STALE_AFTER_MS,
   markTurnEnded,
   markTurnStarted,
@@ -69,13 +78,13 @@ import {
 const db = prisma as any
 
 export const MAX_AGENTS_PER_MESSAGE = 3
-export const MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE = envInt('SHOGO_CHANNEL_AGENT_CONCURRENCY', 6)
 /** Backoff for a runtime that is still waking. The last delay repeats until the budget is spent. */
 const DEFAULT_START_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 15_000]
 const DEFAULT_START_RETRY_BUDGET_MS = 3 * 60_000
 /** Safety cap so a zero delay cannot spin for the whole budget. */
 const MAX_START_RETRIES = 20
-const CONTEXT_MESSAGES = 20
+/** How many thread messages to scan when fitting the prompt budget. */
+const THREAD_CONTEXT_SCAN = 400
 /** Each streamed-reply update is a database write plus a broadcast; once a second reads as live. */
 const DELTA_THROTTLE_MS = 1_000
 /** A workspace file read for a reply's media; a slow runtime must not hold the reply. */
@@ -256,46 +265,49 @@ export interface InvokeArgs {
   userId: string
   prompt: string
   signal: AbortSignal
+  /** The conversation this one-message turn must carry (see chat-history-seed). */
+  historySeed?: { summary: string | null; messages: Array<{ role: 'user' | 'assistant'; text: string }> } | null
 }
 
 const running = new Map<string, AbortController>()
-const activeByWorkspace = new Map<string, number>()
-const waiters = new Map<string, Array<() => void>>()
 
-// A lease outlives the longest run so a crashed pod's slots free themselves.
-const SLOT_LEASE_MS = AGENT_REPLY_TIMEOUT_MS + 60_000
-const SLOT_POLL_MS = 1_000
+/**
+ * How long an open tool may hold a slot before the run parks. A run blocked in
+ * `wait`, `exec_wait`, `agent_result`, a subagent or a slow `exec` is not
+ * working, so it gives the slot back and the next tagged message starts.
+ */
+const PARK_AFTER_MS = Math.max(1_000, envInt('SHOGO_CHANNEL_AGENT_PARK_AFTER_MS', 30_000))
+/** No content frame (text, reasoning, a tool input/output) for this long and no open tool: parked too. */
+const STUCK_AFTER_MS = Math.max(1_000, envInt('SHOGO_CHANNEL_AGENT_STUCK_AFTER_MS', 5 * 60_000))
+/** How often a working run re-checks whether it is only waiting. */
+const SLOT_WATCH_MS = 5_000
+/** Frames the runtime sends on a timer rather than because the agent did something. */
+const TRANSIENT_FRAMES = new Set(['data-turn-seq', 'data-connectivity-wait', 'data-heartbeat'])
 
-async function acquireLocalSlot(workspaceId: string): Promise<() => void> {
-  const active = activeByWorkspace.get(workspaceId) ?? 0
-  if (active >= MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE) {
-    await new Promise<void>((resolve) => {
-      const queue = waiters.get(workspaceId) ?? []
-      queue.push(resolve)
-      waiters.set(workspaceId, queue)
-    })
-  }
-  activeByWorkspace.set(workspaceId, (activeByWorkspace.get(workspaceId) ?? 0) + 1)
-  let released = false
-  return () => {
-    if (released) return
-    released = true
-    activeByWorkspace.set(workspaceId, Math.max(0, (activeByWorkspace.get(workspaceId) ?? 1) - 1))
-    const next = waiters.get(workspaceId)?.shift()
-    if (next) next()
-  }
+/** Mark a reply as waiting for a slot, so the thread can say "Queued" after a reload. */
+async function setQueuedBlock(messageId: string): Promise<void> {
+  await updateMessageInternal(messageId, { blocks: { queued: { since: new Date().toISOString() } } })
 }
 
-/** One of the workspace's agent-reply slots, shared across pods when Redis is up. */
-async function acquireSlot(workspaceId: string, signal?: AbortSignal): Promise<() => void> {
-  for (;;) {
-    signal?.throwIfAborted()
-    const shared = await tryAcquireSharedSlot(`agent-replies:${workspaceId}`, MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE, SLOT_LEASE_MS)
-    if (shared) return shared
-    if (shared === null) return acquireLocalSlot(workspaceId)
-    await new Promise((resolve) => setTimeout(resolve, SLOT_POLL_MS + Math.random() * 250))
-  }
+/**
+ * A live status change for a reply that is not text: its place in the queue, or
+ * that it parked on a tool. `text` stays empty so the client keeps what it has.
+ */
+function publishReplyStatus(
+  conversation: { id: string; workspaceId: string },
+  messageId: string,
+  patch: { queue?: QueuedPosition | null; waiting?: { tool: string | null } | null },
+): void {
+  publishConversationEvent(conversation.workspaceId, {
+    type: 'agent.delta',
+    conversationId: conversation.id,
+    messageId,
+    text: '',
+    tool: null,
+    ...patch,
+  })
 }
+
 
 // ─── Target selection ────────────────────────────────────────────────────────
 
@@ -805,6 +817,11 @@ async function supersedePendingMoveNudges(threadRootId: string | null, agentRef:
   }).catch((err: Error) => console.warn('[ChannelAgent] superseding a pending hint failed:', err.message))
 }
 
+/** Is every automatic agent start held in this workspace? */
+function workspaceAgentsPaused(workspaceId: string): Promise<boolean> {
+  return import('./workspace-pause.service').then((module) => module.isWorkspaceAgentsPaused(workspaceId))
+}
+
 /**
  * Start this (agent, thread)'s pending wakes if nothing is running. One entry
  * point for the settle drain, the post-enqueue timer and the 15s sweep, so two
@@ -817,6 +834,12 @@ async function startDrainIfIdle(row: { conversationId: string; threadRootId: str
   draining.add(key)
   let started = false
   try {
+    // A paused workspace starts nothing; the rows stay pending for the resume.
+    const conversation = await db.conversation.findUnique({
+      where: { id: row.conversationId },
+      select: { workspaceId: true },
+    })
+    if (conversation && (await workspaceAgentsPaused(conversation.workspaceId))) return false
     if (!(await agentRunningInThread(row.conversationId, row.threadRootId, row.agentRef))) {
       started = true
       void drainWakes(row.conversationId, row.threadRootId, row.agentRef)
@@ -1073,41 +1096,69 @@ async function buildPrompt(args: {
   workspaceName: string
   chain: AgentChain
   contextMode?: string
+  /** The ChatSession this reply runs in — where the durable summary lives. */
+  chatSessionId?: string | null
 }): Promise<string> {
-  const { conversation, trigger, threadRootId, reusedSession, name, workspaceName, chain } = args
+  const { conversation, trigger, threadRootId, name, workspaceName, chain } = args
   if (args.contextMode === 'isolated') {
     return buildIsolatedPrompt({ conversation, trigger, threadRootId, name, workspaceName, chain })
   }
+  // The prompt carries only what is new since this agent's last reply (R3).
+  // Everything older is covered by `historySeed` — the durable summary plus the
+  // verbatim tail — and in a cold runtime that seed is what rebuilds the
+  // session. Sending the whole thread instead made every turn re-send the
+  // channel, and since each `ChatMessage` row *is* a full prompt, tokens grew
+  // quadratically in a long thread and the seed then restored those duplicates
+  // (SHO-137 round 3).
   let history: any[]
   if (threadRootId) {
     history = await db.conversationMessage.findMany({
       where: { conversationId: conversation.id, OR: [{ id: threadRootId }, { threadRootId }], deletedAt: null },
       orderBy: { seq: 'desc' },
-      take: CONTEXT_MESSAGES,
+      take: THREAD_CONTEXT_SCAN,
       include: TRANSCRIPT_INCLUDE,
     })
   } else {
     history = await db.conversationMessage.findMany({
       where: { conversationId: conversation.id, threadRootId: null, deletedAt: null, seq: { lte: trigger.seq } },
       orderBy: { seq: 'desc' },
-      take: reusedSession ? 6 : CONTEXT_MESSAGES,
+      take: THREAD_CONTEXT_SCAN,
       include: TRANSCRIPT_INCLUDE,
     })
   }
   history = history.reverse().filter((m) =>
     (m.text?.trim() || m.attachments?.length) && !(m.authorType === 'agent' && m.agentStatus === 'running'))
 
-  if (reusedSession) {
-    const lastAgentIdx = history.map((m) => m.authorType).lastIndexOf('agent')
-    const triggerIdx = history.findIndex((m) => m.id === trigger.id)
-    // Normally the wake is the newest thing here, so drop what the session already
-    // has. A wake queued behind a live reply can predate it (a settled reply moves
-    // to the end of the thread), and then its own tail is what it needs to see —
-    // never an empty prompt.
-    if (lastAgentIdx >= 0 && triggerIdx >= 0) {
-      history = triggerIdx > lastAgentIdx ? history.slice(lastAgentIdx + 1) : history.slice(triggerIdx)
-    }
-  }
+  // Only what is new since the last agent reply in this scope. When nothing has
+  // been answered yet (or the trigger predates that reply) the cut is the
+  // trigger itself, exactly as before SHO-137.
+  //
+  // Only when this agent already has a session for the thread: that is the case
+  // R3 optimises for (the older thread is in its context, and `historySeed`
+  // rebuilds it if the runtime lost it). On a thread this agent has no session
+  // for yet — its first turn — there is nothing to rebuild from, so cutting the
+  // discussion out of the prompt is how a shared agent asked to review a
+  // thread stopped seeing it (SHO-137 round 4).
+  if (args.reusedSession) history = newSinceLastAgentReply(history, trigger?.id ?? null)
+
+  const budgeted = fitThreadBudget(history)
+  history = budgeted.kept
+  // The durable summary is the one that ships: stored on the ChatSession, over
+  // this session's own messages, written by exactly one path (`ensureDurableSummary`).
+  const seed = args.chatSessionId
+    ? await historySeedFor(args.chatSessionId).catch((err: Error) => {
+        console.warn(`[ChannelAgent] history seed for ${args.chatSessionId} failed:`, err.message)
+        return null
+      })
+    : null
+  const summary = seed?.summary ?? null
+  // A prompt that suddenly carries less of the conversation than the last one
+  // is the failure this card exists for. Say so in the turn log — a confused
+  // reply is not a diagnosis (SHO-137).
+  noteCarriedContext(args.chatSessionId ?? null, history.length, {
+    elided: budgeted.elided,
+    summarised: !!summary,
+  })
 
   const transcript = await renderTranscript(conversation.workspaceId, history, trigger.id)
 
@@ -1117,16 +1168,21 @@ async function buildPrompt(args: {
       ? 'a direct message between teammates'
       : `the #${conversation.name ?? 'channel'} channel`
   const surface = PROVIDER_SURFACE[conversation.provider] ?? 'Shogo'
+  const channelDocContextLines = await channelDocContext(conversation)
   const lines = [
     `You are ${name}, a teammate in ${where} of the "${workspaceName}" workspace's team chat in ${surface}.`,
     threadRootId ? 'You are replying inside a thread; the thread so far is below.' : 'Recent messages are below.',
+    ...(summary
+      ? ['Older messages are condensed into a summary below; the most recent ones are verbatim after it.']
+      : []),
     'Reply to the latest message addressed to you. Write concise Markdown suitable for a chat message.',
     'Do real work with your tools when asked. The team sees only your final reply here; your full session is linked from it.',
     ...chainContext(conversation, trigger, threadRootId, chain),
     ...(history.some((m) => m.attachments?.length)
       ? ['Files attached below can be read or searched with fetch_chat_files (pass the file id); download one only when you need the raw file.']
       : []),
-    ...(await channelDocContext(conversation)),
+    ...channelDocContextLines,
+    ...(summary ? ['', '[Earlier in this conversation]', summary] : []),
     '',
     transcript,
   ]
@@ -1215,9 +1271,21 @@ export async function agentModeFor(projectId: string | null, workspaceId?: strin
 }
 
 async function invokeChat(args: InvokeArgs): Promise<Response> {
-  if (config.invoke) return config.invoke(args)
+  // Every turn this module starts carries exactly one message, so the runtime
+  // has nothing to rebuild an evicted session from. Attach the conversation
+  // the API already stores, with the durable summary for anything older than
+  // the tail (SHO-137).
+  const historySeed = args.historySeed !== undefined
+    ? args.historySeed
+    : await historySeedFor(args.sessionId, { excludeNewestUserMessage: true }).catch((err: Error) => {
+        console.warn(`[ChannelAgent] history seed for ${args.sessionId} failed:`, err.message)
+        return null
+      })
+  const call = { ...args, historySeed }
+  if (config.invoke) return config.invoke(call)
   const body = JSON.stringify({
     messages: [{ role: 'user', parts: [{ type: 'text', text: args.prompt }] }],
+    ...(historySeed ? { historySeed } : {}),
     chatSessionId: args.sessionId,
     userId: args.userId,
     agentMode: await agentModeFor(args.projectId, args.workspaceId),
@@ -1329,13 +1397,15 @@ export interface StreamSummary {
 /**
  * Read an AI SDK UI-message SSE stream, reporting text and tool progress.
  * `onActivity` fires for every frame, including the runtime's turn heartbeat,
- * so a caller can tell a turn that is still alive from one that went silent.
+ * so a caller can tell a turn that is still alive from one that went silent,
+ * and tell a *working* run (content frames) from one that is only waiting on an
+ * open tool (`kind: 'content'` with `tool` set).
  */
 export async function readAgentStream(
   response: Response,
   onProgress: (state: StreamProgress) => void,
   onPermission?: (request: ApprovalRequest) => void,
-  onActivity?: () => void,
+  onActivity?: (frame: { kind: 'content' | 'heartbeat'; tool: string | null }) => void,
 ): Promise<StreamSummary> {
   if (!response.ok) {
     const raw = await response.text().catch(() => '')
@@ -1364,8 +1434,15 @@ export async function readAgentStream(
     if (!raw || raw === '[DONE]') return
     let chunk: any
     try { chunk = JSON.parse(raw) } catch { return }
-    onActivity?.()
+    // `tool` is the tool still open (null between calls): a frame that arrives
+    // with one open is progress, but the run is waiting on it, not working.
+    // A frame that *opens* a tool already carries the wait, so report the tool
+    // it opens — otherwise a stream that goes straight to a 60 s `wait` after
+    // `tool-input-start` reports "no tool open" for that frame.
     const type = chunk?.type
+    const opens = type === 'tool-input-start' || type === 'tool-call-start'
+    const frameTool = opens ? String(chunk.toolName || chunk.name || 'a tool') : tool
+    onActivity?.({ kind: TRANSIENT_FRAMES.has(String(type)) ? 'heartbeat' : 'content', tool: frameTool })
     if (type === 'text-start') {
       segments++
       if (segments > 1 && text) text += '\n\n'
@@ -1463,9 +1540,10 @@ export async function runWorkspaceAgentPrompt(args: {
   const timeout = setTimeout(() => controller.abort(new Error('timed out')), args.timeoutMs ?? 5 * 60_000)
   ;(timeout as any).unref?.()
   const startedAt = new Date()
-  let release: (() => void) | null = null
+  let slot: AgentReplySlot | null = null
   try {
-    release = await acquireSlot(args.workspaceId, controller.signal)
+    slot = await enqueueAgentReplySlot({ workspaceId: args.workspaceId, runId: sessionId, signal: controller.signal })
+    await slot.acquired
     const response = await invokeUntilReady({
       workspaceId: args.workspaceId,
       projectId: null,
@@ -1481,7 +1559,7 @@ export async function runWorkspaceAgentPrompt(args: {
     return { text: '', failed: true, error: err?.message ?? 'The agent run failed', sessionId }
   } finally {
     clearTimeout(timeout)
-    release?.()
+    slot?.release()
   }
 }
 
@@ -1520,6 +1598,25 @@ export async function runAgentReply(args: RunAgentReplyArgs, opts: { drained?: b
   // Any wake that reaches this point carries its own instruction, so a move
   // hint still waiting out its window for this agent is now redundant.
   await supersedePendingMoveNudges(threadRootId, agentRefForTarget(target))
+  // A workspace-wide pause stops automatic starts, not people: a person's own
+  // tag still runs, and an automatic one (board hand-off, agent-to-agent tag,
+  // chain continuation) is parked as a durable wake so it replays on resume.
+  if (trigger.authorType !== 'user' && (await workspaceAgentsPaused(conversation.workspaceId))) {
+    const held = await enqueueAgentWake({
+      conversationId: conversation.id,
+      threadRootId,
+      triggerMessageId: trigger.id,
+      agentRef: agentRefForTarget(target),
+      userId,
+      chain: args.chain ?? null,
+      reason: 'paused',
+    }).catch((err: Error) => {
+      console.warn('[ChannelAgent] holding a wake for the workspace pause failed:', err.message)
+      return null
+    })
+    console.log(`[ChannelAgent] workspace paused — held ${held ?? 'no'} wake for ${conversation.id}`)
+    return null
+  }
   const key = runKey(conversation.id, threadRootId, target)
   const holder = liveRuns.get(key)
   if (holder) {
@@ -1669,8 +1766,8 @@ async function runReservedReply(
   running.set(messageId, controller)
   const capMs = config.replyTimeoutMs ?? AGENT_REPLY_TIMEOUT_MS
   const idleMs = config.idleTimeoutMs ?? AGENT_REPLY_IDLE_TIMEOUT_MS
-  const timeout = setTimeout(() => controller.abort(new ReplyTimeout('cap', capMs)), capMs)
-  ;(timeout as any).unref?.()
+  // Armed when the slot is taken, not before: queueing is not part of the run.
+  let timeout: ReturnType<typeof setTimeout> | null = null
   let idle: ReturnType<typeof setTimeout> | null = null
   const armIdle = () => {
     if (idle) clearTimeout(idle)
@@ -1695,13 +1792,80 @@ async function runReservedReply(
     void streamAgentReply(reply, latest)
   }
 
+  // ── Slot parking ──
+  // The slot means "actively working". A run that is only blocked on a tool gives
+  // it back so the next tagged message starts, then takes it again (ahead of the
+  // queue) on its next content frame. Parking never stops the run.
+  let slot: AgentReplySlot | null = null
+  let watch: ReturnType<typeof setInterval> | null = null
+  let queued = false
+  let parked = false
+  let openTool: string | null = null
+  let toolOpenedAt = 0
+  let lastContentAt = Date.now()
+  let stuckLogged = false
+
+  const clearQueuedBlock = async () => {
+    if (!queued) return
+    queued = false
+    await updateMessageInternal(messageId, { blocks: null }).catch((err: Error) => {
+      console.warn('[ChannelAgent] clearing the queued marker failed:', err.message)
+    })
+    publishReplyStatus(conversation, messageId, { queue: null })
+    // External channels go back to "Working on it…" now that the run has a slot.
+    void queueAgentReplyNotice(reply, null).catch(() => {})
+  }
+
+  const takeSlot = () => {
+    parked = false
+    publishReplyStatus(conversation, messageId, { waiting: null })
+  }
+
+  const park = (waitingOn: string | null) => {
+    if (!slot || parked) return
+    parked = true
+    slot.park()
+    publishReplyStatus(conversation, messageId, { waiting: { tool: waitingOn } })
+  }
+
+  const onFrame = (frame: { kind: 'content' | 'heartbeat'; tool: string | null }) => {
+    armIdle()
+    if (frame.kind === 'heartbeat') return
+    lastContentAt = Date.now()
+    // A tool that is still open does not keep the run "working": only its output does.
+    if (frame.tool !== openTool) {
+      openTool = frame.tool
+      toolOpenedAt = Date.now()
+    }
+    if (parked) {
+      slot?.unpark()
+      takeSlot()
+    }
+  }
+
+  const checkSlot = () => {
+    if (!slot || controller.signal.aborted) return
+    if (openTool) {
+      if (Date.now() - toolOpenedAt >= PARK_AFTER_MS) park(openTool)
+      return
+    }
+    if (parked) return
+    if (Date.now() - lastContentAt >= STUCK_AFTER_MS) {
+      if (!stuckLogged) {
+        stuckLogged = true
+        console.log(`[ChannelAgent] run ${messageId} idle ${Math.round(STUCK_AFTER_MS / 60_000)}m — slot released`)
+      }
+      park(null)
+    }
+  }
+
   const startedAt = new Date()
-  let release: (() => void) | null = null
   try {
     // Saved before the slot, so opening the session while the runtime is busy
     // or still waking already shows what was asked.
     const prompt = await buildPrompt({
       conversation, trigger, threadRootId, reusedSession: !!reused, name, workspaceName: workspace?.name ?? 'workspace', chain, contextMode,
+      chatSessionId: sessionId,
     })
     const dispatch = await channelDispatchFor({ conversation, trigger, threadRootId, name, contextMode })
     await db.chatMessage.create({
@@ -1724,7 +1888,27 @@ async function runReservedReply(
       where: { id: sessionId },
       data: { lastActiveAt: now, updatedAt: now },
     }).catch(() => {})
-    release = await acquireSlot(conversation.workspaceId, controller.signal)
+    slot = await enqueueAgentReplySlot({
+      workspaceId: conversation.workspaceId,
+      runId: messageId,
+      conversationId: conversation.id,
+      signal: controller.signal,
+    })
+    if (slot.state() === 'queued') {
+      queued = true
+      await setQueuedBlock(messageId).catch((err: Error) => {
+        console.warn('[ChannelAgent] marking the reply queued failed:', err.message)
+      })
+      // Slack/Teams say "Queued (#n)" instead of claiming the agent is working.
+      void queueAgentReplyNotice(reply, { position: slot.position() }).catch(() => {})
+    }
+    await slot.acquired
+    timeout = setTimeout(() => controller.abort(new ReplyTimeout('cap', capMs)), capMs)
+    ;(timeout as any).unref?.()
+    await clearQueuedBlock()
+    lastContentAt = Date.now()
+    watch = setInterval(checkSlot, SLOT_WATCH_MS)
+    ;(watch as any).unref?.()
     const response = await invokeUntilReady({
       workspaceId: conversation.workspaceId,
       projectId: target.projectId,
@@ -1755,7 +1939,7 @@ async function runReservedReply(
       })
         .then((cardId) => { if (cardId) approvalCards.push(cardId) })
         .catch((err) => console.error('[ChannelAgent] approval card failed:', err))
-    }, armIdle)
+    }, onFrame)
     if (idle) clearTimeout(idle)
     if (pending) {
       clearTimeout(pending)
@@ -1797,9 +1981,12 @@ async function runReservedReply(
   } finally {
     if (pending) clearTimeout(pending)
     if (idle) clearTimeout(idle)
-    clearTimeout(timeout)
+    if (timeout) clearTimeout(timeout)
+    if (watch) clearInterval(watch)
     running.delete(messageId)
-    release?.()
+    slot?.release()
+    if (queued) await clearQueuedBlock()
+    if (parked) publishReplyStatus(conversation, messageId, { waiting: null })
     // Once the run ends nothing is waiting on an approval card any more.
     if (approvalCards.length) await expirePendingApprovals(approvalCards)
     await noteRunEnded()
@@ -1938,8 +2125,6 @@ export async function respondToPermission(input: { projectId: string; requestId:
 
 export function _resetDispatcherForTests(): void {
   running.clear()
-  activeByWorkspace.clear()
-  waiters.clear()
   liveRuns.clear()
   draining.clear()
   config = {}

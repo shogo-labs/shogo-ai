@@ -35,20 +35,3 @@ export function leaveSettings(
   }
   router.replace(SETTINGS_WIDE_FALLBACK_HREF)
 }
-
-/**
- * Way out of Chat preferences (`/c/settings`).
- *
- * Only used where the app sidebar is not on screen (phones and narrow web);
- * wide web leaves through the sidebar instead. History-back is the right
- * answer when it exists — it returns to the channels panel or chat it was
- * opened from — and a cold deep link has none, so fall back to the workspace
- * rather than the account settings page's projects list.
- */
-export function leaveChatPreferences(router: SettingsBackRouter): void {
-  if (router.canGoBack()) {
-    router.back()
-    return
-  }
-  router.replace(APP_HOME_HREF)
-}

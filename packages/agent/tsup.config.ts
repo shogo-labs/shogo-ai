@@ -13,6 +13,7 @@ export default defineConfig({
     'src/tool-orchestration.ts',
     'src/loop-detector.ts',
     'src/microcompact.ts',
+    'src/turn-boundary.ts',
     'src/prefix-fingerprint.ts',
     'src/hooks/index.ts',
     'src/events/index.ts',

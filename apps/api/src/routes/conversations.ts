@@ -69,6 +69,8 @@ import { getFrontendUrl } from '../lib/cloud-urls'
 import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
 import { catchUp, registerConversationActivity } from '../services/conversation-activity'
 import { agentPostTargets, respondToPermission, stopAgentReply } from '../services/conversation-agent-dispatcher'
+import { agentReplySlotState, drainAgentReplyWaiters, slotSnapshot } from '../services/agent-reply-slots'
+import { invalidateAgentReplyCapacity, resolveAgentReplyCapacity } from '../services/agent-reply-capacity'
 import { createReplyTasks } from '../services/background-tasks.service'
 import { decideApproval, listPendingApprovals } from '../services/conversation-approvals'
 import { liveActivityApprovalAnswered } from '../services/approval-live-activity'
@@ -218,6 +220,83 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
 
   mountConversationExtras(router, { requireUser, requireWorkspace, errorResponse, readJson })
   mountHuddleRoutes(router, { requireUser, requireWorkspace, errorResponse })
+
+  /**
+   * How many agent replies may work at once, and how busy the queue is now. The
+   * banner and the Chat settings stepper read this; the same route serves
+   * desktop and cloud, so neither surface can drift.
+   */
+  router.get('/workspaces/:workspaceId/agent-capacity', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    try {
+      const [capacity, snapshot, canManage] = await Promise.all([
+        resolveAgentReplyCapacity(auth.workspaceId),
+        slotSnapshot(auth.workspaceId),
+        userCan(auth.userId, 'workspace.settings:manage', auth.workspaceId),
+      ])
+      return c.json({
+        ...capacity,
+        running: snapshot.running,
+        parked: snapshot.parked,
+        queued: snapshot.queued,
+        canManage,
+      })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * Set how many agent replies may work at once (`null` = the maximum). An admin
+   * may lower it; only local mode allows raising it past the default, and the
+   * plan is the ceiling in the cloud.
+   */
+  router.put('/workspaces/:workspaceId/agent-capacity', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    if (!(await userCan(auth.userId, 'workspace.settings:manage', auth.workspaceId))) {
+      return c.json({ error: { code: 'forbidden', message: 'Only workspace admins can change how many agents work at once' } }, 403)
+    }
+    const body = await readJson(c)
+    const raw = body.agentReplyConcurrency
+    if (!(raw === null || (typeof raw === 'number' && Number.isInteger(raw)))) {
+      return c.json({ error: { code: 'invalid', message: 'agentReplyConcurrency must be a whole number or null' } }, 400)
+    }
+    const { max, source, planId } = await resolveAgentReplyCapacity(auth.workspaceId)
+    if (raw !== null && (raw < 1 || raw > max)) {
+      const planName = planId.charAt(0).toUpperCase() + planId.slice(1)
+      return c.json({
+        error: {
+          code: 'above_max',
+          message: source === 'local'
+            ? `Choose between 1 and ${max} agents at once.`
+            : `Your ${planName} plan allows at most ${max} agents working at once. Upgrade to raise it.`,
+        },
+      }, 400)
+    }
+    try {
+      await db.workspace.update({ where: { id: auth.workspaceId }, data: { agentReplyConcurrency: raw } })
+      invalidateAgentReplyCapacity(auth.workspaceId)
+      // A raised limit should start the replies that were waiting on it, not
+      // wait for the next run to release a slot.
+      await drainAgentReplyWaiters(auth.workspaceId).catch(() => {})
+      const [capacity, snapshot] = await Promise.all([
+        resolveAgentReplyCapacity(auth.workspaceId),
+        slotSnapshot(auth.workspaceId),
+      ])
+      return c.json({
+        ...capacity,
+        configured: raw,
+        running: snapshot.running,
+        parked: snapshot.parked,
+        queued: snapshot.queued,
+        canManage: true,
+      })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
 
   // ─── Workspace-level ─────────────────────────────────────────────────────
 
@@ -1704,7 +1783,15 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
   const inThread = (threadRootId: string) => ({ OR: [{ threadRootId }, { id: threadRootId }] })
   const optionalString = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
 
-  function runView(row: any, access: Access) {
+  /**
+   * One run, as `GET running-agents`, `agent_runs_list` and the agent tools see
+   * it. `state` says whether it is working, parked on a tool, or still in line.
+   */
+  async function runView(row: any, access: Access) {
+    const queuedAt = (row.blocks as { queued?: { since?: string } } | null | undefined)?.queued?.since ?? null
+    const slot = await agentReplySlotState(row.workspaceId, row.id).catch(() => null)
+    const waiting = slot?.state === 'waiting'
+    const queued = !!queuedAt || slot?.state === 'queued'
     return {
       messageId: row.id,
       agent: row.authorAgentRef?.name ?? 'Agent',
@@ -1714,6 +1801,9 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       startedAt: row.createdAt,
       preview: String(row.text ?? '').trim().slice(-200),
       canStop: access.role !== 'viewer',
+      state: queued ? 'queued' : waiting ? 'waiting' : 'running',
+      position: queued ? slot?.position ?? null : null,
+      queuedAt: queuedAt ?? (queued ? row.createdAt : null),
     }
   }
 
@@ -1749,13 +1839,16 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     for (const row of rows) {
       if (sessionId && row.agentSessionId === sessionId) continue
       const access = await accessOrNull(row.conversationId, userId, cache)
-      if (access) runs.push(runView(row, access))
+      if (access) runs.push(await runView(row, access))
       if (runs.length >= 50) break
     }
-    return c.json({ runs })
+    // The pause is part of the answer: a wake that finds nothing to do still
+    // needs to know why nothing starts (SHO-118).
+    const { readWorkspacePause } = await import('../services/workspace-pause.service')
+    return c.json({ runs, paused: await readWorkspacePause(auth.workspaceId) })
   })
 
-  /** Stop one agent reply (`messageId`), or every agent running in a thread (`channel` + `threadRootId`). */
+  /** Stop one agent reply (`messageId`), every agent in a thread (`channel` + `threadRootId`), or every lane in the workspace (`scope: 'workspace'`,  which also pauses automatic starts until `resume: true`). */
   router.post(`${base}/running-agents/stop`, async (c) => {
     const auth = await config.authorize(c)
     if (auth instanceof Response) return auth
@@ -1767,7 +1860,48 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     const channel = optionalString(body.channel)
     const threadRootId = optionalString(body.threadRootId)
     const sessionId = optionalString(body.sessionId)
+    const scope = optionalString(body.scope)
+    const resume = body.resume === true
     const include = { conversation: { select: { name: true, kind: true } } }
+
+    if (scope === 'workspace') {
+      const { readWorkspacePause, setWorkspacePause, resumeWorkspaceAgents } = await import('../services/workspace-pause.service')
+      if (resume) {
+        await resumeWorkspaceAgents(auth.workspaceId)
+        return c.json({ paused: null, stopped: [], skipped: [], resumed: true })
+      }
+      await setWorkspacePause(auth.workspaceId, {
+        at: new Date().toISOString(),
+        by: userId,
+        ...(optionalString(body.reason) ? { reason: optionalString(body.reason)! } : {}),
+      })
+      const running = await db.conversationMessage.findMany({
+        where: { workspaceId: auth.workspaceId, authorType: 'agent', agentStatus: 'running', deletedAt: null },
+        include,
+        take: 200,
+      })
+      const stopped: Awaited<ReturnType<typeof runView>>[] = []
+      const skipped: Array<{ messageId: string; reason: 'not_running' | 'self' | 'not_visible' }> = []
+      for (const row of running) {
+        const access = await accessOrNull(row.conversationId, userId, cache)
+        if (!access) {
+          skipped.push({ messageId: row.id, reason: 'not_visible' })
+          continue
+        }
+        if (access.role === 'viewer') {
+          skipped.push({ messageId: row.id, reason: 'not_visible' })
+          continue
+        }
+        if (sessionId && row.agentSessionId === sessionId) {
+          skipped.push({ messageId: row.id, reason: 'self' })
+          continue
+        }
+        await stopAgentReply(row, userId)
+        stopped.push(await runView(row, access))
+      }
+      return c.json({ paused: await readWorkspacePause(auth.workspaceId), stopped, skipped, resumed: false })
+    }
+
     let rows: any[]
     if (messageId) {
       const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include })
@@ -1789,7 +1923,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     } else {
       return c.json({ error: { code: 'invalid_input', message: 'Pass messageId, or channel and threadRootId' } }, 400)
     }
-    const stopped: ReturnType<typeof runView>[] = []
+    const stopped: Awaited<ReturnType<typeof runView>>[] = []
     const skipped: Array<{ messageId: string; reason: 'not_running' | 'self' }> = []
     for (const row of rows) {
       if (row.agentStatus !== 'running') {
@@ -1803,7 +1937,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       const access = await accessOrNull(row.conversationId, userId, cache)
       if (!access) continue
       await stopAgentReply(row, userId)
-      stopped.push(runView(row, access))
+      stopped.push(await runView(row, access))
     }
     return c.json({ stopped, skipped })
   })

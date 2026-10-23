@@ -17,6 +17,7 @@ import { join, isAbsolute, resolve, sep } from 'path'
 import { randomBytes } from 'crypto'
 import type { SandboxConfig } from './types'
 import { trackExecProcess } from './exec-memory-guard'
+import { containChild, type Containment, type ProcessMember } from './process-tree'
 
 // ---------------------------------------------------------------------------
 // Windows shell resolution — use Git Bash when available so Unix commands
@@ -58,6 +59,149 @@ function resolveShell(): string | undefined {
 
   _resolvedShell = undefined
   return undefined
+}
+
+// ---------------------------------------------------------------------------
+// Shell capability: can this shell report a pipeline's own status?
+// ---------------------------------------------------------------------------
+// SHO-141 (#1634): `cmd | tail -25` used to report the exit code of `tail`, so
+// a failure anywhere to the left of the last `|` was invisible and the task was
+// reported as a success. `set -o pipefail` makes the shell return the leftmost
+// non-zero status instead. Not every shell has it (cmd.exe, dash, busybox ash),
+// so the capability is probed once per shell and the answer is carried all the
+// way to the agent: a command whose pipeline status is unverifiable says so
+// rather than printing a number that belongs to the last stage.
+
+/** A shell to run `command` under, and whether it can report a pipeline's status. */
+export interface ShellChoice {
+  /** Absolute path to the shell binary, or `null` for the platform default (`spawn(…, { shell: true })`). */
+  shell: string | null
+  /** The shell accepts `set -o pipefail`, so a pipeline reports its leftmost failure. */
+  pipefail: boolean
+  /** How the shell is named in a result that has to say the status is unavailable. */
+  label: string
+}
+
+export interface ShellProbeOptions {
+  platform?: NodeJS.Platform
+  /** Ordered shell paths to try. `null` means "the platform default shell". */
+  candidates?: Array<string | null>
+  /** Injectable capability probe (tests run it without the real shells). */
+  probe?: (shell: string) => boolean
+}
+
+const _pipefailCapability = new Map<string, boolean>()
+
+/** Does `shell` accept `set -o pipefail`? Cached: this spawns a process. */
+function shellHasPipefail(shell: string): boolean {
+  const cached = _pipefailCapability.get(shell)
+  if (cached !== undefined) return cached
+  let ok = false
+  try {
+    const res = spawnSync(shell, ['-c', 'set -o pipefail'], {
+      timeout: 5_000,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    })
+    ok = res.status === 0
+  } catch {
+    ok = false
+  }
+  _pipefailCapability.set(shell, ok)
+  return ok
+}
+
+function shellLabelFor(shell: string | null, platform: NodeJS.Platform): string {
+  if (!shell) return platform === 'win32' ? 'cmd.exe' : '/bin/sh'
+  const base = shell.split(/[\\/]/).pop() || shell
+  return base.toLowerCase().includes('bash') ? 'bash' : base
+}
+
+function defaultShellCandidates(platform: NodeJS.Platform): string[] {
+  if (platform === 'win32') {
+    const git = [
+      join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+      join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
+      join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe'),
+    ]
+    const fromPath = resolveShell()
+    return fromPath ? [fromPath, ...git] : git
+  }
+  // POSIX: prefer a shell that can do pipefail over /bin/sh (dash has no
+  // pipefail on Debian/Ubuntu and silently keeps the masked 0).
+  return ['/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash', '/bin/zsh', '/usr/bin/zsh', '/bin/sh']
+}
+
+/**
+ * Pick the shell for a command: the first candidate that exists and accepts
+ * `set -o pipefail`, else the platform default (which may not).
+ */
+export function chooseShell(opts: ShellProbeOptions = {}): ShellChoice {
+  const platform = opts.platform ?? process.platform
+  const probe = opts.probe ?? shellHasPipefail
+  const candidates = opts.candidates ?? defaultShellCandidates(platform)
+
+  for (const candidate of candidates) {
+    if (!candidate) break
+    if (!existsSync(candidate)) continue
+    if (probe(candidate)) {
+      return { shell: candidate, pipefail: true, label: shellLabelFor(candidate, platform) }
+    }
+  }
+
+  // No capable shell. An explicit last candidate wins as the runner; otherwise
+  // the platform default (`/bin/sh` or cmd.exe) runs it without pipefail.
+  const explicit = candidates.filter((c): c is string => !!c && existsSync(c))
+  const fallback = explicit[explicit.length - 1] ?? null
+  return {
+    shell: fallback,
+    pipefail: false,
+    label: shellLabelFor(fallback, platform),
+  }
+}
+
+let _shellChoice: ShellChoice | undefined
+
+/** The cached shell decision for this process. */
+function resolvedShellChoice(): ShellChoice {
+  if (!_shellChoice) _shellChoice = chooseShell()
+  return _shellChoice
+}
+
+/**
+ * The command to hand the shell: prefixed with `set -o pipefail;` when the
+ * shell supports it, untouched when it does not.
+ */
+export function applyPipefail(command: string, pipefail: boolean): string {
+  if (!pipefail) return command
+  // `set -o pipefail` only applies to the shell that reads it, so it has to be
+  // part of the same `-c` string as the command.
+  return `set -o pipefail; ${command}`
+}
+
+/** The `bash -c` command the sandbox container runs. bash always has pipefail. */
+export function sandboxShellCommand(command: string): string {
+  return applyPipefail(command, true)
+}
+
+/**
+ * True when `command` contains a pipeline (`|`, not `||`). Quoted spans are
+ * skipped so `echo 'a | b'` is not mistaken for one.
+ */
+export function commandHasPipeline(command: string): boolean {
+  let quote: '"' | "'" | null = null
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]
+    if (quote) {
+      if (ch === '\\' && quote === '"') { i++; continue }
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if (ch !== '|') continue
+    if (command[i + 1] === '|' || command[i - 1] === '|') { i++; continue }
+    return true
+  }
+  return false
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +569,11 @@ export interface SandboxExecOptions {
    * GitHub App installation token (`GH_TOKEN`) and bot git identity.
    */
   extraEnv?: Record<string, string>
+  /**
+   * Override the shell choice for this run (tests drive the cmd.exe /
+   * pipefail-less path with it; production uses the cached probe).
+   */
+  shell?: ShellProbeOptions
 }
 
 export interface SandboxExecResult {
@@ -631,6 +780,24 @@ class RecentOutputBuffer {
   }
 }
 
+/** What a finished shell command reports. */
+export interface ShellExitResult {
+  exitCode: number
+  stdout: string
+  stderr: string
+  killed: boolean
+  killReason?: string
+  /**
+   * False when the command was a pipeline and its shell cannot report a
+   * pipeline's status, so `exitCode` is the LAST stage's, not the command's.
+   */
+  exitCodeReliable?: boolean
+  /** Set with `exitCodeReliable: false`: the number came from the final stage. */
+  pipelineStatus?: 'last-stage'
+  /** The shell that ran it, for the "status unavailable" message. */
+  shellLabel?: string
+}
+
 export interface CommandHandle {
   /** Native pid for non-sandboxed runs, the docker CLI pid otherwise. */
   pid: number | undefined
@@ -652,9 +819,17 @@ export interface CommandHandle {
    * Resolves once the child process has exited (cleanly or killed).
    * `killReason` is set when Shogo stopped it (e.g. out of memory).
    */
-  done: Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean; killReason?: string }>
+  done: Promise<ShellExitResult>
   /** Send a termination signal. SIGTERM is graceful, SIGKILL is forceful. */
   kill: (signal?: 'SIGTERM' | 'SIGKILL') => void
+  /**
+   * Kill the whole tree, wait for it, and report what is still alive (SHO-144).
+   *
+   * `kill()` only *sends* a signal; this is the call that can say whether the
+   * job actually stopped. Absent on handles that own no OS process of their own
+   * (a restored snapshot, a remote task).
+   */
+  killTree?: (opts?: { graceMs?: number }) => Promise<{ survivors: ProcessMember[] }>
   /** True once the child has exited. */
   exited: () => boolean
   startedAt: number
@@ -682,6 +857,10 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   let child: ChildProcess
   let ownGroup = false
   let containerName: string | undefined
+  /** How the runner shell is named in a result that cannot report a status. */
+  let shellLabel = 'bash'
+  /** The runner applies `set -o pipefail`, so a pipeline reports its own status. */
+  let pipefailApplied = true
 
   if (useSandbox) {
     const config = { ...defaultSandboxConfig(), ...opts.sandboxConfig }
@@ -712,20 +891,20 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
       `DATABASE_URL=${projectScopedDatabaseUrl(opts.workspaceDir, workspaceEnv.DATABASE_URL, '/workspace')}`,
     )
     appendDockerEnv(dockerArgs, opts.extraEnv)
-    dockerArgs.push(config.image, 'bash', '-c', opts.command)
+    dockerArgs.push(config.image, 'bash', '-c', sandboxShellCommand(opts.command))
 
     child = spawn('docker', dockerArgs, {
       env: stripRuntimeVars(getSanitizedEnv()),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
   } else {
-    const shell = resolveShell()
+    const choice = opts.shell ? chooseShell(opts.shell) : resolvedShellChoice()
     const env = buildExecEnv(opts.workspaceDir, { extraEnv: opts.extraEnv })
-    const finalCommand = rewriteBunxOnWindows(opts.command)
+    const finalCommand = applyPipefail(rewriteBunxOnWindows(opts.command), choice.pipefail)
 
     ownGroup = process.platform !== 'win32'
-    if (shell) {
-      child = spawn(shell, ['-c', finalCommand], {
+    if (choice.shell) {
+      child = spawn(choice.shell, ['-c', finalCommand], {
         cwd: opts.workspaceDir,
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -740,7 +919,15 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
         detached: ownGroup,
       })
     }
+    shellLabel = choice.label
+    pipefailApplied = choice.pipefail
   }
+
+  // Containment (SHO-144): whatever this tree starts has to be killable and,
+  // just as important, verifiable. Docker keeps its own container teardown.
+  const containment: Containment | null = !useSandbox && child.pid
+    ? containChild(child, { label: 'exec', workspaceDir: opts.workspaceDir })
+    : null
 
   let killed = false
   let killReason: string | undefined
@@ -790,16 +977,32 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
 
   function sendKill(signal: 'SIGTERM' | 'SIGKILL'): void {
     killed = true
-    // Windows has no process groups and TerminateProcess stops only the shell,
-    // leaving what it launched running. Walk the tree while the shell is alive.
-    if (!useSandbox && !ownGroup && process.platform === 'win32' && child.pid && !exited) {
+    // The contained tree is the authority on how to reach every process in it:
+    // a process group on POSIX, a job object plus `taskkill /T` on Windows.
+    // A forceful kill starts the verified sweep here and does not wait for it;
+    // callers that must know the outcome use `killTree()` (SHO-144).
+    if (containment) {
+      // Windows has no SIGTERM: `child.kill` is a TerminateProcess on the shell
+      // and nothing else, so even the graceful step has to go through the tree
+      // (`taskkill /T` while the parent chain is intact, then the job object).
+      if (signal === 'SIGKILL' || process.platform === 'win32') {
+        void containment.killTree({ graceMs: signal === 'SIGKILL' ? 0 : 2_000 })
+        // POSIX only: the sweep signals the group, so a leader whose group
+        // snapshot comes back empty would otherwise never see this signal.
+        // On Windows the direct kill has to wait until after `taskkill /T` has
+        // walked the parent chain, which `killTree` does itself.
+        if (process.platform !== 'win32') {
+          try { child.kill(signal) } catch { /* already gone */ }
+        }
+        return
+      }
       try {
-        spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
-          stdio: 'ignore',
-          windowsHide: true,
-          timeout: 10_000,
-        })
-      } catch { /* fall through to child.kill */ }
+        if (ownGroup && child.pid) process.kill(-child.pid, signal)
+        else child.kill(signal)
+      } catch {
+        try { child.kill(signal) } catch { /* already gone */ }
+      }
+      return
     }
     try {
       // The shell's children (`bun run dev` → `bun server.ts`) share its
@@ -833,19 +1036,24 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     ;(escalate as any)?.unref?.()
   }
 
-  const done = new Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean; killReason?: string }>((resolve) => {
+  const done = new Promise<ShellExitResult>((resolve) => {
     child.on('exit', (code, signal) => {
       exited = true
       untrack()
+      containment?.dispose()
       const exitCode = typeof code === 'number'
         ? code
         : (signal ? 128 + (signalNumber(signal) ?? 0) : 1)
+      // A pipeline run by a shell without pipefail reports its LAST stage, not
+      // the command: the number must never be presented as the command's.
+      const pipelineMasked = !!opts.command && commandHasPipeline(opts.command) && !pipefailApplied
       resolve({
         exitCode,
         stdout: stdoutBuf.toString(),
         stderr: stderrBuf.toString(),
         killed,
         ...(killReason ? { killReason } : {}),
+        ...(pipelineMasked ? { exitCodeReliable: false, pipelineStatus: 'last-stage' as const, shellLabel } : {}),
       })
     })
   })
@@ -865,6 +1073,9 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
         sendKill('SIGKILL')
       }
     },
+    ...(containment
+      ? { killTree: (opts?: { graceMs?: number }) => containment.killTree(opts ?? {}) }
+      : {}),
     exited: () => exited,
     startedAt,
     onData: (listener) => {

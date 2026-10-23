@@ -125,7 +125,7 @@ export function ActiveDevicesPanel({
               key={chip.key}
               onPress={() => setFilter(chip.key)}
               accessibilityRole="button"
-              accessibilityState={{ selected }}
+              aria-selected={selected}
               className={cn(
                 'rounded-full border px-3 py-1.5',
                 selected ? 'border-primary bg-primary/10' : 'border-border bg-card',
@@ -147,7 +147,7 @@ export function ActiveDevicesPanel({
       <Pressable
         onPress={() => setShowDormant((value) => !value)}
         accessibilityRole="switch"
-        accessibilityState={{ checked: showDormant }}
+        aria-checked={showDormant}
         testID="active-devices-toggle"
       >
         <Text className="text-xs font-medium text-primary">

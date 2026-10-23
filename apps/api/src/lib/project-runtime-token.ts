@@ -4,10 +4,16 @@
  * Resolve the `x-runtime-token` the API must present when calling a
  * *project's* runtime.
  *
- * Every project is served by a project-anchored merged-root workspace runtime.
- * Its `RUNTIME_AUTH_SECRET` is therefore always the workspace token
+ * Every project is served by a project-anchored merged-root workspace runtime,
+ * so the credential this hop uses is the workspace token
  * `wrt_v1_<workspaceId>_…` (`deriveWorkspaceRuntimeToken`), regardless of
  * whether the runtime is hosted locally, on metal, or in Kubernetes.
+ *
+ * The pod holds that token too — as `WORKSPACE_RUNTIME_AUTH_SECRET`, injected
+ * by `build-project-env.ts` — so the runtime's byte-compare fast path matches
+ * and the call never needs the API round-trip. `RUNTIME_AUTH_SECRET` stays the
+ * *project* token because it is also the pod's outbound credential to the API,
+ * where a workspace token is only accepted on the Git LFS routes (SHO-125).
  */
 
 import { deriveRuntimeToken } from './runtime-token'

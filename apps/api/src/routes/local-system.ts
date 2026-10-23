@@ -73,6 +73,38 @@ export function localSystemRoutes(): Hono {
   const router = new Hono()
   const localDb = prisma as any
 
+  /**
+   * POST /local/system/restart-runtime
+   *
+   * Stop every host runtime this API supervises, so the next request
+   * cold-starts one. This is the deterministic "the runtime went away under a
+   * running background task" that `e2e/local/chat-task-interrupted-restart`
+   * needs (SHO-141): killing the child by hand races the supervisor, and a page
+   * reload re-attaches to the still-warm runtime.
+   *
+   * Desktop/local only, and refused unless `SHOGO_E2E_BOOTSTRAP_SECRET` is set
+   * and the header matches it — the same secret the `/api/internal/e2e` backdoors
+   * use, which no normal run sets.
+   */
+  router.post('/local/system/restart-runtime', async (c) => {
+    const expected = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+    if (!expected || c.req.header('x-e2e-bootstrap-secret') !== expected) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    try {
+      const { getRuntimeManager } = await import('../lib/runtime')
+      const manager: any = getRuntimeManager()
+      const stopped: string[] =
+        typeof manager?.getActiveProjects === 'function' ? manager.getActiveProjects() : []
+      await manager.stopAll()
+      console.info('[local-system] restarted host runtimes', JSON.stringify({ stopped }))
+      return c.json({ ok: true, stopped })
+    } catch (err: any) {
+      console.error('[local-system] restart-runtime failed', err)
+      return c.json({ ok: false, error: 'restart_failed', message: err?.message ?? err }, 500)
+    }
+  })
+
   router.post('/local/auto-sign-in', async (c) => {
     try {
       const user = await prisma.user.findFirst()

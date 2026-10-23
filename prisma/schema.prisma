@@ -204,6 +204,10 @@ model Workspace {
   chatMode          String?
   // External chat provider for "external" / "bridged": "slack" | "teams" | "google_chat".
   chatProvider      String?
+  // How many agent replies may be *working at once* in this workspace, or null
+  // for the maximum the plan (or local mode) allows. An admin can lower it; the
+  // plan value is the ceiling in the cloud (see `agent-reply-capacity.ts`).
+  agentReplyConcurrency Int?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -1625,6 +1629,11 @@ model UsageEvent {
   @@index([projectId])
   @@index([memberId])
   @@index([createdAt])
+  // The Analytics reads are always "one workspace (or project) over a date
+  // window". Without the combination Postgres bitmap-ANDs the two single-column
+  // indexes and then disk-sorts the whole workspace (SHO-140).
+  @@index([workspaceId, createdAt])
+  @@index([projectId, createdAt])
   @@map("usage_events")
 }
 
@@ -1784,6 +1793,16 @@ model ChatSession {
   cachedMessageCount    Int         @default(0)
   contextUsageTokens    Int         @default(0)
   contextWindowTokens   Int         @default(0)
+  // Durable summary of this chat's conversation up to
+  // `contextSummaryThroughCount` messages, written when a turn's transcript
+  // no longer fits its budget. It lives here — not in the runtime's
+  // `sessions.db` — so it outlives an evicted session, a pod restart and a
+  // machine that went to sleep: a prompt built after any of those still opens
+  // with what the conversation was about instead of a one-line wake note
+  // (SHO-137). Stable bytes until it is regenerated, so the prompt prefix
+  // stays cacheable.
+  contextSummary                  String? @db.Text
+  contextSummaryThroughCount      Int     @default(0)
   isPrimary             Boolean     @default(false)
   isPinned              Boolean     @default(false)
   isArchived            Boolean     @default(false)
@@ -2988,6 +3007,11 @@ model AppInstall {
 /// (`lib/device-platform.ts`) so legacy platform spellings stay collapsed.
 model DeviceVersionEvent {
   id          String   @id @default(cuid())
+  /// Region that wrote the row (`REGION_ID`, or `local` in single-region and
+  /// desktop mode). NULL means the row predates region tagging; the app never
+  /// writes NULL. Part of the unique key so two regions cannot conflict on one
+  /// (device, version) — see the 2026-10-22 replication incident (SHO-142).
+  region      String?
   deviceId    String
   /// macos | windows | linux | unknown
   os          String   @default("unknown")
@@ -3000,7 +3024,7 @@ model DeviceVersionEvent {
   firstSeenAt DateTime @default(now())
   lastSeenAt  DateTime
 
-  @@unique([deviceId, version])
+  @@unique([region, deviceId, version])
   @@index([lastSeenAt])
   @@index([version])
   @@map("device_version_events")

@@ -239,3 +239,64 @@ describe('inbox scoping', () => {
     })
   })
 })
+
+describe('media presign through the relay', () => {
+  const presign = (body: Record<string, unknown>) =>
+    plan({ method: 'POST', path: '/media/presign', body })
+
+  test('the mint is forwarded with only the fields Zernio reads', () => {
+    expect(
+      presign({ filename: 'reel.mp4', contentType: 'video/mp4', size: 1024, workspaceId: 'ws_victim' }),
+    ).toEqual({
+      kind: 'forward',
+      path: '/media/presign',
+      query: {},
+      body: { filename: 'reel.mp4', contentType: 'video/mp4', size: 1024 },
+    })
+  })
+
+  test('it needs no profile — an upload slot is scoped to the account', () => {
+    // The same plan with no profile resolved still goes through; every other
+    // media call would be waiting on one.
+    expect(
+      planRelayRequest({
+        method: 'POST',
+        path: '/media/presign',
+        query: {},
+        body: { filename: 'a.jpg', contentType: 'image/jpeg' },
+        workspaceId,
+        externalId,
+        profile: null,
+      }),
+    ).toMatchObject({ kind: 'forward', path: '/media/presign' })
+  })
+
+  test('a generic content type is refused before the provider sees it', () => {
+    expect(presign({ filename: 'a.bin', contentType: 'application/octet-stream' })).toMatchObject({
+      kind: 'deny',
+      status: 400,
+      code: 'invalid_content_type',
+    })
+    expect(presign({ filename: 'a.bin' })).toMatchObject({ kind: 'deny', status: 400 })
+  })
+
+  test('only the mint is relayed — the PUT goes straight to storage', () => {
+    for (const method of ['GET', 'PUT', 'DELETE'] as const) {
+      expect(plan({ method, path: '/media/presign', body: {} })).toMatchObject({
+        kind: 'deny',
+        status: 405,
+      })
+    }
+    expect(plan({ method: 'POST', path: '/media', body: {} })).toMatchObject({ kind: 'deny' })
+    expect(plan({ method: 'POST', path: '/media/presign/extra', body: {} })).toMatchObject({
+      kind: 'deny',
+    })
+  })
+
+  test('an empty string content type is not a media type either', () => {
+    expect(presign({ filename: 'a.jpg', contentType: '   ' })).toMatchObject({
+      kind: 'deny',
+      code: 'invalid_content_type',
+    })
+  })
+})

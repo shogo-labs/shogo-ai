@@ -59,4 +59,31 @@ describe("settings tabs", () => {
     expect(webCloud.map((tab) => tab.id)).not.toContain("updates")
     expect(webLocalNonDesktop.map((tab) => tab.id)).not.toContain("updates")
   })
+
+  test("chat preferences only exist in a team workspace", () => {
+    const has = (opts: Parameters<typeof visibleSettingsTabs>[0]) =>
+      visibleSettingsTabs(opts).some((tab) => tab.id === "chat")
+
+    expect(has({ teamChat: true })).toBe(true)
+    expect(has({ teamChat: true, localMode: true })).toBe(true)
+    expect(has({ teamChat: true, isDesktop: true, localMode: false })).toBe(true)
+    // Every caller that has not opted in keeps the old tab list.
+    expect(has({})).toBe(false)
+    expect(has({ localMode: false, showBilling: true, platform: "web" })).toBe(false)
+    expect(has({ teamChat: false })).toBe(false)
+  })
+
+  test("chat sits between People and Models in both nav lists", () => {
+    const ids = (names: Parameters<typeof settingsNavItems>[0]) =>
+      settingsNavItems(names).map((item) => item.id)
+
+    // Mirrors MOBILE_NAV_ITEMS / LOCAL_NAV_ITEMS in (app)/settings.tsx, where
+    // People only exists in cloud mode.
+    const mobile = ids(["workspace", "people", "chat", "models", "integrations"])
+    const local = ids(["workspace", "chat", "models", "integrations"])
+    expect(mobile.indexOf("chat")).toBe(mobile.indexOf("people") + 1)
+    expect(mobile.indexOf("models")).toBe(mobile.indexOf("chat") + 1)
+    expect(local.indexOf("chat")).toBe(local.indexOf("workspace") + 1)
+    expect(settingsNavItems(["chat"])[0]?.label).toBe("Chat")
+  })
 })

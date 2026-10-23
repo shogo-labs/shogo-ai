@@ -160,14 +160,50 @@ export async function syncAccounts(workspaceId: string, workspaceName: string): 
 }
 
 /**
+ * A handle a caller wants the connect to land on, normalised: Zernio compares it
+ * case-insensitively and ignores a leading `@`.
+ */
+function expectedHandle(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  const handle = raw.trim().replace(/^@+/, '')
+  return /^[A-Za-z0-9._-]{1,64}$/.test(handle) ? handle : ''
+}
+
+/**
+ * The account a reconnect is meant to refresh. Zernio wants its own account id,
+ * so a caller may pass either that or one of our row ids and this resolves it —
+ * an id we cannot find in this workspace is refused rather than forwarded.
+ */
+async function reconnectTarget(workspaceId: string, raw: unknown): Promise<string | undefined> {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined
+  const value = raw.trim()
+  const row = await db.socialAccount.findFirst({
+    where: { workspaceId, OR: [{ id: value }, { zernioAccountId: value }] },
+    select: { zernioAccountId: true },
+  })
+  if (!row) {
+    throw new SocialError(400, 'unknown_account', 'That account does not belong to this workspace.')
+  }
+  return row.zernioAccountId as string
+}
+
+/**
  * The URL to send the user to so Zernio can run the platform's OAuth and land
  * back on `redirectUrl` with `accountId` + `username`.
+ *
+ * `forceReauth` (Instagram only) makes Instagram show its own login page instead
+ * of reusing whichever account is already signed in on the device, and
+ * `expectedHandle` refuses a login that lands on a different account — together
+ * they are what makes "connect *this* Instagram account" mean something.
  */
 export async function connectUrl(args: {
   workspaceId: string
   workspaceName: string
   platform: unknown
   redirectUrl: string
+  forceReauth?: unknown
+  expectedUsername?: unknown
+  reconnectAccountId?: unknown
 }): Promise<{ url: string; platform: string; profileId: string }> {
   const platform = parsePlatform(args.platform)
   const profile = await ensureProfile(args.workspaceId, args.workspaceName)
@@ -181,16 +217,33 @@ export async function connectUrl(args: {
   })
   await assertSocialBudget(args.workspaceId, projectedConnectRawUsd(activeAccounts))
 
+  const query: Record<string, string> = {
+    profileId: profile.zernioProfileId,
+    redirect_url: args.redirectUrl,
+  }
+  // Instagram Login only; Zernio ignores it elsewhere, and sending it to a
+  // platform that does not understand it is a param its OAuth state would carry
+  // for nothing (X caps that state at 500 characters).
+  if (platform === 'instagram' && args.forceReauth === true) query.forceReauth = 'true'
+  const handle = expectedHandle(args.expectedUsername)
+  if (handle) query.expectedUsername = handle
+  const reconnect = await reconnectTarget(args.workspaceId, args.reconnectAccountId)
+  if (reconnect) query.reconnectAccountId = reconnect
+
   const payload = await getSocialClient().request<any>({
     workspaceId: args.workspaceId,
     method: 'GET',
     path: `/connect/${platform}`,
-    query: { profileId: profile.zernioProfileId, redirect_url: args.redirectUrl },
+    query,
   })
 
+  // Zernio answers `{ authUrl }`. The other spellings are kept because the
+  // relay and older mocks in this repo answer with them.
   const url =
+    (typeof payload?.authUrl === 'string' && payload.authUrl) ||
     (typeof payload?.url === 'string' && payload.url) ||
     (typeof payload?.connectUrl === 'string' && payload.connectUrl) ||
+    (typeof payload?.data?.authUrl === 'string' && payload.data.authUrl) ||
     (typeof payload?.data?.url === 'string' && payload.data.url) ||
     (typeof payload === 'string' ? payload : '')
 

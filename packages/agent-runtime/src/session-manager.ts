@@ -15,6 +15,15 @@
  */
 
 import type { Message, UserMessage, AssistantMessage, ToolResultMessage, TextContent } from '@mariozechner/pi-ai'
+import {
+  assistantWindowStart,
+  foldTurnMiddle,
+  lastTurnStart,
+  protectedStart as protectedStartOf,
+  summariseTurn,
+  turnAwareCompactionEnabled,
+} from './turn-boundary'
+import { collectCompactionFacts, renderCompactionFacts } from './compaction-facts'
 
 /** Rough per-image token cost (a ~1MP image on Anthropic is ~1,600 tokens). */
 const IMAGE_TOKEN_ESTIMATE = 1_600
@@ -152,6 +161,14 @@ export interface SessionPersistence {
   load(id: string): Promise<SerializedSession | null>
   delete(id: string): Promise<void>
   loadAll(): Promise<SerializedSession[]>
+  /**
+   * Optional cheap scan for reclamation: ids of stored sessions untouched
+   * since `cutoffMs` whose copy holds no messages. Implementations should avoid
+   * parsing the whole store — the sweep runs every few minutes.
+   */
+  listMessageLessIds?(cutoffMs: number): Promise<string[]>
+  /** Optional size of the store in bytes, for a growth warning. */
+  sizeBytes?(): number
 }
 
 export interface SerializedSession {
@@ -167,6 +184,11 @@ export interface SerializedSession {
    *  Persisted so a reloaded session keeps native routing; older sessions
    *  simply lack it and fall back to id-based inference. */
   modelProvider?: string
+  /** The product name of the model `modelOverride` names (e.g. "Hoshi 2.0").
+   *  Stamped by the same request that set the override, so the Account prompt
+   *  line can name the model this session actually sends instead of whatever
+   *  request landed last (SHO-145). */
+  modelDisplayName?: string
   /** Maximum Auto tier permitted after a plan/entitlement rejection. */
   autoTierCeiling?: 'economy' | 'standard' | 'premium'
   /** Timestamp of the last Auto entitlement downgrade. */
@@ -210,6 +232,13 @@ export interface SessionManagerConfig {
   keepRecentMessages: number
   /** Interval in seconds between pruning sweeps (default: 300 = 5 min) */
   pruneIntervalSeconds: number
+  /**
+   * Days a *message-less* session may sit before its persisted copy is
+   * reclaimed (default: 30). A session that holds messages is never
+   * reclaimed by age — a conversation never loses its history because it
+   * went quiet (SHO-137). 0 disables reclamation.
+   */
+  emptySessionRetentionDays?: number
   /** Tool result pruning config (false to disable) */
   pruning?: Partial<PruningConfig> | false
   /**
@@ -250,6 +279,8 @@ export interface ManagedSession {
   modelOverride?: string
   /** Native provider hint paired with `modelOverride` (see SerializedSession). */
   modelProvider?: string
+  /** Product name of the model `modelOverride` names (see SerializedSession). */
+  modelDisplayName?: string
   /** Maximum Auto tier permitted after a plan/entitlement rejection. */
   autoTierCeiling?: 'economy' | 'standard' | 'premium'
   /** Timestamp of the last Auto entitlement downgrade. */
@@ -418,7 +449,22 @@ export interface CompactionResult {
   messagesAfter: number
   compactedCount: number
   summary: string
+  /** Deterministic files/tools/state block appended to the summary. */
+  facts?: string
+  /** Files the facts block recorded (for telemetry). */
+  filesTouched?: string[]
+  /** Tool names the facts block recorded (for telemetry). */
+  toolsUsed?: string[]
+  /** Rounds folded by the oversized-turn valve (0 when it did not fire). */
+  foldedRounds?: number
 }
+
+/**
+ * A single turn is folded in the middle once it exceeds this share of the
+ * context budget. Keeping it verbatim is impossible; summarizing it away is
+ * the bug this file exists to fix, so the middle rounds become one line each.
+ */
+export const TURN_KEEP_MAX_RATIO = 0.4
 
 /**
  * Function signature for the summarization backend.
@@ -432,6 +478,12 @@ export type SummarizeFn = (messages: Message[], previousSummary?: string) => Pro
 /** Max tokens of message text handed to the summarizer in one call. */
 export const DEFAULT_SUMMARIZE_CHUNK_TOKENS = 24_000
 
+/** Days a message-less persisted session is kept before reclamation. */
+export const DEFAULT_EMPTY_SESSION_RETENTION_DAYS = 30
+
+/** Log a growth warning once the session store passes this size. */
+export const SESSION_STORE_WARN_BYTES = 512 * 1024 * 1024
+
 const DEFAULT_CONFIG: SessionManagerConfig = {
   sessionTtlSeconds: 3600,
   maxMessages: 30,
@@ -439,6 +491,7 @@ const DEFAULT_CONFIG: SessionManagerConfig = {
   maxEstimatedTokens: 100_000,
   keepRecentMessages: 10,
   pruneIntervalSeconds: 300,
+  emptySessionRetentionDays: DEFAULT_EMPTY_SESSION_RETENTION_DAYS,
 }
 
 export class SessionManager {
@@ -528,7 +581,12 @@ export class SessionManager {
   startPruning(): void {
     if (this.pruneTimer) return
     this.pruneTimer = setInterval(
-      () => this.pruneExpired(),
+      () => {
+        this.pruneExpired()
+        // Bounded growth without touching a conversation: only rows that never
+        // held a message are reclaimed (SHO-137).
+        void this.reclaimEmptySessions().catch(() => {})
+      },
       this.config.pruneIntervalSeconds * 1000
     )
   }
@@ -561,20 +619,27 @@ export class SessionManager {
     return session
   }
 
+  /**
+   * Load a persisted session into memory *without* creating one when nothing
+   * is stored. The difference matters: `getOrCreate` on a cold pod fabricates
+   * an empty session that the next `persistSession` writes over the good copy
+   * (SHO-137). Callers that want "whatever is on disk, or nothing" use this.
+   */
+  async loadSession(id: string): Promise<ManagedSession | null> {
+    const loaded = this.sessions.get(id)
+    if (loaded) return loaded
+    if (!this.persistence) return null
+    const data = await this.persistence.load(id)
+    if (!data) return null
+    const session: ManagedSession = { ...data, stopRequested: false, metadata: data.metadata || {} }
+    this.sessions.set(id, session)
+    return session
+  }
+
   /** Async version that checks disk persistence before creating a new session */
   async getOrCreateAsync(id: string): Promise<ManagedSession> {
-    let session = this.sessions.get(id)
-    if (session) return session
-
-    if (this.persistence) {
-      const data = await this.persistence.load(id)
-      if (data) {
-        session = { ...data, stopRequested: false, metadata: data.metadata || {} }
-        this.sessions.set(id, session)
-        return session
-      }
-    }
-
+    const loaded = await this.loadSession(id)
+    if (loaded) return loaded
     return this.getOrCreate(id)
   }
 
@@ -681,6 +746,37 @@ export class SessionManager {
   /** Delete a session entirely */
   delete(id: string): boolean {
     return this.sessions.delete(id)
+  }
+
+  /**
+   * Wipe a session for real — memory *and* the persisted copy. Only for a
+   * deliberate delete (the user removed the chat, or history was cleared), so
+   * `pruneExpired()` must never call it: idle time does not destroy history.
+   */
+  async deleteSession(id: string): Promise<boolean> {
+    const known = this.sessions.delete(id)
+    if (this.persistence) {
+      try {
+        await this.persistence.delete(id)
+      } catch (err: any) {
+        console.error(`[SessionManager] Failed to delete persisted session ${id}:`, err?.message ?? err)
+      }
+    }
+    return known
+  }
+
+  /**
+   * Install a durable summary for a session, e.g. the API's copy of what an
+   * evicted conversation was about. Never replaces a longer existing summary
+   * (a compaction already folded this turn's history into it).
+   */
+  setCompactedSummary(id: string, summary: string | null, opts: { replace?: boolean } = {}): void {
+    const session = this.getOrCreate(id)
+    const next = summary?.trim() ? summary.trim() : null
+    if (!next) return
+    if (session.compactedSummary && !opts.replace) return
+    session.compactedSummary = next
+    this.persistSession(session)
   }
 
   /** Check if a session needs compaction (purely token-based, no message count limit) */
@@ -795,6 +891,11 @@ export class SessionManager {
    * Includes a circuit breaker: after maxSummarizeFailures consecutive failures
    * the summarizer is bypassed and fallback is used until resetCircuitBreaker().
    *
+   * The split lands on a **turn start** (`lastTurnStart`), so the previous turn
+   * is never cut in half — that cut was the 516 → 12 collapse: the head ended
+   * mid-turn, leaving a `toolResult` whose `toolCall` had been summarized away
+   * (SHO-122). A turn too large to keep is folded, never summarized away.
+   *
    * @param extraContext Optional extra context (e.g. file state summary) appended to the compacted summary.
    * @param aggressiveKeep Override keepRecentMessages (for reactive compaction after errors).
    */
@@ -803,20 +904,107 @@ export class SessionManager {
     if (!session) return null
 
     const keepRecentMessages = aggressiveKeep ?? this.config.keepRecentMessages
-    const splitIndex = this.splitIndexForCompactionTokens(session.messages, keepRecentMessages)
-    if (splitIndex === null) return null
+    const splitIndex = turnAwareCompactionEnabled()
+      ? this.turnBoundarySplit(session.messages, keepRecentMessages)
+      : this.splitIndexForCompactionTokens(session.messages, keepRecentMessages)
+
+    if (splitIndex === null) {
+      // Nothing older than the current turn to summarize. If that one turn is
+      // over the budget it is still folded in the middle — the request has to
+      // fit, and cutting the turn is what this card exists to stop.
+      const folded = this.foldOversizedTurn(id)
+      if (folded.foldedRounds === 0) return null
+      return {
+        sessionId: id,
+        messagesBefore: folded.messagesBefore,
+        messagesAfter: folded.messagesAfter,
+        compactedCount: folded.messagesBefore - folded.messagesAfter,
+        summary: '',
+        foldedRounds: folded.foldedRounds,
+      }
+    }
 
     const toCompact = session.messages.slice(0, splitIndex)
     if (toCompact.length === 0) return null
 
     const summary = await this.summarizeHead(toCompact)
-    return this.applyCompaction(id, { summary, splitIndex, extraContext })
+    const result = this.applyCompaction(id, { summary, splitIndex, extraContext })
+    if (!result) return null
+
+    // Budget safety valve: the kept turn alone may still exceed its share of
+    // the budget. Fold its middle rounds rather than summarizing it away.
+    const folded = this.foldOversizedTurn(id)
+    if (folded.foldedRounds > 0) {
+      const after = this.sessions.get(id)
+      const messagesAfter = after?.messages.length ?? result.messagesAfter
+      result.messagesAfter = messagesAfter
+      result.compactedCount = result.messagesBefore - messagesAfter
+      result.foldedRounds = folded.foldedRounds
+    }
+    return result
+  }
+
+  /**
+   * Split index at the start of the most recent turn, with
+   * `minKeepMessages` as a floor: whole turns are kept until at least that
+   * many messages survive. Never returns a mid-turn index.
+   */
+  turnBoundarySplit(messages: Message[], minKeepMessages: number): number | null {
+    if (messages.length < 2) return null
+    let split = lastTurnStart(messages)
+    const floor = Math.min(Math.max(1, minKeepMessages), messages.length - 1)
+    while (split > 0 && messages.length - split < floor) {
+      const previous = lastTurnStart(messages.slice(0, split))
+      if (previous === 0 || previous === split) break
+      split = previous
+    }
+    return split > 0 && split < messages.length ? split : null
+  }
+
+  /** Char budget the layers measure against (40% of it is a turn's share). */
+  get contextBudgetChars(): number {
+    return this.autocompactThreshold * 4
+  }
+
+  /**
+   * Fold the middle rounds of an oversized turn in place.
+   *
+   * Runs against the session's current turn (the last turn start). A turn
+   * larger than `TURN_KEEP_MAX_RATIO` of the context budget cannot be kept
+   * verbatim and cannot be summarized away without losing the work, so the
+   * rounds between its first and last are replaced by one line each that keeps
+   * the tool name and arguments and drops only the output.
+   */
+  foldOversizedTurn(id: string, from?: number): {
+    foldedRounds: number
+    messagesBefore: number
+    messagesAfter: number
+  } {
+    const session = this.sessions.get(id)
+    if (!session) return { foldedRounds: 0, messagesBefore: 0, messagesAfter: 0 }
+    const start = from ?? lastTurnStart(session.messages)
+    const messagesBefore = session.messages.length
+    const maxChars = Math.floor(this.contextBudgetChars * TURN_KEEP_MAX_RATIO)
+    const summary = summariseTurn(session.messages, start)
+    if (summary.chars <= maxChars) return { foldedRounds: 0, messagesBefore, messagesAfter: messagesBefore }
+
+    const folded = foldTurnMiddle(session.messages, start, { maxChars })
+    if (folded.foldedRounds === 0) return { foldedRounds: 0, messagesBefore, messagesAfter: messagesBefore }
+
+    session.messages = folded.messages
+    session.lastActivityAt = Date.now()
+    this.persistSession(session)
+    return { foldedRounds: folded.foldedRounds, messagesBefore, messagesAfter: session.messages.length }
   }
 
   /**
    * Apply an already-computed summary: drop `splitIndex` messages of head,
    * prepend the summary, persist. Shared by turn-boundary compaction and the
    * mid-turn compactor so both produce the same session shape.
+   *
+   * The deterministic facts block (`compaction-facts.ts`) is appended here, not
+   * requested from the model, so the files and tool names survive a lazy or
+   * wrong summary.
    */
   applyCompaction(
     id: string,
@@ -835,8 +1023,10 @@ export class SessionManager {
       ? `${session.compactedSummary}\n\n`
       : ''
 
+    const factData = collectCompactionFacts(toCompact)
+    const facts = renderCompactionFacts(factData)
     const extraSuffix = extraContext ? `\n\n${extraContext}` : ''
-    session.compactedSummary = `${existingSummary}${summary}${extraSuffix}`
+    session.compactedSummary = `${existingSummary}${summary}\n\n${facts}${extraSuffix}`
     session.messages = toKeep
     session.compactionCount++
     session.lastActivityAt = Date.now()
@@ -848,6 +1038,9 @@ export class SessionManager {
       messagesAfter: toKeep.length,
       compactedCount: toCompact.length,
       summary,
+      facts,
+      filesTouched: factData.files.map((f) => f.path),
+      toolsUsed: factData.tools.map((t) => t.name),
     }
   }
 
@@ -875,7 +1068,20 @@ export class SessionManager {
     return msgs
   }
 
-  /** Prune all sessions that have exceeded their TTL */
+  /**
+   * Evict idle sessions from *memory*.
+   *
+   * This is a memory bound, never a data bound: the persisted copy is left
+   * alone, so a conversation that goes quiet overnight is still there when a
+   * background task or a person wakes it (SHO-137). Deleting the row here used
+   * to wipe the only durable copy — `.shogo/sessions.db` is S3-synced, so every
+   * replica went with it, and the next wake turn started from nothing.
+   *
+   * Persisted growth is bounded deliberately instead: `reclaimEmptySessions()`
+   * drops rows that hold no messages, and `deleteSession()` wipes one when the
+   * user actually deletes the chat. A session with messages is never removed
+   * for being old.
+   */
   pruneExpired(): string[] {
     const now = Date.now()
     const ttlMs = this.config.sessionTtlSeconds * 1000
@@ -884,18 +1090,63 @@ export class SessionManager {
     for (const [id, session] of this.sessions) {
       if (now - session.lastActivityAt > ttlMs) {
         this.sessions.delete(id)
-        this.persistence?.delete(id).catch((err) => {
-          console.error(`[SessionManager] Failed to delete persisted session ${id}:`, err.message)
-        })
         pruned.push(id)
       }
     }
 
     if (pruned.length > 0) {
-      console.log(`[SessionManager] Pruned ${pruned.length} expired sessions: ${pruned.join(', ')}`)
+      console.log(`[SessionManager] Evicted ${pruned.length} idle session(s) from memory: ${pruned.join(', ')}`)
     }
 
     return pruned
+  }
+
+  /**
+   * Reclaim persisted sessions that never held a message and have been idle
+   * past `emptySessionRetentionDays`. These are the rows chat creation leaves
+   * behind; they cost disk and S3 sync forever and carry nothing a turn needs.
+   * A session with messages is skipped, whatever its age.
+   */
+  async reclaimEmptySessions(now = Date.now()): Promise<string[]> {
+    const days = this.config.emptySessionRetentionDays ?? DEFAULT_EMPTY_SESSION_RETENTION_DAYS
+    if (!this.persistence || !days || days <= 0) return []
+    const cutoff = now - days * 24 * 60 * 60 * 1000
+    const reclaimed: string[] = []
+    let candidates: string[]
+    try {
+      candidates = this.persistence.listMessageLessIds
+        ? await this.persistence.listMessageLessIds(cutoff)
+        : (await this.persistence.loadAll())
+            .filter((data) => data.messages.length === 0 && data.lastActivityAt <= cutoff)
+            .map((data) => data.id)
+    } catch (err: any) {
+      console.error('[SessionManager] Failed to scan persisted sessions:', err?.message ?? err)
+      return []
+    }
+    for (const id of candidates) {
+      try {
+        await this.persistence.delete(id)
+        this.sessions.delete(id)
+        reclaimed.push(id)
+      } catch (err: any) {
+        console.error(`[SessionManager] Failed to reclaim empty session ${id}:`, err?.message ?? err)
+      }
+    }
+    if (reclaimed.length > 0) {
+      console.log(`[SessionManager] Reclaimed ${reclaimed.length} empty persisted session(s)`)
+    }
+    // The store is meant to be bounded, but it now holds conversations forever
+    // by design (SHO-137). If reclaiming empty rows is not enough, say so with
+    // numbers instead of letting it grow invisibly.
+    const bytes = this.persistence.sizeBytes?.()
+    if (bytes !== undefined && bytes > SESSION_STORE_WARN_BYTES) {
+      console.warn(
+        `[SessionManager] sessions.db is ${(bytes / 1024 / 1024).toFixed(1)}MB ` +
+          `(> ${(SESSION_STORE_WARN_BYTES / 1024 / 1024).toFixed(0)}MB); ` +
+          `conversation history is never deleted by age, so this is retention to review, not a bug to prune`,
+      )
+    }
+    return reclaimed
   }
 
   /** Get stats for all sessions */
@@ -1037,20 +1288,13 @@ export function pruneToolResults(
 ): Message[] {
   const cfg = { ...DEFAULT_PRUNING, ...config }
 
-  let turnCount = 0
-  const turnBoundaries: number[] = []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') {
-      turnCount++
-      turnBoundaries.push(i)
-    }
-  }
-
-  const protectedTurnStart = turnBoundaries.length >= cfg.keepLastTurns
-    ? turnBoundaries[cfg.keepLastTurns - 1]
-    : 0
-  const hardClearStart = turnBoundaries.length >= cfg.hardClearAfterTurns
-    ? turnBoundaries[cfg.hardClearAfterTurns - 1]
+  // `keepLastTurns` counts assistant messages, which are tool *rounds*: on a
+  // 12-round turn the window closed while the turn was still running. The
+  // turn start is applied on top so the previous turn survives whole.
+  const protectedTurnStart = protectedStartOf(messages, cfg.keepLastTurns)
+  const assistantBoundary = assistantWindowStart(messages, cfg.hardClearAfterTurns)
+  const hardClearStart = assistantBoundary > 0 && assistantBoundary < protectedTurnStart
+    ? assistantBoundary
     : -1
 
   return messages.map((msg, idx) => {
@@ -1115,13 +1359,9 @@ export function applyToolResultBudget(
 ): Message[] {
   const maxBudget = Math.floor(contextBudgetChars * TOOL_RESULT_BUDGET_RATIO)
 
-  const turnBoundaries: number[] = []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') turnBoundaries.push(i)
-  }
-  const protectedStart = turnBoundaries.length >= BUDGET_PROTECTED_TURNS
-    ? turnBoundaries[BUDGET_PROTECTED_TURNS - 1]
-    : 0
+  // Turn-anchored: the previous turn is one unit, never trimmed from the
+  // middle. See turn-boundary.ts.
+  const protectedStart = protectedStartOf(messages, BUDGET_PROTECTED_TURNS)
 
   const eligibleIndices: number[] = []
   let totalCharsForBudget = 0
@@ -1183,13 +1423,7 @@ export function snipConsumedResults(
   protectedTurns = 3,
   frozenIds?: ReadonlySet<string>,
 ): Message[] {
-  const turnBoundaries: number[] = []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') turnBoundaries.push(i)
-  }
-  const protectedStart = turnBoundaries.length >= protectedTurns
-    ? turnBoundaries[protectedTurns - 1]
-    : 0
+  const protectedStart = protectedStartOf(messages, protectedTurns)
 
   return messages.map((msg, idx) => {
     if (msg.role !== 'toolResult') return msg

@@ -259,6 +259,14 @@ jobs:
           carry_forward shogo-docs "${{ steps.release.outputs.docs_changed }}" "${{ steps.release.outputs.docs_image }}"
           carry_forward shogo-runtime "${{ steps.release.outputs.runtime_changed }}" "${{ steps.release.outputs.runtime_image }}"
 
+      # Disk telemetry FIRST, then the gate: the summary shows per-node nodefs /
+      # imagefs usage, total image GB and digest counts on every run, and warns
+      # at 70% — the level the kubelet now starts reclaiming at (SHO-136).
+      # Before this, "69% and 7 stale runtime digests" was only visible from a
+      # kubectl session, after the node had already started evicting.
+      - name: Report node disk
+        run: .github/scripts/report-node-disk.sh 70
+
       # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
       # manifests / patch ksvcs into a disk-starved cluster. A node above the
       # disk threshold (or already under DiskPressure) cannot bring up a new
@@ -418,7 +426,11 @@ jobs:
             # Standing-headroom floor: see the production "Deploy Cluster
             # Autoscaler" step. MIN>=2 default prevents the old scale-to-1
             # regression; keep vars in sync with terraform system_pool_min/max.
-            NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '2' }}"
+            # Staging floor is 3 (SHO-136): a suite plus a deploy needs three
+            # nodes, and a floor of 1 let the pool oscillate between 1 and 3
+            # while the suite ran, putting a cold-node image pull on the
+            # critical path.
+            NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '3' }}"
             NODE_POOL_MAX="${{ vars.NODE_POOL_MAX || '10' }}"
             sed -e "s|NODE_POOL_MIN_PLACEHOLDER|$NODE_POOL_MIN|g" \
                 -e "s|NODE_POOL_MAX_PLACEHOLDER|$NODE_POOL_MAX|g" \
@@ -580,9 +592,41 @@ jobs:
     permissions:
       contents: read
       statuses: write
+      issues: write
     uses: ./.github/workflows/e2e-hosted.yml
     with:
       target: staging
       suite: critical
       report_status: true
+      # Scopes this call's artifact names (`<attempt>-<run_attempt>`). The retry
+      # is a second invocation in the *same* run, so it must not reuse them:
+      # actions/upload-artifact@v4 fails on a duplicate name, which would fail
+      # the retry's preflight and skip its Playwright job outright.
+      attempt: first
+    secrets: inherit
+
+  # One retry, and it is a safety net — never a capacity fix (SHO-136).
+  #
+  # A green retry is reported as `degraded: first attempt was <classification>`
+  # in the commit status and the run summary, so a platform red can never be
+  # quietly turned into a clean green. Red twice fails exactly as before; there
+  # is no third attempt.
+  e2e-critical-retry:
+    name: Staging critical-path e2e (retry)
+    needs: [e2e-critical]
+    if: failure() && needs.e2e-critical.result == 'failure'
+    permissions:
+      contents: read
+      statuses: write
+      issues: write
+    uses: ./.github/workflows/e2e-hosted.yml
+    with:
+      target: staging
+      suite: critical
+      report_status: true
+      # `|| 'unknown'` keeps the retry flagged as degraded even when the first
+      # attempt failed too early to publish its classification.
+      previous_classification: ${{ needs.e2e-critical.outputs.classification || 'unknown' }}
+      # Its own artifact namespace — see `attempt: first` above.
+      attempt: retry
     secrets: inherit

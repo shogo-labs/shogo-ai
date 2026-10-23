@@ -927,8 +927,8 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
       })
       if (!res.ok || !res.data) {
         return textResult({
-          error: res.error ?? 'Call failed',
-          code: res.code,
+          error: res.error ?? res.data?.error?.message ?? 'Call failed',
+          code: res.code ?? res.data?.error?.code,
           status: res.status,
           project: { id: target.id, name: target.name },
           runId,
@@ -966,6 +966,23 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
         }
       }
       const reply = res.data.reply ?? null
+      // A waiting call whose turn produced no reply is not a success: reporting
+      // `ok: true, reply: null` leaves the caller holding an empty answer with
+      // nothing to act on, which is exactly the silence being fixed here.
+      if (!background && reply === null) {
+        return textResult({
+          ok: false,
+          code: res.data.error?.code ?? 'call_without_reply',
+          error:
+            res.data.error?.message ??
+            `${target.name} finished this call without a reply (status ${res.data.status}). ` +
+              `Read its chat${res.data.chatSessionId ?? res.data.sessionId ? ` ${res.data.chatSessionId ?? res.data.sessionId}` : ''} to see what happened.`,
+          status: res.status,
+          project: { id: target.id, name: target.name },
+          runId,
+          chatSessionId: res.data.chatSessionId ?? res.data.sessionId,
+        })
+      }
       const urls = reply
         ? [...reply.matchAll(/https?:\/\/[^\s<>"')\]]+/g)]
             .map((match) => match[0].replace(/[.,;!?]+$/, ''))

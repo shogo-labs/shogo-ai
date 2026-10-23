@@ -154,6 +154,10 @@ model Workspace {
   chatMode          String?
   // External chat provider for "external" / "bridged": "slack" | "teams" | "google_chat".
   chatProvider      String?
+  // How many agent replies may be *working at once* in this workspace, or null
+  // for the maximum the plan (or local mode) allows. An admin can lower it; the
+  // plan value is the ceiling in the cloud (see `agent-reply-capacity.ts`).
+  agentReplyConcurrency Int?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -1350,6 +1354,11 @@ model UsageEvent {
   @@index([projectId])
   @@index([memberId])
   @@index([createdAt])
+  // Mirrors prisma/schema.prisma: the Analytics reads are "one workspace over
+  // a date window", and the single-column indexes make SQLite re-check every
+  // row of the workspace (SHO-140).
+  @@index([workspaceId, createdAt])
+  @@index([projectId, createdAt])
   @@map("usage_events")
 }
 
@@ -1412,6 +1421,11 @@ model ChatSession {
   cachedMessageCount    Int       @default(0)
   contextUsageTokens    Int       @default(0)
   contextWindowTokens   Int       @default(0)
+  // Durable summary of everything up to `contextSummaryThroughCount` messages
+  // (see schema.prisma — kept in the DB, not the runtime's sessions.db, so an
+  // evicted session cannot take it with it; SHO-137).
+  contextSummary              String?
+  contextSummaryThroughCount  Int       @default(0)
   isPrimary             Boolean   @default(false)
   isPinned              Boolean   @default(false)
   isArchived            Boolean   @default(false)
@@ -2336,6 +2350,11 @@ model AppInstall {
 /// (`lib/device-platform.ts`) so legacy platform spellings stay collapsed.
 model DeviceVersionEvent {
   id          String   @id @default(cuid())
+  /// Region that wrote the row (`REGION_ID`, or `local` in single-region and
+  /// desktop mode). NULL means the row predates region tagging; the app never
+  /// writes NULL. Part of the unique key so two regions cannot conflict on one
+  /// (device, version) — see the 2026-10-22 replication incident (SHO-142).
+  region      String?
   deviceId    String
   /// macos | windows | linux | unknown
   os          String   @default("unknown")
@@ -2348,7 +2367,7 @@ model DeviceVersionEvent {
   firstSeenAt DateTime @default(now())
   lastSeenAt  DateTime
 
-  @@unique([deviceId, version])
+  @@unique([region, deviceId, version])
   @@index([lastSeenAt])
   @@index([version])
   @@map("device_version_events")

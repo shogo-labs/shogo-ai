@@ -19,6 +19,25 @@
 # Sizing (staging pool: 4 OCPU / 24Gi nodes, ~20Gi allocatable, autoscaler
 # 1–6 nodes). Generous enough for normal operation (5 warm pods + assigned /
 # promoted project pods) but far below a runaway:
+#
+# EPHEMERAL STORAGE (SHO-136). Node disk used to be a free-for-all in this
+# tier: the quota capped pods / cpu / memory and nothing else, while every
+# workspace pod could write unbounded bytes into its container layer — 15
+# co-tenants on a node with ~30 GB of real headroom could push it to
+# DiskPressure, and that is exactly what evicted pods on 2026-10-21.
+#
+#   - `requests.ephemeral-storage: 40Gi` is consistent with `pods: "40"` at the
+#     1Gi default request below, so the bound is one the tier can actually
+#     reach. Disk is now a SCHEDULED resource: the scheduler counts it against
+#     a node instead of discovering it as eviction.
+#   - The per-pod 5Gi LIMIT is what stops one runaway workspace from taking the
+#     node: past 5Gi it is evicted on its own (local ephemeral-storage
+#     eviction) instead of pressuring the kubelet into node-wide DiskPressure.
+#     request<<limit is deliberate here for the same reason it is for memory.
+#   - A quota on requests.ephemeral-storage is only satisfiable if EVERY pod
+#     declares a request, so the LimitRange below injects the default. Do not
+#     remove the ephemeral-storage defaults without relaxing the quota — pods
+#     would then be rejected at admission (403) rather than scheduled.
 ---
 apiVersion: v1
 kind: ResourceQuota
@@ -30,6 +49,7 @@ spec:
     pods: "40"
     requests.cpu: "16"
     requests.memory: 40Gi
+    requests.ephemeral-storage: 40Gi
 ---
 apiVersion: v1
 kind: LimitRange
@@ -46,6 +66,8 @@ spec:
       default:
         memory: 2Gi
         cpu: "1"
+        ephemeral-storage: 5Gi
       defaultRequest:
         memory: 768Mi
         cpu: 200m
+        ephemeral-storage: 1Gi

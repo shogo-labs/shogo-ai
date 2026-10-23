@@ -58,6 +58,7 @@ import { cn } from "@shogo/shared-ui/primitives";
 import type { PrimaryNavId, SidebarTabId } from "@shogo/shared-app";
 import { CommandPalette, useCommandPalette } from "../CommandPalette";
 import { useActiveInstance } from "../../../contexts/active-instance";
+import { useWorkspaceInView } from "../../../hooks/useWorkspaceInView";
 import { useMachineWorkspaces } from "../../../hooks/useMachineWorkspaces";
 import {
   buildWorkspaceEntries,
@@ -635,6 +636,7 @@ export const AppSidebar = observer(function AppSidebar({
     activeRemoteInstance?.source === "machine"
       ? machineWorkspaces.find((m) => m.id === activeRemoteInstance.instanceId)
       : undefined;
+  const workspaceInView = useWorkspaceInView()
   const activeMachineWorkspace = activeMachine?.workspaces.find(
     (w) => w.id === activeRemoteInstance?.localWorkspaceId,
   );
@@ -1005,7 +1007,7 @@ export const AppSidebar = observer(function AppSidebar({
                     ? "Collapse pinned projects"
                     : "Expand pinned projects"
                 }
-                accessibilityState={{ expanded: pinnedExpanded }}
+                aria-expanded={pinnedExpanded}
                 className={cn(
                   "flex-row items-center rounded-lg px-1",
                   isNativeDrawer
@@ -1060,7 +1062,7 @@ export const AppSidebar = observer(function AppSidebar({
                   accessibilityLabel={
                     projectsExpanded ? "Collapse projects" : "Expand projects"
                   }
-                  accessibilityState={{ expanded: projectsExpanded }}
+                  aria-expanded={projectsExpanded}
                   className={cn(
                     "min-w-0 flex-1 flex-row items-center rounded-lg",
                     isNativeDrawer
@@ -1091,7 +1093,7 @@ export const AppSidebar = observer(function AppSidebar({
                       {...triggerProps}
                       role="button"
                       accessibilityLabel="Filter and sort projects"
-                      accessibilityState={{ expanded: filterMenuOpen }}
+                      aria-expanded={filterMenuOpen}
                       className="h-6 w-6 items-center justify-center rounded-md active:bg-muted"
                     >
                       <SlidersHorizontal
@@ -1121,9 +1123,7 @@ export const AppSidebar = observer(function AppSidebar({
                               updateProjectFilter({ sort: opt.value })
                             }
                             role={MENU_ITEM_RADIO_ROLE}
-                            accessibilityState={{
-                              checked: projectFilter.sort === opt.value,
-                            }}
+                            aria-checked={projectFilter.sort === opt.value}
                             className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                           >
                             <Text
@@ -1158,9 +1158,7 @@ export const AppSidebar = observer(function AppSidebar({
                               updateProjectFilter({ scope: opt.value })
                             }
                             role={MENU_ITEM_RADIO_ROLE}
-                            accessibilityState={{
-                              checked: projectFilter.scope === opt.value,
-                            }}
+                            aria-checked={projectFilter.scope === opt.value}
                             className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                           >
                             <Text
@@ -1316,6 +1314,7 @@ export const AppSidebar = observer(function AppSidebar({
     currentKey={activeWorkspaceKey}
     onSelectEntry={handleSelectWorkspaceEntry}
     currentWorkspace={currentWorkspace}
+    identityWorkspace={workspaceInView ?? currentWorkspace}
     billingData={billingData}
     workspacePlan={workspacePlan}
     allPlans={allPlans}
@@ -1370,6 +1369,7 @@ export const AppSidebar = observer(function AppSidebar({
             currentKey={activeWorkspaceKey}
             onSelectEntry={handleSelectWorkspaceEntry}
             currentWorkspace={currentWorkspace}
+            identityWorkspace={workspaceInView ?? currentWorkspace}
             billingData={billingData}
             workspacePlan={workspacePlan}
             allPlans={allPlans}

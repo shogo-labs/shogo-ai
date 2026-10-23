@@ -39,6 +39,7 @@ import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
 import { getDbRoutingConfigSync, getMergedModelEntrySync, type ModelUpstreamFallback } from '../services/model-registry.service'
 import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
+import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 import {
   resolveVisibleModelsForWorkspace,
@@ -2551,6 +2552,7 @@ import { getProjectUser } from '../lib/project-user-context'
 import { accumulateUsage, accumulateImageUsage, accumulateVideoUsage, accumulate3dUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { buildUsageLimitInfo } from '../lib/usage-limit-info'
+import { invalidateAnalyticsCache } from '../lib/analytics-cache'
 export { buildUsageLimitInfo }
 
 /**
@@ -2696,6 +2698,7 @@ export async function recordUsage(
         },
       })
       console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${billingModel}) — not billed`)
+      invalidateAnalyticsCache({ workspaceId: tokenPayload.workspaceId, projectId: billingProjectId ?? undefined })
     } catch (err) {
       console.error('[AI Proxy] Failed to record internal usage:', err)
     }
@@ -4593,8 +4596,28 @@ export function aiProxyRoutes() {
     const created = Math.floor(Date.now() / 1000)
     const visible = await resolveVisibleModelsForWorkspace(tokenPayload.workspaceId, { includeLive: true })
 
+    // A listed model must be one this plan can actually run, not just one whose
+    // provider is reachable. Without this a caller (the agent runtime, a tool
+    // such as `project_configure`) happily picks a model the chat routes would
+    // silently swap for Auto at request time (SHO-145) — better to report it
+    // `available:false` here so the tool refuses it up front with
+    // `model_unavailable`.
+    //
+    // One entitlement resolution per request, and only for a model that needs
+    // it: `hasAdvancedModelAccess` is workspace-wide, so it is memoised here
+    // rather than consulted once per model id.
+    let advancedAccess: boolean | undefined
+    const isAccessible = (id: string): Promise<boolean> =>
+      isModelAccessibleForWorkspace(tokenPayload.workspaceId, id, {
+        advancedAccess,
+        resolveAdvancedAccess: async () => {
+          advancedAccess ??= await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
+          return advancedAccess
+        },
+      })
+
     const models = [
-      ...visible.catalogModels.map((entry) => ({
+      ...(await Promise.all(visible.catalogModels.map(async (entry) => ({
         id: entry.id,
         object: 'model',
         created,
@@ -4603,16 +4626,16 @@ export function aiProxyRoutes() {
         ...(entry.kind ? { kind: entry.kind } : {}),
         ...(typeof entry.usdPerMinute === 'number' ? { usd_per_minute: entry.usdPerMinute } : {}),
         // Indicate if the provider is actually configured
-        available: isModelProviderConfigured(entry.provider),
-      })),
-      ...visible.openrouterModels.map((entry) => ({
+        available: isModelProviderConfigured(entry.provider) && (await isAccessible(entry.id)),
+      })))),
+      ...(await Promise.all(visible.openrouterModels.map(async (entry) => ({
         id: entry.id,
         object: 'model',
         created,
         owned_by: 'openrouter',
         display_name: entry.displayName,
-        available: isModelProviderConfigured('openrouter'),
-      })),
+        available: isModelProviderConfigured('openrouter') && (await isAccessible(entry.id)),
+      })))),
     ]
 
     return c.json({

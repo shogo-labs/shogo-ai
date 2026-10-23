@@ -30,9 +30,8 @@
  *     otherwise read as if it were under the allowed root.
  */
 
-import { existsSync, realpathSync } from 'fs'
-import { resolve } from 'path'
-import { isWithinAnyRoot } from './path-boundary'
+import { realpathSync } from 'fs'
+import { canonicalPathSync, isWithinAnyRoot } from './path-boundary'
 import { otherProjectForPath, otherProjectPathMessage } from './workspace-runtime-mode'
 
 import {
@@ -125,16 +124,7 @@ export function getRuntimeTrust(): RuntimeTrust {
 }
 
 function realpathRoots(roots: readonly string[]): string[] {
-  return roots
-    .filter((p) => typeof p === 'string' && p.length > 0)
-    .map((p) => {
-      const resolved = resolve(p)
-      try {
-        return realpathSync(resolved)
-      } catch {
-        return resolved
-      }
-    })
+  return roots.filter((p) => typeof p === 'string' && p.length > 0).map((p) => canonicalPathSync(p))
 }
 
 /** Allowed roots = [workspaceDir, ...linkedFolders], deduplicated. */
@@ -200,45 +190,16 @@ export function assertAllowedPath(targetPath: string, mode: PathMode): PathCheck
   // every operation on a perfectly legitimate path would fail.
   const roots = [trust.workspaceDir, ...trust.linkedFolders]
     .filter((p) => typeof p === 'string' && p.length > 0)
-    .map((p) => {
-      const resolved = resolve(p)
-      try {
-        return realpathSync(resolved)
-      } catch {
-        return resolved
-      }
-    })
+    .map((p) => canonicalPathSync(p))
   if (roots.length === 0) {
     return { ok: false, reason: 'outside_allowed_roots', message: 'No allowed roots configured' }
   }
 
-  // Resolve real path defensively. If `target` doesn't exist, walk up
-  // to the nearest existing ancestor and append the remainder — this
-  // lets write_file('newdir/newfile.txt') still pass the check while
-  // preventing `..` escape.
-  let candidate = resolve(targetPath)
-  let real: string
-  try {
-    real = realpathSync(candidate)
-  } catch {
-    // path doesn't exist yet; resolve as far as we can
-    let cur = candidate
-    let tail = ''
-    while (!existsSync(cur) && cur !== resolve(cur, '..')) {
-      const next = resolve(cur, '..')
-      tail = cur.slice(next.length) + tail
-      cur = next
-    }
-    try {
-      const realParent = _runtimeTrustSeamForTests.realpathSync(cur)
-      real = realParent + tail
-    } catch {
-      real = candidate
-    }
-  }
+  // Same canonicalization as the roots — and the same helper as
+  // permission-engine's guard uses, so the two cannot drift apart again
+  // (that drift is why `exec` worked while the file tools did not, SHO-125).
+  const real = canonicalPathSync(targetPath, _runtimeTrustSeamForTests.realpathSync)
 
-  // Shared helper so this guard and permission-engine's cannot drift apart
-  // again — that drift is why `exec` worked while the file tools did not.
   const inAllowedRoot = isWithinAnyRoot(roots, real)
   if (!inAllowedRoot) {
     return {
@@ -295,14 +256,7 @@ export function assertAllowedPath(targetPath: string, mode: PathMode): PathCheck
   if ((mode === 'write' || mode === 'exec') && (trust.readonlyRoots?.length ?? 0) > 0) {
     const readonlyRoots = trust.readonlyRoots
       .filter((p) => typeof p === 'string' && p.length > 0)
-      .map((p) => {
-        const resolved = resolve(p)
-        try {
-          return realpathSync(resolved)
-        } catch {
-          return resolved
-        }
-      })
+      .map((p) => canonicalPathSync(p))
     // Case-folded on Windows/macOS so the guard cannot be bypassed by case
     // alone (a root attached as 'Foo' must still match a path resolving to 'foo').
     const underReadonly = isWithinAnyRoot(readonlyRoots, real)

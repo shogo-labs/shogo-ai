@@ -10,10 +10,10 @@ mock.module('react-native', () =>
   createReactNativeMock({
     Platform: { OS: 'web', select: (s: any) => s.web ?? s.default },
     Modal: ({ visible, children }: any) => (visible ? createElement('div', null, children) : null),
-    Pressable: ({ testID, accessibilityLabel, accessibilityState, children, onPress }: any) =>
+    Pressable: ({ testID, accessibilityLabel, 'aria-checked': ariaChecked, children, onPress }: any) =>
       createElement(
         'div',
-        { role: 'button', 'data-testid': testID, 'aria-label': accessibilityLabel, 'aria-checked': accessibilityState?.checked, onClick: onPress },
+        { role: 'button', 'data-testid': testID, 'aria-label': accessibilityLabel, 'aria-checked': ariaChecked, onClick: onPress },
         children,
       ),
   } as any),

@@ -488,7 +488,11 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
   }
   const mentionCounts = await unreadMentionCounts(userId, memberships)
   const unread = await unreadCounts(userId, conversations, membershipByConv)
-  const lastMessages = await lastMessagePreviews(directIds, workspaceId)
+  const lastMessages = await lastMessagePreviews(
+    directIds,
+    workspaceId,
+    new Set(conversations.map((c: any) => c.id)),
+  )
   const docs = await docUpdatedAts(conversations.map((c: any) => c.id))
 
   return conversations.map((c: any) => {
@@ -523,7 +527,12 @@ export interface LastMessage {
  * line. One grouped query finds the newest seq per conversation, one more
  * reads those rows, so cost does not grow with message history.
  */
-export async function lastMessagePreviews(conversationIds: string[], workspaceId: string): Promise<Map<string, LastMessage>> {
+export async function lastMessagePreviews(
+  conversationIds: string[],
+  workspaceId: string,
+  /** The reader's own channels, so a `#` reference is only named if they can see it. */
+  visibleConversationIds?: Set<string>,
+): Promise<Map<string, LastMessage>> {
   const out = new Map<string, LastMessage>()
   if (!conversationIds.length) return out
   const latest = await db.conversationMessage.groupBy({
@@ -540,7 +549,7 @@ export async function lastMessagePreviews(conversationIds: string[], workspaceId
     },
   })
   const names = {
-    ...(await loadNamesForTexts(db, workspaceId, rows.map((r: any) => r.text ?? ''))),
+    ...(await loadNamesForTexts(db, workspaceId, rows.map((r: any) => r.text ?? ''), visibleConversationIds)),
     workspaceAgentName: await agentDisplayName(workspaceId, null),
   }
   for (const row of rows as any[]) {

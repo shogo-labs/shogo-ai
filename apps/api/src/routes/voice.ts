@@ -1759,6 +1759,10 @@ export function voiceRoutes() {
           'voice_minutes_outbound',
           'voice_number_setup',
           'voice_number_monthly',
+          // Pooled-key media (TTS, voice changer, sound effects, …), one row
+          // per op call with its unit + quantity in `actionMetadata`. Written
+          // by `voice-media.ts`; zero-cost until an op is priced.
+          'voice_media_usage',
         ],
       },
     }

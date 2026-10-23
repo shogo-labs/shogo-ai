@@ -46,6 +46,7 @@ mock.module("lucide-react-native", () => {
     LogIn: Icon("LogIn"),
     LogOut: Icon("LogOut"),
     Mail: Icon("Mail"),
+    MessageSquare: Icon("MessageSquare"),
     Monitor: Icon("Monitor"),
     Moon: Icon("Moon"),
     Paintbrush: Icon("Paintbrush"),

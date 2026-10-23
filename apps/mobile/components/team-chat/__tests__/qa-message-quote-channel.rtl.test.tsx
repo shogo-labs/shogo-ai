@@ -120,10 +120,12 @@ beforeEach(() => {
 
 const target = (messageId: string) => ({ conversationId: 'conv-1', messageId, threadRootId: null })
 const href = 'https://studio.shogo.ai/c/conv-1?msg=m-1'
+/** The workspace-wide map every team-chat surface resolves `@` mentions from. */
+const names = { users: new Map([['u-1', 'Ana Lopez']]), agents: new Map<string, string>() }
 
 describe('a quoted message says where it came from', () => {
   test('a channel message is labelled with the channel it was posted in', async () => {
-    const { container } = render(<MessageQuoteCard quote={{ href, target: target('m-1') }} />)
+    const { container } = render(<MessageQuoteCard names={names} quote={{ href, target: target('m-1') }} />)
     await screen.findByText('Ana Lopez')
 
     expect(container.textContent).toContain('#shogo-dev')
@@ -133,14 +135,14 @@ describe('a quoted message says where it came from', () => {
   })
 
   test('a direct message is labelled as a DM rather than with a channel name', async () => {
-    const { container } = render(<MessageQuoteCard quote={{ href, target: target('m-dm') }} />)
+    const { container } = render(<MessageQuoteCard names={names} quote={{ href, target: target('m-dm') }} />)
     await screen.findByText('Ana Lopez')
 
     expect(container.textContent).toContain('DM')
   })
 
   test('the channel label is still a single tap to the message', async () => {
-    render(<MessageQuoteCard quote={{ href, target: target('m-1') }} />)
+    render(<MessageQuoteCard names={names} quote={{ href, target: target('m-1') }} />)
     await screen.findByText('Ana Lopez')
 
     fireEvent.click(screen.getByTestId('message-quote'))

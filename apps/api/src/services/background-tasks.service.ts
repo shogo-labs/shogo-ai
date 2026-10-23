@@ -256,6 +256,18 @@ export function isClosedCategory(category: string | null | undefined): boolean {
 export const WAKE_PAUSED =
   'Paused: background tasks finished several times in a row without anyone writing. Send a message to continue.'
 
+/**
+ * The same marker for a different reason: every automatic agent start in the
+ * workspace is held, so this wake is parked rather than delivered (SHO-118).
+ * Both are "paused" rows — the composer shows them the same way, and resuming
+ * either comes from a person or from `agent_run_stop({ resume: true })`.
+ */
+export const WAKE_WORKSPACE_PAUSED =
+  'Paused: agents are paused in this workspace. Resume them and this update will run.'
+
+/** Error markers on a queued row that mean "held, not failed". */
+export const WAKE_PAUSED_MARKERS = [WAKE_PAUSED, WAKE_WORKSPACE_PAUSED]
+
 export function viewOf(row: BackgroundTaskRow, matched?: boolean): BackgroundTaskView {
   const link = normalizeTaskLink(row.link)
   return {
@@ -465,6 +477,13 @@ export interface TaskEvent {
    * a milestone, instead of re-parsing the rendered line.
    */
   card?: CardEventState
+  /**
+   * The agent whose run produced this event (`project:<id>` / `workspace`).
+   * A watch never hears its own agent: the run that just ended knows what it
+   * did, so waking it for that is a wake that buys another wake — the loop
+   * that made one mention re-run an agent a dozen times (SHO-129).
+   */
+  fromAgentRef?: string
 }
 
 export interface CardEventState {
@@ -629,12 +648,43 @@ export async function emitTaskEvent(source: string, targetRef: string, event: Ta
       },
       take: 50,
     })
-    for (const row of rows) await applyEvent(row, event)
-    return rows.length
+    const own = await watchedByAgent(rows, event.fromAgentRef)
+    let applied = 0
+    for (const row of rows) {
+      // The run that wrote this line is the one watching: it already knows, and
+      // settling it would queue a wake whose run writes the next line.
+      if (own.has(row.id)) continue
+      await applyEvent(row, event)
+      applied++
+    }
+    if (own.size) {
+      console.log(`[BackgroundTasks] ${source}:${targetRef} ignored by ${own.size} watch(es) of its own agent ${event.fromAgentRef}`)
+    }
+    return applied
   } catch (err) {
     console.warn(`[BackgroundTasks] emit ${source}:${targetRef} failed:`, (err as Error).message)
     return 0
   }
+}
+
+/**
+ * The watches in `rows` held by `agentRef`, i.e. sitting in one of its chat
+ * sessions. The session is the only record of who owns a watch.
+ */
+async function watchedByAgent(rows: BackgroundTaskRow[], agentRef: string | undefined): Promise<Set<string>> {
+  if (!agentRef || !rows.length) return new Set()
+  const sessions: Array<{ id: string; contextType: string | null; contextId: string | null }> = await db.chatSession
+    .findMany({
+      where: { id: { in: [...new Set(rows.map((row) => row.chatSessionId))] } },
+      select: { id: true, contextType: true, contextId: true },
+    })
+    .catch(() => [])
+  const mine = new Set(
+    sessions
+      .filter((s) => (s.contextType === 'project' && s.contextId ? `project:${s.contextId}` : 'workspace') === agentRef)
+      .map((s) => s.id),
+  )
+  return new Set(rows.filter((row) => mine.has(row.chatSessionId)).map((row) => row.id))
 }
 
 export function newTaskId(): string {
@@ -759,6 +809,17 @@ async function wakeUserFor(session: { id: string; createdByUserId?: string | nul
 }
 
 /**
+ * These two live in `workspace-pause.service` so the dispatcher, the sweep and
+ * the wake producer all read the flag the same way.
+ */
+const isSessionWorkspacePaused = (session: {
+  workspaceId?: string | null
+  contextType?: string | null
+  contextId?: string | null
+}): Promise<boolean> =>
+  import('./workspace-pause.service').then((module) => module.isSessionWorkspacePaused(session))
+
+/**
  * Queue one wake message per finished, unseen task in the session, in finish
  * order: one [Task update] per message, so the agent acts on each result as it
  * lands instead of on a batch. The dispatcher re-checks `consumed` just before
@@ -771,6 +832,10 @@ export async function enqueueTaskWake(chatSessionId: string, opts: { dispatch?: 
     select: { id: true, createdByUserId: true, workspaceId: true, contextType: true, contextId: true },
   })
   if (!session) return false
+  // A workspace-wide pause holds every automatic wake at the source: no row is
+  // written, so the task stays finished-and-unseen and is delivered once the
+  // pause lifts (`sweepUnnotifiedWakes` re-derives it, nothing is lost).
+  if (await isSessionWorkspacePaused(session)) return false
   const tasks: BackgroundTaskRow[] = await db.backgroundTask.findMany({
     where: {
       chatSessionId, status: { not: 'running' }, notify: true, consumed: false, notifiedAt: null,
@@ -899,6 +964,12 @@ export function taskWakeBodyResetsRun(body: string | null | undefined): boolean 
  * it starts a new wait when it introduces a task created after it. A person
  * writing ends the run, and the oldest wake in it always counts as one.
  *
+ * A re-armed watch — one row per card, so it keeps its id and its `createdAt` —
+ * wakes on the same task again and again. That is a new wait each time, and it is
+ * read off the wake messages rather than the row, because re-arming clears the
+ * row (`finishedAt`, `notifiedAt`) before the cap is measured. Otherwise a card
+ * watch that keeps waking itself could never reach the cap (SHO-129).
+ *
  * A wake a person resumed from the composer (`wakeRunReset`) ends the run too:
  * that is the pause lifting, and the wake it delivers starts the count again.
  */
@@ -925,9 +996,12 @@ export async function consecutiveWakeWaits(chatSessionId: string, limit: number)
 
   let waits = 1
   for (let i = 0; i + 1 < run.length; i++) {
+    // The same task reporting twice in a row is a re-armed watch waking again.
+    const older = new Set(run[i + 1]!.taskIds)
+    const rearmed = run[i]!.taskIds.some((id) => older.has(id))
     let newestTaskAt = 0
     for (const id of run[i]!.taskIds) newestTaskAt = Math.max(newestTaskAt, startedAt.get(id) ?? 0)
-    if (newestTaskAt > run[i + 1]!.at.getTime()) waits++
+    if (rearmed || newestTaskAt > run[i + 1]!.at.getTime()) waits++
   }
   return waits
 }
@@ -960,7 +1034,7 @@ export interface SessionWakeState {
  */
 export async function sessionWakeState(chatSessionId: string): Promise<SessionWakeState> {
   const pausedRows: Array<{ body: string | null; content: string }> = await db.chatQueuedMessage.findMany({
-    where: { sessionId: chatSessionId, kind: 'task_notification', status: 'failed', error: WAKE_PAUSED },
+    where: { sessionId: chatSessionId, kind: 'task_notification', status: 'failed', error: { in: WAKE_PAUSED_MARKERS } },
     orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
     take: 50,
     select: { body: true, content: true },
@@ -1030,9 +1104,14 @@ export async function sweepUnnotifiedWakes(limit = 50): Promise<number> {
   })
   if (!sessions.length) return 0
   const { isHomeRegionSession } = await import('./chat-queue-dispatcher.service')
+  const { isChatSessionWorkspacePaused } = await import('./workspace-pause.service')
   let queued = 0
   for (const row of sessions) {
     if (!(await isHomeRegionSession(row.chatSessionId))) continue
+    // A paused workspace is skipped before anything is queued: its updates stay
+    // finished-and-unseen and this sweep picks them up on the first tick after
+    // the pause lifts.
+    if (await isChatSessionWorkspacePaused(row.chatSessionId)) continue
     if (await enqueueTaskWake(row.chatSessionId, { dispatch: false })) queued++
   }
   return queued

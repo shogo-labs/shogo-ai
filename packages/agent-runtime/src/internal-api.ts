@@ -259,6 +259,41 @@ export async function postWorktreeStatus(
   }
 }
 
+/**
+ * Mirror a compaction summary back to the product DB (SHO-137 round 3, R4).
+ *
+ * The runtime's own summary lives in `sessions.db`; losing that file must not
+ * lose the summary, and the runtime's compaction sees tool steps the API's
+ * stored rows do not. Best-effort; never throws.
+ */
+export async function postContextSummary(
+  chatSessionId: string,
+  summary: string,
+): Promise<boolean> {
+  if (!summary.trim()) return false
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return false
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/chat-sessions/${encodeURIComponent(chatSessionId)}/context-summary`,
+      {
+        method: 'POST',
+        headers: getInternalHeaders(),
+        body: JSON.stringify({ summary }),
+        signal: AbortSignal.timeout(5_000),
+      },
+    )
+    if (!res.ok) {
+      console.warn(`[Runtime] postContextSummary HTTP ${res.status} for ${chatSessionId}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn('[Runtime] postContextSummary failed:', err?.message ?? err)
+    return false
+  }
+}
+
 export interface PlanMirrorPayload {
   action?: 'upsert' | 'delete'
   filename: string
@@ -1256,6 +1291,62 @@ export async function deliverAgentChatHandoff(
   })
 }
 
+/**
+ * Which of these chats the acting person can open, per the API's own access
+ * rule. Feeds the "other chats" prompt section so it never advertises a chat
+ * `chat_handoff` would refuse; callers fail open when this returns nothing.
+ */
+export async function fetchReachableChats(
+  workspaceId: string,
+  ids: string[],
+  opts: { timeoutMs?: number } = {},
+): Promise<CheckpointCallResult<{ reachable: string[] }>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
+  if (!ids.length) return { ok: true, status: 200, data: { reachable: [] } }
+  const params = new URLSearchParams({ ids: ids.slice(0, 20).join(',') })
+  const timeoutMs = opts.timeoutMs ?? 500
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}/chat-reachable?${params}`,
+      { headers: getInternalHeaders(), signal: AbortSignal.timeout(timeoutMs) },
+    )
+    const json = (await res.json().catch(() => null)) as { reachable?: unknown } | null
+    if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` }
+    const reachable = Array.isArray(json?.reachable)
+      ? json!.reachable.filter((id): id is string => typeof id === 'string')
+      : []
+    return { ok: true, status: res.status, data: { reachable } }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
+}
+
+/**
+ * The workspace-wide agent pause, if one is in force. Read once per turn so a
+ * woken agent can be told to report and stop instead of starting work; a failed
+ * read means "not paused" (the API enforces the pause, the prompt only explains
+ * it).
+ */
+export async function fetchWorkspacePause(
+  workspaceId: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<CheckpointCallResult<{ paused: WorkspaceAgentsPause | null }>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
+  try {
+    const res = await fetch(`${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agents-paused`, {
+      headers: getInternalHeaders(),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 500),
+    })
+    const json = (await res.json().catch(() => null)) as { paused?: WorkspaceAgentsPause | null } | null
+    if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` }
+    return { ok: true, status: res.status, data: { paused: json?.paused ?? null } }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
+}
+
 export interface AgentUploadedFile {
   id: string
   name: string
@@ -1363,30 +1454,73 @@ export interface RunningAgent {
   startedAt: string
   preview: string
   canStop: boolean
+  /**
+   * `running` = working now, `waiting` = parked on a tool (a `wait`, a `exec_wait`,
+   * a subagent), holding no slot, `queued` = in line for a slot and not started.
+   */
+  state?: 'queued' | 'running' | 'waiting'
+  /** Place in line, for a queued run. */
+  position?: number | null
+  queuedAt?: string | null
+}
+
+/** A workspace-wide pause, as `agent_run_stop`/`agent_runs_list` report it. */
+export interface WorkspaceAgentsPause {
+  at: string
+  by: string | null
+  reason?: string
+}
+
+export interface RunningAgentList extends Array<RunningAgent> {
+  /** The workspace pause in force, or null. */
+  paused: WorkspaceAgentsPause | null
 }
 
 export async function listRunningAgents(
   workspaceId: string,
   filter: { channel?: string; threadRootId?: string; sessionId?: string } = {},
-): Promise<CheckpointCallResult<RunningAgent[]>> {
+): Promise<CheckpointCallResult<RunningAgentList>> {
   const params = new URLSearchParams()
   if (filter.channel) params.set('channel', filter.channel)
   if (filter.threadRootId) params.set('threadRootId', filter.threadRootId)
   if (filter.sessionId) params.set('sessionId', filter.sessionId)
   return personalFetch(channelsPath(workspaceId, `/running-agents?${params}`), {
     method: 'GET',
-    parse: (j) => (j?.runs ?? []) as RunningAgent[],
+    parse: (j) => {
+      const runs = (j?.runs ?? []) as RunningAgent[]
+      return Object.assign(runs, { paused: (j?.paused ?? null) as WorkspaceAgentsPause | null })
+    },
   })
 }
 
 export async function stopRunningAgents(
   workspaceId: string,
-  input: { messageId?: string; channel?: string; threadRootId?: string; sessionId?: string },
-): Promise<CheckpointCallResult<{ stopped: RunningAgent[]; skipped: Array<{ messageId: string; reason: string }> }>> {
+  input: {
+    messageId?: string
+    channel?: string
+    threadRootId?: string
+    sessionId?: string
+    scope?: 'workspace'
+    resume?: boolean
+    reason?: string
+  },
+): Promise<
+  CheckpointCallResult<{
+    stopped: RunningAgent[]
+    skipped: Array<{ messageId: string; reason: string }>
+    paused?: WorkspaceAgentsPause | null
+    resumed?: boolean
+  }>
+> {
   return personalFetch(channelsPath(workspaceId, '/running-agents/stop'), {
     method: 'POST',
     body: JSON.stringify(input),
-    parse: (j) => ({ stopped: j?.stopped ?? [], skipped: j?.skipped ?? [] }),
+    parse: (j) => ({
+      stopped: j?.stopped ?? [],
+      skipped: j?.skipped ?? [],
+      paused: j?.paused ?? null,
+      resumed: j?.resumed === true,
+    }),
   })
 }
 
@@ -2176,6 +2310,8 @@ export interface AgentCallResult {
   sessionId?: string
   /** The project chat (API ChatSession id) that records this call, when persisted. */
   chatSessionId?: string
+  /** Present when the callee reports why it could not run or reply. */
+  error?: { code?: string; message: string }
 }
 
 interface TrackedAgentCall {
@@ -2253,7 +2389,23 @@ export async function callProjectAgent(
   })
   if (!started.ok || !started.data) return started
   // An API without tracking already started the turn untracked; its reply lands in the project chat.
-  if (started.data.tracked !== true) return { ...started, data: { ...started.data, runId } }
+  if (started.data.tracked !== true) {
+    // `202 accepted` means the request was taken for processing, not that a turn
+    // ran (RFC 9110 §15.3.3) — and with no tracking we cannot poll for a reply,
+    // so reporting this as success hands the caller an empty answer.
+    if (!started.data.reply) {
+      const chat = started.data.chatSessionId ? ` in project chat ${started.data.chatSessionId}` : ''
+      return {
+        ok: false,
+        status: 502,
+        code: 'call_not_followed',
+        error:
+          'The call was accepted but not followed (this API cannot track calls), so its reply cannot be read ' +
+          `here. Read it${chat}, or call again without \`wait\` once the target API supports tracked calls.`,
+      }
+    }
+    return { ...started, data: { ...started.data, runId } }
+  }
 
   const deadline = Date.now() + timeoutMs
   let failures = 0

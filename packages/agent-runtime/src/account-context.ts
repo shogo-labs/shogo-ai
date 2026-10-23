@@ -20,7 +20,7 @@ export interface AccountContext {
 
 export function parseAccountContext(body: Record<string, unknown>): AccountContext {
   const name = typeof body.modelDisplayName === 'string'
-    ? body.modelDisplayName.replace(/[\r\n`*]/g, ' ').trim().slice(0, 80)
+    ? sanitizeModelDisplayName(body.modelDisplayName)
     : ''
   const plan = typeof body.planId === 'string' && /^[a-z_]{1,24}$/.test(body.planId) ? body.planId : undefined
   return {
@@ -28,6 +28,17 @@ export function parseAccountContext(body: Record<string, unknown>): AccountConte
     ...(plan ? { planId: plan } : {}),
     ...(typeof body.canPublishSubdomain === 'boolean' ? { canPublishSubdomain: body.canPublishSubdomain } : {}),
   }
+}
+
+/**
+ * A model name goes into the system prompt as markdown, in bold. Anything that
+ * could break out of that line — a newline, a stray backtick or asterisk — is
+ * flattened, and the name is bounded. One rule for every path that prints it:
+ * the value the API stamps on the request, and the name the runtime resolves
+ * for the turn (which can come from a DB row an admin typed into).
+ */
+export function sanitizeModelDisplayName(raw: string): string {
+  return raw.replace(/[\r\n`*]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)
 }
 
 export function buildAccountContextPrompt(ctx: AccountContext): string | null {

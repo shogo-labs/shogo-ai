@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
-import { MAX_WAKE_ATTEMPTS, taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAUSED, type WakeRelease } from './background-tasks.service'
+import { MAX_WAKE_ATTEMPTS, taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAUSED, WAKE_PAUSED_MARKERS, WAKE_WORKSPACE_PAUSED, type WakeRelease } from './background-tasks.service'
 
 /** Well above TURN_REATTACH_AFTER_MS, so the reattach job gets to a dead tracker's turn first. */
 const ACTIVE_TURN_STALE_AFTER_MS = 10 * 60 * 1000
@@ -176,9 +176,20 @@ async function dispatchRow(row: QueueRow): Promise<void> {
     { type: 'text', text: row.content },
   ])
   const clientTurnId = `queue-${row.id}-${randomUUID()}`
+  // A queued turn (a wake, a message typed while the agent was busy) is a
+  // single message. If the runtime no longer holds this session — idle
+  // eviction, pod restart — the model would see one line and nothing else, so
+  // the stored conversation rides along (SHO-137).
+  const historySeed = await import('./chat-history-seed.service')
+    .then((m) => m.historySeedFor(row.sessionId, { excludeNewestUserMessage: true }))
+    .catch((err: Error) => {
+      console.warn(`[chat-queue] history seed for ${row.sessionId} failed:`, err.message)
+      return null
+    })
   const requestBody = {
     ...body,
     messages: [{ role: 'user', parts }],
+    ...(historySeed ? { historySeed } : {}),
     chatSessionId: row.sessionId,
     userId: row.userId,
     clientTurnId,
@@ -268,11 +279,21 @@ async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | 
     cardsOnly = tasks.every((t) => t.source === 'work_item')
   }
   if (taskWakeBodyResetsRun(row.body)) return null
+  // A workspace-wide pause holds every automatic wake — task updates, schedules,
+  // card hand-offs, team-chat tags. A person's own message is not a
+  // `task_notification` row, so it never reaches here and still runs (SHO-118).
+  if (await sessionWorkspacePaused(row.sessionId)) return WAKE_WORKSPACE_PAUSED
   const { MAX_CONSECUTIVE_WAKES, MAX_CONSECUTIVE_CARD_WAKES, consecutiveWakeWaits } =
     await import('./background-tasks.service')
   const limit = cardsOnly ? MAX_CONSECUTIVE_CARD_WAKES : MAX_CONSECUTIVE_WAKES
   if ((await consecutiveWakeWaits(row.sessionId, limit)) >= limit) return WAKE_PAUSED
   return null
+}
+
+/** Is every automatic agent start held in the workspace this session lives in? */
+async function sessionWorkspacePaused(chatSessionId: string): Promise<boolean> {
+  const { isChatSessionWorkspacePaused } = await import('./workspace-pause.service')
+  return isChatSessionWorkspacePaused(chatSessionId)
 }
 
 /**
@@ -300,7 +321,7 @@ async function clearPausedWakeRows(chatSessionId: string, keepId?: string): Prom
     where: {
       sessionId: chatSessionId,
       status: 'failed',
-      error: WAKE_PAUSED,
+      error: { in: WAKE_PAUSED_MARKERS },
       ...(keepId ? { id: { not: keepId } } : {}),
     },
   }).catch(() => {})
@@ -376,7 +397,7 @@ async function collapseFailedWakeRows(chatSessionId: string, keepId: string, tas
         kind: 'task_notification',
         status: 'failed',
         id: { not: keepId },
-        NOT: { error: WAKE_PAUSED },
+        NOT: { error: { in: WAKE_PAUSED_MARKERS } },
       },
       select: { id: true, body: true },
       take: 100,

@@ -173,6 +173,9 @@ mock.module('../config/usage-plans', () => ({
   SEVEN_DAY_MS: 7 * 24 * 60 * 60 * 1000,
   PLAN_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40 },
   PLAN_RANK: { free: 0, basic: 1, pro: 2, business: 3, enterprise: 4 },
+  // A plan change invalidates the agent-reply capacity cache, which reads these.
+  AGENT_REPLY_CONCURRENCY: { free: 2, basic: 4, pro: 8, business: 12, enterprise: 24 },
+  LOCAL_AGENT_REPLY_CONCURRENCY: 24,
   ROLLING_WINDOW_LIMITS: {
     free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
     basic: { fiveHourUsd: 2, weeklyUsd: 10 },

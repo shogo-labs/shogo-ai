@@ -98,7 +98,7 @@ export default function TeamChatInbox() {
             <Pressable
               key={String(u)}
               accessibilityRole="button"
-              accessibilityState={{ selected: unreadOnly === u }}
+              aria-selected={unreadOnly === u}
               onPress={() => setUnreadOnly(u)}
               className={cn('rounded-full border px-3 py-1', unreadOnly === u ? 'border-primary bg-primary/10' : 'border-border')}
             >

@@ -128,7 +128,7 @@ function OptionRow({ label, selected, onPress }: { label: string; selected: bool
   return (
     <Pressable
       accessibilityRole="checkbox"
-      accessibilityState={{ checked: selected }}
+      aria-checked={selected}
       onPress={onPress}
       className="min-h-12 flex-row items-center gap-3 rounded-md px-2 py-2 active:bg-muted hover:bg-muted"
     >

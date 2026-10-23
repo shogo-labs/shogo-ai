@@ -273,6 +273,83 @@ export interface ComposeMusicParams {
 export const DEFAULT_MUSIC_MODEL = 'music_v1'
 
 /**
+ * ElevenLabs speech-to-speech ("voice changer") models. The multilingual one
+ * is the cross-language default; the English one is cheaper and sharper on
+ * English input.
+ */
+export const VOICE_STS_MODEL_IDS: readonly string[] = [
+  'eleven_multilingual_sts_v2',
+  'eleven_english_sts_v2',
+]
+
+export const DEFAULT_STS_MODEL = 'eleven_multilingual_sts_v2'
+
+/** ElevenLabs Scribe speech-to-text models. */
+export const VOICE_SPEECH_TO_TEXT_MODEL_IDS: readonly string[] = ['scribe_v1']
+
+export const DEFAULT_SPEECH_TO_TEXT_MODEL = 'scribe_v1'
+
+/** ElevenLabs text-to-sound-effects models. */
+export const VOICE_SOUND_GENERATION_MODEL_IDS: readonly string[] = ['eleven_text_to_sound_v2']
+
+export const DEFAULT_SOUND_GENERATION_MODEL = 'eleven_text_to_sound_v2'
+
+/** Parameters for {@link ElevenLabsClient.speechToSpeech} (the voice changer). */
+export interface SpeechToSpeechParams {
+  /** Target voice. `POST /v1/speech-to-speech/{voiceId}`. */
+  voiceId: string
+  /** Source audio to convert. */
+  audio: Blob
+  /** Filename sent in the multipart part; defaults to `audio`. */
+  fileName?: string
+  /** One of `VOICE_STS_MODEL_IDS`; defaults to `eleven_multilingual_sts_v2`. */
+  modelId?: string
+  voiceSettings?: VoiceSettings
+  /** Output container/quality, e.g. `mp3_44100_192`. */
+  outputFormat?: string
+  /** `pcm_s16le_16` / `other` (mp3) / `ulaw_8000`. */
+  fileFormat?: string
+  seed?: number
+  removeBackgroundNoise?: boolean
+}
+
+/** Parameters for {@link ElevenLabsClient.soundEffects}. */
+export interface SoundEffectsParams {
+  text: string
+  /** 0.5–30 s. */
+  durationSeconds?: number
+  /** 0–1; how literally the prompt is followed. */
+  promptInfluence?: number
+  loop?: boolean
+  /** Defaults to `eleven_text_to_sound_v2`. */
+  modelId?: string
+  outputFormat?: string
+}
+
+/** Parameters for {@link ElevenLabsClient.transcribe} (Scribe speech-to-text). */
+export interface TranscribeParams {
+  file: Blob
+  /** Filename sent in the multipart part; defaults to `audio`. */
+  fileName?: string
+  /** Defaults to `scribe_v1`. */
+  modelId?: string
+  /** ISO-639-1/3 code; omit to auto-detect. */
+  languageCode?: string
+  diarize?: boolean
+  tagAudioEvents?: boolean
+  numSpeakers?: number
+}
+
+/** A Scribe transcription. Extra provider fields are passed through as-is. */
+export interface TranscriptionResult {
+  text: string
+  language_code?: string
+  language_probability?: number
+  words?: unknown[]
+  [key: string]: unknown
+}
+
+/**
  * An error thrown when ElevenLabs returns a non-2xx response. Preserves the
  * status and response body so callers can decide how to surface it.
  */
@@ -653,6 +730,131 @@ export class ElevenLabsClient {
       )
     }
     return { audio, contentType }
+  }
+
+  /**
+   * Convert speech to speech — the "voice changer": keep the performance,
+   * swap the voice. `POST /v1/speech-to-speech/{voiceId}` with a multipart
+   * audio part. Returns the converted audio bytes.
+   *
+   * @example
+   * ```ts
+   * const { audio } = await el.speechToSpeech({
+   *   voiceId: '21m00Tcm4TlvDq8ikWAM',
+   *   audio: await fetch(myRecording).then((r) => r.blob()),
+   *   modelId: 'eleven_multilingual_sts_v2',
+   * })
+   * ```
+   */
+  async speechToSpeech(
+    params: SpeechToSpeechParams,
+  ): Promise<{ audio: ArrayBuffer; contentType: string }> {
+    if (!params.voiceId) throw new Error('speechToSpeech: voiceId is required')
+    if (!params.audio) throw new Error('speechToSpeech: audio is required')
+
+    const form = new FormData()
+    form.set('audio', params.audio, params.fileName ?? 'audio')
+    form.set('model_id', params.modelId ?? DEFAULT_STS_MODEL)
+    if (params.voiceSettings) {
+      form.set('voice_settings', JSON.stringify(params.voiceSettings))
+    }
+    if (params.outputFormat) form.set('output_format', params.outputFormat)
+    if (params.fileFormat) form.set('file_format', params.fileFormat)
+    if (params.seed !== undefined) form.set('seed', String(params.seed))
+    if (params.removeBackgroundNoise !== undefined) {
+      form.set('remove_background_noise', String(params.removeBackgroundNoise))
+    }
+
+    const { audio, contentType } = await this.request({
+      method: 'POST',
+      path: `/v1/speech-to-speech/${encodeURIComponent(params.voiceId)}`,
+      body: form,
+      accept: 'audio/mpeg',
+    })
+    if (!audio) {
+      throw new ElevenLabsApiError(
+        'speechToSpeech: expected audio bytes but got a JSON response',
+        500,
+        '',
+      )
+    }
+    return { audio, contentType }
+  }
+
+  /**
+   * Generate a sound effect from a text prompt. `POST /v1/sound-generation`.
+   *
+   * @example
+   * ```ts
+   * const { audio } = await el.soundEffects({ text: 'heavy wooden door creaking' })
+   * ```
+   */
+  async soundEffects(
+    params: SoundEffectsParams,
+  ): Promise<{ audio: ArrayBuffer; contentType: string }> {
+    if (!params.text || !params.text.trim()) {
+      throw new Error('soundEffects: text is required')
+    }
+    const body: Record<string, unknown> = {
+      text: params.text,
+      model_id: params.modelId ?? DEFAULT_SOUND_GENERATION_MODEL,
+    }
+    if (params.durationSeconds !== undefined) body.duration_seconds = params.durationSeconds
+    if (params.promptInfluence !== undefined) body.prompt_influence = params.promptInfluence
+    if (params.loop !== undefined) body.loop = params.loop
+
+    const { audio, contentType } = await this.request({
+      method: 'POST',
+      path: '/v1/sound-generation',
+      body,
+      accept: 'audio/mpeg',
+      ...(params.outputFormat ? { query: { output_format: params.outputFormat } } : {}),
+    })
+    if (!audio) {
+      throw new ElevenLabsApiError(
+        'soundEffects: expected audio bytes but got a JSON response',
+        500,
+        '',
+      )
+    }
+    return { audio, contentType }
+  }
+
+  /**
+   * Transcribe audio with Scribe. `POST /v1/speech-to-text` (multipart).
+   *
+   * @example
+   * ```ts
+   * const { text } = await el.transcribe({ file: recording })
+   * ```
+   */
+  async transcribe(params: TranscribeParams): Promise<TranscriptionResult> {
+    if (!params.file) throw new Error('transcribe: file is required')
+
+    const form = new FormData()
+    form.set('file', params.file, params.fileName ?? 'audio')
+    form.set('model_id', params.modelId ?? DEFAULT_SPEECH_TO_TEXT_MODEL)
+    if (params.languageCode) form.set('language_code', params.languageCode)
+    if (params.diarize !== undefined) form.set('diarize', String(params.diarize))
+    if (params.tagAudioEvents !== undefined) {
+      form.set('tag_audio_events', String(params.tagAudioEvents))
+    }
+    if (params.numSpeakers !== undefined) form.set('num_speakers', String(params.numSpeakers))
+
+    const { json } = await this.request({
+      method: 'POST',
+      path: '/v1/speech-to-text',
+      body: form,
+      accept: 'application/json',
+    })
+    if (!json || typeof json !== 'object') {
+      throw new ElevenLabsApiError(
+        'transcribe: expected a JSON transcription but got audio',
+        500,
+        '',
+      )
+    }
+    return json as TranscriptionResult
   }
 
   /** Probe whether a given voice id still exists on the caller's account. */

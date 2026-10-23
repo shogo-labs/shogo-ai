@@ -197,6 +197,18 @@ module "us" {
   # EU/India against (see .github/scripts/check-node-disk-parity.sh).
   system_node_boot_volume_gb = 200
 
+  # Image GC at 70/60 instead of the kubelet default 85/80 (SHO-136). Measured
+  # on the live US cluster 2026-10-22: 36/29/38/42% nodefs used with 4/3/4/6
+  # runtime + 4/2/2/4 api digests per node — i.e. reclaiming at 141 GB leaves
+  # real headroom, and the default 172 GB would leave a node ~10 GB from
+  # eviction with no middle gear. Only the GC thresholds: the staging pool's
+  # memory-pressure flags are a separate decision and do not ride along here.
+  #
+  # Requires the canary recycle in terraform/README.md ("Boot volume
+  # remediation" has the procedure) — node_metadata is in the pool's
+  # ignore_changes, so an apply alone does not reach running nodes.
+  kubelet_extra_args = "--image-gc-high-threshold=70 --image-gc-low-threshold=60"
+
   enable_workload_pool = false
 
   # Autoscaler IAM (tenancy-level — only enable in primary region)

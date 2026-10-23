@@ -151,6 +151,12 @@
       "import": "./dist/voice/route/audio-tags.js",
       "require": "./dist/voice/route/audio-tags.cjs"
     },
+    "./voice/route/op": {
+      "types": "./dist/voice/route/op.d.ts",
+      "development": "./src/voice/route/op.ts",
+      "import": "./dist/voice/route/op.js",
+      "require": "./dist/voice/route/op.cjs"
+    },
     "./cli/deploy": {
       "types": "./dist/cli/deploy.d.ts",
       "development": "./src/cli/deploy.ts",
@@ -199,6 +205,12 @@
       "import": "./dist/vite-watch.js",
       "require": "./dist/vite-watch.cjs"
     },
+    "./child-ledger": {
+      "types": "./dist/child-ledger.d.ts",
+      "development": "./src/child-ledger.ts",
+      "import": "./dist/child-ledger.js",
+      "require": "./dist/child-ledger.cjs"
+    },
     "./file-types": {
       "types": "./dist/file-types.d.ts",
       "development": "./src/file-types.ts",
@@ -228,6 +240,12 @@
       "development": "./src/microcompact.ts",
       "import": "./dist/microcompact.js",
       "require": "./dist/microcompact.cjs"
+    },
+    "./turn-boundary": {
+      "types": "./dist/turn-boundary.d.ts",
+      "development": "./src/turn-boundary.ts",
+      "import": "./dist/turn-boundary.js",
+      "require": "./dist/turn-boundary.cjs"
     },
     "./prefix-fingerprint": {
       "types": "./dist/prefix-fingerprint.d.ts",

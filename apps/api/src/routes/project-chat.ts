@@ -57,6 +57,7 @@ import {
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
 import { dispatchNext } from "../services/chat-queue-dispatcher.service"
+import { historySeedForTurn, lastUserPromptText, summarizeSessionFromDb } from "../services/chat-history-seed.service"
 import { countLineChanges } from "../lib/tool-line-stats"
 import { fetchFromProjectRuntime } from "../lib/chat-runtime-fetch"
 import { importCloudModule } from "../lib/cloud-import"
@@ -260,6 +261,12 @@ export async function trackUsageFromStream(
      * session and is ignored instead of overwriting this turn's row.
      */
     expectedTurnStartedAt?: number
+    /**
+     * The exact turn this tracker owns. The buffer is keyed by chat, so a turn
+     * that starts after ours replaces it; a buffer whose `data-turn-start`
+     * names a different turn is not ours and is never persisted as this turn.
+     */
+    expectedTurnId?: string
     /** Workspace of a `project: null` turn, so its usage can still be recorded. */
     workspaceId?: string
   } = {},
@@ -681,6 +688,12 @@ export async function trackUsageFromStream(
     }
     if (type === 'data-turn-start' && trackedTurnId === undefined) {
       const turnId = data?.data?.turnId
+      // The caller named the turn it is following; a different one in the
+      // buffer (a later turn reused the session's buffer) is not its reply.
+      if (options.expectedTurnId && typeof turnId === 'string' && turnId && turnId !== options.expectedTurnId) {
+        foreignTurn = true
+        return
+      }
       if (typeof turnId === 'string' && turnId) trackedTurnId = turnId
     }
 
@@ -1456,6 +1469,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         body = JSON.stringify(parsedBody)
       }
 
+
       // Track the user who initiated this chat so AI proxy requests from the
       // runtime (which use a generic 'system' token) can be attributed correctly.
       const billingUserId = parsedBody?.userId || c.req.header("X-Billing-User-Id")
@@ -1535,6 +1549,21 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           },
           400
         )
+      }
+
+      // A typed turn carries no history of its own beyond the client's page of
+      // messages, so a cold or evicted runtime used to answer with no context
+      // at all (SHO-137 round 3, R4). Attach the durable seed; the runtime only
+      // applies it when its own session is empty.
+      if (bodyIsJson && parsedBody && typeof parsedBody === 'object' && !parsedBody.historySeed) {
+        const seed = await historySeedForTurn(
+          incomingChatSessionId,
+          lastUserPromptText(parsedBody),
+        ).catch(() => null)
+        if (seed) {
+          parsedBody.historySeed = seed
+          body = JSON.stringify(parsedBody)
+        }
       }
 
       // Turn idempotency: a `clientTurnId` that matches the most recently
@@ -2373,6 +2402,46 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         { method: "POST", body: "{}", signal: c.req.raw.signal },
       )
       const result: any = await response.json().catch(() => ({}))
+      // An idle or evicted session is the normal case here, not an error: the
+      // runtime holds nothing in memory, so `compactSession()` answers
+      // `unknown-session`, which `server.ts` turns into HTTP 404 with
+      // `{reason: "session not found"}`. The rows are all in ChatMessage, so
+      // summarize them API-side and store the block on the ChatSession
+      // (SHO-137 round 3, R5). This branch has to come BEFORE `!response.ok`,
+      // or the 404 returns first and the button is dead on exactly the chats
+      // that need it most (round 4, B1).
+      const evicted =
+        response.status === 404 ||
+        result?.status === "unknown-session" ||
+        result?.error === "unknown-session" ||
+        result?.reason === "session not found"
+      if (evicted) {
+        const fromDb = await summarizeSessionFromDb(chatSessionId)
+        if (!fromDb) {
+          return c.json(
+            { compacted: false, queued: false, status: "nothing-to-compact", reason: "no stored messages to summarize" },
+            200,
+          )
+        }
+        await persistCompactionRow(chatSessionId, {
+          trigger: "manual",
+          tokensBefore: 0,
+          tokensAfter: 0,
+          messagesBefore: fromDb.messagesBefore,
+          messagesAfter: fromDb.messagesAfter,
+          summaryChars: fromDb.summary.length,
+        })
+        return c.json({
+          compacted: true,
+          queued: false,
+          status: "compacted",
+          source: "db",
+          messagesBefore: fromDb.messagesBefore,
+          messagesAfter: fromDb.messagesAfter,
+          summaryChars: fromDb.summary.length,
+        })
+      }
+
       if (!response.ok) {
         return c.json(
           { compacted: false, queued: false, reason: result?.error ?? result?.reason ?? `runtime ${response.status}` },
