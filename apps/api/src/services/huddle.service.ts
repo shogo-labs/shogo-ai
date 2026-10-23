@@ -19,6 +19,8 @@ import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { routeToHomeRegion } from '../lib/home-region-route'
 import { deleteRoom, liveKitConfig, listRoomIdentities, mintJoinToken, muteParticipantMicrophone, receiveWebhook, removeRoomParticipant } from '../lib/livekit'
+import { dispatchNotesAgent, notesFallbackAvailability, setRoomNotesMetadata } from '../lib/livekit-notes'
+import { dedupeHandoverSegments } from './huddle-notes-coverage'
 import { sendVoipPush, type VoipPayload, type VoipSendResult } from '../lib/apns'
 import { sendPushToUser } from '../lib/push-notifications'
 import { getSettingsRows, isSilenced } from './chat-settings'
@@ -145,7 +147,15 @@ export interface HuddleView {
    * Notes (speaker-labelled transcript + auto summary at the end). On by
    * default; any participant may turn it off for the rest of the call.
    */
-  notes: { enabled: boolean }
+  notes: {
+    enabled: boolean
+    /**
+     * Why part of this call is not being transcribed. The client path always
+     * runs; this is about people the fallback would have covered (an all-native
+     * call, or a coverer who left) when LiveKit cannot help.
+     */
+    unavailableReason?: string | null
+  }
 }
 
 export interface HuddleJoin {
@@ -260,7 +270,7 @@ async function serialize(row: any): Promise<HuddleView> {
         createdAt: new Date(r.createdAt).toISOString(),
       }
     }),
-    notes: { enabled: row.notesEnabled !== false },
+    notes: { enabled: row.notesEnabled !== false, unavailableReason: notesUnavailableReason(row) },
   }
 }
 
@@ -1497,6 +1507,41 @@ async function streamAvailabilityOrThrow(): Promise<{ backend: 'openai' | 'sherp
     : new ConversationError(502, 'stream_unavailable', 'Streaming transcription is not available here')
 }
 
+/**
+ * Stop the whole call's notes when the workspace is out of balance: every
+ * stream on both paths goes, everyone is told why, and the partial transcript
+ * is still finalized when the call ends. Local mode has no balance to check.
+ */
+async function requireNotesBalance(row: any): Promise<void> {
+  // checkUsageBalance is always ok in local mode: local usage is unlimited.
+  const { checkUsageBalance } = await import('./billing.service')
+  const balance = await checkUsageBalance(row.workspaceId)
+  if (balance.ok) return
+  await stopNotesForReason(row, 'usage_limit_reached', 'This workspace is out of usage credit')
+  throw new ConversationError(409, 'usage_limit_reached', 'This workspace is out of usage credit')
+}
+
+/** Turn notes off with a reason everyone can see, once. */
+async function stopNotesForReason(row: any, reason: string, message: string): Promise<void> {
+  if (!row.notesEnabled) return
+  await db.huddle.update({ where: { id: row.id }, data: { notesEnabled: false } }).catch(() => {})
+  const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
+  if (!conversation) return
+  void syncNotesFallback(row, false)
+  publishConversationEvent(
+    conversation.workspaceId,
+    {
+      type: 'huddle.notes',
+      conversationId: row.conversationId,
+      huddleId: row.id,
+      enabled: false,
+      reason,
+      message,
+    },
+    await huddleAudience(conversation, row.id),
+  )
+}
+
 function notesTicket(
   row: any,
   target: string,
@@ -1536,6 +1581,7 @@ export async function createHuddleNotesTicket(
   requireParticipant(row, userId)
   if (!row.notesEnabled) throw new ConversationError(409, 'notes_off', 'Notes are off for this huddle')
   const { backend } = await streamAvailabilityOrThrow()
+  await requireNotesBalance(row)
 
   const target = opts.forUserId && opts.forUserId !== userId ? opts.forUserId : userId
   if (target !== userId) {
@@ -1561,6 +1607,7 @@ export async function guestHuddleNotesTicket(requestId: string): Promise<HuddleN
   }
   if (!row.notesEnabled) throw new ConversationError(409, 'notes_off', 'Notes are off for this huddle')
   const { backend } = await streamAvailabilityOrThrow()
+  await requireNotesBalance(row)
   return notesTicket(row, request.guestId, request.guestName || 'Guest', null, backend)
 }
 
@@ -1577,6 +1624,7 @@ export async function setHuddleNotes(conversationId: string, userId: string, ena
   if (changed) await db.huddle.update({ where: { id: row.id }, data: { notesEnabled: enabled } })
   const view = (await announce(conversationId)) ?? (await serialize(await activeHuddleRow(conversationId)))
   if (changed) {
+    void syncNotesFallback(row, enabled)
     const conversation = await db.conversation.findUnique({ where: { id: conversationId } })
     const user = await db.user.findUnique({ where: { id: userId }, select: { name: true, email: true } })
     if (conversation) {
@@ -1595,6 +1643,120 @@ export async function setHuddleNotes(conversationId: string, userId: string, ena
     }
   }
   return view
+}
+
+/** Where a huddle's notes belong, for code that only has the huddle id (the worker). */
+export async function findHuddleNotesTarget(
+  huddleId: string,
+): Promise<{ huddleId: string; workspaceId: string; conversationId: string; roomName: string } | null> {
+  const row = await db.huddle.findUnique({
+    where: { id: huddleId },
+    select: { id: true, workspaceId: true, conversationId: true, roomName: true },
+  })
+  if (!row) return null
+  return { huddleId: row.id, workspaceId: row.workspaceId, conversationId: row.conversationId, roomName: row.roomName }
+}
+
+/**
+ * Charge the workspace for audio the fallback actually sent to Inference STT,
+ * and keep the audit counter honest. Called every 60 s and on close; a crashed
+ * flush can under-count but never double-bills, because the counter and the
+ * charge advance together from the same delta.
+ */
+export async function notesLivekitFallback(input: {
+  huddleId: string
+  identity: string
+  seconds: number
+  streamNo: number
+  flushNo: number
+  reason?: string
+  message?: string
+}): Promise<void> {
+  if (input.reason) {
+    const row = await db.huddle.findUnique({ where: { id: input.huddleId } })
+    if (row) await stopNotesForReason(row, input.reason, input.message || 'Notes stopped')
+    return
+  }
+  if (!(input.seconds > 0)) return
+  const row = await db.huddle.findUnique({
+    where: { id: input.huddleId },
+    select: { id: true, workspaceId: true },
+  })
+  if (!row) return
+
+  const { recordTranscriptionUsage } = await import('../routes/ai-proxy')
+  const now = Math.floor(Date.now() / 1000)
+  const model = `livekit/${(await import('../lib/livekit-notes')).notesSttModel()}`
+  await recordTranscriptionUsage(
+    {
+      projectId: 'api-key',
+      workspaceId: row.workspaceId,
+      // Guests and covered native users have no user id of their own to bill to.
+      userId: input.identity.startsWith('guest') ? 'system' : input.identity,
+      type: 'ai-proxy',
+      authKind: 'api-key',
+      iat: now,
+      exp: now + 3600,
+    } as any,
+    model,
+    input.seconds,
+  )
+  await db.huddle
+    .update({
+      where: { id: row.id },
+      data: { notesLivekitSeconds: { increment: Math.round(input.seconds) } },
+    })
+    .catch(() => {})
+  void input.streamNo
+  void input.flushNo
+}
+
+/**
+ * Drop the duplicate lines a client/fallback handover leaves behind. Both paths
+ * write the same words for a second or two, tagged `c:` or `lk:` in the item id,
+ * so the transcript is cleaned once, before anyone reads or summarizes it.
+ */
+async function dedupeHandoverTranscript(meetingId: string): Promise<void> {
+  try {
+    const draft = await db.meeting.findUnique({ where: { id: meetingId }, select: { transcript: true } })
+    const transcript = readTranscript(draft?.transcript)
+    if (!transcript?.segments?.length) return
+    const kept = dedupeHandoverSegments(transcript.segments)
+    if (kept.length === transcript.segments.length) return
+    const text = kept.map((segment: any) => segment.text).join(' ').trim()
+    await db.meeting.update({ where: { id: meetingId }, data: { transcript: { ...transcript, segments: kept, text } } })
+  } catch (err) {
+    // Cleanup must never cost the notes: the transcript stays as it is.
+    console.warn('[Huddles] Could not de-duplicate the handover:', (err as Error).message)
+  }
+}
+
+/** Why the LiveKit fallback can't cover uncovered tracks here, or null when it can. */
+function notesUnavailableReason(row: any): string | null {
+  if (!row?.notesEnabled) return null
+  const availability = notesFallbackAvailability()
+  return availability.ok ? null : availability.reason
+}
+
+/**
+ * Tell LiveKit whether this call is being transcribed, and bring the fallback
+ * agent in (or leave it to close its own streams). Best effort: the huddle row
+ * is the source of truth, so a failure here only delays the fallback a beat.
+ */
+async function syncNotesFallback(row: any, enabled: boolean): Promise<void> {
+  try {
+    await setRoomNotesMetadata(row.roomName, { huddleId: row.id, notes: enabled })
+    if (!enabled) return
+    const availability = notesFallbackAvailability()
+    if (!availability.ok) {
+      console.warn(`[huddle-notes] fallback unavailable for ${row.id}: ${availability.reason}`)
+      return
+    }
+    const dispatched = await dispatchNotesAgent(row.roomName, row.id)
+    if (!dispatched.ok) console.warn(`[huddle-notes] dispatch failed for ${row.id}: ${dispatched.reason}`)
+  } catch (err) {
+    console.warn('[huddle-notes] could not sync the fallback:', (err as Error).message)
+  }
 }
 
 /**
@@ -1683,6 +1845,10 @@ export async function finalizeHuddleNotes(huddleId: string): Promise<void> {
     }
     await finalizeLiveTranscript(draft.id, Math.round(durationMs / 1000))
   }
+
+  // A client and the fallback both transcribed the same audio around a
+  // handover; keep one copy of each line before the summary is written.
+  await dedupeHandoverTranscript(draft.id)
 
   // Another pod (or an earlier attempt) may have written the summary already.
   const before = await db.meeting.findUnique({ where: { id: draft.id }, select: { enhanceStatus: true } })

@@ -45,6 +45,8 @@ export const STREAM_SAMPLE_RATE = 16000
 export const STREAM_MAX_FRAME_BYTES = 64 * 1024
 /** A single stream never runs longer than this. */
 export const STREAM_MAX_SECONDS = 8 * 60 * 60
+/** How often a huddle stream re-reads the notes toggle before forwarding audio. */
+const NOTES_TOGGLE_TTL_MS = 2_000
 export const FINISH_TIMEOUT_MS = 8000
 /** Huddle streams merge into one shared draft from several people at once, so they retry more. */
 export const HUDDLE_FINAL_ATTEMPTS = 25
@@ -663,6 +665,14 @@ export interface StreamSessionDeps {
    * clocks disagree, so a huddle's timeline can't come from the client.
    */
   huddleOffsetSeconds?(huddleId: string): Promise<number | null>
+  /**
+   * Whether notes are still on for a huddle. Checked before any audio is
+   * forwarded so a client that ignores the toggle cannot keep feeding a
+   * recognizer (or the bill) after the call turned notes off.
+   */
+  huddleNotesEnabled?(huddleId: string): Promise<boolean>
+  /** Adds the forwarded seconds to the huddle's client-path audit counter. */
+  addNotesClientSeconds?(huddleId: string, seconds: number): Promise<void>
 }
 
 export const defaultStreamDeps: StreamSessionDeps = {
@@ -676,6 +686,16 @@ export const defaultStreamDeps: StreamSessionDeps = {
   },
   publish: publishMeetingLive,
   setStatus: setLiveStatus,
+  async huddleNotesEnabled(huddleId) {
+    const huddle = await prisma.huddle.findUnique({ where: { id: huddleId }, select: { notesEnabled: true } })
+    return huddle?.notesEnabled !== false
+  },
+  async addNotesClientSeconds(huddleId, seconds) {
+    if (!(seconds > 0)) return
+    await prisma.huddle
+      .update({ where: { id: huddleId }, data: { notesClientSeconds: { increment: Math.round(seconds) } } })
+      .catch(() => {})
+  },
   async bill(ticket, seconds) {
     const { recordTranscriptionUsage } = await import('../routes/ai-proxy')
     const now = Math.floor(Date.now() / 1000)
@@ -714,6 +734,10 @@ export class LiveStreamSession {
   private finished: Promise<void> | null = null
   private billed = false
   private closed = false
+  /** Huddle notes state, re-read from the row every few seconds while audio flows. */
+  private notesOn = true
+  private notesCheckedAt = 0
+  private notesRefreshing = false
   /**
    * Where this stream's audio lands on the draft's timeline. A recording
    * passes it in; a huddle's is computed on the server in `doBegin`, because
@@ -747,6 +771,16 @@ export class LiveStreamSession {
     if (!choice) return this.fail('stream_unavailable', 'Live streaming is not available here.')
     if (!(await this.deps.admit(this.ticket))) return this.fail('usage_limit_reached', 'Workspace usage limit reached.')
     const huddleId = this.ticket.huddleId
+    if (huddleId) {
+      // Read the toggle before a single frame is accepted, so a stream that
+      // starts after notes were turned off never forwards (or bills) audio.
+      const enabled = await this.deps.huddleNotesEnabled?.(huddleId).catch(() => undefined)
+      this.notesCheckedAt = Date.now()
+      if (enabled === false) {
+        this.notesOn = false
+        return this.fail('notes_off', 'Notes are off for this huddle.')
+      }
+    }
     let draft: { id: string; status: string }
     if (huddleId) {
       const ensure = this.deps.ensureHuddleDraft
@@ -790,6 +824,12 @@ export class LiveStreamSession {
     if (this.closed || this.finished) return
     if (frame.byteLength > STREAM_MAX_FRAME_BYTES) return
     if (this.samples / STREAM_SAMPLE_RATE > STREAM_MAX_SECONDS) return
+    if (this.ticket.huddleId) {
+      if (Date.now() - this.notesCheckedAt >= NOTES_TOGGLE_TTL_MS) void this.refreshNotesEnabled()
+      // Off means off: a client that ignored the toggle gets no recognizer and
+      // no bill for anything it keeps sending.
+      if (!this.notesOn) return
+    }
     this.samples += frame.byteLength >> 1
     if (this.ready && this.backend) {
       this.backend.sendPcm(frame)
@@ -800,6 +840,36 @@ export class LiveStreamSession {
     } else {
       this.lost = true
     }
+  }
+
+  /** Re-read the huddle's notes flag; off closes this stream immediately. */
+  private async refreshNotesEnabled(): Promise<void> {
+    const huddleId = this.ticket.huddleId
+    if (!huddleId || this.notesRefreshing) return
+    this.notesRefreshing = true
+    try {
+      const enabled = await this.deps.huddleNotesEnabled?.(huddleId).catch(() => undefined)
+      this.notesCheckedAt = Date.now()
+      if (enabled === false) {
+        this.notesOn = false
+        this.stopForNotesOff()
+      }
+    } finally {
+      this.notesRefreshing = false
+    }
+  }
+
+  private stopForNotesOff(): void {
+    if (this.closed || this.finished) return
+    this.send({
+      type: 'error',
+      code: 'notes_off',
+      message: 'Notes were turned off for this huddle.',
+      fatal: true,
+    })
+    this.closed = true
+    this.backend?.close()
+    void this.settleBilling()
   }
 
   private onBackendEvent(event: BackendEvent): void {
@@ -869,9 +939,16 @@ export class LiveStreamSession {
   private async settleBilling(): Promise<void> {
     if (this.billed || !this.backend?.billed || this.samples === 0) return
     this.billed = true
-    await this.deps.bill(this.ticket, this.samples / STREAM_SAMPLE_RATE).catch((err) => {
+    const seconds = this.samples / STREAM_SAMPLE_RATE
+    await this.deps.bill(this.ticket, seconds).catch((err) => {
       console.error('[MeetingStream] billing failed:', err?.message ?? err)
     })
+    // Audit: what the client path actually forwarded, so the fallback's share
+    // of a call is visible after the fact.
+    const huddleId = this.ticket.huddleId
+    if (huddleId) {
+      await this.deps.addNotesClientSeconds?.(huddleId, seconds).catch(() => {})
+    }
   }
 }
 

@@ -307,6 +307,38 @@ describe('the summary when the call ends', () => {
     expect(view.transcript.text).toBe('Ana: ship it')
   })
 
+  test('a handover duplicates nothing in the transcript the summary is written from', async () => {
+    const { huddleId } = await liveHuddle()
+    const draft = await meetings.ensureHuddleNotesDraft(huddleId)
+    await db.meeting.update({
+      where: { id: draft.id },
+      data: {
+        status: 'ready',
+        enhanceStatus: 'ready',
+        enhancedNotes: '## Notes\n- ship it',
+        title: 'Design review',
+        transcript: {
+          text: 'ship it ship it we should ship',
+          segments: [
+            // The client had the track, then the fallback took it over for a
+            // beat: the same words arrive from both paths.
+            { start: 10, end: 12, text: 'ship it friday', speaker: 'Ana', itemId: 'c:ana:1' },
+            { start: 11, end: 13, text: 'Ship it Friday', speaker: 'Ana', itemId: 'lk:ana:1' },
+            { start: 14, end: 16, text: 'we should ship', speaker: 'Ben', itemId: 'c:ben:1' },
+          ],
+        },
+      },
+    })
+    await db.huddle.update({ where: { id: huddleId }, data: { startedAt: new Date(Date.now() - 300_000), endedAt: new Date() } })
+
+    await huddles.finalizeHuddleNotes(huddleId)
+
+    const view = await huddles.getHuddleNotes(huddleId, seed.owner)
+    expect(view.transcript.segments.map((segment: any) => segment.text)).toEqual(['ship it friday', 'we should ship'])
+    expect(view.transcript.segments[0].itemId).toBe('c:ana:1')
+    expect(view.transcript.text).toBe('ship it friday we should ship')
+  })
+
   test('a call nobody spoke in leaves nothing behind', async () => {
     const { huddleId } = await liveHuddle()
     const draft = await meetings.ensureHuddleNotesDraft(huddleId)

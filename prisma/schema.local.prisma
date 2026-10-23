@@ -3379,6 +3379,10 @@ model Huddle {
   /// Set when the notes summary was posted, claimed with `updateMany where notesMessageId: null`
   /// so exactly one pod posts it. Holds the summary message id once it is posted.
   notesMessageId String?
+  /// Audit: audio seconds the client path actually forwarded to STT for this call.
+  notesClientSeconds  Int @default(0)
+  /// Audit: audio seconds the LiveKit fallback forwarded to Inference STT for this call.
+  notesLivekitSeconds Int @default(0)
 
   conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   participants HuddleParticipant[]

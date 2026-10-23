@@ -696,7 +696,14 @@ export interface Huddle {
   /** People knocking through the huddle link. */
   requests?: HuddleJoinRequest[]
   /** Notes: a speaker-labelled transcript, and an auto summary posted when the call ends. */
-  notes?: { enabled: boolean }
+  notes?: {
+    enabled: boolean
+    /**
+     * Why the LiveKit fallback can't cover a track no device is transcribing
+     * (an all-native call, or a coverer who left). Null when it can.
+     */
+    unavailableReason?: string | null
+  }
 }
 
 /** Audio-socket ticket that transcribes one person in a huddle. */

@@ -469,7 +469,14 @@ export async function joinHuddleCall(input: JoinHuddleInput): Promise<void> {
       return
     }
     media = connected
-    set({ status: 'connected', notes: { ...state.notes, enabled: joined.huddle.notes?.enabled !== false } })
+    set({
+      status: 'connected',
+      notes: {
+        ...state.notes,
+        enabled: joined.huddle.notes?.enabled !== false,
+        message: joined.huddle.notes?.unavailableReason ?? null,
+      },
+    })
     syncNotes()
     if (input.kind === 'dm' && joined.huddle.participants.length === 1) {
       noAnswerTimer = setTimeout(() => {
