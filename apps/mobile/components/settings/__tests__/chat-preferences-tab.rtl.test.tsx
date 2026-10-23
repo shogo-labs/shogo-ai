@@ -79,7 +79,12 @@ mock.module('../../team-chat/WorkspaceChatAdmin', () => ({
   UserGroupsCard: () => createElement('div', { 'data-testid': 'user-groups' }),
   CustomEmojiCard: () => createElement('div', { 'data-testid': 'custom-emoji' }),
 }))
-mock.module('../../../lib/notification-sound', () => ({ previewMessageSound: () => {} }))
+const previews: Array<[string, string | undefined]> = []
+mock.module('../../../lib/notification-sound', () => ({
+  previewMessageSound: (level: string, tone?: string) => {
+    previews.push([level, tone])
+  },
+}))
 mock.module('../../../lib/huddle-ringtone', () => ({ previewHuddleSound: () => {} }))
 mock.module('../../../lib/notifications/device-alert-prefs', () => ({
   readDeviceAlertPrefs: () => ({ dockBounce: 'off', flashTaskbar: false }),
@@ -101,6 +106,7 @@ const chatSettings: Record<string, unknown> = {
   timezone: null,
   notifyDefault: 'mentions',
   messageSound: 'default',
+  messageTone: 'knock',
   huddleSound: 'ring',
   dndUntil: null,
   emailDigest: 'off',
@@ -124,8 +130,10 @@ const { ChatPreferencesTab } = await import('../ChatPreferencesTab')
 
 beforeEach(() => {
   updates.length = 0
+  previews.length = 0
   experience = { resolved: true, kind: 'team' }
   chatSettings.messageSound = 'default'
+  chatSettings.messageTone = 'knock'
   chatSettings.huddleSound = 'ring'
 })
 
@@ -142,6 +150,27 @@ describe('ChatPreferencesTab', () => {
 
     fireEvent.click(off)
     expect(updates).toEqual([{ messageSound: 'off' }])
+  })
+
+  test('lists the message tones with Soft Knock selected, and saving one previews it', () => {
+    render(createElement(ChatPreferencesTab))
+
+    expect(screen.getByTestId('chat-message-tone-knock').getAttribute('aria-checked')).toBe('true')
+    for (const tone of ['chirp', 'pristine', 'definite', 'juntos', 'confirmation', 'question', 'glass']) {
+      expect(screen.getByTestId(`chat-message-tone-${tone}`).getAttribute('aria-checked')).toBe('false')
+    }
+
+    fireEvent.click(screen.getByTestId('chat-message-tone-glass'))
+    expect(updates).toEqual([{ messageTone: 'glass' }])
+    expect(previews).toEqual([['default', 'glass']])
+  })
+
+  test('the tone preview keeps a subtle message sound subtle', () => {
+    chatSettings.messageSound = 'subtle'
+    render(createElement(ChatPreferencesTab))
+
+    fireEvent.click(screen.getByTestId('chat-message-tone-chirp'))
+    expect(previews).toEqual([['subtle', 'chirp']])
   })
 
   test('renders every control the old Chat preferences page had', () => {

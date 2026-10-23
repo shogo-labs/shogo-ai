@@ -160,6 +160,50 @@ describe('TeamChatNotifier message sound', () => {
     expect(notified[0]).toMatchObject({ conversationId: 'c-ada', messageId: 'm-1', silent: true })
   })
 
+  test('a second alert inside the throttle window plays no cue, and its banner stays silent too', async () => {
+    render(<TeamChatNotifier />)
+    unlockAudio()
+    eventHandler!(dmEvent)
+    await waitFor(() => expect(notified).toHaveLength(1))
+    const cues = playedCues()
+    eventHandler!({ ...dmEvent, messageId: 'm-2' })
+    await waitFor(() => expect(notified).toHaveLength(2))
+    expect(playedCues()).toBe(cues)
+    // A silent banner means the system's default sound never stacks on the chosen tone.
+    expect(notified[1]).toMatchObject({ messageId: 'm-2', silent: true })
+  })
+
+  test('a tab that loses the claim for a message plays no cue and keeps its banner silent', async () => {
+    const nav = win.navigator
+    const original = Object.getOwnPropertyDescriptor(nav, 'locks')
+    // Another tab already holds the lock for this message.
+    Object.defineProperty(nav, 'locks', {
+      value: { request: (_n: string, _o: unknown, cb: (lock: object | null) => unknown) => Promise.resolve(cb(null)) },
+      configurable: true,
+    })
+    try {
+      render(<TeamChatNotifier />)
+      unlockAudio()
+      eventHandler!(dmEvent)
+      await waitFor(() => expect(notified).toHaveLength(1))
+      expect(playedCues()).toBe(0)
+      expect(notified[0].silent).toBe(true)
+    } finally {
+      if (original) Object.defineProperty(nav, 'locks', original)
+      else delete nav.locks
+    }
+  })
+
+  test('with the message sound off, a second alert keeps its banner sound', async () => {
+    settingsState = { messageSound: 'off' }
+    render(<TeamChatNotifier />)
+    unlockAudio()
+    eventHandler!(dmEvent)
+    eventHandler!({ ...dmEvent, messageId: 'm-2' })
+    await waitFor(() => expect(notified).toHaveLength(2))
+    expect(notified.every((n) => n.silent === false)).toBe(true)
+  })
+
   test('the cue plays even when the OS banner would not show', async () => {
     // Banner permission is handled inside notifyChannelMessage; the cue must not depend on it.
     render(<TeamChatNotifier />)

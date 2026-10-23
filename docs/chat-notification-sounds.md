@@ -2,13 +2,16 @@
 
 This document lists every audio notification in Shogo chat: what each sound is, and the conditions under which it plays on web, desktop, and phones.
 
-On web and desktop, chat messages play the Soft Knock recording (`apps/mobile/assets/sounds/soft-knock.mp3`, 2 seconds), and the default huddle ring plays the Llamada Clara recording (`apps/mobile/assets/sounds/llamada-clara.mp3`, 18.5 seconds). All other in-app sounds are synthesized with Web Audio. Phones don't use these sounds. They rely on the system notification sound, vibration, or the system call screen.
+On web and desktop, chat messages play the tone chosen under "Message tone" in Settings > Chat. The default is the Soft Knock recording (`apps/mobile/assets/sounds/soft-knock.mp3`, 2 seconds). The default huddle ring plays the Llamada Clara recording (`apps/mobile/assets/sounds/llamada-clara.mp3`, 18.5 seconds). All other in-app sounds are synthesized with Web Audio. Phones don't use these sounds. They rely on the system notification sound, vibration, or the system call screen.
 
 ## Sound inventory
 
 | Sound | What it is for | How it sounds | Source |
 |---|---|---|---|
-| Soft Knock | Every chat message alert: DMs, mentions, thread replies, keywords, agent questions | Recorded soft knock, 2 s | `apps/mobile/assets/sounds/soft-knock.mp3`, played by `apps/mobile/lib/notification-sound.ts` |
+| Soft Knock | Every chat message alert: DMs, mentions, thread replies, keywords, agent questions (default tone) | Recorded soft knock, 2 s | `apps/mobile/assets/sounds/soft-knock.mp3`, played by `apps/mobile/lib/notification-sound.ts` |
+| Chirp tone | Message alerts, when chosen | The synthesized `dm`, `mention`, `thread`, and `other` cues below, always | `apps/mobile/lib/notification-sound.ts` |
+| Pristine, Definite, Juntos | Message alerts, when chosen | Recorded chimes: 2 s (trimmed), 2.1 s, 3.2 s | `apps/mobile/assets/sounds/{pristine,definite,juntos}.mp3` |
+| Confirmation, Question, Glass | Message alerts, when chosen | Short recorded UI cues: 0.5 s, 0.5 s, 0.3 s | `apps/mobile/assets/sounds/{confirmation,question,glass}.mp3` |
 | Fallback cue: `dm` | Direct and group direct messages, until the recording has loaded | Two rising notes (880 Hz, then 1318 Hz) | `apps/mobile/lib/notification-sound.ts` |
 | Fallback cue: `mention` | @mentions, `@channel`, `@here`, until the recording has loaded | Two higher rising notes (1047 Hz, then 1568 Hz) | same |
 | Fallback cue: `thread` | Replies in a thread you follow, until the recording has loaded | One soft note (740 Hz, 160 ms) | same |
@@ -24,7 +27,11 @@ On web and desktop, chat messages play the Soft Knock recording (`apps/mobile/as
 | Vibration | Incoming huddle on a phone | Pattern of two buzzes | `huddle-ringtone.ts` |
 | System call ringtone | Incoming direct call on a phone (CallKit or CallKeep) | The phone's ringtone | `apps/mobile/lib/native-call` |
 
-The message sounds and huddle sounds share one audio context. The browser only allows it to start after the first click or key press in the app. Until then, message sounds stay silent. The Soft Knock recording is fetched and decoded on that first click or key press. If a message arrives before it has loaded, or if the file can't be loaded, the matching fallback cue plays instead.
+The message sounds and huddle sounds share one audio context. The browser only allows it to start after the first click or key press in the app. Until then, message sounds stay silent. The recording for the chosen tone is fetched and decoded on that first click or key press. If a message arrives before it has loaded, or if the file can't be loaded, the matching fallback cue plays instead.
+
+With several tabs of the same account open in one browser profile, only one tab plays the cue for a given message. The first tab with running audio takes a Web Lock for that message and the others stay quiet; a tab whose audio hasn't started never takes the lock. Separate browsers or apps can't share the lock, so each still plays its own cue. A second alert inside the throttle window plays no cue, and its OS banner is silent too, so the system's default sound never stacks on the chosen tone.
+
+Saving chat settings sends a `settings.changed` event to that person's other open tabs and devices, so a tone change applies everywhere right away instead of after a reload.
 
 ## Step 1: who gets a chat alert (server)
 
@@ -136,6 +143,7 @@ The floating Shogo Island in the desktop app plays its own cues. Sounds are on o
 | Setting | Scope | Effect |
 |---|---|---|
 | Message sound: Default, Subtle, Off | Per workspace | Web and desktop cue volume. Off also makes phone pushes silent. Subtle has no effect on phones. |
+| Message tone: Soft Knock, Chirp, Pristine, Definite, Juntos, Confirmation, Question, Glass | Per workspace, web and desktop only | Which sound a message plays. Choosing one plays a preview. Phones keep the system sound. |
 | Huddle sound: Ring, Chime, Off | Per workspace | Ringtone on web and desktop. Off also stops phone vibration and makes ring pushes silent. |
 | Notification level: All, Mentions, None | Per channel, with a workspace default | Which messages produce a reason at all |
 | Mute | Per conversation | No alerts, except direct mentions. No huddle ring. |
@@ -155,3 +163,8 @@ These behaviors probably don't match what a user expects from the settings:
 3. **Android pushes may play sound even when Off.** The `messages` and `chat-complete` Android channels are created with a sound. On Android 8 and later, the channel's sound usually wins over the push payload. This should be confirmed on a device.
 4. **Some pushes have no sound on iOS.** Agent question pushes (`agent-question`) and agent chat completion pushes (`chat-complete`) don't set `sound`, so they arrive silently on an iPhone.
 5. **Subtle has no effect on phones.** The server only distinguishes Off from everything else.
+
+## Credits
+
+- Pristine, Definite, and Juntos are from [Notification Sounds](https://notificationsounds.com), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). They were re-encoded and peak-normalized, and Pristine was trimmed to 2 seconds with a fade-out.
+- Confirmation (`confirmation_002`), Question (`question_001`), and Glass (`glass_001`) are from Kenney's [Interface Sounds](https://kenney.nl/assets/interface-sounds), released under [CC0](https://creativecommons.org/publicdomain/zero/1.0/). They were re-encoded to MP3 and peak-normalized.

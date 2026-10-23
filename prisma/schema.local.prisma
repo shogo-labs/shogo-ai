@@ -3626,6 +3626,8 @@ model ChatUserSettings {
   lastDigestAt    DateTime?
   /// Sound for chat messages: "default", "subtle", or "off".
   messageSound    String    @default("default")
+  /// Which sound a chat message plays on web and desktop: "knock", "chirp", "pristine", "definite", "juntos", "confirmation", "question", or "glass".
+  messageTone     String    @default("knock")
   /// Sound for incoming huddles: "ring", "chime", or "off".
   huddleSound     String    @default("ring")
   /// Put direct messages in the Activity inbox too.
