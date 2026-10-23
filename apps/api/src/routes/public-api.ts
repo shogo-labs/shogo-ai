@@ -26,7 +26,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { ProxyTokenPayload } from '../lib/ai-proxy-token'
-import { resolveApiKeyForRequest } from './api-keys'
+import { resolveApiKeyForRequest } from '../lib/api-key-request'
 import * as billingService from '../services/billing.service'
 import {
   getPublicModelsSync,

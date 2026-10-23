@@ -36,7 +36,8 @@ import {
   type ProxyTokenPayload,
 } from '../lib/ai-proxy-token'
 import { verifyRuntimeToken } from '../lib/runtime-token'
-import { resolveApiKey, resolveApiKeyForRequest } from './api-keys'
+import { resolveApiKey } from './api-keys'
+import { resolveApiKeyForRequest } from '../lib/api-key-request'
 import { getDbRoutingConfigSync, getMergedModelEntrySync, type ModelUpstreamFallback } from '../services/model-registry.service'
 import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'

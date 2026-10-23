@@ -167,10 +167,10 @@ import {
   apiKeyRoutes,
   planApiKeyTouch,
   resolveApiKey,
-  resolveApiKeyForRequest,
   API_KEY_TOUCH_INTERVAL_MS,
   DEVICE_VERSION_EVENT_INTERVAL_MS,
 } from '../api-keys'
+import { resolveApiKeyForRequest } from '../../lib/api-key-request'
 
 function app() {
   const { Hono } = require('hono')

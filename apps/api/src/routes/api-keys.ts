@@ -30,7 +30,7 @@
  *                                    (public, key is credential)
  */
 
-import { Hono, type Context } from 'hono'
+import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import {
   SHOGO_API_KEY_PREFIX,
@@ -414,33 +414,6 @@ export function planApiKeyTouch(
     recordVersion,
     version: versionChanged ? reported : (reported ?? stored.deviceAppVersion),
   }
-}
-
-export type ResolvedApiKey = NonNullable<Awaited<ReturnType<typeof resolveApiKey>>>
-
-declare module 'hono' {
-  interface ContextVariableMap {
-    /**
-     * The `shogo_sk_*` key `authMiddleware` already resolved for this request,
-     * so route-level auth doesn't look it up (and touch it) a second time.
-     */
-    apiKeyResolution?: { key: string; result: ResolvedApiKey | null }
-  }
-}
-
-/**
- * `resolveApiKey` for a request that went through `authMiddleware`: reuses the
- * middleware's result when it resolved this same key. App tokens are never
- * reused (the middleware resolves without `allowAppTokens`).
- */
-export async function resolveApiKeyForRequest(
-  c: Context,
-  key: string,
-  opts?: Parameters<typeof resolveApiKey>[1],
-): Promise<ResolvedApiKey | null> {
-  const memo = c.get('apiKeyResolution')
-  if (memo && memo.key === key && !opts?.allowAppTokens) return memo.result
-  return resolveApiKey(key, opts)
 }
 
 /**
