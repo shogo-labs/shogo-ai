@@ -16,7 +16,7 @@ import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
 import { installSyncTriggers, triggerStatements } from '../machine-sync/triggers.ts'
 import { MachineSyncPusher, type SyncBatchRequest } from '../machine-sync/pusher.ts'
-import { applyBatch, normaliseRow } from '../machine-sync/ingest.ts'
+import { applyBatch, deleteMachineCopy, normaliseRow } from '../machine-sync/ingest.ts'
 import { applyRewrites } from '../machine-sync/models.ts'
 
 // ─── Triggers, on a real SQLite database ────────────────────────────────────
@@ -104,7 +104,7 @@ describe('change capture triggers', () => {
 
 type FakeRow = Record<string, unknown>
 
-function fakeDesktopDb(options: { rows?: Record<string, FakeRow[]>; changes?: FakeRow[] } = {}) {
+function fakeDesktopDb(options: { rows?: Record<string, FakeRow[]>; changes?: FakeRow[]; seedState?: boolean } = {}) {
   const changes: FakeRow[] = options.changes ?? []
   const tables = new Map<string, Map<string, FakeRow>>()
   for (const [model, rows] of Object.entries(options.rows ?? {})) {
@@ -117,7 +117,7 @@ function fakeDesktopDb(options: { rows?: Record<string, FakeRow[]>; changes?: Fa
     enabled: true,
     lastIngestAt: null,
   }
-  let seededState = Boolean(options.rows) || Boolean(options.changes)
+  let seededState = options.seedState ?? (Boolean(options.rows) || Boolean(options.changes))
 
   const delegate = (name: string) => {
     if (name === 'machineSyncChange') {
@@ -231,6 +231,52 @@ describe('the pusher', () => {
     // Acked changes are pruned so the log does not grow.
     expect(changes).toHaveLength(0)
     expect(state.cursor).toBe(2)
+  })
+
+  test('start() starts the pusher and schedules a tick', async () => {
+    const { db } = fakeDesktopDb()
+    const lines: string[] = []
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: fakeFetch(),
+      log: (line) => lines.push(line),
+    })
+
+    await pusher.start()
+
+    expect(pusher.status.running).toBe(true)
+    expect(lines).toContain('[MachineSync] Pusher started')
+    pusher.stop()
+  })
+
+  test('a desktop that has never pushed sends a full snapshot', async () => {
+    // A fresh install: the rows exist, but the triggers were installed after
+    // they were written, so the change log is empty and only a snapshot can
+    // bring them across.
+    const { db } = fakeDesktopDb({
+      rows: { workspace: [{ id: 'w1', name: 'Samsara', slug: 'samsara' }] },
+      seedState: false,
+    })
+
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: fakeFetch(),
+    })
+    await pusher.tick()
+
+    expect(posted.length).toBeGreaterThan(0)
+    expect(posted.every((request) => request.mode === 'snapshot')).toBe(true)
+    expect(posted.some((request) =>
+      request.models.some((model) => model.model === 'Workspace' && model.rows[0]?.id === 'w1'),
+    )).toBe(true)
+    // The last request claims the epoch, so the delta stream starts from here.
+    expect(posted[posted.length - 1].snapshot).toEqual({ complete: true, models: expect.any(Array) })
   })
 
   test('a delete for a row that no longer exists becomes a delete, not an upsert', async () => {
@@ -419,7 +465,7 @@ function fakeCloudDb(options: { owned?: Record<string, string>; cloudRows?: Reco
     },
   )
 
-  return { db, mirror, state, members, tables }
+  return { db, mirror, syncState: state, members, tables }
 }
 
 const ingestCtx = (db: any) => ({
@@ -573,5 +619,23 @@ describe('the ingest', () => {
     expect('ok' in result && result.ok).toBe(true)
     expect(chat.has('old-1')).toBe(false)
     expect([...mirror.keys()]).toEqual([])
+  })
+
+  test('deleting a copy leaves the sync switch off, and clears the epoch', async () => {
+    const { db, mirror, tables, syncState } = fakeCloudDb({ owned: { 'Workspace|w1': 'inst-1' } })
+    tables.set('workspace', new Map([['w1', { id: 'w1', name: 'Samsara' }]]))
+    syncState.enabled = false
+    syncState.cursor = 41
+    syncState.epoch = 'epoch-1'
+
+    const removed = await deleteMachineCopy(db, 'inst-1')
+
+    expect(removed).toEqual({ rows: 1, workspaces: 1 })
+    expect([...mirror.keys()]).toEqual([])
+    // The state row survives on purpose: deleting it would let a desktop that is
+    // still running recreate the copy a person just switched off.
+    expect(syncState.enabled).toBe(false)
+    expect(syncState.cursor).toBe(0)
+    expect(syncState.epoch).toBe('')
   })
 })

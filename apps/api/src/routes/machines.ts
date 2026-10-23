@@ -597,7 +597,10 @@ export function machineRoutes() {
       const state = await prisma.machineSyncState.upsert({
         where: { instanceId: instance.id },
         create: { instanceId: instance.id, enabled: true },
-        update: { enabled: true },
+        // A copy that was deleted has no epoch to continue: clearing it makes
+        // the desktop send a fresh snapshot rather than deltas for rows the
+        // cloud no longer owns.
+        update: { enabled: true, cursor: 0, epoch: '' },
       })
       return c.json({ ok: true, enabled: true, lastSyncedAt: state.lastIngestAt?.toISOString() ?? null })
     }

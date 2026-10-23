@@ -163,7 +163,7 @@ export class MachineSyncPusher {
   }
 
   async start(): Promise<void> {
-    if (!this.stopped) return
+    if (this.running) return
     this.stopped = false
     this.running = true
     try {
@@ -226,6 +226,9 @@ export class MachineSyncPusher {
       if (!state) return
       this.epoch = state.epoch
       this.cursor = state.cursor
+      // Nothing has ever been pushed for this device: the rows it already has
+      // predate the triggers, so only a snapshot can bring them across.
+      if (state.fresh) this.snapshotNeeded = true
 
       if (this.snapshotNeeded) {
         await this.runSnapshot(instanceId, apiKey)
@@ -244,31 +247,34 @@ export class MachineSyncPusher {
 
   private async loadState(
     instanceId: string,
-  ): Promise<{ epoch: string; cursor: number } | null> {
+  ): Promise<{ epoch: string; cursor: number; fresh: boolean } | null> {
     const prisma = this.opts.prisma as any
     const existing = await prisma.machineSyncState.findUnique({ where: { instanceId } })
     if (existing) {
-      if (!existing.epoch) {
-        return prisma.machineSyncState.update({
-          where: { instanceId },
-          data: { epoch: crypto.randomUUID() },
-        })
-      }
       if (existing.enabled === false) {
         // Sync switched off on the cloud: stay quiet rather than push into a
-        // workspace the cloud has already deleted.
+        // workspace the cloud has already deleted. Checked before the epoch
+        // below — a switched-off machine also has its epoch cleared.
         this.stopped = true
         this.running = false
         this.log('[MachineSync] Sync to cloud is off for this machine; pusher stopped')
         return null
       }
-      return existing
+      if (!existing.epoch) {
+        const updated = await prisma.machineSyncState.update({
+          where: { instanceId },
+          data: { epoch: crypto.randomUUID() },
+        })
+        return { epoch: updated.epoch, cursor: updated.cursor, fresh: true }
+      }
+      return { epoch: existing.epoch, cursor: existing.cursor, fresh: false }
     }
     // First ever push (or a fresh desktop database): the whole thing has to be
     // sent, so the epoch starts empty and the snapshot claims it.
-    return prisma.machineSyncState.create({
+    const created = await prisma.machineSyncState.create({
       data: { instanceId, epoch: crypto.randomUUID(), cursor: 0, enabled: true },
     })
+    return { epoch: created.epoch, cursor: created.cursor, fresh: true }
   }
 
   private async maxSeq(): Promise<number> {

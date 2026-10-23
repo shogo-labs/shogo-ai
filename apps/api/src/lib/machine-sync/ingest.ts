@@ -21,6 +21,7 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import type { PrismaClient } from '../../generated/prisma-pg/client'
 import { applyRewrites, delegateName, isMirroredModel, MIRROR_MODELS } from './models'
 import {
@@ -86,7 +87,10 @@ function loadMetadata(): Map<string, ModelMeta> {
   if (metadata) return metadata
   const candidates = [
     process.env.SHOGO_PRISMA_SCHEMA,
-    new URL('../../../../../prisma/schema.prisma', import.meta.url).pathname,
+    // `fileURLToPath`, not `URL.pathname`: a pathname stays percent-encoded, so
+    // an install directory with a space in it (macOS `Application Support`)
+    // silently made this unreadable.
+    fileURLToPath(new URL('../../../../../prisma/schema.prisma', import.meta.url)),
     `${process.cwd()}/prisma/schema.prisma`,
   ].filter(Boolean) as string[]
 
@@ -503,7 +507,13 @@ export async function deleteMachineCopy(
 
   const workspaces = byModel.get('Workspace') ?? []
   await prisma.machineMirrorRow.deleteMany({ where: { instanceId } })
-  await prisma.machineSyncState.deleteMany({ where: { instanceId } })
+  // The switch outlives the copy. Deleting the state row instead would let a
+  // desktop that is still running recreate the copy a person just switched off.
+  await prisma.machineSyncState.upsert({
+    where: { instanceId },
+    create: { instanceId, enabled: false, cursor: 0, epoch: '' },
+    update: { enabled: false, cursor: 0, epoch: '' },
+  })
   return { rows, workspaces: workspaces.length }
 }
 
