@@ -274,6 +274,63 @@ describe('ownership CRUD', () => {
       ;(console as any).warn = origWarn
     }
   })
+
+  describe('retry option', () => {
+    async function countReads<T>(fn: () => Promise<T>) {
+      const origGet = pub().get
+      const origSetTimeout = globalThis.setTimeout
+      const sleeps: Array<number | undefined> = []
+      let reads = 0
+      pub().get = async (key: string) => {
+        reads++
+        return origGet.call(pub(), key)
+      }
+      ;(globalThis as any).setTimeout = ((cb: () => void, ms?: number) => {
+        sleeps.push(ms)
+        return origSetTimeout(cb, 0)
+      }) as typeof setTimeout
+      try {
+        const value = await fn()
+        return { value, reads, sleeps }
+      } finally {
+        pub().get = origGet
+        ;(globalThis as any).setTimeout = origSetTimeout
+      }
+    }
+
+    it('retry: false does one GET on a miss and never sleeps', async () => {
+      const r = await countReads(() => tr.getTunnelOwner('miss-noretry', { retry: false }))
+      expect(r.value).toBeNull()
+      expect(r.reads).toBe(1)
+      expect(r.sleeps).toEqual([])
+    })
+
+    it('default still re-reads once after GET_TUNNEL_OWNER_RETRY_MS on a miss', async () => {
+      const r = await countReads(() => tr.getTunnelOwner('miss-default'))
+      expect(r.value).toBeNull()
+      expect(r.reads).toBe(2)
+      expect(r.sleeps).toEqual([100])
+    })
+
+    it('retry: false still returns the owner on a hit', async () => {
+      pub().store.set('tunnel:hit:pod', 'pod-B')
+      const r = await countReads(() => tr.getTunnelOwner('hit', { retry: false }))
+      expect(r.value).toBe('pod-B')
+      expect(r.reads).toBe(1)
+    })
+
+    it('isTunnelConnectedAnywhere forwards retry: false, and retries by default', async () => {
+      const noRetry = await countReads(() => tr.isTunnelConnectedAnywhere('miss-status', { retry: false }))
+      expect(noRetry.value).toBe(false)
+      expect(noRetry.reads).toBe(1)
+      expect(noRetry.sleeps).toEqual([])
+
+      const routing = await countReads(() => tr.isTunnelConnectedAnywhere('miss-route'))
+      expect(routing.value).toBe(false)
+      expect(routing.reads).toBe(2)
+      expect(routing.sleeps).toEqual([100])
+    })
+  })
 })
 
 describe('getSharedRedis', () => {

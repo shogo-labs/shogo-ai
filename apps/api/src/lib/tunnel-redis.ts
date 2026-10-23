@@ -369,8 +369,16 @@ export async function refreshTunnelOwnership(instanceId: string): Promise<void> 
  * on another pod and its `registerTunnelOwnership` write hasn't yet landed
  * in Redis. Without it, a sibling pod hitting that 5–50ms gap would see
  * null and return 503 even though the tunnel is healthy.
+ *
+ * Keep the default (`retry: true`) when the caller is about to route a
+ * request through the tunnel. Pass `{ retry: false }` for plain status reads
+ * (heartbeat, machine/instance lists): a miss there is the normal "no tunnel"
+ * state, and the retry would add a 100ms sleep to every such check.
  */
-export async function getTunnelOwner(instanceId: string): Promise<string | null> {
+export async function getTunnelOwner(
+  instanceId: string,
+  opts: { retry?: boolean } = {},
+): Promise<string | null> {
   await whenReady()
   const r = getPublisher()
   if (!r) return null
@@ -385,7 +393,7 @@ export async function getTunnelOwner(instanceId: string): Promise<string | null>
   }
 
   const first = await read()
-  if (first) return first
+  if (first || opts.retry === false) return first
   // Bounded retry: one re-read after GET_TUNNEL_OWNER_RETRY_MS to absorb
   // the sub-100ms cold-start gap on a sibling pod.
   await new Promise((r) => setTimeout(r, GET_TUNNEL_OWNER_RETRY_MS))
@@ -751,9 +759,17 @@ export async function getActiveControllersRedis(
 
 // ─── Tunnel existence check (cross-pod) ─────────────────────────────────────
 
-export async function isTunnelConnectedAnywhere(instanceId: string): Promise<boolean> {
+/**
+ * Whether any pod owns a tunnel for this instance. Pass `{ retry: false }` for
+ * status reads; keep the default before routing through the tunnel (see
+ * {@link getTunnelOwner}).
+ */
+export async function isTunnelConnectedAnywhere(
+  instanceId: string,
+  opts: { retry?: boolean } = {},
+): Promise<boolean> {
   try {
-    const owner = await getTunnelOwner(instanceId)
+    const owner = await getTunnelOwner(instanceId, opts)
     return owner !== null
   } catch (err) {
     console.warn('[TunnelRedis] isTunnelConnectedAnywhere failed:', (err as Error).message)
