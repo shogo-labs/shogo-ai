@@ -12,6 +12,19 @@ import { queuedRowToUserMessage } from "./queued-user-message"
 
 type QueueBody = Record<string, unknown> & { text?: string }
 
+/** A queued team-chat message waiting behind a reply, as `/api/agent-wakes` lists it. */
+export type AgentWakeRow = {
+  id: string
+  status: string
+  sendNowAt: string | null
+  createdAt: string
+  conversationId: string
+  threadRootId: string | null
+  channelName: string | null
+  author: { name: string | null }
+  text: string
+}
+
 type UseServerMessageQueueOptions = {
   sessionId: string | null | undefined
   enabled: boolean
@@ -38,6 +51,9 @@ const OPTIMISTIC_ID_PREFIX = "temp-"
  * hidden with no turn to show for it — the row comes back and can be retried.
  */
 const SENT_NOW_HIDE_TIMEOUT_MS = 30_000
+
+/** How often the dock asks for the team-chat wakes waiting behind this session. */
+const WAKE_POLL_MS = 1_500
 
 function parseJson<T>(value: string | undefined, fallback: T): T {
   if (!value) return fallback
@@ -93,6 +109,26 @@ function toQueuedMessage(row: IChatQueuedMessage): QueuedMessage {
     // A task wake is never a queued chat message: it is the agent's own update,
     // and while a pause holds it back it is shown as one waiting chip instead.
     ...(taskWake ? { kind: "task_wake" as const, paused: taskWake.paused === true } : {}),
+  }
+}
+
+/**
+ * A team-chat message queued behind a reply, as a dock row: the channel and
+ * author it came from, and the text the agent will be woken with.
+ */
+function wakeToQueuedMessage(wake: AgentWakeRow): QueuedMessage {
+  const source = [
+    wake.channelName ? `#${wake.channelName}` : null,
+    wake.author?.name ?? null,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+  return {
+    id: wake.id,
+    content: wake.text,
+    status: wake.status,
+    kind: "agent_wake",
+    ...(source ? { source } : {}),
   }
 }
 
@@ -152,6 +188,12 @@ export function useServerMessageQueue({
     new Map<string, ReturnType<typeof setTimeout>>(),
   )
   const rowsRef = useRef<IChatQueuedMessage[]>([])
+  /**
+   * Team-chat wakes waiting behind this session's turn. They are not
+   * `ChatQueuedMessage` rows — `AgentWake` is their one queue — so they are
+   * read from their own route and painted after the session's own rows.
+   */
+  const [wakes, setWakes] = useState<AgentWakeRow[]>([])
   const isStreamingRef = useRef(isStreaming)
   const onTurnAvailableRef = useRef(onTurnAvailable)
 
@@ -169,8 +211,15 @@ export function useServerMessageQueue({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const rows = useMemo(() => liveRows, [rowsSignature])
   const queuedMessages = useMemo(
-    () => rows.filter((row) => !sentIds.has(row.id)).map(toQueuedMessage),
-    [rows, sentIds],
+    () => [
+      ...rows.filter((row) => !sentIds.has(row.id)).map(toQueuedMessage),
+      // A team-chat wake sits after the session's own queued rows: those were
+      // typed here, this one arrived in a channel.
+      ...wakes
+        .filter((wake) => !sentIds.has(wake.id))
+        .map(wakeToQueuedMessage),
+    ],
+    [rows, sentIds, wakes],
   )
   /**
    * What the transcript should paint that the server has not saved as a
@@ -239,6 +288,7 @@ export function useServerMessageQueue({
     setSentIds(new Set())
     setTrackedCount(0)
     setPendingUserMessage(undefined)
+    setWakes([])
   }, [sessionId, enabled])
 
   /** Stop chasing a row this window was waiting on; returns its user message. */
@@ -254,6 +304,37 @@ export function useServerMessageQueue({
     if (!enabled || !sessionId) return
     await collection.loadAll({ sessionId })
   }, [collection, enabled, sessionId])
+
+  const http = useCallback(
+    () =>
+      getEnv<{
+        http?: {
+          get?: (url: string) => Promise<{ data?: any }>
+          post?: (url: string, body?: unknown) => Promise<{ data?: any }>
+          delete?: (url: string) => Promise<{ data?: any }>
+        }
+      }>(collection).http,
+    [collection],
+  )
+
+  /** The team-chat wakes waiting behind this session, oldest first. */
+  const loadWakes = useCallback(async () => {
+    if (!enabled || !sessionId) return
+    const client = http()
+    // A host without a `get` (an island or a test double) simply has no wakes to show.
+    if (typeof client?.get !== "function") return
+    const response = await client.get(
+      `/api/agent-wakes?sessionId=${encodeURIComponent(sessionId)}`,
+    )
+    const list = Array.isArray(response?.data?.wakes) ? response.data.wakes : []
+    // The poll runs every 1.5s: keep the same array when nothing changed, so a
+    // quiet queue does not re-render the dock on every tick.
+    setWakes((current) =>
+      JSON.stringify(current) === JSON.stringify(list)
+        ? current
+        : (list as AgentWakeRow[]),
+    )
+  }, [enabled, sessionId, http])
 
   const flushPendingTurn = useCallback(() => {
     if (isStreamingRef.current || !pendingTurnRef.current) return
@@ -298,6 +379,27 @@ export function useServerMessageQueue({
       console.warn("[ChatQueue] Failed to load server queue:", error)
     })
   }, [load])
+
+  useEffect(() => {
+    void loadWakes().catch((error) => {
+      console.warn("[ChatQueue] Failed to load queued team-chat messages:", error)
+    })
+  }, [loadWakes])
+
+  // A team-chat wake can arrive, and drain, while this session's own turn is
+  // streaming — the one case the queue poll below deliberately skips — so it
+  // has a poll of its own. It only runs while there is something to watch: a
+  // wake exists only while a reply is running in the thread and is gone when
+  // that reply ends, so an idle session must not ask at all. The mount load
+  // above still runs once, which is how a dock opened mid-run finds its rows.
+  useEffect(() => {
+    if (!enabled || !sessionId) return
+    if (!isStreaming && wakes.length === 0) return
+    const timer = setInterval(() => {
+      void loadWakes().catch(() => {})
+    }, WAKE_POLL_MS)
+    return () => clearInterval(timer)
+  }, [enabled, sessionId, isStreaming, wakes.length, loadWakes])
 
   useEffect(() => {
     if (!enabled || !sessionId || rows.length === 0 || isStreaming) return
@@ -498,6 +600,37 @@ export function useServerMessageQueue({
     [action],
   )
 
+  /**
+   * "Send now" on a team-chat wake: it goes to the front of the wake queue and
+   * the reply in front of it is stopped, so it starts at once.
+   *
+   * The row is hidden only once the server has taken it. Hiding on the click
+   * unmounts the row, so a refusal comes back to a fresh component with an empty
+   * error state and the dock shows nothing; the click's own "Sending…" holds the
+   * row until the answer arrives (QA round 2, AC6).
+   */
+  const sendWakeNow = useCallback(
+    async (id: string) => {
+      const client = http()
+      if (typeof client?.post !== "function") return
+      await client.post(`/api/agent-wakes/${encodeURIComponent(id)}/send-now`, {})
+      hideSent(id)
+      await loadWakes().catch(() => {})
+    },
+    [http, hideSent, loadWakes],
+  )
+
+  /** Take a team-chat wake off the queue. It never runs. */
+  const removeWake = useCallback(
+    async (id: string) => {
+      const client = http()
+      if (typeof client?.delete !== "function") return
+      await client.delete(`/api/agent-wakes/${encodeURIComponent(id)}`)
+      await loadWakes().catch(() => {})
+    },
+    [http, loadWakes],
+  )
+
   const isServerQueued = useCallback(
     (id: string) => rows.some((row) => row.id === id),
     [rows],
@@ -512,6 +645,8 @@ export function useServerMessageQueue({
     reorder,
     sendNow,
     resumeTaskWake,
+    sendWakeNow,
+    removeWake,
     isServerQueued,
     reload: load,
   }

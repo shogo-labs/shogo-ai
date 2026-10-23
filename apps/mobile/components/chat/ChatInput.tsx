@@ -480,8 +480,14 @@ export type QueuedMessage = {
    * `task_wake` is the agent's own background update, not something a person
    * typed: it is never rendered as a queued chat message. While a wake pause
    * holds it back it shows as one "N updates waiting" chip with a Resume.
+   *
+   * `agent_wake` is a team-chat message waiting behind a reply: its queue is
+   * the durable `AgentWake` row, and the dock reaches it through the
+   * agent-wake routes rather than the session's own queue.
    */
-  kind?: "message" | "task_wake";
+  kind?: "message" | "task_wake" | "agent_wake";
+  /** For an `agent_wake` row: the channel and author it came from ("#shogo-dev · Russell"). */
+  source?: string;
   paused?: boolean;
   /** True when queued because a send failed on a network error, rather than
    * because it was typed while a turn was streaming. Rendered with a
@@ -513,6 +519,11 @@ export interface ChatInputProps {
   ) => void;
   onEditQueuedMessage?: (messageId: string) => void;
   onSendQueuedMessageNow?: (messageId: string) => void;
+  /** Send a team-chat wake now (its own queue, its own route). The dock's row
+   *  awaits this so the server's refusal is shown on the row itself. */
+  onSendAgentWakeNow?: (wakeId: string) => void | Promise<void>;
+  /** Take a team-chat wake off the queue. */
+  onRemoveAgentWake?: (wakeId: string) => void | Promise<void>;
   /** Deliver the updates a paused session is holding (the waiting chip's Resume). */
   onResumeTaskWakes?: (messageId: string) => void;
   interactionMode?: InteractionMode;
@@ -651,6 +662,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onReorderQueuedMessage,
   onEditQueuedMessage,
   onSendQueuedMessageNow,
+  onSendAgentWakeNow,
+  onRemoveAgentWake,
   onResumeTaskWakes,
   interactionMode: controlledInteractionMode,
   onInteractionModeChange,
@@ -2042,6 +2055,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         onReorderQueuedMessage={onReorderQueuedMessage}
         onEditQueuedMessage={onEditQueuedMessage}
         onSendQueuedMessageNow={onSendQueuedMessageNow}
+        onSendAgentWakeNow={onSendAgentWakeNow}
+        onRemoveAgentWake={onRemoveAgentWake}
         onResumeTaskWakes={onResumeTaskWakes}
       />
       <ContextUsageDockPanel

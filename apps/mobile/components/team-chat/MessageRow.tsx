@@ -29,6 +29,7 @@ import { AgentProfileCard } from './AgentProfileCard'
 import { ApprovalCardView, StatusCardView } from './AgentStatus'
 import { WorkItemCard } from './WorkItemCard'
 import { QuestionCardView } from './QuestionCard'
+import { QueuedWakeRow, wakeQueuedOf } from './QueuedWakeRow'
 import { approvalOf, connectRequestsOf, isAskedOf, messageKind, questionRefsOf, questionsOf, statusCardOf, workItemOf, workOf, type WorkItemBlock } from '../../lib/team-chat-kinds'
 import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
@@ -713,6 +714,13 @@ function MessageRowImpl(props: MessageRowProps) {
         </TimeTooltip>
       </View>
     )
+  }
+
+  if (message.authorType === 'system' && message.blocks?.wakeQueued) {
+    const wake = wakeQueuedOf(message)
+    // A note from before the row knew its wake has no buttons to press: it
+    // stays the plain line it has always been.
+    if (wake?.wakeId && !deleted) return <QueuedWakeRow message={message} wake={wake} />
   }
 
   return (

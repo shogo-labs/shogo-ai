@@ -6637,6 +6637,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [serverQueue],
   )
 
+  // A team-chat message queued behind this session's turn is its own queue row:
+  // Send now and ✕ reach the agent-wake routes, never the session's own queue.
+  // The promise goes back to the row so a refusal (409 not_pending, 403 viewer)
+  // is shown where the person pressed, not just logged.
+  const handleSendAgentWakeNow = useCallback(
+    (wakeId: string) => serverQueue.sendWakeNow(wakeId),
+    [serverQueue],
+  )
+  const handleRemoveAgentWake = useCallback(
+    (wakeId: string) => serverQueue.removeWake(wakeId),
+    [serverQueue],
+  )
+
   const displayedQueue = useMemo(
     () =>
       [...serverQueue.queuedMessages, ...messageQueue].filter(
@@ -8936,6 +8949,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onReorderQueuedMessage={handleReorderQueuedMessage}
                     onEditQueuedMessage={handleEditQueuedMessage}
                     onSendQueuedMessageNow={handleSendQueuedMessageNow}
+                    onSendAgentWakeNow={handleSendAgentWakeNow}
+                    onRemoveAgentWake={handleRemoveAgentWake}
                     onResumeTaskWakes={handleResumeTaskWakes}
                     interactionMode={interactionMode}
                     onInteractionModeChange={handleInteractionModeChange}

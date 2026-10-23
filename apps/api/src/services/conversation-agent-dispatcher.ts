@@ -608,11 +608,17 @@ interface QueuedWake {
   chain: AgentChain
   threadRootId: string | null
   runningMessageId: string | null
+  /** The session the live run holds — how the session's queue dock finds the wake. */
+  chatSessionId: string | null
 }
 
-/** What the thread says when nothing more specific is going on. */
-async function queuedNote(workspaceId: string, target: AgentTarget): Promise<string> {
-  return `_Queued — ${await agentName(workspaceId, target)} is still working on the previous message here; this wake will run when that reply ends._`
+/**
+ * What the thread says when nothing more specific is going on. The app paints
+ * the `wakeQueued` block beside this line (with its Send now); Slack and other
+ * outbound mirrors only ever see the text.
+ */
+function queuedNote(agent: string): string {
+  return `_Queued for ${agent}. It runs when the current reply ends._`
 }
 
 export interface AgentWakeInput {
@@ -627,6 +633,8 @@ export interface AgentWakeInput {
   reason?: string
   /** Earliest time the drain may start this row. */
   notBefore?: Date | null
+  /** The session the run in front of this wake holds, so its queue dock finds it. */
+  chatSessionId?: string | null
   /** What the thread says about the wait; the caller's own line when it has one. */
   note?: { text: string; blocks?: Record<string, unknown> } | null
 }
@@ -655,6 +663,7 @@ export async function enqueueAgentWake(input: AgentWakeInput): Promise<string | 
         chain: input.chain ?? null,
         reason: input.reason ?? 'wake',
         notBefore: input.notBefore ?? null,
+        chatSessionId: input.chatSessionId ?? null,
         status: 'pending',
       },
       select: { id: true },
@@ -666,17 +675,29 @@ export async function enqueueAgentWake(input: AgentWakeInput): Promise<string | 
     throw err
   }
   if (!input.note) return wakeId
+  const blocks = withWakeId(input.note.blocks, wakeId)
   const posted = await postMessage({
     conversationId: input.conversationId,
     authorType: 'system',
     threadRootId: input.threadRootId,
     systemMentions: true,
     text: input.note.text,
-    blocks: input.note.blocks,
+    blocks,
+  })
+  // The note follows the row from here on: every state change calls `syncWakeNote`.
+  await db.agentWake.update({ where: { id: wakeId }, data: { noteMessageId: posted.message.id } }).catch((err: Error) => {
+    console.warn('[ChannelAgent] recording the queued note failed:', err.message)
   })
   const { afterMessagePosted } = await import('./conversation-pipeline')
   void afterMessagePosted(posted, { actorUserId: null, origin: 'system' })
   return wakeId
+}
+
+/** The queued note carries the row's id, so the app can act on it. */
+function withWakeId(blocks: Record<string, unknown> | undefined, wakeId: string): Record<string, unknown> | undefined {
+  const queued = blocks?.wakeQueued
+  if (!queued || typeof queued !== 'object') return blocks
+  return { ...blocks, wakeQueued: { ...(queued as Record<string, unknown>), wakeId, status: 'pending' } }
 }
 
 /**
@@ -684,9 +705,17 @@ export async function enqueueAgentWake(input: AgentWakeInput): Promise<string | 
  */
 async function queueWake(args: QueuedWake): Promise<void> {
   const agentRef = agentRefForTarget(args.target)
+  const agent = await agentName(args.conversation.workspaceId, args.target)
   const note = {
-    text: await queuedNote(args.conversation.workspaceId, args.target),
-    blocks: { wakeQueued: { agentRef, triggerMessageId: args.trigger.id, runningMessageId: args.runningMessageId } },
+    text: queuedNote(agent),
+    blocks: {
+      wakeQueued: {
+        agentRef,
+        agentName: agent,
+        triggerMessageId: args.trigger.id,
+        runningMessageId: args.runningMessageId,
+      },
+    },
   }
   const wakeId = await enqueueAgentWake({
     conversationId: args.conversation.id,
@@ -695,6 +724,7 @@ async function queueWake(args: QueuedWake): Promise<void> {
     agentRef,
     userId: args.userId,
     chain: args.chain,
+    chatSessionId: args.chatSessionId,
     note,
   })
   if (!wakeId || !args.threadRootId) return
@@ -703,11 +733,26 @@ async function queueWake(args: QueuedWake): Promise<void> {
     .catch((err: Error) => console.warn('[ChannelAgent] queued-wake note failed:', err.message))
 }
 
-/** A run ended: start the oldest wake waiting for this agent in this thread. */
+/**
+ * A wake's place in line: one a person pressed Send now on goes first (newest
+ * press first, the way the chat queue moves a row ahead), then the oldest wait.
+ */
+function drainPriority(a: { sendNowAt: Date | null; createdAt: Date }, b: { sendNowAt: Date | null; createdAt: Date }): number {
+  const aSent = a.sendNowAt ? new Date(a.sendNowAt).getTime() : null
+  const bSent = b.sendNowAt ? new Date(b.sendNowAt).getTime() : null
+  if (aSent !== bSent) {
+    if (aSent === null) return 1
+    if (bSent === null) return -1
+    return bSent - aSent
+  }
+  return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+}
+
+/** A run ended: start the most urgent wake waiting for this agent in this thread. */
 async function drainWakes(conversationId: string, threadRootId: string | null, agentRef: string): Promise<number> {
   let ran = 0
   for (;;) {
-    const next = await db.agentWake.findFirst({
+    const waiting = await db.agentWake.findMany({
       // A row inside its debounce window is not ready yet; anything else pending
       // goes now, so a waiting nudge cannot hold a real wake back.
       where: {
@@ -717,10 +762,10 @@ async function drainWakes(conversationId: string, threadRootId: string | null, a
         status: 'pending',
         OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }],
       },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true },
+      select: { id: true, sendNowAt: true, createdAt: true },
     })
-    if (!next) return ran
+    if (!waiting.length) return ran
+    const next = [...waiting].sort(drainPriority)[0]!
     const claimed = await db.agentWake.updateMany({
       where: { id: next.id, status: 'pending' },
       data: { status: 'claimed', claimedAt: new Date(), attempts: { increment: 1 } },
@@ -729,17 +774,131 @@ async function drainWakes(conversationId: string, threadRootId: string | null, a
     if (!claimed.count) continue
     const wake = await db.agentWake.findUnique({ where: { id: next.id } })
     if (!wake) return ran
+    await syncWakeNote(wake.id, 'running')
+    let failure: string | null = null
     try {
       await runWake(wake)
       await db.agentWake.updateMany({ where: { id: wake.id, status: 'claimed' }, data: { status: 'done', lastError: null } })
     } catch (err: any) {
-      const lastError = String(err?.message ?? err).slice(0, 1000)
-      await db.agentWake.updateMany({ where: { id: wake.id, status: 'claimed' }, data: { status: 'failed', lastError } })
+      failure = String(err?.message ?? err).slice(0, 1000)
+      await db.agentWake.updateMany({ where: { id: wake.id, status: 'claimed' }, data: { status: 'failed', lastError: failure } })
         .catch(() => {})
-      console.warn(`[ChannelAgent] queued wake ${wake.id} failed:`, lastError)
+      console.warn(`[ChannelAgent] queued wake ${wake.id} failed:`, failure)
     }
+    // A wake that threw is not done: the note has to say so, or the thread
+    // claims a reply that never happened.
+    await syncWakeNote(wake.id, failure ? 'failed' : 'done', failure ? { error: failure } : undefined)
     ran++
   }
+}
+
+/** How the note beside a queued message reads its row's state. */
+export type WakeNoteStatus = 'pending' | 'sending' | 'running' | 'done' | 'failed' | 'removed'
+
+/**
+ * Keep the thread's queued note in step with its wake. One helper for every
+ * state change — claim, finish, send-now, remove — so the note can never say
+ * something the row doesn't. It edits the message through the normal path, so
+ * realtime pushes the new state to anyone looking at the thread.
+ */
+export async function syncWakeNote(wakeId: string, status: WakeNoteStatus, extra?: Record<string, unknown>): Promise<void> {
+  const wake = await db.agentWake.findUnique({ where: { id: wakeId }, select: { noteMessageId: true } })
+  if (!wake?.noteMessageId) return
+  const note = await db.conversationMessage.findUnique({ where: { id: wake.noteMessageId }, select: { blocks: true } })
+  if (!note) return
+  const blocks = parseMessageBlocks(note.blocks)
+  const queued = blocks.wakeQueued && typeof blocks.wakeQueued === 'object' ? blocks.wakeQueued as Record<string, unknown> : {}
+  await updateMessageInternal(wake.noteMessageId, {
+    blocks: { ...blocks, wakeQueued: { ...queued, ...extra, status } },
+  }).catch((err: Error) => console.warn('[ChannelAgent] updating the queued note failed:', err.message))
+}
+
+/** `blocks` is an object on Postgres and JSON text on SQLite. */
+function parseMessageBlocks(value: unknown): Record<string, unknown> {
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+    } catch {
+      return {}
+    }
+  }
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {}
+}
+
+/** What a send-now or a remove could not do, in the shape the route answers with. */
+export type AgentWakeRefusal = { ok: false; status: 403 | 404 | 409; code: string; message: string }
+export type AgentWakeResult = { ok: true; wake: { id: string; status: string; sendNowAt: Date | null } } | AgentWakeRefusal
+
+/**
+ * Send a queued wake now, the way the chat queue's Send now works: it goes to
+ * the front, and the reply in front of it is stopped (the same Stop the button
+ * does) so the drain starts it immediately. One queue, one stop path.
+ */
+export async function sendAgentWakeNow(wakeId: string, userId: string): Promise<AgentWakeResult> {
+  const wake = await db.agentWake.findUnique({ where: { id: wakeId } })
+  if (!wake) return { ok: false, status: 404, code: 'not_found', message: 'Queued message not found' }
+  if (wake.status !== 'pending' || wake.reason !== 'wake') {
+    return { ok: false, status: 409, code: 'not_pending', message: 'That message is not waiting any more' }
+  }
+  const now = new Date()
+  const claimed = await db.agentWake.updateMany({ where: { id: wakeId, status: 'pending' }, data: { sendNowAt: now } })
+  if (!claimed.count) {
+    return { ok: false, status: 409, code: 'not_pending', message: 'That message is not waiting any more' }
+  }
+  const sender = await db.user.findUnique({ where: { id: userId }, select: { name: true } }).catch(() => null)
+  await syncWakeNote(wakeId, 'sending', { sentNowBy: { id: userId, name: sender?.name ?? null } })
+
+  // The reply holding the thread is stopped the way the Stop button stops it,
+  // so its own settle drains this wake — first in line, because of `sendNowAt`.
+  const running = await db.conversationMessage.findMany({
+    where: {
+      conversationId: wake.conversationId,
+      authorType: 'agent',
+      agentStatus: 'running',
+      deletedAt: null,
+      ...(wake.threadRootId ? { OR: [{ threadRootId: wake.threadRootId }, { id: wake.threadRootId }] } : { threadRootId: null }),
+    },
+    orderBy: { seq: 'asc' },
+    take: 10,
+  })
+  const agentRef = wake.agentRef
+  const reply = running.find((row: any) => {
+    const owner = row.authorAgentRef
+    return (owner?.projectId ? `project:${owner.projectId}` : 'workspace') === agentRef
+  })
+  if (reply) {
+    await stopAgentReply(reply, userId)
+  } else {
+    await startDrainIfIdle({ conversationId: wake.conversationId, threadRootId: wake.threadRootId, agentRef })
+      .catch((err: Error) => console.warn('[ChannelAgent] starting a sent-now wake failed:', err.message))
+  }
+  return { ok: true, wake: { id: wakeId, status: wake.status, sendNowAt: now } }
+}
+
+/** Take a queued wake off the queue: it never runs, and its note says so. */
+export async function removeAgentWake(wakeId: string): Promise<AgentWakeResult> {
+  const wake = await db.agentWake.findUnique({ where: { id: wakeId } })
+  if (!wake) return { ok: false, status: 404, code: 'not_found', message: 'Queued message not found' }
+  const removed = await db.agentWake.updateMany({ where: { id: wakeId, status: 'pending' }, data: { status: 'superseded' } })
+  if (!removed.count) {
+    return { ok: false, status: 409, code: 'not_pending', message: 'That message is not waiting any more' }
+  }
+  await syncWakeNote(wakeId, 'removed')
+  return { ok: true, wake: { id: wakeId, status: 'superseded', sendNowAt: wake.sendNowAt } }
+}
+
+/** A queued wake as the session's queue dock reads it. */
+export async function listPendingAgentWakes(sessionId: string) {
+  return db.agentWake.findMany({
+    where: { chatSessionId: sessionId, status: 'pending', reason: 'wake' },
+    orderBy: { createdAt: 'asc' },
+    take: 50,
+    select: {
+      id: true, status: true, sendNowAt: true, createdAt: true, conversationId: true,
+      threadRootId: true, triggerMessageId: true,
+    },
+  })
 }
 
 /** Post the wake's trigger again, now that nothing else is running in the thread. */
@@ -1624,7 +1783,7 @@ export async function runAgentReply(args: RunAgentReplyArgs, opts: { drained?: b
     // starting a second turn on the same session.
     try {
       const chain = args.chain ?? nextChain(humanChain(trigger, userId, await rootChain(trigger.threadRootId)), target, 0)
-      await queueWake({ conversation, trigger, target, userId, chain, threadRootId, runningMessageId: holder.messageId })
+      await queueWake({ conversation, trigger, target, userId, chain, threadRootId, runningMessageId: holder.messageId, chatSessionId: holder.sessionId })
     } catch (err: any) {
       console.error('[ChannelAgent] queueing the wake failed:', err?.message ?? err)
     }
@@ -1722,7 +1881,7 @@ async function runReservedReply(
     state.lost = true
     await db.conversationMessage.delete({ where: { id: messageId } }).catch(() => {})
     await endTurn()
-    await queueWake({ conversation, trigger, target, userId, chain, threadRootId, runningMessageId: earlier.id })
+    await queueWake({ conversation, trigger, target, userId, chain, threadRootId, runningMessageId: earlier.id, chatSessionId: sessionId })
     return null
   }
   let work: AgentWork | null = null

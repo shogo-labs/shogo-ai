@@ -1626,6 +1626,14 @@ model AgentWake {
   reason           String    @default("wake")
   /// Earliest time the drain may start this row. Null runs as soon as it can.
   notBefore        DateTime?
+  /// The chat session the live run held, so the session's queue dock finds
+  /// this row and can send it now from there.
+  chatSessionId    String?
+  /// The system note that says it is queued, so its status can follow the row.
+  noteMessageId    String?
+  /// Set when a person presses Send now: the drain takes the newest first, the
+  /// way the chat queue's send-now marks a row ahead of the rest.
+  sendNowAt        DateTime?
   /// pending | claimed | done | failed | superseded
   status           String    @default("pending")
   attempts         Int       @default(0)
@@ -1638,6 +1646,7 @@ model AgentWake {
   @@index([conversationId, threadRootId, agentRef, status])
   @@index([status, createdAt])
   @@index([status, notBefore])
+  @@index([chatSessionId, status])
   @@map("agent_wakes")
 }
 

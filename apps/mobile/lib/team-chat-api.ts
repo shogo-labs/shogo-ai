@@ -1096,6 +1096,18 @@ export function teamChatApi() {
     async stopAgent(messageId: string) {
       await http.post(`${msg(messageId)}/stop`, {})
     },
+    /**
+     * Start a queued team-chat message now: it goes to the front of the queue
+     * and the reply in front of it is stopped, the same as the chat queue's
+     * Send now. A wake that already ran throws, so the row can say why.
+     */
+    async sendWakeNow(wakeId: string) {
+      await http.post(`/api/agent-wakes/${encodeURIComponent(wakeId)}/send-now`, {})
+    },
+    /** Take a queued team-chat message off the queue. It never runs. */
+    async removeWake(wakeId: string) {
+      await http.delete(`/api/agent-wakes/${encodeURIComponent(wakeId)}`)
+    },
     /** What an agent did before its final message: its turn's parts, trimmed for the channel. */
     async workLog(messageId: string): Promise<AgentWorkLog> {
       return (await http.get<AgentWorkLog>(`${msg(messageId)}/work`)).data

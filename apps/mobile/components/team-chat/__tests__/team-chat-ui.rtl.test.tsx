@@ -13,6 +13,8 @@ const pins: Array<{ id: string; pinned: boolean }> = []
 const uploaded: string[] = []
 const updates: Array<{ id: string; patch: unknown }> = []
 const decisions: Array<{ id: string; decision: string }> = []
+const sentWakes: string[] = []
+const removedWakes: string[] = []
 let decisionError: string | null = null
 const deletes: string[] = []
 let deleteError: string | null = null
@@ -175,6 +177,12 @@ mock.module('../../../lib/team-chat-api', () => ({
     delete: async (id: string) => {
       if (deleteError) throw new Error(deleteError)
       deletes.push(id)
+    },
+    sendWakeNow: async (id: string) => {
+      sentWakes.push(id)
+    },
+    removeWake: async (id: string) => {
+      removedWakes.push(id)
     },
     decideApproval: async (id: string, decision: string) => {
       if (decisionError) throw Object.assign(new Error('failed'), { response: { data: { error: { message: decisionError } } } })
@@ -2230,6 +2238,75 @@ describe('channel mentions in a message', () => {
     expect(container.textContent).toContain('#privatechannel')
     expect(container.textContent).not.toContain('secret-plans')
     expect(routed).toEqual([])
+  })
+})
+
+/**
+ * A team-chat message queued behind a reply the agent is still writing is a
+ * durable `AgentWake`, and its note is that wake's row: Send now starts it,
+ * ✕ takes it off the queue. Both act on the wake, not on the transcript.
+ */
+describe('a queued team-chat message', () => {
+  const queued = (wake: Record<string, unknown> = {}): any =>
+    message({
+      id: 'n1',
+      authorType: 'system',
+      author: null,
+      authorUserId: null,
+      text: 'Queued for Billing Bot — it runs when the current reply ends.',
+      blocks: {
+        wakeQueued: {
+          wakeId: 'w1',
+          agentRef: 'project:proj-1',
+          agentName: 'Billing Bot',
+          triggerMessageId: 'm2',
+          runningMessageId: 'm3',
+          ...wake,
+        },
+      },
+    })
+  const row = (msg: any) =>
+    render(<MessageRow message={msg} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+
+  afterEach(() => {
+    sentWakes.length = 0
+    removedWakes.length = 0
+  })
+
+  test('the note is the wake row, not the old sentence, and Send now starts it', async () => {
+    row(queued())
+
+    expect(screen.getByText('Queued for Billing Bot')).toBeInTheDocument()
+    expect(screen.getByLabelText('Send queued message now')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('it runs when the current reply ends')
+
+    fireEvent.click(screen.getByLabelText('Send queued message now'))
+    await waitFor(() => expect(sentWakes).toEqual(['w1']))
+  })
+
+  test('✕ takes the message off the queue', async () => {
+    row(queued())
+
+    fireEvent.click(screen.getByLabelText('Remove queued message'))
+    await waitFor(() => expect(removedWakes).toEqual(['w1']))
+    expect(sentWakes).toEqual([])
+  })
+
+  test('a note painted before the row knew its wake stays the plain system line', () => {
+    const legacy = queued()
+    delete legacy.blocks.wakeQueued.wakeId
+    row(legacy)
+
+    expect(screen.queryByLabelText('Send queued message now')).toBeNull()
+    expect(screen.queryByLabelText('Remove queued message')).toBeNull()
+    expect(document.body.textContent).toContain('it runs when the current reply ends')
+  })
+
+  test('a wake already running offers nothing to press and says who started it', () => {
+    row(queued({ status: 'running', sentNowBy: { id: 'u-ana', name: 'Ana Lopez' } }))
+
+    expect(screen.queryByLabelText('Send queued message now')).toBeNull()
+    expect(document.body.textContent).toContain('Sent now by Ana Lopez · running')
   })
 })
 
