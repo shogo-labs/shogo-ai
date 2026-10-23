@@ -170,6 +170,22 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     },
     deliverText: (text: string) => ipcRenderer.invoke('dictation:deliver-text', text),
   },
+  /**
+   * Huddles run in their own always-on-top window on desktop. The app window
+   * opens it, mirrors its state, and sends it commands.
+   */
+  huddle: {
+    open: (request: unknown): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('huddle:open', request),
+    command: (command: unknown): void => ipcRenderer.send('huddle:command', command),
+    focus: (mode?: 'expanded' | 'mini'): void => ipcRenderer.send('huddle:focus', mode),
+    onState: (cb: (snapshot: unknown) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, snapshot: unknown) => cb(snapshot)
+      ipcRenderer.on('huddle:state', listener)
+      return () => {
+        ipcRenderer.removeListener('huddle:state', listener)
+      }
+    },
+  },
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   setIslandConfig: (config: Partial<IslandConfig>) => ipcRenderer.invoke('set-island-config', config),
@@ -779,6 +795,10 @@ exposeShogoDesktopPortsBridge()
 
 import { exposeShogoIslandBridge } from './preload-island'
 exposeShogoIslandBridge()
+
+// Exposes window.shogoHuddleHost, only in the huddle window.
+import { exposeShogoHuddleHostBridge } from './preload-huddle'
+exposeShogoHuddleHostBridge()
 
 if (process.env.SHOGO_E2E === '1' || process.env.PLAYWRIGHT_E2E === '1') {
   contextBridge.exposeInMainWorld('shogoTesting', {

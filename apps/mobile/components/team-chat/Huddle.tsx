@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Huddle chrome: the header button that starts or joins one and the banner
- * over a conversation with a live huddle. `HuddleDock` keeps your call in
- * reach everywhere else.
+ * Huddle chrome: the header button that starts or joins one and the one-line
+ * banner over a conversation with a live huddle. The call itself is the
+ * floating `HuddleWindow`.
  */
 import { ActivityIndicator, Image, Pressable, Text, View } from 'react-native'
-import { Headphones, Mic, MicOff, MonitorOff, MonitorUp, PhoneOff, Video, VideoOff, Volume2, X } from 'lucide-react-native'
+import { Headphones, PhoneOff, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { WebTooltip } from '../chat/WebTooltip'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
@@ -14,20 +14,14 @@ import { useConversationHuddle } from '../../hooks/useHuddles'
 import {
   clearHuddleError,
   huddleMediaSupported,
-  huddleVideoSupported,
-  joinHuddleCall,
   leaveHuddleCall,
-  resumeHuddlePlayback,
-  screenShareSupported,
-  setHuddleCamera,
-  setHuddleMuted,
-  setHuddleScreenShare,
+  requestHuddleJoin,
+  setHuddleView,
   useHuddleCall,
-  type HuddleVideoTile,
 } from '../../lib/huddle-call'
+import { summarizeNames } from '../../lib/huddle-roster'
 import { isAgentDm, type ConversationDetail, type HuddleParticipant, type Participant } from '../../lib/team-chat-api'
 import { GlassButton } from './FloatingChrome'
-import { HuddleVideo } from './HuddleVideo'
 
 const MAX_FACES = 5
 
@@ -86,7 +80,7 @@ export function HuddleButton({ conversation, me, label, floating }: { conversati
   const action = inThis ? 'Leave huddle' : huddle ? 'Join huddle' : 'Start a huddle'
   const onPress = () => {
     if (inThis) void leaveHuddleCall()
-    else void joinHuddleCall({ conversationId: conversation.id, workspaceId: conversation.workspaceId, label, kind: conversation.kind })
+    else void requestHuddleJoin({ conversationId: conversation.id, workspaceId: conversation.workspaceId, label, kind: conversation.kind })
   }
   const iconClass = inThis || huddle ? 'text-emerald-500' : floating ? 'text-foreground' : 'text-muted-foreground'
   if (!huddleMediaSupported && !huddle) return null
@@ -113,49 +107,11 @@ export function HuddleButton({ conversation, me, label, floating }: { conversati
   )
 }
 
-function VideoTile({ tile, speaking, fit, className }: { tile: HuddleVideoTile; speaking: boolean; fit: 'cover' | 'contain'; className?: string }) {
-  return (
-    <View
-      className={cn('overflow-hidden rounded-xl border-2 bg-black', speaking ? 'border-emerald-500' : 'border-transparent', className)}
-      accessibilityLabel={`${tile.isLocal ? 'You' : tile.name}${tile.source === 'screen' ? ', sharing screen' : ', camera'}`}
-      testID={`huddle-tile-${tile.userId}-${tile.source}`}
-    >
-      <HuddleVideo tile={tile} fit={fit} />
-      <View className="absolute bottom-1.5 left-1.5 rounded-md bg-black/60 px-1.5 py-0.5">
-        <Text className="text-[11px] font-medium text-white" numberOfLines={1}>
-          {tile.isLocal ? 'You' : tile.name}
-          {tile.source === 'screen' ? ' · screen' : ''}
-        </Text>
-      </View>
-    </View>
-  )
-}
-
-/** Cameras and shared screens in the call: a shared screen takes the stage, cameras line up beneath. */
-function HuddleStage({ tiles, speaking }: { tiles: HuddleVideoTile[]; speaking: Set<string> }) {
-  const screen = tiles.find((t) => t.source === 'screen' && !t.isLocal) ?? tiles.find((t) => t.source === 'screen')
-  const rest = tiles.filter((t) => t !== screen)
-  return (
-    <View className="mt-2 gap-2" testID="huddle-stage">
-      {screen ? <VideoTile tile={screen} speaking={false} fit="contain" className="aspect-video max-h-[60vh] w-full" /> : null}
-      {rest.length ? (
-        <View className="flex-row flex-wrap gap-2">
-          {rest.map((tile) => (
-            <VideoTile
-              key={tile.key}
-              tile={tile}
-              speaking={tile.source === 'camera' && speaking.has(tile.userId)}
-              fit={tile.source === 'screen' ? 'contain' : 'cover'}
-              className={cn('aspect-video', screen ? 'w-40' : 'w-64')}
-            />
-          ))}
-        </View>
-      ) : null}
-    </View>
-  )
-}
-
-/** Who's in this conversation's huddle, with join / mute / camera / screen / leave. */
+/**
+ * One line over a conversation with a live huddle: who is in it, and Join /
+ * Open call. The call itself lives in `HuddleWindow`, so the chat is never
+ * pushed down by video.
+ */
 export function HuddleBanner({ conversation, me, label, topInset = 0 }: { conversation: ConversationDetail; me: string | null; label: string; topInset?: number }) {
   const { huddle } = useConversationHuddle(conversation.workspaceId, conversation.id)
   const call = useHuddleCall()
@@ -172,18 +128,20 @@ export function HuddleBanner({ conversation, me, label, topInset = 0 }: { conver
       : call.status === 'reconnecting'
         ? 'Reconnecting…'
         : others.length
-          ? `In a huddle with ${others.slice(0, 2).map((p) => p.name).join(', ')}${others.length > 2 ? ` and ${others.length - 2} more` : ''}`
+          ? `In a huddle with ${summarizeNames(others.map((p) => p.name))}`
           : conversation.kind === 'dm' || conversation.kind === 'group_dm'
             ? `Calling ${label}…`
             : 'In a huddle · waiting for others'
     : people.length
-      ? `${people.length} ${people.length === 1 ? 'person' : 'people'} in a huddle`
+      ? `Huddle live · ${people.length} ${people.length === 1 ? 'person' : 'people'}`
       : null
+
+  const join = () => void requestHuddleJoin({ conversationId: conversation.id, workspaceId: conversation.workspaceId, label, kind: conversation.kind })
 
   return (
     <View className="z-20 px-3" style={{ paddingTop: topInset }} testID="huddle-banner">
       {summary ? (
-        <View className="mt-2 flex-row items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+        <View className="mt-2 flex-row items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5">
           <Headphones size={16} className="text-emerald-600" />
           <View className="flex-row">
             {people.slice(0, MAX_FACES).map((p, i) => (
@@ -196,25 +154,12 @@ export function HuddleBanner({ conversation, me, label, topInset = 0 }: { conver
             {summary}
           </Text>
           {call.status === 'joining' && inThis ? <ActivityIndicator size="small" /> : null}
-          {inThis && call.playbackBlocked ? (
-            <CircleButton label="Turn on huddle audio" onPress={resumeHuddlePlayback}>
-              <Volume2 size={16} className="text-foreground" />
-            </CircleButton>
-          ) : null}
           {inThis && call.status !== 'joining' ? (
             <>
-              <CircleButton label={call.muted ? 'Unmute' : 'Mute'} onPress={() => void setHuddleMuted(!call.muted)}>
-                {call.muted ? <MicOff size={16} className="text-destructive" /> : <Mic size={16} className="text-foreground" />}
-              </CircleButton>
-              {huddleVideoSupported ? (
-                <CircleButton label={call.camera ? 'Turn off camera' : 'Turn on camera'} onPress={() => void setHuddleCamera(!call.camera)}>
-                  {call.camera ? <Video size={16} className="text-emerald-600" /> : <VideoOff size={16} className="text-foreground" />}
-                </CircleButton>
-              ) : null}
-              {screenShareSupported ? (
-                <CircleButton label={call.screen ? 'Stop sharing' : 'Share screen'} onPress={() => void setHuddleScreenShare(!call.screen)}>
-                  {call.screen ? <MonitorOff size={16} className="text-emerald-600" /> : <MonitorUp size={16} className="text-foreground" />}
-                </CircleButton>
+              {call.view !== 'expanded' ? (
+                <Pressable onPress={() => setHuddleView('expanded')} accessibilityRole="button" accessibilityLabel="Open call" className="rounded-full bg-emerald-600 px-3 py-1.5 active:opacity-80">
+                  <Text className="text-xs font-semibold text-white">Open call</Text>
+                </Pressable>
               ) : null}
               <CircleButton label="Leave huddle" tone="danger" onPress={() => void leaveHuddleCall()}>
                 <PhoneOff size={16} color="white" />
@@ -222,19 +167,13 @@ export function HuddleBanner({ conversation, me, label, topInset = 0 }: { conver
             </>
           ) : null}
           {!inThis && huddleMediaSupported && canHuddle(conversation, me) ? (
-            <Pressable
-              onPress={() => void joinHuddleCall({ conversationId: conversation.id, workspaceId: conversation.workspaceId, label, kind: conversation.kind })}
-              accessibilityRole="button"
-              accessibilityLabel="Join huddle"
-              className="rounded-full bg-emerald-600 px-3 py-1.5 active:opacity-80"
-            >
+            <Pressable onPress={join} accessibilityRole="button" accessibilityLabel="Join huddle" className="rounded-full bg-emerald-600 px-3 py-1.5 active:opacity-80">
               <Text className="text-xs font-semibold text-white">Join</Text>
             </Pressable>
           ) : null}
           {!inThis && !huddleMediaSupported ? <Text className="text-xs text-muted-foreground">Join from web or desktop</Text> : null}
         </View>
       ) : null}
-      {inThis && call.video.length ? <HuddleStage tiles={call.video} speaking={speaking} /> : null}
       {error ? (
         <Pressable onPress={clearHuddleError} accessibilityRole="button" accessibilityLabel={`${error}. Dismiss`} className="mt-2 flex-row items-center gap-2 rounded-xl bg-destructive/10 px-3 py-2">
           <Text className="flex-1 text-xs text-destructive">{error}</Text>

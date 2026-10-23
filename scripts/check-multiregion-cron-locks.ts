@@ -288,6 +288,17 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'One live huddle per conversation, written by the join/leave request in the workspace\'s home region (LiveKit webhooks forward there via routeToHomeRegion); a cross-region race needs a failover mid-join.',
   },
   {
+    key: 'Huddle.linkToken',
+    category: 'random_secret',
+    reason: 'Random secret in the shareable join link; collision astronomically improbable.',
+  },
+  {
+    key: 'HuddleInvite.(huddleId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One invite per (huddle, person), upserted by the invite/ring request in the workspace\'s home region; a re-invite just resets the status on the same row.',
+  },
+  {
     key: 'Account.(accountId,providerId)',
     category: 'request_scoped',
     reason:
@@ -898,6 +909,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'single_tenant_upsert',
     reason:
       'Reaction toggle under /api/conversation-messages/:id/reactions by the reacting user only; create-or-ignore / deleteMany on the same triple.',
+  },
+  {
+    key: 'ConversationVote.(messageId,optionId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Poll vote / question upvote by the voting user only; create-or-ignore / deleteMany on the same triple.',
   },
   {
     key: 'SocialProfile.(localWorkspaceId,workspaceId)',

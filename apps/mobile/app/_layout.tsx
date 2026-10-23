@@ -87,6 +87,7 @@ import * as ExpoLinking from "expo-linking";
 import { useWhatsNew } from "../lib/whats-new/use-whats-new";
 import { WhatsNewModal } from "../components/whats-new/WhatsNewModal";
 import { isIslandWindow } from "../components/island/types";
+import { getHuddleHostBridge } from "../lib/desktop-huddle";
 import { EnvironmentBadge } from "../components/layout/EnvironmentBadge";
 import { getActiveEnvKey, telemetryEnvFor } from "../lib/env-override";
 import { getRuntimeAppEnv } from "../lib/runtime-env";
@@ -199,10 +200,12 @@ function AuthenticatedAppShell({
   // The desktop island overlay renders only its own route: app-wide banners
   // and modals would draw into the transparent notch window.
   const island = isIslandWindow();
+  // The huddle window is a bare call surface too: no app banners or modals.
+  const bare = island || getHuddleHostBridge() !== null;
 
   return (
     <ActiveInstanceProvider>
-      {island ? null : (
+      {bare ? null : (
         <>
           <InstanceOfflineWatcher />
           <GlobalDictationListener />
@@ -219,7 +222,7 @@ function AuthenticatedAppShell({
       {/* The island reads the look from its snapshot instead. */}
       <BuddyLookProvider enabled={!island}>
         {/* Draws agent avatars on native; renders nothing on web or in the island. */}
-        {!island && <BuddySnapshotHost />}
+        {!bare && <BuddySnapshotHost />}
         {/* Fallback for a file link clicked on a screen with no side pane: it
             opens the app's own viewer instead of a browser tab. */}
         <ShareFileHost>
@@ -232,13 +235,15 @@ function AuthenticatedAppShell({
             <Stack.Screen name="(onboarding)" />
             <Stack.Screen name="(app)" />
             <Stack.Screen name="(admin)" />
+            <Stack.Screen name="huddle" />
+            <Stack.Screen name="huddle/join/[token]" />
             <Stack.Screen
               name="island"
               options={{ contentStyle: { backgroundColor: "transparent" } }}
             />
           </Stack>
         </ShareFileHost>
-        {!island && <EnvironmentBadge />}
+        {!bare && <EnvironmentBadge />}
       </BuddyLookProvider>
     </ActiveInstanceProvider>
   );

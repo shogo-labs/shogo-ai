@@ -20,6 +20,10 @@ export interface IncomingRing {
   kind: ConversationKind
   from: { userId: string; name: string; image: string | null }
   at: number
+  /** Someone rang you into a huddle already under way, rather than a call starting in your DM. */
+  invite?: boolean
+  /** The channel an invitation is for; null in a DM. */
+  conversationName?: string | null
 }
 
 let rings: IncomingRing[] = []
@@ -46,8 +50,9 @@ export function useIncomingRings(): IncomingRing[] {
 }
 
 /** "Dana is calling you" in a DM, "Dana's huddle" in a group DM. */
-export function ringLabel(ring: { kind: ConversationKind; from: { name: string } }): string {
-  return ring.kind === 'dm' ? ring.from.name : `${ring.from.name}'s huddle`
+export function ringLabel(ring: { kind: ConversationKind; from: { name: string }; invite?: boolean; conversationName?: string | null }): string {
+  if (ring.invite && ring.conversationName) return `#${ring.conversationName}`
+  return ring.kind === 'dm' && !ring.invite ? ring.from.name : `${ring.from.name}'s huddle`
 }
 
 /**
@@ -81,7 +86,26 @@ function startRing(ring: IncomingRing, remainingMs: number): void {
 export function restoreRings(workspaceId: string, huddles: ActiveHuddle[], me: string | null): void {
   const now = Date.now()
   for (const huddle of huddles) {
-    if (!huddle.ringing || huddle.startedById === me) continue
+    if (!huddle.ringing) continue
+    if (huddle.invite) {
+      const remaining = RING_TIMEOUT_MS - (now - new Date(huddle.invite.at).getTime())
+      if (remaining <= 0 || huddle.invite.from.userId === me) continue
+      startRing(
+        {
+          conversationId: huddle.conversationId,
+          workspaceId,
+          huddleId: huddle.id,
+          kind: huddle.conversationKind,
+          from: huddle.invite.from,
+          at: now,
+          invite: true,
+          conversationName: huddle.invite.conversationName,
+        },
+        remaining,
+      )
+      continue
+    }
+    if (huddle.startedById === me) continue
     const from = huddle.participants.find((p) => p.userId === huddle.startedById)
     if (!from) continue
     const remaining = RING_TIMEOUT_MS - (now - new Date(huddle.startedAt).getTime())
@@ -105,7 +129,15 @@ export function applyRingEvent(workspaceId: string, event: TeamChatEvent, me: st
   if (event.type === 'huddle.ring') {
     if (event.from.userId === me) return
     startRing(
-      { conversationId: event.conversationId, workspaceId, huddleId: event.huddleId, kind: event.conversationKind, from: event.from, at: Date.now() },
+      {
+        conversationId: event.conversationId,
+        workspaceId,
+        huddleId: event.huddleId,
+        kind: event.conversationKind,
+        from: event.from,
+        at: Date.now(),
+        ...(event.invite ? { invite: true, conversationName: event.conversationName ?? null } : {}),
+      },
       RING_TIMEOUT_MS,
     )
     return
@@ -119,11 +151,14 @@ export function applyRingEvent(workspaceId: string, event: TeamChatEvent, me: st
       dismissRing(ring.conversationId)
     } else if (huddle.participants.some((p) => p.userId === me)) {
       dismissRing(ring.conversationId, 'answered_elsewhere')
+    } else if (ring.invite && !huddle.invited?.some((i) => i.userId === me && i.status === 'ringing')) {
+      // The invitation was taken back, answered elsewhere, or ran out.
+      dismissRing(ring.conversationId, 'remote_ended')
     }
   }
 }
 
-export function answerRing(ring: IncomingRing | NativeCallRing, label: string = ringLabel(ring)): Promise<void> {
+export function answerRing(ring: IncomingRing | NativeCallRing, label: string = ringLabel(ring as IncomingRing)): Promise<void> {
   // Answered: the system call screen (if any) becomes an active call, so the dismiss below leaves it up.
   markNativeCallAnswered(ring.huddleId)
   dismissRing(ring.conversationId, 'answered_elsewhere')

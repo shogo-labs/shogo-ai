@@ -20,6 +20,9 @@ export const GATE_PUBLIC_PREFIXES = [
   // Shared-file downloads: the signed token in the path is the credential
   // (verified in routes/shared-files.ts).
   '/api/f/',
+  // Huddle join links: guests open them without an account. The link token or
+  // request id is the credential (checked in routes/huddles.ts).
+  '/api/huddle-links/',
   '/api/marketplace',
   '/api/tech-stacks',
   '/api/instances/heartbeat',

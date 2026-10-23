@@ -31,6 +31,14 @@ const Icon = forwardRef(function LucideIcon(
 })
 
 export {
+  Icon as ChevronsDown,
+  Icon as Expand,
+  Icon as Hand,
+  Icon as HelpCircle,
+  Icon as ImagePlus,
+  Icon as Presentation,
+  Icon as Shrink,
+  Icon as VolumeX,
   Icon as Activity,
   Icon as Hourglass,
   Icon as AudioLines,

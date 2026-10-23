@@ -555,8 +555,13 @@ export type TeamChatEvent =
       conversationKind: ConversationKind
       huddleId: string
       from: { userId: string; name: string; image: string | null }
+      /** Someone rang you into a huddle already under way (as opposed to a call starting in your DM). */
+      invite?: boolean
+      /** The channel the invitation is for, when it isn't a DM. */
+      conversationName?: string | null
     }
   | { type: 'huddle.declined'; conversationId: string; huddleId: string; userId: string; name: string }
+  | { type: 'huddle.knock'; conversationId: string; huddleId: string; request: { id: string; name: string; guest: boolean } }
   | {
       type: 'doc.updated'
       conversationId: string
@@ -644,6 +649,28 @@ export interface HuddleParticipant {
   name: string
   image: string | null
   joinedAt: string
+  /** An outside guest let in through the huddle link. */
+  guest?: boolean
+}
+
+/** Someone rung into the huddle who hasn't joined yet. */
+export interface HuddleInvitee {
+  userId: string
+  name: string
+  image: string | null
+  status: 'ringing' | 'declined' | 'missed'
+  invitedById: string
+}
+
+/** Someone knocking to be let into the huddle: everyone in the call sees Admit and Deny. */
+export interface HuddleJoinRequest {
+  id: string
+  /** Set for a workspace member without access to the conversation; null for an outside guest. */
+  userId: string | null
+  name: string
+  image: string | null
+  guest: boolean
+  createdAt: string
 }
 
 /** A live audio call in a conversation. */
@@ -653,7 +680,89 @@ export interface Huddle {
   workspaceId: string
   startedById: string
   startedAt: string
+  /** The "started a huddle" message: chat during the call is posted as replies to it. */
+  messageId?: string | null
   participants: HuddleParticipant[]
+  /** People rung in who haven't joined: "Ringing…" tiles. */
+  invited: HuddleInvitee[]
+  /**
+   * Everyone the call's chat is shared with (people who have been in the call
+   * or were invited, and the members of a DM it started in). Only grows; when
+   * it changes, ask for your chat again with `huddleChat`.
+   */
+  chatMembers?: string[]
+  /** People knocking through the huddle link. */
+  requests?: HuddleJoinRequest[]
+}
+
+/** Where one person chats during a call. */
+export interface HuddleChatTarget {
+  conversationId: string
+  kind: string
+  /** The huddle's start message when the chat is its thread; null for a plain group conversation. */
+  threadRootId: string | null
+  members: string[]
+  /** Not the conversation the call started in: a person added to the call moved the chat to a matching group. */
+  moved: boolean
+}
+
+/** The shareable huddle link. */
+export interface HuddleLink {
+  token: string
+  /** App path that opens the join page. */
+  path: string
+}
+
+/** What a huddle link shows before anyone asks to join. */
+export interface HuddleLinkInfo {
+  enabled?: boolean
+  live: boolean
+  startedBy?: string | null
+  participantCount?: number
+  /** `member` can join directly; `knock` has to ask to be let in. */
+  access?: 'member' | 'knock'
+  /** You are signed in; otherwise you join as a guest with just a name. */
+  signedIn?: boolean
+  conversationId?: string
+  workspaceId?: string
+  label?: string | null
+}
+
+export interface HuddleKnock {
+  requestId: string | null
+  status: 'waiting' | 'admitted'
+  guest: boolean
+  conversationId?: string
+  workspaceId?: string
+}
+
+export type HuddleRequestStatus = 'waiting' | 'admitted' | 'denied' | 'expired' | 'ended'
+
+export interface HuddleRequestResult {
+  status: HuddleRequestStatus
+  /** Guests get a LiveKit token the moment they are let in. */
+  token?: string
+  url?: string
+  guestId?: string
+  conversationId?: string
+  workspaceId?: string
+}
+
+/** A poll block on a huddle-thread message. */
+export interface PollBlock {
+  question: string
+  options: Array<{ id: string; text: string }>
+  multiple: boolean
+  closed: boolean
+  tally: Record<string, number>
+  voters: Record<string, string[]>
+}
+
+/** A Q&A block on a huddle-thread message. */
+export interface QuestionBlock {
+  answered: boolean
+  upvotes: number
+  upvoters: string[]
 }
 
 /** A live huddle as the workspace list returns it. */
@@ -661,6 +770,8 @@ export interface ActiveHuddle extends Huddle {
   conversationKind: ConversationKind
   /** Started in a DM moments ago without you, so it should still be ringing here. */
   ringing: boolean
+  /** Set when the ring is an invitation to a huddle already under way. */
+  invite?: { from: { userId: string; name: string; image: string | null }; conversationName: string | null; at: string }
 }
 
 export interface HuddleJoin {
@@ -1145,6 +1256,76 @@ export function teamChatApi() {
     },
     async declineHuddle(id: string): Promise<Huddle | null> {
       return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/decline`, {})).data.huddle
+    },
+    /** Ring more people into the huddle you're in. */
+    async inviteToHuddle(id: string, userIds: string[]): Promise<Huddle> {
+      return (await http.post<{ huddle: Huddle }>(`${conv(id)}/huddle/invite`, { userIds })).data.huddle
+    },
+    async cancelHuddleInvite(id: string, userId: string): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/invite/${encodeURIComponent(userId)}/cancel`, {})).data.huddle
+    },
+    /** Mute someone's mic (the host or a workspace admin). */
+    async muteHuddleParticipant(id: string, userId: string): Promise<void> {
+      await http.post(`${conv(id)}/huddle/mute`, { userId })
+    },
+    /** Remove someone from the call (the host or a workspace admin). */
+    async removeHuddleParticipant(id: string, userId: string): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/remove`, { userId })).data.huddle
+    },
+    /** The shareable link for the huddle you're in; `rotate` revokes the old one (host only). */
+    async huddleLink(id: string, opts: { rotate?: boolean } = {}): Promise<HuddleLink> {
+      return (await http.post<HuddleLink>(`${conv(id)}/huddle/link`, { rotate: opts.rotate === true })).data
+    },
+    async admitHuddleRequest(id: string, requestId: string): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/requests/${encodeURIComponent(requestId)}/admit`, {})).data.huddle
+    },
+    async denyHuddleRequest(id: string, requestId: string): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/requests/${encodeURIComponent(requestId)}/deny`, {})).data.huddle
+    },
+    async huddleLinkInfo(token: string): Promise<HuddleLinkInfo> {
+      return (await http.get<HuddleLinkInfo>(`/api/huddle-links/${encodeURIComponent(token)}`)).data
+    },
+    /** Ask to be let in. Guests (no account) give a name. */
+    async knockOnHuddle(token: string, name?: string): Promise<HuddleKnock> {
+      return (await http.post<HuddleKnock>(`/api/huddle-links/${encodeURIComponent(token)}/knock`, name ? { name } : {})).data
+    },
+    async huddleJoinRequest(requestId: string): Promise<HuddleRequestResult> {
+      return (await http.get<HuddleRequestResult>(`/api/huddle-links/requests/${encodeURIComponent(requestId)}`)).data
+    },
+    async leaveHuddleAsGuest(requestId: string): Promise<void> {
+      await http.post(`/api/huddle-links/requests/${encodeURIComponent(requestId)}/leave`, {})
+    },
+    /** Leave as a guest from a closing tab: survives page unload, never throws. */
+    leaveHuddleAsGuestOnUnload(requestId: string): void {
+      try {
+        void fetch(`${API_URL}/api/huddle-links/requests/${encodeURIComponent(requestId)}/leave`, {
+          method: 'POST',
+          keepalive: true,
+          credentials: 'omit',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        }).catch(() => {})
+      } catch {}
+    },
+    /** Where you chat in this call: your DM for two people, the exact group DM for more. */
+    async huddleChat(id: string): Promise<HuddleChatTarget | null> {
+      return (await http.get<{ chat: HuddleChatTarget | null }>(`${conv(id)}/huddle/chat`)).data.chat
+    },
+    async postHuddlePoll(id: string, input: { question: string; options: string[]; multiple?: boolean }): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${conv(id)}/huddle/polls`, input)).data.message
+    },
+    async postHuddleQuestion(id: string, text: string): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${conv(id)}/huddle/questions`, { text })).data.message
+    },
+    /** Vote on a poll option, or upvote a question with `optionId: 'up'`. Voting again takes the vote back. */
+    async voteOnMessage(messageId: string, optionId: string): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/vote`, { optionId })).data.message
+    },
+    async closePoll(messageId: string): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/poll/close`, {})).data.message
+    },
+    async setQuestionAnswered(messageId: string, answered = true): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/question/answered`, { answered })).data.message
     },
     /** Leave from a closing tab: survives page unload, never throws. */
     leaveHuddleOnUnload(id: string): void {

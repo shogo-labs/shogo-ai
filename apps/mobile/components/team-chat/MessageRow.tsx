@@ -29,8 +29,9 @@ import { AgentProfileCard } from './AgentProfileCard'
 import { ApprovalCardView, StatusCardView } from './AgentStatus'
 import { WorkItemCard } from './WorkItemCard'
 import { QuestionCardView } from './QuestionCard'
+import { AudienceQuestionCardView, PollCardView } from './PollCard'
 import { QueuedWakeRow, wakeQueuedOf } from './QueuedWakeRow'
-import { approvalOf, connectRequestsOf, isAskedOf, messageKind, questionRefsOf, questionsOf, statusCardOf, workItemOf, workOf, type WorkItemBlock } from '../../lib/team-chat-kinds'
+import { approvalOf, audienceQuestionOf, connectRequestsOf, pollOf, isAskedOf, messageKind, questionRefsOf, questionsOf, statusCardOf, workItemOf, workOf, type WorkItemBlock } from '../../lib/team-chat-kinds'
 import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { ImagePreviewModal } from '../chat/ImagePreviewModal'
@@ -482,6 +483,9 @@ function MessageRowImpl(props: MessageRowProps) {
   const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
   // Board cards are posted by the system, so this is deliberately author-agnostic.
   const workItem = running || deleted ? null : workItemOf(message)
+  // Polls and audience questions (from a huddle's thread) replace the text, which only summarises them.
+  const pollBlock = running || deleted ? null : pollOf(message)
+  const audienceQuestion = running || deleted || pollBlock ? null : audienceQuestionOf(message)
   const approval = !running && message.authorType === 'agent' ? approvalOf(message) : null
   const kind = message.authorType === 'agent' ? messageKind(message) : null
   const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
@@ -847,6 +851,8 @@ function MessageRowImpl(props: MessageRowProps) {
             ) : card ? (
               <StatusCardView card={card} onOpenLink={openMessageLinkInApp} />
             ) : null}
+            {pollBlock ? <PollCardView message={message} me={me} canManage={canManage} /> : null}
+            {audienceQuestion ? <AudienceQuestionCardView message={message} me={me} canManage={canManage} /> : null}
             {approval ? <ApprovalCardView approval={approval} messageId={message.id} canDecide={!message.pending} onDecide={(decision) => api.decideApproval(message.id, decision)} /> : null}
             {work ? <AgentWorkedFor messageId={message.id} work={work} /> : null}
             {connectRequests.filter((c) => !continuedConnects.includes(c.provider)).map((c) => (
@@ -891,12 +897,12 @@ function MessageRowImpl(props: MessageRowProps) {
               </Pressable>
             ))}
             {/* While an agent works the row shows its status; its closing message appears when it is done. */}
-            {!workItem && !card && !approval && !!body && !(running && message.authorType === 'agent') && foldBody ? (
+            {!workItem && !card && !approval && !pollBlock && !audienceQuestion && !!body && !(running && message.authorType === 'agent') && foldBody ? (
               <Pressable onPress={() => setShowFullUpdate(true)} accessibilityRole="button" className="mt-1 self-start" testID="show-full-update">
                 <Text className="text-xs font-medium text-primary">Show full update</Text>
               </Pressable>
             ) : null}
-            {!workItem && !card && !approval && !!body && !foldBody && !(running && message.authorType === 'agent') && (() => {
+            {!workItem && !card && !approval && !pollBlock && !audienceQuestion && !!body && !foldBody && !(running && message.authorType === 'agent') && (() => {
               const jumbo = running ? null : jumboEmojiCodes(body, customEmoji)
               return (
                 <View className={cn(message.pending && 'opacity-60')}>

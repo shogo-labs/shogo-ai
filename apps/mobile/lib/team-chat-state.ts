@@ -554,7 +554,7 @@ export function renderMentionsMarkdown(text: string, names: MentionNames): strin
 }
 
 /** Mention tokens as plain `@name` labels, leaving the message's own markdown alone. */
-function renderMentionLabels(text: string, names: MentionNames): string {
+export function renderMentionLabels(text: string, names: MentionNames): string {
   return text
     .replace(/<@u:([^>]+)>/g, (_m, id) => `@${names.users.get(id) ?? 'someone'}`)
     .replace(/<@a:(ws|p:[^>]+)>/g, (_m, key) => `@${names.agents.get(key) ?? 'agent'}`)
