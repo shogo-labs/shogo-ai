@@ -18,6 +18,20 @@ export const NOTES_AGENT_ATTRIBUTE = 'shogoNotesAgent'
 /** Agent name the worker registers under and dispatch targets. */
 export const NOTES_AGENT_NAME = 'huddle-notes'
 
+/**
+ * LiveKit's own topic for transcription text streams. Whoever transcribes a
+ * speaker publishes each partial and final here, so every participant reads
+ * live captions straight from the room (guests and phones included) with no
+ * server hop. Must match `CAPTION_TOPIC` in the app.
+ */
+export const CAPTION_TOPIC = 'lk.transcription'
+/** The transcript item a line belongs to, so a partial is replaced by its final. */
+export const CAPTION_SEGMENT_ATTRIBUTE = 'lk.segment_id'
+/** `'true'` once the recognizer settled the line. */
+export const CAPTION_FINAL_ATTRIBUTE = 'lk.transcription_final'
+/** Who said it — the worker's own participant identity is the agent, not the speaker. */
+export const CAPTION_SPEAKER_ATTRIBUTE = 'shogo.speaker'
+
 /** Inference STT model the worker sends audio to. */
 export function notesSttModel(): string {
   return process.env.LIVEKIT_NOTES_STT_MODEL?.trim() || 'deepgram/nova-3'

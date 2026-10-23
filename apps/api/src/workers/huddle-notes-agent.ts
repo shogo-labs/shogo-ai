@@ -31,6 +31,10 @@ import { AgentServer, JobContext, WorkerOptions, defineAgent, inference, initial
 import { liveKitConfig, type LiveKitConfig } from '../lib/livekit'
 import { resolveLocalApiPort } from '../lib/local-api-port'
 import {
+  CAPTION_FINAL_ATTRIBUTE,
+  CAPTION_SEGMENT_ATTRIBUTE,
+  CAPTION_SPEAKER_ATTRIBUTE,
+  CAPTION_TOPIC,
   NOTES_AGENT_ATTRIBUTE,
   NOTES_AGENT_NAME,
   notesFallbackAvailability,
@@ -104,6 +108,9 @@ function log(message: string): void {
 
 /** How many times a final is re-posted before it is given up on. */
 const FINAL_POST_ATTEMPTS = 3
+
+/** Partials go to the room at most five times a second, per speaker. */
+const CAPTION_PARTIAL_INTERVAL_MS = 200
 
 /** The env var `startNotesWorker` puts in the API's environment; forked jobs inherit it. */
 export const NOTES_WORKER_TOKEN_ENV = 'SHOGO_NOTES_WORKER_TOKEN'
@@ -269,9 +276,45 @@ export async function runNotesJob(options: {
     open.set(identity, { close, meters: meter })
     log(`covering ${identity} with ${notesSttModel()}`)
 
+    /**
+     * Captions go straight into the room, on LiveKit's own transcription topic,
+     * so everyone sees them live — guests and phones included — without a
+     * server hop. The speaker id has to ride along in an attribute: this
+     * worker's own participant identity is the agent, and receivers report an
+     * empty identity for it anyway. Best effort: a lost caption is not a lost call.
+     */
+    let lastInterimAt = 0
+    const publishCaption = async (text: string, final: boolean, itemId: string) => {
+      const local = (room as any).localParticipant
+      if (!local?.sendText) return
+      try {
+        await local.sendText(text, {
+          topic: CAPTION_TOPIC,
+          attributes: {
+            [CAPTION_SEGMENT_ATTRIBUTE]: itemId,
+            [CAPTION_FINAL_ATTRIBUTE]: final ? 'true' : 'false',
+            [CAPTION_SPEAKER_ATTRIBUTE]: identity,
+          },
+        })
+      } catch {
+        // A caption is a nicety; the line itself still reaches the notes.
+      }
+    }
+
     void (async () => {
       try {
         for await (const event of speck) {
+          if (event?.type === stt.SpeechEventType.INTERIM_TRANSCRIPT) {
+            const text = String(event.alternatives?.[0]?.text ?? '').trim()
+            if (!text) continue
+            // Partials are throttled to five a second; finals always go.
+            const at = now()
+            if (at - lastInterimAt < CAPTION_PARTIAL_INTERVAL_MS) continue
+            lastInterimAt = at
+            // A partial carries the id its final will claim, so the final replaces it.
+            await publishCaption(text, false, `lk:${identity}:${meter.streamNo}:${meter.itemNo + 1}`)
+            continue
+          }
           if (event?.type !== stt.SpeechEventType.FINAL_TRANSCRIPT) continue
           const text = String(event.alternatives?.[0]?.text ?? '').trim()
           if (!text) continue
@@ -279,13 +322,15 @@ export async function runNotesJob(options: {
           // One item id per final: `appendStreamFinal` is idempotent per id, so
           // reusing the stream's id would dedupe every later line away.
           meter.itemNo += 1
+          const itemId = `lk:${identity}:${meter.streamNo}:${meter.itemNo}`
+          await publishCaption(text, true, itemId)
           await deps.appendFinal({
             huddleId,
             identity,
             text,
             start: Math.max(0, at - 3),
             end: at,
-            itemId: `lk:${identity}:${meter.streamNo}:${meter.itemNo}`,
+            itemId,
           })
         }
       } catch (err) {
@@ -488,8 +533,9 @@ function serverOptions(config: LiveKitConfig): any {
     production: false,
     port: 0,
     // Hidden and subscribe-only: it never shows in a tile, roster or count,
-    // and it can never publish audio into the call.
-    permissions: { canSubscribe: true, canPublish: false, canPublishData: false, hidden: true },
+    // and it can never publish audio into the call. It *does* publish data,
+    // because its captions are text streams on `lk.transcription`.
+    permissions: { canSubscribe: true, canPublish: false, canPublishData: true, hidden: true },
     requestFunc: async (job: any) => {
       // Accepting is explicit in JS: an un-accepted request just sits until
       // LiveKit times it out, which is exactly how the fallback stays dark.

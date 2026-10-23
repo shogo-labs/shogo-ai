@@ -714,7 +714,7 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
   }
   const meeting = await db.meeting.findUnique({
     where: { id: meetingId },
-    select: { status: true, workspaceId: true, userId: true },
+    select: { status: true, workspaceId: true, userId: true, recordingId: true },
   })
   if (!meeting || meeting.status !== 'recording') return { ok: false, reason: 'not_recording' }
 
@@ -784,6 +784,7 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
     if (updated.count === 1) {
       if (segment) publishMeetingLive(meetingId, { type: 'final', itemId: input.itemKey ?? `chunk-${input.seq}`, segment })
       if (current.liveStatus?.state === 'error') publishMeetingLive(meetingId, { type: 'status', state: 'ok' })
+      if (segment) notifyHuddleFinalStored({ meetingId, recordingId: meeting.recordingId, itemId: input.itemKey ?? `chunk-${input.seq}`, segment, speaker, speakerId })
       return { ok: true, segment, transcript: { text: next.text, segments, language: next.language } }
     }
     // Heartbeats and note saves touch the row too: back off briefly, then merge again.
@@ -824,7 +825,7 @@ export async function appendStreamFinal(
   for (let attempt = 0; attempt < attempts; attempt++) {
     const row = await db.meeting.findUnique({
       where: { id: meetingId },
-      select: { status: true, transcript: true, updatedAt: true },
+      select: { status: true, transcript: true, updatedAt: true, recordingId: true },
     })
     if (!row || row.status !== 'recording') return { ok: false, reason: 'not_recording' }
     const current = readTranscript(row.transcript) ?? { text: '', segments: [] }
@@ -844,7 +845,10 @@ export async function appendStreamFinal(
       where: { id: meetingId, status: 'recording', updatedAt: row.updatedAt },
       data: { transcript: writeTranscript(next) },
     })
-    if (updated.count === 1) return { ok: true, stored: true, finals: next.liveItems!.length }
+    if (updated.count === 1) {
+      notifyHuddleFinalStored({ meetingId, recordingId: row.recordingId, itemId: input.itemId, segment, speaker, speakerId })
+      return { ok: true, stored: true, finals: next.liveItems!.length }
+    }
     await new Promise((resolve) => setTimeout(resolve, 20 + Math.random() * 60 * (attempt + 1)))
   }
   return { ok: false, reason: 'busy' }
@@ -1011,6 +1015,39 @@ export function huddleRecordingId(huddleId: string): string {
 export function huddleIdFromRecordingId(recordingId: string | null | undefined): string | null {
   if (!recordingId?.startsWith(HUDDLE_RECORDING_PREFIX)) return null
   return recordingId.slice(HUDDLE_RECORDING_PREFIX.length) || null
+}
+
+/**
+ * A final landed in a huddle's draft, so it is also a candidate for the spoken
+ * "hey Shogo" wake. Only fires when the write **stored** a new line: the live
+ * bookkeeping already rejects a replayed item, which is what makes "one wake per
+ * line" hold without the wake service trusting a caller.
+ *
+ * Lazy import, because the wake service reads the transcript back through this
+ * module. Fire-and-forget: a wake never fails the write that triggered it.
+ */
+function notifyHuddleFinalStored(input: {
+  meetingId: string
+  recordingId: string | null | undefined
+  itemId: string
+  segment: TranscriptSegment
+  speaker?: string
+  speakerId?: string
+}): void {
+  const huddleId = huddleIdFromRecordingId(input.recordingId)
+  if (!huddleId) return
+  void import('./huddle-wake.service')
+    .then(({ onHuddleFinalStored }) =>
+      onHuddleFinalStored({
+        meetingId: input.meetingId,
+        huddleId,
+        itemId: input.itemId,
+        segment: input.segment,
+        speaker: input.speaker,
+        speakerId: input.speakerId,
+      }),
+    )
+    .catch((err: Error) => console.warn(`[HuddleWake] hook failed for ${huddleId}: ${err.message}`))
 }
 
 /**

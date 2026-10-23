@@ -4,6 +4,8 @@
 import { useState } from 'react'
 import { Pressable, View } from 'react-native'
 import {
+  Captions,
+  CaptionsOff,
   Hand,
   LayoutGrid,
   Check,
@@ -85,9 +87,13 @@ export interface HuddleControlsProps {
   chatOpen?: boolean
   /** How many unread chat lines, for the badge. */
   chatBadge?: number
+  /** Live captions are on for this viewer. */
+  captions?: boolean
+  /** Hide or show the captions strip on this device (display only). */
+  onToggleCaptions?: () => void
 }
 
-export function HuddleControls({ call, compact, onInvite, onSettings, onCopyLink, linkCopied, onToggleChat, chatOpen }: HuddleControlsProps) {
+export function HuddleControls({ call, compact, onInvite, onSettings, onCopyLink, linkCopied, onToggleChat, chatOpen, captions, onToggleCaptions }: HuddleControlsProps) {
   const [reactions, setReactions] = useState(false)
   const size = compact ? 32 : 40
   const icon = compact ? 15 : 18
@@ -157,6 +163,26 @@ export function HuddleControls({ call, compact, onInvite, onSettings, onCopyLink
             onPress={() => void setHuddleNotesEnabled(!call.notes.enabled)}
           >
             <NotebookPen size={icon} color={call.notes.enabled ? white : undefined} className={call.notes.enabled ? undefined : 'text-foreground'} />
+          </ControlButton>
+        ) : null}
+        {!compact && onToggleCaptions ? (
+          <ControlButton
+            label={
+              !call.notes.enabled
+                ? 'Captions need notes on'
+                : captions
+                  ? 'Hide captions'
+                  : 'Show captions'
+            }
+            size={size}
+            active={!!captions && call.notes.enabled}
+            onPress={call.notes.enabled ? onToggleCaptions : () => {}}
+          >
+            {captions && call.notes.enabled ? (
+              <Captions size={icon} color={white} />
+            ) : (
+              <CaptionsOff size={icon} className="text-foreground" />
+            )}
           </ControlButton>
         ) : null}
         {!compact && onSettings ? (

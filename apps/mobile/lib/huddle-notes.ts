@@ -145,6 +145,12 @@ export interface HuddleNotesOptions {
   /** Publish whether this device streams its own audio (`'self'`, `'unsupported'`, `''`). */
   setSource(state: 'self' | 'unsupported' | ''): Promise<void>
   onStatus?(status: HuddleNotesStatus): void
+  /**
+   * Publish one caption line for a person this device transcribes (`null` is
+   * this device). Captions are the notes stream seen live, so with notes off
+   * nothing here runs — a caption is never a reason to transcribe.
+   */
+  publishCaption?(input: { itemId: string; speakerId: string; text: string; final: boolean; start?: number }): void
   /** Injected in tests; defaults to Web Audio and the real socket. */
   createTap?(stream: MediaStream, context: AudioContext | null): PcmTap | null
   startCapture?(options: AdaptiveLiveOptions): LiveCapture
@@ -224,10 +230,25 @@ export function startHuddleNotes(options: HuddleNotesOptions): HuddleNotesEngine
       failed.add(key)
       return false
     }
+    const speakerId = forUserId ?? options.selfId
+    /**
+     * Every line this device transcribes is also a caption for the room.
+     * Partials exist only on the socket path; a chunk-mode device (no socket)
+     * publishes finals only, a chunk-length behind — that is the fallback, not
+     * a bug.
+     */
+    const publish = (input: { itemId: string; text: string; final: boolean; start?: number }) => {
+      if (!input.text.trim()) return
+      options.publishCaption?.({ itemId: input.itemId, speakerId, text: input.text, final: input.final, start: input.start })
+    }
     const capture = startCapture({
       tap,
       wsBase: options.wsBase,
       isMuted: () => options.isMuted?.(forUserId) === true,
+      handlers: {
+        onPartial: (message) => publish({ itemId: message.itemId, text: message.text, final: false, start: message.start }),
+        onFinal: (message) => publish({ itemId: message.itemId, text: message.segment.text, final: true, start: message.segment.start }),
+      },
       getTicket: async () => {
         try {
           return await options.ticket(forUserId)

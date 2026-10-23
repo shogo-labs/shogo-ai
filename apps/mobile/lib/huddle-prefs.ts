@@ -34,6 +34,11 @@ export interface HuddlePrefs {
   lowLight: boolean
   /** Join with the camera off even when it was on last time. */
   previewBeforeJoin: boolean
+  /**
+   * Show the live captions strip. Per viewer and display-only: it never starts
+   * or stops transcription, so with notes off there is nothing to show.
+   */
+  captions: boolean
 }
 
 export const DEFAULT_HUDDLE_PREFS: HuddlePrefs = {
@@ -47,6 +52,7 @@ export const DEFAULT_HUDDLE_PREFS: HuddlePrefs = {
   autoFraming: false,
   lowLight: false,
   previewBeforeJoin: true,
+  captions: true,
 }
 
 /** Backgrounds that ship with the app: soft gradients, so no image files are needed. */
@@ -87,7 +93,7 @@ function sanitize(raw: unknown): Partial<HuddlePrefs> {
   if (bg?.kind === 'none') out.background = { kind: 'none' }
   else if (bg?.kind === 'blur' && typeof bg.radius === 'number') out.background = { kind: 'blur', radius: bg.radius }
   else if (bg?.kind === 'image' && typeof bg.url === 'string') out.background = { kind: 'image', url: bg.url, name: typeof bg.name === 'string' ? bg.name : 'Custom' }
-  for (const key of ['autoFraming', 'lowLight', 'previewBeforeJoin'] as const) {
+  for (const key of ['autoFraming', 'lowLight', 'previewBeforeJoin', 'captions'] as const) {
     if (typeof r[key] === 'boolean') out[key] = r[key] as boolean
   }
   return out

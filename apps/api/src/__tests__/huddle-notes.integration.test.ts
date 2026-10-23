@@ -37,6 +37,9 @@ mock.module('livekit-server-sdk', () => ({
     async deleteRoom(room: string) {
       liveRooms.delete(room)
     }
+    async sendData(room: string, data: Uint8Array, _kind?: unknown, options?: { topic?: string }) {
+      roomData.push({ room, topic: options?.topic, payload: JSON.parse(new TextDecoder().decode(data)) })
+    }
     async updateRoomMetadata(room: string, metadata: string) {
       roomMetadata.set(room, JSON.parse(metadata))
     }
@@ -51,6 +54,8 @@ mock.module('livekit-server-sdk', () => ({
 
 const liveRooms = new Map<string, string[]>()
 const roomMetadata = new Map<string, any>()
+/** What the server pushed over the room data channel, in order. */
+const roomData: Array<{ room: string; topic?: string; payload: any }> = []
 
 const { prisma } = await import('../lib/prisma')
 const bus = await import('../lib/conversation-bus')
@@ -58,6 +63,18 @@ const service = await import('../services/conversation.service')
 const meetings = await import('../services/meeting.service')
 const { verifyStreamTicket } = await import('../lib/meeting-stream-ticket')
 const huddles = await import('../services/huddle.service')
+const wakeService = await import('../services/huddle-wake.service')
+
+// The wake runs the workspace agent; here it only records that it was asked to.
+// Spread the real module so the internal app's other importers still link.
+const dispatcher = await import('../services/conversation-agent-dispatcher')
+const replies: any[] = []
+mock.module('../services/conversation-agent-dispatcher', () => ({
+  ...dispatcher,
+  runAgentReply: async (args: any) => {
+    replies.push(args)
+  },
+}))
 
 const db = prisma as any
 let seed: SeededWorkspace
@@ -73,8 +90,11 @@ beforeAll(async () => {
 beforeEach(() => {
   events = []
   dispatches.length = 0
+  replies.length = 0
   roomMetadata.clear()
+  roomData.length = 0
   huddles._resetHuddlesForTests()
+  wakeService._resetHuddleWakeForTests()
 })
 
 afterAll(async () => {
@@ -645,5 +665,134 @@ describe('deleting the notes', () => {
   test('someone else in the call may not delete them', async () => {
     const { huddleId } = await liveHuddle()
     await expect(huddles.deleteHuddleNotes(huddleId, seed.member)).rejects.toMatchObject({ status: 403 })
+  })
+})
+
+describe('saying "hey Shogo" in a huddle', () => {
+  /** The wake is fire-and-forget, so wait for it to land rather than racing it. */
+  async function until<T>(read: () => Promise<T | null | undefined>, ms = 4_000): Promise<T> {
+    const deadline = Date.now() + ms
+    for (;;) {
+      const value = await read()
+      if (value) return value
+      if (Date.now() > deadline) throw new Error('the wake never happened')
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+  }
+
+  const wakesOf = (huddleId: string) => db.huddleWake.findMany({ where: { huddleId } })
+
+  test('a spoken phrase posts a note and runs the agent as the person who said it', async () => {
+    const { conv, huddleId } = await liveHuddle()
+    // A little context before the wake, so the note has something to hand over.
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.member,
+      itemId: `lk:${seed.member}:1:1`,
+      text: 'the login button is broken on safari',
+      start: 1,
+      end: 3,
+    })
+
+    const stored = await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: `lk:${seed.owner}:1:1`,
+      text: 'hey shogo can you make a card for the login bug',
+      start: 4,
+      end: 7,
+    })
+    expect(stored).toEqual({ ok: true, stored: true })
+
+    const row = await until(() => db.huddleWake.findFirst({ where: { huddleId } }))
+    expect(row).toMatchObject({ speakerId: seed.owner, itemId: `lk:${seed.owner}:1:1` })
+
+    await until(() => (replies.length ? replies : null))
+    expect(replies).toHaveLength(1)
+    expect(replies[0]).toMatchObject({ userId: seed.owner })
+
+    const note = await db.conversationMessage.findUnique({ where: { id: row.messageId } })
+    expect(note.conversationId).toBe(conv.id)
+    expect(note.authorType).toBe('system')
+    // The request, and the last minute of the call with a name on every line.
+    expect(note.text).toContain('make a card for the login bug')
+    expect(note.text).toContain('the login button is broken on safari')
+    expect(note.blocks.huddleWake).toMatchObject({ huddleId, speakerId: seed.owner })
+    expect((await db.huddle.findUnique({ where: { id: huddleId } })).lastWakeAt).toBeTruthy()
+
+    // The call learns where the agent is without reading the chat bus.
+    const statuses = roomData.filter((entry) => entry.payload?.type === 'wake').map((entry) => entry.payload.status)
+    expect(statuses).toEqual(['running', 'replied'])
+    expect(roomData[0].topic).toBe('shogo.huddle')
+    expect(roomData[0].payload.by).toBe('owner')
+  })
+
+  test('a second phrase inside 10 s does not start a second run', async () => {
+    const { huddleId } = await liveHuddle()
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: `lk:${seed.owner}:1:1`,
+      text: 'hey shogo summarise where we are',
+      start: 1,
+      end: 3,
+    })
+    await until(() => db.huddleWake.findFirst({ where: { huddleId } }))
+    await until(() => (replies.length ? replies : null))
+
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.member,
+      itemId: `lk:${seed.member}:1:1`,
+      text: 'hey shogo what about the other thing',
+      start: 4,
+      end: 6,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(1)
+    expect(replies).toHaveLength(1)
+  })
+
+  test('the same transcript item can never wake twice', async () => {
+    const { huddleId } = await liveHuddle()
+    const text = 'hey shogo file this as a bug please'
+    await huddles.appendHuddleNoteFinal({ huddleId, identity: seed.owner, itemId: 'lk:dup:1', text, start: 1, end: 3 })
+    await until(() => db.huddleWake.findFirst({ where: { huddleId } }))
+    // Move the cooldown out of the way, leaving the item-id guard as the only thing left.
+    await db.huddle.update({ where: { id: huddleId }, data: { lastWakeAt: new Date(Date.now() - 60_000) } })
+    await huddles.appendHuddleNoteFinal({ huddleId, identity: seed.owner, itemId: 'lk:dup:1', text, start: 1, end: 3 })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(1)
+  })
+
+  test('a guest’s words are captioned but never woken', async () => {
+    const { huddleId } = await liveHuddle()
+    wakeService.onHuddleFinalStored({
+      meetingId: (await meetings.ensureHuddleNotesDraft(huddleId)).id,
+      huddleId,
+      itemId: 'lk:guest:1',
+      speakerId: `guest_${crypto.randomUUID().slice(0, 6)}`,
+      speaker: 'Guest',
+      segment: { start: 1, end: 3, text: 'hey shogo can you hear the guest' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(0)
+    expect(replies).toHaveLength(0)
+  })
+
+  test('with the notes off there is nothing to wake from', async () => {
+    const { huddleId } = await liveHuddle()
+    await db.huddle.update({ where: { id: huddleId }, data: { notesEnabled: false } })
+    wakeService.onHuddleFinalStored({
+      meetingId: (await meetings.ensureHuddleNotesDraft(huddleId)).id,
+      huddleId,
+      itemId: 'lk:owner:9',
+      speakerId: seed.owner,
+      speaker: 'owner',
+      segment: { start: 1, end: 3, text: 'hey shogo are the notes even on' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(0)
+    expect(replies).toHaveLength(0)
   })
 })

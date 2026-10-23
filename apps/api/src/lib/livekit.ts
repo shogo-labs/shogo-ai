@@ -6,7 +6,7 @@
  * self-hosted) carries it. Huddles are off unless all three env vars are set.
  */
 
-import { AccessToken, RoomServiceClient, TrackSource, WebhookReceiver, type WebhookEvent } from 'livekit-server-sdk'
+import { AccessToken, DataPacket_Kind, RoomServiceClient, TrackSource, WebhookReceiver, type WebhookEvent } from 'livekit-server-sdk'
 
 export interface LiveKitConfig {
   /** `wss://` URL clients connect to. */
@@ -119,4 +119,32 @@ export async function removeRoomParticipant(config: LiveKitConfig, roomName: str
 /** Verify and parse a LiveKit webhook. Throws when the signature is wrong. */
 export async function receiveWebhook(config: LiveKitConfig, body: string, authHeader: string | undefined): Promise<WebhookEvent> {
   return new WebhookReceiver(config.apiKey, config.apiSecret).receive(body, authHeader)
+}
+
+/**
+ * Send one small JSON message to everyone in the room, on a topic of our own.
+ * This is how the huddle wake tells the call what the agent is doing: it
+ * reaches guests and phones without the conversation bus, and clients that
+ * don't know the topic ignore it. Best effort — a call whose media is fine
+ * must not fail because a status message didn't go out.
+ */
+export async function sendRoomData(
+  config: LiveKitConfig,
+  roomName: string,
+  topic: string,
+  payload: unknown,
+  options: { destinationIdentities?: string[] } = {},
+): Promise<boolean> {
+  try {
+    const data = new TextEncoder().encode(JSON.stringify(payload))
+    await roomService(config).sendData(roomName, data, DataPacket_Kind.RELIABLE, {
+      topic,
+      ...(options.destinationIdentities?.length ? { destinationIdentities: options.destinationIdentities } : {}),
+    })
+    return true
+  } catch (err: any) {
+    if (err?.status === 404 || /does not exist|not found/i.test(String(err?.message ?? ''))) return false
+    console.warn(`[LiveKit] room data on ${topic} in ${roomName} failed:`, err?.message ?? err)
+    return false
+  }
 }
