@@ -5,7 +5,7 @@
  * (SHO-185, AC4): asleep, waking, and fine.
  */
 
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
@@ -20,9 +20,13 @@ mock.module('react-native', () => ({
     createElement('button', { ...rest, 'aria-label': accessibilityLabel, onClick: onPress }, children),
 }))
 
+// Only the two icons this banner uses are replaced, and every other export is
+// kept: a module mock here is visible to later files in the same process, and a
+// three-icon stand-in made the next screen test die on a missing `ChevronUp`.
+const realLucide = await import('lucide-react-native')
 mock.module('lucide-react-native', () => {
   const Icon = (props: any) => createElement('span', { 'data-icon': props.size })
-  return { CloudOff: Icon, RefreshCw: Icon, Cloud: Icon }
+  return { ...realLucide, CloudOff: Icon, RefreshCw: Icon, Cloud: Icon }
 })
 
 const { MachineWorkspaceBanner, useMachineWorkspace } = await import('../MachineWorkspaceBanner')
@@ -51,6 +55,13 @@ function Harness({
 
 beforeEach(() => {
   machineWorkspaceState.reset()
+})
+
+// This file mocks `react-native` and `lucide-react-native` module-wide, and bun
+// shares that across files in one process: hand the real modules back so a
+// screen test that runs after this one is not rendered with our shim.
+afterAll(() => {
+  mock.restore()
 })
 
 describe('a machine workspace whose Mac is asleep', () => {
