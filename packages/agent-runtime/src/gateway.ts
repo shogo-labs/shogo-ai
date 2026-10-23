@@ -600,7 +600,7 @@ export interface GatewayConfig {
   capabilityProfile?: CapabilityProfileName
   /**
    * Whether the heartbeat tools (`heartbeat_configure`, `heartbeat_status`) and
-   * the devops guide are available to the agent. This is a capability toggle,
+   * the heartbeat guide are available to the agent. This is a capability toggle,
    * NOT the schedule: whether heartbeats actually run (enabled, interval,
    * quiet hours) lives in the `agent_configs` table and is read/written through
    * the project config API. Default: on. The legacy `heartbeatEnabled` key in
@@ -5731,7 +5731,7 @@ export class AgentGateway {
     const imageGuideOn = cfg.imageGenEnabled !== false
     const videoGuideOn = cfg.videoGenEnabled === true
     const threeDGuideOn = cfg.threeDGenEnabled === true
-    const devopsGuideOn = cfg.heartbeatToolsEnabled !== false
+    const heartbeatGuideOn = cfg.heartbeatToolsEnabled !== false
 
     this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
     pushStable('capability-status', buildCapabilityStatusSection(cfg, {
@@ -5750,16 +5750,16 @@ export class AgentGateway {
       // Personal workspaces and the workspace agent have no subagent
       // orchestration at all; the media tools are direct on every profile.
       subagents: !subagentOrchestrationDisabled(this.config),
-      devops: devopsGuideOn,
+      heartbeat: heartbeatGuideOn,
     }))
 
     // Action Tools guide — only worth including when at least one of its
     // action surfaces (channels, managed integrations, heartbeat) is enabled.
-    if (channelsGuideOn || integrationsGuideOn || devopsGuideOn) {
+    if (channelsGuideOn || integrationsGuideOn || heartbeatGuideOn) {
       const actionVerbs = [
         integrationsGuideOn ? 'connect an integration' : null,
         channelsGuideOn ? 'configure a channel' : null,
-        devopsGuideOn ? 'set up a scheduled reminder' : null,
+        heartbeatGuideOn ? 'set up a scheduled reminder' : null,
       ].filter((v): v is string => v !== null)
       const actionVerbPhrase =
         actionVerbs.length === 1
@@ -5777,7 +5777,7 @@ export class AgentGateway {
       if (integrationsGuideOn) {
         actionLines.push('- For managed integrations (Google, Slack, GitHub, etc.) and MCP servers alike, call `search_integrations` then `connect`. The result\'s `source` tag (`managed` | `mcp` | `skill`) tells you which path was taken.')
       }
-      if (devopsGuideOn) {
+      if (heartbeatGuideOn) {
         if (workspaceAgentToolsRegistered({ workspaceId: process.env.WORKSPACE_ID })) {
           actionLines.push(
             '- For work tied to the clock (a reminder at 9am, a Monday digest, a daily inbox sweep), create a named goal schedule with `schedule_create`; use `heartbeat_configure` only for the general heartbeat sweep.',
@@ -6375,16 +6375,8 @@ export class AgentGateway {
       'Saving that file triggers a fast restart (no regenerate, no db push)',
       'so changes are live in under a second.',
       '',
-      ...(subagentOrchestrationDisabled(this.config)
-        ? []
-        : [
-            'If you ever see a route 404 or need to force a refresh, delegate to the `devops` subagent, which has the `server_sync` tool:',
-            '```',
-            'agent_spawn({ type: "devops", prompt: "Run server_sync and report the phase, active routes, and schema models" })',
-            '```',
-            'It reports the current phase, active routes, and schema models.',
-            '',
-          ]),
+      'If a route 404s or the server looks down, call `server_sync` yourself (no subagent). It regenerates routes, restarts the server, and returns the phase, active routes, and schema models.',
+      '',
       '**Do NOT** manually run `prisma generate`, `shogo generate`, or `npm run db:generate` — it is all automatic.',
     ].join('\n')
 

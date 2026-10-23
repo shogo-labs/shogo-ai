@@ -51,6 +51,7 @@ import {
   resolveSubagentModel,
   runSubagent,
   runSubagentsParallel,
+  BUILTIN_SUBAGENT_TYPES,
 } from '../subagent'
 
 afterEach(() => {
@@ -62,7 +63,7 @@ afterEach(() => {
 describe('getBuiltinSubagentConfig', () => {
   const cases = [
     'explore', 'general-purpose', 'code-reviewer', 'browser',
-    'browser_qa', 'channel', 'media', 'devops',
+    'browser_qa', 'channel', 'media',
   ] as const
 
   for (const name of cases) {
@@ -76,6 +77,17 @@ describe('getBuiltinSubagentConfig', () => {
 
   it('returns null for an unknown type', () => {
     expect(getBuiltinSubagentConfig('mystery', {} as any, [])).toBeNull()
+  })
+
+  it('devops is no longer a built-in type (SHO-184)', () => {
+    expect(getBuiltinSubagentConfig('devops', {} as any, [])).toBeNull()
+  })
+
+  it('BUILTIN_SUBAGENT_TYPES matches the switch exactly', () => {
+    for (const name of BUILTIN_SUBAGENT_TYPES) {
+      expect(getBuiltinSubagentConfig(name, {} as any, [])).not.toBeNull()
+    }
+    expect([...BUILTIN_SUBAGENT_TYPES].sort()).toEqual([...cases].sort())
   })
 
   it('explore is auto + 100 turns + readonly tool set', () => {

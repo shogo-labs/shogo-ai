@@ -317,7 +317,8 @@ describe('work capabilities', () => {
 
 describe('filterSubagentOnlyTools', () => {
   // Media tools are called directly by the project's own agent (SHO-49).
-  // `browser` and `server_sync` stay delegated to their subagents. The image
+  // `browser` stays delegated to its subagent; `server_sync` is a main-agent
+  // tool on every profile (SHO-184). The image
   // tools' gate is the capability flag, applied by
   // filterDisabledCapabilityTools — not the subagent-only set.
   function mainAgentTools(config: GatewayConfig): Set<string> {
@@ -326,13 +327,59 @@ describe('filterSubagentOnlyTools', () => {
     return new Set(filterSubagentOnlyTools(tools, config).map(t => t.name))
   }
 
-  test('team profile keeps the media tools on the main agent and still strips browser/server_sync', () => {
+  test('team profile keeps the media tools and server_sync on the main agent and still strips browser', () => {
     const n = mainAgentTools(makeConfig())
     expect(n.has('generate_image')).toBe(true)
     expect(n.has('list_media_models')).toBe(true)
     expect(n.has('transcribe_audio')).toBe(true)
     expect(n.has('browser')).toBe(false)
-    expect(n.has('server_sync')).toBe(false)
+    expect(n.has('server_sync')).toBe(true)
+  })
+
+  test('server_sync is a direct main-agent tool on project and workspace-agent runtimes; heartbeat tools on every profile', () => {
+    const prevRuntime = process.env.WORKSPACE_RUNTIME
+    const prevAnchor = process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    try {
+      const team = mainAgentTools(makeConfig())
+      expect(team.has('server_sync')).toBe(true)
+      expect(team.has('heartbeat_configure')).toBe(true)
+      expect(team.has('heartbeat_status')).toBe(true)
+      // Personal workspaces build in a hidden builder project, not their own
+      // runtime, so the profile's `code_review` group (not the subagent
+      // filter) keeps server_sync off there. Heartbeat stays direct.
+      const personal = mainAgentTools(makeConfig({ capabilityProfile: 'personal' }))
+      expect(personal.has('server_sync')).toBe(false)
+      expect(personal.has('heartbeat_configure')).toBe(true)
+      expect(personal.has('heartbeat_status')).toBe(true)
+      process.env.WORKSPACE_RUNTIME = '1'
+      process.env.WORKSPACE_ANCHOR_PROJECT_ID = 'p1'
+      const ws = mainAgentTools(makeConfig())
+      expect(ws.has('server_sync')).toBe(true)
+      expect(ws.has('heartbeat_configure')).toBe(true)
+    } finally {
+      if (prevRuntime === undefined) delete process.env.WORKSPACE_RUNTIME
+      else process.env.WORKSPACE_RUNTIME = prevRuntime
+      if (prevAnchor === undefined) delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+      else process.env.WORKSPACE_ANCHOR_PROJECT_ID = prevAnchor
+    }
+  })
+
+  test('main agent repairs a dead project server itself: server_sync from its own tool list returns the route table', async () => {
+    const config = makeConfig()
+    const ctx = makeCtx(config)
+    ctx.skillServerManager = {
+      sync: async () => ({ ok: true, phase: 'healthy' }),
+      getActiveRoutes: () => ['leads', 'notes'],
+      getSchemaModels: () => ['Lead', 'Note'],
+      url: 'http://localhost:0',
+      phase: 'healthy',
+    } as any
+    const tools = filterSubagentOnlyTools(filterDisabledCapabilityTools(createTools(ctx), config), config)
+    const sync = tools.find(t => t.name === 'server_sync')!
+    const r: any = (await sync.execute('c1', {} as any)).details
+    expect(r.ok).toBe(true)
+    expect(r.activeRoutes).toEqual(['/api/leads', '/api/notes'])
+    expect(r.schemaModels).toEqual(['Lead', 'Note'])
   })
 
   test('imageGenEnabled: false still removes the image tools from the main agent', () => {
@@ -363,6 +410,7 @@ describe('filterSubagentOnlyTools', () => {
     expect(n.has('transcribe_audio')).toBe(true)
     expect(n.has('list_media_models')).toBe(true)
     expect(n.has('browser')).toBe(false)
+    // Off by the personal profile's code_review group, not by the subagent filter.
     expect(n.has('server_sync')).toBe(false)
   })
 })

@@ -64,7 +64,7 @@ describe('workspace agent has no subagent orchestration', () => {
     expect(SUBAGENT_ONLY_TOOLS.has('generate_image')).toBe(false)
     expect(SUBAGENT_ONLY_TOOLS.has('transcribe_audio')).toBe(false)
     const kept = names(filterSubagentOnlyTools(fakeTools(['generate_image', 'transcribe_audio', 'browser', 'server_sync']), {} as any))
-    expect(kept).toEqual(['generate_image', 'transcribe_audio'])
+    expect(kept).toEqual(['generate_image', 'transcribe_audio', 'server_sync'])
     process.env.WORKSPACE_ANCHOR_PROJECT_ID = 'p1'
     expect(subagentOrchestrationDisabled({})).toBe(false)
     expect(names(filterSubagentOnlyTools(fakeTools(['generate_image']), {} as any))).toEqual(['generate_image'])
