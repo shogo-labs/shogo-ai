@@ -66,12 +66,13 @@ describe('reactionTooltip', () => {
 
 describe('reactionDetail', () => {
   test('names the viewer alone', () => {
-    expect(reactionDetail('👍', ['u-me'], 'u-me', names)).toEqual({ who: 'You', verb: 'reacted with :+1:' })
+    expect(reactionDetail('👍', ['u-me'], 'u-me', names))
+      .toEqual({ who: 'You', verb: 'reacted with :+1:', viewerReacted: true })
   })
 
   test('puts "You" last, as Slack does', () => {
     expect(reactionDetail('❤️', ['u-me', 'u-ana', 'u-bob'], 'u-me', names))
-      .toEqual({ who: 'Ana Lopez, Bob Chen and You', verb: 'reacted with :heart:' })
+      .toEqual({ who: 'Ana Lopez, Bob Chen and You', verb: 'reacted with :heart:', viewerReacted: true })
   })
 
   test('falls back for someone who left', () => {
@@ -81,6 +82,12 @@ describe('reactionDetail', () => {
   test('keeps custom and unmapped emoji as they are', () => {
     expect(reactionDetail(':party_blob:', ['u-ana'], 'u-me', names).verb).toBe('reacted with :party_blob:')
     expect(reactionDetail('🦄', ['u-ana'], 'u-me', names).verb).toBe('reacted with 🦄')
+  })
+
+  test('flags whether the viewer reacted, which drives the remove hint', () => {
+    expect(reactionDetail('👍', ['u-me', 'u-ana'], 'u-me', names).viewerReacted).toBe(true)
+    expect(reactionDetail('👍', ['u-ana'], 'u-me', names).viewerReacted).toBe(false)
+    expect(reactionDetail('👍', ['u-ana'], null, names).viewerReacted).toBe(false)
   })
 
   test('lists everyone up to the cap, then collapses while still naming the viewer', () => {

@@ -1004,7 +1004,28 @@ describe('MessageRow', () => {
     const chip = screen.getByLabelText('Ana Lopez, Bob Chen and 3 others reacted with 🎉')
     fireEvent.mouseEnter(chip.parentElement!)
     await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
-    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent).toContain('Ana Lopez, Bob Chen, Cid Rao, Dee Park and You reacted with :tada:')
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent)
+      .toContain('Ana Lopez, Bob Chen, Cid Rao, Dee Park and You (click to remove) reacted with :tada:')
+  })
+
+  test('the hover card says the click removes it, but only when you reacted', async () => {
+    const { rerender } = render(
+      <MessageRow message={message({ reactions: [{ emoji: '✅', count: 1, userIds: ['u-me'] }] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+    fireEvent.mouseEnter(screen.getByLabelText('You reacted with ✅').parentElement!)
+    await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent)
+      .toContain('You (click to remove) reacted with :white_check_mark:')
+
+    rerender(
+      <MessageRow message={message({ reactions: [{ emoji: '✅', count: 1, userIds: ['u-ana'] }] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+    fireEvent.mouseLeave(screen.getByLabelText('Ana Lopez reacted with ✅').parentElement!)
+    fireEvent.mouseEnter(screen.getByLabelText('Ana Lopez reacted with ✅').parentElement!)
+    await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
+    const card = document.querySelector('[data-testid="reaction-tooltip"]')!
+    expect(card.textContent).toContain('Ana Lopez reacted with :white_check_mark:')
+    expect(card.textContent).not.toContain('to remove')
   })
 
   test('a pasted markdown attachment renders as a markdown card, not a file tile', () => {

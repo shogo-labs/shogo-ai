@@ -269,18 +269,20 @@ function ReactionGlyph({ emoji, size = 12 }: { emoji: string; size?: number }) {
 
 /** The text of a "who reacted" card: a large emoji, then bold names and what they did. */
 function ReactionDetailCard({ emoji, userIds, me, names }: { emoji: string; userIds: string[]; me: string | null; names: MentionNames }) {
-  const { who, verb } = reactionDetail(emoji, userIds, me, names)
+  const { who, verb, viewerReacted } = reactionDetail(emoji, userIds, me, names)
   return (
     <View className="items-center" style={{ alignItems: 'center' }}>
       <View
         className="rounded-lg border border-transparent bg-zinc-900 px-3 py-3 shadow-lg dark:border-white/20 dark:bg-zinc-600"
         style={{ width: 240, flexDirection: 'column', alignItems: 'center', gap: 8 }}
       >
-        <View className="rounded-md bg-white" style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}>
-          <ReactionGlyph emoji={emoji} size={28} />
+        <View className="rounded-md bg-white" style={{ width: 64, height: 64, alignItems: 'center', justifyContent: 'center' }}>
+          <ReactionGlyph emoji={emoji} size={40} />
         </View>
         <Text className="text-sm text-white" style={{ textAlign: 'center' }} testID="reaction-tooltip-text">
           <Text className="font-bold text-white">{who}</Text>
+          {/* Only when the click would remove: the chip toggles, so say which way. */}
+          {viewerReacted ? <Text className="text-zinc-400"> ({Platform.OS === 'web' ? 'click' : 'tap'} to remove)</Text> : null}
           <Text className="text-zinc-300"> {verb}</Text>
         </Text>
       </View>
