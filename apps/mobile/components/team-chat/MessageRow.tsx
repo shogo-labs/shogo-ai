@@ -355,6 +355,77 @@ function ReactionTooltip({ emoji, userIds, me, names, children }: { emoji: strin
   )
 }
 
+const PICKER_W = 312
+const PICKER_H = 360
+
+/**
+ * The reaction picker as a Slack-style popover: portaled to <body> and pinned
+ * under the button that opened it. The previous centred modal dimmed and hid the
+ * very message being reacted to, and on a wide window put the picker a screen
+ * away from the pointer.
+ *
+ * `trigger` is excluded from the outside-click close so the button keeps its own
+ * toggle — otherwise mousedown closes the popover and the click reopens it.
+ */
+function ReactionPickerPopover({
+  left,
+  top,
+  trigger,
+  onClose,
+  children,
+}: {
+  left: number
+  top: number
+  trigger: HTMLElement | null
+  onClose: () => void
+  children: ReactNode
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node
+      if (ref.current?.contains(target)) return
+      if (trigger?.contains(target)) return
+      onClose()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    // A fixed-position popover would otherwise hang in place while the timeline
+    // scrolls out from under it. `capture` because scroll does not bubble.
+    const onScroll = (e: Event) => {
+      if (ref.current?.contains(e.target as Node)) return
+      onClose()
+    }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('wheel', onScroll, { passive: true })
+    window.addEventListener('scroll', onScroll, true)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('wheel', onScroll)
+      window.removeEventListener('scroll', onScroll, true)
+    }
+  }, [onClose, trigger])
+
+  if (typeof document === 'undefined') return null
+
+  return createPortal(
+    <div
+      ref={ref}
+      data-testid="reaction-picker-popover"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      style={{ position: 'fixed', left, top, zIndex: 9999 }}
+    >
+      {children}
+    </div>,
+    document.body,
+  )
+}
+
 /** One reaction chip: tap toggles; hover (web) or long press (native) shows who reacted. */
 function ReactionChip({ reaction, reacted, label, me, names, onToggle }: { reaction: ReactionSummary; reacted: boolean; label: string; me: string | null; names: MentionNames; onToggle: () => void }) {
   const [sheet, setSheet] = useState(false)
@@ -444,9 +515,14 @@ function MessageRowImpl(props: MessageRowProps) {
   const { message, grouped, me, names, streaming, canManage, inThread } = props
   const { hovered, hoverIn, hoverOut } = useRowHover()
   const [pickerOpen, setPickerOpen] = useState(false)
+  // Web anchor for the picker; null means "no button rect" (e.g. opened from the
+  // long-press action sheet), which falls back to the centred sheet.
+  const [pickerPos, setPickerPos] = useState<{ left: number; top: number } | null>(null)
+  const pickerTrigger = useRef<HTMLElement | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  // The menu is portaled out of the row, so keep the row lit while it is open.
-  const active = hovered || !!menu
+  // The menu and the picker are portaled out of the row, so keep the row lit
+  // while either is open.
+  const active = hovered || !!menu || pickerOpen
   const [editing, setEditing] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const saved = useIsSaved(message.id)
@@ -629,6 +705,25 @@ function MessageRowImpl(props: MessageRowProps) {
     const rect = e?.currentTarget?.getBoundingClientRect?.()
     const ne = e?.nativeEvent ?? e
     setMenu(rect && (rect.width || rect.height) ? { x: rect.left, y: rect.bottom + 4 } : { x: ne?.clientX ?? 0, y: ne?.clientY ?? 0 })
+  }
+  // Slack-style: anchor the picker under the button that opened it rather than
+  // centring it, so it lands next to the pointer and the message stays visible.
+  const togglePickerFromButton = (e: any) => {
+    const el = e?.currentTarget ?? null
+    const rect = el?.getBoundingClientRect?.()
+    pickerTrigger.current = el
+    if (rect && (rect.width || rect.height) && typeof window !== 'undefined') {
+      const left = Math.max(8, Math.min(rect.right - PICKER_W, window.innerWidth - PICKER_W - 8))
+      const below = rect.bottom + 6
+      const top =
+        below + PICKER_H > window.innerHeight - 8
+          ? Math.max(8, rect.top - PICKER_H - 6)
+          : below
+      setPickerPos({ left, top })
+    } else {
+      setPickerPos(null)
+    }
+    setPickerOpen((open) => !open)
   }
   const onContextMenu = (e: any) => {
     if (!hasMenu || editing) return
@@ -1133,7 +1228,7 @@ function MessageRowImpl(props: MessageRowProps) {
               <Text className="text-sm">{emoji}</Text>
             </Pressable>
           ))}
-          <Pressable onPress={() => setPickerOpen((open) => !open)} accessibilityLabel="More reactions" className="rounded px-1.5 py-1 hover:bg-muted">
+          <Pressable onPress={togglePickerFromButton} accessibilityLabel="More reactions" className="rounded px-1.5 py-1 hover:bg-muted">
             <SmilePlus size={14} className="text-muted-foreground" />
           </Pressable>
           {props.onReply && !inThread && (
@@ -1159,7 +1254,11 @@ function MessageRowImpl(props: MessageRowProps) {
             active: hasReacted(message.reactions, emoji, props.me),
             onPress: () => toggleReact(emoji),
           }))}
-          onAddReaction={() => setPickerOpen(true)}
+          onAddReaction={() => {
+            // No trigger rect from the action sheet, so use the centred sheet.
+            setPickerPos(null)
+            setPickerOpen(true)
+          }}
         />
       )}
       {profileOpen && message.authorAgent && (
@@ -1174,19 +1273,36 @@ function MessageRowImpl(props: MessageRowProps) {
         />
       )}
       {pickerOpen && (
-        <Modal visible transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
-          <Pressable className="flex-1 items-center justify-center bg-black/30 p-6" onPress={() => setPickerOpen(false)} accessibilityLabel="Close emoji picker">
-            <Pressable onPress={() => {}}>
-              <EmojiPicker
-                workspaceId={props.workspaceId}
-                onPick={(code) => {
-                  setPickerOpen(false)
-                  toggleReact(code)
-                }}
-              />
+        Platform.OS === 'web' && pickerPos ? (
+          <ReactionPickerPopover
+            left={pickerPos.left}
+            top={pickerPos.top}
+            trigger={pickerTrigger.current}
+            onClose={() => setPickerOpen(false)}
+          >
+            <EmojiPicker
+              workspaceId={props.workspaceId}
+              onPick={(code) => {
+                setPickerOpen(false)
+                toggleReact(code)
+              }}
+            />
+          </ReactionPickerPopover>
+        ) : (
+          <Modal visible transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
+            <Pressable className="flex-1 items-center justify-center bg-black/30 p-6" onPress={() => setPickerOpen(false)} accessibilityLabel="Close emoji picker">
+              <Pressable onPress={() => {}}>
+                <EmojiPicker
+                  workspaceId={props.workspaceId}
+                  onPick={(code) => {
+                    setPickerOpen(false)
+                    toggleReact(code)
+                  }}
+                />
+              </Pressable>
             </Pressable>
-          </Pressable>
-        </Modal>
+          </Modal>
+        )
       )}
       {lightboxIndex !== null && (
         <ImagePreviewModal

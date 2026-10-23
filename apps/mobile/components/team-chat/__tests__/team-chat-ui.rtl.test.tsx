@@ -970,6 +970,81 @@ describe('MessageRow', () => {
     expect(shim('emoji-picker')).toBeNull()
   })
 
+  test('the reaction picker opens anchored under its button, not centred', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    trigger.getBoundingClientRect = () => ({ left: 300, right: 340, top: 100, bottom: 120, width: 40, height: 20, x: 300, y: 100, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    const popover = screen.getByTestId('reaction-picker-popover')
+    // Right edge follows the button (340 - 312), 6px under it.
+    expect(popover.style.position).toBe('fixed')
+    expect(popover.style.left).toBe('28px')
+    expect(popover.style.top).toBe('126px')
+  })
+
+  test('the picker flips above the button when it would overflow the bottom', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    trigger.getBoundingClientRect = () => ({ left: 300, right: 340, top: 700, bottom: 720, width: 40, height: 20, x: 300, y: 700, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    const popover = screen.getByTestId('reaction-picker-popover')
+    expect(popover.style.top).toBe('334px')
+  })
+
+  test('the picker stays inside the window when the button sits at the right edge', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    const right = window.innerWidth - 4
+    trigger.getBoundingClientRect = () => ({ left: right - 20, right, top: 100, bottom: 120, width: 20, height: 20, x: right - 20, y: 100, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    const popover = screen.getByTestId('reaction-picker-popover')
+    expect(parseFloat(popover.style.left) + 312).toBeLessThanOrEqual(window.innerWidth - 8)
+  })
+
+  test('clicking outside or pressing Escape closes the anchored picker', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    trigger.getBoundingClientRect = () => ({ left: 300, right: 340, top: 100, bottom: 120, width: 40, height: 20, x: 300, y: 100, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeTruthy()
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeNull()
+
+    fireEvent.click(trigger)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeTruthy()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeNull()
+  })
+
+  test('clicking the trigger again closes the picker instead of reopening it', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    trigger.getBoundingClientRect = () => ({ left: 300, right: 340, top: 100, bottom: 120, width: 40, height: 20, x: 300, y: 100, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeTruthy()
+    fireEvent.mouseDown(trigger)
+    fireEvent.click(trigger)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeNull()
+  })
+
+  test('scrolling the timeline closes the anchored picker, but scrolling the emoji list does not', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    trigger.getBoundingClientRect = () => ({ left: 300, right: 340, top: 100, bottom: 120, width: 40, height: 20, x: 300, y: 100, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    const popover = screen.getByTestId('reaction-picker-popover')
+    fireEvent.wheel(popover)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeTruthy()
+    fireEvent.wheel(document.body)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeNull()
+  })
+
   test('clicking a reaction you already have removes it', () => {
     const h = handlers()
     render(<MessageRow message={message({ reactions: [{ emoji: '👍', count: 1, userIds: ['u-me'] }] })} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
