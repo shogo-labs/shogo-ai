@@ -206,25 +206,24 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
           ) : null
         }
         ListFooterComponent={
-          paging.hasMore ? (
+          paging.loadingMore ? (
+            <View className="items-center py-3">
+              <ActivityIndicator size="small" />
+            </View>
+          ) : paging.hasMore ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Show older activity"
-              disabled={paging.loadingMore}
               onPress={() => paging.loadMore()}
               className="items-center py-3 active:bg-accent/50"
               testID="show-older"
             >
-              {paging.loadingMore ? (
-                <ActivityIndicator size="small" />
-              ) : (
-                <Text className="text-xs font-medium text-muted-foreground">Show older</Text>
-              )}
+              <Text className="text-xs font-medium text-muted-foreground">Show older</Text>
             </Pressable>
+          ) : feed.entries.length > 0 && filter !== 'sent' ? (
+            <Text className="py-3 text-center text-xs text-muted-foreground">You&apos;re all caught up.</Text>
           ) : null
         }
-        onEndReached={() => { if (paging.hasMore && !paging.loadingMore) paging.loadMore() }}
-        onEndReachedThreshold={0.4}
       />
 
       {filter === 'sent' ? null : (
