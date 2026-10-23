@@ -795,4 +795,94 @@ describe('saying "hey Shogo" in a huddle', () => {
     expect(await wakesOf(huddleId)).toHaveLength(0)
     expect(replies).toHaveLength(0)
   })
+
+  // QA (SHO-187): the answer has to land where the call's chat panel reads it,
+  // and a call that has used up its wakes or lost its speaker must stay quiet.
+  test('a channel huddle puts the note and the agent’s answer in the huddle’s thread', async () => {
+    const { huddleId } = await liveHuddle()
+    const huddle = await db.huddle.findUnique({ where: { id: huddleId } })
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: 'lk:thread:1',
+      text: 'hey shogo where did we land on the release',
+      start: 1,
+      end: 3,
+    })
+    const row = await until(() => db.huddleWake.findFirst({ where: { huddleId } }))
+    await until(() => (replies.length ? replies : null))
+
+    const note = await db.conversationMessage.findUnique({ where: { id: row.messageId } })
+    expect(note.threadRootId).toBe(huddle.messageId)
+    // HuddleThreadPanel reads that thread, so the answer must be written into it.
+    expect(replies[0].threadRootId).toBe(huddle.messageId)
+  })
+
+  test('a DM huddle puts the note and the answer at the top level, where its chat panel reads', async () => {
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+    await huddles.joinHuddle(dm.id, seed.owner)
+    const joined = await huddles.joinHuddle(dm.id, seed.member)
+    const huddleId = joined.huddle.id
+
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: 'lk:dm:1',
+      text: 'hey shogo make a card for the safari login bug',
+      start: 1,
+      end: 3,
+    })
+    const row = await until(() => db.huddleWake.findFirst({ where: { huddleId } }))
+    await until(() => (replies.length ? replies : null))
+
+    const note = await db.conversationMessage.findUnique({ where: { id: row.messageId } })
+    expect(note.conversationId).toBe(dm.id)
+    // A thread here is a thread the call's chat panel never shows.
+    expect(note.threadRootId).toBeNull()
+    expect(replies[0].threadRootId).toBeNull()
+  })
+
+  test('someone who has left the call cannot wake the agent', async () => {
+    const { conv, huddleId } = await liveHuddle()
+    await huddles.leaveHuddle(conv.id, seed.member)
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.member,
+      itemId: 'lk:left:1',
+      text: 'hey shogo am I still here',
+      start: 1,
+      end: 3,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(0)
+    expect(replies).toHaveLength(0)
+  })
+
+  test('a call that has used its 20 wakes stays quiet, and says nothing it cannot back up', async () => {
+    const { huddleId } = await liveHuddle()
+    const wakeAt = Date.now() - 5 * 60_000
+    await db.huddleWake.createMany({
+      data: Array.from({ length: 20 }, (_, i) => ({
+        huddleId,
+        speakerId: seed.owner,
+        itemId: `lk:used:${i}`,
+        status: 'replied',
+        createdAt: new Date(wakeAt + i * 1_000),
+      })),
+    })
+    const before = await db.conversationMessage.count({})
+
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: 'lk:cap:1',
+      text: 'hey shogo one more thing',
+      start: 320,
+      end: 322,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(20)
+    expect(replies).toHaveLength(0)
+    expect(await db.conversationMessage.count({})).toBe(before)
+  })
 })
