@@ -7,12 +7,19 @@ interface State {
   events: Record<string, { id: string; goalId: string; kind: string; metadata: unknown }>
   updateCalls: any[]
   scheduleUpdates: any[]
+  /** `Workspace` rows this pod can see, by id — absent means "not copied here yet". */
+  workspaces: Record<string, { id: string; machineInstanceId: string | null }>
+  profiles: Record<string, { id: string; workspaceId: string; name: string }>
+  profileUpserts: any[]
 }
 
 const s: State = {
   events: {},
   updateCalls: [],
   scheduleUpdates: [],
+  workspaces: {},
+  profiles: {},
+  profileUpserts: [],
 }
 
 mock.module('../../lib/prisma', () => ({
@@ -40,10 +47,36 @@ mock.module('../../lib/prisma', () => ({
         return { count: 1 }
       },
     },
+    workspace: {
+      findUnique: async (args: any) => s.workspaces[args.where.id] ?? null,
+    },
+    workspaceAgentProfile: {
+      findUnique: async (args: any) => s.profiles[args.where.workspaceId] ?? null,
+      // Postgres refuses an insert whose `workspaceId` has no `Workspace` row.
+      upsert: async (args: any) => {
+        if (!s.workspaces[args.where.workspaceId]) {
+          throw new Error(
+            `Foreign key constraint violated on the constraint: \`WorkspaceAgentProfile_workspaceId_fkey\``,
+          )
+        }
+        s.profileUpserts.push(args)
+        const row = s.profiles[args.where.workspaceId] ?? { id: 'profile-new', ...args.create }
+        const next = { ...row, ...args.update }
+        s.profiles[args.where.workspaceId] = next
+        return next
+      },
+    },
   },
 }))
 
-const { resolveGoalEventApproval, isApprovalPending, saveAgentAvatar, updateGoal } = await import('../workspace-agent.service')
+const {
+  resolveGoalEventApproval,
+  isApprovalPending,
+  saveAgentAvatar,
+  updateGoal,
+  getOrCreateAgentProfile,
+  updateAgentProfile,
+} = await import('../workspace-agent.service')
 
 beforeEach(() => {
   s.events = {
@@ -58,6 +91,9 @@ beforeEach(() => {
   }
   s.updateCalls = []
   s.scheduleUpdates = []
+  s.workspaces = { 'workspace-1': { id: 'workspace-1', machineInstanceId: null } }
+  s.profiles = {}
+  s.profileUpserts = []
 })
 
 describe('updateGoal', () => {
@@ -137,5 +173,60 @@ describe('isApprovalPending', () => {
   it('is false for non-approval event kinds regardless of metadata', () => {
     expect(isApprovalPending({ kind: 'progress', metadata: null })).toBe(false)
     expect(isApprovalPending({ kind: 'note', metadata: {} })).toBe(false)
+  })
+})
+
+/**
+ * A machine workspace's copy lands in this database only through ingest, so a
+ * read can arrive for a workspace this pod has no row for yet. The panel that
+ * sends it used to get a foreign-key 500 and show "Retry loading Workspace
+ * Agent Chat" instead of an agent (SHO-130 AC5, `machine-workspace-agent-turn-live`).
+ */
+describe('getOrCreateAgentProfile', () => {
+  it('creates the row for a cloud workspace', async () => {
+    const profile = await getOrCreateAgentProfile('workspace-1')
+    expect(profile).toMatchObject({ workspaceId: 'workspace-1', name: 'Shogo' })
+    expect(s.profileUpserts).toHaveLength(1)
+  })
+
+  it('answers the defaults without inserting when the workspace has no row here yet', async () => {
+    const profile = await getOrCreateAgentProfile('ws-not-copied-yet')
+    expect(profile).toMatchObject({
+      id: 'machine-copy-ws-not-copied-yet',
+      workspaceId: 'ws-not-copied-yet',
+      name: 'Shogo',
+    })
+    expect(s.profileUpserts).toHaveLength(0)
+  })
+
+  it('never inserts into a machine copy, and still answers the row ingest landed', async () => {
+    s.workspaces['ws-machine'] = { id: 'ws-machine', machineInstanceId: 'inst-1' }
+    const before = await getOrCreateAgentProfile('ws-machine')
+    expect(before).toMatchObject({ id: 'machine-copy-ws-machine', name: 'Shogo' })
+
+    s.profiles['ws-machine'] = { id: 'desktop-row', workspaceId: 'ws-machine', name: 'Shogo on the desktop' }
+    const after = await getOrCreateAgentProfile('ws-machine')
+    expect(after).toMatchObject({ id: 'desktop-row', name: 'Shogo on the desktop' })
+    expect(s.profileUpserts).toHaveLength(0)
+  })
+})
+
+describe('updateAgentProfile', () => {
+  it('writes a cloud workspace', async () => {
+    const profile = await updateAgentProfile('workspace-1', { name: 'Companion' })
+    expect(profile).toMatchObject({ workspaceId: 'workspace-1', name: 'Companion' })
+    expect(s.profileUpserts).toHaveLength(1)
+  })
+
+  it('does not throw on a workspace this pod has no row for, and writes nothing', async () => {
+    const profile = await updateAgentProfile('ws-not-copied-yet', { name: 'Companion' })
+    expect(profile).toMatchObject({ workspaceId: 'ws-not-copied-yet', name: 'Companion' })
+    expect(s.profileUpserts).toHaveLength(0)
+  })
+
+  it('leaves a machine copy to its desktop', async () => {
+    s.workspaces['ws-machine'] = { id: 'ws-machine', machineInstanceId: 'inst-1' }
+    await updateAgentProfile('ws-machine', { name: 'Companion' })
+    expect(s.profileUpserts).toHaveLength(0)
   })
 })

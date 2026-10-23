@@ -17,6 +17,7 @@
 
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
+import { withCloudWorkspaces } from '../lib/machine-workspace'
 import { loadConversationFileBytes } from '../lib/conversation-files'
 import { canExtract, decodeTextBytes, extractAndStoreAttachmentText, isTextLike, MAX_DOCUMENT_BYTES } from './conversation-file-text'
 import { cosine, embeddingProvider } from './conversation-semantic'
@@ -88,7 +89,9 @@ export async function chunkAttachment(attachmentId: string): Promise<number> {
 
 function homeAttachmentWhere(): Record<string, unknown> {
   const home = homeRegionWorkspaceWhere()
-  return home ? { conversation: { workspace: home } } : {}
+  // A machine workspace's files are chunked and embedded on the desktop, so the
+  // copy is never a candidate — alongside the home-region narrowing.
+  return { conversation: { workspace: withCloudWorkspaces(home ?? {}) } }
 }
 
 /** Chunk files that have text but no chunks yet (files shared before chunking existed). */
@@ -116,7 +119,10 @@ export async function embedPendingChunks(batch = EMBED_BATCH): Promise<number> {
   if (!provider) return 0
   const home = homeRegionWorkspaceWhere()
   const rows = await db.conversationAttachmentChunk.findMany({
-    where: { model: null, ...(home ? { attachment: { conversation: { workspace: home } } } : {}) },
+    where: {
+      model: null,
+      attachment: { conversation: { workspace: withCloudWorkspaces(home ?? {}) } },
+    },
     orderBy: { createdAt: 'desc' },
     take: batch,
     select: { id: true, text: true },

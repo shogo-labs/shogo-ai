@@ -7653,7 +7653,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
   return {
     name: 'agent_spawn',
     description:
-      'Launch an instance of a registered or built-in agent type. Waits for its report, or with background: true runs it as a background task. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
+      'Launch an instance of a registered or built-in agent type. Waits for its report, or with background: true runs it as a background task. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
     label: 'Spawn Agent',
     parameters: Type.Object({
       type: Type.Optional(
@@ -10112,7 +10112,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   // Subagents and orchestration tools draw their parent tool set from here.
   // Filter out capability-disabled tools so a delegated subagent (media,
-  // devops, channel, integration, …) cannot reach a tool the project has
+  // channel, integration, …) cannot reach a tool the project has
   // turned off — matching how the main agent's tool list is gated.
   const allToolsGetter = () => filterDisabledCapabilityTools(tools, ctx.config)
   tools.push(createSkillTool(ctx, allToolsGetter))
@@ -10862,7 +10862,7 @@ export function resolveToolNames(refs: string[]): string[] {
  * subagents (via `allToolsGetter`), so a disabled capability — image
  * generation, heartbeat, channels, managed integrations, etc. — is truly
  * unreachable rather than merely dropped from the main agent's prompt. Without
- * this, a delegated subagent (media / devops / channel / integration) would
+ * this, a delegated subagent (media / channel / integration) would
  * still receive the tool because subagents draw from the unfiltered set.
  *
  * Capability flags default to enabled, so only an explicit `=== false`
@@ -10918,7 +10918,11 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
 /**
  * Tools delegated to dedicated subagents — removed from the main agent's tool
  * list to reduce per-request token cost. The main agent is expected to reach
- * them via `agent_spawn({ type: "browser"|"devops", ... })`.
+ * them via `agent_spawn({ type: "browser", ... })`.
+ *
+ * `server_sync` is deliberately NOT here (SHO-184): it repairs the agent's own
+ * project server, so it must be callable directly on every profile — personal
+ * workspaces and the workspace agent have no subagents to delegate to.
  *
  * Media tools are deliberately NOT here: the project's own agent calls
  * `generate_image` and friends directly. Their gate is the capability itself
@@ -10927,7 +10931,6 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
  */
 export const SUBAGENT_ONLY_TOOLS = new Set([
   'browser', // -> browser subagent
-  'server_sync', // -> devops subagent
 ])
 
 /**
@@ -10943,7 +10946,7 @@ export function subagentOrchestrationDisabled(
 
 /**
  * Remove `SUBAGENT_ONLY_TOOLS` from the main agent's tool list. Today that is
- * `browser` and `server_sync` only, on every profile — including personal
+ * `browser` only, on every profile — including personal
  * workspaces and the workspace agent, which have no subagents to delegate to.
  *
  * Media tools are intentionally not part of the set: the main agent calls

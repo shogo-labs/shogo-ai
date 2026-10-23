@@ -74,7 +74,10 @@ class FakeWebSocket {
   }
 }
 
+// The live tunnel's threading has its own test; these drive the protocol, which
+// needs the socket on this thread (a fake `WebSocket` cannot reach a worker).
 const { startInstanceTunnel, stopInstanceTunnel, isTunnelConnected, _testing } = await import('../lib/instance-tunnel')
+_testing.forceInProcess()
 
 afterAll(() => {
   globalThis.fetch = originalFetch
@@ -127,9 +130,25 @@ async function markTunnelStarted() {
   fetchCalls = []
 }
 
+/**
+ * What the tunnel forwarded to a local runtime or to the local API — i.e. every
+ * `fetch` except its own heartbeats to the cloud.
+ *
+ * These tests run the tunnel on this thread (§5's threading has its own test),
+ * so its heartbeat goes through the same mocked `fetch`. Asserting on
+ * `fetchCalls[0]` made the result depend on whether a heartbeat happened to land
+ * first, which is why one of them counted a heartbeat as a forwarded request.
+ */
+function forwardedRequests(): Array<{ url: string; init?: RequestInit }> {
+  return fetchCalls.filter((call) => call.url.startsWith('http://localhost:'))
+}
+
 describe('desktopResolver — error paths', () => {
-  test('agent path with projectId: manager.start throws → catch branch + break, falls back to apps/api', async () => {
-    // Force the inner try to throw: status returns "not running" so start() is called, and start() rejects.
+  test('agent path with a stopped runtime: starts it in the background and answers RUNTIME_STARTING', async () => {
+    // Never await a cold start inside a tunnel request: `manager.start()` blocks
+    // the local API's event loop (lsof/ps), and this tunnel shares that loop, so
+    // `/health` stopped answering and the desktop supervisor killed the API
+    // mid-request — the tunnel then dropped as 1006 at the cloud (SHO-185).
     runtimeStatus.mockImplementation(() => ({ status: 'stopped', agentPort: null }))
     runtimeStart.mockImplementation(async () => { throw new Error('cold start failed') })
 
@@ -145,9 +164,11 @@ describe('desktopResolver — error paths', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    // Because projectId was provided AND the inner try threw, the resolver
-    // breaks out of the candidate loop and falls back to the apps/api URL.
-    expect(fetchCalls[0].url).toBe('http://localhost:39100/agent/chat')
+    // Nothing is forwarded to the local API, and the cloud is told to retry.
+    expect(forwardedRequests()).toEqual([])
+    const reply = lastSocket!.sent.map((frame) => JSON.parse(frame)).find((f) => f.requestId === 'req-err-1')
+    expect(reply.status).toBe(502)
+    expect(reply.body).toContain('RUNTIME_STARTING')
   })
 
   test('agent path with no projectId: iterates active projects, skips failing ones', async () => {
@@ -172,9 +193,11 @@ describe('desktopResolver — error paths', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    // Iterated past bad-1 (caught error, did NOT break because projectId was absent),
-    // then resolved good-1's runtime → forwarded to its agentPort.
-    expect(fetchCalls[0].url).toBe('http://localhost:9555/agent/chat')
+    // Only runtimes that are already running are used: bad-1 is stopped and is
+    // skipped without being started (starting every project to answer one
+    // request is what blocked the loop), good-1 already runs → its agentPort.
+    expect(forwardedRequests()[0].url).toBe('http://localhost:9555/agent/chat')
+    expect(runtimeStart).not.toHaveBeenCalled()
   })
 
   test('agent path: outer catch when getRuntimeManager itself throws → falls back to apps/api', async () => {
@@ -191,12 +214,11 @@ describe('desktopResolver — error paths', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(fetchCalls[0].url).toBe('http://localhost:39100/agent/anything')
+    expect(forwardedRequests()[0].url).toBe('http://localhost:39100/agent/anything')
   })
 
-  test('agent path: start() returns runtime with no agentPort → falls through to apps/api', async () => {
+  test('agent path: a runtime with no agentPort is reported as starting, not forwarded', async () => {
     runtimeStatus.mockImplementation(() => null)
-    // start() resolves but the returned runtime never reaches "running with port".
     runtimeStart.mockImplementation(async () => ({ status: 'starting', agentPort: null }) as any)
 
     await markTunnelStarted()
@@ -211,7 +233,10 @@ describe('desktopResolver — error paths', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(fetchCalls[0].url).toBe('http://localhost:39100/agent/x')
+    expect(forwardedRequests()).toEqual([])
+    const reply = lastSocket!.sent.map((frame) => JSON.parse(frame)).find((f) => f.requestId === 'req-err-4')
+    expect(reply.status).toBe(502)
+    expect(reply.body).toContain('RUNTIME_STARTING')
   })
 
   test('non-agent path always forwards to apps/api (PORT env override is honored)', async () => {
@@ -230,7 +255,7 @@ describe('desktopResolver — error paths', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(fetchCalls[0].url).toBe('http://localhost:9090/api/local/projects?limit=5')
+    expect(forwardedRequests()[0].url).toBe('http://localhost:9090/api/local/projects?limit=5')
   })
 
   test('exact "/agent" path (no trailing slash) is treated as an agent path', async () => {
@@ -247,7 +272,7 @@ describe('desktopResolver — error paths', () => {
     await new Promise((r) => setTimeout(r, 0))
 
     // status() returns running with port 9123 → forwarded to that port.
-    expect(fetchCalls[0].url).toBe('http://localhost:9123/agent')
+    expect(forwardedRequests()[0].url).toBe('http://localhost:9123/agent')
   })
 })
 

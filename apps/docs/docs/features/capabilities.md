@@ -24,10 +24,12 @@ generation, and dropping them keeps the agent focused and cheaper to run.
 
 :::info Tools and prompt stay in sync
 A disabled capability is removed **everywhere** — the main agent and every
-delegated subagent (devops, channel, integration). The agent can't reach a tool
+delegated subagent (channel, integration). The agent can't reach a tool
 you've turned off, and it won't be told the tool exists. Image generation is the
 one capability whose tools the agent calls **directly** — a project's own agent
 generates images with `generate_image`, it does not hand the job to a subagent.
+The same goes for `server_sync`, which regenerates and restarts the project's API
+server: every agent calls it directly.
 :::
 
 ## The capabilities
@@ -45,7 +47,7 @@ modes that bill per output are off until you turn them on.
 | Image generation | `imageGenEnabled` | `generate_image`, `list_media_models` | `media` capability line |
 | Video generation (opt-in) | `videoGenEnabled` | `generate_video` | Video tools in the `media` line |
 | 3D generation (opt-in) | `threeDGenEnabled` | `generate_3d_model`, `edit_3d_model` | 3D tools in the `media` line |
-| Heartbeat | `heartbeatToolsEnabled` | `heartbeat_configure`, `heartbeat_status` | `devops` line + Action Tools reminder |
+| Heartbeat | `heartbeatToolsEnabled` | `heartbeat_configure`, `heartbeat_status` | `heartbeat` line + Action Tools reminder |
 | Memory | `memoryEnabled` | `memory_read`, `memory_search` | — |
 | Quick actions | `quickActionsEnabled` | `quick_action` | Quick Action guide |
 | Channels | `channelsEnabled` | `channel_connect`, `channel_disconnect`, `channel_list`, `send_message` | `channel` line + Action Tools bullet |

@@ -183,7 +183,7 @@ describe('rewriteMachineWorkspaceBody', () => {
 })
 
 describe('createRemoteAwareHttpClient with a machine workspace', () => {
-  it('rewrites both the base URL and the workspaceId, and leaves cloud routes alone', async () => {
+  it('rewrites both the base URL and the workspaceId on a write, and leaves cloud routes alone', async () => {
     const calls: string[] = []
     const http = {
       get: async (path: string) => {
@@ -204,11 +204,11 @@ describe('createRemoteAwareHttpClient with a machine workspace', () => {
       machineWorkspaceId: 'lw-1',
     }))
 
-    await proxy.get('/api/projects?workspaceId=ws-cloud')
+    await proxy.post('/api/boards?workspaceId=ws-cloud')
     await proxy.get('/api/billing/summary')
 
     expect(calls[0]).toBe(
-      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/projects?workspaceId=lw-1',
+      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/boards?workspaceId=lw-1',
     )
     // Billing is cloud-pinned even inside a machine workspace.
     expect(calls[1]).toBe('/api/billing/summary')
@@ -395,7 +395,7 @@ describe('rewriteMachineWorkspacePath', () => {
 })
 
 describe('createRemoteAwareHttpClient in a machine workspace', () => {
-  it('sends the workspace agent chat through the relay with the local workspace id', async () => {
+  it('sends writes through the relay with the local workspace id, and reads to the cloud copy', async () => {
     const calls: string[] = []
     const http = {
       get: async (path: string) => {
@@ -417,13 +417,71 @@ describe('createRemoteAwareHttpClient in a machine workspace', () => {
     }))
 
     await proxy.post('/api/workspaces/ws-cloud/agent-proxy/agent/chat')
+    // Rows: the cloud copy answers, so a panel opens while the machine sleeps.
     await proxy.get('/api/workspaces/ws-cloud/conversations')
     await proxy.get('/api/conversations/conv-1')
+    // The machine's runtime: still a live call.
+    await proxy.get('/api/workspaces/ws-cloud/preview')
+    await proxy.get('/api/conversation-files/file-1')
 
     expect(calls).toEqual([
       'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/workspaces/lw-1/agent-proxy/agent/chat',
-      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/workspaces/lw-1/conversations',
-      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/conversations/conv-1',
+      '/api/workspaces/ws-cloud/conversations',
+      '/api/conversations/conv-1',
+      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/workspaces/lw-1/preview',
+      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/conversation-files/file-1',
     ])
+  })
+})
+
+// ─── Reads vs. the machine's runtime (#SHO-185) ─────────────────────────────
+//
+// A machine workspace's rows live on the desktop, but the cloud keeps a copy of
+// them under the desktop's own ids. A read therefore has two possible hosts, and
+// which one it is decides whether a page waits on a sleeping machine. Rows come
+// from the copy; only an answer that *is* the machine (an agent turn, a preview
+// frame, a file on its disk) goes through the tunnel.
+
+describe('shouldRouteToRemote: machine-workspace reads', () => {
+  it('answers row reads from the cloud copy', () => {
+    for (const path of [
+      '/api/workspaces/ws-cloud/agent-profile',
+      '/api/workspaces/ws-cloud/conversations?limit=30',
+      '/api/workspaces/ws-cloud/history/search?q=x',
+      '/api/conversations/conv-1',
+      '/api/conversation-messages/msg-1',
+      '/api/boards',
+      '/api/work-items/SUP-42',
+      '/api/projects?workspaceId=ws-cloud',
+      '/api/chat-sessions',
+    ]) {
+      expect(shouldRouteToRemote(path, { ...MACHINE, isRead: true })).toBe(false)
+    }
+  })
+
+  it("still tunnels the reads that only the machine can answer", () => {
+    for (const path of [
+      '/api/workspaces/ws-cloud/agent-proxy/agent/chat',
+      '/api/workspaces/ws-cloud/preview?port=37626',
+      '/api/workspaces/ws-cloud/runtime',
+      '/api/workspaces/ws-cloud/local-files/list?path=/',
+      '/api/workspaces/ws-cloud/ide/session',
+      '/api/conversation-files/file-1',
+      '/api/chat-attachments/att-1',
+    ]) {
+      expect(shouldRouteToRemote(path, { ...MACHINE, isRead: true })).toBe(true)
+    }
+  })
+
+  it('leaves a write alone — a write is always the machine’s', () => {
+    expect(shouldRouteToRemote('/api/boards', { ...MACHINE, isRead: false })).toBe(true)
+    expect(shouldRouteToRemote('/api/conversations/conv-1', { ...MACHINE, isRead: false })).toBe(true)
+  })
+
+  it('keeps cloud-only families cloud-side even for a live read', () => {
+    expect(
+      shouldRouteToRemote('/api/workspaces/ws-cloud/instance', { ...MACHINE, isRead: true }),
+    ).toBe(false)
+    expect(shouldRouteToRemote('/api/billing/summary', { ...MACHINE, isRead: true })).toBe(false)
   })
 })

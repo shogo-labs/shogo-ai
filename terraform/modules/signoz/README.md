@@ -56,6 +56,10 @@ they're managed separately as YAML/JSON files under this directory:
   (error-level) publish failures within 5 minutes.
 - `alerts/prod-node-count-low.yaml` — pages when prod-us has fewer ready
   nodes than the terraform-declared `system_pool_min`.
+- `alerts/kourier-gateway-restarts.yaml` — pages when the ingress gateway
+  (`3scale-kourier-gateway`) restarts 3+ times in 10 minutes on prod-us or
+  prod-eu, i.e. the 2026-10-22 scanner-flood crash-loop that 502'd a region
+  (SHO-173). Staging is excluded.
 - `alerts/warm-pool-starvation.yaml` — pages when warm-pool depth
   stays below 3 for 10+ minutes (every new project hitting cold start).
 - `alerts/metal-fc-process-leak.yaml` — pages when a metal host carries

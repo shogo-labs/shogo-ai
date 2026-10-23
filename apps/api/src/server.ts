@@ -181,6 +181,7 @@ import {
   isTokenGatedThumbnailPath,
 } from './middleware/api-auth-gate'
 import { homeRegionWriteProxy } from './middleware/home-region-router'
+import { machineWorkspaceWriteGuard } from './lib/machine-workspace'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
 
@@ -838,6 +839,12 @@ app.use('/api/projects/:projectId/*', pinProjectRoutesToHomeRegion({ skip: isPro
 // HOME_REGION_ROUTING=shadow|enforce. Registered after requireProjectAccess so
 // project routes have already cached c.get('workspaceId').
 app.use('/api/*', homeRegionWriteProxy)
+
+// A workspace whose rows live on a paired desktop is read-only here: the desktop
+// is its only writer, so a cloud write that names one is refused with
+// `409 machine_workspace_write_via_tunnel` instead of silently diverging from
+// the machine the user is looking at (SHO-185).
+app.use('/api/*', machineWorkspaceWriteGuard())
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
@@ -1652,6 +1659,18 @@ app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
 // stable API URL, then route each request to an enabled project runtime.
 app.route('/api', slackAgentRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
 startTunnelHeartbeat()
+
+// A blocked event loop here is invisible from the outside except as a tunnel
+// dropping with 1006 and `/health` missing its probes — which is how the SHO-185
+// incident looked. Log it at the moment the stall ends, with the size of the
+// stall, so the next one is diagnosable. `SHOGO_EVENT_LOOP_LAG_MS=0` disables it.
+if (process.env.SHOGO_EVENT_LOOP_LAG_MS !== '0') {
+  void import('./lib/event-loop-lag').then(({ startEventLoopLagMonitor }) => {
+    startEventLoopLagMonitor({
+      thresholdMs: Number(process.env.SHOGO_EVENT_LOOP_LAG_THRESHOLD_MS) || undefined,
+    })
+  }).catch(() => {})
+}
 
 // SHO-105 / #1597: checkpoint repos seeded before this build still carry
 // `.shogo/sessions.db` (+ its live WAL) in their history and in `.git/lfs`.
@@ -9858,6 +9877,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
       const previewMax = resolveWorkspacePreviewMax()
       const take = previewMax
       const workspaces = await prisma.workspace.findMany({
+        // A machine workspace's runtime is on the desktop (SHO-185): warming it
+        // here would spawn a runtime for a workspace this process cannot serve.
+        where: { machineInstanceId: null },
         orderBy: { updatedAt: 'desc' },
         take,
         select: { id: true },

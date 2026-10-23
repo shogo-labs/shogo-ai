@@ -7,7 +7,7 @@
  * Uses child_process.spawn with random port allocation in range 37100-37900.
  */
 
-import { execSync, type ChildProcess } from '@shogo/shared-runtime/child-process'
+import { exec, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import {
   existsSync,
   cpSync,
@@ -24,6 +24,7 @@ import {
   readdirSync,
 } from 'fs'
 import { join, dirname, resolve, basename } from 'path'
+import { connect } from 'node:net'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { pkg } from '../../../../../packages/cli/src/pkg'
@@ -209,6 +210,22 @@ const RUNTIME_SERVER = process.env.AGENT_RUNTIME_ENTRY
   || join(PROJECT_ROOT, 'packages', 'agent-runtime', 'src', 'server.ts')
 
 /** Port range for random allocation (obscure high range to avoid conflicts) */
+/**
+ * Promise form of `exec`, for the process-table scans and kills that used to be
+ * `execSync`. Those run on the runtime manager's start path (and from the
+ * constructor), which shares an event loop with the local API's tunnel: a
+ * blocking `ps`/`lsof`/`kill` froze `/health` long enough for the desktop
+ * supervisor to kill the API mid-request (SHO-185).
+ */
+function execAsync(command: string, options: { maxBuffer?: number } = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(command, { encoding: 'utf-8', maxBuffer: options.maxBuffer ?? 8 * 1024 * 1024 }, (err: any, stdout: any) => {
+      if (err) reject(err)
+      else resolve(String(stdout ?? ''))
+    })
+  })
+}
+
 const PORT_RANGE_START = 37100
 const PORT_RANGE_END = 37900
 const AGENT_PORT_OFFSET = 1000
@@ -494,7 +511,10 @@ export class RuntimeManager implements IRuntimeManager {
 
   constructor(config: Partial<IRuntimeConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
-    this.cleanupStaleProcesses()
+    // Fire and forget: the sweep shells out to `ps`/`lsof`, and awaiting it in
+    // the constructor would block this API's event loop (and, on the desktop, its
+    // tunnel) for the whole scan (SHO-185).
+    void this.cleanupStaleProcesses()
     this.agentManager = new WorkerRuntimeManager({
       // Spawn `bun run <RUNTIME_SERVER>` so the desktop dev path can
       // use the source bundle / TS entry directly without depending on
@@ -581,16 +601,16 @@ export class RuntimeManager implements IRuntimeManager {
    * stack — allocates from this same port range, so a listener whose owning
    * API is still alive belongs to someone else and must be left running.
    */
-  private cleanupStaleProcesses(): void {
+  private async cleanupStaleProcesses(): Promise<void> {
     if (cleanupRanAtModuleScope) return
     cleanupRanAtModuleScope = true
     if (process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP === '1') return
 
-    this.cleanupOrphanedRuntimeListeners()
-    if (process.platform !== 'win32') this.cleanupOrphanedViteWatchers()
+    await this.cleanupOrphanedRuntimeListeners()
+    if (process.platform !== 'win32') await this.cleanupOrphanedViteWatchers()
   }
 
-  private cleanupOrphanedRuntimeListeners(): void {
+  private async cleanupOrphanedRuntimeListeners(): Promise<void> {
     const rangesToClean = [
       { start: PORT_RANGE_START, end: PORT_RANGE_END },
       { start: PORT_RANGE_START + AGENT_PORT_OFFSET, end: PORT_RANGE_END + AGENT_PORT_OFFSET + 1 },
@@ -603,13 +623,13 @@ export class RuntimeManager implements IRuntimeManager {
     const candidates = new Set<string>()
     for (const range of rangesToClean) {
       const pids = isWindows
-        ? this.findStalePidsWindows(range.start, range.end, selfPid, parentPid)
-        : this.findStalePidsPosix(range.start, range.end, selfPid, parentPid)
+        ? await this.findStalePidsWindows(range.start, range.end, selfPid, parentPid)
+        : await this.findStalePidsPosix(range.start, range.end, selfPid, parentPid)
       for (const pid of pids) candidates.add(pid)
     }
     if (candidates.size === 0) return
 
-    const parentOf = isWindows ? this.readParentPidsWindows() : this.readParentPidsPosix()
+    const parentOf = isWindows ? await this.readParentPidsWindows() : await this.readParentPidsPosix()
     if (!parentOf) {
       console.warn(`[RuntimeManager] Could not read the process table — leaving ${candidates.size} listener(s) on the runtime port range alone`)
       return
@@ -626,14 +646,14 @@ export class RuntimeManager implements IRuntimeManager {
     for (const pid of stale) {
       try {
         if (isWindows) {
-          // taskkill is the Windows equivalent of `kill -9`. We
-          // intentionally swallow stderr and stdio to keep the
-          // module-level cleanup quiet on a normal boot where
-          // every PID we found has already exited by the time
-          // we get here.
-          execSync(`taskkill /F /PID ${pid}`, { stdio: ['pipe', 'pipe', 'pipe'] })
+          // taskkill is the Windows equivalent of SIGKILL. Failures are
+          // swallowed: on a normal boot every PID we found has already exited.
+          await execAsync(`taskkill /F /PID ${pid}`)
         } else {
-          execSync(`kill -9 ${pid} 2>/dev/null || true`)
+          // process.kill, not a shelled-out signal: the pid is already a number
+          // we validated, and spawning sh to signal our own child is 5-20ms of
+          // blocked event loop per pid (SHO-185).
+          process.kill(Number(pid), 'SIGKILL')
         }
       } catch {
         // Process already exited / permission denied — fine.
@@ -647,7 +667,7 @@ export class RuntimeManager implements IRuntimeManager {
    * (observed: 120 orphans, ~18GB). Scoped to this API's workspaces dir so
    * another Shogo instance's watchers are untouched.
    */
-  private cleanupOrphanedViteWatchers(): void {
+  private async cleanupOrphanedViteWatchers(): Promise<void> {
     const workspacesDir = this.resolvedWorkspacesDir()
     const dirs = [workspacesDir]
     try {
@@ -659,10 +679,7 @@ export class RuntimeManager implements IRuntimeManager {
 
     let psOutput = ''
     try {
-      psOutput = execSync('ps -A -o pid=,ppid=,pgid=,command=', {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
+      psOutput = await execAsync('ps -A -o pid=,ppid=,pgid=,command=')
     } catch {
       return
     }
@@ -717,12 +734,9 @@ export class RuntimeManager implements IRuntimeManager {
   }
 
   /** `pid -> ppid` for every process, or `null` when `ps` is unavailable. */
-  private readParentPidsPosix(): Map<string, string> | null {
+  private async readParentPidsPosix(): Promise<Map<string, string> | null> {
     try {
-      const stdout = execSync('ps -A -o pid= -o ppid=', {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
+      const stdout = await execAsync('ps -A -o pid= -o ppid=')
       const table = parsePidTable(stdout)
       return table.size > 0 ? table : null
     } catch {
@@ -734,11 +748,10 @@ export class RuntimeManager implements IRuntimeManager {
    * Windows never reparents orphans, so a dead owner shows up as a
    * `ParentProcessId` that is absent from the table.
    */
-  private readParentPidsWindows(): Map<string, string> | null {
+  private async readParentPidsWindows(): Promise<Map<string, string> | null> {
     try {
-      const stdout = execSync(
+      const stdout = await execAsync(
         `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.ParentProcessId }"`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
       )
       const table = parsePidTable(stdout)
       return table.size > 0 ? table : null
@@ -756,17 +769,14 @@ export class RuntimeManager implements IRuntimeManager {
    * `/bin/sh: syntax error: unexpected "("` into the logs.
    * Defensively keep only pure integer PIDs.
    */
-  private findStalePidsPosix(
+  private async findStalePidsPosix(
     start: number,
     end: number,
     selfPid: string,
     parentPid: string,
-  ): string[] {
+  ): Promise<string[]> {
     try {
-      const result = execSync(
-        `lsof -iTCP:${start}-${end} -sTCP:LISTEN -t 2>/dev/null || true`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-      ).trim()
+      const result = (await execAsync(`lsof -iTCP:${start}-${end} -sTCP:LISTEN -t 2>/dev/null || true`)).trim()
       return [...new Set(
         result
           .split(/\s+/)
@@ -795,18 +805,15 @@ export class RuntimeManager implements IRuntimeManager {
    * and then filter the port number ourselves so we can match a
    * range rather than a single port.
    */
-  private findStalePidsWindows(
+  private async findStalePidsWindows(
     start: number,
     end: number,
     selfPid: string,
     parentPid: string,
-  ): string[] {
+  ): Promise<string[]> {
     let stdout = ''
     try {
-      stdout = execSync(
-        'netstat -ano | findstr LISTENING',
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-      )
+      stdout = await execAsync('netstat -ano | findstr LISTENING')
     } catch {
       // findstr exits 1 when nothing matches — i.e. nothing is
       // listening anywhere. Treat as empty rather than fatal.
@@ -834,22 +841,28 @@ export class RuntimeManager implements IRuntimeManager {
 
   /**
    * TCP-level check whether a port is listening (faster and more reliable than HTTP fetch).
+   *
+   * Never shells out: this runs on the runtime start path, which the desktop's
+   * tunnel can trigger many times at once, and `execSync('lsof')` froze the
+   * whole event loop (~65 ms per call here, seconds on a loaded machine). That
+   * stall starved `/health`, the desktop supervisor killed the API after three
+   * missed probes, and the tunnel dropped as 1006 at the cloud (SHO-185).
    */
   private async isPortListening(port: number): Promise<boolean> {
-    try {
-      const result = execSync(
-        process.platform === 'win32'
-          ? `netstat -ano | findstr :${port} | findstr LISTENING`
-          : `lsof -ti :${port} 2>/dev/null || true`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-      ).trim()
-      const pids = result.split('\n').filter(l => l.trim().length > 0)
-      const selfPid = String(process.pid)
-      const parentPid = String(process.ppid)
-      return pids.some(pid => pid !== selfPid && pid !== parentPid)
-    } catch {
-      return false
-    }
+    return await new Promise<boolean>((resolve) => {
+      let settled = false
+      const done = (listening: boolean) => {
+        if (settled) return
+        settled = true
+        try { socket.destroy() } catch { /* already closed */ }
+        resolve(listening)
+      }
+      const socket = connect({ host: '127.0.0.1', port })
+      socket.setTimeout(350)
+      socket.once('connect', () => done(true))
+      socket.once('timeout', () => done(false))
+      socket.once('error', () => done(false))
+    })
   }
 
   /**

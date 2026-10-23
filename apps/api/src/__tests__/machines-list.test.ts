@@ -58,6 +58,11 @@ const mockPrisma = {
     },
   },
   remoteAction: { create: async (args: any) => args.data },
+  // `GET /machines` reports `lastSyncedAt` / `syncEnabled` per machine (SHO-185).
+  machineSyncState: {
+    findMany: async () => [],
+    findUnique: async () => null,
+  },
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
@@ -149,5 +154,32 @@ describe('GET /api/machines', () => {
       new Request('http://x/api/machines'),
     )).json()) as any
     expect(body.machines).toEqual([])
+  })
+
+  test('a machine whose copy state is unreadable still lists, with the defaults', async () => {
+    seed()
+    const body = (await (await buildApp().fetch(new Request('http://x/api/machines'))).json()) as any
+    // Sync to cloud is on until a machine says otherwise, and it has never
+    // pushed — the switch and "Last synced" read these two fields.
+    expect(body.machines[0]).toMatchObject({ syncEnabled: true, lastSyncedAt: null })
+  })
+
+  test('a client with no copy-state table cannot take the machine list down', async () => {
+    // The copy state is a convenience, and a Prisma client generated before
+    // those tables exist throws on the property *access* — before any `.catch()`
+    // on the call could see it — so `GET /api/machines` used to 500 and the
+    // switcher lost every machine. Reproduced here by removing the delegate.
+    seed()
+    const table = (mockPrisma as any).machineSyncState
+    delete (mockPrisma as any).machineSyncState
+    try {
+      const res = await buildApp().fetch(new Request('http://x/api/machines'))
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as any
+      expect(body.machines).toHaveLength(1)
+      expect(body.machines[0]).toMatchObject({ syncEnabled: true, lastSyncedAt: null })
+    } finally {
+      ;(mockPrisma as any).machineSyncState = table
+    }
   })
 })

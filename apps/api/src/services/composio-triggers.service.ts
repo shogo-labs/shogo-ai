@@ -346,7 +346,14 @@ export async function disableSubscriptionsForConnections(input: {
   }
   if (or.length === 0) return 0
   const subs = await db.eventSubscription.findMany({
-    where: { source: 'composio', enabled: true, OR: or },
+    // A trigger on a machine workspace is the desktop's (SHO-185): firing it here
+    // would run the same automation twice and bill the cloud account for it.
+    where: {
+      source: 'composio',
+      enabled: true,
+      OR: or,
+      workspace: { machineInstanceId: null },
+    },
     select: { id: true, composioTriggerId: true },
   })
   for (const sub of subs) {
@@ -368,8 +375,14 @@ export async function reconcileComposioTriggers(): Promise<{ checked: number; di
   const client = composioTriggersClient()
   if (!client) return { checked: 0, disabled: 0 }
   const homeFilter = homeRegionWorkspaceWhere()
+  const cloudWorkspace = { machineInstanceId: null } as const
   const subs: Array<{ id: string; enabled: boolean; composioTriggerId: string }> = await db.eventSubscription.findMany({
-    where: { source: 'composio', composioTriggerId: { not: null }, ...(homeFilter ? { workspace: homeFilter } : {}) },
+    where: {
+      source: 'composio',
+      composioTriggerId: { not: null },
+      // Triggers of a machine workspace belong to the desktop (SHO-185).
+      workspace: homeFilter ? { AND: [homeFilter, cloudWorkspace] } : cloudWorkspace,
+    },
     select: { id: true, enabled: true, composioTriggerId: true },
   })
   let disabled = 0
