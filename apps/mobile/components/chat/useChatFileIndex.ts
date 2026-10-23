@@ -33,6 +33,8 @@ export function useChatFileIndex(
     }
     let cancelled = false
     const client = new AgentClient({ baseUrl: agentUrl.replace(/\/$/, ""), fetch: agentFetch })
+    // File chips are optional; an out-of-date SDK build must not crash chat.
+    if (typeof client.listWorkspaceFiles !== "function") return
     client
       .listWorkspaceFiles()
       .then((res) => {
