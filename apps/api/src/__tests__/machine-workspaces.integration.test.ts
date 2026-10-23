@@ -184,6 +184,11 @@ async function startTopology(suffix: string): Promise<Topology> {
   const deviceWorkspace = await db.workspace.create({
     data: { name: `Devices ${suffix}`, slug: `devices-${suffix}`, kind: 'team' },
   })
+  // Pairing happens in a workspace the person is a member of; the unpair route
+  // authorises on exactly that.
+  await db.member.create({
+    data: { userId: cloudUser.id, workspaceId: deviceWorkspace.id, role: 'owner' },
+  })
   const instanceId = `inst-${suffix}-${Date.now()}`
   await db.instance.create({
     data: {
@@ -418,6 +423,61 @@ describeIfInfra('a real desktop and two real cloud pods', () => {
     expect(await db.workspace.count({ where: { id: `ws-local-${suffix}` } })).toBe(0)
     expect(await db.project.findFirst({ where: { id: `p-local-${suffix}` } })).toBeNull()
     const state = await db.machineSyncState.findUnique({ where: { instanceId: topology.instanceId } })
+    // The state row survives on purpose: deleting it would let a desktop that is
+    // still running recreate the copy a person just switched off.
     expect(state.enabled).toBe(false)
+  }, 180_000)
+
+  test('two desktops with the same local email and slug do not collide, and neither owner can read the other', async () => {
+    // Both desktops ship a `local@shogo.local` user and a workspace called
+    // Samsara with slug `samsara` — the collision the rewrites exist for.
+    const [left, right] = await Promise.all([startTopology('left'), startTopology('right')])
+
+    const [leftCopy, rightCopy] = await Promise.all([
+      waitUntil(async () => db.workspace.findFirst({ where: { id: 'ws-local-left' } })),
+      waitUntil(async () => db.workspace.findFirst({ where: { id: 'ws-local-right' } })),
+    ])
+    expect(leftCopy.machineInstanceId).toBe(left.instanceId)
+    expect(rightCopy.machineInstanceId).toBe(right.instanceId)
+    expect(leftCopy.slug).not.toBe(rightCopy.slug)
+    expect(leftCopy.slug).toBe(`samsara-m-${left.instanceId.slice(0, 8)}`)
+
+    // Each project landed under its own copy, not under the other machine's.
+    const [leftProject, rightProject] = await Promise.all([
+      db.project.findUnique({ where: { id: 'p-local-left' } }),
+      db.project.findUnique({ where: { id: 'p-local-right' } }),
+    ])
+    expect(leftProject.workspaceId).toBe('ws-local-left')
+    expect(rightProject.workspaceId).toBe('ws-local-right')
+
+    // Reads are authorised by membership: the left owner is a member of the left
+    // copy only, so the right copy is not theirs to read.
+    const leftMembership = await db.member.findFirst({
+      where: { workspaceId: 'ws-local-left', projectId: null },
+    })
+    const crossRead = await fetch(`${podB(right)}/api/projects?workspaceId=ws-local-right`, {
+      headers: authHeaders(leftMembership.userId),
+    })
+    expect(crossRead.status).not.toBe(200)
+    const ownRead = await fetch(`${podB(left)}/api/projects?workspaceId=ws-local-left`, {
+      headers: authHeaders(leftMembership.userId),
+    })
+    expect(ownRead.status).toBe(200)
+  }, 180_000)
+
+  test('unpairing the machine deletes its copy', async () => {
+    const topology = await startTopology('unpair')
+    await waitUntil(async () => db.workspace.findFirst({ where: { id: 'ws-local-unpair' } }))
+
+    const res = await fetch(`${podB(topology)}/api/instances/${topology.instanceId}`, {
+      method: 'DELETE',
+      headers: authHeaders(topology.ownerUserId),
+    })
+    expect(res.status).toBe(200)
+
+    expect(await db.workspace.count({ where: { id: 'ws-local-unpair' } })).toBe(0)
+    expect(await db.project.findFirst({ where: { id: 'p-local-unpair' } })).toBeNull()
+    expect(await db.user.findFirst({ where: { id: 'u-local-unpair' } })).toBeNull()
+    expect(await db.instance.findUnique({ where: { id: topology.instanceId } })).toBeNull()
   }, 180_000)
 })

@@ -31,6 +31,7 @@ function fail(message: string): never {
 
 if (role === 'cloud') {
   const { machineRoutes } = await import('../../routes/machines')
+  const { instanceRoutes } = await import('../../routes/instances')
   const { createGeneratedRoutes } = await import('../../generated/routes')
   const { resolveApiKey } = await import('../../routes/api-keys')
   const { prisma } = await import('../../lib/prisma')
@@ -79,6 +80,9 @@ if (role === 'cloud') {
   // The Studio's normal read routes: a machine workspace's GETs are served here,
   // from the copied rows, with the usual membership checks.
   app.route('/api', createGeneratedRoutes({ prisma }))
+  // Pairing's own routes: `DELETE /instances/:id` is the unpair path, which has
+  // to take the copy with it (SHO-185, AC8).
+  app.route('/api', instanceRoutes())
 
   Bun.serve({ port, fetch: app.fetch, idleTimeout: 0 })
   console.log(`READY ${port}`)

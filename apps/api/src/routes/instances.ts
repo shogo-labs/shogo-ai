@@ -24,6 +24,7 @@ import { Hono } from 'hono'
 import { prisma, InstanceKind } from '../lib/prisma'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 import { can } from '../lib/authz'
+import { deleteMachineCopy } from '../lib/machine-sync/ingest'
 import { resolveApiKey } from './api-keys'
 import { logRemoteAction, classifyAction } from './remote-audit'
 import {
@@ -1061,6 +1062,12 @@ export function instanceRoutes() {
     if (conn) {
       conn.ws.close(4000, 'Instance removed')
     }
+
+    // Unpairing takes the cloud copy with it (SHO-185): a machine that is gone
+    // must not leave its records readable in the workspace it was copied into.
+    await deleteMachineCopy(prisma, instance.id).catch((err: any) => {
+      console.warn(`[Instances] could not remove the copy for ${instance.id}: ${err?.message ?? err}`)
+    })
 
     await prisma.instance.delete({ where: { id: instance.id } })
     return c.json({ ok: true })
