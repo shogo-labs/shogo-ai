@@ -60,6 +60,7 @@ import {
   Clapperboard,
   Activity,
   Wallet,
+  ShieldAlert,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -112,6 +113,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
       { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scopes: ['creators:read', 'creators:write'] },
       { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM', scope: 'creators:write' },
       { href: '/(admin)/affiliate-payouts', icon: Wallet, label: 'Affiliate payouts', scope: 'creators:write' },
+      { href: '/(admin)/signup-risk', icon: ShieldAlert, label: 'Signup risk', scope: 'creators:write' },
     ],
   },
   {

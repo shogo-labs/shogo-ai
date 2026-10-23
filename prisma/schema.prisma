@@ -54,6 +54,9 @@ model User {
   // region's REGION_ID on signup; null is treated as the primary region by the
   // router. Cloud-only (single-region desktop ignores it).
   homeRegion                  String?
+  // Normalized email (lowercased; Gmail dots and plus tags removed) used by the
+  // signup risk scorer to detect duplicate accounts. Cloud-only.
+  emailCanonical              String?
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 
@@ -85,6 +88,7 @@ model User {
 
   @@index([createdAt])
   @@index([homeRegion])
+  @@index([emailCanonical])
   @@map("users")
 }
 
@@ -1605,6 +1609,16 @@ model UsageWallet {
   fiveHourUsedUsd              Float     @default(0)
   weeklyWindowStart            DateTime?
   weeklyUsedUsd                Float     @default(0)
+  // Signup promo credit (services/signup-credit.service.ts). Spent after the
+  // rolling windows and before overage. `promoCreditUsd` is the remaining
+  // balance; `promoCreditGrantedUsd` is the total granted, net of admin
+  // revokes (each revoke is also a `signup_credit_revoked` usage event);
+  // `promoCreditStage` is 0 (none), 1 (initial grant issued), 2 (fully
+  // granted). The stage only moves forward, which makes grants idempotent.
+  promoCreditUsd               Float     @default(0)
+  promoCreditGrantedUsd        Float     @default(0)
+  promoCreditExpiresAt         DateTime?
+  promoCreditStage             Int       @default(0)
   createdAt                    DateTime  @default(now())
   updatedAt                    DateTime  @updatedAt
 
@@ -1649,6 +1663,59 @@ enum UsageSource {
   monthly
   overage
   window
+  promo
+}
+
+/// Signup risk assessment, one row per new account. Written from the Better
+/// Auth `user.create.after` hook by services/signup-risk.service.ts. `band`
+/// decides how much signup credit the account gets and whether it may start
+/// a free trial. `reviewDecision` records a manual admin override.
+model SignupRiskAssessment {
+  id               String    @id @default(uuid())
+  userId           String    @unique
+  score            Int
+  band             String
+  signals          Json
+  decision         String
+  ip               String?
+  ipPrefix         String?
+  country          String?
+  deviceId         String?
+  emailCanonical   String?
+  reviewDecision   String?
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([ipPrefix, createdAt])
+  @@index([deviceId, createdAt])
+  @@index([emailCanonical])
+  @@index([band, createdAt])
+  @@map("signup_risk_assessments")
+}
+
+/// Records each workspace (and card fingerprint) that has used its one free
+/// trial. Rows are written from the checkout webhook, not at checkout time, so
+/// an abandoned checkout does not consume the trial.
+model TrialRedemption {
+  id                   String   @id @default(uuid())
+  userId               String
+  workspaceId          String   @unique
+  stripeCustomerId     String
+  stripeSubscriptionId String?
+  /// Stripe `card.fingerprint`. Unique so one physical card can only fund one
+  /// free trial, across all accounts.
+  cardFingerprint      String?  @unique
+  planId               String
+  /// trialing | converted | ended | blocked_duplicate_card | blocked_duplicate_user
+  /// (see `TRIAL_STATUS` in services/trial.service.ts)
+  status               String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([userId])
+  @@map("trial_redemptions")
 }
 
 /// Super-admin-managed credit grant. Each row gives a workspace a fixed

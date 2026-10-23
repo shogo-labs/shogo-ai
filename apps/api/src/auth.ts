@@ -23,9 +23,22 @@ import { evaluateAllowlist, recordSignIn } from "./services/project-auth-config.
 import { prisma } from "./lib/prisma"
 import { getFrontendUrl } from "./lib/cloud-urls"
 import { homeRegionForNewUser } from "./lib/region"
+import { E2E_BOOTSTRAP_HEADER, isE2eBootstrapRequest } from "./lib/e2e-bootstrap-secret"
+import { isBlockedEmailDomain } from "./services/signup-risk-scoring"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 const LOAD_TEST_SECRET = process.env.LOAD_TEST_SECRET
+
+/**
+ * Signup provider for risk scoring. Google and Apple sign-ups arrive on the
+ * OAuth callback (`/callback/:provider`, Apple form-posts there too) or an
+ * ID-token sign-in (`/sign-in/social`). Anything else, including server-side
+ * user creation with no request context, is scored as a credential signup so
+ * it never earns the trusted-provider credit.
+ */
+export function signupProviderFromPath(path: string | undefined): 'credential' | 'social' {
+  return path?.startsWith('/callback/') || path === '/sign-in/social' ? 'social' : 'credential'
+}
 
 function isLoadTestBypass(request: Request): boolean {
   return !!(LOAD_TEST_SECRET && request?.headers?.get?.('x-load-test-key') === LOAD_TEST_SECRET)
@@ -364,6 +377,22 @@ export const auth = betterAuth({
         )
       }
     },
+    afterEmailVerification: async (user: { id: string }) => {
+      if (isLocalMode) return
+      // Release the held/remaining signup credit once the address is verified.
+      // The risk re-score runs here, so the decision reflects accounts created
+      // since signup. Best-effort: never fail the verification itself.
+      try {
+        // Lazy: keeps billing out of the auth module graph at startup.
+        const { releaseSignupCreditOnVerification } = await import('./services/signup-credit.service')
+        const outcome = await releaseSignupCreditOnVerification({ userId: user.id })
+        if (outcome.released) {
+          console.log(`[signup-credit] released $${outcome.amountUsd} for user ${user.id} (band ${outcome.band})`)
+        }
+      } catch (err) {
+        console.error('[signup-credit] verification release failed', err)
+      }
+    },
   },
 
   socialProviders: isLocalMode ? {} : {
@@ -472,6 +501,11 @@ export const auth = betterAuth({
 
   // Advanced configuration
   advanced: {
+    // Client IP for signup risk scoring. Cloudflare sets cf-connecting-ip (the
+    // real client); x-forwarded-for is the fallback for other ingress paths.
+    ipAddress: {
+      ipAddressHeaders: ['cf-connecting-ip', 'x-real-ip', 'x-forwarded-for'],
+    },
     database: {
       generateId: (options) => crypto.randomUUID(),
     },
@@ -493,7 +527,7 @@ export const auth = betterAuth({
          * Strips any HTML tags and angle brackets from the name field.
          * In local mode, enforces a single-account limit.
          */
-        before: async (user) => {
+        before: async (user, ctx?: any) => {
           if (user.name) {
             user.name = sanitizeName(user.name)
           }
@@ -508,6 +542,22 @@ export const auth = betterAuth({
             }
             return { data: user }
           }
+          // Hard block for domains seen only in abuse farms (see
+          // signup-risk-config BLOCKED_EMAIL_DOMAINS). The e2e bootstrap header is
+          // honored only when the server has e2e bootstrap enabled.
+          if (user.email && isBlockedEmailDomain(user.email)) {
+            const reqHeaders = ctx?.request?.headers ?? ctx?.headers
+            const e2e = isE2eBootstrapRequest(
+              typeof reqHeaders?.get === 'function' ? reqHeaders.get(E2E_BOOTSTRAP_HEADER) : null,
+            )
+            if (!e2e) {
+              throw new APIError('UNPROCESSABLE_ENTITY', {
+                code: 'SIGNUP_BLOCKED',
+                message: 'We could not create an account with this email address. Please try a different email.',
+              })
+            }
+          }
+
           // Stamp the write-ownership home region for this identity to the
           // region the signup lands in. `input: false` on the additionalField
           // means a client can never override it.
@@ -630,6 +680,31 @@ export const auth = betterAuth({
               ? [createWithRetry('team', () => createDefaultTeamWorkspace(user.id, user.name || "User"))]
               : []),
           ])
+
+          // Signup risk assessment + initial promo credit (cloud only). Runs after
+          // the team workspace exists, since the credit lives on that wallet.
+          // Best-effort: a failure here must never block the signup itself.
+          if (!isLocalMode) {
+            try {
+              const { assessNewSignup } = await import('./services/signup-risk.service')
+              const { applyInitialSignupCredit } = await import('./services/signup-credit.service')
+              const risk = await assessNewSignup({
+                userId: user.id,
+                email: user.email,
+                provider: signupProviderFromPath(ctx?.path),
+                emailVerified: Boolean(user.emailVerified),
+                headers: ctx?.request?.headers ?? ctx?.headers ?? null,
+              })
+              await applyInitialSignupCredit({ userId: user.id, result: risk })
+              trackEvent(user.id, 'signup_risk_scored', {
+                band: risk.band,
+                decision: risk.decision,
+                score: risk.score,
+              }).catch(() => {})
+            } catch (err) {
+              console.error(`[signup-risk] assessment failed for ${user.email}`, err)
+            }
+          }
 
           // FIRE-AND-FORGET: Send welcome email (non-blocking)
           const baseUrl = getFrontendUrl()

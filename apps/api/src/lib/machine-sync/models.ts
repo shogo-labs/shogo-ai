@@ -172,10 +172,12 @@ const NEVER_BILLING = [
   'MarketplaceInstall',
   'MarketplaceReview',
   'MarketplaceTransaction',
+  'TrialRedemption', // card-backed trial, keyed by Stripe ids
 ] as const
 
 const NEVER_CLOUD_PLATFORM = [
   'Instance', // the cloud's machine registry
+  'SignupRiskAssessment', // the cloud's signup anti-abuse record
   'RemoteAction', // the cloud's audit trail
   'EventSubscription', // cloud event bus
   'EventDelivery',

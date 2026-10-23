@@ -82,6 +82,21 @@ const INTENTIONAL_DIFFERENCES: Allow[] = [
       'Multi-region write-ownership marker for identity-scoped rows. The cloud routes a user\'s identity writes to their homeRegion; Shogo Desktop is single-region/local, so the column is meaningless there and intentionally omitted from the SQLite schema.',
   },
   {
+    key: 'User.emailCanonical',
+    reason:
+      'Normalized email used by the cloud signup risk scorer to spot duplicate accounts. Signup abuse controls are cloud-only; desktop has a single local account and no signup flow.',
+  },
+  {
+    key: 'SignupRiskAssessment',
+    reason:
+      'Cloud signup risk assessments (IP, device, email signals and the resulting credit band). Desktop has no public signups, so this table is never written there.',
+  },
+  {
+    key: 'TrialRedemption',
+    reason:
+      'Cloud Stripe free-trial redemptions keyed by card fingerprint. Desktop does not run Stripe Checkout trials.',
+  },
+  {
     key: 'RemoteHost',
     reason:
       'Desktop-only Remote-SSH connection metadata. SSH credentials and host records belong to the local desktop profile and are intentionally never persisted in the cloud schema.',

@@ -172,6 +172,13 @@ interface HomeRegionPartitioned {
  */
 const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
   {
+    fn: 'runExpireSignupCredits',
+    file: 'apps/api/src/jobs/expire-signup-credits.ts',
+    reason:
+      'Each region zeroes only the expired signup promo credit on usage_wallets it owns, via homeWorkspaceIds() inside expireSignupCredits(). usage_wallets is never replicated, so a global lock would let one region settle a peer-owned wallet it cannot see.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runAgentScheduleDispatch',
     file: 'apps/api/src/jobs/run-agent-schedule-dispatch.ts',
     reason:
@@ -252,6 +259,25 @@ interface UniqueKeyRule {
 }
 
 const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
+  // --- signup risk / free trial (added with the signup credit rollout) ----
+  {
+    key: 'SignupRiskAssessment.userId',
+    category: 'request_scoped',
+    reason:
+      'One assessment per new user, written by the signup hook and re-scored by the email-verification hook for that same user; the two requests are sequential and the user is homed to one region.',
+  },
+  {
+    key: 'TrialRedemption.workspaceId',
+    category: 'single_tenant_upsert',
+    reason:
+      'One trial record per workspace; checkout and subscription webhooks for a workspace are routed to that workspace home region and upsert the same row.',
+  },
+  {
+    key: 'TrialRedemption.cardFingerprint',
+    category: 'external_global_id',
+    reason:
+      'Stripe assigns the card fingerprint and it is globally stable per card. The dedupe check is racy only if the same card starts two trials in two regions within the same second; the second is still cancelled by the subscription webhook path.',
+  },
   // --- random secrets / cryptographically-unique tokens --------------------
   {
     key: 'User.email',
