@@ -97,6 +97,7 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     return c.json(await listInbox(auth.workspaceId, auth.userId, {
       unreadOnly: c.req.query('filter') === 'unread',
       before: c.req.query('before') ?? null,
+      beforeId: c.req.query('beforeId') ?? null,
       limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
     }))
   })

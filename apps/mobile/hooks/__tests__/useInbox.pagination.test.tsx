@@ -201,6 +201,19 @@ describe('useInbox · paging', () => {
     expect(inbox.mock.calls[1][1]).toMatchObject({ unreadOnly: true, before: '2026-10-20T11:00:00.000Z' })
   })
 
+  test('the append cursor carries the id too, so ties are not dropped', async () => {
+    const view = renderHook(() => useInbox('ws-1', false))
+    await flush()
+
+    act(() => view.result.current.loadMore())
+    await flush()
+
+    // `createdAt` alone means every row sharing the boundary millisecond is
+    // skipped. Both halves travel together.
+    const cursor = inbox.mock.calls[1][1]
+    expect(cursor).toMatchObject({ before: '2026-10-20T11:00:00.000Z', beforeId: 'b' })
+  })
+
   test('leaving unread mode asks for the unfiltered list again', async () => {
     const view = renderHook(({ unreadOnly }) => useInbox('ws-1', unreadOnly), {
       initialProps: { unreadOnly: true },

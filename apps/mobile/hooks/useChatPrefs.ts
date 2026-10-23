@@ -209,13 +209,13 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
   const req = useRef(0)
   const appending = useRef(false)
 
-  const load = useCallback(async (before?: string) => {
+  const load = useCallback(async (before?: string, beforeId?: string) => {
     if (!workspaceId) return
     const id = ++req.current
     if (before) setLoadingMore(true)
     else setLoading(true)
     try {
-      const page = await api.inbox(workspaceId, { unreadOnly, before })
+      const page = await api.inbox(workspaceId, { unreadOnly, before, beforeId })
       if (id !== req.current) return
       setItems((prev) => (before ? [...prev, ...page.items] : page.items))
       setHasMore(page.hasMore)
@@ -276,11 +276,13 @@ export function useInbox(workspaceId: string | null | undefined, unreadOnly: boo
 
   const loadMore = useCallback(() => {
     const last = items[items.length - 1]
-    // A virtualized list fires onEndReached again while the previous page is
-    // still in flight; the ref keeps those from stacking up identical requests.
+    // Two presses can land before the first page arrives; the ref keeps them
+    // from stacking up identical requests.
     if (!hasMore || !last || appending.current) return
     appending.current = true
-    void load(last.createdAt).finally(() => { appending.current = false })
+    // Both halves of the cursor: `createdAt` alone drops rows that share the
+    // boundary millisecond.
+    void load(last.createdAt, last.id).finally(() => { appending.current = false })
   }, [items, hasMore, load])
 
   return { items, hasMore, loading, loadingMore, error, markRead, loadMore, refresh: load }
