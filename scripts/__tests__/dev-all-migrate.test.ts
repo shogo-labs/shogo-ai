@@ -36,6 +36,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   findStuckMigrations,
+  isPostgresDatabaseUrl,
   isMigrationFullyApplied,
   parseDuplicateColumnFailure,
   parseRecoverableFailure,
@@ -607,5 +608,19 @@ describe("findStuckMigrations", () => {
       "stuck_earlier",
       "stuck_later",
     ]);
+  });
+});
+
+describe("isPostgresDatabaseUrl", () => {
+  test("detects postgres URLs so SQLite migrations are skipped", () => {
+    expect(isPostgresDatabaseUrl("postgres://u:p@localhost:5432/db")).toBe(true);
+    expect(isPostgresDatabaseUrl("postgresql://u:p@localhost/db")).toBe(true);
+    expect(isPostgresDatabaseUrl("  POSTGRES://u:p@h/db ")).toBe(true);
+  });
+
+  test("returns false for SQLite / unset URLs", () => {
+    expect(isPostgresDatabaseUrl("file:./shogo.db")).toBe(false);
+    expect(isPostgresDatabaseUrl("")).toBe(false);
+    expect(isPostgresDatabaseUrl(undefined)).toBe(false);
   });
 });
