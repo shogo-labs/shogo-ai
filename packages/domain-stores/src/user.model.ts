@@ -31,6 +31,7 @@ export const UserModel = types
     onboardingIntent: types.optional(types.string, ""),
     buddyLook: types.optional(types.string, ""),
     homeRegion: types.optional(types.string, ""),
+    emailCanonical: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),
