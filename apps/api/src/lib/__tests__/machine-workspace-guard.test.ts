@@ -36,6 +36,20 @@ function source(relative: string): string {
   return readFileSync(join(API_ROOT, relative), 'utf8')
 }
 
+/** One function's body, braces matched — a marker has to be in *this* function. */
+function functionBody(relative: string, name: string): string {
+  const text = source(relative)
+  const signature = text.search(new RegExp(`(?:export )?async function ${name}\\(`))
+  if (signature < 0) throw new Error(`${name} is not defined in ${relative}`)
+  const open = text.indexOf('{', text.indexOf(')', signature))
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '{') depth++
+    else if (text[i] === '}' && --depth === 0) return text.slice(open, i + 1)
+  }
+  throw new Error(`unbalanced braces after ${name} in ${relative}`)
+}
+
 describe('the machine-workspace where fragments', () => {
   test('cloud-only selects null, machine-only selects non-null', () => {
     expect(CLOUD_WORKSPACE_ONLY).toEqual({ machineInstanceId: null })
@@ -122,6 +136,17 @@ describe('every cloud worker that selects workspace-owned rows skips the copy', 
     const file = source('src/services/composio-triggers.service.ts')
     const cloudOnly = file.match(/machineInstanceId: null/g) ?? []
     expect(cloudOnly.length).toBeGreaterThanOrEqual(2)
+  })
+
+  test('both reply-settling sweeps refuse the copy themselves, not just their file', () => {
+    // Round 3: the file-level marker was satisfied by the *wake* sweep while
+    // these two settled a copy's live run, flipping it to `error` behind the
+    // desktop. A marker per function is what the next one needs.
+    for (const name of ['settleOrphanedAgentReplies', 'sweepDeadAgentReplies']) {
+      expect(functionBody('src/services/conversation-agent-dispatcher.ts', name)).toContain(
+        'await notMachineWorkspaceWhere()',
+      )
+    }
   })
 })
 

@@ -151,6 +151,9 @@ export async function settleOrphanedAgentReplies(minAgeMs = 0): Promise<number> 
       createdAt: { lt: cutoff },
       deletedAt: null,
       ...(home ? { conversation: { workspace: home } } : {}),
+      // A copy's running reply is live on the desktop that owns it: settling it
+      // here would flip the copy to `error` behind a run that never died.
+      ...(await notMachineWorkspaceWhere()),
     },
     select: { id: true, threadRootId: true, authorAgentRef: true, agentSessionId: true, createdAt: true },
     take: 500,
@@ -223,6 +226,9 @@ export async function sweepDeadAgentReplies(opts: { staleAfterMs?: number } = {}
       deletedAt: null,
       threadRootId: { not: null },
       ...(home ? { conversation: { workspace: home } } : {}),
+      // Same reason as settleOrphanedAgentReplies: a card run on the desktop is
+      // not this pod's to end.
+      ...(await notMachineWorkspaceWhere()),
     },
     select: { id: true, threadRootId: true, authorAgentRef: true, agentSessionId: true, createdAt: true },
     take: 200,
