@@ -34,9 +34,10 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { resolveTunnelWorkerEntry, startTunnelInWorker } from '@shogo-ai/worker/tunnel-host'
 
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..', '..', '..', '..')
@@ -217,6 +218,9 @@ describe('desktop API bundle (apps/api/src/entry.ts) integrity', () => {
 describe('desktop tunnel worker entry', () => {
   let outDir: string
   let builtEntry: string
+  /** A directory shaped like `resources/bundle/`. */
+  let packagedDir: string
+  let packagedEntry: string
 
   beforeAll(() => {
     outDir = mkdtempSync(join(tmpdir(), 'shogo-tunnel-worker-'))
@@ -232,10 +236,34 @@ describe('desktop tunnel worker entry', () => {
       throw new Error(`bun build failed (exit ${proc.exitCode}):\n${proc.stderr.toString()}`)
     }
     builtEntry = join(outDir, 'tunnel-worker.js')
+
+    // The same thing for the host, so its `import.meta.dir` is a bundle
+    // directory rather than `src/lib` — which is how `api.js` sees the world.
+    packagedDir = mkdtempSync(join(tmpdir(), 'shogo-bundle-shape-'))
+    const hostBuild = Bun.spawnSync({
+      cmd: [
+        'bun',
+        'build',
+        join(REPO_ROOT, 'packages/shogo-worker/src/lib/tunnel-host.ts'),
+        '--target',
+        'bun',
+        '--outdir',
+        packagedDir,
+        ...externals,
+      ],
+      cwd: REPO_ROOT,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    if (hostBuild.exitCode !== 0) {
+      throw new Error(`host build failed (exit ${hostBuild.exitCode}):\n${hostBuild.stderr.toString()}`)
+    }
+    packagedEntry = join(packagedDir, 'tunnel-host.js')
   })
 
   afterAll(() => {
     rmSync(outDir, { recursive: true, force: true })
+    rmSync(packagedDir, { recursive: true, force: true })
   })
 
   test('packaging ships the worker entry beside the API bundle', () => {
@@ -258,6 +286,53 @@ describe('desktop tunnel worker entry', () => {
     // the worker fail to load exactly like the bug this fixes.
     expect(survivingRuntimeTsImports(readFileSync(builtEntry, 'utf-8'))).toEqual([])
   })
+
+  test('the packaged shape — compiled host, compiled worker, no sources — comes up', async () => {
+    // `resources/bundle/`: api.js and tunnel-worker.js, nothing else. The host is
+    // bundled on its own so `import.meta.dir` is that directory, which is what
+    // `api.js` gets; nothing here is a `.ts` and there is no source tree above it.
+    copyFileSync(builtEntry, join(packagedDir, 'tunnel-worker.js'))
+    const previous = process.env.SHOGO_TUNNEL_WORKER_PATH
+    delete process.env.SHOGO_TUNNEL_WORKER_PATH
+    let host: { stop(): void; ready(): Promise<void> } | null = null
+    try {
+      const packaged = (await import(`${pathToFileURL(packagedEntry).href}?t=${Date.now()}`)) as any
+      // The sibling the packaging step ships, not the checkout's `.ts`. Compared
+      // by file name: macOS reports `/var/…` and `/private/var/…` for one path.
+      const resolved = packaged.resolveTunnelWorkerEntry()
+      expect({ file: basename(resolved), exists: existsSync(resolved) }).toEqual({
+        file: 'tunnel-worker.js',
+        exists: true,
+      })
+
+      host = packaged.startTunnelInWorker({
+        apiKey: 'test-key',
+        cloudUrl: 'http://127.0.0.1:1',
+        name: 'packaged-shape',
+        kind: 'desktop',
+        resolver: {
+          async resolveLocalUrl() {
+            return null
+          },
+          async deriveRuntimeToken() {
+            return null
+          },
+          getActiveProjects() {
+            return []
+          },
+          status() {
+            return null
+          },
+        },
+        logger: { log: () => {}, warn: () => {}, error: () => {} },
+        readyTimeoutMs: 8_000,
+      })
+      await host.ready()
+    } finally {
+      host?.stop()
+      if (previous !== undefined) process.env.SHOGO_TUNNEL_WORKER_PATH = previous
+    }
+  }, 20_000)
 
   test('a host pointed at the built worker comes up — no source tree needed', async () => {
     const previous = process.env.SHOGO_TUNNEL_WORKER_PATH
