@@ -602,24 +602,22 @@ export function useServerMessageQueue({
 
   /**
    * "Send now" on a team-chat wake: it goes to the front of the wake queue and
-   * the reply in front of it is stopped, so it starts at once. The row is
-   * hidden on the click — the wake leaves the list as the drain claims it.
+   * the reply in front of it is stopped, so it starts at once.
+   *
+   * The row is hidden only once the server has taken it. Hiding on the click
+   * unmounts the row, so a refusal comes back to a fresh component with an empty
+   * error state and the dock shows nothing; the click's own "Sending…" holds the
+   * row until the answer arrives (QA round 2, AC6).
    */
   const sendWakeNow = useCallback(
     async (id: string) => {
       const client = http()
       if (typeof client?.post !== "function") return
+      await client.post(`/api/agent-wakes/${encodeURIComponent(id)}/send-now`, {})
       hideSent(id)
-      try {
-        await client.post(`/api/agent-wakes/${encodeURIComponent(id)}/send-now`, {})
-      } catch (error) {
-        // Nothing started: the message is still queued, so put the row back.
-        showAgain(id)
-        throw error
-      }
       await loadWakes().catch(() => {})
     },
-    [http, hideSent, showAgain, loadWakes],
+    [http, hideSent, loadWakes],
   )
 
   /** Take a team-chat wake off the queue. It never runs. */

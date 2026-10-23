@@ -71,12 +71,15 @@ let wakeList: any[] = []
 const wakeCalls: string[] = []
 const wakeDeletes: string[] = []
 let sendWakeFailure: Error | null = null
+/** When set, the Send-now POST hangs on it so a test can look at the in-flight dock. */
+let sendWakeHold: Promise<void> | null = null
 mock.module("mobx-state-tree", () => ({
   getEnv: () => ({
     http: {
       post: async (url: string) => {
-        if (url.startsWith("/api/agent-wakes/")) {
+        if (url.startsWith("/api/agent-wakes/") && url.endsWith("/send-now")) {
           wakeCalls.push(url)
+          if (sendWakeHold) await sendWakeHold
           if (sendWakeFailure) throw sendWakeFailure
           return { data: { ok: true } }
         }
@@ -127,6 +130,7 @@ function reset() {
   wakeCalls.length = 0
   wakeDeletes.length = 0
   sendWakeFailure = null
+  sendWakeHold = null
   act(() => runInAction(() => { collection.all.splice(0, collection.all.length) }))
 }
 
@@ -454,6 +458,25 @@ describe("team-chat wakes waiting behind this session", () => {
     expect(wakeCalls).toContain("/api/agent-wakes/w1/send-now")
     // The server has not taken it off the list yet, so the hide is the click's,
     // not the next poll's.
+    expect(queueApi!.queuedMessages).toEqual([])
+  })
+
+  test("Send now keeps the row on screen until the server answers", async () => {
+    reset()
+    wakeList = [wake()]
+    render(<Probe isStreaming />)
+    await settle()
+
+    // The POST is in flight: the row must still be the person's queued message,
+    // or a refusal would land on an unmounted row and show nothing.
+    let release!: () => void
+    sendWakeHold = new Promise<void>((resolve) => { release = resolve })
+    let pending!: Promise<void>
+    act(() => { pending = queueApi!.sendWakeNow("w1") })
+    expect(queueApi!.queuedMessages.map((m) => m.id)).toEqual(["w1"])
+
+    await act(async () => { release(); await pending })
+    // Taken by the server: now it goes off the dock.
     expect(queueApi!.queuedMessages).toEqual([])
   })
 
