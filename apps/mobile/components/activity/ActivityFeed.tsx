@@ -60,7 +60,12 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
   const focused = useFocused()
   const [filter, setFilter] = useState<ActivityFilter>('all')
   const [unreadOnly, setUnreadOnly] = useState(false)
-  const inbox = useInbox(workspaceId, false)
+  /**
+   * The server filters, not `buildFeed`. Filtering unread on the client means
+   * every page arrives mostly-read, the filtered list never fills the viewport,
+   * and `onEndReached` walks the whole history to find the unread items in it.
+   */
+  const inbox = useInbox(workspaceId, unreadOnly)
   const sent = useSentMessages(workspaceId, filter === 'sent')
   const agents = useAgentActivity({ polling: focused, light: true })
   const experience = useWorkspaceExperience()

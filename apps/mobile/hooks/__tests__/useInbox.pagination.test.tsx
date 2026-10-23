@@ -180,6 +180,40 @@ describe('useInbox · paging', () => {
     expect(view.result.current.items.map((i) => i.id)).toEqual(['a', 'b', 'c'])
   })
 
+  test('unread mode asks the server to filter, so pages arrive unread', async () => {
+    const view = renderHook(() => useInbox('ws-1', true))
+    await flush()
+
+    // Filtering unread on the client left every page mostly-read: the filtered
+    // list never filled the panel and the feed walked the whole history.
+    expect(inbox.mock.calls[0][1]).toMatchObject({ unreadOnly: true })
+    expect(view.result.current.items.map((i) => i.id)).toEqual(['a', 'b'])
+  })
+
+  test('unread mode keeps the filter on every appended page', async () => {
+    const view = renderHook(() => useInbox('ws-1', true))
+    await flush()
+
+    act(() => view.result.current.loadMore())
+    await flush()
+
+    expect(inbox).toHaveBeenCalledTimes(2)
+    expect(inbox.mock.calls[1][1]).toMatchObject({ unreadOnly: true, before: '2026-10-20T11:00:00.000Z' })
+  })
+
+  test('leaving unread mode asks for the unfiltered list again', async () => {
+    const view = renderHook(({ unreadOnly }) => useInbox('ws-1', unreadOnly), {
+      initialProps: { unreadOnly: true },
+    })
+    await flush()
+    expect(inbox.mock.calls[0][1]).toMatchObject({ unreadOnly: true })
+
+    view.rerender({ unreadOnly: false })
+    await flush()
+
+    expect(inbox.mock.calls[inbox.mock.calls.length - 1][1]).toMatchObject({ unreadOnly: false })
+  })
+
   test('a refresh still shows rows that arrived below the first page', async () => {
     let page = PAGE_1
     inbox.mockImplementation(async (_ws, opts = {}) =>
