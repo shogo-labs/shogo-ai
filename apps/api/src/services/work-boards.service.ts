@@ -1694,7 +1694,8 @@ export async function getBoardView(board: any, opts: { includeArchived?: boolean
       ...(oneOf(PRIORITIES, opts.priority) ? { priority: opts.priority } : {}),
       ...(opts.q ? { OR: [{ title: { contains: opts.q } }, { key: { contains: opts.q.toUpperCase() } }] } : {}),
     },
-    orderBy: [{ position: 'asc' }],
+    // Newest first, so the row cap below drops the oldest cards rather than an arbitrary set.
+    orderBy: [{ createdAt: 'desc' }, { number: 'desc' }],
     take: MAX_ITEMS_PER_BOARD_VIEW,
   })
   const working = await runningCardReplies(items.map((i: any) => i.threadRootMessageId).filter(Boolean))

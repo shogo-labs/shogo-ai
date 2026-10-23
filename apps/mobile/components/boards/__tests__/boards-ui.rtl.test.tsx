@@ -55,6 +55,18 @@ mock.module('../../chat/MarkdownText', () => ({
   MarkdownText: ({ children }: any) => createElement('div', null, children),
 }))
 mock.module('../../../lib/team-chat-connection', () => ({ useTeamChatEvents: () => 'open' }))
+const stored = new Map<string, string>()
+mock.module('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: async (k: string) => stored.get(k) ?? null,
+    setItem: async (k: string, v: string) => {
+      stored.set(k, v)
+    },
+    removeItem: async (k: string) => {
+      stored.delete(k)
+    },
+  },
+}))
 
 type Call = { method: string; path: string; body?: any }
 const calls: Call[] = []
@@ -177,6 +189,78 @@ describe('BoardKanban', () => {
     render(createElement(BoardKanban, { boardId: 'b1', workspaceId: 'ws', mentionables: mentionables as any, onOpenCard: (i: any) => opened.push(i.id) }))
     fireEvent.click(await screen.findByTestId('board-card-SUP-2'))
     expect(opened).toEqual(['2'])
+  })
+})
+
+describe('BoardKanban sort', () => {
+  // Each test gets its own board: the picked sort is remembered per board for the session.
+  const cards = [
+    item('1', 'c1', 1, { number: 1, createdAt: '2026-01-01T00:00:00Z' }),
+    item('2', 'c1', 2, { number: 2, createdAt: '2026-02-01T00:00:00Z' }),
+    item('3', 'c1', 3, { number: 3, createdAt: '2026-03-01T00:00:00Z' }),
+  ]
+  const servedBoard = (id: string, items = cards) => () => ({ board: { ...board, id }, items, health: { issues: [] } })
+  const order = () => screen.getAllByTestId(/^board-card-SUP-/).map((el) => el.getAttribute('data-testid'))
+  const open = (boardId: string) =>
+    render(createElement(BoardKanban, { boardId, workspaceId: 'ws', mentionables: mentionables as any, onOpenCard: () => {} }))
+
+  beforeEach(() => stored.clear())
+
+  test('a board with no saved preference opens on Newest, newest card first', async () => {
+    routes['GET /api/boards/s1'] = servedBoard('s1')
+    open('s1')
+    await screen.findByTestId('board-card-SUP-1')
+    expect(screen.getByTestId('board-sort').textContent).toContain('Newest')
+    await waitFor(() => expect(order()).toEqual(['board-card-SUP-3', 'board-card-SUP-2', 'board-card-SUP-1']))
+  })
+
+  test('choosing a sort re-orders the column and is remembered for that board only', async () => {
+    routes['GET /api/boards/s2'] = servedBoard('s2')
+    routes['GET /api/boards/s3'] = servedBoard('s3')
+    const first = open('s2')
+    await screen.findByTestId('board-card-SUP-1')
+    fireEvent.click(screen.getByTestId('board-sort'))
+    fireEvent.click(await screen.findByText('Manual'))
+    await waitFor(() => expect(order()).toEqual(['board-card-SUP-1', 'board-card-SUP-2', 'board-card-SUP-3']))
+    expect(screen.getByTestId('board-sort').textContent).toContain('Manual')
+    await waitFor(() => expect(stored.get('shogo:board-sort:s2')).toBe('manual'))
+
+    first.unmount()
+    open('s2')
+    await screen.findByTestId('board-card-SUP-1')
+    await waitFor(() => expect(screen.getByTestId('board-sort').textContent).toContain('Manual'))
+    cleanup()
+
+    open('s3')
+    await screen.findByTestId('board-card-SUP-1')
+    expect(screen.getByTestId('board-sort').textContent).toContain('Newest')
+  })
+
+  test('Oldest is offered and reverses the columns', async () => {
+    routes['GET /api/boards/s4'] = servedBoard('s4')
+    open('s4')
+    await screen.findByTestId('board-card-SUP-1')
+    fireEvent.click(screen.getByTestId('board-sort'))
+    fireEvent.click(await screen.findByText('Oldest'))
+    await waitFor(() => expect(order()).toEqual(['board-card-SUP-1', 'board-card-SUP-2', 'board-card-SUP-3']))
+  })
+
+  test('list view is one flat list, newest first, across columns', async () => {
+    routes['GET /api/boards/s5'] = servedBoard('s5', [
+      item('1', 'c1', 1, { number: 1, createdAt: '2026-01-01T00:00:00Z' }),
+      item('2', 'c2', 1, { number: 2, createdAt: '2026-03-01T00:00:00Z' }),
+      item('3', 'c1', 2, { number: 3, createdAt: '2026-02-01T00:00:00Z' }),
+    ])
+    open('s5')
+    await screen.findByTestId('board-card-SUP-1')
+    fireEvent.click(screen.getByLabelText('List view'))
+    await waitFor(() =>
+      expect(screen.getAllByTestId(/^work-row-SUP-/).map((el) => el.getAttribute('data-testid'))).toEqual([
+        'work-row-SUP-2',
+        'work-row-SUP-3',
+        'work-row-SUP-1',
+      ]),
+    )
   })
 })
 
