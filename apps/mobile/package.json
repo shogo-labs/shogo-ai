@@ -45,7 +45,7 @@
     "@livekit/react-native-expo-plugin": "^1.0.3",
     "@livekit/react-native-webrtc": "^144.2.0",
     "@livekit/track-processors": "^0.8.2",
-    "@mediapipe/tasks-vision": "^1.1.1",
+    "@mediapipe/tasks-vision": "0.10.14",
     "@monaco-editor/react": "^4.7.0",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@sentry/react-native": "^8.12.0",

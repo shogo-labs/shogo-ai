@@ -30,6 +30,10 @@ export interface UsageWalletType {
   fiveHourUsedUsd: number
   weeklyWindowStart?: Date
   weeklyUsedUsd: number
+  promoCreditUsd: number
+  promoCreditGrantedUsd: number
+  promoCreditExpiresAt?: Date
+  promoCreditStage: number
   createdAt: Date
   updatedAt: Date
 }
@@ -57,6 +61,10 @@ export interface UsageWalletCreateInput {
   fiveHourUsedUsd?: number
   weeklyWindowStart?: Date
   weeklyUsedUsd?: number
+  promoCreditUsd?: number
+  promoCreditGrantedUsd?: number
+  promoCreditExpiresAt?: Date
+  promoCreditStage?: number
 }
 
 export interface UsageWalletUpdateInput {
@@ -82,4 +90,8 @@ export interface UsageWalletUpdateInput {
   fiveHourUsedUsd?: number
   weeklyWindowStart?: Date
   weeklyUsedUsd?: number
+  promoCreditUsd?: number
+  promoCreditGrantedUsd?: number
+  promoCreditExpiresAt?: Date
+  promoCreditStage?: number
 }
