@@ -39,6 +39,10 @@ export const GATE_PUBLIC_PREFIXES = [
   // subdomain or (UUID) project id; no tenant data is exposed.
   '/api/published/',
   '/api/preview/',
+  // The page a browser lands on after a social (Instagram/TikTok) sign-in. The
+  // tab came back from the platform and carries no Shogo session; the handler is
+  // display-only and writes nothing, so there is nothing to protect.
+  '/api/social/connect/return',
 ]
 
 function isWebchatProxyPath(path: string): boolean {

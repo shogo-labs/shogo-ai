@@ -7,7 +7,7 @@ import { describe, test, expect } from 'bun:test'
 import { Hono } from 'hono'
 
 const { apiAuthGate, isGatePublicPath, GATE_PUBLIC_PREFIXES } = await import('../api-auth-gate')
-const { PUBLIC_PREFIXES } = await import('../auth')
+const { PUBLIC_PREFIXES, isPublicPath } = await import('../auth')
 
 function buildApp(authenticated = false): Hono {
   const app = new Hono()
@@ -55,6 +55,18 @@ describe('apiAuthGate', () => {
   test('401s an unauthenticated request to a non-public path', async () => {
     const res = await buildApp().fetch(new Request('http://x/api/api-keys'))
     expect(res.status).toBe(401)
+  })
+
+  test('the social OAuth return page is reachable straight from the platform', () => {
+    // A browser arrives here from Zernio's consent screen with no Shogo
+    // session. It is the page only — every other `/api/social` path stays
+    // behind auth, and `requireAuth` matches the return path exactly.
+    expect(isGatePublicPath('/api/social/connect/return')).toBe(true)
+    expect(isGatePublicPath('/api/social/connect')).toBe(false)
+    expect(isGatePublicPath('/api/social/accounts')).toBe(false)
+    expect(isPublicPath('/api/social/connect/return')).toBe(true)
+    expect(isPublicPath('/api/social/connect/return/extra')).toBe(false)
+    expect(isPublicPath('/api/social/accounts')).toBe(false)
   })
 
   test('passes an authenticated request to a non-public path', async () => {

@@ -9209,6 +9209,208 @@ async function socialInternalCall(
 }
 
 /**
+ * Platforms a person can connect from the app / with the agent. Zernio serves
+ * the OAuth for each of them; the list is here so a typo is refused with the
+ * accepted values instead of a provider 404.
+ */
+const SOCIAL_CONNECT_PLATFORMS = [
+  'instagram',
+  'tiktok',
+  'facebook',
+  'x',
+  'linkedin',
+  'youtube',
+  'threads',
+  'pinterest',
+  'reddit',
+  'bluesky',
+  'googlebusiness',
+]
+
+const SOCIAL_PLATFORM_LABELS: Record<string, string> = {
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
+  facebook: 'Facebook',
+  x: 'X',
+  linkedin: 'LinkedIn',
+  youtube: 'YouTube',
+  threads: 'Threads',
+  pinterest: 'Pinterest',
+  reddit: 'Reddit',
+  bluesky: 'Bluesky',
+  googlebusiness: 'Google Business Profile',
+}
+
+function platformLabel(platform: string): string {
+  return SOCIAL_PLATFORM_LABELS[platform] ?? platform
+}
+
+/** A password-shaped argument, or null. Nothing in this tool ever needs one. */
+function credentialShapedParams(rawParams: unknown): string | null {
+  if (!rawParams || typeof rawParams !== 'object') return null
+  const blocked = ['password', 'passwd', 'pass', 'credentials', 'credential', 'otp', 'two_factor_code']
+  for (const key of Object.keys(rawParams as Record<string, unknown>)) {
+    if (!blocked.includes(key.toLowerCase())) continue
+    const value = (rawParams as Record<string, unknown>)[key]
+    if (typeof value === 'string' && value.trim()) return key
+  }
+  return null
+}
+
+/** A JSON object passed as a string (models do this) or already an object. */
+function parseJsonObject(raw: unknown): Record<string, any> | undefined {
+  if (!raw) return undefined
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, any>
+  if (typeof raw !== 'string' || !raw.trim()) return undefined
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, any>)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The MIME type Zernio's presign accepts for a file, from its extension. A file
+ * whose type cannot be named is refused rather than uploaded as
+ * `application/octet-stream`, which the provider rejects.
+ */
+const SOCIAL_MEDIA_CONTENT_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  mp4: 'video/mp4',
+  mov: 'video/quicktime',
+  m4v: 'video/x-m4v',
+  webm: 'video/webm',
+  mpeg: 'video/mpeg',
+  mpg: 'video/mpeg',
+  avi: 'video/x-msvideo',
+  pdf: 'application/pdf',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/x-m4a',
+  wav: 'audio/wav',
+  aac: 'audio/aac',
+  ogg: 'audio/ogg',
+  srt: 'application/x-subrip',
+  vtt: 'text/vtt',
+}
+
+function socialContentTypeFor(filename: string): string | undefined {
+  const match = /\.([A-Za-z0-9]+)$/.exec(filename)
+  return match ? SOCIAL_MEDIA_CONTENT_TYPES[match[1]!.toLowerCase()] : undefined
+}
+
+const MAX_SOCIAL_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024
+
+/**
+ * Turn post media into URLs Zernio can publish.
+ *
+ * A public https URL is used as-is. A workspace path is minted an upload slot,
+ * the bytes are PUT to it from here — so a 200 MB MP4 never travels through the
+ * API — and the slot's `publicUrl` is what the post names. Paths outside the
+ * workspace are refused, the same guard the other file tools apply.
+ */
+async function resolveSocialMedia(
+  ctx: ToolContext,
+  entries: string[],
+): Promise<{ ok: true; urls: string[] } | { ok: false; error: string }> {
+  const urls: string[] = []
+  for (const entry of entries) {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(entry)) {
+      if (!entry.startsWith('https://')) {
+        return { ok: false, error: `Media URLs must be https, so the platform can fetch them: ${entry}` }
+      }
+      urls.push(entry)
+      continue
+    }
+
+    const path = entry.replace(/\\/g, '/').replace(/^\.\//, '')
+    let resolved: string
+    try {
+      resolved = assertWithinWorkspaceSecure(ctx.workspaceDir, path)
+    } catch {
+      return { ok: false, error: `Media path is outside the workspace: ${entry}` }
+    }
+
+    let bytes: Uint8Array
+    try {
+      const stat = statSync(resolved)
+      if (!stat.isFile()) return { ok: false, error: `Not a file: ${entry}` }
+      if (stat.size > MAX_SOCIAL_UPLOAD_BYTES) {
+        return { ok: false, error: `${entry} is larger than the 5 GB Zernio accepts.` }
+      }
+      bytes = new Uint8Array(readFileSync(resolved))
+    } catch {
+      return { ok: false, error: `Media file not found: ${entry}` }
+    }
+
+    const filename = path.split('/').pop() ?? path
+    const contentType = socialContentTypeFor(filename)
+    if (!contentType) {
+      return {
+        ok: false,
+        error: `Cannot tell the media type of ${filename}. Supported: png, jpg, gif, webp, mp4, mov, m4v, webm, mpeg, avi, pdf, mp3, m4a, wav.`,
+      }
+    }
+
+    const slot = await socialInternalCall(ctx, 'POST', '/social/media/presign', {
+      filename,
+      contentType,
+      size: bytes.byteLength,
+    })
+    if (!slot.ok) return { ok: false, error: slot.error }
+    const uploadUrl = typeof slot.data?.uploadUrl === 'string' ? slot.data.uploadUrl : ''
+    const publicUrl = typeof slot.data?.publicUrl === 'string' ? slot.data.publicUrl : ''
+    if (!uploadUrl || !publicUrl) {
+      return { ok: false, error: 'The media upload slot came back incomplete.' }
+    }
+
+    try {
+      // A presigned storage URL carries its own credential; the runtime's own
+      // token must never ride along with it.
+      const put = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        body: bytes as unknown as BodyInit,
+        signal: AbortSignal.timeout(120_000),
+      })
+      if (!put.ok) {
+        return { ok: false, error: `Uploading ${filename} failed (HTTP ${put.status}).` }
+      }
+    } catch (err: any) {
+      return { ok: false, error: `Uploading ${filename} failed: ${err?.message ?? err}` }
+    }
+    urls.push(publicUrl)
+  }
+  return { ok: true, urls }
+}
+
+/** A post, in the shape an agent (or a person reading chat) can act on. */
+function summarizeSocialPost(post: any) {
+  if (!post || typeof post !== 'object') return null
+  return {
+    post_id: post.id,
+    status: post.status,
+    content: post.content,
+    scheduled_for: post.scheduledFor ?? null,
+    published_at: post.publishedAt ?? null,
+    targets: (Array.isArray(post.targets) ? post.targets : []).map((target: any) => ({
+      account_id: target.accountId,
+      platform: target.platform,
+      username: target.account?.username ?? null,
+      status: target.status,
+      url: target.platformPostUrl ?? null,
+      error: target.error ?? null,
+    })),
+  }
+}
+
+/**
  * Public Instagram/TikTok profile and recent-post lookup, plus the connected
  * accounts' own inbox: threads and comments, and answering them.
  *
@@ -9223,12 +9425,19 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
     name: 'social_media',
     description:
       `Look up a public social profile or its recent posts (views, likes, comments, shares), ` +
-      `or work the connected accounts' inbox. ` +
+      `or work a workspace's connected accounts: connect one, publish and schedule posts, ` +
+      `read the calendar and analytics, and run the inbox. ` +
       `Enabled lookup platforms: ${platformList}. ` +
       `Actions: "profile" and "recent_posts" take a handle; ` +
+      `"connect" takes a platform and returns a sign-in LINK to give the person — never ask for or accept a username, password or 2FA code; ` +
+      `"accounts" lists the connected accounts and their ids; ` +
+      `"post" publishes or schedules one post to one or more accounts (content, account_ids, media, scheduled_for/publish_now/draft); ` +
+      `"posts" lists posts, "calendar" the schedule and "analytics" the numbers; ` +
       `"inbox" lists DM threads (kind "dms") or comments (kind "comments"); ` +
       `"reply" takes conversation_id + text; "comment_reply" takes comment_id + text; ` +
       `"automate" manages comment→DM automations (automation_action create/list/pause/resume/delete). ` +
+      `Media for a post is a public https URL or a workspace file path, which is uploaded for you. ` +
+      `Instagram and TikTok refuse a post with no image or video; TikTok defaults to an inbox draft unless direct-post settings are given. ` +
       `Lookups spend paid API units — prefer one call with a sufficient limit over several small ones. ` +
       `Inbox replies are public/sent as the connected account: quote the user's own words when unsure.`,
     label: 'Social Media',
@@ -9241,8 +9450,17 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           Type.Literal('reply'),
           Type.Literal('comment_reply'),
           Type.Literal('automate'),
+          Type.Literal('connect'),
+          Type.Literal('accounts'),
+          Type.Literal('post'),
+          Type.Literal('posts'),
+          Type.Literal('calendar'),
+          Type.Literal('analytics'),
         ],
-        { description: 'profile | recent_posts | inbox | reply | comment_reply | automate' },
+        {
+          description:
+            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | post | posts | calendar | analytics',
+        },
       ),
       platform: Type.Optional(socialPlatformSchema(platforms)),
       handle: Type.Optional(Type.String({ description: 'Account handle, with or without a leading @. Required for profile/recent_posts.' })),
@@ -9281,6 +9499,66 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       dm_message: Type.Optional(Type.String({ description: 'For automate create: the DM to send the commenter.' })),
       comment_reply: Type.Optional(Type.String({ description: 'For automate create: a public reply under the comment (required on reply-only platforms).' })),
       messages: Type.Optional(Type.String({ description: 'For a sequence: comma-separated DM messages sent in order, 1-3.' })),
+      content: Type.Optional(
+        Type.String({ description: 'For action "post": the caption or text of the post.' }),
+      ),
+      account_ids: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            'For action "post": the connected account ids to publish to, from action "accounts". One post fans out to all of them.',
+        }),
+      ),
+      media: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            'For action "post": images or videos. Each entry is either a public https URL or a workspace-relative file path (e.g. "renders/hero.png"), which is uploaded through the media presign flow first. Instagram and TikTok require at least one.',
+        }),
+      ),
+      variants: Type.Optional(
+        Type.String({
+          description:
+            'For action "post": JSON object keyed by account id with per-target overrides, e.g. {"<account_id>": {"content": "different caption", "media": ["renders/alt.mp4"], "platform_specific_data": {"title": "..."}}}.',
+        }),
+      ),
+      scheduled_for: Type.Optional(
+        Type.String({
+          description:
+            'For action "post": ISO timestamp to schedule the post for (omit, with no publish_now and no draft, to publish now).',
+        }),
+      ),
+      publish_now: Type.Optional(
+        Type.Boolean({ description: 'For action "post": publish immediately instead of scheduling.' }),
+      ),
+      draft: Type.Optional(
+        Type.Boolean({ description: 'For action "post": save as a draft and publish nothing.' }),
+      ),
+      tiktok: Type.Optional(
+        Type.String({
+          description:
+            'For action "post": JSON TikTok settings, e.g. {"privacyLevel":"PUBLIC_TO_EVERYONE","contentPreviewConfirmed":true,"expressConsentGiven":true} for a direct post. Omit it and the video goes to the creator\'s TikTok inbox as a draft (the safe default).',
+        }),
+      ),
+      expected_username: Type.Optional(
+        Type.String({
+          description:
+            'For action "connect": the handle the person says they are connecting. A sign-in that lands on a different account is refused instead of connected.',
+        }),
+      ),
+      force_reauth: Type.Optional(
+        Type.Boolean({
+          description:
+            'For action "connect": Instagram only. Show Instagram\'s own login page instead of reusing whichever account is already signed in on the device.',
+        }),
+      ),
+      status: Type.Optional(
+        Type.String({ description: 'For action "posts": only posts in this status (draft, scheduled, published, partial, failed).' }),
+      ),
+      from: Type.Optional(
+        Type.String({ description: 'For "posts" / "calendar" / "analytics": start of the window, ISO date. Defaults to 7 days ago (calendar) or 30 days (analytics).' }),
+      ),
+      to: Type.Optional(
+        Type.String({ description: 'For "posts" / "calendar" / "analytics": end of the window, ISO date.' }),
+      ),
     }),
     execute: async (_toolCallId, rawParams) => {
       // The platform enum is built from the enabled set, so TypeBox cannot
@@ -9304,6 +9582,19 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         dm_message?: unknown
         comment_reply?: unknown
         messages?: unknown
+        content?: unknown
+        account_ids?: unknown
+        media?: unknown
+        variants?: unknown
+        scheduled_for?: unknown
+        publish_now?: unknown
+        draft?: unknown
+        tiktok?: unknown
+        expected_username?: unknown
+        force_reauth?: unknown
+        status?: unknown
+        from?: unknown
+        to?: unknown
       }
       const action = String(params.action ?? '')
       const allowed = enabledSocialPlatforms(ctx.config)
@@ -9315,11 +9606,219 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       // managing the connected accounts does not. Turning one on must not turn
       // the other on, so neither may be read as the other's gate. The lookup
       // path keeps its own platform check further down.
-      const managementActions = new Set(['inbox', 'reply', 'comment_reply', 'automate'])
+      const managementActions = new Set([
+        'inbox',
+        'reply',
+        'comment_reply',
+        'automate',
+        'connect',
+        'accounts',
+        'post',
+        'posts',
+        'calendar',
+        'analytics',
+      ])
       if (managementActions.has(action) && ctx.config.socialManagementEnabled !== true) {
         return textResult({
-          error: 'Social management is off for this project: the inbox, replies and automations are disabled. Turn on the Social management capability to use them.',
+          error:
+            'Social management is off for this project: connecting accounts, posting and the inbox are disabled. Turn on the Social management capability to use them.',
         })
+      }
+
+      if (action === 'connect') {
+        // A connect is a link plus a person's own sign-in. Credentials typed into
+        // this tool are a bug in the conversation, so they are refused rather
+        // than passed anywhere — nothing here ever needs them.
+        const credentials = credentialShapedParams(rawParams)
+        if (credentials) {
+          return textResult({
+            refused: true,
+            error: `Never accept a ${credentials} — not to connect an account, not to sign in. Give the person the sign-in link instead and ask them to change that password now.`,
+          })
+        }
+        const platform = String(params.platform ?? '').trim().toLowerCase()
+        if (!SOCIAL_CONNECT_PLATFORMS.includes(platform)) {
+          return textResult({
+            error: `platform must be one of: ${SOCIAL_CONNECT_PLATFORMS.join(', ')}.`,
+          })
+        }
+        const expected = String(params.expected_username ?? '').trim().replace(/^@+/, '')
+        const result = await socialInternalCall(ctx, 'POST', '/social/connect', {
+          platform,
+          ...(expected ? { expectedUsername: expected } : {}),
+          ...(params.force_reauth === true ? { forceReauth: true } : {}),
+        })
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        const url = typeof result.data?.url === 'string' ? result.data.url : ''
+        if (!url) return textResult({ error: 'No sign-in link was returned.' })
+        return textResult({
+          platform,
+          url,
+          instructions:
+            `Give the person this link and ask them to open it in a browser and sign in on ${platformLabel(platform)}'s own page. ` +
+            `When they finish they land on a page saying the account is connected; run action "accounts" to see it. ` +
+            (platform === 'instagram'
+              ? 'Instagram needs a professional (Business or Creator) account to publish — Instagram converts a personal one during sign-in.'
+              : ''),
+          never:
+            'Never ask for, accept or store a username, password or 2FA code: Shogo never sees them, and this flow never needs them.',
+        })
+      }
+
+      if (action === 'accounts') {
+        // Sync first: a connect that just finished in a browser wrote nothing
+        // locally, and the person expects the account to be there now.
+        const result = await socialInternalCall(ctx, 'POST', '/social/accounts/sync')
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        const accounts = Array.isArray(result.data?.accounts) ? result.data.accounts : []
+        return textResult({
+          count: accounts.length,
+          accounts: accounts.map((account: any) => ({
+            account_id: account.id,
+            platform: account.platform,
+            username: account.username,
+            active: account.isActive !== false,
+            needs_reconnect: account.needsReconnect === true,
+          })),
+        })
+      }
+
+      if (action === 'post') {
+        const content = String(params.content ?? '').trim()
+        const isDraft = params.draft === true
+        const targetIds = Array.isArray(params.account_ids)
+          ? params.account_ids.map((id) => String(id).trim()).filter(Boolean)
+          : []
+        if (!isDraft && targetIds.length === 0) {
+          return textResult({
+            error: 'account_ids is required: run action "accounts" first and pass the account_id values to publish to.',
+          })
+        }
+        const mediaEntries = Array.isArray(params.media)
+          ? params.media.map((entry) => String(entry).trim()).filter(Boolean)
+          : []
+
+        const accountsResult = await socialInternalCall(ctx, 'GET', '/social/accounts')
+        if (!accountsResult.ok) {
+          return textResult({ error: accountsResult.error, suggestion: accountsResult.suggestion })
+        }
+        const known = new Map<string, any>(
+          (Array.isArray(accountsResult.data?.accounts) ? accountsResult.data.accounts : []).map(
+            (account: any) => [String(account.id), account],
+          ),
+        )
+        const unknown = targetIds.filter((id) => !known.has(id))
+        if (unknown.length) {
+          return textResult({
+            error: `Unknown account id(s): ${unknown.join(', ')}.`,
+            suggestion: 'Run action "accounts" to list the connected accounts and their ids.',
+          })
+        }
+        // Instagram and TikTok refuse a post without media, so the refusal
+        // happens here — before an upload slot is minted or a post is created.
+        const needingMedia = targetIds
+          .map((id) => known.get(id))
+          .filter((account: any) => account?.platform === 'instagram' || account?.platform === 'tiktok')
+        if (needingMedia.length && mediaEntries.length === 0) {
+          return textResult({
+            error: `${needingMedia.map((account: any) => `@${account.username} (${account.platform})`).join(', ')} need at least one image or video: pass it in "media".`,
+          })
+        }
+
+        const media = mediaEntries.length
+          ? await resolveSocialMedia(ctx, mediaEntries)
+          : ({ ok: true, urls: [] } as const)
+        if (!media.ok) return textResult({ error: media.error })
+
+        const variantInput = parseJsonObject(params.variants)
+        const variants: Record<string, unknown> = {}
+        for (const [accountId, raw] of Object.entries(variantInput ?? {})) {
+          if (!raw || typeof raw !== 'object') continue
+          const entry = raw as Record<string, unknown>
+          const entryMedia = Array.isArray(entry.media)
+            ? entry.media.map((item) => String(item).trim()).filter(Boolean)
+            : []
+          const resolvedEntry = entryMedia.length
+            ? await resolveSocialMedia(ctx, entryMedia)
+            : ({ ok: true, urls: [] } as const)
+          if (!resolvedEntry.ok) return textResult({ error: resolvedEntry.error })
+          variants[accountId] = {
+            ...(typeof entry.content === 'string' ? { content: entry.content } : {}),
+            ...(resolvedEntry.urls.length ? { mediaUrls: resolvedEntry.urls } : {}),
+            ...(entry.platform_specific_data && typeof entry.platform_specific_data === 'object'
+              ? { platformSpecificData: entry.platform_specific_data }
+              : {}),
+          }
+        }
+
+        const scheduledFor = String(params.scheduled_for ?? '').trim()
+        const tiktok = parseJsonObject(params.tiktok)
+        const created = await socialInternalCall(ctx, 'POST', '/social/posts', {
+          content,
+          accountIds: targetIds,
+          ...(media.urls.length ? { mediaUrls: media.urls } : {}),
+          ...(Object.keys(variants).length ? { variants } : {}),
+          ...(scheduledFor ? { scheduledFor } : {}),
+          ...(params.publish_now === true ? { publishNow: true } : {}),
+          ...(isDraft ? { draft: true } : {}),
+          ...(tiktok ? { tiktok } : {}),
+        })
+        if (!created.ok) return textResult({ error: created.error, suggestion: created.suggestion })
+        return textResult({
+          post: summarizeSocialPost(created.data?.post),
+          media_uploaded: media.urls.length,
+          note: isDraft
+            ? 'Saved as a draft: nothing is published until it is scheduled or sent.'
+            : scheduledFor
+              ? `Scheduled for ${scheduledFor}.`
+              : 'Publishing now: check each target below for its own result.',
+        })
+      }
+
+      if (action === 'posts') {
+        const status = String(params.status ?? '').trim()
+        const query = new URLSearchParams({ limit: String(limit) })
+        if (status) query.set('status', status)
+        const result = await socialInternalCall(ctx, 'GET', `/social/posts?${query.toString()}`)
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        const posts = Array.isArray(result.data?.posts) ? result.data.posts : []
+        return textResult({ count: posts.length, posts: posts.map(summarizeSocialPost) })
+      }
+
+      if (action === 'calendar') {
+        const query = new URLSearchParams()
+        for (const key of ['from', 'to'] as const) {
+          const value = String(params[key] ?? '').trim()
+          if (value) query.set(key, value)
+        }
+        const result = await socialInternalCall(
+          ctx,
+          'GET',
+          `/social/calendar${query.toString() ? `?${query.toString()}` : ''}`,
+        )
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        const posts = Array.isArray(result.data?.posts) ? result.data.posts : []
+        return textResult({
+          from: result.data?.from ?? null,
+          to: result.data?.to ?? null,
+          count: posts.length,
+          posts: posts.map(summarizeSocialPost),
+        })
+      }
+
+      if (action === 'analytics') {
+        const query = new URLSearchParams()
+        for (const key of ['from', 'to'] as const) {
+          const value = String(params[key] ?? '').trim()
+          if (value) query.set(key, value)
+        }
+        const result = await socialInternalCall(
+          ctx,
+          'GET',
+          `/social/analytics${query.toString() ? `?${query.toString()}` : ''}`,
+        )
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        return textResult(result.data)
       }
 
       if (action === 'automate') {
@@ -9472,7 +9971,10 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         })
       }
       if (action !== 'profile' && action !== 'recent_posts') {
-        return textResult({ error: 'action must be profile, recent_posts, inbox, reply, comment_reply or automate.' })
+        return textResult({
+          error:
+            'action must be profile, recent_posts, connect, accounts, post, posts, calendar, analytics, inbox, reply, comment_reply or automate.',
+        })
       }
       const handle = String(params.handle ?? '').trim().replace(/^@+/, '')
       if (!handle) return textResult({ error: 'handle is required.' })

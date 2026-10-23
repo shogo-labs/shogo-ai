@@ -177,6 +177,7 @@ function runOneSync(
     env: childEnv,
     cwd,
   })
+  removeTmpHome(tmpHome)
   if (coverageOpts && shardDir) {
     const defaultLcov = join(cwd, 'coverage', 'lcov.info')
     if (existsSync(defaultLcov)) {
@@ -213,6 +214,15 @@ function runOneSync(
     durationMs,
     exitCode: proc.status ?? 1,
   }
+}
+
+/**
+ * Each test child gets its own throwaway HOME, and bun writes its
+ * transpiler cache (several MB) under it. Nothing else cleans these up, so
+ * on a long-lived dev machine they accumulate by the hundred thousand.
+ */
+function removeTmpHome(dir: string): void {
+  try { rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
 }
 
 interface CoverageOpts {
@@ -280,6 +290,7 @@ function runOneAsync(
     proc.stderr?.on('data', (d) => { stderr += d.toString() })
 
     proc.on('close', (code) => {
+      removeTmpHome(tmpHomeAsync)
       const durationMs = Date.now() - start
       const combined = stderr + '\n' + stdout
       const { passed, failed, skipped } = parseSummary(combined)
@@ -292,6 +303,7 @@ function runOneAsync(
     })
 
     proc.on('error', () => {
+      removeTmpHome(tmpHomeAsync)
       resolveFn({
         file,
         passed: 0,
