@@ -191,6 +191,13 @@ export async function runNotesJob(options: {
   }
 
   const tick = async () => {
+    // The room metadata is only a hint; the huddle row is the source of truth,
+    // so a toggle whose metadata write failed still stops the meter.
+    if (notesOn && !(await deps.notesEnabled(huddleId))) {
+      notesOn = false
+      await stopStreams()
+      return
+    }
     const participants = notesParticipantsOf(room as any)
     const { start, stop } = coverage.sync(participants, now())
     for (const identity of stop) {

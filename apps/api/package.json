@@ -14,7 +14,8 @@
     "test:coverage": "bun --no-env-file ../../scripts/run-tests-isolated.ts . --coverage",
     "stripe:sync-copy": "bun --env-file=../../.env.local scripts/update-stripe-product-copy.ts",
     "stripe:migrate-tiers": "bun --env-file=../../.env.local scripts/migrate-tier-subscriptions.ts",
-    "worker:huddle-notes": "bun run src/workers/huddle-notes-agent.ts"
+    "worker:huddle-notes": "bun run src/workers/huddle-notes-agent.ts",
+    "smoke:huddle-notes": "bun run scripts/smoke-huddle-notes.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.37",
