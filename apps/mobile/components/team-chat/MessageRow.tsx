@@ -53,6 +53,7 @@ import { toggleSaved, useIsSaved } from '../../hooks/useChatItems'
 import { customEmojiFor, jumboEmojiCodes, useCustomEmoji } from '../../hooks/useCustomEmoji'
 import { useEditRequest } from '../../hooks/useChatShortcuts'
 import { useMobileWorkspaceChrome } from '../layout/MobileWorkspaceChromeContext'
+import { HuddleWakeNote, huddleWakeBlockOf } from './HuddleWakeNote'
 
 export const QUICK_REACTIONS = ['👍', '✅', '👀', '🎉', '❤️', '😂']
 
@@ -653,6 +654,12 @@ function MessageRowImpl(props: MessageRowProps) {
     }
     await props.onEdit(message, text)
     setEditing(false)
+  }
+
+  // "Hey Shogo" in a huddle: the request, with the transcript the agent was given behind a toggle.
+  const wakeBlock = huddleWakeBlockOf(message.blocks)
+  if (message.authorType === 'system' && wakeBlock) {
+    return <HuddleWakeNote block={wakeBlock} createdAt={formatTime(message.createdAt)} />
   }
 
   // A huddle's notes: the summary the meeting pipeline wrote, with the transcript behind it.

@@ -46,6 +46,7 @@ export function ControlButton({
   label,
   onPress,
   active,
+  disabled,
   tone = 'muted',
   size = 40,
   children,
@@ -53,6 +54,7 @@ export function ControlButton({
   label: string
   onPress: () => void
   active?: boolean
+  disabled?: boolean
   tone?: 'muted' | 'danger' | 'accent'
   size?: number
   children: React.ReactNode
@@ -60,13 +62,14 @@ export function ControlButton({
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={label}
-      accessibilityState={active === undefined ? undefined : { selected: active }}
+      accessibilityState={{ ...(active === undefined ? {} : { selected: active }), ...(disabled ? { disabled: true } : {}) }}
       style={{ width: size, height: size, borderRadius: size / 2 }}
       className={cn(
         'items-center justify-center active:opacity-80',
-        tone === 'danger' ? 'bg-destructive' : tone === 'accent' || active ? 'bg-emerald-600' : 'bg-muted hover:bg-muted/80',
+        disabled ? 'opacity-40' : tone === 'danger' ? 'bg-destructive' : tone === 'accent' || active ? 'bg-emerald-600' : 'bg-muted hover:bg-muted/80',
       )}
     >
       <WebTooltip label={label}>{children}</WebTooltip>
@@ -176,7 +179,8 @@ export function HuddleControls({ call, compact, onInvite, onSettings, onCopyLink
             }
             size={size}
             active={!!captions && call.notes.enabled}
-            onPress={call.notes.enabled ? onToggleCaptions : () => {}}
+            disabled={!call.notes.enabled}
+            onPress={onToggleCaptions}
           >
             {captions && call.notes.enabled ? (
               <Captions size={icon} color={white} />

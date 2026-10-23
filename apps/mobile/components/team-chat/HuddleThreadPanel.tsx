@@ -17,6 +17,8 @@ import { teamChatApi, type ChatMessage } from '../../lib/team-chat-api'
 import { mentionNames, renderMentionLabels, type MentionNames } from '../../lib/team-chat-state'
 import { audienceQuestionOf, pollOf, sortQuestions } from '../../lib/team-chat-kinds'
 import { AudienceQuestionCardView, PollCardView } from './PollCard'
+import { formatTime } from '../../lib/team-chat-time'
+import { HuddleWakeNote, huddleWakeBlockOf } from './HuddleWakeNote'
 
 type Tab = 'chat' | 'qa'
 
@@ -157,6 +159,9 @@ export function HuddleThreadPanel({
 function ThreadLine({ message, me, names, canModerate }: { message: ChatMessage; me: string | null; names: MentionNames; canModerate: boolean }) {
   if (pollOf(message)) return <PollCardView message={message} me={me} canManage={canModerate} />
   if (audienceQuestionOf(message)) return <AudienceQuestionCardView message={message} me={me} canManage={canModerate} />
+  // The wake note's text is the whole transcript — show the card, not the text.
+  const wake = huddleWakeBlockOf(message.blocks)
+  if (wake) return <HuddleWakeNote block={wake} createdAt={formatTime(message.createdAt)} />
   const text = renderMentionLabels(message.text, names)
   if (message.authorType === 'system') {
     return <Text className="self-center px-2 text-center text-[11px] text-muted-foreground" testID="huddle-thread-line">{text}</Text>
