@@ -4,7 +4,7 @@
  * Analytics: workspace usage, per-channel activity and the agent cost
  * optimizer, in one place. Reached from the More tab and the desktop
  * sidebar's More panel.
- * `?view=usage|channels|costs` selects the segment on open.
+ * `?view=usage|channels|heartbeats|costs` selects the segment on open.
  */
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -19,13 +19,15 @@ import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { usePermissions } from "../../hooks/usePermissions";
 import { WorkspaceUsagePanel } from "../../components/analytics/WorkspaceUsagePanel";
 import { WorkspaceChannelsPanel } from "../../components/analytics/WorkspaceChannelsPanel";
+import { WorkspaceHeartbeatsPanel } from "../../components/analytics/WorkspaceHeartbeatsPanel";
 import { WorkspaceCostPanel } from "../../components/analytics/WorkspaceCostPanel";
 
-type AnalyticsView = "usage" | "channels" | "costs";
+type AnalyticsView = "usage" | "channels" | "heartbeats" | "costs";
 
 const VIEWS: Array<{ id: AnalyticsView; label: string }> = [
   { id: "usage", label: "Usage" },
   { id: "channels", label: "Channels" },
+  { id: "heartbeats", label: "Heartbeats" },
   { id: "costs", label: "Cost Optimizer" },
 ];
 
@@ -81,6 +83,8 @@ export default function AnalyticsScreen() {
           <WorkspaceUsagePanel />
         ) : activeView === "channels" ? (
           <WorkspaceChannelsPanel />
+        ) : activeView === "heartbeats" ? (
+          <WorkspaceHeartbeatsPanel />
         ) : (
           <WorkspaceCostPanel />
         )}

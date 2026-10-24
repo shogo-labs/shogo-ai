@@ -10,6 +10,10 @@
  */
 
 import { createHash } from 'crypto'
+import {
+  heartbeatSessionProjectId,
+  isHeartbeatChatSessionId,
+} from '@shogo/shared-runtime/heartbeat-session'
 import { prisma, Prisma } from '../lib/prisma'
 import { resolveModelLabels } from './model-registry.service'
 import { countLineChanges } from '../lib/tool-line-stats'
@@ -4690,6 +4694,443 @@ export async function getCreatorProfileDetail(
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
     })),
     affiliate: affiliateSummary,
+  }
+}
+
+// ============================================================================
+// Workspace Heartbeats (SHO-182)
+// ============================================================================
+
+export type HeartbeatPeriod = '24h' | '7d' | '30d'
+
+export const HEARTBEAT_PERIODS: readonly HeartbeatPeriod[] = ['24h', '7d', '30d']
+
+/** The window an admin cares about first: the incident SHO-178 found was 24h. */
+export const DEFAULT_HEARTBEAT_PERIOD: HeartbeatPeriod = '24h'
+
+export function parseHeartbeatPeriod(raw: unknown): HeartbeatPeriod {
+  return typeof raw === 'string' && (HEARTBEAT_PERIODS as readonly string[]).includes(raw)
+    ? (raw as HeartbeatPeriod)
+    : DEFAULT_HEARTBEAT_PERIOD
+}
+
+const HEARTBEAT_PERIOD_HOURS: Record<HeartbeatPeriod, number> = {
+  '24h': 24,
+  '7d': 24 * 7,
+  '30d': 24 * 30,
+}
+
+export interface WorkspaceHeartbeatsAgent {
+  projectId: string
+  projectName: string
+  owner: { userId: string; name: string | null; email: string | null } | null
+  enabled: boolean
+  intervalSeconds: number
+  quietHours: { start: string; end: string; timezone: string | null } | null
+  lastHeartbeatAt: string | null
+  nextHeartbeatAt: string | null
+  /** `AgentConfig.modelName` — what the heartbeat is *configured* to run on. */
+  configuredModel: string
+  /** Display label for `configuredModel` (a catalog id is a UUID post-migration). */
+  configuredModelLabel: string | null
+  /** What the charges actually ran on, so a config/actual mismatch is visible. */
+  modelsUsed: Array<{ model: string; billedUsd: number }>
+  ticks: number
+  billedUsd: number
+  rawUsd: number
+  totalTokens: number
+  avgUsdPerTick: number | null
+  /** Filled by the route: whether the caller may PATCH this project's heartbeat. */
+  canEdit: boolean
+}
+
+export interface WorkspaceHeartbeats {
+  period: HeartbeatPeriod
+  window: { from: string; to: string }
+  totals: {
+    /** Projects with `heartbeatEnabled` in the caller's scope. */
+    agentsEnabled: number
+    /** Of those (and the turned-off ones), how many charged in the window. */
+    agentsWithSpend: number
+    ticks: number
+    billedUsd: number
+    rawUsd: number
+    totalTokens: number
+    /** Every metered charge in the window, so the UI can show "x% of spend". */
+    workspaceBilledUsd: number
+  }
+  daily: Array<{ date: string; heartbeatUsd: number; otherUsd: number }>
+  agents: WorkspaceHeartbeatsAgent[]
+}
+
+/**
+ * One (day, project, heartbeat?) bucket of `usage_events`. Both dialects produce
+ * exactly this, so the shaping below is written once.
+ */
+interface HeartbeatChargeGroup {
+  day: string
+  /** Project the charge belongs to, or '' when nothing names one. */
+  projectId: string
+  heartbeat: boolean
+  model: string
+  charges: number
+  billedUsd: number
+  rawUsd: number
+  totalTokens: number
+}
+
+function heartbeatWindow(period: HeartbeatPeriod, now: Date): { from: Date; to: Date } {
+  return { from: new Date(now.getTime() - HEARTBEAT_PERIOD_HOURS[period] * 3_600_000), to: now }
+}
+
+/** UTC day keys covering `[from, to]`, so the chart never jumps a gap. */
+function heartbeatDayKeys(from: Date, to: Date): string[] {
+  const keys: string[] = []
+  const cursor = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()))
+  const last = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate())
+  while (cursor.getTime() <= last) {
+    keys.push(isoDay(cursor))
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return keys
+}
+
+/**
+ * The charge the row actually cost. `billedUsd` is 0 for included-quota and
+ * local-mode usage, so the provider cost is the fallback — the same rule
+ * `getSpendTimeseries` uses, which is what makes the totals here reconcile with
+ * the Usage tab for the same window.
+ */
+function effectiveCost(billedUsd: number, rawUsd: number, metaRawUsd: number): number {
+  if (billedUsd > 0) return billedUsd
+  if (rawUsd > 0) return rawUsd
+  return metaRawUsd
+}
+
+/**
+ * Heartbeat (and total) charges for a workspace window, one row per
+ * (day, project, heartbeat?, model).
+ *
+ * Same dialect split as `scanUsageGroups` (SHO-140, measured): Postgres rolls the
+ * JSON up in the database so the window's `actionMetadata` never crosses the
+ * wire; SQLite has no index for `json_extract` and ships the rows to Node
+ * instead. Both return identical groups — the parity test runs the same fixture
+ * through both.
+ */
+async function scanHeartbeatCharges(
+  workspaceId: string,
+  from: Date,
+  to: Date,
+): Promise<HeartbeatChargeGroup[]> {
+  if (process.env.SHOGO_LOCAL_MODE === 'true') return scanHeartbeatChargesInNode(workspaceId, from, to)
+  return scanHeartbeatChargesInSql(workspaceId, from, to)
+}
+
+async function scanHeartbeatChargesInNode(
+  workspaceId: string,
+  from: Date,
+  to: Date,
+): Promise<HeartbeatChargeGroup[]> {
+  const events = await prisma.usageEvent.findMany({
+    where: {
+      workspaceId,
+      actionType: { in: [...USAGE_METERED_ACTION_TYPES] },
+      createdAt: { gte: from, lt: to },
+    },
+    select: {
+      projectId: true,
+      billedUsd: true,
+      rawUsd: true,
+      actionMetadata: true,
+      createdAt: true,
+    },
+  })
+
+  const groups = new Map<string, HeartbeatChargeGroup>()
+  for (const event of events) {
+    const meta = parseMeta(event.actionMetadata)
+    const numOrNull = (key: string): number | null => {
+      const value = meta[key]
+      return typeof value === 'number' && Number.isFinite(value) ? value : null
+    }
+    const num = (key: string) => numOrNull(key) ?? 0
+
+    const sessionId = typeof meta.chatSessionId === 'string' ? meta.chatSessionId : null
+    const heartbeat = isHeartbeatChatSessionId(sessionId)
+    // A per-tick session id names the project the tick ran for; before SHO-178
+    // every tick shared `heartbeat`, so the row's own project is all there is.
+    const projectId = (heartbeat ? heartbeatSessionProjectId(sessionId) : null) ?? event.projectId ?? ''
+    const billedUsd = Number(event.billedUsd ?? 0)
+    const metaRaw = numOrNull('rawUsd') ?? numOrNull('dollarCost') ?? 0
+    const rawUsd = event.rawUsd ?? metaRaw
+    const totalTokensField = num('totalTokens')
+    const totalTokens = totalTokensField !== 0
+      ? totalTokensField
+      : num('inputTokens') + num('outputTokens') + num('cachedInputTokens') + num('cacheWriteTokens')
+
+    const day = isoDay(event.createdAt)
+    const model = String(meta.model ?? meta.modelUsed ?? 'unknown')
+    const key = `${day}::${projectId}::${heartbeat ? 1 : 0}::${model}`
+
+    let group = groups.get(key)
+    if (!group) {
+      group = { day, projectId, heartbeat, model, charges: 0, billedUsd: 0, rawUsd: 0, totalTokens: 0 }
+      groups.set(key, group)
+    }
+    group.charges += 1
+    group.billedUsd += effectiveCost(billedUsd, rawUsd, metaRaw)
+    group.rawUsd += rawUsd
+    group.totalTokens += totalTokens
+  }
+
+  return [...groups.values()]
+}
+
+async function scanHeartbeatChargesInSql(
+  workspaceId: string,
+  from: Date,
+  to: Date,
+): Promise<HeartbeatChargeGroup[]> {
+  const params: unknown[] = []
+  const bind = (value: unknown) => {
+    params.push(value)
+    return `$${params.length}`
+  }
+
+  const numOrNull = (key: string) => `(CASE WHEN jsonb_typeof("actionMetadata"->'${key}') = 'number'`
+    + ` THEN ("actionMetadata"->>'${key}')::numeric ELSE NULL END)`
+  const num = (key: string) => `COALESCE(${numOrNull(key)}, 0)`
+
+  const session = `COALESCE("actionMetadata"->>'chatSessionId', '')`
+  // Exact id or the `heartbeat:` prefix — never `heartbeat-notes`.
+  const isHeartbeat = `(${session} = 'heartbeat' OR ${session} LIKE 'heartbeat:%')`
+  // `heartbeat:<projectId>:<tickId>` names its project; the bare id does not.
+  const sessionProject = `NULLIF(split_part(${session}, ':', 2), '')`
+  const project = `COALESCE(CASE WHEN ${isHeartbeat} THEN ${sessionProject} END, "projectId", '')`
+  const modeled = `COALESCE("actionMetadata"->>'model', "actionMetadata"->>'modelUsed', 'unknown')`
+  const input = num('inputTokens')
+  const output = num('outputTokens')
+  const cached = num('cachedInputTokens')
+  const cacheWrite = num('cacheWriteTokens')
+  const totalTokens = num('totalTokens')
+  const metaRaw = `COALESCE(${numOrNull('rawUsd')}, ${numOrNull('dollarCost')}, 0)`
+
+  const actionTypes = USAGE_METERED_ACTION_TYPES.map((t) => bind(t)).join(', ')
+
+  const sql = `SELECT
+      DATE_TRUNC('day', "createdAt")   AS "day",
+      ${project}                       AS "projectId",
+      (${isHeartbeat})                 AS "heartbeat",
+      ${modeled}                       AS "model",
+      COUNT(*)                         AS "charges",
+      COALESCE(SUM(
+        CASE
+          WHEN "billedUsd" > 0 THEN "billedUsd"
+          WHEN COALESCE("rawUsd", 0) > 0 THEN "rawUsd"
+          ELSE ${metaRaw}
+        END
+      ), 0)                            AS "billedUsd",
+      COALESCE(SUM(COALESCE("rawUsd", ${metaRaw})), 0) AS "rawUsd",
+      COALESCE(SUM(
+        CASE WHEN ${totalTokens} <> 0 THEN ${totalTokens}
+             ELSE ${input} + ${output} + ${cached} + ${cacheWrite} END
+      ), 0)                            AS "totalTokens"
+    FROM "usage_events"
+    WHERE "workspaceId" = ${bind(workspaceId)}
+      AND "createdAt" >= ${bind(from)}
+      AND "createdAt" < ${bind(to)}
+      AND "actionType" IN (${actionTypes})
+    GROUP BY 1, 2, 3, 4`
+
+  const rows = await prisma.$queryRawUnsafe<any[]>(sql, ...params)
+
+  return rows.map((r) => ({
+    day: r.day instanceof Date ? isoDay(r.day) : isoDay(new Date(String(r.day))),
+    projectId: String(r.projectId ?? ''),
+    heartbeat: r.heartbeat === true || r.heartbeat === 1 || r.heartbeat === 't',
+    model: String(r.model ?? 'unknown'),
+    charges: Number(r.charges),
+    billedUsd: Number(r.billedUsd),
+    rawUsd: Number(r.rawUsd),
+    totalTokens: Number(r.totalTokens),
+  }))
+}
+
+/**
+ * Every agent in the workspace with a heartbeat on — plus any that spent in the
+ * window and has since been switched off — with its schedule and what it cost.
+ *
+ * Read-side only: the heartbeat session id that tags these charges has been
+ * written since the billing session existed, so no backfill is needed. A
+ * heartbeat tick opens and closes one billing session, so `ticks` is the count
+ * of `usage_events` rows (one per turn) and `avgUsdPerTick` is meaningful.
+ *
+ * `projectWhere` narrows the report to the projects the caller can see (members
+ * get their own; the route passes nothing for admins).
+ */
+export async function getWorkspaceHeartbeats(
+  workspaceId: string,
+  options: {
+    period?: HeartbeatPeriod
+    projectWhere?: Record<string, unknown>
+    now?: Date
+  } = {},
+): Promise<WorkspaceHeartbeats> {
+  const period = options.period ?? DEFAULT_HEARTBEAT_PERIOD
+  const { from, to } = heartbeatWindow(period, options.now ?? new Date())
+  const scoped = options.projectWhere !== undefined
+
+  const [projects, groups] = await Promise.all([
+    prisma.project.findMany({
+      where: {
+        workspaceId,
+        ...(scoped ? { AND: [options.projectWhere as Record<string, unknown>] } : {}),
+      },
+      select: { id: true, name: true, createdBy: true },
+    }),
+    scanHeartbeatCharges(workspaceId, from, to),
+  ])
+
+  const projectIds = projects.map((p) => p.id)
+  const [configs, users] = await Promise.all([
+    projectIds.length
+      ? prisma.agentConfig.findMany({
+        where: { projectId: { in: projectIds } },
+        select: {
+          projectId: true,
+          heartbeatEnabled: true,
+          heartbeatInterval: true,
+          nextHeartbeatAt: true,
+          lastHeartbeatAt: true,
+          quietHoursStart: true,
+          quietHoursEnd: true,
+          quietHoursTimezone: true,
+          modelName: true,
+        },
+      })
+      : Promise.resolve([]),
+    (async () => {
+      const createdBy = [...new Set(projects.map((p) => p.createdBy).filter((id): id is string => !!id))]
+      if (!createdBy.length) return new Map<string, { name: string | null; email: string | null }>()
+      const rows = await prisma.user.findMany({
+        where: { id: { in: createdBy } },
+        select: { id: true, name: true, email: true },
+      })
+      return new Map(rows.map((u) => [u.id, { name: u.name ?? null, email: u.email ?? null }]))
+    })(),
+  ])
+
+  const configByProject = new Map(configs.map((c) => [c.projectId, c]))
+  const allowed = new Set(projectIds)
+
+  // A member's report must not be diluted by spend on projects they cannot see,
+  // so their denominator is their own scope. An admin's is the whole workspace.
+  const inScope = groups.filter((g) => !scoped || allowed.has(g.projectId))
+
+  const perProject = new Map<string, {
+    ticks: number
+    billedUsd: number
+    rawUsd: number
+    totalTokens: number
+    models: Map<string, number>
+  }>()
+  const daily = new Map<string, { heartbeatUsd: number; otherUsd: number }>()
+  const totals = {
+    agentsEnabled: 0,
+    agentsWithSpend: 0,
+    ticks: 0,
+    billedUsd: 0,
+    rawUsd: 0,
+    totalTokens: 0,
+    workspaceBilledUsd: 0,
+  }
+
+  for (const group of inScope) {
+    const bucket = daily.get(group.day) ?? { heartbeatUsd: 0, otherUsd: 0 }
+    if (group.heartbeat) {
+      bucket.heartbeatUsd += group.billedUsd
+      totals.ticks += group.charges
+      totals.billedUsd += group.billedUsd
+      totals.rawUsd += group.rawUsd
+      totals.totalTokens += group.totalTokens
+
+      const usage = perProject.get(group.projectId) ?? (() => {
+        const fresh = { ticks: 0, billedUsd: 0, rawUsd: 0, totalTokens: 0, models: new Map<string, number>() }
+        perProject.set(group.projectId, fresh)
+        return fresh
+      })()
+      usage.ticks += group.charges
+      usage.billedUsd += group.billedUsd
+      usage.rawUsd += group.rawUsd
+      usage.totalTokens += group.totalTokens
+      usage.models.set(group.model, (usage.models.get(group.model) ?? 0) + group.billedUsd)
+    } else {
+      bucket.otherUsd += group.billedUsd
+    }
+    daily.set(group.day, bucket)
+    totals.workspaceBilledUsd += group.billedUsd
+  }
+
+  const modelLabels = await resolveModelLabels(
+    configs.map((c) => c.modelName ?? '').filter((id) => !!id),
+  )
+
+  const agents: WorkspaceHeartbeatsAgent[] = []
+  for (const project of projects) {
+    const config = configByProject.get(project.id)
+    const usage = perProject.get(project.id)
+    const enabled = config?.heartbeatEnabled === true
+    // Off-but-spent still shows: the money was spent in this window either way.
+    if (!enabled && !usage) continue
+
+    if (enabled) totals.agentsEnabled += 1
+    if (usage && usage.ticks > 0) totals.agentsWithSpend += 1
+
+    const configuredModel = config?.modelName ?? ''
+    const quietStart = config?.quietHoursStart ?? null
+    const quietEnd = config?.quietHoursEnd ?? null
+    const ownerId = project.createdBy ?? null
+
+    agents.push({
+      projectId: project.id,
+      projectName: project.name,
+      owner: ownerId ? { userId: ownerId, ...(users.get(ownerId) ?? { name: null, email: null }) } : null,
+      enabled,
+      intervalSeconds: config?.heartbeatInterval ?? 1800,
+      quietHours: quietStart && quietEnd
+        ? { start: quietStart, end: quietEnd, timezone: config?.quietHoursTimezone ?? null }
+        : null,
+      lastHeartbeatAt: config?.lastHeartbeatAt ? config.lastHeartbeatAt.toISOString() : null,
+      nextHeartbeatAt: enabled && config?.nextHeartbeatAt ? config.nextHeartbeatAt.toISOString() : null,
+      configuredModel,
+      configuredModelLabel: configuredModel ? (modelLabels.get(configuredModel) ?? configuredModel) : null,
+      modelsUsed: usage
+        ? [...usage.models.entries()]
+          .map(([model, billedUsd]) => ({ model, billedUsd }))
+          .sort((a, b) => b.billedUsd - a.billedUsd)
+        : [],
+      ticks: usage?.ticks ?? 0,
+      billedUsd: usage?.billedUsd ?? 0,
+      rawUsd: usage?.rawUsd ?? 0,
+      totalTokens: usage?.totalTokens ?? 0,
+      avgUsdPerTick: usage && usage.ticks > 0 ? usage.billedUsd / usage.ticks : null,
+      canEdit: false,
+    })
+  }
+
+  // Highest spend first: the whole point is spotting the burn.
+  agents.sort((a, b) => b.billedUsd - a.billedUsd || a.projectName.localeCompare(b.projectName))
+
+  return {
+    period,
+    window: { from: from.toISOString(), to: to.toISOString() },
+    totals,
+    daily: heartbeatDayKeys(from, to).map((date) => ({
+      date,
+      heartbeatUsd: daily.get(date)?.heartbeatUsd ?? 0,
+      otherUsd: daily.get(date)?.otherUsd ?? 0,
+    })),
+    agents,
   }
 }
 

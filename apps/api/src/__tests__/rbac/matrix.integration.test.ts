@@ -66,6 +66,17 @@ const rows: Row[] = [
     expect: { owner: 200, admin: 200, billingAdmin: 200, member: 200, viewer: 403, outsider: 404, guestEditor: 404, guestViewer: 403, superAdmin: 200, anon: 401 },
   },
   {
+    // SHO-182: the Analytics → Heartbeats tab hides "Turn off" for a row the
+    // caller may not edit. Hiding it is not the guarantee — this route is the
+    // same PATCH a project's own settings use, so a workspace viewer must be
+    // refused here too.
+    name: 'PATCH heartbeat (project:update)',
+    method: 'PATCH',
+    path: (w) => `/api/projects/${w.projects.open}/heartbeat`,
+    body: { heartbeatEnabled: false },
+    expect: { owner: 200, admin: 200, billingAdmin: 200, member: 200, viewer: 403, outsider: 404, guestEditor: 404, guestViewer: 403, superAdmin: 200, anon: 401 },
+  },
+  {
     name: 'chat send (project:update)',
     method: 'POST',
     path: (w) => `/api/projects/${w.projects.open}/chat`,
