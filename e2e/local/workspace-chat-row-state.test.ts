@@ -430,11 +430,9 @@ test.describe("workspace chat row state (local)", () => {
       .toEqual([newer.name, older.name]);
     await expect(chatRow(page, older.name)).toContainText("3h ago");
 
-    // Send in the older chat. The reply has not landed when the sampler runs, so
-    // nothing but the send itself can have moved the row. Sampled inside the
-    // page rather than asserted after the fact: the session-list refresh the
-    // send kicks off (~2s later) repaints the row from the server, and on this
-    // stack the server never bumps `lastActiveAt` (see the note at the end).
+    // Send in the older chat. Sampled inside the page rather than asserted after
+    // the fact: the lift lands in the frame the send returns, and the session
+    // list refresh ~2s behind it repaints the row from the server.
     await chatRow(page, older.name).click();
     await expect(composer(page)).toBeVisible({ timeout: 60_000 });
     await composer(page).click();
@@ -453,13 +451,25 @@ test.describe("workspace chat row state (local)", () => {
       `the send never re-stamped and lifted the row (${JSON.stringify(samples.slice(0, 3))})`,
     ).toBeGreaterThan(0);
 
-    // AC4's "it survives" half stops here on the desktop stack: local mode's
-    // generated routes register no chat-message hooks
-    // (`apps/api/src/generated/local-routes.ts` registers none, and the bump
-    // lives in `generated/chat-message.hooks.ts` `afterCreate`), so the list
-    // refresh that follows the send repaints the row with its old time. That gap
-    // is server-side and predates this card; it is reported on SHO-190, not
-    // asserted as expected behaviour here.
+    // The list refresh the send kicked off has landed by now, and it repaints
+    // from the server — so the last sample proves the database moved too, not
+    // just the client (a client-only bump snapped back here before section B).
+    const settled = samples[samples.length - 1];
+    expect(
+      settled.justNow && settled.names[0] === older.name,
+      `the row fell back after the list refresh (${JSON.stringify(settled)})`,
+    ).toBe(true);
+
+    // And it survives a reload, which reads the session list from scratch: the
+    // desktop track now bumps `lastActiveAt` at insert (`localChatMessageHooks`),
+    // the same function the cloud hook uses.
+    await page.reload();
+    await expect(chatsPanel(page)).toBeVisible({ timeout: 90_000 });
+    await expandChats(page);
+    await expect(chatRow(page, older.name)).toContainText(/just now/);
+    await expect
+      .poll(async () => (await renderedChatLabels(page)).filter((label) => label.startsWith(prefix)))
+      .toEqual([older.name, newer.name]);
   });
 
   test("pin shows in the pane and the phone drawer, and unpin clears it", async ({ page }) => {
