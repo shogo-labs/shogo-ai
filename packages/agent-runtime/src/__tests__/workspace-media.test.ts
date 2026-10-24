@@ -62,6 +62,33 @@ describe('publishWorkspaceMedia', () => {
     expect(out.markdown).toBe('![](nope.png)')
     expect(out.errors).toEqual(['nope.png: file not found'])
   })
+
+  test('leaves refs inside fenced blocks and inline code as written', async () => {
+    const uploaded: string[] = []
+    const md = [
+      '## Docs',
+      '',
+      '```md',
+      '![Hero](brand/hero.png)',
+      '```',
+      '',
+      'Write `![Hero](brand/hero.png)` to embed the hero.',
+      '',
+      '````',
+      '![Also code](brand/hero.png)',
+      '````',
+      '![Real](brand/hero.png)',
+    ].join('\n')
+    const out = await publishWorkspaceMedia(md, dir, async (file) => {
+      uploaded.push(file.path)
+      return { ok: true, status: 201, data: { id: 'att-1', name: file.name, mimeType: file.mimeType, size: 1, url: '/api/conversation-files/att-1?t=sig' } }
+    })
+
+    expect(uploaded).toEqual(['brand/hero.png'])
+    expect(out.uploaded).toBe(1)
+    expect(out.errors).toEqual([])
+    expect(out.markdown).toBe(md.replace('![Real](brand/hero.png)', '![Real](/api/conversation-files/att-1?t=sig#hero.png)'))
+  })
 })
 
 describe('board tools with media', () => {

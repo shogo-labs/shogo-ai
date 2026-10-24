@@ -311,3 +311,26 @@ describe('getStatus', () => {
     expect(s.memory.fileCount).toBeGreaterThanOrEqual(3)
   })
 })
+
+// SHO-57 — the skills prompt truncation has to be visible in the logs, but the
+// prompt builders run on every turn, so only a distinct (included, omitted)
+// pair may be reported once per process.
+describe('skills prompt truncation reporting', () => {
+  test('logs each distinct (included, omitted) pair once', () => {
+    const gw: any = new AgentGateway(makeWs('truncation'), 'p-truncation')
+    const warnings: string[] = []
+    const original = console.warn
+    console.warn = (...args: any[]) => { warnings.push(args.join(' ')) }
+    try {
+      gw.reportSkillsTruncation({ included: 90, omitted: 27, omittedNames: ['filler-001', 'filler-002'] })
+      gw.reportSkillsTruncation({ included: 90, omitted: 27, omittedNames: ['filler-001', 'filler-002'] })
+      gw.reportSkillsTruncation({ included: 91, omitted: 26, omittedNames: ['filler-001'] })
+    } finally {
+      console.warn = original
+    }
+
+    expect(warnings).toHaveLength(2)
+    expect(warnings[0]).toContain('90 skills listed, 27 omitted')
+    expect(warnings[1]).toContain('91 skills listed, 26 omitted')
+  })
+})

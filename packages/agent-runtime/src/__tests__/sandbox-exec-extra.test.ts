@@ -126,6 +126,35 @@ describe('getSanitizedEnv — never inherits a database URL', () => {
   })
 })
 
+describe('AI proxy credentials in the exec env', () => {
+  afterEach(() => {
+    delete process.env.AI_PROXY_TOKEN
+    delete process.env.AI_PROXY_SECRET
+  })
+
+  // `shogo 3d` (and any script the agent runs) reaches the proxy with the
+  // project-scoped token. It is HMAC(projectId + AI_PROXY_SECRET), so it grants
+  // nothing beyond the spend this agent already has — safe to expose. The
+  // signing secret must never reach a child process.
+  test('exposes AI_PROXY_TOKEN to exec children', () => {
+    process.env.AI_PROXY_TOKEN = 'sha256:abc123'
+    expect(sandbox.getSanitizedEnv().AI_PROXY_TOKEN).toBe('sha256:abc123')
+  })
+
+  test('still redacts AI_PROXY_SECRET', () => {
+    process.env.AI_PROXY_SECRET = 'super-secret-signing-key'
+    expect(sandbox.getSanitizedEnv().AI_PROXY_SECRET).toBeUndefined()
+  })
+
+  test('purgeSecretsFromEnv keeps the token and removes the secret', () => {
+    process.env.AI_PROXY_TOKEN = 'sha256:abc123'
+    process.env.AI_PROXY_SECRET = 'super-secret-signing-key'
+    sandbox.purgeSecretsFromEnv()
+    expect(process.env.AI_PROXY_TOKEN).toBe('sha256:abc123')
+    expect(process.env.AI_PROXY_SECRET).toBeUndefined()
+  })
+})
+
 describe('projectScopedDatabaseUrl — clamps the agent DB to the project', () => {
   const ws = '/work/proj'
 

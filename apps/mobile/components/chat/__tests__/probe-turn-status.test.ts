@@ -17,7 +17,9 @@
 
 import { describe, expect, test } from "bun:test"
 import {
+  isLiveTurnOtherThan,
   normalizeTurnStatus,
+  probeChatTurn,
   probeChatTurnStatus,
   shouldAttachLiveStream,
   type ChatTurnStatus,
@@ -142,6 +144,74 @@ describe("probeChatTurnStatus", () => {
     expect(fetch.calls[0].init.method).toBe("GET")
     expect(fetch.calls[0].init.headers).toEqual({ Cookie: "session=abc" })
     expect(fetch.calls[0].init.credentials).toBe("include")
+  })
+})
+
+describe("probeChatTurn", () => {
+  test("surfaces the turn id beside the status", async () => {
+    const fetch = makeFetch({
+      status: 200,
+      body: { status: "active", turnId: "turn-7", lastSeq: 3 },
+    })
+    expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
+      status: "active",
+      turnId: "turn-7",
+    })
+  })
+
+  test("404 (no buffer for this session) → unknown with no turn id", async () => {
+    const fetch = makeFetch({ status: 404, body: { status: "unknown" } })
+    expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
+      status: "unknown",
+      turnId: null,
+    })
+  })
+
+  test("204 (no body) → unknown with no turn id", async () => {
+    const fetch = makeFetch({ status: 204 })
+    expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
+      status: "unknown",
+      turnId: null,
+    })
+  })
+
+  test("a snapshot without a turn id still reports its status", async () => {
+    const fetch = makeFetch({ status: 200, body: { status: "completed" } })
+    expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
+      status: "completed",
+      turnId: null,
+    })
+  })
+})
+
+describe("isLiveTurnOtherThan", () => {
+  test("the turn Stop cancelled is not a turn to wait for", () => {
+    expect(
+      isLiveTurnOtherThan({ status: "active", turnId: "turn-1" }, "turn-1"),
+    ).toBe(false)
+  })
+
+  test("another live turn still holds a send back", () => {
+    expect(
+      isLiveTurnOtherThan({ status: "active", turnId: "turn-2" }, "turn-1"),
+    ).toBe(true)
+  })
+
+  test("a finished turn never holds a send back", () => {
+    for (const status of ["completed", "failed", "aborted", "unknown"] as const) {
+      expect(isLiveTurnOtherThan({ status, turnId: "turn-2" }, "turn-1")).toBe(
+        false,
+      )
+    }
+  })
+
+  test("falls back to the status when either id is missing", () => {
+    expect(isLiveTurnOtherThan({ status: "active", turnId: null }, "turn-1")).toBe(
+      true,
+    )
+    expect(isLiveTurnOtherThan({ status: "active", turnId: "turn-2" }, null)).toBe(
+      true,
+    )
   })
 })
 

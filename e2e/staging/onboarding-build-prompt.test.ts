@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { expect, test } from "./fixtures"
 import {
+  APP_HOME_PATH,
   buildPromptInput,
   makeTestUser,
   onboardToBuildPrompt,
@@ -89,13 +90,22 @@ test.describe("Onboarding build prompt", () => {
     expect(`${session!.name ?? ""} ${session!.inferredName ?? ""}`).not.toContain("Before building anything")
   })
 
-  test("skipping the prompt opens the team workspace home", async ({ page }) => {
+  test("skipping the prompt opens the workspace agent on an empty chat", async ({ page }) => {
     await signUp(page, makeTestUser("OnboardingSkip"))
     expect(await onboardToBuildPrompt(page), "fresh account skipped onboarding").toBe(true)
 
     await page.getByText("I'll explore first", { exact: true }).click()
 
+    // SHO-4: a team cold start lands on the agent with a fresh session, not the
+    // builder. The old home is one route away at /home.
+    await expect(
+      page.getByRole("textbox", { name: "Chat message input" }).filter({ visible: true }).first(),
+    ).toBeVisible({ timeout: 60_000 })
+    expect(new URL(page.url()).pathname).toBe("/")
+    await expect(page.getByText("What are we building", { exact: false })).toHaveCount(0)
+
+    await page.goto(APP_HOME_PATH)
     await page.waitForSelector("text=What are we building", { timeout: 30_000 })
-    expect(new URL(page.url()).pathname).not.toMatch(/\/agent/)
+    expect(new URL(page.url()).pathname).toBe(APP_HOME_PATH)
   })
 })

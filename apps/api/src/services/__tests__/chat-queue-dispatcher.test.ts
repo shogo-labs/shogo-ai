@@ -49,6 +49,7 @@ const mockPrisma = {
     delete: async () => {
       state.row.status = "deleted"
     },
+    deleteMany: async () => ({ count: 0 }),
     update: async () => state.row,
     findMany: async () => [],
   },
@@ -57,6 +58,7 @@ const mockPrisma = {
       state.persisted.push(create)
       return create
     },
+    findMany: async () => [],
   },
 }
 

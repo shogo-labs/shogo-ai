@@ -84,7 +84,7 @@ export default function QuestionsInbox() {
             <Pressable
               key={t.id}
               accessibilityRole="button"
-              accessibilityState={{ selected: tab === t.id }}
+              aria-selected={tab === t.id}
               onPress={() => setTab(t.id)}
               className={cn('rounded-full border px-3 py-1', tab === t.id ? 'border-primary bg-primary/10' : 'border-border')}
             >
@@ -94,7 +94,7 @@ export default function QuestionsInbox() {
           <View className="mx-1 h-4 w-px bg-border" />
           <Pressable
             accessibilityRole="switch"
-            accessibilityState={{ checked: everyone }}
+            aria-checked={everyone}
             onPress={() => setEveryone((v) => !v)}
             className={cn('rounded-full border px-3 py-1', everyone ? 'border-primary bg-primary/10' : 'border-border')}
           >

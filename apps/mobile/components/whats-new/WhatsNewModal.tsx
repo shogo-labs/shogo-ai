@@ -94,6 +94,7 @@ export function WhatsNewModal({
         >
           <View className="overflow-hidden rounded-t-3xl">
             <LinearGradient
+              testID="whats-new-header"
               colors={["#fb923c", "#f97316", "#ea580c"]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
@@ -237,6 +238,11 @@ const styles = StyleSheet.create({
     minHeight: 178,
     justifyContent: "flex-end",
     paddingHorizontal: 24,
+    // Declared, never derived: `flex-end` packs the block against the bottom, so
+    // without an explicit top inset a longer intro grows the banner upward and
+    // the eyebrow ends up flush with the top edge. 2.3's five-line intro did
+    // exactly that.
+    paddingTop: 28,
     paddingBottom: 22,
     position: "relative",
   },

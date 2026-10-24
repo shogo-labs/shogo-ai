@@ -8,6 +8,7 @@
  */
 
 import { safeFetchText } from '../lib/safe-fetch'
+import { getFrontendUrl } from '../lib/cloud-urls'
 import { registerAfterPostHook } from './conversation-pipeline'
 import { onMessageTextSettled, updateMessageInternal, type PostMessageResult } from './conversation.service'
 
@@ -34,14 +35,37 @@ let fetcher: Fetcher = safeFetchText
 
 const URL_RE = /\bhttps?:\/\/[^\s<>()"'`]+[^\s<>()"'`.,;:!?]/gi
 
+/**
+ * Our own pages answer with the same single-page-app shell, so a link to one
+ * can never produce a card worth showing — and a message that quotes another
+ * message would otherwise render an empty preview of this app beside the quote.
+ */
+function ownHost(): string | null {
+  try {
+    return new URL(getFrontendUrl()).host
+  } catch {
+    return null
+  }
+}
+
+function hostOfUrl(url: string): string | null {
+  try {
+    return new URL(url).host
+  } catch {
+    return null
+  }
+}
+
 /** Links in a message, skipping ones wrapped in `<…>` (the "no preview" convention) and code. */
 export function extractLinks(text: string): string[] {
   const withoutCode = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ')
   const suppressed = new Set([...withoutCode.matchAll(/<(https?:\/\/[^>\s]+)>/gi)].map((m) => m[1]))
+  const ours = ownHost()
   const out: string[] = []
   for (const m of withoutCode.matchAll(URL_RE)) {
     const url = m[0]
     if (suppressed.has(url) || out.includes(url)) continue
+    if (ours && hostOfUrl(url) === ours) continue
     out.push(url)
     if (out.length >= MAX_LINKS) break
   }

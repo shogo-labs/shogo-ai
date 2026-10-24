@@ -15,6 +15,8 @@ export const EVENT_SCOPES: Record<string, string> = {
   'chat:write': 'Post messages and send direct messages as the app',
   'channels:read': 'List team chat channels',
   'channels:manage': 'Add people to team chat channels',
+  'social:read':
+    "See comments, DMs and connected-account status from the workspace's social accounts",
 }
 
 export const memberJoined = defineEvent<MemberJoinedPayload>({
@@ -43,7 +45,163 @@ export const memberJoined = defineEvent<MemberJoinedPayload>({
   },
 })
 
-export const NATIVE_EVENTS: readonly EventDefinition<any>[] = [memberJoined]
+/**
+ * Social events come from Zernio's webhooks, not from us: a comment, a DM or an
+ * account changing health. `externalId` is the profile's routing id
+ * (`ws_<workspaceId>` / `lws_<localWorkspaceId>`), which is how a subscriber
+ * can tell the cloud scope from one of a desktop's local workspaces.
+ *
+ * Provider-specific detail (`comment`, `message`, `run`) is passed through as
+ * `any` on purpose: Zernio owns those shapes and extends them, and a trigger
+ * filter reads a dot path into them rather than a schema we would have to keep
+ * chasing.
+ */
+const socialAccount = {
+  type: 'object',
+  properties: {
+    zernioAccountId: { type: 'string' },
+    platform: { type: 'string' },
+    username: { type: 'string' },
+  },
+} as const
+
+const socialBase = {
+  externalId: { type: 'string', description: 'The profile routing id: ws_<workspaceId> or lws_<localWorkspaceId>.' },
+  /** Absent when the provider's event does not name the account it came from. */
+  account: { ...socialAccount, optional: true },
+} as const
+
+export const socialCommentReceived = defineEvent({
+  type: 'social.comment.received',
+  version: 1,
+  description: 'Someone commented on a post published from one of the workspace\'s connected accounts.',
+  scope: 'social:read',
+  payload: {
+    type: 'object',
+    properties: { ...socialBase, comment: { type: 'any' } },
+  },
+  example: {
+    externalId: 'ws_1f0d',
+    account: { zernioAccountId: 'acc_1', platform: 'instagram', username: 'acme' },
+    comment: { id: 'cmt_1', text: 'MERGE', authorUsername: 'ada' },
+  },
+})
+
+export const socialMessageReceived = defineEvent({
+  type: 'social.message.received',
+  version: 1,
+  description: 'A direct message arrived on one of the workspace\'s connected accounts.',
+  scope: 'social:read',
+  payload: {
+    type: 'object',
+    properties: { ...socialBase, message: { type: 'any' } },
+  },
+  example: {
+    externalId: 'ws_1f0d',
+    account: { zernioAccountId: 'acc_1', platform: 'instagram', username: 'acme' },
+    message: { id: 'msg_1', text: 'Do you ship to the EU?', authorUsername: 'ada' },
+  },
+})
+
+export const socialMessageSent = defineEvent({
+  type: 'social.message.sent',
+  version: 1,
+  description: 'A direct message was sent from one of the workspace\'s connected accounts.',
+  scope: 'social:read',
+  payload: {
+    type: 'object',
+    properties: { ...socialBase, message: { type: 'any' } },
+  },
+  example: {
+    externalId: 'ws_1f0d',
+    account: { zernioAccountId: 'acc_1', platform: 'instagram', username: 'acme' },
+    message: { id: 'msg_2', text: 'Yes — here is the link', authorUsername: 'acme' },
+  },
+})
+
+export const socialAccountConnected = defineEvent({
+  type: 'social.account.connected',
+  version: 1,
+  description: 'An account was connected to this workspace\'s social profile.',
+  scope: 'social:read',
+  payload: {
+    type: 'object',
+    properties: { ...socialBase },
+  },
+  example: {
+    externalId: 'ws_1f0d',
+    account: { zernioAccountId: 'acc_1', platform: 'instagram', username: 'acme' },
+  },
+})
+
+export const socialAccountDisconnected = defineEvent({
+  type: 'social.account.disconnected',
+  version: 1,
+  description: 'An account was disconnected or its token stopped working, so it needs reconnecting.',
+  scope: 'social:read',
+  payload: {
+    type: 'object',
+    properties: { ...socialBase },
+  },
+  example: {
+    externalId: 'ws_1f0d',
+    account: { zernioAccountId: 'acc_1', platform: 'instagram', username: 'acme' },
+  },
+})
+
+export const socialAutomationRunCompleted = defineEvent({
+  type: 'social.automation.run.completed',
+  version: 1,
+  description: 'A comment→DM automation or sequence finished a run.',
+  scope: 'social:read',
+  payload: {
+    type: 'object',
+    properties: { ...socialBase, run: { type: 'any' } },
+  },
+  example: {
+    externalId: 'ws_1f0d',
+    account: { zernioAccountId: 'acc_1', platform: 'instagram', username: 'acme' },
+    run: { id: 'run_1', status: 'completed', triggeredBy: 'cmt_1' },
+  },
+})
+
+export const socialAutomationRunFailed = defineEvent({
+  type: 'social.automation.run.failed',
+  version: 1,
+  description: 'A comment→DM automation or sequence run failed.',
+  scope: 'social:read',
+  payload: {
+    type: 'object',
+    properties: { ...socialBase, run: { type: 'any' } },
+  },
+  example: {
+    externalId: 'ws_1f0d',
+    account: { zernioAccountId: 'acc_1', platform: 'instagram', username: 'acme' },
+    run: { id: 'run_2', status: 'failed', error: 'private reply not allowed' },
+  },
+})
+
+export const SOCIAL_EVENT_TYPES = [
+  'social.comment.received',
+  'social.message.received',
+  'social.message.sent',
+  'social.account.connected',
+  'social.account.disconnected',
+  'social.automation.run.completed',
+  'social.automation.run.failed',
+] as const
+
+const SOCIAL_EVENTS: readonly EventDefinition<any>[] = [
+  socialCommentReceived,
+  socialMessageReceived,
+  socialMessageSent,
+  socialAccountConnected,
+  socialAccountDisconnected,
+  socialAutomationRunCompleted,
+  socialAutomationRunFailed,
+]
+
+export const NATIVE_EVENTS: readonly EventDefinition<any>[] = [memberJoined, ...SOCIAL_EVENTS]
 
 export const COMPOSIO_EVENT_PREFIX = 'composio.'
 

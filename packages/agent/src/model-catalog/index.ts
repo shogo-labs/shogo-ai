@@ -17,14 +17,21 @@
 export {
   MODEL_CATALOG,
   IMAGE_MODEL_CATALOG,
+  VIDEO_MODEL_CATALOG,
+  HIGGSFIELD_LEGACY_MODEL_ALIASES,
   AUTO_MODEL_ID,
   OPENROUTER_MODEL_PREFIX,
   type ModelEntry,
   type ImageModelEntry,
+  type ImageModelCapabilities,
+  type ModelOptionField,
+  type VideoModelEntry,
   type ModelId,
   type ImageModelId,
+  type VideoModelId,
   type Provider,
   type ImageProvider,
+  type VideoProvider,
   type ModelTier,
   type ModelFamily,
   type ModelGeneration,
@@ -48,8 +55,10 @@ export {
 
 export {
   resolveModelId,
+  resolveMediaModelId,
   getModelEntry,
   getImageModelEntry,
+  getVideoModelEntry,
   getModelDisplayName,
   getModelShortDisplayName,
   inferProviderFromModel,
@@ -57,6 +66,7 @@ export {
   getModelBillingModel,
   getModelFamily,
   getMaxOutputTokens,
+  getContextWindowTokens,
   modelSupportsAudioInput,
   getModelKind,
   isLiveModel,
@@ -75,6 +85,13 @@ export {
 } from './helpers'
 
 export { ADAPTIVE_THINKING_MODEL_MARKERS, supportsAdaptiveThinking } from './thinking'
+
+export {
+  endpointsOf,
+  mediaOption,
+  mergeModelOptions,
+  optionsForEndpoint,
+} from './media-options'
 
 export {
   registerDynamicModels,

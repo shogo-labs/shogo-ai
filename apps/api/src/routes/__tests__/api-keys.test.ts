@@ -163,7 +163,14 @@ mock.module('../../lib/api-keys-mint', () => ({
   mintDeviceApiKey: mintImpl,
 }))
 
-import { apiKeyRoutes, resolveApiKey } from '../api-keys'
+import {
+  apiKeyRoutes,
+  planApiKeyTouch,
+  resolveApiKey,
+  API_KEY_TOUCH_INTERVAL_MS,
+  DEVICE_VERSION_EVENT_INTERVAL_MS,
+} from '../api-keys'
+import { resolveApiKeyForRequest } from '../../lib/api-key-request'
 
 function app() {
   const { Hono } = require('hono')
@@ -725,5 +732,178 @@ describe('fire-and-forget catch handlers', () => {
       prismaStub.apiKey.update = origUpdate
     }
     await new Promise(r => setTimeout(r, 10))
+  })
+})
+
+// ─── SHO-160: throttle the per-request key touch ─────────────────────────────
+
+describe('planApiKeyTouch', () => {
+  const NOW = new Date('2026-10-23T00:10:00.000Z') // exactly on a 5-min window boundary
+  const ago = (ms: number) => new Date(NOW.getTime() - ms)
+  const userKey = (o: Partial<{ lastUsedAt: Date | null }> = {}) => ({
+    kind: 'user', deviceAppVersion: null, lastUsedAt: null, lastSeenAt: null, ...o,
+  })
+  const deviceKey = (o: Partial<{ lastUsedAt: Date | null; lastSeenAt: Date | null; deviceAppVersion: string | null }> = {}) => ({
+    kind: 'device', deviceAppVersion: '1.0.0', lastUsedAt: null, lastSeenAt: null, ...o,
+  })
+
+  test('null timestamps write everything and record the version', () => {
+    const t = planApiKeyTouch(deviceKey(), { now: NOW, touchLastUsed: true })
+    expect(t.data).toEqual({ lastUsedAt: NOW, lastSeenAt: NOW })
+    expect(t.recordVersion).toBe(true)
+    expect(t.version).toBe('1.0.0')
+  })
+
+  test('lastUsedAt: 59 s old → no write, 61 s old → write', () => {
+    expect(planApiKeyTouch(userKey({ lastUsedAt: ago(59_000) }), { now: NOW, touchLastUsed: true }).data).toBeNull()
+    expect(planApiKeyTouch(userKey({ lastUsedAt: ago(61_000) }), { now: NOW, touchLastUsed: true }).data)
+      .toEqual({ lastUsedAt: NOW })
+    expect(API_KEY_TOUCH_INTERVAL_MS).toBe(60_000)
+  })
+
+  test('user keys never get lastSeenAt or a version event', () => {
+    const t = planApiKeyTouch(userKey(), { now: NOW, touchLastUsed: true, reportedVersion: '9.9.9' })
+    expect(t.data).toEqual({ lastUsedAt: NOW })
+    expect(t.recordVersion).toBe(false)
+  })
+
+  test('device key touched 30 s ago → no write, no event', () => {
+    const t = planApiKeyTouch(
+      deviceKey({ lastUsedAt: ago(30_000), lastSeenAt: ago(30_000) }),
+      { now: NOW, touchLastUsed: true, reportedVersion: '1.0.0' },
+    )
+    expect(t.data).toBeNull()
+    expect(t.recordVersion).toBe(false)
+  })
+
+  test('a changed version is written and recorded immediately, clamped to 32 chars', () => {
+    const t = planApiKeyTouch(
+      deviceKey({ lastUsedAt: ago(1_000), lastSeenAt: ago(1_000) }),
+      { now: NOW, touchLastUsed: true, reportedVersion: '2.0.0-' + 'x'.repeat(40) },
+    )
+    expect(t.data).toEqual({ deviceAppVersion: ('2.0.0-' + 'x'.repeat(40)).slice(0, 32), lastSeenAt: NOW })
+    expect(t.recordVersion).toBe(true)
+    expect(t.version).toBe(('2.0.0-' + 'x'.repeat(40)).slice(0, 32))
+  })
+
+  test('unchanged version: event only when a lastSeenAt write enters a new 5-min window', () => {
+    expect(DEVICE_VERSION_EVENT_INTERVAL_MS).toBe(300_000)
+    // 4 min ago, but in the previous window (NOW is on a boundary) → write + event
+    const crossing = planApiKeyTouch(deviceKey({ lastSeenAt: ago(4 * 60_000), lastUsedAt: ago(4 * 60_000) }), { now: NOW, touchLastUsed: true })
+    expect(crossing.data).toEqual({ lastUsedAt: NOW, lastSeenAt: NOW })
+    expect(crossing.recordVersion).toBe(true)
+    // 61 s ago within the same window → write, no event
+    const later = new Date(NOW.getTime() + 2 * 60_000)
+    const same = planApiKeyTouch(deviceKey({ lastSeenAt: ago(0), lastUsedAt: ago(0) }), { now: later, touchLastUsed: true })
+    expect(same.data).toEqual({ lastUsedAt: later, lastSeenAt: later })
+    expect(same.recordVersion).toBe(false)
+    // 6 min ago → write + event
+    expect(planApiKeyTouch(deviceKey({ lastSeenAt: ago(6 * 60_000) }), { now: NOW, touchLastUsed: true }).recordVersion).toBe(true)
+  })
+
+  test('an active device keeps recording at least once per window', () => {
+    // Simulate a device calling every 10 s for 20 minutes.
+    let stored = deviceKey({ lastSeenAt: NOW, lastUsedAt: NOW })
+    let events = 0
+    let writes = 0
+    for (let t = 10_000; t <= 20 * 60_000; t += 10_000) {
+      const now = new Date(NOW.getTime() + t)
+      const plan = planApiKeyTouch(stored, { now, touchLastUsed: true, reportedVersion: '1.0.0' })
+      if (plan.data) { writes++; stored = { ...stored, ...plan.data } as typeof stored }
+      if (plan.recordVersion) events++
+    }
+    expect(writes).toBe(20) // once a minute, not 120 times
+    expect(events).toBe(4) // once per 5-min window
+  })
+
+  test('heartbeat mode refreshes lastSeenAt for non-device keys but never lastUsedAt', () => {
+    const t = planApiKeyTouch(userKey(), { now: NOW, touchLastUsed: false, alwaysTouchLastSeen: true })
+    expect(t.data).toEqual({ lastSeenAt: NOW })
+    expect(t.recordVersion).toBe(false)
+  })
+})
+
+describe('resolveApiKey write throttle', () => {
+  const pushDevice = (o: Partial<ApiKeyRow> = {}) => apiKeys.push({
+    id: 'k', name: 'K', keyHash: 'H(shogo_sk_x)', keyPrefix: 'p', workspaceId: 'w1', userId: 'u1',
+    expiresAt: null, revokedAt: null, kind: 'device',
+    deviceId: 'dev-1', deviceName: null, devicePlatform: 'darwin', deviceAppVersion: '1.0.0',
+    lastUsedAt: null, lastSeenAt: null, createdAt: new Date(), ...o,
+  })
+  const settle = () => new Promise(r => setTimeout(r, 10))
+
+  test('two calls within 60 s issue one update', async () => {
+    pushDevice()
+    await resolveApiKey('shogo_sk_x', { deviceAppVersion: '1.0.0' })
+    await settle()
+    await resolveApiKey('shogo_sk_x', { deviceAppVersion: '1.0.0' })
+    await settle()
+    expect(updateCalls.length).toBe(1)
+  })
+
+  test('a second call after 60 s updates again', async () => {
+    pushDevice({ lastUsedAt: new Date(Date.now() - 61_000), lastSeenAt: new Date(Date.now() - 61_000) })
+    await resolveApiKey('shogo_sk_x')
+    await settle()
+    expect(updateCalls.length).toBe(1)
+    expect(updateCalls[0].data.lastUsedAt).toBeInstanceOf(Date)
+  })
+
+  test('a new app version is written even inside the 60 s window', async () => {
+    pushDevice({ lastUsedAt: new Date(), lastSeenAt: new Date() })
+    await resolveApiKey('shogo_sk_x', { deviceAppVersion: '1.1.0' })
+    await settle()
+    expect(updateCalls.length).toBe(1)
+    expect(updateCalls[0].data.deviceAppVersion).toBe('1.1.0')
+  })
+
+  test('revoked, expired and app tokens are still rejected', async () => {
+    pushDevice({ revokedAt: new Date() })
+    expect(await resolveApiKey('shogo_sk_x')).toBeNull()
+    apiKeys = []
+    pushDevice({ expiresAt: new Date(Date.now() - 1) })
+    expect(await resolveApiKey('shogo_sk_x')).toBeNull()
+    apiKeys = []
+    pushDevice({ kind: 'app' as any })
+    expect(await resolveApiKey('shogo_sk_x')).toBeNull()
+    await settle()
+    expect(updateCalls.length).toBe(0)
+  })
+})
+
+describe('resolveApiKeyForRequest', () => {
+  const ctx = (memo?: unknown) => ({ get: (k: string) => (k === 'apiKeyResolution' ? memo : undefined) }) as any
+  const pushUser = () => apiKeys.push({
+    id: 'k', name: 'K', keyHash: 'H(shogo_sk_x)', keyPrefix: 'p', workspaceId: 'w1', userId: 'u1',
+    expiresAt: null, revokedAt: null, kind: 'user',
+    deviceId: null, deviceName: null, devicePlatform: null, deviceAppVersion: null,
+    lastUsedAt: null, lastSeenAt: null, createdAt: new Date(),
+  })
+
+  test('reuses the middleware result for the same key without a DB lookup', async () => {
+    const memo = { key: 'shogo_sk_x', result: { workspaceId: 'w9', userId: 'u9', kind: 'user', deviceId: null } }
+    const origFind = prismaStub.apiKey.findUnique
+    let finds = 0
+    prismaStub.apiKey.findUnique = (async (...a: any[]) => { finds++; return (origFind as any)(...a) }) as any
+    try {
+      expect(await resolveApiKeyForRequest(ctx(memo), 'shogo_sk_x')).toEqual(memo.result)
+      expect(finds).toBe(0)
+    } finally {
+      prismaStub.apiKey.findUnique = origFind
+    }
+  })
+
+  test('reuses a null result (invalid key) too', async () => {
+    pushUser()
+    expect(await resolveApiKeyForRequest(ctx({ key: 'shogo_sk_x', result: null }), 'shogo_sk_x')).toBeNull()
+  })
+
+  test('resolves normally for a different key, no memo, or allowAppTokens', async () => {
+    pushUser()
+    const memo = { key: 'shogo_sk_other', result: null }
+    expect((await resolveApiKeyForRequest(ctx(memo), 'shogo_sk_x'))?.userId).toBe('u1')
+    expect((await resolveApiKeyForRequest(ctx(), 'shogo_sk_x'))?.userId).toBe('u1')
+    const sameKey = { key: 'shogo_sk_x', result: null }
+    expect((await resolveApiKeyForRequest(ctx(sameKey), 'shogo_sk_x', { allowAppTokens: true }))?.userId).toBe('u1')
   })
 })

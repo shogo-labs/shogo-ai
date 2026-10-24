@@ -169,7 +169,9 @@ export async function installAgent(params: {
   workspaceId: string
   /** Required when the version's `shogo.app.json` requests access (else `consent_required`). */
   consent?: AppConsentInput | null
-}): Promise<{ projectId: string; installId: string; grantedScopes?: string[] }> {
+  /** Answers to the pack's `setup.questions`, rendered into its prompts and profile. */
+  answers?: Record<string, unknown> | null
+}): Promise<{ projectId: string; installId: string; grantedScopes?: string[]; created?: string[] }> {
   const { listingId, userId, workspaceId } = params
 
   const canInstall = await hasWorkspaceAccess(workspaceId, userId)
@@ -191,6 +193,20 @@ export async function installAgent(params: {
   }
   if (listing.status !== 'published') {
     throw new Error('listing_not_published')
+  }
+
+  // A listing that ships `pack.yaml` installs once per workspace: channels,
+  // boards and a schedule are not idempotent from the person's point of view,
+  // and a second copy would be two agents answering the same mention. A
+  // listing without a pack installs exactly as it always has.
+  const { loadVersionPack } = await import('./marketplace-pack.service')
+  const pack = await loadVersionPack(listing.id, listing.currentVersion)
+  if (pack) {
+    const already = await prisma.marketplaceInstall.findFirst({
+      where: { listingId, workspaceId, status: 'active' },
+      select: { id: true, projectId: true },
+    })
+    if (already) throw new Error(`already_installed:${already.id}:${already.projectId}`)
   }
 
   const grants = await import('./app-install-grants.service')
@@ -358,6 +374,38 @@ export async function installAgent(params: {
     }
   }
 
+  // A pack anchor can now carry its channels, boards, schedules and triggers.
+  // This runs after the workspace files are in place (and pushed, when the
+  // runtime lives in another pod) because the prompt files the pack writes are
+  // what the agents read.
+  let packBindings: unknown = null
+  let created: string[] = []
+  let packAnswers: Record<string, unknown> = {}
+  if (pack) {
+    const { applySystemPack, previewSystemPack, uninstallSystemPack } = await import('./system-apply.service')
+    const { normalizeAnswers } = await import('@shogo/agent-runtime/src/system-manifest')
+    // Stored on the install row keyed by `applies` path, with skipped questions
+    // resolved to their defaults: re-applying later must not change the answer.
+    const answers = normalizeAnswers(pack.setup, params.answers ?? undefined)
+    const preview = await previewSystemPack({ workspaceId, manifest: pack, answers, anchorProjectId: newProject.id })
+    const applied = await applySystemPack({
+      workspaceId,
+      manifest: pack,
+      answers,
+      actorUserId: userId,
+      anchorProjectId: newProject.id,
+      channelNames: preview.channelNames,
+    })
+    if (!applied.ok) {
+      await uninstallSystemPack({ workspaceId, actorUserId: userId, bindings: applied.bindings }).catch(() => {})
+      await prisma.project.delete({ where: { id: newProject.id } }).catch(() => {})
+      throw new Error(`pack_apply_failed: ${applied.errors.join('; ')}`)
+    }
+    packBindings = applied.bindings
+    packAnswers = answers
+    created = applied.applied
+  }
+
   const install = await prisma.$transaction(async (tx) => {
     const row = await tx.marketplaceInstall.create({
       data: {
@@ -369,6 +417,7 @@ export async function installAgent(params: {
         installedVersion: listing.currentVersion,
         status: 'active',
         baselineManifest: baselineManifest as object,
+        ...(pack ? { answers: packAnswers as object, packBindings: packBindings as object } : {}),
       },
     })
     await tx.marketplaceListing.update({
@@ -404,7 +453,7 @@ export async function installAgent(params: {
   // FIRE-AND-FORGET: track project creation for lifecycle campaigns
   _trackProjectCreated(userId, newProject.id, listing.title)
 
-  return { projectId: newProject.id, installId: install.id, ...(grantedScopes ? { grantedScopes } : {}) }
+  return { projectId: newProject.id, installId: install.id, ...(grantedScopes ? { grantedScopes } : {}), ...(pack ? { created } : {}) }
 }
 
 // FIRE-AND-FORGET helper — defined outside installAgent so it is hoisted
@@ -648,6 +697,22 @@ export async function uninstallAgent(params: {
 
   const { revokeInstallGrant } = await import('./app-install-grants.service')
   await revokeInstallGrant(installId)
+
+  // A pack's channels, boards, schedules and triggers go with it. Only the ids
+  // this install recorded are touched, schedule first — never an adopted
+  // channel and never something a person added to one.
+  const packRows = await prisma.marketplaceInstall.findUnique({
+    where: { id: installId },
+    select: { packBindings: true },
+  })
+  if (packRows?.packBindings) {
+    const { uninstallSystemPack } = await import('./system-apply.service')
+    await uninstallSystemPack({
+      workspaceId: install.workspaceId,
+      actorUserId: userId,
+      bindings: packRows.packBindings as any,
+    }).catch((err) => console.warn('[marketplace] pack uninstall failed (non-fatal):', err?.message ?? err))
+  }
 
   if (install.projectId) {
     const projectDir = join(getWorkspacesDir(), install.projectId)

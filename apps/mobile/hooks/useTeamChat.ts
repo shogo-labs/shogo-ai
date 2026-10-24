@@ -20,6 +20,7 @@ import {
 import { useTeamChatEvents } from '../lib/team-chat-connection'
 import { setActiveChannelNotificationContext } from '../lib/notifications/chat-notifier'
 import { cacheList, cacheTimeline, readCachedList, readCachedTimeline } from '../lib/team-chat-cache'
+import { linkPreviewOptOuts } from '../lib/link-preview-consent'
 import {
   addOptimistic,
   applyListEvent,
@@ -45,9 +46,18 @@ const TIMELINE_TRIM_TO = 300
 // ─── Which conversation is on screen (suppresses its unread badge) ──────────
 
 let activeConversationId: string | null = null
+// The screen that set the active conversation. Opening a thread pushes a second
+// screen for the same conversation, so the one being covered must not clear it.
+let activeOwner: object | null = null
 const activeListeners = new Set<() => void>()
 
-export function setActiveConversation(id: string | null): void {
+export function setActiveConversation(id: string | null, owner: object): void {
+  if (id === null) {
+    if (activeOwner !== owner) return
+    activeOwner = null
+  } else {
+    activeOwner = owner
+  }
   if (activeConversationId === id) return
   activeConversationId = id
   setActiveChannelNotificationContext(id)
@@ -158,6 +168,54 @@ export function useConversationList(workspaceId: string | null | undefined) {
   return { list, groups, loading, error, refresh }
 }
 
+// ─── Channel directory (for `#` references) ──────────────────────────────────
+
+const directoryInflight = new Map<string, Promise<ConversationSummary[]>>()
+
+/**
+ * The conversations this viewer can see, for naming `#channel` references in
+ * message text. The list endpoint is already viewer-scoped — every public
+ * channel plus whatever this user is a member of — so a private channel they
+ * are not in simply isn't here, and a message naming it renders as
+ * `#privatechannel` instead of leaking the name.
+ *
+ * Deliberately lighter than `useConversationList`: no live-event subscription
+ * and a workspace-wide in-flight dedupe, so opening a channel doesn't fire a
+ * second copy of that heavier query just to resolve names.
+ */
+export function useChannelDirectory(workspaceId: string | null | undefined): ConversationSummary[] {
+  const [list, setList] = useState<ConversationSummary[]>(() =>
+    workspaceId ? listCache.get(workspaceId) ?? [] : [],
+  )
+  useEffect(() => {
+    if (!workspaceId) {
+      setList([])
+      return
+    }
+    const warm = listCache.get(workspaceId)
+    if (warm) {
+      setList(warm)
+      return
+    }
+    let cancelled = false
+    const running = directoryInflight.get(workspaceId) ?? api.list(workspaceId)
+    directoryInflight.set(workspaceId, running)
+    running
+      .then((next) => {
+        listCache.set(workspaceId, next)
+        if (!cancelled) setList(next)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (directoryInflight.get(workspaceId) === running) directoryInflight.delete(workspaceId)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
+  return list
+}
+
 // ─── Mentionables ────────────────────────────────────────────────────────────
 
 const mentionablesCache = new Map<string, { at: number; data: Mentionables }>()
@@ -262,6 +320,8 @@ export interface SendInput {
   text: string
   alsoSentToChannel?: boolean
   attachmentIds?: string[]
+  /** Links in this message whose author declined a preview (closed conversations). */
+  linkPreviewsOff?: string[]
 }
 
 export function useConversationTimeline(
@@ -399,7 +459,9 @@ export function useConversationTimeline(
       authorUserId: me,
       authorAgent: null,
       text: input.text,
-      blocks: null,
+      // Carried on the optimistic row too, so the author sees their own refusal
+      // apply immediately rather than a card appearing and then vanishing.
+      blocks: input.linkPreviewsOff?.length ? { linkPreviewsOff: input.linkPreviewsOff } : null,
       clientMsgId,
       agentSessionId: null,
       agentStatus: null,
@@ -420,7 +482,13 @@ export function useConversationTimeline(
       ...s,
       messages: s.messages.map((m) => (m.clientMsgId === clientMsgId && m.pending ? { ...m, pending: 'sending' } : m)),
     }))
-    await sendWithClientId(clientMsgId, { text: message.text, alsoSentToChannel: message.alsoSentToChannel })
+    await sendWithClientId(clientMsgId, {
+      text: message.text,
+      alsoSentToChannel: message.alsoSentToChannel,
+      // A retry must keep the sender's decision, or the preview they declined
+      // would appear on the second attempt.
+      linkPreviewsOff: linkPreviewOptOuts(message.blocks),
+    })
   }, [sendWithClientId])
 
   const retryRef = useRef(retry)

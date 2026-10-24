@@ -551,6 +551,110 @@ export async function mergePullRequest(options: {
   return { merged: true, sha: body?.sha, message: body?.message };
 }
 
+/** One check-run on a PR's head commit, reduced to what a card shows. */
+export interface PullRequestCheck {
+  name: string
+  url: string | null
+  conclusion: string | null
+}
+
+/** A PR read straight from GitHub: state, merge queue / armed, and its checks. */
+export interface PullRequestSnapshot {
+  number: number;
+  url: string;
+  state: 'open' | 'closed';
+  draft: boolean;
+  merged: boolean;
+  mergedAt: string | null;
+  headSha: string;
+  headRef: string;
+  baseRef: string;
+  /** GitHub's `mergeable_state`: clean | blocked | behind | dirty | unstable | unknown. */
+  mergeableState: string | null;
+  /** `auto_merge` is set — GitHub will merge once the required checks pass. */
+  autoMerge: boolean;
+  checks: { total: number; passing: number; failing: number; pending: number };
+  failing: PullRequestCheck[];
+}
+
+const PASSING_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
+
+/**
+ * Read a pull request and the check-runs on its head commit.
+ *
+ * Two calls instead of one: the REST PR resource has no check data, and the
+ * combined-status endpoint misses GitHub Actions check-runs. A check-runs
+ * failure (no `checks:read`, a fork head) leaves the counts at zero rather
+ * than failing the whole refresh — the card's PR state is still worth saving.
+ */
+export async function getPullRequestSnapshot(
+  auth: number | GitHubAuth,
+  repoOwner: string,
+  repoName: string,
+  number: number,
+): Promise<PullRequestSnapshot> {
+  const token = await accessTokenFor(auth);
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+  const repoPath = `${GITHUB_API_URL}/repos/${encodeURIComponent(repoOwner)}/${encodeURIComponent(repoName)}`;
+
+  const response = await fetch(`${repoPath}/pulls/${number}`, { headers });
+  const pr = (await response.json().catch(() => null)) as any;
+  if (!response.ok || !pr) {
+    throw new Error(`Failed to read pull request #${number}: ${pr?.message || `HTTP ${response.status}`}`);
+  }
+
+  const headSha: string = pr.head?.sha ?? '';
+  let total = 0;
+  let passing = 0;
+  let failing = 0;
+  let pending = 0;
+  const failingChecks: PullRequestCheck[] = [];
+
+  if (headSha) {
+    const runsResponse = await fetch(`${repoPath}/commits/${headSha}/check-runs?per_page=100`, { headers });
+    const runs = (await runsResponse.json().catch(() => null)) as any;
+    if (runsResponse.ok && Array.isArray(runs?.check_runs)) {
+      for (const run of runs.check_runs) {
+        total += 1;
+        const conclusion: string | null = run.conclusion ?? null;
+        const check: PullRequestCheck = {
+          name: run.name || run.app?.slug || 'check',
+          url: run.html_url ?? run.details_url ?? null,
+          conclusion,
+        };
+        if (!conclusion || run.status === 'queued' || run.status === 'in_progress' || run.status === 'waiting') {
+          pending += 1;
+        } else if (PASSING_CONCLUSIONS.has(conclusion)) {
+          passing += 1;
+        } else {
+          failing += 1;
+          failingChecks.push(check);
+        }
+      }
+    }
+  }
+
+  return {
+    number: pr.number ?? number,
+    url: pr.html_url ?? '',
+    state: pr.state === 'closed' ? 'closed' : 'open',
+    draft: pr.draft === true,
+    merged: pr.merged === true,
+    mergedAt: typeof pr.merged_at === 'string' ? pr.merged_at : null,
+    headSha,
+    headRef: pr.head?.ref ?? '',
+    baseRef: pr.base?.ref ?? '',
+    mergeableState: typeof pr.mergeable_state === 'string' ? pr.mergeable_state : null,
+    autoMerge: pr.auto_merge != null,
+    checks: { total, passing, failing, pending },
+    failing: failingChecks,
+  };
+}
+
 // =============================================================================
 // Project Connection
 // =============================================================================

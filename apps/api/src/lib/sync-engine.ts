@@ -69,6 +69,11 @@ export type SyncEventType =
   | 'AGENT_CREATED'
   | 'AGENT_UPDATED'
   | 'AGENT_DELETED'
+  /**
+   * A verified provider event (today: Zernio) for a workspace scope this
+   * process does not own — the desktop holding that scope applies it locally.
+   */
+  | 'SOCIAL_EVENT'
 
 /**
  * Subscriber callback — receives events to apply locally.

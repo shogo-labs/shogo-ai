@@ -128,7 +128,7 @@ export const TEAM_CHAT_GUIDE = [
   '- Use `team_chat_add_member` to put someone in a channel, e.g. when welcoming a new teammate.',
   '- Asked to create a channel, or to change one (private, topic, agent members)? Do it yourself; never send the person to the UI. Add or edit it under `teamChannels` in shogo-system.yaml and run `system_apply` (dry run, then apply). The person who asked is added as the new channel\'s owner. Without `system_apply`, ask the workspace agent in the channel to do it.',
   '- Files shared in your channels and DMs: use `fetch_chat_files`. Search them by meaning with `query`, read a document\'s text with `file_id`, and pass `download: true` only when you need the raw file on disk (images, spreadsheets to run code on, archives); it is saved under `chat-files/`.',
-  '- Each channel can have a doc: a shared markdown page for its plans, decisions and checklists. Read it with `team_chat_doc_read`; record settled decisions and long content there with `team_chat_doc_update` (prefer `patch_section` or `append` over rewriting it), then mention the change briefly in your reply.',
+  '- Each channel can have a doc: a shared markdown page of the channel\'s plans and decisions, kept by the people in it. Read it with `team_chat_doc_read` when it helps you answer. Do not add to it or edit it on your own initiative; change it only when someone asks you to.',
   '- Asked what a teammate worked on ("what did Sam do today?")? Use `member_activity`. Only owners and admins may ask; if the API refuses, say so plainly and do not guess from channel history. Answer only the person who asked, in the conversation where they asked. Never post someone\'s activity summary into a channel.',
   '- Respect Do Not Disturb: when someone is away, leave the question in the thread rather than pinging them repeatedly.',
   '- Starting a new piece of work? Post a top-level message with `team_chat_post` (pass `run_id` if you track one); you own that thread and unaddressed replies there come to you.',
@@ -140,6 +140,7 @@ export const TEAM_CHAT_GUIDE = [
   '- Agents do not need to tag you when they finish: cards you hand off and runs you start already tell you (a `[Task update]`), and a finishing agent\'s tag on a card you watch is folded into that update. Do not write "tag me when done" into the AGENTS.md of agents you create. If a person asks for it anyway, pass it on (it costs nothing) and say the update comes either way. What makes hand-offs slow is a timer: turn off any schedule of yours that checks on that work, yourself and in the same turn, then tell the person. Do not keep it "as a backstop" or offer to turn it off later; it only delays cards and reviews them twice.',
   '- Tagged by an agent on work you handed it? Its card or task update already reached you or is about to; act on that once and do not reply to the tag separately.',
   '- If you have `agent_run_stop`: when a person asks you to stop an agent, or agents are looping in a thread, find the run with `agent_runs_list` and stop it with `agent_run_stop` instead of posting "please stop".',
+  '- "Pause every agent" / "stop everything" is `agent_run_stop({ scope: "workspace" })`: it stops the running agents **and** holds every automatic start (task updates, schedules, triggers, card hand-offs, team-chat tags) until someone resumes with `agent_run_stop({ scope: "workspace", resume: true })`. A person\'s own message still runs. Do not try to deliver a "stop" as a message — that wakes the agent you are trying to stop.',
   '',
   '### Keep the channel readable',
   'Every post you make has a kind. People only get notified for `decision` and `alert`, so choose honestly:',
@@ -422,19 +423,47 @@ export function createChannelDocReadTool(ctx: ToolContext): AgentTool {
     label: 'Read Channel Doc',
     description:
       "Read a team chat channel's doc: its shared markdown page of plans, decisions and checklists. Returns the " +
-      'title, content and version (pass version as base_version when you replace the whole doc), or doc: null when ' +
-      'the channel has none yet.',
+      'title, content, version and budget (chars/limit, ok|warn|critical) — pass version as base_version when you ' +
+      'replace the whole doc, or doc: null when the channel has none yet. include_archive lists the sections that ' +
+      'were archived out of it (heading + chars, no bodies); archive_id returns one archived section in full.',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
+      include_archive: Type.Optional(Type.Boolean({ description: 'Also list the sections archived out of this doc.' })),
+      archive_id: Type.Optional(Type.String({ description: 'Return one archived section in full, by id.' })),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { channel: string }
-      const result = await readAgentChannelDoc(workspaceId, input.channel.replace(/^#/, ''), channelIdentity(ctx))
-      return result.ok ? textResult({ ok: true, ...result.data }) : apiError(result, 'Could not read the channel doc')
+      const input = params as { channel: string; include_archive?: boolean; archive_id?: string }
+      const result = await readAgentChannelDoc(workspaceId, input.channel.replace(/^#/, ''), channelIdentity(ctx), {
+        includeArchive: input.include_archive === true,
+        archiveId: input.archive_id,
+      })
+      if (!result.ok || !result.data) return apiError(result, 'Could not read the channel doc')
+      const { doc, url, archives, archive } = result.data
+      if (archive) return textResult({ ok: true, archive, budget: doc?.budget })
+      return textResult({
+        ok: true,
+        doc,
+        url,
+        budget: doc?.budget ?? { chars: 0, limit: 200_000, pct: 0, level: 'ok' },
+        ...(archives ? { archives } : {}),
+      })
     },
   }
+}
+
+function docWriteFailure(result: { error?: string; code?: string; status?: number; details?: Record<string, any> }, fallback: string) {
+  const details = result.details ?? {}
+  return textResult({
+    error: result.error ?? fallback,
+    code: result.code,
+    status: result.status,
+    ...(details.over_by !== undefined ? { over_by: details.over_by, chars: details.chars, limit: details.limit } : {}),
+    ...(details.reason ? { reason: details.reason, heading: details.heading, card: details.card } : {}),
+    ...(details.matches ? { matches: details.matches } : {}),
+    ...(details.next ? { next: details.next } : {}),
+  })
 }
 
 export function createChannelDocUpdateTool(ctx: ToolContext): AgentTool {
@@ -442,26 +471,51 @@ export function createChannelDocUpdateTool(ctx: ToolContext): AgentTool {
     name: 'team_chat_doc_update',
     label: 'Update Channel Doc',
     description:
-      "Change a team chat channel's doc (creating it if needed), attributed to you. Modes: \"patch_section\" " +
-      'replaces the body under one heading (or adds that section), "append" adds to the end, and "replace" rewrites ' +
-      'the whole doc and needs base_version from team_chat_doc_read. Prefer patch_section or append so you do not ' +
-      'overwrite teammates. Everyone in the channel sees the change live and can restore an earlier version. ' +
-      'Fails with code doc_conflict if someone saved since you read it: read again and retry.',
+      "Change a team chat channel's doc (creating it if needed), attributed to you. Every response carries the " +
+      'doc\'s budget (chars/limit, pct, ok|warn|critical). Modes: "patch_section" replaces the body under one ' +
+      'heading (or adds that section), "append" adds to the end, "replace" rewrites the whole doc and needs ' +
+      'base_version from team_chat_doc_read, and "archive_section" moves one section into the doc\'s archive ' +
+      "(replacing it with a pointer line) so a full doc can be slimmed. Prefer patch_section over append/rewrite " +
+      'so you do not clobber teammates. A new section headed like a card (SHO-123, "QA gate", "round 2", ' +
+      '"shipped") or longer than 4,000 chars is refused with code use_card_thread: that narrative belongs in the ' +
+      'card thread via work_item_comment, and force: true overrides. A write that would exceed the limit returns ' +
+      'doc_full with over_by and the next calls — archive a section first. Fails with code doc_conflict if ' +
+      'someone saved since you read it: read again and retry.',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
-      mode: Type.Union([Type.Literal('patch_section'), Type.Literal('append'), Type.Literal('replace')], {
-        description: 'How to apply content.',
-      }),
-      content: Type.String({ description: 'Markdown. For patch_section, the new body of the section (without its heading).' }),
-      section: Type.Optional(Type.String({ description: 'Heading text of the section to replace (patch_section only), e.g. "Decisions".' })),
+      mode: Type.Union(
+        [Type.Literal('patch_section'), Type.Literal('append'), Type.Literal('replace'), Type.Literal('archive_section')],
+        { description: 'How to apply content.' },
+      ),
+      content: Type.Optional(Type.String({
+        description: 'Markdown. For patch_section, the new body of the section (without its heading). Not used by archive_section.',
+      })),
+      section: Type.Optional(Type.String({
+        description: 'Heading text of the section to replace (patch_section) or to archive (archive_section), e.g. "Decisions".',
+      })),
       title: Type.Optional(Type.String({ description: 'New doc title. Omit to keep the current one.' })),
       base_version: Type.Optional(Type.Number({ description: 'Version you read; required for replace.' })),
+      force: Type.Optional(Type.Boolean({
+        description: 'Write a card-narrative or oversized new section anyway (use_card_thread otherwise).',
+      })),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { channel: string; mode: AgentDocMode; content: string; section?: string; title?: string; base_version?: number }
-      if (typeof input.content !== 'string') return textResult({ error: 'content is required', code: 'invalid_input' })
+      const input = params as {
+        channel: string
+        mode: AgentDocMode
+        content?: string
+        section?: string
+        title?: string
+        base_version?: number
+        force?: boolean
+      }
+      if (input.mode === 'archive_section') {
+        if (!input.section?.trim()) return textResult({ error: 'section is required for archive_section', code: 'invalid_input' })
+      } else if (typeof input.content !== 'string') {
+        return textResult({ error: 'content is required', code: 'invalid_input' })
+      }
       if (input.mode === 'patch_section' && !input.section?.trim()) {
         return textResult({ error: 'section is required for patch_section', code: 'invalid_input' })
       }
@@ -475,12 +529,18 @@ export function createChannelDocUpdateTool(ctx: ToolContext): AgentTool {
         section: input.section,
         title: input.title,
         baseVersion: input.base_version,
+        force: input.force === true,
       })
-      if (result.ok && result.data) {
-        const { doc, url } = result.data
-        return textResult({ ok: true, version: doc?.version, title: doc?.title, url })
-      }
-      return apiError(result, 'Could not update the channel doc')
+      if (!result.ok || !result.data) return docWriteFailure(result, 'Could not update the channel doc')
+      const { doc, url, archive } = result.data
+      return textResult({
+        ok: true,
+        version: doc?.version,
+        title: doc?.title,
+        url,
+        budget: doc?.budget,
+        ...(archive ? { archived: { heading: archive.heading, chars: archive.chars, id: archive.id } } : {}),
+      })
     },
   }
 }
@@ -668,9 +728,11 @@ export function createAgentRunsListTool(ctx: ToolContext): AgentTool {
     name: 'agent_runs_list',
     label: 'List Running Agents',
     description:
-      'List the agents working right now in team chat: replying in a channel or thread, or working a card. Only runs ' +
-      'in channels the person who asked can see are listed. Each run has a message_id to pass to agent_run_stop, and ' +
-      'can_stop says whether that person may stop it.',
+      'List the agents in team chat that have a run in flight: replying in a channel or thread, or working a card. ' +
+      'Only runs in channels the person who asked can see are listed. Each run has a message_id to pass to ' +
+      'agent_run_stop, state (running = working now, waiting = parked on a tool and holding no slot, queued = in ' +
+      'line for a slot, with position telling how many runs are ahead of it), and can_stop says whether that ' +
+      'person may stop it.',
     parameters: Type.Object({
       channel: Type.Optional(Type.String({ description: 'Only runs in this channel (name without # or conversation id).' })),
       thread: Type.Optional(Type.String({ description: 'Only runs in this thread (its root message id).' })),
@@ -693,9 +755,13 @@ export function createAgentRunsListTool(ctx: ToolContext): AgentTool {
           channel: r.channel.name ?? r.channel.id,
           thread_id: r.threadRootId,
           started_at: r.startedAt,
+          state: r.state ?? 'running',
+          position: r.position ?? null,
+          queued_at: r.queuedAt ?? null,
           preview: r.preview,
           can_stop: r.canStop,
         })),
+        paused: result.data?.paused ?? null,
       })
     },
   }
@@ -708,19 +774,54 @@ export function createAgentRunStopTool(ctx: ToolContext): AgentTool {
     description:
       'Stop an agent that is working right now, the same as a person pressing Stop on its reply. Pass message_id ' +
       '(from agent_runs_list) to stop one run, or channel and thread to stop every agent running in that thread. ' +
-      'A stopped reply does not wake the agents it tagged, so this also ends an agent loop. Stop only when the person ' +
-      'asks you to, or when agents are looping, then tell that person which agents you stopped.',
+      'A stopped reply does not wake the agents it tagged, so this also ends an agent loop. ' +
+      'Pass scope "workspace" to stop every agent run in this workspace and pause all automatic starts ' +
+      '(task updates, schedules, triggers, card hand-offs, team-chat tags) until you call it again with ' +
+      'resume: true — a person\'s own message still runs while paused. Stop only when the person asks you to, ' +
+      'or when agents are looping, then tell that person which agents you stopped.',
     parameters: Type.Object({
       message_id: Type.Optional(Type.String({ description: 'The running reply to stop.' })),
       channel: Type.Optional(Type.String({ description: 'With thread: the channel (name without # or conversation id).' })),
       thread: Type.Optional(Type.String({ description: 'With channel: root message id of the thread whose agents to stop.' })),
+      scope: Type.Optional(
+        Type.Union([Type.Literal('run'), Type.Literal('thread'), Type.Literal('workspace')], {
+          description: '"workspace" stops every run in the workspace and pauses automatic starts; "run"/"thread" are implied by the other arguments.',
+        }),
+      ),
+      resume: Type.Optional(Type.Boolean({ description: 'With scope "workspace": lift the pause instead of setting it.' })),
+      reason: Type.Optional(Type.String({ description: 'With scope "workspace": one line on why, kept with the pause.' })),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { message_id?: string; channel?: string; thread?: string }
-      if (!input.message_id && !(input.channel && input.thread)) {
-        return textResult({ error: 'Pass message_id, or channel and thread.', code: 'invalid_input' })
+      const input = params as { message_id?: string; channel?: string; thread?: string; scope?: string; resume?: boolean; reason?: string }
+      const scope = input.scope === 'workspace' ? 'workspace' : input.message_id ? 'run' : input.channel && input.thread ? 'thread' : null
+      if (!scope) {
+        return textResult({
+          error: 'Pass message_id, channel and thread, or scope "workspace".',
+          code: 'invalid_input',
+        })
+      }
+      if (scope === 'workspace') {
+        const result = await stopRunningAgents(workspaceId, {
+          scope: 'workspace',
+          resume: input.resume === true,
+          ...(input.reason ? { reason: input.reason } : {}),
+          sessionId: ctx.sessionId,
+        })
+        if (!result.ok || !result.data) return apiError(result, 'Could not pause the workspace agents')
+        return textResult({
+          ok: true,
+          paused: result.data.paused ?? null,
+          resumed: result.data.resumed === true,
+          stopped: (result.data.stopped ?? []).map((r) => ({
+            message_id: r.messageId,
+            agent: r.agent,
+            channel: r.channel.name ?? r.channel.id,
+            thread_id: r.threadRootId,
+          })),
+          skipped: (result.data.skipped ?? []).map((s) => ({ message_id: s.messageId, reason: s.reason })),
+        })
       }
       const result = await stopRunningAgents(workspaceId, {
         ...(input.message_id

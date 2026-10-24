@@ -40,6 +40,18 @@ BASE_API_PORT=8002
 BASE_WEB_PORT=3000
 BASE_VITE_RUNTIME_PORT=5200
 
+# The dev API port for a worktree offset.
+#
+# The variable emitted into `.env.local` is `SHOGO_DEV_API_PORT`, NOT `API_PORT`:
+# `scripts/dev-all.ts` and `scripts/watch-api.ts` read the prefixed name (SHO-26),
+# because the Shogo desktop app exports the bare `API_PORT` for its own API child
+# and an agent shell inheriting it made `bun dev:all` kill the app's API. A writer
+# that still emitted `API_PORT` left `dev:all` clearing port 8002 in a worktree
+# whose real port was 8002+offset.
+api_port_for_offset() {
+    echo $((BASE_API_PORT + $1))
+}
+
 # Secrets to preserve from existing .env.local
 SECRETS_PATTERN='^(ANTHROPIC_API_KEY|GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|STRIPE_PRICE_.*)='
 
@@ -186,7 +198,8 @@ generate_env_local() {
     local redis_port=$((BASE_REDIS_PORT + offset))
     local minio_api_port=$((BASE_MINIO_API_PORT + offset))
     local minio_console_port=$((BASE_MINIO_CONSOLE_PORT + offset))
-    local api_port=$((BASE_API_PORT + offset))
+    local api_port
+    api_port=$(api_port_for_offset "$offset")
     local web_port=$((BASE_WEB_PORT + offset))
     local vite_runtime_base=$((BASE_VITE_RUNTIME_PORT + offset))
     local vite_runtime_end=$((vite_runtime_base + 9))
@@ -216,7 +229,7 @@ POSTGRES_PORT=$postgres_port
 REDIS_PORT=$redis_port
 MINIO_API_PORT=$minio_api_port
 MINIO_CONSOLE_PORT=$minio_console_port
-API_PORT=$api_port
+SHOGO_DEV_API_PORT=$api_port
 WEB_PORT=$web_port
 VITE_RUNTIME_BASE=$vite_runtime_base
 VITE_RUNTIME_END=$vite_runtime_end
@@ -323,7 +336,7 @@ main() {
     echo ""
     echo "  COMPOSE_PROJECT_NAME: shogo-$(sanitize_branch_name "$branch")"
     echo "  Web:    http://localhost:$((BASE_WEB_PORT + offset))"
-    echo "  API:    http://localhost:$((BASE_API_PORT + offset))"
+    echo "  API:    http://localhost:$(api_port_for_offset "$offset")"
     echo "  MinIO:  http://localhost:$((BASE_MINIO_CONSOLE_PORT + offset))"
     echo ""
     echo "  To start Docker: docker compose up --build"

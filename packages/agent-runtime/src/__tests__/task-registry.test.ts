@@ -10,6 +10,7 @@
 import { describe, test, expect } from 'bun:test'
 import {
   TaskRegistry,
+  COMPLETED_RETENTION_MS,
   formatTaskNotification,
   type RemoteTaskClient,
   type RemoteTaskState,
@@ -56,6 +57,27 @@ function fakeHandle() {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0))
+
+/**
+ * A handle whose tree kill is verified separately from the signal (SHO-144):
+ * `kill()` is fire-and-forget, `killTree()` says what is still running.
+ */
+function handleWithTree(survivors: Array<{ pid: number; name: string }> = []) {
+  const f = fakeHandle()
+  const kills: Array<{ graceMs?: number }> = []
+  return {
+    ...f,
+    handle: {
+      ...f.handle,
+      killTree: async (opts?: { graceMs?: number }) => {
+        kills.push(opts ?? {})
+        f.finish(137)
+        return { survivors }
+      },
+    } as CommandHandle,
+    kills,
+  }
+}
 
 /** A scripted remote client: `state` is what the next get returns. */
 function fakeClient(initial: RemoteTaskState['status'] = 'running') {
@@ -138,6 +160,58 @@ describe('notifications', () => {
     })).toBe('[Task update] explore: find auth (t_1) completed.\nOutput: .shogo/tasks/s/t_1.log\nLast output:\ndone')
     expect(formatTaskNotification({ taskId: 't_2', source: 'shell', title: 'x', status: 'cancelled', tail: '' }))
       .toBe('[Task update] x (t_2) was cancelled.')
+  })
+})
+
+describe('cancel', () => {
+  test('cancel waits for the tree and reports an empty one', async () => {
+    const reg = new TaskRegistry()
+    const f = handleWithTree([])
+    const entry = reg.register('merge', f.handle)
+
+    const result = await reg.cancel(entry.id)
+
+    expect(result).toEqual({ found: true, survivors: [] })
+    expect(f.kills).toHaveLength(1)
+    expect(reg.get(entry.id)?.status).toBe('cancelled')
+  })
+
+  test('cancel names what outlived it instead of pretending the tree is gone', async () => {
+    const reg = new TaskRegistry()
+    const f = handleWithTree([{ pid: 991, name: 'sleep' }])
+    const entry = reg.register('merge', f.handle)
+
+    const result = await reg.cancel(entry.id)
+
+    expect(result.survivors).toEqual([{ pid: 991, name: 'sleep' }])
+  })
+
+  test('cancel of an unknown id is not found, and a finished task is not re-killed', async () => {
+    const reg = new TaskRegistry()
+    const f = handleWithTree([])
+    const entry = reg.register('true', f.handle)
+    f.finish(0)
+    await f.handle.done
+    await tick()
+
+    expect(await reg.cancel('t_missing')).toEqual({ found: false, survivors: [] })
+    expect(await reg.cancel(entry.id)).toEqual({ found: true, survivors: [] })
+    expect(f.kills).toHaveLength(0)
+  })
+
+  test('killAll waits on every tree, and still settles interrupted first', async () => {
+    const reg = new TaskRegistry()
+    const first = handleWithTree([])
+    const second = handleWithTree([])
+    const a = reg.register('merge one', first.handle)
+    const b = reg.register('merge two', second.handle)
+
+    await reg.killAll()
+
+    expect(first.kills).toHaveLength(1)
+    expect(second.kills).toHaveLength(1)
+    expect(reg.get(a.id)?.status).toBe('interrupted')
+    expect(reg.get(b.id)?.status).toBe('interrupted')
   })
 })
 
@@ -266,9 +340,174 @@ describe('listing and persistence', () => {
 
     const restored = new TaskRegistry()
     restored.restoreStale(snap)
+    // API-tracked work outlives the runtime: the API still owns it and the next
+    // poll reports the truth, so it comes back live.
     const byId = new Map(restored.listRunning().map((p) => [p.id, p]))
     expect(byId.get('t_api00002')?.stale).toBeUndefined()
     expect(byId.get('t_api00002')?.remote).toBe(true)
-    expect([...byId.values()].find((p) => p.source === 'subagent')?.stale).toBe(true)
+    // A local task belonged to the dead gateway: never live again, and its
+    // verdict is `interrupted` (SHO-141), not a running row awaiting Dismiss.
+    expect(restored.listRunning().map((p) => p.id)).not.toContain(
+      restored.listDock().find((p) => p.source === 'subagent')?.id,
+    )
+    const local = restored.listDock().find((p) => p.source === 'subagent')
+    expect(local?.stale).toBe(true)
+    expect(local?.status).toBe('interrupted')
+  })
+})
+
+describe('the dock list', () => {
+  /** A task that started in the background and has already settled. */
+  async function finishedTask(reg: TaskRegistry, command: string, exitCode = 0) {
+    const f = fakeHandle()
+    const entry = reg.register(command, f.handle)
+    reg.markBackgrounded(entry.id)
+    f.finish(exitCode)
+    await tick()
+    return entry
+  }
+
+  test('a finished task keeps its row, running ones first', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 60_000 })
+    const done = await finishedTask(reg, 'bun test')
+    const running = reg.registerTask({ source: 'subagent', title: 'explore' })
+
+    const dock = reg.listDock()
+    expect(dock.map((p) => p.id)).toEqual([running.entry.id, done.id])
+    expect(dock[1]?.status).toBe('completed')
+    expect(dock[1]?.finishedAt).toBeGreaterThan(0)
+    // The agent's own list stays running-only.
+    expect(reg.listVisible().map((p) => p.id)).toEqual([running.entry.id])
+  })
+
+  test('finished rows are newest first', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 60_000 })
+    const first = await finishedTask(reg, 'bun test')
+    await new Promise((r) => setTimeout(r, 5))
+    const second = await finishedTask(reg, 'bun build')
+    expect(reg.listDock().map((p) => p.id)).toEqual([second.id, first.id])
+  })
+
+  test('a quiet shell command that came and went never appears', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 30_000 })
+    const f = fakeHandle()
+    reg.register('ls', f.handle)
+    f.finish(0)
+    await tick()
+    expect(reg.listDock()).toHaveLength(0)
+  })
+
+  test('a background task announces itself the moment it is marked backgrounded', () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 30_000 })
+    const keys: string[] = []
+    reg.onChange(() => keys.push(reg.listDock().map((p) => p.id).join(',')))
+    const entry = reg.register('sleep 900', fakeHandle().handle)
+    // Still below the visibility delay: registering alone tells the dock nothing.
+    expect(keys).toEqual([''])
+    reg.markBackgrounded(entry.id)
+    expect(keys).toEqual(['', entry.id])
+    expect(reg.listDock().map((p) => p.id)).toEqual([entry.id])
+  })
+
+  test('a dormant card stays hidden and entries drop past the retention window', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 60_000 })
+    reg.registerTask({ source: 'work_item', title: 'SUP-1', dormant: true })
+    const done = await finishedTask(reg, 'bun test')
+    expect(reg.listDock().map((p) => p.id)).toEqual([done.id])
+
+    reg.get(done.id)!.finishedAt = Date.now() - COMPLETED_RETENTION_MS - 1
+    expect(reg.listDock()).toHaveLength(0)
+  })
+
+  test('a failed task reports its outcome, not just its disappearance', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 60_000 })
+    const entry = await finishedTask(reg, 'bun test', 1)
+    expect(reg.listDock()[0]?.status).toBe('failed')
+    expect(reg.listDock()[0]?.id).toBe(entry.id)
+  })
+
+  test('snapshot round-trip keeps a finished row finished (and drops it once stale)', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 60_000 })
+    const done = await finishedTask(reg, 'bun test', 2)
+    const running = reg.registerTask({ source: 'subagent', title: 'explore' })
+
+    const snap = reg.snapshot()
+    expect(snap.find((s) => s.runId === done.id)?.status).toBe('failed')
+
+    const restored = new TaskRegistry()
+    restored.restoreStale(snap)
+    const byId = new Map(restored.listDock().map((p) => [p.id, p]))
+    // The dead task is a terminal row; the one that was running is stale.
+    expect(byId.get(done.id)?.status).toBe('failed')
+    expect(byId.get(done.id)?.stale).toBeUndefined()
+    expect(byId.get(running.entry.id)?.stale).toBe(true)
+  })
+
+  test('a running task the dock has not shown yet is still persisted', async () => {
+    const reg = new TaskRegistry({ uiVisibleAfterMs: 30_000 })
+    const hidden = reg.register('npm run dev', fakeHandle().handle)
+    const done = await finishedTask(reg, 'bun test', 2)
+    // Invisible to the dock (below the delay), but it must survive a restart.
+    expect(reg.listDock().map((p) => p.id)).toEqual([done.id])
+
+    const snap = reg.snapshot()
+    expect(snap.map((s) => s.runId).sort()).toEqual([hidden.id, done.id].sort())
+    expect(snap.find((s) => s.runId === hidden.id)?.status).toBe('running')
+
+    const restored = new TaskRegistry()
+    restored.restoreStale(snap)
+    // It survives the restart (the row and its command are back) but not as a
+    // live task: the process it described died with the runtime.
+    const back = restored.get(hidden.id)
+    expect(back?.command).toBe('npm run dev')
+    expect(back?.stale).toBe(true)
+    expect(back?.status).toBe('interrupted')
+    expect(restored.listDock().map((p) => p.id)).toContain(hidden.id)
+  })
+
+  test('a finished row past its retention is not restored', () => {
+    const reg = new TaskRegistry()
+    reg.restoreStale([{
+      runId: 't_old00001',
+      command: 'bun test',
+      pid: undefined,
+      sandboxed: false,
+      startedAt: Date.now() - 3_600_000,
+      status: 'completed',
+      finishedAt: Date.now() - COMPLETED_RETENTION_MS - 1,
+    }])
+    expect(reg.listDock()).toHaveLength(0)
+  })
+
+  test('without a snapshot the task logs still describe what ran', () => {
+    const reg = new TaskRegistry()
+    const now = Date.now()
+    reg.restoreFromOutputRows([
+      {
+        taskId: 't_log00001',
+        source: 'shell',
+        title: 'bun test',
+        startedAt: now - 200_000,
+        path: '/tmp/.shogo/tasks/s/t_log00001.log',
+        status: 'completed',
+        finishedAt: now - 100_000,
+        modifiedAt: now - 100_000,
+      },
+      {
+        taskId: 't_log00002',
+        source: 'shell',
+        title: 'bun dev',
+        startedAt: now - 60_000,
+        path: '/tmp/.shogo/tasks/s/t_log00002.log',
+        modifiedAt: now - 60_000,
+      },
+    ])
+    const byId = new Map(reg.listDock().map((p) => [p.id, p]))
+    expect(byId.get('t_log00001')?.status).toBe('completed')
+    expect(byId.get('t_log00001')?.outputFile).toBe('/tmp/.shogo/tasks/s/t_log00001.log')
+    // SHO-141: no footer means the runtime died under it, so the row is
+    // `interrupted` — never a live `running` row.
+    expect(byId.get('t_log00002')?.status).toBe('interrupted')
+    expect(byId.get('t_log00002')?.stale).toBe(true)
   })
 })

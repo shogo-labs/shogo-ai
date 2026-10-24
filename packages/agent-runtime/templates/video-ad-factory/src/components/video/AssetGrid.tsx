@@ -11,11 +11,15 @@ const QA_COLORS: Record<QAStatus, string> = {
 };
 
 const MODEL_LABELS: Record<VideoModel, string> = {
-  "seedance-2.0": "Seedance 2.0",
-  "sora-2": "Sora 2",
-  "veo-3.1": "Veo 3.1",
-  "kling-3.0": "Kling 3.0",
-  "nano-banana": "Nano Banana",
+  "hf-soul-v2": "SOUL V2",
+  "hf-ideogram-4": "Ideogram 4.0",
+  "hf-hailuo-2.3": "Hailuo 2.3",
+  "hf-kling-2.5-pro": "Kling 2.5 Pro",
+  "hf-wan-2.6": "Wan 2.6",
+  "hf-ltx-2.5-fast": "LTX-2.5 Fast",
+  "hf-genjutsu-motion-transfer": "Motion Transfer",
+  "hf-genjutsu-object-swap": "Object Swap",
+  "hf-genjutsu-restyle": "Restyle",
 };
 
 interface AssetGridProps {

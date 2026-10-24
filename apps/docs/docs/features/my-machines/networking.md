@@ -55,6 +55,41 @@ transparently forwards requests through the tunnel. Streaming endpoints
 (`/agent/chat`, `/agent/canvas/stream`, `/agent/logs/stream`) are auto-detected
 and relayed as `stream-chunk` frames.
 
+## A paired desktop's own workspaces
+
+A desktop app that registers its own workspaces (`source: 'machine'`) serves
+each of them from `GET /api/machines/:id/w/:localWorkspaceId/:rest`. That
+relay carries **the workspace's own data** — its projects, chats, team chat and
+workspace agent — because the desktop owns them and its workspace ids are not
+the cloud's.
+
+Nothing auto-prefixes a URL for you: a request is relayed only when all three of
+these hold.
+
+1. **The path is on the relay list.** While a machine workspace is open,
+   `remote-http-interceptor.ts` adds a narrow set of workspace-scoped paths
+   (`/api/workspaces/:id/agent-proxy`, `agent-profile`, `chat`, `history`,
+   `conversations`, and the `/api/conversations` / `/api/conversation-messages`
+   families). The workspace *list* itself, members, billing, analytics and
+   exports stay on cloud — Settings must keep working while a machine workspace
+   is open.
+2. **The workspace id is rewritten.** The app builds URLs from the cloud
+   workspace id it has in memory. On the way out, the interceptor replaces that
+   id in the path, the `workspaceId` query param and the body with the machine's
+   own id (`rewriteMachineWorkspacePath`).
+3. **It goes through the client, not a hand-built `fetch`.** The interceptor
+   only sees requests made through the domain HTTP client. A component that
+   builds `${API_URL}/api/workspaces/...` by hand silently reaches cloud
+   instead — pass the machine's agent base from `useWorkspaceAgentBase()`, or
+   use the domain client.
+
+Chat that goes through the relay must also be recognized as streaming: the
+relay decides between `request`/`response` and `stream-chunk` with
+`isStreamingRequest`, run against `normalizeTransparentProxyPath`. Both the
+project wrapper (`/api/projects/:pid/agent-proxy`) and the workspace wrapper
+(`/api/workspaces/:wsId/agent-proxy`) are unwrapped, so a workspace agent turn
+arrives token by token rather than all at once when it ends.
+
 ## Data that leaves the worker
 
 The worker runs your existing `apps/api` Bun server locally; the cloud never

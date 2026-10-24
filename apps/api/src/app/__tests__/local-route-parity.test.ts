@@ -31,6 +31,11 @@ const REQUIRED_LOCAL_ROUTES = [
   'POST /api/generate-project-name',
   'GET /api/templates',
   'POST /api/workspaces/personal',
+  'POST /api/workspaces',
+  'PATCH /api/workspaces/:id',
+  'DELETE /api/workspaces/:id',
+  'GET /api/workspaces/:id/deletion-preview',
+  'GET /api/workspaces/activity',
   'POST /api/workspaces/:id/leave',
   'GET /api/workspaces/:id/visible-models',
   'PUT /api/workspaces/:id/visible-models',
@@ -58,8 +63,41 @@ const REQUIRED_LOCAL_ROUTES = [
   'GET /api/integrations/connections',
   'POST /api/integrations/connect',
   'DELETE /api/integrations/connections/:id',
+  // Social management (SHO-71): a desktop connects and publishes through the
+  // cloud relay, so every user-facing social route must be mounted locally too.
+  'GET /api/workspaces/:workspaceId/social/status',
+  'GET /api/workspaces/:workspaceId/social/accounts',
+  'POST /api/workspaces/:workspaceId/social/accounts/sync',
+  'POST /api/workspaces/:workspaceId/social/connect',
+  'POST /api/workspaces/:workspaceId/social/connect/complete',
+  'DELETE /api/workspaces/:workspaceId/social/accounts/:accountId',
+  'GET /api/workspaces/:workspaceId/social/posts',
+  'POST /api/workspaces/:workspaceId/social/posts',
+  'GET /api/workspaces/:workspaceId/social/posts/:postId',
+  'PATCH /api/workspaces/:workspaceId/social/posts/:postId',
+  'DELETE /api/workspaces/:workspaceId/social/posts/:postId',
+  'GET /api/workspaces/:workspaceId/social/calendar',
+  'GET /api/workspaces/:workspaceId/social/analytics',
+  'GET /api/workspaces/:workspaceId/social/inbox',
+  'GET /api/workspaces/:workspaceId/social/inbox/conversations/:conversationId',
+  'POST /api/workspaces/:workspaceId/social/inbox/conversations/:conversationId/messages',
+  'POST /api/workspaces/:workspaceId/social/inbox/conversations/:conversationId/read',
+  'POST /api/workspaces/:workspaceId/social/inbox/sync',
+  'GET /api/workspaces/:workspaceId/social/comments',
+  'GET /api/workspaces/:workspaceId/social/comments/:commentId',
+  'POST /api/workspaces/:workspaceId/social/comments/:commentId/reply',
+  'POST /api/workspaces/:workspaceId/social/comments/:commentId/read',
+  'GET /api/workspaces/:workspaceId/social/automations',
+  'POST /api/workspaces/:workspaceId/social/automations',
+  'GET /api/workspaces/:workspaceId/social/automations/:automationId',
+  'PATCH /api/workspaces/:workspaceId/social/automations/:automationId',
+  'DELETE /api/workspaces/:workspaceId/social/automations/:automationId',
+  // The desktop half of webhook routing: a verified event for one of this
+  // machine's local scopes is applied here, in its own DB.
+  'POST /api/social/events',
   // Called by the local agent-runtime; "Trust folder" is dead without it.
   'GET /api/internal/projects/:projectId/trust',
+  'GET /api/local/machine',
   'GET /api/local/remote-hosts',
   'POST /api/local/remote-hosts',
   'POST /api/local/remote-hosts/:id/connect',
@@ -68,12 +106,27 @@ const REQUIRED_LOCAL_ROUTES = [
   'POST /api/local/remote-hosts/:id/askpass',
   'GET /api/local/remote-hosts/:id/browse',
   'POST /api/local/projects/from-remote-folder',
+  // Voice TTS: the hosted route lives in `routes/voice-media.ts`, which only
+  // `server.ts` (cloud) mounted — desktop 404'd on TTS until it was added to
+  // `createLocalApp()`. `music` comes along with it (voiceRoutes delegates).
+  'POST /api/voice/tts',
+  'POST /api/voice/music',
+  // The file viewer (SHO-70): a shared file opens in the app, so the metadata
+  // and text routes it renders from must answer on desktop too — otherwise the
+  // viewer is a blank screen on exactly the surface that has no browser tab.
+  'GET /api/conversation-files/:attachmentId/meta',
+  'GET /api/conversation-files/:attachmentId/text',
 ] as const
 
 /** Runtime → API paths that intentionally only exist in the cloud API. */
 const CLOUD_ONLY_RUNTIME_PATHS = new Set([
   // Publishing deploys to `*.shogo.one`; desktop has no publish pipeline.
   '/api/internal/projects/:param/publish',
+  // Cross-project previews (SHO-125): another project is served by its own pod
+  // on metal, and desktop has no metal substrate — `isMetalRuntime()` is false
+  // there, so `preview_project` takes the local `/p/<id>/preview/start` path
+  // and never builds this URL.
+  '/api/internal/workspaces/:param/sessions/:param/projects/:param/preview',
 ])
 
 const AGENT_RUNTIME_SRC = resolve(import.meta.dir, '../../../../../packages/agent-runtime/src')

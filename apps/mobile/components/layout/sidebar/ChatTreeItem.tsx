@@ -37,6 +37,7 @@ function sessionActivityLabel(session: any): string | null {
   const value =
     session.activity ??
     session.lastMessageAt ??
+    session.lastActiveAt ??
     session.updatedAt ??
     session.createdAt ??
     null;

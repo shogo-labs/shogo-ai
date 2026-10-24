@@ -19,6 +19,16 @@ export interface MeetingStreamTicket {
   userId: string | null
   recordingId: string
   exp: number
+  /**
+   * Set when the recording id belongs to a live huddle (`huddle:<huddleId>`).
+   * The stream then writes into the huddle's shared draft with a speaker label
+   * and a server-computed timeline instead of the recorder's own clock.
+   */
+  huddleId?: string
+  /** Who is being transcribed: a display name, so the transcript reads `Ana: …`. */
+  speaker?: string
+  /** Who is being transcribed: a user id or guest id, so their finals never collide with anyone else's. */
+  speakerId?: string
 }
 
 export const STREAM_TICKET_TTL_MS = 2 * 60 * 1000
@@ -58,6 +68,10 @@ export function verifyStreamTicket(ticket: string | null | undefined, now = Date
       userId: typeof parsed.userId === 'string' ? parsed.userId : null,
       recordingId: parsed.recordingId,
       exp: parsed.exp,
+      // Only present on huddle tickets; older tickets keep verifying unchanged.
+      ...(typeof parsed.huddleId === 'string' && parsed.huddleId ? { huddleId: parsed.huddleId } : {}),
+      ...(typeof parsed.speaker === 'string' && parsed.speaker ? { speaker: parsed.speaker.slice(0, 80) } : {}),
+      ...(typeof parsed.speakerId === 'string' && parsed.speakerId ? { speakerId: parsed.speakerId.slice(0, 128) } : {}),
     }
   } catch {
     return null

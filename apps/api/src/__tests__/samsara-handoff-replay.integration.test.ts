@@ -175,10 +175,19 @@ const runsOf = (projectId: string | null) => invocations.filter((i) => i.project
 
 /** The wake Shogo's main session would get now: the [Task update] text, or null. */
 async function wakeText(main: string): Promise<string | null> {
+  const rows = await wakeTexts(main)
+  return rows.at(-1) ?? null
+}
+
+/** Every wake a finished card earns the session: one [Task update] message per task. */
+async function wakeTexts(main: string): Promise<string[]> {
   tasks._testing.clearTimers()
   await tasks.enqueueTaskWake(main)
-  const row = await db.chatQueuedMessage.findFirst({ where: { sessionId: main, kind: 'task_notification' }, orderBy: { createdAt: 'desc' } })
-  return row?.content ?? null
+  const rows = await db.chatQueuedMessage.findMany({
+    where: { sessionId: main, kind: 'task_notification' },
+    orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+  })
+  return rows.map((row: any) => row.content)
 }
 
 describe('Samsara Phase 1 replay: engineers tag @Shogo when a card is done', () => {
@@ -226,7 +235,7 @@ describe('Samsara Phase 1 replay: engineers tag @Shogo when a card is done', () 
     expect(fixed!.output).toContain(':586')
   })
 
-  test('both lanes finishing together wake Shogo with both cards and run it in neither thread', async () => {
+  test('both lanes finishing together wake Shogo once per card and run it in neither thread', async () => {
     const ctx = await phase1()
     const p14 = await handOff(ctx, 'M0.4 gates 11 and 12', backend, finishesAndTagsShogo(backend, (key) => `${key} in Review at b6d4123, 412 tests pass.`))
     const p17 = await handOff(ctx, 'M1.1 ACF spike', ue, finishesAndTagsShogo(ue, (key) => `${key} in Review at ab1b896, 2 joins at 150 ms.`))
@@ -235,9 +244,13 @@ describe('Samsara Phase 1 replay: engineers tag @Shogo when a card is done', () 
     expect(runsOf(backend)).toHaveLength(1)
     expect(runsOf(ue)).toHaveLength(1)
     expect(runsOf(null)).toHaveLength(0)
-    const wake = await wakeText(ctx.main)
-    expect(wake).toContain('b6d4123')
-    expect(wake).toContain('ab1b896')
+    // SHO-33: one finished card is one [Task update], so the two lanes queue two
+    // wakes with their own evidence instead of one combined message.
+    const wakes = await wakeTexts(ctx.main)
+    expect(wakes).toHaveLength(2)
+    expect(wakes.join('\n\n')).toContain('b6d4123')
+    expect(wakes.join('\n\n')).toContain('ab1b896')
+    for (const wake of wakes) expect((wake.match(/\[Task update\]/g) ?? []).length).toBe(1)
   })
 })
 

@@ -22,6 +22,8 @@ export const WORKSPACE_PERMISSIONS = [
   /** List and revoke other members' API keys. Managing your own keys only needs `workspace:read`. */
   'workspace.api_keys:manage',
   'workspace.analytics:read',
+  /** Download one archive of the whole workspace (every model + every project's files). */
+  'workspace:export',
   'project:create',
 ] as const
 

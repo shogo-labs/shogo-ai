@@ -218,6 +218,11 @@ export async function executeWorkspaceAgentTurn(input: {
     alwaysEnabled: true,
     resolveUserId: async (c) => c.req.header('X-Schedule-User-Id') || null,
   })
+  const { historySeedFor } = await import('../services/chat-history-seed.service')
+  const historySeed = await historySeedFor(input.sessionId).catch((err: Error) => {
+    console.warn(`[schedules] history seed for ${input.sessionId} failed:`, err.message)
+    return null
+  })
   const response = await untilAborted(Promise.resolve(router.fetch(
     new Request(`http://internal/workspaces/${encodeURIComponent(input.workspaceId)}/chat`, {
       method: 'POST',
@@ -230,6 +235,11 @@ export async function executeWorkspaceAgentTurn(input: {
       },
       body: JSON.stringify({
         messages: [{ role: 'user', parts: [{ type: 'text', text: input.prompt }] }],
+        // A scheduled run is one message too. Carry what this chat already
+        // holds so a recall does not wake to its own instruction line after the
+        // runtime dropped the session (SHO-137). Nothing was written for this
+        // turn beforehand, so the newest stored message is real history.
+        ...(historySeed ? { historySeed } : {}),
         chatSessionId: input.sessionId,
         userId: input.userId,
         agentMode: 'auto',

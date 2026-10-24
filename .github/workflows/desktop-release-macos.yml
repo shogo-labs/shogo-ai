@@ -310,6 +310,7 @@ jobs:
         with:
           name: web-dist-macos
           path: apps/mobile/dist/
+          retention-days: 7
 
   build-desktop:
     name: Build Desktop (macOS ${{ matrix.arch }})
@@ -775,6 +776,9 @@ jobs:
         with:
           name: desktop-darwin-${{ matrix.arch }}
           path: apps/desktop/out/make/**/*
+          # Intermediate: the installers are already on the GitHub Release from
+          # this same run. Their 90-day default was 558 GB of live storage.
+          retention-days: 7
 
   boot-smoke-x64:
     # End-to-end guard for the v1.8.14 incident: the x64 .app is cross-built on

@@ -34,16 +34,26 @@ function workspaceLink(path: string, workspaceId = 'ws-1') {
   return signSharedFileToken({ workspaceId, path, exp: Math.floor(Date.now() / 1000) + 3600 })
 }
 
+function projectLink(path: string, projectId = 'proj-a', workspaceId = 'ws-1') {
+  return signSharedFileToken({ projectId, workspaceId, path, exp: Math.floor(Date.now() / 1000) + 3600 })
+}
+
 beforeAll(() => {
   workspacesDir = mkdtempSync(join(tmpdir(), 'local-shared-files-'))
   outsideDir = mkdtempSync(join(tmpdir(), 'local-shared-files-outside-'))
   const mergedRoot = join(workspacesDir, '.workspace-roots', 'ws-1')
   mkdirSync(join(mergedRoot, 'exports'), { recursive: true })
   writeFileSync(join(mergedRoot, 'exports', 'summary.csv'), 'a,b\n1,2\n')
+  mkdirSync(join(mergedRoot, 'media'), { recursive: true })
+  writeFileSync(join(mergedRoot, 'media', 'clip.mp4'), 'not really a video')
+  writeFileSync(join(mergedRoot, 'media', 'voice.mp3'), 'not really audio')
+  writeFileSync(join(mergedRoot, 'media', 'notes.md'), '# Notes')
+  writeFileSync(join(mergedRoot, 'media', 'icon.woff2'), 'wOF2')
 
   mkdirSync(join(workspacesDir, 'proj-a'), { recursive: true })
   writeFileSync(join(workspacesDir, 'proj-a', 'report.txt'), 'project file')
   symlinkSync(join(workspacesDir, 'proj-a'), join(mergedRoot, 'proj-a'))
+  symlinkSync(outsideDir, join(workspacesDir, 'proj-a', 'project-escape'))
 
   mkdirSync(join(workspacesDir, 'proj-other'), { recursive: true })
   writeFileSync(join(workspacesDir, 'proj-other', 'secret.txt'), 'other workspace')
@@ -91,5 +101,120 @@ describe('local shared file routes: workspace links', () => {
     }
     const otherWorkspace = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink('exports/summary.csv', 'ws-2')}`))
     expect(otherWorkspace.status).toBe(404)
+  })
+})
+
+describe('local shared file routes: content types', () => {
+  // The app fetches the bytes and plays them itself (SHO-165): a video served
+  // as `application/octet-stream` gives `<video>` nothing to decode with.
+  it('names media, fonts and markdown by their real type', async () => {
+    const app = localSharedFileRoutes({ workspacesDir })
+    const cases: Array<[string, string]> = [
+      ['media/clip.mp4', 'video/mp4'],
+      ['media/voice.mp3', 'audio/mpeg'],
+      ['media/notes.md', 'text/markdown'],
+      ['media/icon.woff2', 'font/woff2'],
+    ]
+    for (const [path, expected] of cases) {
+      const response = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink(path)}`))
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toBe(expected)
+    }
+  })
+
+  it('still answers octet-stream for a type it does not know', async () => {
+    const app = localSharedFileRoutes({ workspacesDir })
+    writeFileSync(join(workspacesDir, '.workspace-roots', 'ws-1', 'media', 'blob.xyz'), 'x')
+    const response = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink('media/blob.xyz')}`))
+    expect(response.headers.get('content-type')).toBe('application/octet-stream')
+  })
+})
+
+describe('local shared file routes: project links', () => {
+  // A workspace-runtime agent signs a workspace-relative path, so a
+  // project-scoped link can arrive as `proj-a/report.txt` (SHO-67). Both
+  // shapes must serve the same bytes.
+  it('serves a project-relative path and a redundant project prefix', async () => {
+    const app = localSharedFileRoutes({ workspacesDir })
+    for (const path of ['report.txt', 'proj-a/report.txt']) {
+      const response = await app.fetch(new Request(`http://localhost/api/f/${projectLink(path)}`))
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe('project file')
+      expect(response.headers.get('content-disposition')).toBe('attachment; filename="report.txt"')
+    }
+  })
+
+  it('refuses an escape, a foreign workspace and a missing file', async () => {
+    const app = localSharedFileRoutes({ workspacesDir })
+    const cases = [
+      projectLink('project-escape/host.txt'),
+      projectLink('missing.txt'),
+      projectLink('report.txt', 'proj-a', 'ws-2'),
+      projectLink('report.txt', 'proj-other', 'ws-1'),
+    ]
+    for (const token of cases) {
+      const response = await app.fetch(new Request(`http://localhost/api/f/${token}`))
+      expect(response.status).toBe(404)
+    }
+    // A traversal path cannot even be signed, so it can never reach the route.
+    expect(() => projectLink('proj-a/../proj-other/secret.txt')).toThrow()
+  })
+})
+
+/**
+ * A dead link has to say which way it is dead: an expired link (ask for a new
+ * one), a mangled one (the token did not survive the trip), or a token whose
+ * file is gone. They used to be one 404 with one message (SHO-80).
+ */
+describe('local shared file routes: honest 404s', () => {
+  const originalWarn = console.warn
+  let warnings: string[] = []
+
+  beforeEach(() => {
+    warnings = []
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((arg) => String(arg)).join(' '))
+    }
+  })
+
+  afterAll(() => {
+    console.warn = originalWarn
+  })
+
+  async function fetchToken(token: string) {
+    const app = localSharedFileRoutes({ workspacesDir })
+    const response = await app.fetch(new Request(`http://localhost/api/f/${token}`))
+    return { response, body: (await response.json()) as { error: { code: string; message: string } } }
+  }
+
+  it('answers `expired` for a link past its exp', async () => {
+    const token = signSharedFileToken({
+      workspaceId: 'ws-1',
+      path: 'exports/summary.csv',
+      exp: Math.floor(Date.now() / 1000) - 5,
+      now: Math.floor(Date.now() / 1000) - 3600,
+    })
+    const { response, body } = await fetchToken(token)
+    expect(response.status).toBe(404)
+    expect(body.error.code).toBe('expired')
+    expect(warnings.join('\n')).toContain('reason=expired')
+    expect(warnings.join('\n')).toContain('path=exports/summary.csv')
+  })
+
+  it('answers `invalid_link` for a mangled or tampered token, and logs why', async () => {
+    const token = workspaceLink('exports/summary.csv')
+    const mangled = `${token.slice(0, -1)}${token.endsWith('a') ? 'b' : 'a'}`
+
+    for (const candidate of [mangled, `${token}.extra`]) {
+      const { body } = await fetchToken(candidate)
+      expect(body.error.code).toBe('invalid_link')
+    }
+    expect(warnings.join('\n')).toContain('reason=signature_mismatch')
+    expect(warnings.join('\n')).toContain('reason=malformed')
+  })
+
+  it('answers `file_not_found` when the token is good but nothing resolves', async () => {
+    const { body } = await fetchToken(workspaceLink('exports/missing.csv'))
+    expect(body.error.code).toBe('file_not_found')
   })
 })

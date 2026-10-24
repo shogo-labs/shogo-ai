@@ -30,6 +30,7 @@ import {
   detectSchemaProvider,
   type DatabaseProvider as SchemaProvider 
 } from '@shogo-ai/db'
+import { runThreeDCommand } from './three-d-cli.mjs'
 
 // ============================================================================
 // Types
@@ -186,6 +187,26 @@ const { values, positionals } = parseArgs({
     project: {
       type: 'string',
     },
+    // `shogo 3d` flags
+    op: { type: 'string' },
+    input: { type: 'string' },
+    prompt: { type: 'string' },
+    image: { type: 'string' },
+    images: { type: 'string' },
+    model: { type: 'string' },
+    texture: { type: 'boolean' },
+    'no-texture': { type: 'boolean' },
+    'texture-quality': { type: 'string' },
+    'texture-prompt': { type: 'string' },
+    'style-image': { type: 'string' },
+    'face-limit': { type: 'string' },
+    format: { type: 'string' },
+    animation: { type: 'string' },
+    animations: { type: 'string' },
+    'rig-type': { type: 'string' },
+    'part-names': { type: 'string' },
+    out: { type: 'string' },
+    json: { type: 'boolean' },
   },
   allowPositionals: true,
 })
@@ -279,6 +300,7 @@ Commands:
   dev                   Runtime-token preflight then passthrough to \`bun run dev\`
   db switch <provider>  Switch Prisma schema provider (sqlite | postgres)
   db status             Show current schema provider
+  3d <subcommand>       3D models through the AI proxy (generate | edit | status | upload | models)
 
 Generate Options:
   -c, --config <path>    Path to shogo.config.json (default: ./shogo.config.json)
@@ -905,6 +927,11 @@ async function main() {
   if (command === 'dev') {
     await handleDevCommand()
     process.exit(0)
+  }
+
+  // Handle 3D commands (generate/edit/status/upload/models via the AI proxy)
+  if (command === '3d') {
+    process.exit(await runThreeDCommand(positionals.slice(1), values as Record<string, unknown>))
   }
 
   // Handle deploy command (reconcile shogo.config.json#agents with cloud)

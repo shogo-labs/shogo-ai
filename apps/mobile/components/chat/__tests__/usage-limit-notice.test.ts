@@ -51,7 +51,7 @@ describe("usageLimitNoticeFor", () => {
     }
   })
 
-  test("a limit hit mid-turn keeps the Continue action", () => {
+  test("a limit hit mid-turn leads with billing, not with Continue", () => {
     const notice = usageLimitNoticeFor({
       error: null,
       errorDismissed: false,
@@ -61,6 +61,10 @@ describe("usageLimitNoticeFor", () => {
     })
     expect(notice).toMatchObject({ variant: "stopped", primaryLabel: "Upgrade", secondaryLabel: "Continue" })
     expect(notice!.body).toContain("completed work is saved")
+    expect(notice!.body).toContain("2099-01-01T00:00:00.000Z")
+    // No copy anywhere may tell the user to type "continue" (SHO-121).
+    expect(notice!.body.toLowerCase()).not.toContain("tap continue")
+    expect(notice!.body.toLowerCase()).not.toContain('type "continue"')
   })
 
   test("nothing for other errors, dismissed errors, or another session's limit", () => {

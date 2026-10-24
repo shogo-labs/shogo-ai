@@ -97,7 +97,10 @@ function applied(m: SystemManifest, diff: SystemDiff) {
     version: 1, name: m.name, bindings,
     ...(triggers.length ? { triggers: Object.fromEntries(diff.triggers.map((t, i) => [t.key, { id: `t${i}`, hash: t.hash! }])) } : {}),
   }
-  return { live, lock, opts: { callerProjectId: CALLER, teamChannels, boards, triggers, readFile: (id: string, path: string) => files.get(`${id}:${path}`) ?? null } }
+  return { live, lock, opts: { callerProjectId: CALLER, teamChannels, boards, triggers, readFile: (id: string, path: string) => {
+    const content = files.get(`${id}:${path}`)
+    return content === undefined ? ({ status: 'missing' } as const) : ({ status: 'ok', content } as const)
+  } } }
 }
 
 describe('generated template files', () => {

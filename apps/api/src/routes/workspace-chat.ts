@@ -64,6 +64,11 @@ import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session-runtime'
 import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from '../lib/chat-references'
 import {
+  chatHandoffText,
+  deliverChatMentions,
+  isChatHandoff,
+} from '../services/chat-mention-delivery.service'
+import {
   attachProjectToProject,
   syncPinnedSessionAttachments,
 } from '../services/project-attachment.service'
@@ -74,6 +79,7 @@ import {
   startTurnHeartbeat,
 } from '../services/chat-turn-state.service'
 import { dispatchNext } from '../services/chat-queue-dispatcher.service'
+import { historySeedForTurn, lastUserPromptText } from '../services/chat-history-seed.service'
 import { trackUsageFromStream } from './project-chat'
 
 // Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
@@ -709,6 +715,18 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       return mapSessionError(c, err)
     }
 
+    // A typed turn carries no history of its own beyond the client's page of
+    // messages, so a cold or evicted runtime used to answer with no context at
+    // all (SHO-137 round 3, R4). Attach the durable seed; the runtime only
+    // applies it when its own session is empty.
+    if (!parsedBody.historySeed) {
+      const seed = await historySeedForTurn(sessionId, lastUserPromptText(parsedBody)).catch(() => null)
+      if (seed) {
+        parsedBody.historySeed = seed
+        body = JSON.stringify(parsedBody)
+      }
+    }
+
     // A focused project is a per-turn hint, never a scope expansion, so it may
     // only select from projects attached to this chat session. Clients cache
     // the attachment list and can lag behind detaches made elsewhere; an id
@@ -768,6 +786,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       body = JSON.stringify(parsedBody)
     }
     await stampWorkspacePlan(parsedBody, workspaceId)
+    // Tell the runtime which surface this chat is, so capability toggles and
+    // the prompt block resolve for the WORKSPACE agent even when the runtime
+    // is anchored on the project the user happens to have open. Never trusted
+    // from the client: always overwritten here.
+    parsedBody.chatContext = 'workspace'
     body = JSON.stringify(parsedBody)
 
     // Harden "@" references before forwarding to the runtime:
@@ -785,7 +808,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       const historyChanged = await enrichChatReferences(
         parsedBody,
         auth.userId,
-        anchorProjectId,
         workspaceId,
       )
       if (anchorProjectId && projectRefs.attachProjectIds.length > 0) {
@@ -816,6 +838,27 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         }
       }
       if (wsChanged || projectRefs.changed || historyChanged) body = JSON.stringify(parsedBody)
+    }
+
+    // A `<@c:CHAT_ID>` token addresses another chat (SHO-52): the message is
+    // delivered there with a one-line origin and that chat's turn starts —
+    // including when it lives in another workspace, because the queue
+    // dispatches against the target session's own runtime. A message that
+    // arrived as a handoff never fans out again.
+    if (auth.userId && !isChatHandoff(parsedBody)) {
+      const handoffText = chatHandoffText(parsedBody)
+      if (handoffText.includes('<@c:')) {
+        try {
+          await deliverChatMentions({
+            text: handoffText,
+            actingUserId: auth.userId,
+            sourceSessionId: sessionId,
+            references: parsedBody?.references,
+          })
+        } catch (err: any) {
+          console.warn('[WorkspaceChat] Chat handoff failed:', err?.message ?? err)
+        }
+      }
     }
 
     // Billing anchor: the AI proxy accumulates usage keyed by projectId, and
@@ -1102,6 +1145,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             {
               chatSessionId: sessionId,
               userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
+              workspaceId,
               projectName: 'Workspace project',
               resume: async (fromSeq) => {
                 try {
@@ -1322,6 +1366,64 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         err?.message || err,
       )
       return c.json({ status: 'unknown' as const }, 404)
+    }
+  })
+
+  // The tasks a chat still has running. A window polls this to learn that
+  // background work is in flight and, once the list empties, that a
+  // `[Task update]` wake is about to be queued for the session (SHO-31).
+  router.get('/workspaces/:workspaceId/chat/:sessionId/tasks', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const workspaceId = c.req.param('workspaceId')
+    const sessionId = c.req.param('sessionId')
+
+    let attachedProjectIds: string[]
+    let runtimeExtra: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] } = {}
+    try {
+      const args = await loadRuntimeArgs(workspaceId, sessionId, auth.userId)
+      attachedProjectIds = args.attachedProjectIds
+      runtimeExtra = args.extra
+    } catch (err) {
+      return mapSessionError(c, err)
+    }
+    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceTasks', runtimeExtra, auth.kind)
+    if ('res' in runtimeRes) return runtimeRes.res
+    try {
+      let response = await fetchFromWorkspaceRuntime(
+        workspaceId,
+        attachedProjectIds,
+        `/agent/chat/${encodeURIComponent(sessionId)}/tasks`,
+        { method: 'GET' },
+        runtimeExtra,
+      )
+      // Runtimes that predate tasks only list shell processes.
+      if (response.status === 404) {
+        response = await fetchFromWorkspaceRuntime(
+          workspaceId,
+          attachedProjectIds,
+          `/agent/chat/${encodeURIComponent(sessionId)}/processes`,
+          { method: 'GET' },
+          runtimeExtra,
+        )
+        // Neither endpoint exists: the runtime has no task concept at all.
+        if (response.status === 404) return c.json({ tasks: [] }, 200)
+      }
+      // "Unknown" and "nothing running" are different answers: the client
+      // holds its wait on a failed read, and would arm a wake probe on an
+      // empty one.
+      if (!response.ok) return c.json({ error: 'task list unavailable' as const }, 502)
+      const data = await response.json()
+      return c.json(
+        { tasks: Array.isArray(data?.tasks) ? data.tasks : data?.processes ?? [] },
+        200,
+      )
+    } catch (err: any) {
+      console.warn(
+        `[WorkspaceChat] task list proxy error for ${workspaceId}/${sessionId}:`,
+        err?.message || err,
+      )
+      return c.json({ error: 'task list unavailable' as const }, 502)
     }
   })
 

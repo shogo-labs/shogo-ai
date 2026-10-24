@@ -15,7 +15,7 @@ process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-
 import { describe, test, expect, beforeAll, mock } from 'bun:test'
 import { Hono } from 'hono'
 import { generateProxyToken } from '../lib/ai-proxy-token'
-import { aiProxyRoutes } from '../routes/ai-proxy'
+import { aiProxyRoutes, splitOpenAIPromptUsage } from '../routes/ai-proxy'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // Mock prisma to avoid database dependency
@@ -305,5 +305,28 @@ describe('AI Proxy Route Handlers', () => {
     })
     const res = await app.fetch(req)
     expect(res.status).toBe(400)
+  })
+})
+
+describe('splitOpenAIPromptUsage', () => {
+  test('plain OpenAI usage: cached tokens are carved out of prompt_tokens', () => {
+    expect(splitOpenAIPromptUsage({ prompt_tokens: 1000, prompt_tokens_details: { cached_tokens: 800 } }))
+      .toEqual({ inputTokens: 200, cachedInputTokens: 800, cacheWriteTokens: 0 })
+  })
+
+  test('OpenRouter-style cache writes are counted inside prompt_tokens and cached_tokens', () => {
+    expect(splitOpenAIPromptUsage({
+      prompt_tokens: 7203,
+      prompt_tokens_details: { cached_tokens: 7200, cache_write_tokens: 1200 },
+    })).toEqual({ inputTokens: 3, cachedInputTokens: 6000, cacheWriteTokens: 1200 })
+  })
+
+  test('DeepSeek hit/miss counters', () => {
+    expect(splitOpenAIPromptUsage({ prompt_tokens: 100, prompt_cache_hit_tokens: 60, prompt_cache_miss_tokens: 40 }))
+      .toEqual({ inputTokens: 40, cachedInputTokens: 60, cacheWriteTokens: 0 })
+  })
+
+  test('missing usage is all zeros', () => {
+    expect(splitOpenAIPromptUsage(undefined)).toEqual({ inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0 })
   })
 })

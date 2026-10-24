@@ -26,6 +26,12 @@ export type ChatNotificationClickData =
   | { conversationId: string; threadRootId?: string | null; taskId?: undefined }
   /** A tap on the agents notification: open that agent (`shogo://agents/<key>`). */
   | { agentKey: string; conversationId?: undefined; taskId?: undefined }
+  /**
+   * A tap on any other notification that carries an in-app destination (e.g.
+   * `invitation_pending` → the invitation accept page). Always an app-relative
+   * path (`/...`).
+   */
+  | { actionUrl: string; conversationId?: undefined; taskId?: undefined }
 
 export interface ChannelNotificationPayload {
   conversationId: string
@@ -33,6 +39,10 @@ export interface ChannelNotificationPayload {
   threadRootId: string | null
   title: string
   body: string
+  /** True when the app already played the message cue, so the OS alert stays quiet. */
+  silent?: boolean
+  /** Why this alert fired; shown as the title's label ("Direct message"). */
+  reason?: string
 }
 
 export async function notifyChannelMessage(_p: ChannelNotificationPayload): Promise<void> {
@@ -45,6 +55,11 @@ export function setActiveChannelNotificationContext(_conversationId: string | nu
 
 export async function isUserInactive(): Promise<boolean> {
   return false
+}
+
+/** Desktop only: asks the OS for attention (dock bounce, taskbar flash). */
+export async function requestAttention(_reason: string | null | undefined): Promise<void> {
+  // no-op fallback
 }
 
 export async function ensureNotificationPermission(): Promise<boolean> {

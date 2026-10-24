@@ -376,30 +376,92 @@ export function loadBundledClaudeCodeSkill(source: string, dirName: string): Ski
  * Build a skills description block for injection into the system prompt.
  * Only includes skills where disable-model-invocation is false.
  * Respects a character budget (default: 16000 chars).
+ *
+ * When the list does not fit the budget the section ends with a footer naming
+ * how many skills were omitted (and the first few by name) so the model knows
+ * the list is incomplete and can `skill({ action: "search" })` for the rest.
+ * `onTruncate` fires with the counts when — and only when — something was cut.
  */
 export function buildSkillsPromptSection(
   skills: Skill[],
   charBudget?: number,
+  onTruncate?: (info: { included: number; omitted: number; omittedNames: string[] }) => void,
 ): string {
   const budget = charBudget || parseInt(process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET || '16000', 10)
   const invocableSkills = skills.filter(s => !s.disableModelInvocation)
 
   if (invocableSkills.length === 0) return ''
 
-  let section = '## Available Skills\n\nUse the `skill` tool to invoke these skills when relevant:\n\n'
-  let currentSize = section.length
+  const header = '## Available Skills\n\nUse the `skill` tool to invoke these skills when relevant:\n\n'
 
-  for (const skill of invocableSkills) {
+  const formatLine = (skill: Skill): string => {
     let line = `- **${skill.name}**: ${skill.description}`
     if (skill.argumentHint) line += ` (args: ${skill.argumentHint})`
     if (skill.scripts && skill.scripts.length > 0) line += ` [scripts: ${skill.scripts.join(', ')}]`
-    line += '\n'
+    return `${line}\n`
+  }
+
+  const MAX_FOOTER_NAMES = 40
+  const buildFooter = (omittedNames: string[]): string => {
+    if (omittedNames.length === 0) return ''
+    const shown = omittedNames.slice(0, MAX_FOOTER_NAMES)
+    const names = shown.join(', ') + (omittedNames.length > shown.length ? ', …' : '')
+    return `- …and ${omittedNames.length} more installed skills not listed here (${names}). Call skill({ action: "search", query }) to find them.\n`
+  }
+
+  const included: Skill[] = []
+  let currentSize = header.length
+
+  for (const skill of invocableSkills) {
+    const line = formatLine(skill)
     if (currentSize + line.length > budget) break
-    section += line
+    included.push(skill)
     currentSize += line.length
   }
 
+  // The footer's length varies with the omitted names, so drop listed skills
+  // until the whole section — header, lines and footer — fits the budget.
+  let omittedNames = invocableSkills.slice(included.length).map(s => s.name)
+  let footer = buildFooter(omittedNames)
+  while (omittedNames.length > 0 && currentSize + footer.length > budget && included.length > 0) {
+    const dropped = included.pop()!
+    currentSize -= formatLine(dropped).length
+    omittedNames = [dropped.name, ...omittedNames]
+    footer = buildFooter(omittedNames)
+  }
+
+  let section = header + included.map(formatLine).join('') + footer
+  if (section.length > budget) {
+    // Budget too small to fit even the omission footer — send the header alone.
+    section = header
+  }
+
+  if (omittedNames.length > 0) {
+    onTruncate?.({
+      included: included.length,
+      omitted: omittedNames.length,
+      omittedNames,
+    })
+  }
+
   return section
+}
+
+/**
+ * Build the prompt injected when `matchSkill` picks up a trigger word.
+ * Shared by the channel message loop and `buildChatPrompt` so the two do not
+ * drift (they previously both claimed the skill was "for this integration").
+ */
+export function buildSkillMatchPrompt(skill: Skill, text: string): string {
+  return [
+    `[Skill: ${skill.name}]`,
+    `A skill you have installed matched this request. Follow its instructions below; if they are not enough, use skill({ action: "invoke", skill: "${skill.name}" }) for its full body or search_integrations for the tools it references.`,
+    ``,
+    skill.content,
+    ``,
+    `[User Message]`,
+    text,
+  ].join('\n')
 }
 
 // ---------------------------------------------------------------------------

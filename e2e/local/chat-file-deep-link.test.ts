@@ -3,7 +3,12 @@
 import { test, expect, type Page, type Route } from "@playwright/test"
 
 /**
- * File paths in an assistant message open the project's IDE.
+ * File paths in an assistant message open the file: the workspace chat shows
+ * its own viewer pane, and a project chat deep-links into the project's IDE.
+ *
+ * A mentioned path renders as a `chat-file-chip` when the runtime reports it
+ * as a real file and as a `chat-file-link` when it does not (#1471), so the
+ * specs match either.
  *
  * The model reply is a mocked SSE turn (no provider). The project, the
  * fixture files, and the save round-trip go through the real local API.
@@ -56,6 +61,11 @@ async function installChatMock(page: Page) {
 
 function composer(page: Page) {
   return page.getByTestId("project-composer-input").or(page.getByTestId("home-composer-input"))
+}
+
+/** A mentioned path is a chip when it exists in the workspace, a link when not. */
+function mentionedFile(page: Page, name: string) {
+  return page.getByTestId(/^chat-file-(chip|link)$/).filter({ hasText: name })
 }
 
 async function send(page: Page, text: string) {
@@ -149,24 +159,40 @@ test.describe("Chat file deep links", () => {
     await page?.close()
   })
 
-  test("workspace chat opens a markdown file in the IDE preview", async () => {
+  test("workspace chat opens a mentioned markdown file in the workspace viewer", async () => {
     nextReply = `Done — report written to the project folder:\n\n${projectId}/E2E-REPORT.md (3 lines)`
     await send(page, "Write the report")
 
-    const link = page.getByTestId("chat-file-link").filter({ hasText: "E2E-REPORT.md" })
+    const link = mentionedFile(page, "E2E-REPORT.md")
+    await expect(link).toBeVisible({ timeout: 20_000 })
+    await link.click()
+
+    // #1474: the workspace chat opens the mentioned file in its own pane
+    // instead of navigating away to the project's IDE.
+    await expect(page.getByTestId("workspace-file-viewer")).toBeVisible({ timeout: 20_000 })
+    const viewer = page.getByTestId("workspace-file-markdown")
+    await expect(viewer).toContainText("E2E Report Heading", { timeout: 20_000 })
+    expect(new URL(page.url()).pathname).toBe("/")
+  })
+
+  test("the project chat opens the mentioned file in the IDE, and edits save to disk", async () => {
+    await page.goto(`/projects/${projectId}`)
+    await composer(page).waitFor({ state: "visible", timeout: 60_000 })
+
+    nextReply = `Done — report written to the project folder:\n\n${projectId}/E2E-REPORT.md (3 lines)`
+    await send(page, "Open the report")
+
+    const link = mentionedFile(page, "E2E-REPORT.md").last()
     await expect(link).toBeVisible({ timeout: 20_000 })
     await link.click()
 
     await expect(page).toHaveURL(new RegExp(`/projects/${projectId}`), { timeout: 20_000 })
-    await expect(page).toHaveURL(/tab=ide/)
-    await expect(page.getByText("E2E-REPORT.md").first()).toBeVisible({ timeout: 30_000 })
+    await expect(page).toHaveURL(/navTab=ide/)
     const preview = page.getByTestId("ide-md-preview")
     await expect(preview).toBeVisible({ timeout: 30_000 })
     await expect(preview.getByRole("heading", { name: "E2E Report Heading" })).toBeVisible()
     await expect(preview.locator(".monaco-editor")).toHaveCount(0)
-  })
 
-  test("edit mode saves the markdown back to disk", async () => {
     await page.getByTestId("ide-md-mode-edit").click()
     const editor = page.locator(".monaco-editor").last()
     await expect(editor).toBeVisible()
@@ -189,7 +215,7 @@ test.describe("Chat file deep links", () => {
   test("a non-markdown path opens straight in the code editor", async () => {
     nextReply = `Updated \`${projectId}/src/e2e-fixture.ts\``
     await send(page, "Show the fixture")
-    const link = page.getByTestId("chat-file-link").filter({ hasText: "e2e-fixture.ts" })
+    const link = mentionedFile(page, "e2e-fixture.ts")
     await expect(link).toBeVisible({ timeout: 20_000 })
     await link.click()
     await expect(page.getByText("e2e-fixture.ts").first()).toBeVisible({ timeout: 20_000 })
@@ -201,7 +227,7 @@ test.describe("Chat file deep links", () => {
     const before = page.url()
     nextReply = `Done — report written to the project folder:\n\n${projectId}/E2E-REPORT.md (3 lines)`
     await send(page, "Open the report again")
-    const link = page.getByTestId("chat-file-link").filter({ hasText: "E2E-REPORT.md" }).last()
+    const link = mentionedFile(page, "E2E-REPORT.md").last()
     await expect(link).toBeVisible({ timeout: 20_000 })
     await link.click()
     await expect(page.getByTestId("ide-md-preview")).toBeVisible()
@@ -212,8 +238,8 @@ test.describe("Chat file deep links", () => {
     nextReply = "Use and/or here, see https://example.com/a.md, and\n```\nfoo/bar.md\n```"
     await send(page, "No files this time")
     await expect(page.getByText("https://example.com/a.md")).toBeVisible({ timeout: 20_000 })
-    await expect(page.getByTestId("chat-file-link").filter({ hasText: "foo/bar.md" })).toHaveCount(0)
-    await expect(page.getByTestId("chat-file-link").filter({ hasText: "example.com" })).toHaveCount(0)
+    await expect(mentionedFile(page, "foo/bar.md")).toHaveCount(0)
+    await expect(mentionedFile(page, "example.com")).toHaveCount(0)
     await expect(page.locator('a[href^="https://example.com/a.md"]')).toBeVisible()
   })
 })

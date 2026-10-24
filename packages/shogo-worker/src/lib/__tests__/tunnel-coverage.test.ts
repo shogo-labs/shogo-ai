@@ -371,6 +371,40 @@ describe('collectMetadata() (L259-286)', () => {
     expect(Array.isArray(captured.metadata.projects)).toBe(true);
   });
 
+  it('carries the owner-gated machine snapshot when the resolver provides one', async () => {
+    let captured: any = null;
+    global.fetch = ((_url: string, init?: RequestInit) => {
+      captured = JSON.parse(init?.body as string ?? '{}');
+      return fakeHeartbeatResp() as any;
+    }) as any;
+    const snapshot = {
+      machine: { id: 'device-1', hostname: 'mac' },
+      workspaces: [{ id: 'lw-1', name: 'Personal', projectCount: 3 }],
+      activity: { runningTurns: 1 },
+    };
+    const t = makeTunnel({
+      resolver: makeResolver({ machineSnapshot: async () => snapshot }),
+    });
+    await t._testing().sendHeartbeat();
+    t.stop();
+    expect(captured.metadata.machine).toEqual(snapshot);
+  });
+
+  it('still heartbeats when the machine snapshot fails', async () => {
+    let captured: any = null;
+    global.fetch = ((_url: string, init?: RequestInit) => {
+      captured = JSON.parse(init?.body as string ?? '{}');
+      return fakeHeartbeatResp() as any;
+    }) as any;
+    const t = makeTunnel({
+      resolver: makeResolver({ machineSnapshot: async () => { throw new Error('db down'); } }),
+    });
+    await t._testing().sendHeartbeat();
+    t.stop();
+    expect(captured.metadata.machine).toBeUndefined();
+    expect(captured.metadata.protocolVersion).toBe(TUNNEL_PROTOCOL_VERSION);
+  });
+
   it('handles resolver.getActiveProjects() throwing', async () => {
     let captured: any = null;
     global.fetch = ((_url: string, init?: RequestInit) => {

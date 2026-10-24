@@ -25,6 +25,12 @@ import {
   getShogoAgentName,
   withShogoCommitTrailer,
 } from '@shogo/shared-runtime/agent-attribution';
+import {
+  ensureShogoExcludes,
+  evictStaleGitLock,
+  isRepairInProgress,
+  untrackShogoStatePaths,
+} from '@shogo/shared-runtime/shogo-state-paths';
 
 const execAsync = promisify(exec);
 
@@ -161,7 +167,10 @@ build/
 
 # Shogo agent runtime state (SQLite databases, per-checkpoint snapshots).
 # Held open by the agent runtime and managed out-of-band, not project content.
-.shogo/
+# .shogo/* rather than .shogo/ so the single durable exception below can be
+# re-included: an agent's memory write history is state that must survive.
+.shogo/*
+!.shogo/memory-history/
 
 # Agent scratch files (/tmp writes are remapped here). Not project content.
 .tmp/
@@ -255,6 +264,35 @@ function ensureCheckpointSafeGitConfig(workspacePath: string): void {
 }
 
 /**
+ * Re-include an agent's memory write history inside the otherwise-ignored
+ * `.shogo/` tree (see `memory-history.ts` in agent-runtime). Every memory
+ * write leaves a copy under `.shogo/memory-history/`, and those copies need
+ * to ride along in checkpoints — otherwise the one thing that saves an agent
+ * from a wiped `MEMORY.md` is itself unversioned.
+ */
+const MEMORY_HISTORY_IGNORE_EXCEPTION = '!.shogo/memory-history/';
+
+/**
+ * Canonical key for one `.gitignore` entry, so equivalent spellings compare
+ * equal. A trailing `/` (directory-only) and a trailing `/*` (contents-only)
+ * both collapse onto the bare path, and a leading `!` is kept so a negation
+ * never matches the pattern it re-includes.
+ *
+ * Without this, `node_modules` vs `node_modules/` was the only equivalence we
+ * honoured, which silently broke the `.shogo/*` requirement: stripping a
+ * trailing slash off `.shogo/*` leaves `.shogo/*`, so a legacy `.shogo/` line
+ * never matched and we appended a second, competing spelling next to it.
+ */
+function normalizeIgnoreEntry(entry: string): string {
+  const trimmed = entry.trim();
+  const negated = trimmed.startsWith('!');
+  let key = negated ? trimmed.slice(1) : trimmed;
+  key = key.replace(/^\/+/, '').replace(/\/+$/, '');
+  if (key.endsWith('/*')) key = key.slice(0, -2);
+  return negated ? `!${key}` : key;
+}
+
+/**
  * Entries we always want ignored in a Shogo-managed workspace. Staging these
  * on Windows is what triggers the long-path crash in the first place, and
  * committing a 1 GB `node_modules/` tree is never what the user wants.
@@ -295,7 +333,16 @@ const REQUIRED_IGNORE_ENTRIES = [
   // Windows the SQLite handles can't be unlinked while open, so any
   // `git checkout` (most importantly the rollback path) errors out
   // with `unable to unlink old '.shogo/index.db-shm': Invalid argument`.
-  '.shogo/',
+  //
+  // `.shogo/*` (not `.shogo/`) for one reason: an agent's memory write
+  // history under `.shogo/memory-history/` is the one durable thing in
+  // there, and a `.shogo/` pattern excludes the whole directory so git
+  // never looks inside to honour the negation. See memory-history.ts
+  // (agent-runtime) and ensureMemoryHistoryTrackable() below, which owns
+  // the matching negation — it is not listed here because a negation is
+  // only meaningful directly after the pattern it re-includes, and that
+  // pairing is that helper's job.
+  '.shogo/*',
   // Scratch dir. write_file remaps /tmp here; it is not project content
   // and must not be checkpointed, synced, or published.
   '.tmp/',
@@ -328,8 +375,6 @@ const UNTRACK_IF_TRACKED: readonly string[] = [
   'build',
   '.output',
   '.nitro',
-  '.shogo',
-  '.tmp',
 ];
 
 /**
@@ -418,6 +463,7 @@ function ensureGitignoreIgnoresDeps(workspacePath: string): void {
   const gitignorePath = join(workspacePath, '.gitignore');
   if (!existsSync(gitignorePath)) {
     writeFileSync(gitignorePath, DEFAULT_GITIGNORE);
+    ensureMemoryHistoryTrackable(workspacePath);
     return;
   }
 
@@ -434,22 +480,84 @@ function ensureGitignoreIgnoresDeps(workspacePath: string): void {
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith('#'))
+      .map(normalizeIgnoreEntry)
   );
 
-  const missing = REQUIRED_IGNORE_ENTRIES.filter((entry) => {
-    // Treat `node_modules` and `node_modules/` as equivalent.
-    const bare = entry.replace(/\/$/, '');
-    return !existing.has(entry) && !existing.has(bare);
+  const missing = REQUIRED_IGNORE_ENTRIES.filter(
+    (entry) => !existing.has(normalizeIgnoreEntry(entry))
+  );
+
+  if (missing.length > 0) {
+    const prefix = contents.length === 0 || contents.endsWith('\n') ? '' : '\n';
+    const block = `${prefix}\n# Added by Shogo AI to prevent committing dependency trees\n${missing.join('\n')}\n`;
+    try {
+      appendFileSync(gitignorePath, block);
+    } catch {
+      // Best-effort; don't abort git operations over a .gitignore write failure.
+    }
+  }
+
+  // Must run after the required entries land: repos created before
+  // 2026-10-19 ignore all of `.shogo/`, which defeats the exception.
+  ensureMemoryHistoryTrackable(workspacePath);
+}
+
+/**
+ * Guarantee the `.shogo` pair is on its canonical form: exactly one `.shogo/*`
+ * line, immediately followed by `!.shogo/memory-history/`.
+ *
+ * A legacy `.shogo/` line has to be *replaced*, not appended to — a `.shogo/`
+ * pattern excludes the directory itself, so git never descends into it and the
+ * negation would be dead. The negation must also land after the pattern it
+ * re-includes (last matching pattern wins), wherever the legacy line sat in
+ * the file, and no spelling may appear twice: appending a `.shogo/*` next to a
+ * legacy `.shogo/` and then rewriting the legacy line is what produced two
+ * identical `.shogo/*` entries.
+ *
+ * Idempotent, best-effort, and a no-op once the file is canonical.
+ */
+function ensureMemoryHistoryTrackable(workspacePath: string): void {
+  const gitignorePath = join(workspacePath, '.gitignore');
+  let contents: string;
+  try {
+    contents = readFileSync(gitignorePath, 'utf-8');
+  } catch {
+    return;
+  }
+
+  const shogoContentsKey = normalizeIgnoreEntry('.shogo/*');
+  const exceptionKey = normalizeIgnoreEntry(MEMORY_HISTORY_IGNORE_EXCEPTION);
+
+  const lines = contents.split(/\r?\n/);
+  const isPattern = (line: string) => normalizeIgnoreEntry(line) === shogoContentsKey;
+  const isException = (line: string) => normalizeIgnoreEntry(line) === exceptionKey;
+
+  const firstPattern = lines.findIndex(isPattern);
+  if (firstPattern === -1) {
+    // No `.shogo` pattern at all. Nothing to pair the negation with — the
+    // required-entries pass above is what adds the pattern, and it runs first.
+    return;
+  }
+
+  const next: string[] = [];
+  lines.forEach((line, index) => {
+    if (isPattern(line) || isException(line)) {
+      // Re-emit the pair once, at the position of the first pattern.
+      if (index === firstPattern) {
+        next.push('.shogo/*', MEMORY_HISTORY_IGNORE_EXCEPTION);
+      }
+      return;
+    }
+    next.push(line);
   });
 
-  if (missing.length === 0) return;
+  const rewritten = next.join('\n');
+  if (rewritten === contents) return;
 
-  const prefix = contents.length === 0 || contents.endsWith('\n') ? '' : '\n';
-  const block = `${prefix}\n# Added by Shogo AI to prevent committing dependency trees\n${missing.join('\n')}\n`;
   try {
-    appendFileSync(gitignorePath, block);
+    writeFileSync(gitignorePath, rewritten);
   } catch {
-    // Best-effort; don't abort git operations over a .gitignore write failure.
+    // Best-effort; a locked .gitignore must not fail a checkpoint.
   }
 }
 
@@ -480,28 +588,7 @@ const STALE_INDEX_LOCK_MS = 5_000;
  */
 function evictStaleIndexLock(workspacePath: string): void {
   if (!isGitRepo(workspacePath)) return;
-  const lockPath = join(workspacePath, '.git', 'index.lock');
-  let stat;
-  try {
-    stat = statSync(lockPath);
-  } catch {
-    return; // No lock — nothing to do.
-  }
-  const ageMs = Date.now() - stat.mtimeMs;
-  if (ageMs < STALE_INDEX_LOCK_MS) return;
-  try {
-    unlinkSync(lockPath);
-    console.warn(
-      `[git.service] Removed stale .git/index.lock (age ${Math.round(ageMs / 1000)}s) at ${workspacePath}`
-    );
-  } catch (err: any) {
-    // Lock may have been released between stat and unlink — that's fine.
-    // Anything else (permissions, locked by Win32 file handle) we surface
-    // implicitly when the next `git` command fails with a clearer error.
-    if (err?.code !== 'ENOENT') {
-      console.warn(`[git.service] Could not remove .git/index.lock: ${err?.message ?? err}`);
-    }
-  }
+  evictStaleGitLock(workspacePath, STALE_INDEX_LOCK_MS, console);
 }
 
 /**
@@ -515,6 +602,11 @@ function evictStaleIndexLock(workspacePath: string): void {
  * lived in `.gitignore` ended up with the build artifacts committed.
  * Just appending to `.gitignore` doesn't fix existing tracking — we
  * have to actively evict them from the index.
+ *
+ * Shogo's own runtime state (`.shogo/sessions.db` + its live WAL, logs,
+ * `.tmp/`) is handled by the shared predicate in `shogo-state-paths.ts` and
+ * only after `await`ing {@link pruneShogoRuntimeState} — a `snapshotTree`
+ * caller that cannot await keeps the sync-only half.
  */
 function untrackNowIgnoredPaths(workspacePath: string): void {
   if (!isGitRepo(workspacePath)) return;
@@ -533,6 +625,34 @@ function untrackNowIgnoredPaths(workspacePath: string): void {
       // Best-effort: a missing path or a git version that lacks one of
       // these flags shouldn't block the checkpoint.
     }
+  }
+}
+
+/**
+ * Install the managed exclude block and drop Shogo runtime state from the
+ * index (files stay on disk). Idempotent — one `git ls-files` when the repo is
+ * already clean — so it is safe to run before every commit.
+ */
+async function pruneShogoRuntimeState(
+  workspacePath: string,
+  opts: { indexFile?: string } = {}
+): Promise<void> {
+  if (!isGitRepo(workspacePath)) return;
+  evictStaleIndexLock(workspacePath);
+  ensureShogoExcludes(workspacePath, console);
+  try {
+    // A snapshot stages into a temp index seeded from the parent commit, so the
+    // tracked-ness has to be undone *in that index* or the next `git add -A`
+    // re-stages `.shogo/sessions.db` forever.
+    const env = opts.indexFile ? { ...process.env, GIT_INDEX_FILE: opts.indexFile } : undefined;
+    const { removed } = await untrackShogoStatePaths(workspacePath, { logger: console, env });
+    if (removed > 0) {
+      console.log(
+        `[git.service] Untracked ${removed} Shogo runtime-state path(s) in ${workspacePath}`
+      );
+    }
+  } catch (err: any) {
+    console.warn(`[git.service] Untracking Shogo runtime state failed: ${err?.message ?? err}`);
   }
 }
 
@@ -556,6 +676,7 @@ export async function initRepo(
     ensureGitignoreIgnoresDeps(workspacePath);
     evictStaleIndexLock(workspacePath);
     untrackNowIgnoredPaths(workspacePath);
+    await pruneShogoRuntimeState(workspacePath);
     const branch = await getCurrentBranch(workspacePath);
     return { created: false, branch };
   }
@@ -619,6 +740,29 @@ export async function getCurrentBranch(workspacePath: string): Promise<string> {
     return result.trim() || 'main';
   } catch {
     return 'main';
+  }
+}
+
+/**
+ * The URL of the repo's `origin` remote, or `null` when it has none (or the
+ * path isn't a git repo, or git isn't available).
+ *
+ * Checkpoint ownership hangs off this. Shogo's own `initRepo` creates a repo
+ * with no remotes and the cloud pod pushes to GitHub with an explicit URL, so
+ * an `origin` always means a human (or `github_connect`) pointed this folder
+ * at an external repository — Shogo must never commit into it.
+ */
+export async function getOriginRemoteUrl(workspacePath: string): Promise<string | null> {
+  try {
+    const url = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+      cwd: workspacePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })
+    return String(url).trim() || null
+  } catch {
+    // No origin (exit 1), not a repo, or no git — all mean "not foreign".
+    return null
   }
 }
 
@@ -720,6 +864,13 @@ export async function commit(
   requireGit();
   const { message, author, email, includeUntracked = true } = options;
 
+  // A history rewrite is moving this repo's refs; a commit now would be
+  // discarded by it. Skip this checkpoint — the next one commits the tree.
+  if (isRepairInProgress(workspacePath)) {
+    console.log(`[git.service] ${workspacePath}: checkpoint repo is being repaired, skipping commit`);
+    return null;
+  }
+
   // Self-heal legacy repos that pre-date these settings: enable long paths,
   // disable CRLF rewriting, and make sure node_modules/ is ignored so the
   // stage step below doesn't trip on Windows MAX_PATH inside deep
@@ -742,6 +893,12 @@ export async function commit(
   // disk; the index entry is removed so this commit records a clean
   // deletion and future runs find nothing to evict.
   untrackNowIgnoredPaths(workspacePath);
+
+  // Shogo runtime state (`.shogo/sessions.db` + live WAL, logs, `.tmp/`):
+  // install the exclude rules and drop it from the index. Without this an
+  // older repo re-stages its live SQLite files on every single checkpoint
+  // (SHO-105 / #1597).
+  await pruneShogoRuntimeState(workspacePath);
 
   // Sweep Win32-reserved-name files (`nul`, `con`, …) out of the working
   // tree before staging. These are virtually always shell-redirect garbage
@@ -784,6 +941,284 @@ export async function commit(
 
   // Get the commit we just created
   return await getCommit(workspacePath, 'HEAD');
+}
+
+// =============================================================================
+// Ref snapshots (checkpoints that never touch HEAD)
+// =============================================================================
+
+/**
+ * Namespace for checkpoint snapshot commits. Deliberately outside
+ * `refs/heads/*` so `git push <remote> <branch>`, `git push --all` and
+ * `syncAfterCheckpoint` can never publish a Shogo snapshot onto the user's
+ * branch. `git gc` treats a ref as a root, so live refs also keep the
+ * snapshot's objects alive.
+ */
+export const CHECKPOINT_REF_PREFIX = 'refs/shogo/checkpoints';
+
+/** Characters git forbids in a ref component (see `git check-ref-format`). */
+function toRefSegment(value: string): string {
+  const cleaned = value
+    .replace(/[\s~^:?*[\]\\]+/g, '-')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^[./-]+|[./-]+$/g, '');
+  return cleaned.length > 0 ? cleaned : 'head';
+}
+
+/**
+ * Build the ref that pins one snapshot:
+ * `refs/shogo/checkpoints/<branch>/<ISO8601>-<short-sha>`.
+ *
+ * ISO8601 contains `:` (and `+` for offsets), which `git check-ref-format`
+ * rejects, so both are rewritten to `-` — the result still sorts
+ * lexicographically by time.
+ */
+export function checkpointRefName(branch: string, sha: string, at: Date = new Date()): string {
+  const stamp = toRefSegment(at.toISOString());
+  return `${CHECKPOINT_REF_PREFIX}/${toRefSegment(branch || 'detached')}/${stamp}-${sha.slice(0, 7)}`;
+}
+
+export interface GitSnapshot {
+  /** Commit object holding the tree. Reachable only from `refName`. */
+  sha: string;
+  shortSha: string;
+  /** Live ref pinning `sha`. Not a branch — never pushed. */
+  refName: string;
+  branch: string;
+  message: string;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface SnapshotTreeOptions {
+  message: string;
+  /** Branch to namespace the ref under. Defaults to the checked-out branch. */
+  branch?: string;
+}
+
+/**
+ * Record the working tree as a commit **without** touching HEAD, the real
+ * index, the working tree, or any remote.
+ *
+ * This is the checkpoint mechanism for GitHub-connected projects: previously
+ * `commit()` wrote an `AI: …` commit authored by `agent@shogo.ai` onto
+ * whatever branch the user had checked out, and `syncAfterCheckpoint` pushed
+ * it. A snapshot instead:
+ *
+ *   1. resolves the current `HEAD` as the snapshot's parent (none in an
+ *      empty repo);
+ *   2. stages the tree into a **temporary index** (`GIT_INDEX_FILE`) seeded
+ *      from that parent, so untracked files are captured and `.gitignore`
+ *      still applies;
+ *   3. writes the tree with `git write-tree` and the commit with
+ *      `git commit-tree` — a commit that no branch points at;
+ *   4. pins it with `git update-ref refs/shogo/checkpoints/<branch>/<stamp>`.
+ *
+ * Returns null when the tree is identical to the parent's (nothing to
+ * snapshot), mirroring `commit()`'s "no changes" contract.
+ */
+export async function snapshotTree(
+  workspacePath: string,
+  options: SnapshotTreeOptions,
+): Promise<GitSnapshot | null> {
+  requireGit();
+  const { message } = options;
+
+  if (!isGitRepo(workspacePath)) {
+    throw new Error(`Not a git repository: ${workspacePath}`);
+  }
+
+  const branch = options.branch ?? (await getCurrentBranch(workspacePath));
+  const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
+    cwd: workspacePath,
+    encoding: 'utf-8',
+    stdio: 'pipe',
+  }).trim();
+
+  // A stale lock would make `git add -A` fail; the temp index means we can
+  // never be fighting a live `git commit`, but a crash can still leave the
+  // real one behind (and that would break the *next* real commit).
+  evictStaleIndexLock(workspacePath);
+
+  const parent = (() => {
+    try {
+      return execFileSync('git', ['rev-parse', '--verify', 'HEAD'], {
+        cwd: workspacePath,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      }).trim();
+    } catch {
+      return null;
+    }
+  })();
+
+  const indexFile = join(
+    gitDir,
+    `shogo-snapshot-index-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+  );
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_INDEX_FILE: indexFile };
+
+  try {
+    if (parent) {
+      execFileSync('git', ['read-tree', parent], { cwd: workspacePath, env, stdio: 'pipe' });
+    } else {
+      execFileSync('git', ['read-tree', '--empty'], { cwd: workspacePath, env, stdio: 'pipe' });
+    }
+
+    // The temp index was seeded from the parent commit, which may still track
+    // `.shogo/sessions.db` and friends; ignore rules do not apply to a path an
+    // index already holds, so drop them from *this* index before staging.
+    await pruneShogoRuntimeState(workspacePath, { indexFile });
+
+    execFileSync('git', ['add', '-A'], { cwd: workspacePath, env, stdio: 'pipe' });
+    const tree = execFileSync('git', ['write-tree'], {
+      cwd: workspacePath,
+      env,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
+
+    if (parent) {
+      const parentTree = execFileSync('git', ['rev-parse', `${parent}^{tree}`], {
+        cwd: workspacePath,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      }).trim();
+      if (parentTree === tree) return null;
+    } else if (tree === EMPTY_TREE_SHA) {
+      return null;
+    }
+
+    // Identity comes from the environment, not the repo config — a snapshot
+    // must not rewrite `.git/config` in a checkout Shogo only has on loan.
+    const commitEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: getShogoAgentName(),
+      GIT_AUTHOR_EMAIL: getShogoAgentEmail(),
+      GIT_COMMITTER_NAME: getShogoAgentName(),
+      GIT_COMMITTER_EMAIL: getShogoAgentEmail(),
+    };
+    const commitArgs = ['commit-tree', tree];
+    if (parent) commitArgs.push('-p', parent);
+    commitArgs.push('-m', message, '-m', 'Shogo-Checkpoint: 1');
+    const sha = execFileSync('git', commitArgs, {
+      cwd: workspacePath,
+      env: commitEnv,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
+
+    const refName = checkpointRefName(branch, sha);
+    execFileSync('git', ['update-ref', refName, sha], { cwd: workspacePath, stdio: 'pipe' });
+
+    const stats = snapshotShortstat(workspacePath, parent, sha, tree);
+
+    return {
+      sha,
+      shortSha: sha.slice(0, 7),
+      refName,
+      branch,
+      message,
+      filesChanged: stats.filesChanged,
+      additions: stats.additions,
+      deletions: stats.deletions,
+    };
+  } finally {
+    try {
+      unlinkSync(indexFile);
+    } catch {
+      /* already gone — the temp index is disposable */
+    }
+  }
+}
+
+/** The empty tree object, stable across every git version. */
+const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+function snapshotShortstat(
+  workspacePath: string,
+  parent: string | null,
+  sha: string,
+  tree: string,
+): { filesChanged: number; additions: number; deletions: number } {
+  let stats = '';
+  try {
+    stats = execFileSync(
+      'git',
+      parent
+        ? ['diff', '--shortstat', parent, tree]
+        : ['diff-tree', '--shortstat', '--root', sha],
+      { cwd: workspacePath, encoding: 'utf-8', stdio: 'pipe' },
+    ).trim();
+  } catch {
+    return { filesChanged: 0, additions: 0, deletions: 0 };
+  }
+
+  const filesMatch = stats.match(/(\d+) files? changed/);
+  const addMatch = stats.match(/(\d+) insertions?\(\+\)/);
+  const delMatch = stats.match(/(\d+) deletions?\(-\)/);
+  return {
+    filesChanged: filesMatch ? parseInt(filesMatch[1]!, 10) : 0,
+    additions: addMatch ? parseInt(addMatch[1]!, 10) : 0,
+    deletions: delMatch ? parseInt(delMatch[1]!, 10) : 0,
+  };
+}
+
+/**
+ * Delete the ref that pinned a snapshot. Called when a checkpoint row is
+ * pruned: once the last ref goes, the objects become unreachable and
+ * `git gc` can reclaim them.
+ */
+export async function deleteCheckpointRef(workspacePath: string, refName: string): Promise<boolean> {
+  if (!refName.startsWith(`${CHECKPOINT_REF_PREFIX}/`)) return false;
+  try {
+    execFileSync('git', ['update-ref', '-d', refName], { cwd: workspacePath, stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pin a pre-ref checkpoint (a `mode='branch'` row) with a ref of its own the
+ * first time an older card touches it (diff/prune). Without this a branch
+ * rewrite upstream — a force-push, a rebase, `git gc` after either — can drop
+ * the commit a historical checkpoint row still points at.
+ *
+ * Best-effort: returns null when the commit is not in this repo (already
+ * gone, or the workspace has not been hydrated yet).
+ */
+export async function ensureLegacyCheckpointRef(
+  workspacePath: string,
+  sha: string,
+): Promise<string | null> {
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) return null;
+  const refName = `${CHECKPOINT_REF_PREFIX}/legacy/${sha}`;
+  try {
+    const resolved = execFileSync('git', ['rev-parse', '--verify', `${sha}^{commit}`], {
+      cwd: workspacePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
+    const existing = (() => {
+      try {
+        return execFileSync('git', ['rev-parse', '--verify', refName], {
+          cwd: workspacePath,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        }).trim();
+      } catch {
+        return null;
+      }
+    })();
+    if (existing !== resolved) {
+      execFileSync('git', ['update-ref', refName, resolved], { cwd: workspacePath, stdio: 'pipe' });
+    }
+    return refName;
+  } catch {
+    return null;
+  }
 }
 
 /**

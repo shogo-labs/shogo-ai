@@ -79,6 +79,20 @@ test.describe("Channel boards", () => {
     await expect.poll(async () => (await cards()).items[0].columnId, { timeout: 15_000 }).toBe(doing.id)
   })
 
+  test("a card's channel post is a card, and tapping it opens the card", async () => {
+    const item = (await cards()).items[0]
+    await page.getByTestId("channel-tabs").getByRole("tab", { name: "Messages" }).click()
+    const post = page.getByTestId("work-item-card").first()
+    await expect(post).toBeVisible({ timeout: 30_000 })
+    await expect(post).toContainText(item.key)
+    await expect(post).toContainText(item.title)
+    await post.click()
+    await expect(page).toHaveURL(new RegExp(`card=${item.id}`))
+    await expect(cardPane(page)).toBeVisible({ timeout: 15_000 })
+    await page.getByRole("button", { name: "Close card" }).click()
+    await page.getByTestId("channel-tabs").getByRole("tab", { name: boardName }).click()
+  })
+
   test("a card opens beside the board, takes an assignee, and shows its history", async () => {
     const item = (await cards()).items[0]
     await page.getByTestId(`board-card-${item.key}`).click()
@@ -108,6 +122,31 @@ test.describe("Channel boards", () => {
     await expect(cardPane(page).getByTestId("card-column")).toContainText(done.name, { timeout: 15_000 })
     await page.getByRole("button", { name: "Close card" }).click()
     await expect(page).not.toHaveURL(/card=/)
+  })
+
+  test("a card's description and summary live on its Details tab", async () => {
+    const item = (await cards()).items[0]
+    const description = `Retry loop double-charges the customer ${suffix}`
+    const summary = `Rolled back the deploy; watching the next hour ${suffix}`
+    const patched = await api(page, "PATCH", `/api/work-items/${item.id}`, { description, historySummary: summary })
+    expect(patched.status).toBeLessThan(300)
+
+    await page.getByTestId(`board-card-${item.key}`).click()
+    await expect(page.getByTestId("card-details")).toHaveCount(0)
+    await expect(cardPane(page).getByTestId("card-tab-thread")).toHaveAttribute("aria-selected", "true")
+
+    await cardPane(page).getByTestId("card-tab-details").click()
+    const details = page.getByTestId("card-details")
+    await expect(details).toBeVisible()
+    await expect(details).toContainText(description)
+    await expect(details).toContainText("Summary")
+    await expect(details).toContainText(summary)
+    await expect(kanban(page)).toBeVisible()
+
+    await cardPane(page).getByTestId("card-tab-thread").click()
+    await expect(page.getByTestId("card-details")).toHaveCount(0)
+    await expect(cardPane(page).getByTestId("card-tab-thread")).toHaveAttribute("aria-selected", "true")
+    await page.getByRole("button", { name: "Close card" }).click()
   })
 
   test("a message becomes a card from its menu", async () => {

@@ -7,6 +7,7 @@
 import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { homeRegionWorkspaceWhere, homeWorkspaceIds } from '../lib/region'
+import { machineWorkspaceIds, notMachineWorkspaceWhere } from '../lib/machine-workspace'
 import { sendPushToUser } from '../lib/push-notifications'
 import {
   ConversationError,
@@ -260,7 +261,13 @@ export async function sendDueScheduledMessages(now = new Date()): Promise<number
   // unique keys. Null in single-region / local mode (no filtering).
   const home = homeRegionWorkspaceWhere()
   const due = await db.scheduledMessage.findMany({
-    where: { status: 'pending', sendAt: { lte: now }, ...(home ? { conversation: { workspace: home } } : {}) },
+    where: {
+      status: 'pending',
+      sendAt: { lte: now },
+      // A queued message in a machine workspace is the desktop's to send.
+      ...(await notMachineWorkspaceWhere()),
+      ...(home ? { conversation: { workspace: home } } : {}),
+    },
     orderBy: { sendAt: 'asc' },
     take: 100,
   })
@@ -400,11 +407,19 @@ let pushReminder: Pusher = sendPushToUser
 
 export async function fireDueReminders(now = new Date()): Promise<number> {
   // Reminders fire (inbox rows, pushes) in the workspace's home region only.
-  const dueWhere: Record<string, unknown> = { status: 'pending', remindAt: { lte: now } }
+  // A reminder for a machine workspace fires on the desktop, which is where that
+  // person's inbox lives — so the copy never gets here.
+  const machineIds = new Set(await machineWorkspaceIds())
+  const dueWhere: Record<string, unknown> = {
+    status: 'pending',
+    remindAt: { lte: now },
+    ...(machineIds.size ? { workspaceId: { notIn: [...machineIds] } } : {}),
+  }
   if (homeRegionWorkspaceWhere()) {
     const candidates = await db.chatReminder.findMany({ where: dueWhere, distinct: ['workspaceId'], select: { workspaceId: true } })
     const homeIds = await homeWorkspaceIds(candidates.map((c: { workspaceId: string }) => c.workspaceId))
-    if (homeIds) dueWhere.workspaceId = { in: Array.from(homeIds) }
+    // Both narrowings have to survive: the home region and "not a copy".
+    if (homeIds) dueWhere.workspaceId = { in: Array.from(homeIds).filter((id: string) => !machineIds.has(id)) }
   }
   const due = await db.chatReminder.findMany({
     where: dueWhere,

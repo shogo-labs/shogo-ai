@@ -88,7 +88,12 @@ describe('describeTurnFailure', () => {
   })
 
   test('iteration-limit is treated as a continuable state, not a provider error', () => {
-    expect(describeTurnFailure('Reached the maximum iteration limit')).toMatch(/continue/i)
+    const out = describeTurnFailure('Reached the maximum iteration limit')
+    expect(out).toMatch(/more steps than a single run allows/i)
+    expect(out).toMatch(/work so far is saved/i)
+    // The runtime must never harvest the word it used to harvest: a user typing
+    // "continue" is the failure this copy created (SHO-121).
+    expect(out.toLowerCase()).not.toContain('continue')
   })
 
   test('content-policy blocks are explained, not leaked', () => {

@@ -4,7 +4,11 @@
  * checkpoints route — full coverage.
  * Mocks the checkpoint service + prisma.project + prisma.projectCheckpoint.
  */
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 let projects: Map<string, any>
 let projectCheckpoints: Map<string, any>
@@ -36,7 +40,7 @@ beforeEach(() => {
   console.error = () => {}
 })
 
-function app() {
+function app(workspacesDir = '/tmp/ws') {
   const { Hono } = require('hono')
   const a = new Hono()
   a.use('*', async (c: any, next: any) => {
@@ -44,9 +48,91 @@ function app() {
     if (uid) c.set('auth', { userId: uid })
     await next()
   })
-  a.route('/api', checkpointRoutes({ workspacesDir: '/tmp/ws' }))
+  a.route('/api', checkpointRoutes({ workspacesDir }))
   return a
 }
+
+// ─── foreign repo (a checkout of someone else's git repo) ────────────────────
+
+const tmpRoots: string[] = []
+
+/** A workspaces dir whose `p1` folder is a real git repo with a foreign origin. */
+function makeForeignRepoWorkspaces(): string {
+  const root = mkdtempSync(join(tmpdir(), 'cp-foreign-'))
+  tmpRoots.push(root)
+  const repo = join(root, 'p1')
+  mkdirSync(repo)
+  execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'pipe' })
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/repo.git'], {
+    cwd: repo,
+    stdio: 'pipe',
+  })
+  return root
+}
+
+afterEach(() => {
+  while (tmpRoots.length) rmSync(tmpRoots.pop()!, { recursive: true, force: true })
+})
+
+describe('foreign-repo gate', () => {
+  test('POST returns 409 checkpoints_disabled_foreign_repo and never calls the service', async () => {
+    const root = makeForeignRepoWorkspaces()
+    projects.set('p1', { id: 'p1', workingMode: 'managed', githubConnection: null })
+    const r = await app(root).request('/api/projects/p1/checkpoints', {
+      method: 'POST',
+      body: JSON.stringify({ message: 'x' }),
+    })
+    expect(r.status).toBe(409)
+    const body: any = await r.json()
+    expect(body.error.code).toBe('checkpoints_disabled_foreign_repo')
+    expect(body.error.message).toContain('https://github.com/acme/repo.git')
+    expect(svc.createCheckpoint).not.toHaveBeenCalled()
+  })
+
+  test('GET list returns the same 409 shape', async () => {
+    const root = makeForeignRepoWorkspaces()
+    projects.set('p1', { id: 'p1', workingMode: 'managed', githubConnection: null })
+    const r = await app(root).request('/api/projects/p1/checkpoints')
+    expect(r.status).toBe(409)
+    expect((await r.json() as any).error.code).toBe('checkpoints_disabled_foreign_repo')
+    expect(svc.listCheckpoints).not.toHaveBeenCalled()
+  })
+
+  test('rollback refuses with the same code (no git operation attempted)', async () => {
+    const root = makeForeignRepoWorkspaces()
+    projects.set('p1', { id: 'p1', workingMode: 'managed', githubConnection: null })
+    const r = await app(root).request('/api/projects/p1/checkpoints/cp1/rollback', { method: 'POST' })
+    expect(r.status).toBe(409)
+    expect((await r.json() as any).error.code).toBe('checkpoints_disabled_foreign_repo')
+    expect(svc.rollback).not.toHaveBeenCalled()
+  })
+
+  test('a GitHubConnection row lets the same folder through', async () => {
+    const root = makeForeignRepoWorkspaces()
+    projects.set('p1', { id: 'p1', workingMode: 'managed', githubConnection: { id: 'gh1' } })
+    const r = await app(root).request('/api/projects/p1/checkpoints', {
+      method: 'POST',
+      body: JSON.stringify({ message: 'x' }),
+    })
+    expect(r.status).toBe(201)
+    expect(svc.createCheckpoint).toHaveBeenCalled()
+  })
+
+  test('a typed error from the service still lands as the same 409', async () => {
+    projects.set('p1', { id: 'p1', workingMode: 'managed', githubConnection: { id: 'gh1' } })
+    svc.createCheckpoint.mockImplementationOnce(async () => {
+      const e: any = new Error("This project's folder is a checkout of another git repository (x)")
+      e.code = 'checkpoints_disabled_foreign_repo'
+      throw e
+    })
+    const r = await app().request('/api/projects/p1/checkpoints', {
+      method: 'POST',
+      body: JSON.stringify({ message: 'x' }),
+    })
+    expect(r.status).toBe(409)
+    expect((await r.json() as any).error.code).toBe('checkpoints_disabled_foreign_repo')
+  })
+})
 
 // ─── POST create ─────────────────────────────────────────────────────────────
 

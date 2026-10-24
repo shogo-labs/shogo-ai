@@ -70,13 +70,17 @@ describe('createVoiceHandlers — config validation', () => {
     expect(() => createVoiceHandlers({ getUser: async () => null, companionStore: makeCompanionStore() } as any))
       .toThrow(/apiKey is required/)
   })
-  test('throws when apiKey set but getUser missing', () => {
-    expect(() => createVoiceHandlers({ apiKey: 'k', companionStore: makeCompanionStore() } as any))
-      .toThrow(/getUser is required/)
+  test('apiKey alone is enough to construct handlers (tts/music need no stores)', () => {
+    const h = createVoiceHandlers({ apiKey: 'k' } as any)
+    expect(typeof h.tts).toBe('function')
+    expect(typeof h.music).toBe('function')
   })
-  test('throws when getUser set but companionStore missing', () => {
-    expect(() => createVoiceHandlers({ apiKey: 'k', getUser: async () => null } as any))
-      .toThrow(/companionStore is required/)
+  test('user-scoped handlers 500 with a clear message when companionStore is missing', async () => {
+    const h = createVoiceHandlers({ apiKey: 'k', getUser: async () => ({ id: 'u1' }) } as any)
+    const r = await h.signedUrl(new Request('http://x/signed-url'))
+    expect(r.status).toBe(500)
+    const body = await r.json() as any
+    expect(body.detail).toMatch(/companionStore/)
   })
 })
 
@@ -96,15 +100,29 @@ describe('resolveProxyOptions — explicit-config branches', () => {
       proxy: { runtimeToken: 't', projectId: 'p', apiUrl: '' },
     } as any)).toThrow(/proxy requires runtimeToken/)
   })
-  test('warns when apiKey provided alongside proxy (proxy takes priority)', () => {
-    const warns: string[] = []
+  test('an explicit proxy wins over a supplied apiKey', async () => {
+    // The "apiKey is ignored" warning is emitted once per process, so this
+    // asserts the behaviour (proxy transport) rather than the log line.
+    const seen: string[] = []
     const h = createVoiceHandlers({
-      proxy: { runtimeToken: 't', projectId: 'p', apiUrl: 'http://x', fetch: okFetch },
+      proxy: {
+        runtimeToken: 't',
+        projectId: 'p',
+        apiUrl: 'http://x',
+        fetch: (async (input: any) => {
+          seen.push(String(input))
+          return new Response(JSON.stringify({ signedUrl: 'wss://x', agentId: 'a' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }) as unknown as typeof fetch,
+      },
       apiKey: 'xi_should_be_ignored',
-      logger: (level, msg) => { if (level === 'warn') warns.push(msg) },
+      logger: () => {},
     } as any)
-    expect(warns.some(w => /apiKey is ignored/i.test(w) || /runtime-token proxy mode is active/i.test(w))).toBe(true)
-    expect(typeof h.signedUrl).toBe('function')
+    const r = await h.signedUrl(new Request('http://pod/voice/signed-url'))
+    expect(r.status).toBe(200)
+    expect(seen[0]).toContain('http://x/api/voice/signed-url')
   })
 })
 
@@ -113,12 +131,14 @@ describe('proxy-mode handlers — notImplemented + elevenLabs proxy', () => {
     proxy: { runtimeToken: 'rt', projectId: 'p', apiUrl: 'http://api', fetch: fetchImpl ?? okFetch },
   })
 
-  test('tts returns 501 Not Implemented', async () => {
+  test('tts proxies to /api/voice/tts (no longer 501)', async () => {
     const h = createVoiceHandlers(proxyCfg() as any)
-    const r = await h.tts(new Request('http://x/tts', { method: 'POST' }))
-    expect(r.status).toBe(501)
-    const body = await r.json() as any
-    expect(body.detail).toMatch(/runtime-token proxy mode/)
+    const r = await h.tts(new Request('http://x/tts', {
+      method: 'POST',
+      body: JSON.stringify({ text: 'hi' }),
+    }))
+    expect(r.status).not.toBe(501)
+    expect(r.status).toBe(200)
   })
 
   test('agent.create / patch / delete all return 501 in proxy mode', async () => {
@@ -136,8 +156,10 @@ describe('proxy-mode handlers — notImplemented + elevenLabs proxy', () => {
     expect(Array.isArray(body.tags)).toBe(true)
   })
 
-  test('elevenLabs proxy throws when any method is accessed', () => {
+  test('elevenLabs proxy serves media methods and throws for the rest', () => {
     const h = createVoiceHandlers(proxyCfg() as any)
+    expect(typeof (h.elevenLabs as any).textToSpeech).toBe('function')
+    expect(typeof (h.elevenLabs as any).composeMusic).toBe('function')
     expect(() => (h.elevenLabs as any).createAgent({})).toThrow(/proxy mode/)
     expect(() => (h.elevenLabs as any).anyMethodAtAll).toThrow(/proxy mode/)
   })

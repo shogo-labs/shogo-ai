@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#
+# commit-msg: fold every Shogo-generated co-author in the commit message into
+# the one canonical `Co-authored-by: Shogo Agent <agent@shogo.ai>` trailer, and
+# append it when there is none.
+#
+# This is the enforcement point for attribution, not a prompt: it runs for
+# every commit in the repo — `git commit -m`, `-F`, `--amend`, a repo script,
+# `bash -c '…'`, `xargs git commit`, a merge or a rebase — so a path that no
+# caller-side rewriting can see still ends up attributed. Only agent-authored
+# commits are touched: a commit whose author is not a Shogo identity, and a
+# human's checkout of this repo, are left exactly as written.
+#
+# The logic lives in scripts/git-attribution-hook.ts (tracked, like this file).
+# A broken hook must never block a commit, so it exits 0 either way; the
+# report-only "Attribution audit" workflow catches whatever slips through.
+
+set -uo pipefail
+
+if ! command -v bun >/dev/null 2>&1; then
+  exit 0
+fi
+
+hook_dir="$(cd "$(dirname "$0")" && pwd)"
+
+bun "$(dirname "$hook_dir")/scripts/git-attribution-hook.ts" commit-msg "$1" || true
+exit 0

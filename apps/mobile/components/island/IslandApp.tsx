@@ -32,6 +32,13 @@ import { ProjectSwitcher, useWorkspaceProjects } from "./ProjectSwitcher"
 import { SessionList, SessionRow } from "./SessionList"
 import { planAddToProject, saveAttachmentsPrompt, type IslandDropAction } from "./island-drop"
 import { inboxSessions, orderIslandSessions, sortIslandProjects, type IslandProjectItem } from "./island-inbox"
+import { initialIslandView, isWorkspaceAgentChat, parentView, viewForOpen, type IslandView } from "./island-view"
+import {
+  useWorkspaceAgentChats,
+  useWorkspaceAgentName,
+  useWorkspaceAgentSessionCreator,
+} from "./useWorkspaceAgentSession"
+import { workspaceAgentChatRows } from "./workspace-agent-rows"
 import {
   IDLE_TAB_HEIGHT,
   IDLE_TAB_WIDTH,
@@ -49,8 +56,11 @@ import { islandSoundForTransition, meetingSoundForTransition, playIslandSound } 
 import type { IslandChatSession } from "./useIslandChatSession"
 import { useIslandBridge } from "./useIslandBridge"
 import { useIslandPointer } from "./useIslandPointer"
+import { isWorkspaceRuntimeEnabled } from "../../lib/platform-config"
 import {
   ISLAND_SURFACE_PROPS,
+  ISLAND_WORKSPACE_AGENT_ID,
+  isWorkspaceAgentId,
   islandSessionKey,
   type IslandBridge,
   type IslandFileRef,
@@ -67,42 +77,6 @@ const MAX_CARD_HEIGHT = 640
 const ISLAND_INTERACTION_MODE: ChatSendInteractionMode = "agent"
 const PICKER_WIDTH = 300
 const PICKER_HEIGHT = 320
-
-type IslandView =
-  | { name: "inbox" }
-  | {
-      name: "project"
-      projectId: string
-      projectName: string
-      initialFiles?: IslandFileRef[]
-    }
-  | {
-      name: "chat"
-      projectId: string
-      projectName: string
-      sessionId: string
-      title: string
-      initialSend?: IslandInitialSend
-      initialFiles?: IslandFileRef[]
-    }
-  | { name: "drop"; files: IslandFileRef[]; returnTo: IslandView }
-
-function parentView(view: IslandView): IslandView | null {
-  switch (view.name) {
-    case "inbox":
-      return null
-    case "drop":
-      return view.returnTo
-    case "project":
-      return { name: "inbox" }
-    case "chat":
-      return {
-        name: "project",
-        projectId: view.projectId,
-        projectName: view.projectName,
-      }
-  }
-}
 
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false)
@@ -174,7 +148,8 @@ export const IslandApp = observer(function IslandApp({
   const { bridge, snapshot, layout, meeting, requestMode: applyMode } = useIslandBridge()
   const actions = useDomainActions()
   const reducedMotion = usePrefersReducedMotion()
-  const [view, setView] = useState<IslandView>({ name: "inbox" })
+  const workspaceAgentEnabled = isWorkspaceRuntimeEnabled()
+  const [view, setView] = useState<IslandView>(() => initialIslandView(workspaceAgentEnabled))
   const [usageOpen, setUsageOpen] = useState(false)
   const [peek, setPeek] = useState<IslandPeek | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -249,16 +224,58 @@ export const IslandApp = observer(function IslandApp({
     () => orderIslandSessions(inboxSessions(snapshot.sessions, snapshot.focusedSessionKey)),
     [snapshot.focusedSessionKey, snapshot.sessions],
   )
+  const agentSessions = useMemo(
+    () => orderedSessions.filter((session) => isWorkspaceAgentId(session.projectId)),
+    [orderedSessions],
+  )
+  const projectSessions = useMemo(
+    () => orderedSessions.filter((session) => !isWorkspaceAgentId(session.projectId)),
+    [orderedSessions],
+  )
+  // Agent chats already carry their status in "Chats with <agent>", so the
+  // Needs-you group is the project sessions that are blocked on the user.
+  const needsYouSessions = useMemo(
+    () =>
+      projectSessions.filter(
+        (session) => session.status === "needs_approval" || session.status === "needs_answer",
+      ),
+    [projectSessions],
+  )
+  const runningSessions = useMemo(
+    () =>
+      projectSessions.filter(
+        (session) => session.status !== "needs_approval" && session.status !== "needs_answer",
+      ),
+    [projectSessions],
+  )
+  const agentName = useWorkspaceAgentName(workspaceAgentEnabled ? workspaceId : undefined)
+  const [agentChatsTick, setAgentChatsTick] = useState(0)
+  const agentChats = useWorkspaceAgentChats(
+    workspaceId,
+    workspaceAgentEnabled && view.name === "inbox",
+    agentChatsTick,
+  )
+  const createAgentSession = useWorkspaceAgentSessionCreator(workspaceId)
+  const agentRows = useMemo(
+    () => workspaceAgentChatRows(agentChats.chats, agentSessions),
+    [agentChats.chats, agentSessions],
+  )
+
+  // Each open starts a fresh conversation: the card never resumes whatever it
+  // was showing when it was last dismissed. A session that is waiting on the
+  // user wins the open — a permission raised while the notch was closed must
+  // not be replaced by a blank chat.
+  const wasCardOpen = useRef(cardOpen)
+  useEffect(() => {
+    if (cardOpen && !wasCardOpen.current) setView(viewForOpen(workspaceAgentEnabled, snapshot.sessions))
+    wasCardOpen.current = cardOpen
+  }, [cardOpen, snapshot.sessions, workspaceAgentEnabled])
 
   const currentProjectId =
     view.name === "chat" || view.name === "project"
       ? view.projectId
-      : (orderedSessions[0]?.projectId ?? sortedProjects[0]?.id ?? null)
-  const currentProjectName =
-    view.name === "chat" || view.name === "project"
-      ? view.projectName
-      : (orderedSessions[0]?.projectName ?? sortedProjects.find((p) => p.id === currentProjectId)?.name ?? "Project")
-  const modelId = useModelId(currentProjectId)
+      : (projectSessions[0]?.projectId ?? sortedProjects[0]?.id ?? null)
+  const modelId = useModelId(isWorkspaceAgentId(currentProjectId ?? undefined) ? null : currentProjectId)
 
   const canAutoCollapse = useCallback(
     () =>
@@ -266,7 +283,10 @@ export const IslandApp = observer(function IslandApp({
       !pendingRef.current &&
       !meetingPromptRef.current &&
       !pickerOpenRef.current &&
-      (viewRef.current.name === "inbox" || viewRef.current.name === "project" || viewRef.current.name === "chat"),
+      (viewRef.current.name === "agent" ||
+        viewRef.current.name === "inbox" ||
+        viewRef.current.name === "project" ||
+        viewRef.current.name === "chat"),
     [],
   )
   useIslandPointer({ bridge, mode: layout.mode, requestMode, canAutoCollapse })
@@ -281,10 +301,10 @@ export const IslandApp = observer(function IslandApp({
   }, [requestMode])
 
   const goBack = useCallback(() => {
-    const parent = parentView(viewRef.current)
+    const parent = parentView(viewRef.current, workspaceAgentEnabled)
     if (parent) setView(parent)
     else collapse()
-  }, [collapse])
+  }, [collapse, workspaceAgentEnabled])
 
   // ── Snapshot side effects: sounds, completion peek, jump to new requests ──
   const previousSnapshot = useRef<IslandSnapshot>(snapshot)
@@ -397,6 +417,12 @@ export const IslandApp = observer(function IslandApp({
   const openInShogo = useCallback(
     (projectId: string, sessionId?: string) => {
       if (!bridge) return
+      if (isWorkspaceAgentId(projectId)) {
+        const query = sessionId ? `?chatSessionId=${encodeURIComponent(sessionId)}` : ""
+        void bridge.sendAction({ type: "navigate", path: `/agent${query}` })
+        collapse()
+        return
+      }
       void (sessionId
         ? bridge.sendAction({ type: "open", projectId, sessionId })
         : bridge.sendAction({
@@ -474,6 +500,31 @@ export const IslandApp = observer(function IslandApp({
         ...extra,
       }),
     [],
+  )
+
+  const startAgentChat = useCallback(
+    async (initialSend: IslandInitialSend): Promise<IslandResult> => {
+      try {
+        const session = await createAgentSession()
+        setView({
+          name: "chat",
+          projectId: ISLAND_WORKSPACE_AGENT_ID,
+          projectName: agentName,
+          sessionId: session.id,
+          title: "New chat",
+          initialSend,
+        })
+        setAgentChatsTick((tick) => tick + 1)
+        if (layout.sounds) playIslandSound("sent", layout.soundVolume)
+        return { ok: true }
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    },
+    [agentName, createAgentSession, layout.soundVolume, layout.sounds],
   )
 
   const startNewChat = useCallback(
@@ -592,8 +643,10 @@ export const IslandApp = observer(function IslandApp({
         ? view.projectName
         : view.name === "drop"
           ? "Dropped files"
-          : "Shogo"
-  const headerSubtitle = view.name === "chat" ? view.projectName : undefined
+          : agentName
+  const headerSubtitle = view.name === "chat" && !isWorkspaceAgentChat(view) ? view.projectName : undefined
+  const headerOpensInbox = view.name === "agent"
+  const showBack = view.name === "project" || view.name === "chat" || view.name === "drop"
 
   const header = (
     <View className="flex-row items-center gap-1.5 px-3" style={{ height: layout.notched ? layout.topInset : 40 }}>
@@ -609,19 +662,19 @@ export const IslandApp = observer(function IslandApp({
           followPointer
           reducedMotion={reducedMotion}
         />
-        {view.name !== "inbox" ? (
+        {showBack ? (
           <Pressable onPress={goBack} accessibilityLabel="Back" hitSlop={6}>
             <ChevronLeft size={15} color="#d4d4d8" />
           </Pressable>
         ) : null}
         <Pressable
-          onPress={() => setPickerOpen((open) => !open)}
+          onPress={() => (headerOpensInbox ? setView({ name: "inbox" }) : setPickerOpen((open) => !open))}
           className={cn(
             "min-w-0 flex-row items-center gap-1 rounded-md px-1 py-0.5 -mx-1",
-            pickerOpen ? "bg-white/10" : "hover:bg-white/5",
+            !headerOpensInbox && pickerOpen ? "bg-white/10" : "hover:bg-white/5",
           )}
-          accessibilityLabel="Switch project"
-          aria-expanded={pickerOpen}
+          accessibilityLabel={headerOpensInbox ? `Open ${agentName} chats and projects` : "Switch project"}
+          aria-expanded={headerOpensInbox ? false : pickerOpen}
         >
           <View className="min-w-0">
             <Text className="text-[12px] font-semibold text-zinc-50" numberOfLines={1}>
@@ -634,10 +687,10 @@ export const IslandApp = observer(function IslandApp({
             ) : null}
           </View>
           <Motion.View
-            animate={{ rotate: pickerOpen ? "180deg" : "0deg" }}
+            animate={{ rotate: !headerOpensInbox && pickerOpen ? "180deg" : "0deg" }}
             transition={islandMotion(reducedMotion, ISLAND_CONTENT_OUT)}
           >
-            <ChevronDown size={12} color={pickerOpen ? "#e4e4e7" : "#71717a"} />
+            <ChevronDown size={12} color={!headerOpensInbox && pickerOpen ? "#e4e4e7" : "#71717a"} />
           </Motion.View>
         </Pressable>
       </View>
@@ -666,13 +719,21 @@ export const IslandApp = observer(function IslandApp({
     target: { projectId: string; projectName: string },
     session: IslandChatSession | null,
     initialFiles?: IslandFileRef[],
+    placeholder?: string,
   ) => (
     <IslandComposer
       key={session ? `chat:${session.sessionId}` : `new:${target.projectId}`}
       ref={composerRef}
       bridge={bridge}
       initialFiles={initialFiles}
-      placeholder={session ? `Reply in ${target.projectName}…` : `New chat in ${target.projectName}…`}
+      placeholder={
+        placeholder ??
+        (session
+          ? `Reply in ${target.projectName}…`
+          : isWorkspaceAgentId(target.projectId)
+            ? `Message ${target.projectName}…`
+            : `New chat in ${target.projectName}…`)
+      }
       isStreaming={session?.isStreaming ?? false}
       onFocus={focusForTyping}
       onDraftChange={(hasDraft) => {
@@ -684,15 +745,17 @@ export const IslandApp = observer(function IslandApp({
           ? await session.send(text, files, {
               interactionMode: ISLAND_INTERACTION_MODE,
             })
-          : await startNewChat(target.projectId, target.projectName, {
-              text,
-              files,
-            })
+          : isWorkspaceAgentId(target.projectId)
+            ? await startAgentChat({ text, files })
+            : await startNewChat(target.projectId, target.projectName, {
+                text,
+                files,
+              })
         if (result.ok && session && layout.sounds) playIslandSound("sent", layout.soundVolume)
         return result
       }}
       targetChip={
-        view.name === "inbox" ? (
+        view.name === "project" || view.name === "inbox" ? (
           <Pressable
             onPress={() => setPickerOpen((open) => !open)}
             className="flex-row items-center gap-1 rounded-full bg-white/10 px-2 py-0.5"
@@ -748,6 +811,7 @@ export const IslandApp = observer(function IslandApp({
           userId,
           modelId,
           interactionMode: ISLAND_INTERACTION_MODE,
+          workspaceAgent: isWorkspaceAgentChat(view),
         }}
       >
         {(session) => {
@@ -793,15 +857,70 @@ export const IslandApp = observer(function IslandApp({
         }}
       </IslandChatHost>
     )
+  } else if (view.name === "agent") {
+    pendingRef.current = false
+    body = (
+      <>
+        <View className="px-4 pb-2 pt-1">
+          <Text className="text-[12px] text-zinc-400">
+            {`Ask ${agentName} anything — plan your week, create a project, or pick up work already running.`}
+          </Text>
+        </View>
+        {composerFor({ projectId: ISLAND_WORKSPACE_AGENT_ID, projectName: agentName }, null)}
+      </>
+    )
   } else {
     pendingRef.current = false
     body = (
       <>
         <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ padding: 8 }}>
-          {orderedSessions.length > 0 ? (
+          {needsYouSessions.length > 0 ? (
             <>
-              <Text className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Active</Text>
-              {orderedSessions.map((session) => (
+              <Text className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-amber-400">
+                Needs you
+              </Text>
+              {needsYouSessions.map((session) => (
+                <SessionRow
+                  key={islandSessionKey(session.projectId, session.sessionId)}
+                  row={{
+                    title: session.title,
+                    status: session.status,
+                    activity: session.lastActivityAt ?? 0,
+                    step: session.step,
+                    replyPreview: session.replyPreview,
+                  }}
+                  subtitle={session.projectName}
+                  onPress={() => openChat(session.projectId, session.projectName, session.sessionId, session.title)}
+                />
+              ))}
+            </>
+          ) : null}
+          {workspaceAgentEnabled ? (
+            <>
+              <Text className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                {`Chats with ${agentName}`}
+              </Text>
+              {agentRows.map((row) => (
+                <SessionRow
+                  key={row.sessionId}
+                  row={row}
+                  onPress={() => openChat(ISLAND_WORKSPACE_AGENT_ID, agentName, row.sessionId, row.title)}
+                />
+              ))}
+              {agentChats.error ? (
+                <Text className="px-2 py-1 text-[11px] text-rose-400">{agentChats.error}</Text>
+              ) : null}
+              {agentRows.length === 0 && !agentChats.loading ? (
+                <Text className="px-2 py-1 text-[11px] text-zinc-500">No chats yet.</Text>
+              ) : null}
+            </>
+          ) : null}
+          {runningSessions.length > 0 ? (
+            <>
+              <Text className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                Running
+              </Text>
+              {runningSessions.map((session) => (
                 <SessionRow
                   key={islandSessionKey(session.projectId, session.sessionId)}
                   row={{
@@ -817,13 +936,37 @@ export const IslandApp = observer(function IslandApp({
               ))}
             </>
           ) : null}
-          {orderedSessions.length === 0 ? (
-            <Text className="px-2 py-4 text-center text-[12px] text-zinc-500">
-              Nothing running. Start a chat below.
-            </Text>
-          ) : null}
+          <Text className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+            Projects
+          </Text>
+          {sortedProjects.length === 0 ? (
+            <Text className="px-2 py-1 text-[11px] text-zinc-500">No projects yet.</Text>
+          ) : (
+            sortedProjects.map((project) => (
+              <Pressable
+                key={project.id}
+                onPress={() => setView({ name: "project", projectId: project.id, projectName: project.name })}
+                className="flex-row items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-white/5"
+              >
+                <View className="h-1.5 w-1.5 rounded-full bg-violet-400" />
+                <Text className="min-w-0 flex-1 text-[12px] text-zinc-200" numberOfLines={1}>
+                  {project.name}
+                </Text>
+              </Pressable>
+            ))
+          )}
         </ScrollView>
-        {currentProjectId ? composerFor({ projectId: currentProjectId, projectName: currentProjectName }, null) : null}
+        {workspaceAgentEnabled ? (
+          composerFor({ projectId: ISLAND_WORKSPACE_AGENT_ID, projectName: agentName }, null)
+        ) : currentProjectId ? (
+          composerFor(
+            {
+              projectId: currentProjectId,
+              projectName: sortedProjects.find((project) => project.id === currentProjectId)?.name ?? "Project",
+            },
+            null,
+          )
+        ) : null}
       </>
     )
   }

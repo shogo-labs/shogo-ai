@@ -59,9 +59,17 @@ export function resolveMarkdownMedia(
   return { url: raw ? resolveChatAttachmentUrl(raw) : null, kind, label, fromWorkspace: false }
 }
 
-export function useMarkdownMedia(src: string | null | undefined, alt: string | null | undefined): MarkdownMediaTarget {
-  const agentUrl = useChatContextSafe()?.agentUrl ?? null
-  return resolveMarkdownMedia(src, alt, agentUrl)
+/**
+ * `agentUrlOverride` lets callers outside a ChatContext (e.g. the workspace
+ * file viewer) resolve workspace media against their own agent URL.
+ */
+export function useMarkdownMedia(
+  src: string | null | undefined,
+  alt: string | null | undefined,
+  agentUrlOverride?: string | null,
+): MarkdownMediaTarget {
+  const contextAgentUrl = useChatContextSafe()?.agentUrl ?? null
+  return resolveMarkdownMedia(src, alt, agentUrlOverride ?? contextAgentUrl)
 }
 
 /** Image URI ready for `<img>` / `<Image>`; null while loading. */

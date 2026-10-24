@@ -1448,9 +1448,9 @@ export class MetalWarmPool {
 
   private claim(vmClass: VmClass = 'standard'): PooledVm | null {
     const idx = this.available.findIndex((v) => v.ready && v.handle.vmClass === vmClass)
-    if (idx === -1) return null
-    const [vm] = this.available.splice(idx, 1)
-    // Replace in background.
+    const vm = idx === -1 ? null : this.available.splice(idx, 1)[0]!
+    // Replace in background. A miss tops up too: a fill whose boots failed is
+    // not retried on its own, so an empty pool would otherwise stay empty.
     this.reconcile().catch(() => {})
     return vm
   }

@@ -70,6 +70,10 @@ class FakeWebSocket {
   }
 }
 
+// The live tunnel's threading has its own test; these drive the protocol.
+const { _testing: tunnelTesting } = await import('../lib/instance-tunnel')
+tunnelTesting.forceInProcess()
+
 const { startInstanceTunnel, stopInstanceTunnel, isTunnelConnected, _testing } = await import('../lib/instance-tunnel')
 
 afterAll(() => {
@@ -242,7 +246,7 @@ describe('instance tunnel heartbeat and websocket client', () => {
     })
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(fetchCalls[0].url).toBe('http://localhost:8002/api/local/projects')
+    expect(fetchCalls[0].url).toBe('http://localhost:39100/api/local/projects')
     expect(sentMessages()).toEqual(expect.arrayContaining([
       { type: 'stream-chunk', requestId: 'stream-1', data: 'hello ' },
       { type: 'stream-chunk', requestId: 'stream-1', data: 'stream' },

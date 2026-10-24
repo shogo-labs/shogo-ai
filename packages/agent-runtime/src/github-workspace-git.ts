@@ -9,6 +9,7 @@
  * a remote URL, or argv.
  */
 import { execFile } from '@shogo/shared-runtime/child-process'
+import { getShogoAgentEmail, getShogoAgentName } from '@shogo/shared-runtime/agent-attribution'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -134,6 +135,11 @@ async function currentBranch(cwd: string): Promise<string> {
 async function ensureRepo(cwd: string, defaultBranch: string): Promise<void> {
   if (existsSync(join(cwd, '.git'))) return
   await gitOk(cwd, ['init', '-b', defaultBranch])
+  // A repo Shogo creates commits as the agent from the first commit, without
+  // anyone typing an identity into `.git/config`. An existing repo's identity
+  // is the owner's and is left alone.
+  await gitOk(cwd, ['config', 'user.name', getShogoAgentName()])
+  await gitOk(cwd, ['config', 'user.email', getShogoAgentEmail()])
 }
 
 async function setOrigin(cwd: string, url: string): Promise<void> {
@@ -147,10 +153,10 @@ async function setOrigin(cwd: string, url: string): Promise<void> {
 }
 
 const SAVE_IDENTITY = {
-  GIT_AUTHOR_NAME: 'Shogo',
-  GIT_AUTHOR_EMAIL: 'agent@shogo.ai',
-  GIT_COMMITTER_NAME: 'Shogo',
-  GIT_COMMITTER_EMAIL: 'agent@shogo.ai',
+  GIT_AUTHOR_NAME: getShogoAgentName(),
+  GIT_AUTHOR_EMAIL: getShogoAgentEmail(),
+  GIT_COMMITTER_NAME: getShogoAgentName(),
+  GIT_COMMITTER_EMAIL: getShogoAgentEmail(),
 }
 
 function ensureRuntimeExcludes(cwd: string): void {

@@ -119,7 +119,7 @@ export function TeamChatModeCard({ workspaceId }: { workspaceId: string }) {
               <Pressable
                 key={option.id}
                 accessibilityRole="radio"
-                accessibilityState={{ checked: active, disabled }}
+                aria-checked={active} aria-disabled={disabled}
                 accessibilityLabel={option.label}
                 disabled={disabled}
                 onPress={() => void choose(option)}

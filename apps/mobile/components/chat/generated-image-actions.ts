@@ -37,8 +37,11 @@ async function prepareNativeImageFile(
     await import("expo-file-system/legacy");
   if (!cacheDirectory) throw new Error("Could not access app storage");
 
-  const extension =
-    mediaType.includes("jpeg") || mediaType.includes("jpg") ? "jpg" : "png";
+  const extension = mediaType.startsWith("video/")
+    ? "mp4"
+    : mediaType.includes("jpeg") || mediaType.includes("jpg")
+      ? "jpg"
+      : "png";
   const fileUri = `${cacheDirectory}${safeFilename(title)}-${Date.now()}.${extension}`;
   await writeAsStringAsync(
     fileUri,

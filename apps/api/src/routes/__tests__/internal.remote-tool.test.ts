@@ -196,4 +196,94 @@ describe('POST /projects/:projectId/remote-tool', () => {
     expect(res.status).toBe(403)
     expect(res.body).toEqual({ ok: false, error: 'tool_not_remotable' })
   })
+
+  // SHO-125 §4b — a resolved-but-warming target used to become a hard 502 with
+  // no retry. Read-only hops are retried once; everything else gets a 503 the
+  // caller can act on.
+  describe('a target that is not listening yet', () => {
+    /** Fail the first `failures` attempts at the transport level, then succeed. */
+    function flakyRuntime(failures: number) {
+      let attempts = 0
+      globalThis.fetch = (async (url: string, init: any) => {
+        attempts += 1
+        if (attempts <= failures) {
+          throw Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:8080'), { code: 'ECONNREFUSED' })
+        }
+        forwarded.push({
+          url: String(url),
+          token: new Headers(init?.headers).get('x-runtime-token'),
+          body: init?.body ? JSON.parse(init.body) : null,
+        })
+        return new Response(JSON.stringify({ ok: true, result: { content: 'recovered' } }), { status: 200 })
+      }) as unknown as typeof fetch
+      return () => attempts
+    }
+
+    test('a read-only tool is retried once and succeeds', async () => {
+      const attempts = flakyRuntime(1)
+      const res = await remoteTool(
+        w.projects.open,
+        { tool: 'read_file', args: { path: 'README.md' } },
+        { 'x-runtime-token': tokenA, 'X-Requester-Ticket': ticketFor(w.users.member) },
+      )
+      expect(res.status).toBe(200)
+      expect(res.body.result.content).toBe('recovered')
+      expect(attempts()).toBe(2)
+    })
+
+    test('a read-only tool is retried at most once, then 503 target_not_ready', async () => {
+      const attempts = flakyRuntime(5)
+      const res = await remoteTool(
+        w.projects.open,
+        { tool: 'search', args: { query: 'sho' } },
+        { 'x-runtime-token': tokenA, 'X-Requester-Ticket': ticketFor(w.users.member) },
+      )
+      expect(res.status).toBe(503)
+      expect(res.body.error.code).toBe('target_not_ready')
+      expect(res.body.error.retryAfterSeconds).toBe(2)
+      expect(attempts()).toBe(2)
+    })
+
+    test('a timeout on a read is not retried: the budget is already spent', async () => {
+      let attempts = 0
+      globalThis.fetch = (async () => {
+        attempts += 1
+        const err: any = new Error('The operation was aborted due to timeout')
+        err.name = 'TimeoutError'
+        throw err
+      }) as unknown as typeof fetch
+
+      const res = await remoteTool(
+        w.projects.open,
+        { tool: 'read_file', args: { path: 'README.md' } },
+        { 'x-runtime-token': tokenA, 'X-Requester-Ticket': ticketFor(w.users.member) },
+      )
+      expect(res.status).toBe(504)
+      expect(res.body.error.code).toBe('agent_call_timeout')
+      expect(attempts).toBe(1)
+    })
+
+    test('a write is never replayed: one attempt, 503 with a retry hint', async () => {
+      const attempts = flakyRuntime(5)
+      const res = await remoteTool(
+        w.projects.open,
+        { tool: 'write_file', args: { path: 'a.txt', content: 'hi' } },
+        { 'x-runtime-token': tokenA, 'X-Requester-Ticket': ticketFor(w.users.member) },
+      )
+      expect(res.status).toBe(503)
+      expect(res.body.error.code).toBe('target_not_ready')
+      expect(attempts()).toBe(1)
+    })
+
+    test('the 503 carries Retry-After on the response, not just the body', async () => {
+      flakyRuntime(5)
+      const res = await app.request(`/projects/${w.projects.open}/remote-tool`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-runtime-token': tokenA, 'X-Requester-Ticket': ticketFor(w.users.member) },
+        body: JSON.stringify({ tool: 'read_file', args: { path: 'a.txt' } }),
+      })
+      expect(res.status).toBe(503)
+      expect(res.headers.get('Retry-After')).toBe('2')
+    })
+  })
 })

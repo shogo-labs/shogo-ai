@@ -12,7 +12,7 @@
  * in this process. Gated on RUN_INTEGRATION=1 like the other server suites.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import { createTools, resetRemoteTargetCache, type ToolContext } from '../gateway-tools'
@@ -36,7 +36,7 @@ const GRAPH = [
   { id: PROJECT_B, name: 'Beta', description: null, workingMode: 'managed', settings: {}, attachments: [], agent: null },
 ]
 
-const ENV_KEYS = ['PROJECT_ID', 'WORKSPACE_ID', 'SHOGO_API_URL', 'WORKSPACE_ANCHOR_PROJECT_ID', 'WORKSPACE_RUNTIME', 'RUNTIME_AUTH_SECRET']
+const ENV_KEYS = ['PROJECT_ID', 'WORKSPACE_ID', 'SHOGO_API_URL', 'WORKSPACE_ANCHOR_PROJECT_ID', 'WORKSPACE_RUNTIME', 'RUNTIME_AUTH_SECRET', 'SHOGO_RUNTIME_SUBSTRATE']
 
 function snapshotEnv(): Record<string, string | undefined> {
   return Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
@@ -277,6 +277,18 @@ describe.skipIf(!integration)('remote tool channel across two runtimes', () => {
           forwarded.push({ tool: body.tool, status: res.status })
           return new Response(await res.text(), { status: res.status, headers: { 'Content-Type': 'application/json' } })
         }
+        const imp = url.pathname.match(/^\/api\/internal\/projects\/([^/]+)\/files\/import$/)
+        if (req.method === 'POST' && imp) {
+          if (imp[1] !== PROJECT_B) return Response.json({ error: { code: 'not_found', message: 'Project not found' } }, { status: 404 })
+          const body = (await req.json()) as Record<string, unknown>
+          const res = await fetch(`${bUrl}/agent/remote/import`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-runtime-token': TOKEN_B },
+            body: JSON.stringify({ ...body, callerProjectId: PROJECT_A }),
+          })
+          forwarded.push({ tool: 'copy_to_project', status: res.status })
+          return new Response(await res.text(), { status: res.status, headers: { 'Content-Type': 'application/json' } })
+        }
         return Response.json({ error: { code: 'not_found', message: url.pathname } }, { status: 404 })
       },
     })
@@ -285,7 +297,10 @@ describe.skipIf(!integration)('remote tool channel across two runtimes', () => {
     process.env.WORKSPACE_ID = WORKSPACE_ID
     process.env.SHOGO_API_URL = `http://127.0.0.1:${api.port}`
     delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
-    delete process.env.WORKSPACE_RUNTIME
+    // After B is spawned: A is the metal workspace agent (no anchor), the
+    // only runtime that registers copy_to_project.
+    process.env.WORKSPACE_RUNTIME = 'true'
+    process.env.SHOGO_RUNTIME_SUBSTRATE = 'metal'
     resetRemoteTargetCache()
     tools = createTools(toolCtx(aDir))
 
@@ -362,6 +377,42 @@ describe.skipIf(!integration)('remote tool channel across two runtimes', () => {
     const connected = await run('connect_project', { project: 'Beta' })
     expect(details(connected)).toMatchObject({ ok: true, reachable: true, project: { id: PROJECT_B, name: 'Beta' } })
     expect((connected.content[0] as any).text).toContain('read_file')
+  })
+
+  test('copy_to_project ships a binary folder into B, readable there over the channel', async () => {
+    // Dot-prefixed so the "files land only in B" check above ignores the source.
+    mkdirSync(join(aDir, '.pack/cab2/img'), { recursive: true })
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 255, 7])
+    writeFileSync(join(aDir, '.pack/cab2/img/hero.png'), png)
+    writeFileSync(join(aDir, '.pack/cab2/data.json'), '{"cab":2}\n')
+
+    const copied = await run('copy_to_project', { project: 'Beta', paths: ['.pack/cab2'], dest: 'public/assets' })
+    expect(details(copied)).toMatchObject({ ok: true, project: { id: PROJECT_B }, fileCount: 2, dest: 'public/assets' })
+    expect(forwarded.at(-1)).toEqual({ tool: 'copy_to_project', status: 200 })
+    expect(readFileSync(join(bDir, 'public/assets/cab2/img/hero.png'))).toEqual(png)
+
+    const read = await run('read_file', { path: 'public/assets/cab2/data.json', project: PROJECT_B })
+    expect(JSON.stringify(read.content)).toContain('cab')
+
+    const again = await run('copy_to_project', { project: PROJECT_B, paths: ['.pack/cab2'], dest: 'public/assets' })
+    expect(details(again)).toMatchObject({ code: 'conflict', status: 409 })
+    expect(details(again).conflicts).toContain('public/assets/cab2/data.json')
+  })
+
+  test('copy_to_project is never remotable', async () => {
+    const err = await callRemoteTool(PROJECT_B, 'copy_to_project', { project: PROJECT_A, paths: ['.'] }).catch((e) => e)
+    expect(err).toBeInstanceOf(RemoteToolError)
+    expect(err.status).toBe(403)
+    expect(err.code).toBe('tool_not_remotable')
+  })
+
+  test('the import route requires the runtime token', async () => {
+    const res = await fetch(`${bUrl}/agent/remote/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archive: 'aGk=' }),
+    })
+    expect(res.status).toBe(401)
   })
 
   test('non-allow-listed tool is 403 tool_not_remotable', async () => {

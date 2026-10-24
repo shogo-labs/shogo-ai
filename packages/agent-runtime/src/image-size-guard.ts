@@ -34,8 +34,18 @@
  * Both layers use the same pure helpers below. The functions are deterministic
  * so they don't disturb stable-compaction's "byte-identical prompt prefix"
  * invariant.
+ *
+ * "Bad" covers three shapes: too big, a format no provider accepts, and — the
+ * one magic bytes cannot catch — bytes that simply do not decode. A PNG with a
+ * valid 8-byte signature and a corrupt IDAT sails past a signature check,
+ * enters the session, and then 400s *every* later model call
+ * (`messages[N].image[0]: You have uploaded an unsupported image`). So images
+ * are decode-validated (`decodeImageInfo`) before they are allowed into a
+ * request or into history.
  */
 
+import { createHash } from 'node:crypto'
+import { inflateSync } from 'node:zlib'
 import type { ImageContent, Message, TextContent } from '@mariozechner/pi-ai'
 
 /**
@@ -88,6 +98,244 @@ export function sniffImageMimeType(base64: string): string | undefined {
   if (ascii(0, 4) === 'II*\0' || ascii(0, 4) === 'MM\0*') return 'image/tiff'
   if (/^(\uFEFF|\xEF\xBB\xBF)?\s*<(\?xml|svg)/i.test(ascii(0, head.length))) return 'image/svg+xml'
   return undefined
+}
+
+/** Dimensions and real format of an image whose bytes we successfully decoded. */
+export interface DecodedImageInfo {
+  mimeType: string
+  width: number
+  height: number
+}
+
+/**
+ * Cap on inflated PNG data. A ~5 MB PNG cannot legitimately expand past this,
+ * and it bounds what a hostile/corrupt `IDAT` can cost us in memory.
+ */
+const MAX_DECODED_RAW_BYTES = 256 * 1024 * 1024
+/** Reject nonsense dimensions before doing pixel arithmetic on them. */
+const MAX_IMAGE_DIMENSION = 100_000
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    table[n] = c >>> 0
+  }
+  return table
+})()
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff
+  for (let i = 0; i < buf.length; i++) c = CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+
+const PNG_CHANNELS_BY_COLOR_TYPE: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }
+
+function saneDims(width: number, height: number): { width: number; height: number } | null {
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null
+  if (width <= 0 || height <= 0) return null
+  if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) return null
+  return { width, height }
+}
+
+/**
+ * Walk every PNG chunk, verifying each CRC32 and requiring IHDR first,
+ * at least one IDAT, and an IEND. Then inflate the pixel stream: a file that
+ * sniffs as PNG from its 8-byte signature but carries a corrupt IDAT CRC (or a
+ * truncated/garbled stream) is rejected here, before it can reach a provider
+ * that would 400 the whole conversation on it.
+ */
+function decodePng(buf: Buffer): { width: number; height: number } | null {
+  let off = 8
+  let dims: { width: number; height: number } | null = null
+  let interlace = 0
+  let bitDepth = 0
+  let colorType = -1
+  let sawIdat = false
+  let sawIend = false
+  const idat: Buffer[] = []
+
+  while (off + 12 <= buf.length) {
+    const length = buf.readUInt32BE(off)
+    if (off + 12 + length > buf.length) return null
+    const type = buf.toString('latin1', off + 4, off + 8)
+    const data = buf.subarray(off + 8, off + 8 + length)
+    const storedCrc = buf.readUInt32BE(off + 8 + length)
+    if (crc32(buf.subarray(off + 4, off + 8 + length)) !== storedCrc) return null
+
+    if (dims === null) {
+      if (type !== 'IHDR' || length !== 13) return null
+      const parsed = saneDims(data.readUInt32BE(0), data.readUInt32BE(4))
+      if (!parsed) return null
+      dims = parsed
+      bitDepth = data[8]
+      colorType = data[9]
+      if (data[10] !== 0 || data[11] !== 0) return null // compression / filter method
+      if (data[12] !== 0 && data[12] !== 1) return null // interlace method
+      interlace = data[12]
+    } else if (type === 'IDAT') {
+      sawIdat = true
+      idat.push(data)
+    } else if (type === 'IEND') {
+      sawIend = true
+      break
+    }
+    off += 12 + length
+  }
+
+  if (!dims || !sawIdat || !sawIend) return null
+  const channels = PNG_CHANNELS_BY_COLOR_TYPE[colorType]
+  if (!channels) return null
+  if (![1, 2, 4, 8, 16].includes(bitDepth)) return null
+
+  const rowBytes = Math.ceil((dims.width * channels * bitDepth) / 8)
+  const expectedRaw = dims.height * (1 + rowBytes)
+  if (!interlace && expectedRaw > MAX_DECODED_RAW_BYTES) return null
+
+  let raw: Buffer
+  try {
+    raw = inflateSync(Buffer.concat(idat), { maxOutputLength: MAX_DECODED_RAW_BYTES })
+  } catch {
+    return null
+  }
+  if (raw.length === 0) return null
+  // Adam7 interlacing packs the rows differently, so the exact-length check
+  // only applies to the (overwhelmingly common) non-interlaced case. A
+  // successful, non-empty inflate of a CRC-clean stream is the honest bar there.
+  if (!interlace && raw.length !== expectedRaw) return null
+  return dims
+}
+
+const JPEG_SOF_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf])
+
+function decodeJpeg(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null
+  let off = 2
+  let dims: { width: number; height: number } | null = null
+  while (off + 4 <= buf.length) {
+    if (buf[off] !== 0xff) return null
+    const marker = buf[off + 1]
+    if (marker === 0xff) {
+      off += 1
+      continue
+    }
+    // Standalone markers carry no length field.
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) {
+      off += 2
+      continue
+    }
+    if (marker === 0xd9) break
+    const length = buf.readUInt16BE(off + 2)
+    if (length < 2 || off + 2 + length > buf.length) return null
+    if (JPEG_SOF_MARKERS.has(marker)) {
+      if (length < 7) return null
+      const parsed = saneDims(buf.readUInt16BE(off + 7), buf.readUInt16BE(off + 5))
+      if (!parsed) return null
+      dims = parsed
+    }
+    if (marker === 0xda) break // SOS — entropy-coded data follows
+    off += 2 + length
+  }
+  if (!dims) return null
+  const eoi = buf.indexOf(Buffer.from([0xff, 0xd9]), off)
+  return eoi === -1 ? null : dims
+}
+
+function decodeGif(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 14) return null
+  const header = buf.toString('latin1', 0, 6)
+  if (header !== 'GIF87a' && header !== 'GIF89a') return null
+  const dims = saneDims(buf.readUInt16LE(6), buf.readUInt16LE(8))
+  if (!dims) return null
+  if (buf[buf.length - 1] !== 0x3b) return null // block terminator
+  return dims
+}
+
+function decodeWebp(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 20) return null
+  if (buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WEBP') return null
+  const riffSize = buf.readUInt32LE(4)
+  if (8 + riffSize > buf.length) return null
+  const fourcc = buf.toString('latin1', 12, 16)
+  const chunk = buf.subarray(20)
+  if (fourcc === 'VP8 ') {
+    // Lossy: 3-byte frame tag, then the 0x9d 0x01 0x2a start code.
+    if (chunk.length < 10) return null
+    if (chunk[3] !== 0x9d || chunk[4] !== 0x01 || chunk[5] !== 0x2a) return null
+    return saneDims(chunk.readUInt16LE(6) & 0x3fff, chunk.readUInt16LE(8) & 0x3fff)
+  }
+  if (fourcc === 'VP8L') {
+    if (chunk.length < 5) return null
+    if (chunk[0] !== 0x2f) return null
+    const bits = chunk.readUInt32LE(1)
+    return saneDims((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1)
+  }
+  if (fourcc === 'VP8X') {
+    if (chunk.length < 10) return null
+    const width = chunk[4] | (chunk[5] << 8) | (chunk[6] << 16)
+    const height = chunk[7] | (chunk[8] << 8) | (chunk[9] << 16)
+    return saneDims(width + 1, height + 1)
+  }
+  return null
+}
+
+/**
+ * Decode-validate an image and report its real format and dimensions.
+ *
+ * `sniffImageMimeType()` only reads magic bytes, which is why a PNG with a
+ * valid signature and a corrupt `IDAT` used to sail through the guard, get
+ * persisted into a session, and then 400 *every* later model call
+ * (`messages[N].image[0]: You have uploaded an unsupported image`). This walks
+ * the actual container: chunk CRCs and the pixel stream for PNG, marker walk to
+ * SOF + EOI for JPEG, header + trailer for GIF, RIFF/VP8 headers for WebP.
+ *
+ * Returns null for anything we cannot prove is a real, decodable image — the
+ * caller must then keep it out of a provider request.
+ */
+export function decodeImageInfo(base64: string, declaredMime?: string): DecodedImageInfo | null {
+  const declared = declaredMime?.toLowerCase().trim()
+  const cacheKey = `${declared ?? ''}:${base64.length}:${createHash('sha1').update(base64).digest('hex')}`
+  const cached = decodeCache.get(cacheKey)
+  if (cached !== undefined) return cached
+
+  const info = decodeImageInfoUncached(base64, declared)
+  if (decodeCache.size >= DECODE_CACHE_LIMIT) {
+    const oldest = decodeCache.keys().next().value
+    if (oldest !== undefined) decodeCache.delete(oldest)
+  }
+  decodeCache.set(cacheKey, info)
+  return info
+}
+
+/**
+ * Decoding is O(pixels), and the history scrub runs on every API call, so
+ * results (including rejections) are memoized by content digest. Replays of
+ * the same session history cost a hash instead of a re-inflate.
+ */
+const decodeCache = new Map<string, DecodedImageInfo | null>()
+const DECODE_CACHE_LIMIT = 64
+
+function decodeImageInfoUncached(base64: string, declared: string | undefined): DecodedImageInfo | null {
+  let buf: Buffer
+  try {
+    buf = Buffer.from(base64, 'base64')
+  } catch {
+    return null
+  }
+  if (buf.length < 8) return null
+
+  const mimeType = sniffImageMimeType(base64) ?? declared
+  if (!mimeType) return null
+
+  let dims: { width: number; height: number } | null = null
+  if (mimeType === 'image/png') dims = decodePng(buf)
+  else if (mimeType === 'image/jpeg') dims = decodeJpeg(buf)
+  else if (mimeType === 'image/gif') dims = decodeGif(buf)
+  else if (mimeType === 'image/webp') dims = decodeWebp(buf)
+  if (!dims) return null
+  return { mimeType, width: dims.width, height: dims.height }
 }
 
 export interface OversizedPlaceholderOptions {
@@ -168,12 +416,56 @@ export function buildUnsupportedFormatPlaceholder(opts: {
   return { type: 'text', text: lines.join(' ') }
 }
 
+/** A base64 image we could not decode, and why. */
+export interface InvalidImagePlaceholderOptions {
+  /** Short human-readable source label, e.g. `read_file` or `mcp:foo`. */
+  label: string
+  /** MIME type the block claimed (or that its magic bytes suggested). */
+  mimeType?: string
+  /** Workspace-relative path when the bytes came from a file. */
+  pathHint?: string
+  /** Why validation failed. Defaults to "not a decodable <mime>". */
+  reason?: string
+}
+
 /**
- * Return a new content array where any ImageContent that's either oversized
- * or in a format no configured provider accepts is replaced with an
- * actionable placeholder TextContent. Content blocks that are already valid
- * (or already text) pass through by reference so the caller can rely on
- * cheap equality checks if nothing changed.
+ * Build a TextContent block that replaces an image whose bytes do not decode.
+ *
+ * This is the placeholder that keeps a corrupt PNG out of session history: a
+ * provider rejects such a block with `400 ... You have uploaded an unsupported
+ * image`, and because the block is persisted, every later call in that session
+ * fails the same way.
+ */
+export function buildInvalidImagePlaceholder(opts: InvalidImagePlaceholderOptions): TextContent {
+  const { label, mimeType, pathHint, reason } = opts
+  const what = mimeType ?? 'image'
+  const lines: string[] = [
+    `[Image omitted — ${label}]`,
+    `Reason: ${reason ?? `not a decodable ${what}`} — the bytes are corrupt or truncated, ` +
+      'and a model provider would reject the whole request if it were sent.',
+  ]
+  if (pathHint) {
+    lines.push(
+      `The file is still on disk at "${pathHint}". ` +
+        `Re-export it (on macOS: \`sips -s format png "${pathHint}" --out "${pathHint}.png"\`, ` +
+        `or \`convert "${pathHint}" "${pathHint}.png"\`), then read the new file.`
+    )
+  } else {
+    lines.push('Capture or encode the image again, then send the fresh one.')
+  }
+  return { type: 'text', text: lines.join(' ') }
+}
+
+/**
+ * Return a new content array where any ImageContent that cannot be sent to a
+ * provider is replaced with an actionable placeholder TextContent:
+ *
+ *   1. a format no configured provider accepts (bmp/ico/heic/avif/svg/…),
+ *   2. bytes that do not decode (corrupt CRC, truncated, not an image at all),
+ *   3. a base64 payload over the per-image cap.
+ *
+ * Content blocks that are already valid (or already text) pass through by
+ * reference so the caller can rely on cheap equality checks.
  */
 export function enforceImageSizeLimit(
   content: ReadonlyArray<TextContent | ImageContent>,
@@ -196,7 +488,11 @@ export function enforceImageSizeLimit(
         pathHint: opts.pathHint,
       }))
       mutated = true
-    } else if (block.data.length > MAX_IMAGE_BASE64_BYTES) {
+      continue
+    }
+    // Cheap length check before decode: inflating a 6 MB base64 payload to
+    // prove it is oversized is wasted work.
+    if (block.data.length > MAX_IMAGE_BASE64_BYTES) {
       next.push(buildOversizedPlaceholder({
         label: opts.label,
         base64Length: block.data.length,
@@ -204,27 +500,41 @@ export function enforceImageSizeLimit(
         pathHint: opts.pathHint,
       }))
       mutated = true
-    } else if (sniffedMime && sniffedMime !== normalizedMime) {
-      // Providers also reject a media type that doesn't match the bytes.
-      next.push({ ...block, mimeType: sniffedMime })
-      mutated = true
-    } else {
-      next.push(block)
+      continue
     }
+    // Magic bytes are not enough: a PNG with a corrupt IDAT CRC sniffs fine and
+    // still poisons the session. Decode before the block is allowed through.
+    const decoded = decodeImageInfo(block.data, effectiveMime)
+    if (!decoded) {
+      next.push(buildInvalidImagePlaceholder({
+        label: opts.label,
+        mimeType: effectiveMime ?? block.mimeType,
+        pathHint: opts.pathHint,
+      }))
+      mutated = true
+      continue
+    }
+    if (decoded.mimeType !== normalizedMime) {
+      // Providers also reject a media type that doesn't match the bytes.
+      next.push({ ...block, mimeType: decoded.mimeType })
+      mutated = true
+      continue
+    }
+    next.push(block)
   }
   return mutated ? next : (content as (TextContent | ImageContent)[])
 }
 
 /**
  * Walk a message history and rewrite any UserMessage / ToolResultMessage that
- * carries an oversized or unsupported-format image block. AssistantMessages
- * cannot contain images in pi-ai's type model so they're passed through
- * untouched.
+ * carries an image no provider will accept (unsupported format, undecodable
+ * bytes, or oversized). AssistantMessages cannot contain images in pi-ai's type
+ * model so they're passed through untouched.
  *
  * Returns the same array reference when no message needed scrubbing; this
  * keeps prompt-cache hashes stable across calls when nothing needed fixing.
  */
-export function scrubOversizedImages(messages: ReadonlyArray<Message>): Message[] {
+export function scrubInvalidImages(messages: ReadonlyArray<Message>): Message[] {
   let mutated = false
   const next: Message[] = []
   for (const msg of messages) {
@@ -249,3 +559,6 @@ export function scrubOversizedImages(messages: ReadonlyArray<Message>): Message[
   }
   return mutated ? next : (messages as Message[])
 }
+
+/** @deprecated Old name for `scrubInvalidImages`; kept so existing imports work. */
+export const scrubOversizedImages = scrubInvalidImages

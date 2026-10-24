@@ -4,6 +4,7 @@ export {
   COMPOSIO_EVENT_PREFIX,
   EVENT_SCOPES,
   NATIVE_EVENTS,
+  SOCIAL_EVENT_TYPES,
   composioEventType,
   composioScope,
   defineEvent,
@@ -13,6 +14,13 @@ export {
   parseComposioEventType,
   redactEventPayload,
   scopeForEventType,
+  socialAccountConnected,
+  socialAccountDisconnected,
+  socialAutomationRunCompleted,
+  socialAutomationRunFailed,
+  socialCommentReceived,
+  socialMessageReceived,
+  socialMessageSent,
   validateEventPayload,
 } from './catalog'
 export {

@@ -64,9 +64,10 @@ const BACKEND_PACKAGES = [
 // not pretend backend + frontend share a meaningful aggregate.
 const FRONTEND_PACKAGES = [
   'apps/mobile',
-  // apps/desktop — Electron app, has only Playwright e2e tests today
-  // (no `test:coverage` script). Listed here for documentation; the
-  // runPackage skip path takes care of it.
+  // apps/desktop — Electron app. Its `test` script runs src/__tests__ per-file
+  // via run-tests-isolated.ts (no `test:coverage`: the app is not installed in
+  // CI and its suites don't produce lcov). It is in the "remaining + e2e" CI
+  // leg, which is the leg that also owns the desktop bundle assertions.
   'apps/desktop',
   // packages/shared-app — UI-shared code (component primitives,
   // theming, etc.) used by the mobile + desktop frontends.
@@ -136,6 +137,49 @@ const IN_PROCESS_E2E_SUITES: readonly InProcessE2ESuite[] = [
   {
     name: 'workspace tool failures',
     files: ['e2e/workspace-tool-failures.integration.test.ts'],
+    env: {},
+  },
+  // SHO-67: the reported bug end to end — the real `share_file` tool, the real
+  // desktop mint route and the real desktop download route over a merged root
+  // whose projects are symlinks, so the signed path and the resolved path are
+  // checked against each other rather than each against a stub.
+  {
+    name: 'share_file roundtrip',
+    files: ['e2e/share-file-roundtrip.integration.test.ts'],
+    env: {},
+  },
+  // SHO-63: `system_apply` against a real HTTP API that answers 401 to an
+  // attach from the workspace anchor — the failure that produced six
+  // meaningless errors on every workspace apply. Sets its own runtime env,
+  // so it gets a process of its own.
+  {
+    name: 'system_apply loud failures',
+    files: ['e2e/system-apply-loud.integration.test.ts'],
+    env: {},
+  },
+  // SHO-65: a Video Editor project is a Remotion project, and the stack switch
+  // that used to half-apply is refused. The fast half is real files on disk;
+  // the build/MP4 half is opt-in (`RUN_HEAVY=1`) because it installs the
+  // starter and renders 150 frames.
+  {
+    name: 'video-editor stack e2e',
+    files: ['e2e/video-editor-stack.integration.test.ts'],
+    env: {},
+  },
+  // One join, one email (SHO-51). Mocked at the `email.service` module, so it
+  // counts a send from *any* caller — a hook that mails directly is caught here
+  // even though `join-notifications.test.ts` only records through the seam.
+  {
+    name: 'invitations e2e: join notifications',
+    files: ['e2e/invitations/join-notifications.integration.test.ts'],
+    env: {},
+  },
+  // SHO-39: spawns its own writer processes against its own throwaway SQLite
+  // file, so it needs no prepared database and must not share a bun process
+  // with the suites above.
+  {
+    name: 'agent-call restart e2e',
+    files: ['e2e/agent-call-restart.test.ts'],
     env: {},
   },
   ...['enterprise-onboarding', 'restricted-project-lifecycle', 'api-key-lifecycle'].map((name) => ({

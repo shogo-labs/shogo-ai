@@ -7,6 +7,7 @@ import { createTools } from '../gateway-tools'
 import { CORE_TOOL_NAMES } from '../capability-profiles'
 import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, createBoardTools, HANDOFF_WATCH_UNTIL, isHandedOff, PROBLEM_TOOL_NAMES } from '../board-tools'
 import { TaskRegistry } from '../task-registry'
+import { __setCreateRetryDelaysForTest } from '../remote-tasks'
 
 function ctx(overrides: Partial<ToolContext> = {}, capabilityProfile?: 'personal' | 'team'): ToolContext {
   return {
@@ -32,17 +33,25 @@ const saved = { api: process.env.SHOGO_API_URL, mode: process.env.WORKSPACE_RUNT
 let calls: Array<{ url: string; method: string; body: any }> = []
 let reply: unknown = {}
 let status = 200
+/** How many task creates the API refuses before accepting them (SHO-35). */
+let taskCreateFailures = 0
 
 beforeEach(() => {
   calls = []
   reply = {}
   status = 200
+  taskCreateFailures = 0
   process.env.SHOGO_API_URL = 'http://api.test'
   delete process.env.WORKSPACE_RUNTIME
   delete process.env.PROJECT_ID
   delete process.env.WORKSPACE_ID
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
-    calls.push({ url, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    const method = init?.method ?? 'GET'
+    calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    if (taskCreateFailures > 0 && method === 'POST' && String(url).endsWith('/api/internal/tasks')) {
+      taskCreateFailures--
+      return new Response(JSON.stringify({ error: 'boom' }), { status: 500, headers: { 'content-type': 'application/json' } })
+    }
     return new Response(JSON.stringify(reply), { status, headers: { 'content-type': 'application/json' } })
   }) as any
 })
@@ -112,6 +121,24 @@ describe('board tools', () => {
     expect(calls[0].url).toBe('http://api.test/api/internal/workspaces/ws-1/agent-boards/Tickets/items?channel=support')
     expect(calls[0].body).toMatchObject({ title: 'Refund not received', priority: 'high', fields: { customer: 'Acme' }, projectId: 'proj-1', sessionId: 'sess-1' })
     expect(out.item).toMatchObject({ key: 'SUP-42', column: 'Open', category: 'active', assignee_agent: 'workspace', fields: { customer: 'Acme' } })
+  })
+
+  test('work_item_comment carries the server’s mention_warnings for an ambiguous @Name', async () => {
+    reply = {
+      messageId: 'm-9',
+      threadRootId: 'm1',
+      mention_warnings: ['@New Project matches 7 people or agents — use the tag from team_directory'],
+    }
+    const out = await run('work_item_comment', { item: 'SUP-42', text: '@New Project status?' })
+    expect(calls[0].method).toBe('POST')
+    expect(calls[0].url).toBe('http://api.test/api/internal/workspaces/ws-1/agent-work-items/SUP-42/comments')
+    expect(calls[0].body).toMatchObject({ text: '@New Project status?', projectId: 'proj-1', sessionId: 'sess-1' })
+    expect(out).toMatchObject({
+      ok: true,
+      messageId: 'm-9',
+      threadRootId: 'm1',
+      mention_warnings: ['@New Project matches 7 people or agents — use the tag from team_directory'],
+    })
   })
 
   test('work_item_move returns WIP warnings', async () => {
@@ -209,6 +236,37 @@ describe('handed-off cards are watched', () => {
     expect(registry.get(out.task_id)?.dormant).toBeUndefined()
   })
 
+  // SHO-35: a create the API refuses must not cost the hand-off its watch.
+  test('a hand-off whose task create the API refuses is still watched, with one row', async () => {
+    const { registry, context } = withRegistry()
+    const restore = __setCreateRetryDelaysForTest([10, 10, 10])
+    const posts = () => calls.filter((c) => c.method === 'POST' && c.url.endsWith('/api/internal/tasks'))
+    try {
+      reply = { item: handedOff }
+      taskCreateFailures = 2
+      const out = await run('work_item_create', { board: 'Tickets', title: 'Refund not received', assignee_agent: 'proj-eng' }, context)
+
+      // The caller no longer shrugs: the tool still reports a live watch, so
+      // the agent is woken when the card comes back instead of losing it.
+      expect(out.watching).toBe(true)
+      expect(out.task_id).toBeDefined()
+      expect(registry.get(out.task_id)?.status).toBe('running')
+      expect(registry.get(out.task_id)?.dormant).toBeUndefined()
+
+      const deadline = Date.now() + 5_000
+      while (Date.now() < deadline && posts().length < 3) await new Promise((r) => setTimeout(r, 10))
+      // Refused, refused, accepted — and every attempt carries the same id, so
+      // the API cannot end up with two rows (two wakes) for one card.
+      expect(posts()).toHaveLength(3)
+      expect(new Set(posts().map((c) => c.body.id))).toEqual(new Set([out.task_id]))
+
+      await new Promise((r) => setTimeout(r, 50))
+      expect(posts()).toHaveLength(3) // and it stops once the row exists
+    } finally {
+      restore()
+    }
+  })
+
   test('reading a card stays lazy, and handing it off later activates the same task', async () => {
     const { registry, context } = withRegistry()
     reply = { item: { ...ITEM, assigneeAgentRef: null } }
@@ -225,9 +283,15 @@ describe('handed-off cards are watched', () => {
     expect(registry.get(read.task_id)?.dormant).toBeUndefined()
   })
 
-  test('a card the agent holds itself, or one already in review, is not watched', () => {
+  // SHO-88: handing a card into a review-category column that binds an agent
+  // opens a watch (lacvapps' QA lane is `review`); only a closed card ends one.
+  test('a review-category holder is watched, a closed card is not', () => {
     expect(isHandedOff({ assignee_agent: 'project:proj-1', category: 'active' }, 'project:proj-1')).toBe(false)
-    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'review' }, 'workspace')).toBe(false)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'review' }, 'workspace')).toBe(true)
+    expect(isHandedOff({ assignee_agent: null, column_agent: ENGINEER, category: 'review' }, 'workspace')).toBe(true)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'waiting' }, 'workspace')).toBe(true)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'done' }, 'workspace')).toBe(false)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'dismissed' }, 'workspace')).toBe(false)
     expect(isHandedOff({ assignee_agent: null, column_agent: ENGINEER, category: 'active' }, 'workspace')).toBe(true)
     expect(isHandedOff({ assignee_agent: null, category: 'active' }, 'workspace')).toBe(false)
   })

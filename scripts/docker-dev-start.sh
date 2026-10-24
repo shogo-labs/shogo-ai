@@ -116,7 +116,7 @@ ANTHROPIC_API_KEY=
 
 # Port configuration
 VITE_PORT=5173
-API_PORT=8002
+SHOGO_DEV_API_PORT=8002
 
 # Database (Docker PostgreSQL)
 DATABASE_URL=postgres://shogo:shogo_dev@localhost:5432/shogo

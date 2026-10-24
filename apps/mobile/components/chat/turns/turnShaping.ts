@@ -93,6 +93,7 @@ const UNGROUPABLE_TOOLS = new Set([
   "browser",
   "create_plan",
   "update_plan",
+  "share_file",
 ]);
 
 const MIN_WORK_GROUP_SIZE = 1;
@@ -125,7 +126,10 @@ function isShellRunCommand(tool: ToolCallData): boolean {
  * covered by `UNGROUPABLE_TOOLS` or the work-tool rules below. They keep
  * their own card instead of joining a work-group.
  */
-const CUSTOM_RENDER_TOOLS = new Set(["generate_image", "share_file"]);
+const CUSTOM_RENDER_TOOLS = new Set([
+  "generate_image",
+  "generate_video",
+]);
 
 /**
  * A tool call with no dedicated card and no bespoke grouping, e.g.

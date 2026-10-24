@@ -19,6 +19,14 @@ import {
 import { useAuth } from "../../contexts/auth";
 import { usePostHogSafe } from "../../contexts/posthog";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { useActiveInstance } from "../../contexts/active-instance";
+import { useMachineWorkspaces } from "../../hooks/useMachineWorkspaces";
+import {
+  buildWorkspaceEntries,
+  currentWorkspaceKey,
+  machineInstanceForEntry,
+  type WorkspaceEntry,
+} from "../../lib/workspace-entries";
 import { EVENTS, trackEvent } from "../../lib/analytics";
 import { api } from "../../lib/api";
 import { usePlatformConfig } from "../../lib/platform-config";
@@ -27,6 +35,7 @@ import {
   scheduleWorkspaceSwitch,
 } from "../../lib/switch-workspace";
 import { setActiveWorkspaceId } from "../../lib/workspace-store";
+import { workspaceErrorMessage } from "../../lib/workspace-errors";
 import { isCloudWorkspace, useCloudWorkspaces } from "../../lib/workspace-route";
 import { NativePhoneSheet } from "../phone/NativePhoneSheet";
 import { CreateWorkspaceModal } from "./sidebar/CreateWorkspaceModal";
@@ -43,18 +52,25 @@ export function MobileWorkspaceSwitcherRow({
   onPress: () => void;
 }) {
   const workspace = useActiveWorkspace();
+  const { instance } = useActiveInstance();
   const { localMode } = usePlatformConfig();
   useCloudWorkspaces();
-  const badge = workspaceKindBadge(workspace ?? {}, {
-    localMode: !!localMode,
-    cloud: !!localMode && isCloudWorkspace(workspace?.id),
-  });
-  const initial = workspace?.name?.[0]?.toUpperCase() ?? "W";
+  // While one of a paired computer's own workspaces is open, the drawer names
+  // *that* workspace — the same rule the wide sidebar's header follows.
+  const machine = instance?.source === "machine" ? instance : null;
+  const name = machine?.localWorkspaceName ?? workspace?.name ?? "Workspace";
+  const badge = machine
+    ? { highlighted: false, label: "Local" }
+    : workspaceKindBadge(workspace ?? {}, {
+        localMode: !!localMode,
+        cloud: !!localMode && isCloudWorkspace(workspace?.id),
+      });
+  const initial = name[0]?.toUpperCase() ?? "W";
 
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Switch workspace. Current workspace ${workspace?.name ?? "Workspace"}, ${badge.label}`}
+      accessibilityLabel={`Switch workspace. Current workspace ${name}, ${badge.label}`}
       onPress={onPress}
       className="mx-4 mb-3 flex-row items-center gap-2 rounded-2xl bg-background px-3 py-2.5 active:bg-muted"
     >
@@ -65,7 +81,7 @@ export function MobileWorkspaceSwitcherRow({
         className="min-w-0 flex-1 text-sm font-semibold text-foreground"
         numberOfLines={1}
       >
-        {workspace?.name ?? "Workspace"}
+        {name}
       </Text>
       <View
         className={cn(
@@ -107,9 +123,20 @@ export function MobileWorkspaceSwitcherSheet({
   const workspaces = useWorkspaceCollection();
   const projects = useProjectCollection();
   const currentWorkspace = useActiveWorkspace();
+  const { instance: activeInstance, setInstance: setActiveInstance, clearInstance } = useActiveInstance();
+  // The phone lists the same workspaces the wide sidebar does, machine ones
+  // included (SHO-108) — a person on a phone can reach the agent, chats and
+  // boards running on their own computer exactly like a cloud workspace's.
+  const { machines } = useMachineWorkspaces();
   const [createOpen, setCreateOpen] = useState(false);
 
   const allWorkspaces = workspaces?.all ?? [];
+  const entries = buildWorkspaceEntries({ workspaces: allWorkspaces, machines });
+  const activeKey = currentWorkspaceKey({
+    entries,
+    currentWorkspaceId: currentWorkspace?.id,
+    activeInstance,
+  });
   const hasPersonalWorkspace = allWorkspaces.some(
     (workspace: { kind?: string }) => workspace.kind === "personal"
   );
@@ -140,19 +167,48 @@ export function MobileWorkspaceSwitcherSheet({
     [currentWorkspace?.id, onClose, onSwitched, posthog, projects]
   );
 
+  /** One switch path: a cloud row switches the workspace, a machine row mounts it. */
+  const handleSelectEntry = useCallback(
+    (entry: WorkspaceEntry) => {
+      const machine = machineInstanceForEntry(entry, currentWorkspace?.id);
+      if (machine) {
+        setActiveInstance(machine);
+        trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED);
+        onSwitched?.();
+        onClose();
+        reloadAfterWorkspaceSwitch();
+        return;
+      }
+      if (activeInstance?.source === "machine") clearInstance();
+      handleSwitchWorkspace(entry.id);
+    },
+    [
+      activeInstance,
+      clearInstance,
+      currentWorkspace?.id,
+      handleSwitchWorkspace,
+      onClose,
+      onSwitched,
+      posthog,
+      setActiveInstance,
+    ]
+  );
+
   const handleCreateWorkspace = useCallback(() => {
     onClose();
-    if (hasTeamWorkspace) {
-      onSwitched?.();
-      router.push("/(app)/new-workspace" as never);
+    // Local mode has no billing gate — always the name modal, never the paid
+    // `/(app)/new-workspace` checkout page (its billing route 404s locally).
+    if (localMode || !hasTeamWorkspace) {
+      setCreateOpen(true);
       return;
     }
-    setCreateOpen(true);
-  }, [hasTeamWorkspace, onClose, onSwitched, router]);
+    onSwitched?.();
+    router.push("/(app)/new-workspace" as never);
+  }, [hasTeamWorkspace, localMode, onClose, onSwitched, router]);
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
-      if (!user?.id) return;
+      if (!user?.id) return false;
       try {
         const created = await actions.createWorkspace(name, undefined, user.id);
         if (created?.id) {
@@ -165,6 +221,7 @@ export function MobileWorkspaceSwitcherSheet({
         }
       } catch (err) {
         console.warn("Failed to create workspace:", err);
+        return workspaceErrorMessage(err);
       }
     },
     [actions, posthog, projects, user?.id, workspaces]
@@ -200,7 +257,9 @@ export function MobileWorkspaceSwitcherSheet({
           includePlan={false}
           showBilling={false}
           localMode={localMode}
-          workspaces={allWorkspaces}
+          entries={entries}
+          currentKey={activeKey}
+          onSelect={handleSelectEntry}
           currentWorkspace={currentWorkspace}
           billingData={EMPTY_BILLING}
           workspacePlan={null}

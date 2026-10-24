@@ -1,129 +1,126 @@
 ---
 name: video-generation
-version: 1.0.0
-description: Generate AI marketing videos and images using Arcads API (Sora 2, Veo 3.1, Kling 3.0, Seedance 2.0, Nano Banana)
-trigger: "generate video|create ad|make video|ugc|video ad|ai video|render video|product video|b-roll|talking head|creative asset|generate image|character sheet|influencer"
-tools: [memory_read, memory_write, web, browser, shell]
+version: 2.0.0
+description: Generate AI marketing videos and images with the built-in media tools (Higgsfield video + image, Genjutsu clip editing, fal fallbacks)
+trigger: "generate video|create ad|make video|ugc|video ad|ai video|render video|product video|b-roll|talking head|creative asset|generate image|character sheet|influencer|restyle clip|swap object"
+tools: [memory_read, memory_write, generate_image, generate_video, list_media_models, web]
 ---
 
 # Video Generation
 
-Generate AI marketing videos and images via the Arcads API with full production workflow.
+Generate AI marketing videos and images with the built-in media tools. No
+external API key, no shell calls: `generate_image` and `generate_video` bill the
+workspace directly, and `list_media_models` tells you what everything costs.
+
+Higgsfield is the provider. fal models still work where Higgsfield has no
+equivalent, and `list_media_models` marks them `deprecated`.
 
 ## Decision Tree — Which Model to Use
 
 ```
 User goal?
-├── UGC / talking-head / influencer → Seedance 2.0
-├── Product hero / premium reveal → Seedance 2.0
-├── Feature walkthrough / demo → Seedance 2.0
-├── Studio lookbook / lifestyle → Seedance 2.0
-├── Long-form text-to-video (>10s) → Sora 2 (up to 20s)
-├── Image-to-video / start-frame continuity → Veo 3.1 (up to 8s)
-├── B-roll / atmospheric scenes → Kling 3.0 (up to 5s)
-└── Still images / character sheets → Nano Banana
+├── Still image: product, editorial, lifestyle → hf-soul-v2 (default)
+├── Still image with legible text (poster, logo) → hf-ideogram-4
+├── Animating an approved still (image-to-video) → hf-hailuo-2.3
+├── Draft / storyboard / b-roll (cheapest clip) → hf-hailuo-2.3 (default)
+├── Fluid motion, polished hero shot → hf-kling-2.5-pro
+├── Stylized look, up to 15 s → hf-wan-2.6
+├── Needs an exact aspect_ratio in text-to-video, or audio → hf-ltx-2.5-fast
+├── Edit an existing clip (motion, product swap, look) → Genjutsu (below)
+└── Needs Veo / Nano Banana / FLUX / upscale → a fal model (deprecated, still works)
 ```
+
+Run `list_media_models` at the start of any campaign: it returns the live list
+with per-image and per-clip prices, plus each model's durations, aspect ratios
+and resolutions. Never guess a model id.
+
+## Genjutsu — editing a clip instead of generating one
+
+Pass a workspace `.mp4` (4–30 s, ≤ 200 MB) as `source_video` and pick a
+workflow with `genjutsu`:
+
+| `genjutsu` | Use it for | Also needs |
+| --- | --- | --- |
+| `motion_transfer` | Drive a character/product photo with the motion of the clip | 1–8 reference images |
+| `object_swap` | Replace an object in the clip with a product from a reference | 1–8 reference images (source ≥ 409,600 px/frame) |
+| `restyle` | Change the look of the clip, keeping motion and audio | `preset_id` from `list_media_models` kind `"presets"` |
+
+Genjutsu is priced per source second, so the price is only known once the clip
+is submitted (`estimated_usd` on the submit response). Use `resolution: "480p"`
+for drafts — restyle at 480p is about a fifth of 1080p.
 
 ## Execution Checklist
 
 1. **Session folder** — Create `assets/YYYY-MM-DD_campaign-slug/` with subdirs: `video/`, `images/`, `audio/`, `scripts/`.
-2. **Product** — Identify the product/offer from `MEMORY.md` catalog. If not in catalog, ask user to describe it and persist to memory.
+2. **Product** — Identify the product/offer from `MEMORY.md` catalog. If not in catalog, ask the user to describe it and persist it to memory.
 3. **Script** — Write the ad script with beat structure:
    - Hook (2-3s): grab attention, pattern-interrupt
    - Show (3-5s): product reveal, first impression
    - Demo (3-5s): feature/benefit demonstration
    - CTA (2-3s): call to action, urgency
-4. **Dialogue gate** — Present full script to user. **STOP HERE.** Do not proceed until user approves. For non-speaking videos (b-roll, product shots), skip this step but still confirm the visual brief.
-5. **Model choice** — Select based on decision tree above. Explain reasoning to user.
-6. **Credit estimate** — Calculate cost and display:
+4. **Dialogue gate** — Present the full script to the user. **STOP HERE.** Do not proceed until the user approves. For non-speaking videos (b-roll, product shots), skip this step but still confirm the visual brief.
+5. **Model choice** — Select from the decision tree. Explain the reasoning to the user.
+6. **Cost estimate** — Get the real number, then show it:
    ```
-   Model: [model name]
-   Duration: [Xs]
-   Estimated credits: [N]
-   Remaining balance: [M] credits
+   Plan: [N] clips @ [model] ([duration]) + [M] stills @ [model]
+   Estimated cost: $[X]
    ```
-   **MANDATORY.** Never skip this step.
-7. **Confirm** — Wait for explicit user approval ("go", "generate", "yes", etc.)
-8. **Generate** — Submit request to Arcads API via shell or custom route.
-9. **Poll** — Check generation status every 30s. Update dashboard with progress indicator.
+   **MANDATORY.** Numbers come from `list_media_models` or from the
+   `estimated_usd` that `generate_video` returns on submit — never from memory.
+7. **Confirm** — Wait for explicit user approval ("go", "generate", "yes", etc.).
+8. **Generate stills first** — `generate_image` for every shot's key frame. For a vertical ad, ask for a 9:16 still: the video inherits the frame from the start image.
+9. **Animate** — `generate_video` with `start_image` pointing at the approved still. Poll (`wait: true`, or `job_id`) instead of re-submitting.
 10. **QA** — When complete:
-    - Video: check for lip-sync issues, visual glitches, audio/visual misalignment
-    - Images: check for extra limbs, distorted faces, text artifacts, background inconsistencies
-11. **Present** — Add to dashboard Assets tab with metadata (model, duration, credits, QA status).
+    - Video: lip-sync, warped faces/hands, flicker, audio/visual drift, brand marks
+    - Images: extra limbs, distorted faces, gibberish text, impossible background geometry
+11. **Present** — Add to the dashboard Assets tab with metadata (model, duration, price, QA status).
 
-## Model-Specific Notes
+## Model Notes
 
-### Seedance 2.0
-- Best for: UGC talking-head, product hero, premium reveal, feature walkthrough, studio lookbook
-- Max duration: 10s
-- Requires: character reference image OR character sheet from Nano Banana
-- Supports: lip-sync to audio, expression control
-- Credit cost: ~3 credits per second
+| Model | Best for | Limits |
+| --- | --- | --- |
+| `hf-soul-v2` | Default stills: product, editorial, lifestyle | text-only; no reference images |
+| `hf-ideogram-4` | Posters, logos, text in image | one style reference |
+| `hf-hailuo-2.3` | Default clips, drafts, b-roll | 768p fixed, 6 or 10 s, no aspect_ratio |
+| `hf-kling-2.5-pro` | Fluid motion, hero shots | 5 or 10 s, no aspect_ratio |
+| `hf-wan-2.6` | Stylized/animated looks | 5/10/15 s, 720p or 1080p |
+| `hf-ltx-2.5-fast` | Only text-to-video with `aspect_ratio`; audio | 6/8/10 s, 720p/1080p |
+| `hf-genjutsu-*` | Editing a clip | source 4–30 s, ≤ 200 MB |
 
-### Sora 2
-- Best for: long-form text-to-video, cinematic shots, complex scenes
-- Max duration: 20s
-- Input: text prompt only (no start frame)
-- Quality: highest visual fidelity for non-character content
-- Credit cost: ~5 credits per second
-
-### Veo 3.1
-- Best for: image-to-video transitions, maintaining visual continuity from a reference frame
-- Max duration: 8s
-- Requires: start frame image (upload or generate with Nano Banana first)
-- Supports: camera motion control
-- Credit cost: ~4 credits per second
-
-### Kling 3.0
-- Best for: fast b-roll, atmospheric scenes, product environment shots
-- Max duration: 5s
-- Input: text prompt, optional reference image
-- Fastest generation time of all video models
-- Credit cost: ~2 credits per second
-
-### Nano Banana
-- Best for: still images, character sheets, product photography, reference frames for Veo 3.1
-- Output: single high-resolution image
-- Supports: style transfer, consistent character generation across shots
-- Credit cost: ~1 credit per image
+Hailuo, Kling and Wan take no `aspect_ratio`: output framing follows the start
+image (or the model's fixed size). That is why a 9:16 ad starts from a portrait
+still, not from an aspect_ratio argument.
 
 ## Script Length → Duration Table
 
-| Words | Duration | Recommended Model |
+| Words | Duration | Recommended model |
 |-------|----------|-------------------|
-| 5-15 | 2-6s | Kling 3.0, Seedance 2.0 |
-| 15-25 | 6-10s | Seedance 2.0 |
-| 25-37 | 10-15s | Sora 2 |
-| 37-50 | 15-20s | Sora 2 |
-| 50+ | Split into clips | Multiple models |
+| 5-15 | 6s | `hf-hailuo-2.3` |
+| 15-25 | 6-10s | `hf-hailuo-2.3`, `hf-ltx-2.5-fast` |
+| 25-37 | 10s | `hf-ltx-2.5-fast`, `hf-kling-2.5-pro` |
+| 37-50 | 10-15s | `hf-wan-2.6` (15 s) |
+| 50+ | Split into clips | Multiple shots, edited together |
 
-Formula: ~2.5 words per second. Round up to nearest model-supported duration.
+Formula: ~2.5 words per second. Round up to the nearest duration the model supports.
 
 ## Image QA Rules
 
 When reviewing generated images:
-1. **Extra limbs check** — Count fingers (5 per hand), arms (2), legs (2). Flag anomalies.
+1. **Extra limbs** — Count fingers (5 per hand), arms (2), legs (2). Flag anomalies.
 2. **Face distortion** — Check for asymmetry, melted features, double-eye artifacts.
-3. **Text artifacts** — Any embedded text should be legible or absent. No gibberish text.
-4. **Background consistency** — No impossible geometry, floating objects, or merged elements.
-5. **Brand alignment** — Does it match the brand's visual language from `MEMORY.md`?
+3. **Text artifacts** — Embedded text must be legible or absent. No gibberish.
+4. **Background consistency** — No impossible geometry, floating objects, merged elements.
+5. **Brand alignment** — Does it match the visual language in `MEMORY.md`?
 
-If issues found:
-- Retry 1: adjust prompt to explicitly avoid the artifact (e.g., "exactly five fingers on each hand")
-- Retry 2: try different seed or slight prompt variation
-- After 2 retries: surface to user with issue description and ask for guidance
+If issues are found:
+- Retry 1: adjust the prompt to explicitly avoid the artifact ("exactly five fingers on each hand")
+- Retry 2: change the model or the reference image
+- After 2 retries: surface to the user with the issue and ask for guidance
 
-## Credit Cost Estimation
+## Cost Rules
 
-**Always calculate before generating. Always show to user.**
-
-```
-Estimated cost:
-  [N] × [model] clips @ [X] credits each = [total] credits
-  + [M] images @ 1 credit each = [M] credits
-  ────────────────────────────────────────
-  Total: [grand total] credits
-  Balance after: [remaining] credits
-```
-
-Never generate if remaining balance would drop below 10% without explicit override from user.
+- **Show the price before spending.** `generate_video` returns `estimated_usd` on submit; `list_media_models` gives per-image and per-clip prices.
+- **Generate stills, not clips, while exploring the look.** A still is cents; a clip is tens of cents.
+- **One clip per approved shot.** Re-running a clip costs the full clip price again.
+- **Restyle at 480p** for drafts, then re-run the approved preset at 720p or 1080p.
+- If the plan would cost more than the user approved, stop and ask.

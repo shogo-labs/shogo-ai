@@ -10,6 +10,7 @@
 import { PROJECT_CALL_MESSAGE_AGENT } from "@shogo/shared-runtime/project-call-chat"
 import { externalizeMessageAttachments } from "../lib/chat-attachments"
 import type { Principal } from "../lib/authz"
+import { reconcileCallReplyOnRead } from "../services/agent-call-reconcile.service"
 import { authorizeChatSession, CHAT_SESSION_SCOPE_SELECT } from "./chat-session.hooks"
 
 /**
@@ -131,6 +132,10 @@ export const chatMessageHooks: ChatMessageHooks = {
     const where: Record<string, unknown> = { sessionId }
     if (agent === "technical") {
       where.agent = { in: ["technical", PROJECT_CALL_MESSAGE_AGENT] }
+      // A call's reply can be missed by its follower (empty turn, buffer gone,
+      // API restart). Repair it from the call record the first time the chat is
+      // opened, so an orphaned prompt never stays unanswered.
+      await reconcileCallReplyOnRead(ctx.prisma, sessionId)
     } else if (agent) {
       where.agent = agent
     }

@@ -340,8 +340,8 @@ describe('gitFetchUnshallow', () => {
   });
 });
 
-describe('commitAndPush (author env vars)', () => {
-  it('sets GIT_AUTHOR_EMAIL + GIT_COMMITTER_EMAIL when authorEmail is provided (L315-316)', async () => {
+describe('commitAndPush (author identity)', () => {
+  it('always authors and commits as the canonical agent, whatever the caller asks for', async () => {
     spawnHandler = (inv) => {
       if (inv.args[0] === 'diff') return { exitCode: 1 };
       if (inv.args[0] === 'rev-parse') return { stdout: 'shaaaaaa\n' };
@@ -353,14 +353,51 @@ describe('commitAndPush (author env vars)', () => {
       projectId: 'p',
       localDir: '/tmp/never',
       message: 'feat: x',
-      authorEmail: 'dev@shogo.ai',
+      // @ts-expect-error — the fields are gone; a caller that still passes them must not win.
+      authorEmail: 'dev2@shogo.local',
+      authorName: 'Shogo Dev 2',
     });
-    const addInv = spawnInvocations.find((i) => i.args[0] === 'add')!;
-    expect(addInv.env?.GIT_AUTHOR_EMAIL).toBe('dev@shogo.ai');
-    expect(addInv.env?.GIT_COMMITTER_EMAIL).toBe('dev@shogo.ai');
+    for (const invocation of spawnInvocations) {
+      expect(invocation.env?.GIT_AUTHOR_NAME).toBe('Shogo Agent');
+      expect(invocation.env?.GIT_AUTHOR_EMAIL).toBe('agent@shogo.ai');
+      expect(invocation.env?.GIT_COMMITTER_NAME).toBe('Shogo Agent');
+      expect(invocation.env?.GIT_COMMITTER_EMAIL).toBe('agent@shogo.ai');
+    }
   });
 
-  it('sets GIT_AUTHOR_NAME + GIT_COMMITTER_NAME when authorName is provided (L319-320)', async () => {
+  it('overrides a GIT_AUTHOR_* in the worker environment', async () => {
+    const previous = { name: process.env.GIT_AUTHOR_NAME, email: process.env.GIT_AUTHOR_EMAIL };
+    process.env.GIT_AUTHOR_NAME = 'Shogo Dev 3';
+    process.env.GIT_AUTHOR_EMAIL = 'dev3@shogo.local';
+    spawnInvocations.length = 0;
+    spawnHandler = (inv) => {
+      if (inv.args[0] === 'diff') return { exitCode: 1 };
+      if (inv.args[0] === 'rev-parse') return { stdout: 'shaaaaaa\n' };
+      return { exitCode: 0 };
+    };
+    try {
+      await commitAndPush({
+        apiUrl: 'https://api.shogo.ai',
+        apiKey: 'k',
+        projectId: 'p',
+        localDir: '/tmp/never',
+        message: 'feat: x',
+      });
+      const commitInv = spawnInvocations.find((i) => i.args[0] === 'commit')!;
+      expect(commitInv.env?.GIT_AUTHOR_EMAIL).toBe('agent@shogo.ai');
+      expect(commitInv.env?.GIT_COMMITTER_EMAIL).toBe('agent@shogo.ai');
+      expect(commitInv.env?.GIT_AUTHOR_NAME).toBe('Shogo Agent');
+    } finally {
+      if (previous.name === undefined) delete process.env.GIT_AUTHOR_NAME;
+      else process.env.GIT_AUTHOR_NAME = previous.name;
+      if (previous.email === undefined) delete process.env.GIT_AUTHOR_EMAIL;
+      else process.env.GIT_AUTHOR_EMAIL = previous.email;
+    }
+  });
+});
+
+describe('commitAndPush (co-author trailer)', () => {
+  it('writes the one canonical co-author', async () => {
     spawnHandler = (inv) => {
       if (inv.args[0] === 'diff') return { exitCode: 1 };
       if (inv.args[0] === 'rev-parse') return { stdout: 'shaaaaaa\n' };
@@ -371,12 +408,41 @@ describe('commitAndPush (author env vars)', () => {
       apiKey: 'k',
       projectId: 'p',
       localDir: '/tmp/never',
-      message: 'feat: x',
-      authorName: 'Shogo Bot',
+      message: 'chore: x',
     });
-    const addInv = spawnInvocations.find((i) => i.args[0] === 'add')!;
-    expect(addInv.env?.GIT_AUTHOR_NAME).toBe('Shogo Bot');
-    expect(addInv.env?.GIT_COMMITTER_NAME).toBe('Shogo Bot');
+    const commitInv = spawnInvocations.find((i) => i.args[0] === 'commit')!;
+    const trailer = commitInv.args[commitInv.args.indexOf('--trailer') + 1];
+    expect(trailer).toBe('Co-authored-by: Shogo Agent <agent@shogo.ai>');
+  });
+
+  it('never takes the co-author from SHOGO_AGENT_GIT_* env overrides', async () => {
+    const previous = { name: process.env.SHOGO_AGENT_GIT_NAME, email: process.env.SHOGO_AGENT_GIT_EMAIL };
+    process.env.SHOGO_AGENT_GIT_NAME = 'Shogo Dev 3';
+    process.env.SHOGO_AGENT_GIT_EMAIL = 'dev3@shogo.local';
+    spawnInvocations.length = 0;
+    spawnHandler = (inv) => {
+      if (inv.args[0] === 'diff') return { exitCode: 1 };
+      if (inv.args[0] === 'rev-parse') return { stdout: 'shaaaaaa\n' };
+      return { exitCode: 0 };
+    };
+    try {
+      await commitAndPush({
+        apiUrl: 'https://api.shogo.ai',
+        apiKey: 'k',
+        projectId: 'p',
+        localDir: '/tmp/never',
+        message: 'chore: x',
+      });
+      const commitInv = spawnInvocations.find((i) => i.args[0] === 'commit')!;
+      expect(commitInv.args[commitInv.args.indexOf('--trailer') + 1]).toBe(
+        'Co-authored-by: Shogo Agent <agent@shogo.ai>',
+      );
+    } finally {
+      if (previous.name === undefined) delete process.env.SHOGO_AGENT_GIT_NAME;
+      else process.env.SHOGO_AGENT_GIT_NAME = previous.name;
+      if (previous.email === undefined) delete process.env.SHOGO_AGENT_GIT_EMAIL;
+      else process.env.SHOGO_AGENT_GIT_EMAIL = previous.email;
+    }
   });
 });
 

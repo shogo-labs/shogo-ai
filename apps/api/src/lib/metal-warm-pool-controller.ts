@@ -1154,6 +1154,25 @@ export class MetalWarmPoolController {
               throw err
             }
 
+            // A host that ANSWERED with an error can still be running the key:
+            // on 2026-10-17 latitude-dal-1 replied 500 (Firecracker boot
+            // failure) for a runtime it went on to run, and failing over
+            // put a second copy on dal-2. Ask before moving on.
+            if (!(err instanceof MetalHostUnreachableError) && (await this.hostIsRunning(host, projectId))) {
+              this.projectHost.set(projectId, host.hostId)
+              void this.registry.setPlacement(projectId, host.hostId, 'local').catch(() => {})
+              this.urlCache.delete(projectId)
+              if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
+              console.warn(
+                `[MetalPool] assign on host ${host.hostId} failed for ${projectId} but the host is running it — ` +
+                  `keeping placement instead of failing over: ${(err as any)?.message ?? err}`,
+              )
+              wakeMode = 'assign_failed_owner'
+              span.setAttribute('resolve.method', 'assign_failed_owner')
+              span.setStatus({ code: SpanStatusCode.ERROR, message: 'assign failed on owner host' })
+              throw err
+            }
+
             // Drop stickiness/placement/cache so we don't keep hammering a dead host.
             if (this.projectHost.get(projectId) === host.hostId) this.projectHost.delete(projectId)
             this.urlCache.delete(projectId)
@@ -1176,6 +1195,22 @@ export class MetalWarmPoolController {
         span.end()
       }
     })
+  }
+
+  /** Whether `host` reports a running VM for `projectId`. False when it can't say. */
+  private async hostIsRunning(host: HostEntry, projectId: string): Promise<boolean> {
+    try {
+      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/status`, {
+        method: 'POST',
+        headers: this.agentHeaders(),
+        body: JSON.stringify({ projectId }),
+        signal: AbortSignal.timeout(OWNER_PROBE_TIMEOUT_MS),
+      })
+      if (!res.ok) return false
+      return ((await res.json()) as { state?: string }).state === 'assigned'
+    } catch {
+      return false
+    }
   }
 
   /**

@@ -34,6 +34,7 @@ import {
   removeViteWatchPidfile,
   writeViteWatchPidfile,
 } from '@shogo-ai/sdk/vite-watch'
+import { containChild, type Containment } from './process-tree'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
 import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded } from '@shogo-ai/sdk/generators'
@@ -983,6 +984,13 @@ export class PreviewManager {
   private onBuildComplete?: (info?: { outputChanged: boolean }) => void
   private buildWatchProcess: ChildProcess | null = null
   private apiServerProcess: ChildProcess | null = null
+  /**
+   * Containment for the two detached children this manager owns (SHO-144).
+   * Each one records its group in the workspace's child ledger, so a runtime
+   * that dies without running `stop()` still leaves a reaper a trail.
+   */
+  private buildWatchContainment: Containment | null = null
+  private apiContainment: Containment | null = null
   /**
    * True once the spawned `server.tsx` process has been observed to bind
    * its port (either the in-process `/health` poll returned 2xx OR the
@@ -2025,15 +2033,21 @@ export class PreviewManager {
    * or when the group signal raises (typically ESRCH — group already empty).
    */
   private killApiServerProcessGroup(proc: ChildProcess, signal: NodeJS.Signals): void {
-    if (process.platform === 'win32' || !proc.pid) {
+    // Containment knows where the whole tree is: the process group on POSIX,
+    // the job object on Windows. The direct signal stays as the fast path for
+    // the leader (and for a `proc` with no pid, which the lifecycle unit test
+    // wires), but the tree kill is what reaches the grandchildren.
+    const containment = this.apiContainment
+    if (process.platform !== 'win32' && proc.pid) {
+      try {
+        process.kill(-proc.pid, signal)
+      } catch {
+        try { proc.kill(signal) } catch { /* already gone */ }
+      }
+    } else {
       try { proc.kill(signal) } catch { /* already gone */ }
-      return
     }
-    try {
-      process.kill(-proc.pid, signal)
-    } catch {
-      try { proc.kill(signal) } catch { /* already gone */ }
-    }
+    if (signal === 'SIGKILL') void containment?.killTree({ graceMs: 0 })
   }
 
   /**
@@ -2973,8 +2987,12 @@ export class PreviewManager {
     }
     if (this.apiServerProcess) {
       console.log(`[${LOG_PREFIX}] Stopping API server...`)
-      this.apiServerProcess.kill('SIGTERM')
+      const proc = this.apiServerProcess
       this.apiServerProcess = null
+      this.killApiServerProcessGroup(proc, 'SIGTERM')
+      // Graceful in intent, verified in fact: whatever `server.tsx` started is
+      // a grandchild the leader's pid never reaches (SHO-144).
+      void this.apiContainment?.killTree()
     }
     this.apiListening = false
     // Invalidate any in-flight _startApiServerImpl() attempt. It's still
@@ -3022,18 +3040,21 @@ export class PreviewManager {
    */
   private killBuildWatchProcessGroup(proc: ChildProcess): void {
     const pid = proc.pid
-    if (process.platform === 'win32' || !proc.pid) {
+    const containment = this.buildWatchContainment
+    if (process.platform !== 'win32' && pid) {
+      try {
+        process.kill(-pid, 'SIGTERM')
+      } catch {
+        try { proc.kill('SIGTERM') } catch { /* already gone */ }
+      }
+    } else {
       try { proc.kill('SIGTERM') } catch { /* already gone */ }
-      if (pid) removeViteWatchPidfile(this.workspaceDir, pid)
-      return
     }
-    try {
-      process.kill(-proc.pid, 'SIGTERM')
-    } catch {
-      try { proc.kill('SIGTERM') } catch { /* already gone */ }
-    } finally {
-      removeViteWatchPidfile(this.workspaceDir, pid)
-    }
+    if (pid) removeViteWatchPidfile(this.workspaceDir, pid)
+    // Verified teardown: vite's rollup workers and native-binding loaders are
+    // grandchildren, and on Windows the tree cannot be reached by parent pid at
+    // all. Nothing waits on it — the exit handler resolves the lifecycle.
+    void containment?.killTree({ graceMs: 0 })
   }
 
   get phase(): PreviewPhase {
@@ -3447,6 +3468,13 @@ export class PreviewManager {
     }
 
     this.buildWatchProcess = viteProcess
+    // Containment before anything else: the ledger entry and (on Windows) the
+    // job have to exist while the parent chain is still intact.
+    this.buildWatchContainment?.dispose()
+    this.buildWatchContainment = containChild(viteProcess, {
+      label: 'vite-watch',
+      workspaceDir: this.workspaceDir,
+    })
     if (viteProcess.pid) {
       try {
         writeViteWatchPidfile(this.workspaceDir, {
@@ -3478,6 +3506,8 @@ export class PreviewManager {
       console.error(`[${LOG_PREFIX}] Vite build --watch error: ${err.message}`)
       if (this.buildWatchProcess === viteProcess) {
         this.buildWatchProcess = null
+        this.buildWatchContainment?.dispose()
+        this.buildWatchContainment = null
       }
       if (viteProcess.pid) removeViteWatchPidfile(this.workspaceDir, viteProcess.pid)
     })
@@ -3526,6 +3556,8 @@ export class PreviewManager {
       console.log(`[${LOG_PREFIX}] Vite build --watch exited (code=${code}, signal=${signal})`)
       if (this.buildWatchProcess === viteProcess) {
         this.buildWatchProcess = null
+        this.buildWatchContainment?.dispose()
+        this.buildWatchContainment = null
       }
       if (viteProcess.pid) removeViteWatchPidfile(this.workspaceDir, viteProcess.pid)
     })
@@ -3824,6 +3856,11 @@ export class PreviewManager {
     })
 
     this.apiServerProcess = proc
+    this.apiContainment?.dispose()
+    this.apiContainment = containChild(proc, {
+      label: 'api-sidecar',
+      workspaceDir: this.workspaceDir,
+    })
 
     // Drop the detached leader from the event-loop ref-count (the HTTP server
     // keeps the loop alive anyway); stdio pipes stay ref'd so the build-log
@@ -3846,6 +3883,8 @@ export class PreviewManager {
       console.log(`[${LOG_PREFIX}] API server exited (code=${code}, signal=${signal})`)
       if (this.apiServerProcess === proc) {
         this.apiServerProcess = null
+        this.apiContainment?.dispose()
+        this.apiContainment = null
         // Stop advertising a listening port the moment the owning
         // process is gone — without this the `/api/*` proxy would
         // keep fetching against a dead socket between the exit and

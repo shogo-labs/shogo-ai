@@ -17,8 +17,9 @@ import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
 import { isSearchEnabled } from './search-flag'
+import { MEDIA_TOOL_NAMES } from './media-tool-names'
 import type { ToolContext } from './gateway-tools'
-import { createBrowserTool, disposeBrowserTool, textResult } from './gateway-tools'
+import { createBrowserTool, createReadGuideTool, disposeBrowserTool, textResult } from './gateway-tools'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed
@@ -37,7 +38,7 @@ const CORE_GATEWAY_TOOLS = new Set([
   'quick_action',
   'project_list', 'project_create', 'project_attach', 'project_detach',
   'project_configure', 'capabilities_configure', 'project_call', 'system_apply',
-  'connect_project', 'list_models',
+  'connect_project', 'copy_to_project', 'list_models',
 ])
 
 // ---------------------------------------------------------------------------
@@ -100,6 +101,12 @@ export interface SubagentResult {
   escalated?: boolean
   /** True when the final response is empty or a "Subagent failed: ..." marker. */
   responseEmpty?: boolean
+  /**
+   * Why the run failed, when it did. `responseText` is what the subagent said;
+   * this is what stopped it (a provider 4xx, a missing tool, an empty loop), and
+   * without it a failed spawn reaches the parent as a placeholder string.
+   */
+  error?: { code?: string; message: string }
 }
 
 export interface SubagentStreamCallbacks {
@@ -226,20 +233,6 @@ read_file, write_file — save config or results to the workspace
 - For channel_connect: guide the user through required config (tokens, webhook URLs, etc.)
 - For send_message: confirm the target channel is connected first
 - Return clear status updates about what was configured`
-
-export const DEVOPS_SUBAGENT_PROMPT = `You are a DevOps subagent. Manage heartbeat schedules, monitoring, and the project API server.
-
-## Available Tools
-heartbeat_configure — set up or modify heartbeat scheduling (interval, quiet hours)
-heartbeat_status — check current heartbeat configuration
-server_sync — force the project API server (root server.tsx) to regenerate routes from prisma/schema.prisma and restart
-read_file, write_file — save config or results to the workspace
-
-## Guidelines
-- Check heartbeat_status before modifying configuration
-- When setting quiet hours, confirm the user's timezone
-- For server_sync: run after editing prisma/schema.prisma if routes are 404'ing, or to verify the API server is healthy
-- Return a clear summary of the current configuration state`
 
 export const BROWSER_SUBAGENT_PROMPT = `You are a browser automation subagent. Navigate web pages, interact with elements, and extract information.
 
@@ -370,18 +363,40 @@ Return a short final response (≤ 10 lines): canvas surface path if built, mark
 - Stop and report if the page fails to load after two retries — record network details.
 - Stop once every flow in the directive has a pass/fail/blocked outcome. Don't keep exploring beyond the requested scope.`
 
-export const MEDIA_SUBAGENT_PROMPT = `You are a media processing subagent. Generate images and transcribe audio.
+export const MEDIA_SUBAGENT_PROMPT = `You are a media processing subagent. Generate and edit images, generate video, and transcribe audio.
 
 ## Available Tools
-generate_image — create images from text descriptions
+list_media_models — every image and video model with capabilities and Shogo price; check it before picking a model or a batch size
+generate_image — create images from text, or edit / keep a character consistent by passing reference_images
+generate_video — text-to-video, or animate a still with start_image (only present when video generation is enabled)
 transcribe_audio — convert audio files to text
 read_file, write_file — read inputs and save results to the workspace
 
 ## Guidelines
 - For image generation: provide detailed, specific descriptions for best results
+- Higgsfield is the only media provider (hf-soul-v2 for images, hf-hailuo-2.3 for video). hf-soul-v2 is text-only; for reference images use hf-ideogram-4 (one style reference) or, for several, hf-marketing-studio-flare / hf-qwen-image-3. list_media_models shows every model option
+- Save files where the parent asked (the path parameter accepts any workspace path, e.g. public/assets/hero.png); otherwise images/ and videos/ are the defaults
+- For video, generate a still with generate_image first, then animate it with generate_video using start_image. It is cheaper, the result matches the approved look, and the frame (and so the aspect ratio) follows that still
+- Video is billed per clip on Higgsfield: the submit response carries estimated_usd, so check it before rendering a long batch and do not regenerate without a reason
+- To edit an existing clip, pass source_video (.mp4, 200 MB max, 4 s minimum) with genjutsu: motion_transfer (drive a subject image with the clip's motion), object_swap (swap a product in) or restyle (needs a preset_id from list_media_models kind "presets")
+- For several shots at once, submit each generate_video with wait: false, then check them with generate_video({ job_id })
 - For transcription: read the audio file path from the prompt, transcribe, and save the text output
 - Always save results to the workspace so the parent agent can access them
-- Return a clear summary of what was produced and where files were saved`
+- Return a clear summary of what was produced, which model was used, and where files were saved`
+
+/** Every name `getBuiltinSubagentConfig` resolves. Keep in step with its switch. */
+export const BUILTIN_SUBAGENT_TYPES = [
+  'explore', 'general-purpose', 'code-reviewer', 'browser', 'browser_qa', 'channel', 'media',
+] as const
+
+/**
+ * Built-in types that were removed, mapped to what the caller should do
+ * instead. `agent_spawn` with one of these returns this hint, not a bare
+ * "unknown type".
+ */
+export const RETIRED_SUBAGENT_TYPES: Record<string, string> = {
+  devops: 'The devops subagent was removed. Call `server_sync`, `heartbeat_configure` and `heartbeat_status` directly — they are your own tools.',
+}
 
 export function getBuiltinSubagentConfig(
   name: string,
@@ -463,21 +478,12 @@ export function getBuiltinSubagentConfig(
     case 'media':
       return {
         name: 'media',
-        description: 'Image generation and audio transcription agent',
+        description: 'Image and video generation, image editing, and audio transcription agent',
         systemPrompt: MEDIA_SUBAGENT_PROMPT,
-        toolNames: ['generate_image', 'transcribe_audio', 'read_file', 'write_file'],
+        toolNames: [...MEDIA_TOOL_NAMES, 'transcribe_audio', 'read_file', 'write_file'],
         disallowedTools: ['task', 'skill'],
         model: AUTO_MODEL_ID,
-        maxTurns: 5,
-      }
-    case 'devops':
-      return {
-        name: 'devops',
-        description: 'Heartbeat scheduling, monitoring, and skill server management',
-        systemPrompt: DEVOPS_SUBAGENT_PROMPT,
-        toolNames: ['heartbeat_configure', 'heartbeat_status', 'server_sync', 'read_file', 'write_file'],
-        disallowedTools: ['task', 'skill'],
-        maxTurns: 5,
+        maxTurns: 15,
       }
     default:
       return null
@@ -601,6 +607,8 @@ import {
 } from './model-router'
 import { AUTO_MODEL_ID, inferProviderFromModel, isAutoModel } from '@shogo/model-catalog'
 import { createStableLoopTransform } from './stable-compaction'
+import { createToolProfile, deferredToolsEnabled, resolveLearnedToolOrder, withActivationOnCall } from './tool-profile'
+import { getProjectToolUsage, projectScopedId } from './internal-api'
 import { SUBAGENT_REPORT_INSTRUCTION } from './subagent-prompts'
 import { resolveAutoTierModelId } from './available-models'
 
@@ -874,6 +882,9 @@ export async function runSubagent(
     renderedSystemPrompt: undefined,
     sessionMessages: undefined,
     subagentInstanceId: options?.instanceId,
+    // A subagent gets its OWN advertised tool set (SHO-97), filled in below —
+    // never the parent's, so a tool the parent activated is not inherited.
+    toolProfileRef: undefined,
   }
 
   // Ensure working directory exists
@@ -949,6 +960,37 @@ export async function runSubagent(
     if (config.readonly) {
       tools = tools.filter(t => READONLY_TOOLS.has(t.name))
     }
+  }
+
+  // Deferred tool definitions (SHO-97): a subagent advertises its own core +
+  // learned set. Only when it can actually discover the rest — a subagent whose
+  // tool list has no read_guide keeps every schema, so nothing becomes
+  // unreachable. Fork mode inherits the parent's prompt and tools, so it keeps
+  // the parent's set and does not re-defer.
+  let isAdvertisedTool: ((tool: AgentTool) => boolean) | undefined
+  if (!isFork && deferredToolsEnabled(parentCtx.config) && tools.some(t => t.name === 'read_guide')) {
+    const learned = await resolveLearnedToolOrder({
+      projectId: projectScopedId(parentCtx.projectId),
+      load: async (id) => {
+        const usage = await getProjectToolUsage(id)
+        return usage ? { order: usage.order, totalCalls: usage.totalCalls } : null
+      },
+    })
+    const profile = createToolProfile(tools, { learned })
+    subCtx.toolProfileRef = { current: profile }
+    tools = tools.map(tool => (profile.isDeferred(tool.name) ? withActivationOnCall(tool, profile) : tool))
+    isAdvertisedTool = tool => profile.isAdvertised(tool.name)
+    if (profile.catalog) systemPrompt = `${systemPrompt}\n\n---\n\n${profile.catalog}`
+  }
+
+  // Rebind `read_guide` to subCtx (SHO-97): the parent's instance closed over
+  // parentCtx, so a subagent's read_guide({ tool }) would load the parent's
+  // profile — activating in the parent's advertised set (changing the parent's
+  // cache prefix mid-turn) while never advertising in the child's. Fork keeps
+  // the parent's tools and prompt on purpose, so it keeps the parent's instance.
+  if (!isFork && tools.some(t => t.name === 'read_guide')) {
+    tools = tools.filter(t => t.name !== 'read_guide')
+    tools.push(createReadGuideTool(subCtx))
   }
 
   // Apply eval mock interceptors so subagent tool calls hit the same mocks
@@ -1085,6 +1127,7 @@ export async function runSubagent(
       history,
       prompt,
       tools,
+      isAdvertisedTool,
       maxIterations,
       maxTokens: config.maxTokens,
       thinkingLevel,
@@ -1122,6 +1165,7 @@ export async function runSubagent(
     const responseEmpty =
       !result.text || result.text.trim().length === 0
       || result.text.startsWith('Subagent failed:')
+      || !!result.error
 
     return {
       toolCalls: result.toolCalls.length,
@@ -1138,6 +1182,9 @@ export async function runSubagent(
       loopDetected: !!result.loopBreak,
       escalated: false,
       responseEmpty,
+      // The loop's own cause (`promptError || implicitError`) is the only thing
+      // that explains an empty run — a provider 4xx, a tool schema rejection.
+      ...(result.error ? { error: { message: result.error.message } } : {}),
     }
   }
 
@@ -1197,6 +1244,7 @@ export async function runSubagent(
       loopDetected: false,
       escalated: false,
       responseEmpty: true,
+      error: { message: err.message },
     }
   } finally {
     if (parentCtx.fileStateCache && subCtx.fileStateCache) {

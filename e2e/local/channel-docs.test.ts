@@ -107,3 +107,119 @@ test.describe("Channel docs", () => {
     }
   })
 })
+
+/**
+ * SHO-62: the whole doc is injected into the prompt of every agent woken in the
+ * channel, so a doc near its 200,000-character limit is both expensive and the
+ * place durable rules get buried. The pane shows how full it is, a write that
+ * does not fit fails with `doc_full` and a way out instead of a bare 400, and a
+ * finished section can be archived out of the doc and restored.
+ */
+test.describe("Channel doc budget and archives", () => {
+  test.describe.configure({ mode: "serial" })
+  test.use({ viewport: { width: 1440, height: 900 } })
+
+  let page: Page
+  let workspaceId: string
+  const suffix = Date.now().toString(36)
+  const created: string[] = []
+
+  const newDocChannel = async (name: string, content: string) => {
+    const channel = await api(page, "POST", `/api/workspaces/${workspaceId}/conversations`, {
+      name: `${name}-${suffix}`,
+      kind: "public",
+    })
+    const id = channel.json?.conversation?.id
+    if (!id) throw new Error(`channel create failed: ${JSON.stringify(channel.json)}`)
+    created.push(id)
+    const saved = await api(page, "PUT", `/api/conversations/${id}/doc`, { title: name, content, baseVersion: 0 })
+    if (saved.status !== 200) throw new Error(`doc create failed: ${JSON.stringify(saved.json)}`)
+    return id
+  }
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(180_000)
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    page = await context.newPage()
+    await signIn(page)
+    workspaceId = await teamWorkspaceId(page)
+    await activateTeamWorkspace(page, workspaceId)
+  })
+
+  test.afterAll(async () => {
+    for (const id of created) await api(page, "PATCH", `/api/conversations/${id}`, { archived: true }).catch(() => {})
+    await page.context().close()
+  })
+
+  test("a near-limit doc reads critical, shows its budget, and refuses a write that does not fit", async () => {
+    const nearLimit = `# How this channel works\n\n${"y".repeat(175_000)}`
+    const id = await newDocChannel("budget", nearLimit)
+
+    const read = await api(page, "GET", `/api/conversations/${id}/doc`)
+    expect(read.json.doc.budget).toMatchObject({ chars: nearLimit.length, limit: 200_000, level: "critical" })
+    expect(read.json.doc.budget.pct).toBeGreaterThan(87)
+    expect(read.json.doc.budget.pct).toBeLessThan(88)
+
+    await page.goto(`/c/${id}?doc=1`)
+    await expect(page.getByTestId("doc-budget")).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByTestId("doc-budget-text")).toContainText(`${nearLimit.length.toLocaleString("en-US")} / 200,000`, { timeout: 60_000 })
+    await expect(page.getByTestId("doc-budget-text")).toHaveClass(/text-destructive/)
+
+    const tooBig = `${nearLimit}\n\n${"y".repeat(30_000)}`
+    const refused = await api(page, "PUT", `/api/conversations/${id}/doc`, {
+      title: `budget-${suffix}`,
+      content: tooBig,
+      baseVersion: read.json.doc.version,
+    })
+    expect(refused.status).toBe(400)
+    expect(refused.json.error.code).toBe("doc_full")
+    expect(refused.json.error).toMatchObject({ chars: tooBig.length, limit: 200_000, over_by: tooBig.length - 200_000 })
+    expect(refused.json.error.next).toContain("archive_section")
+
+    const untouched = await api(page, "GET", `/api/conversations/${id}/doc`)
+    expect(untouched.json.doc.version).toBe(read.json.doc.version)
+    expect(untouched.json.doc.content).toBe(nearLimit)
+  })
+
+  test("a finished section is archived out of the doc and restored from the archive panel", async () => {
+    const story = "x".repeat(2_000)
+    const content = `# How this channel works\n\nkeep this rule\n\n## Old card story\n\n${story}\n\n## Decisions\n\nship it\n`
+    const id = await newDocChannel("archive", content)
+
+    await page.goto(`/c/${id}?doc=1`)
+    await expect(page.getByTestId("doc-budget")).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByTestId("doc-budget-text")).toContainText(`${content.length.toLocaleString("en-US")} / 200,000`)
+
+    await page.getByRole("button", { name: "Archive a section" }).click()
+    await page.getByRole("button", { name: "Archive Old card story" }).click()
+    await page.getByRole("button", { name: "Archive section" }).click()
+
+    await expect
+      .poll(async () => (await serverDoc(page, id))?.content ?? "", { timeout: 15_000 })
+      .toContain('_Archived "Old card story"')
+    const afterArchive = await serverDoc(page, id)
+    expect(afterArchive.content).not.toContain(story)
+    expect(afterArchive.content).toContain("keep this rule")
+    expect(afterArchive.content).toContain("ship it")
+    expect(afterArchive.version).toBe(2)
+
+    const archives = (await api(page, "GET", `/api/conversations/${id}/doc/archives`)).json.archives ?? []
+    expect(archives).toHaveLength(1)
+    expect(archives[0].heading).toBe("Old card story")
+    expect(archives[0].chars).toBeGreaterThan(story.length)
+    expect(archives[0].chars).toBeLessThan(content.length)
+
+    await page.getByRole("button", { name: "Archived sections" }).click()
+    await page.getByRole("button", { name: "Open Old card story" }).click()
+    await expect(page.getByTestId("archive-body")).toContainText(story.slice(0, 40), { timeout: 15_000 })
+    await page.getByRole("button", { name: "Restore this section" }).click()
+
+    await expect
+      .poll(async () => (await serverDoc(page, id))?.content ?? "", { timeout: 15_000 })
+      .toContain(story)
+    const restored = await serverDoc(page, id)
+    expect(restored.content).toContain("## Old card story")
+    expect(restored.content).toContain("keep this rule")
+    expect((await api(page, "GET", `/api/conversations/${id}/doc/archives`)).json.archives).toEqual([])
+  })
+})

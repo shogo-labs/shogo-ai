@@ -19,9 +19,14 @@ function matches(row: any, where: any): boolean {
   for (const [key, cond] of Object.entries(where ?? {})) {
     if (key === 'OR') {
       if (!(cond as any[]).some((c) => matches(row, c))) return false
+    } else if (key === 'NOT') {
+      const conditions = Array.isArray(cond) ? cond : [cond]
+      if (conditions.some((c) => matches(row, c))) return false
     } else if (cond && typeof cond === 'object' && 'contains' in (cond as any)) {
       const value = String(row[key] ?? '').toLowerCase()
       if (!value.includes(String((cond as any).contains).toLowerCase())) return false
+    } else if (cond && typeof cond === 'object' && 'startsWith' in (cond as any)) {
+      if (!String(row[key] ?? '').startsWith(String((cond as any).startsWith))) return false
     } else if (cond && typeof cond === 'object' && 'gte' in (cond as any)) {
       if (!(row[key] >= (cond as any).gte)) return false
     } else if (cond && typeof cond === 'object' && 'lt' in (cond as any)) {

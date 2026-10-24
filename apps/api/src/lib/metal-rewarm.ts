@@ -24,6 +24,7 @@ import { metrics } from '@opentelemetry/api'
 import type { Redis } from 'ioredis'
 import type { StagedRootfsReport } from './metal-placement-registry'
 import type { RuntimeHostStatus, StopResult } from './metal-warm-pool-controller'
+import { getAdvisoryLockPoolSize } from './advisory-lock'
 import { getSharedRedis } from './tunnel-redis'
 
 export type RewarmOutcome =
@@ -211,8 +212,27 @@ export function rewarmConfig() {
     minIntervalMs: envInt('METAL_REWARM_MIN_INTERVAL_MS', 2 * 60 * 60_000),
     settleMs: envInt('METAL_REWARM_SETTLE_MS', 2 * 60_000),
     maxHostUtilPct: envInt('METAL_REWARM_MAX_HOST_UTIL_PCT', 75),
+    leaseBudget: rewarmLeaseBudget(),
   }
 }
+
+/**
+ * Warms this replica may run at once. Each warm holds a spawn lease — one
+ * dedicated advisory-lock connection — for its whole boot/suspend, so the
+ * rewarm must leave part of the lock pool free or user opens on the watcher's
+ * replica can't get a lease at all.
+ */
+export function rewarmLeaseBudget(poolSize = getAdvisoryLockPoolSize()): number {
+  return Math.max(1, poolSize - Math.max(2, Math.ceil(poolSize / 3)))
+}
+
+interface RewarmLimits {
+  maxHostUtilPct: number
+  /** Cap on concurrent warms on this replica. Unset = no cap. */
+  leaseBudget?: number
+}
+
+let refreshesInFlight = 0
 
 // --- job -------------------------------------------------------------------
 
@@ -225,11 +245,15 @@ export async function runRewarm(
   opts: RewarmOptions,
   deps: RewarmDeps,
   candidates: RewarmCandidate[],
-  cfg: { maxHostUtilPct: number } = rewarmConfig(),
+  cfg: RewarmLimits = rewarmConfig(),
 ): Promise<RewarmStatus> {
   const region = opts.region ?? null
   const regionHosts = (await deps.listHosts()).filter((h) => !region || h.region === region)
-  const concurrency = Math.min(MAX_CONCURRENCY, Math.max(1, opts.concurrencyPerHost * Math.max(1, regionHosts.length)))
+  const concurrency = Math.min(
+    MAX_CONCURRENCY,
+    cfg.leaseBudget ?? MAX_CONCURRENCY,
+    Math.max(1, opts.concurrencyPerHost * Math.max(1, regionHosts.length)),
+  )
   const status: RewarmStatus = {
     jobId: opts.jobId ?? `rewarm-${deps.now().toString(36)}`,
     reason: opts.reason,
@@ -988,7 +1012,7 @@ export interface RefreshDrainResult {
  */
 export async function drainRefreshQueue(
   deps: RewarmDeps,
-  cfg: { maxHostUtilPct: number } = rewarmConfig(),
+  cfg: RewarmLimits = rewarmConfig(),
 ): Promise<RefreshDrainResult> {
   const { store } = deps
   const res: RefreshDrainResult = { paused: false, started: [], deferred: [], expired: [], running: [] }
@@ -1004,6 +1028,7 @@ export async function drainRefreshQueue(
   const claimed = new Set<string>()
 
   for (const key of due) {
+    if (cfg.leaseBudget !== undefined && refreshesInFlight >= cfg.leaseBudget) break
     const item = parseJson<RefreshItem>(await store.get(refreshItemKey(key)))
     if (!item || now - item.queuedAt > SWITCHOVER.refreshExpiryMs) {
       await store.zrem(REFRESH_QUEUE, key)
@@ -1037,6 +1062,7 @@ export async function drainRefreshQueue(
 async function runRefresh(deps: RewarmDeps, item: RefreshItem, slot: string): Promise<void> {
   const { store } = deps
   const started = deps.now()
+  refreshesInFlight++
   try {
     const [c] = await deps.candidatesForKeys([item.key])
     if (!c) {
@@ -1066,6 +1092,7 @@ async function runRefresh(deps: RewarmDeps, item: RefreshItem, slot: string): Pr
     await recordRefresh(store, done, r.outcome)
     deps.log(`[MetalRewarm] refresh ${item.key}: ${r.outcome}${r.detail ? ` (${r.detail})` : ''} attempt ${item.attempts + 1}`)
   } finally {
+    refreshesInFlight--
     await store.del(slot).catch(() => {})
   }
 }

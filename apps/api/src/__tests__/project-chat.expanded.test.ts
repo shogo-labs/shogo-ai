@@ -442,6 +442,33 @@ describe('trackUsageFromStream — processLine branches', () => {
     expect(parts.some((p: any) => p.type === 'data-turn-timing')).toBe(false)
   })
 
+  test('persists a data-context-summarized part so the divider survives a reload (SHO-96)', async () => {
+    chatSessionFixture = { id: 's-compact' }
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"working on it"}\n',
+      'data: {"type":"data-context-summarized","data":{"trigger":"auto","tokensBefore":412000,"tokensAfter":38000,"messagesBefore":44,"messagesAfter":6,"summaryChars":900,"contextWindowTokens":1000000}}\n',
+      'data: {"type":"text-delta","delta":" — done"}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-compact' }, { id: 'p-1', workspaceId: 'w-1' })
+    const parts = JSON.parse(prismaCalls.chatMessageCreate[0].data.parts)
+    const divider = parts.find((p: any) => p.type === 'data-context-summarized')
+    expect(divider).toBeDefined()
+    expect(divider.data).toEqual({
+      trigger: 'auto',
+      tokensBefore: 412000,
+      tokensAfter: 38000,
+      messagesBefore: 44,
+      messagesAfter: 6,
+      summaryChars: 900,
+      contextWindowTokens: 1000000,
+    })
+    // Exactly one row/divider per compaction, in stream order between the text.
+    expect(parts.filter((p: any) => p.type === 'data-context-summarized')).toHaveLength(1)
+    const types = parts.map((p: any) => p.type)
+    expect(types.indexOf('data-context-summarized')).toBeGreaterThan(types.indexOf('text'))
+  })
+
   test('ignores [DONE], event:, id:, retry:, blank lines, and garbage non-JSON', async () => {
     const stream = streamFromChunks([
       '\n',

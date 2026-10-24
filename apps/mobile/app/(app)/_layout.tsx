@@ -45,8 +45,8 @@ import { trackSignUp, trackLogin } from "../../lib/tracking";
 import { usePostHogIdentify, usePostHogSafe } from "../../contexts/posthog";
 import { DomainProvider, useWorkspaceCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { useActiveInstance } from "../../contexts/active-instance";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
-import { getActiveWorkspaceId } from "../../lib/workspace-store";
 import {
   homePathForWorkspaceKind,
   subscribeWorkspaceSwitched,
@@ -55,8 +55,9 @@ import { useResolvedTheme } from "../../contexts/theme";
 import { AppSidebar } from "../../components/layout/AppSidebar";
 import { TeamChatNotifier } from "../../components/team-chat/TeamChatNotifier";
 import { NotificationPermissionBanner } from "../../components/notifications/NotificationPermissionBanner";
+import { AgentLimitBanner } from "../../components/AgentLimitBanner";
 import { AgentGlancePublisher } from "../../components/layout/AgentGlancePublisher";
-import { HuddleDock } from "../../components/team-chat/HuddleDock";
+import { HuddleWindow } from "../../components/team-chat/HuddleWindow";
 import { HuddleRinger } from "../../components/team-chat/HuddleRinger";
 import { AppHeader } from "../../components/layout/AppHeader";
 import { RecordingIndicator } from "../../components/meetings/RecordingIndicator";
@@ -96,6 +97,7 @@ function AppLayoutInner() {
   // known.
   const experience = useWorkspaceExperience();
   const activeWorkspace = useActiveWorkspace();
+  const { instance } = useActiveInstance();
   const workspaces = useWorkspaceCollection();
   const router = useRouter();
   const pathname = usePathname();
@@ -131,17 +133,22 @@ function AppLayoutInner() {
   const mobileAgentShellEnabled = isWorkspaceRuntimeEnabled();
   const isHomePage =
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index";
+  // `/(app)/home` is the pre-landing home: the team feed on a phone and the
+  // builder on wide web. `/` itself is the workspace agent chat.
+  const isExplicitHome = pathname === "/home" || pathname === "/(app)/home";
+  const isHomeCanvas = (isHomePage || isExplicitHome) && isDark;
   // The workspace agent chat has a route of its own (`/agent`); on phones the
-  // team Home is a feed that links into it.
+  // team Home feed lives on `/(app)/home` and links into it.
   const isAgentChatPage = /\/agent\/?$/.test(pathname);
   const isTeamHomeFeed =
-    isHomePage &&
+    isExplicitHome &&
     !isWide &&
     !isIdeEmbed &&
     mobileAgentShellEnabled &&
     (experience.kind === "team" || !experience.resolved);
   const isWorkspaceChatRoute =
     isHomePage ||
+    isExplicitHome ||
     isAgentChatPage ||
     isProjectDetail ||
     pathname.includes("/new-project") ||
@@ -187,6 +194,11 @@ function AppLayoutInner() {
     pathname === "/profile" || pathname === "/(app)/profile";
   const isAccountPage =
     pathname === "/account" || pathname === "/(app)/account";
+  // Phone Settings redirects to Account (`lib/phone-settings-route.ts`). The
+  // redirect frame must not draw the legacy AppHeader or open the legacy
+  // AppSidebar drawer — it is a phone screen, not the wide Settings page.
+  const isSettingsPage =
+    pathname === "/settings" || pathname === "/(app)/settings";
   const isSearchPage = pathname === "/search" || pathname === "/(app)/search";
   const isProjectChatsPage =
     pathname === "/project-chats" || pathname === "/(app)/project-chats";
@@ -345,6 +357,7 @@ function AppLayoutInner() {
     isApiKeysPage ||
     isProfilePage ||
     isAccountPage ||
+    isSettingsPage ||
     isSearchPage ||
     isProjectChatsPage ||
     isAIModelsPage ||
@@ -367,7 +380,7 @@ function AppLayoutInner() {
     windowWidth: width,
     isDark,
     swipeEnabled: nativeDrawerSwipe,
-    closedCanvas: isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined,
+    closedCanvas: isHomeCanvas ? NATIVE_PHONE_HOME_CANVAS : undefined,
   });
   const { drawerOpen, closeDrawer, toggleDrawer, openDrawer, resetDrawer } =
     drawer;
@@ -407,31 +420,27 @@ function AppLayoutInner() {
   ]);
 
   useEffect(() => {
-    if (!isWide && !isAccountPage) return;
+    if (!isWide && !isAccountPage && !isSettingsPage) return;
     resetDrawer();
-  }, [isAccountPage, isWide, resetDrawer]);
+  }, [isAccountPage, isSettingsPage, isWide, resetDrawer]);
 
   useEffect(() => {
     if (useMobileWorkspaceShell) resetDrawer();
   }, [resetDrawer, useMobileWorkspaceShell]);
 
-  // After a workspace switch, leave the previous screen. Personal opens
-  // main chat; team opens the project builder. `openInWorkspace` navigates
-  // itself and does not emit this.
+  // After a workspace switch, leave the previous screen: every workspace
+  // lands on its agent chat. `openInWorkspace` navigates itself and does not
+  // emit this.
   useEffect(() => {
     return subscribeWorkspaceSwitched(() => {
-      const id = getActiveWorkspaceId();
-      const kind = (workspaces?.all ?? []).find(
-        (workspace: { id: string; kind?: string }) => workspace.id === id
-      )?.kind;
-      const href = homePathForWorkspaceKind(kind);
+      const href = homePathForWorkspaceKind();
       if (Platform.OS === "web" && typeof window !== "undefined") {
         window.location.assign(href.replace(/\/\([^)]+\)/g, "") || "/");
         return;
       }
       router.replace(href as any);
     });
-  }, [router, workspaces]);
+  }, [router]);
 
   useEffect(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return;
@@ -518,13 +527,21 @@ function AppLayoutInner() {
 
   return (
     <TeamChatSidebarProvider
-      workspaceId={experience.kind === "team" ? activeWorkspace?.id : null}
+      workspaceId={
+        experience.kind === "team"
+          ? // A machine workspace's team chat lives on the machine: its own
+            // workspace id, not the cloud workspace that happens to be selected
+            // (SHO-185). Asking the cloud id resolved the chat mode of a
+            // different workspace, so the machine's channels never appeared.
+            (instance?.source === "machine" ? instance.localWorkspaceId : null) ?? activeWorkspace?.id ?? null
+          : null
+      }
     >
     <NativeSheetDrawerShell
       isWide={isWide}
       nativeSheetDrawer={nativeSheetDrawer}
       canvas={
-        isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : nativeDrawerCanvas
+        isHomeCanvas ? NATIVE_PHONE_HOME_CANVAS : nativeDrawerCanvas
       }
       safeAreaEdges={nativeEdgeToEdgeChrome ? ["left", "right"] : undefined}
       sidebarWide={showSidebar ? <AppSidebar /> : null}
@@ -555,8 +572,9 @@ function AppLayoutInner() {
       {(localMode || Platform.OS !== "web") && !isIdeEmbed ? <RecordingIndicator /> : null}
       {!isIdeEmbed ? <TeamChatNotifier /> : null}
       {!isIdeEmbed ? <NotificationPermissionBanner /> : null}
+      {!isIdeEmbed ? <AgentLimitBanner /> : null}
       {!isIdeEmbed ? <AgentGlancePublisher /> : null}
-      {!isIdeEmbed ? <HuddleDock /> : null}
+      {!isIdeEmbed ? <HuddleWindow /> : null}
       {!isIdeEmbed ? <HuddleRinger /> : null}
       {/* The shell stays mounted on every phone route and only toggles its
           chrome. Swapping the parent of <Slot /> between routes (e.g. the team

@@ -22,13 +22,7 @@ import { EditorGroupView } from "./EditorGroup";
 import { applyEditorChange } from "./editor-change-apply";
 import { collectDirtyFiles, resolveSaveTarget } from "./save-target";
 import { findEditorForFileId } from "./model-by-uri";
-import { isImagePath } from "./ImagePreview";
-import {
-  isAudioPath,
-  isFontPath,
-  isPdfPath,
-  isVideoPath,
-} from "./MediaPreview";
+import { PREVIEW_LANGUAGES, previewLanguageFor, type PreviewLanguage } from "./FilePreview";
 import { Palette, type PaletteItem } from "./Palette";
 import { buildDisambiguation, type QuickOpenFile } from "./quick-open-disambiguate";
 import {
@@ -108,32 +102,7 @@ import {
 let groupSeq = 1;
 const newGroupId = () => `g${groupSeq++}`;
 
-/** SQLite database files are binary, but we render them in a read-only
- *  SQLite preview (tables + sample rows) instead of refusing to open. */
-const SQLITE_EXTENSIONS = new Set(["db", "sqlite", "sqlite3"]);
-function isSqlitePath(path: string): boolean {
-  const ext = path.toLowerCase().split(".").pop() ?? "";
-  return SQLITE_EXTENSIONS.has(ext);
-}
-
-/** Preview "languages" — pseudo-Monaco-language tags we stash on an OpenFile
- *  to tell EditorGroupView which preview component to mount. Any file whose
- *  language matches one of these is opened via svc.readFileUrl() (not
- *  readFile()) and its OpenFile.content holds a URL rather than text. */
-type PreviewLanguage = "image" | "sqlite" | "pdf" | "audio" | "video" | "font";
 type PrimarySideBarPosition = "left" | "right";
-const PREVIEW_LANGUAGES: ReadonlySet<string> = new Set<PreviewLanguage>([
-  "image", "sqlite", "pdf", "audio", "video", "font",
-]);
-function previewLanguageFor(path: string): PreviewLanguage | null {
-  if (isImagePath(path)) return "image";
-  if (isSqlitePath(path)) return "sqlite";
-  if (isPdfPath(path)) return "pdf";
-  if (isAudioPath(path)) return "audio";
-  if (isVideoPath(path)) return "video";
-  if (isFontPath(path)) return "font";
-  return null;
-}
 /** Human-friendly viewer name for error toasts when readFileUrl is missing. */
 const PREVIEW_LABEL: Record<PreviewLanguage, string> = {
   image: "Image",

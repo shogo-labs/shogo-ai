@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
+import { observer } from 'mobx-react-lite'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { KanbanSquare, List, Search, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -63,7 +64,7 @@ function first(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
 }
 
-export default function MyWorkScreen() {
+export default observer(function MyWorkScreen() {
   const params = useLocalSearchParams<{ card?: string }>()
   const cardId = first(params.card) ?? null
   const router = useRouter()
@@ -392,7 +393,7 @@ export default function MyWorkScreen() {
       ) : null}
     </View>
   )
-}
+})
 
 function index(ids: string[], id: string): number {
   return ids.indexOf(id)

@@ -2,6 +2,19 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { defineConfig } from 'prisma/config'
 
+// Prisma 7 no longer auto-loads dotenv files, and `bun run <script>` does not
+// forward `.env.local` to the spawned Prisma CLI. Load it here so
+// `bun run db:migrate:deploy` etc. use the DATABASE_URL from `.env.local`
+// instead of the "unused" fallback below. `loadEnvFile` never overrides vars
+// that are already set (CI / prod / explicit shell exports still win).
+for (const file of ['.env.local']) {
+  try {
+    process.loadEnvFile(file)
+  } catch {
+    // file missing (CI, prod, desktop) — nothing to load
+  }
+}
+
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 // NOTE: we use `process.env.DATABASE_URL ?? fallback` rather than Prisma's

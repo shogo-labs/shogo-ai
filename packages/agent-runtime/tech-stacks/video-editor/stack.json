@@ -1,0 +1,48 @@
+{
+  "id": "video-editor",
+  "name": "Video Editor",
+  "description": "Programmatic video with Remotion: write React compositions, preview them live in the canvas with the Remotion Player, and render real MP4s from the same entry file.",
+  "tags": ["video", "remotion", "rendering", "react", "mp4", "animation"],
+  "target": "web",
+  "seedsOwnTemplate": true,
+  "runtime": {
+    "devServer": "static-build",
+    "buildCommand": "vite build"
+  },
+  "capabilities": {
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "heartbeatToolsEnabled": true,
+    "imageGenEnabled": true,
+    "videoGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "quickCommands": [
+    {
+      "id": "remotion-studio",
+      "label": "Open Studio",
+      "description": "Launch the Remotion Studio timeline editor at http://localhost:3000",
+      "command": "bun x remotion studio",
+      "category": "server",
+      "timeout": 600000
+    },
+    {
+      "id": "remotion-render-main",
+      "label": "Render Main MP4",
+      "description": "Render the Main composition to out/main.mp4",
+      "command": "bun x remotion render src/index.ts Main out/main.mp4",
+      "category": "build",
+      "timeout": 900000
+    },
+    {
+      "id": "remotion-browser-ensure",
+      "label": "Install Render Browser",
+      "description": "Make sure the headless browser Remotion renders with is installed",
+      "command": "bun x remotion browser ensure",
+      "category": "package",
+      "timeout": 900000
+    }
+  ]
+}

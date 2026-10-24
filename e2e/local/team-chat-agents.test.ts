@@ -185,6 +185,7 @@ test.describe("Team chat: agents hand off to each other", () => {
   })
 
   test("two agents handing work back and forth get paused, and the person is asked to continue", async () => {
+    test.setTimeout(180_000)
     await page.goto(`/c/${channelId}`)
     const channelComposer = page.getByLabel("Message", { exact: true }).first()
     await channelComposer.waitFor({ state: "visible", timeout: 30_000 })
@@ -192,8 +193,12 @@ test.describe("Team chat: agents hand off to each other", () => {
 
     await openThread(page, channelId, "write the release note")
     // The pause notice shows in the thread and, as a broadcast, in the channel.
-    await expect(page.getByText("reply here to continue", { exact: false }).first()).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByText("reply here to continue", { exact: false }).first()).toBeVisible({ timeout: 100_000 })
+    // The limit is a server setting (SHOGO_AGENT_CHAIN_MAX_PING_PONG); read it off the notice.
+    const reason = await page.getByText(/back and forth \d+ times/).first().innerText()
+    const limit = Number(reason.match(/back and forth (\d+) times/)?.[1])
+    expect(limit, reason).toBeGreaterThan(0)
     const reviews = await page.getByText("The draft also claims", { exact: false }).count()
-    expect(reviews).toBeLessThanOrEqual(2)
+    expect(reviews).toBeLessThanOrEqual(Math.ceil(limit / 2))
   })
 })

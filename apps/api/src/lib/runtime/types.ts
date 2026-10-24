@@ -148,4 +148,15 @@ export interface IRuntimeManager {
    * Safe no-op when the project has no running anchored runtime.
    */
   markPreviewActive(projectId: string): void
+
+  /**
+   * Count an open PTY terminal WebSocket for `projectId` (+1 on open, -1 on
+   * close). A runtime with a shell attached is treated as doing active work, so
+   * the warm-preview LRU can never evict the runtime hosting the user's
+   * terminal out from under it.
+   *
+   * Optional: only host runtimes implement it (cloud runtimes are keyed to a
+   * pod the gateway does not evict). Safe no-op everywhere else.
+   */
+  noteTerminalSession?(projectId: string, delta: 1 | -1): void
 }

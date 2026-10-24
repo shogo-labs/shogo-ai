@@ -20,13 +20,13 @@
 
 import { prisma, Prisma } from '../lib/prisma'
 import {
+  MARKUP_MULTIPLIER,
   MODEL_DOLLAR_COSTS,
-  calculateDollarCost,
+  calculateUsageCost,
   proxyModelToBillingModel,
   type ModelName,
 } from '../lib/usage-cost'
 import { resolveModelId } from '@shogo/model-catalog'
-import { getDbModelPricing } from '../lib/db-model-pricing'
 import { resolveModelLabelSync } from './model-registry.service'
 
 // ============================================================================
@@ -48,6 +48,8 @@ interface AgentBreakdownEntry {
   /** Human display label resolved from the model registry. */
   modelLabel: string
   totalRuns: number
+  /** Runs that carry quality signals; the denominator for every rate below. */
+  scoredRuns: number
   /** Legacy "promise resolved" successes — kept for backwards compat / debug. */
   promiseSuccesses: number
   /** Multi-signal quality successes (see file header). The number used in recommendations. */
@@ -59,8 +61,11 @@ interface AgentBreakdownEntry {
   totalInputTokens: number
   totalOutputTokens: number
   totalCachedInputTokens: number
+  totalCacheWriteTokens: number
   totalToolCalls: number
   totalCreditCost: number
+  /** Desktop runs recorded without rates for their model; their cost is 0, not a guess. */
+  unpricedRuns: number
   totalWallTimeMs: number
   avgCostPerRun: number
   avgLatencyMs: number
@@ -114,6 +119,15 @@ interface CostForecast {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Rows without real quality signals (history rebuilt from per-call usage
+ * events by the desktop backfill migration). They count toward cost and runs
+ * but are kept out of every quality rate and the recommendation gate.
+ */
+function qualityUnknownSql(): Prisma.Sql {
+  return Prisma.sql`COALESCE(CAST("metadata" AS TEXT), '') LIKE '%"qualityUnknown":%true%'`
+}
 
 function periodToDate(period: CostPeriod): Date {
   const now = new Date()
@@ -236,6 +250,7 @@ export async function getAgentCostBreakdown(
       inputTokens: true,
       outputTokens: true,
       cachedInputTokens: true,
+      cacheWriteTokens: true,
       toolCalls: true,
       creditCost: true,
       wallTimeMs: true,
@@ -244,8 +259,10 @@ export async function getAgentCostBreakdown(
   })
 
   // Boolean counts can't go in a groupBy `_sum` (Prisma rejects them), so we
-  // do a single raw SQL aggregation alongside. CAST to int8 to count true rows.
+  // do a single raw SQL aggregation alongside. SUM(CASE ...) rather than
+  // COUNT(*) FILTER so the same SQL runs on Postgres and local SQLite.
   const projectFilter = projectId ? Prisma.sql`AND "projectId" = ${projectId}` : Prisma.empty
+  const qualityUnknown = qualityUnknownSql()
   const flags = await prisma.$queryRaw<Array<{
     agentType: string
     model: string
@@ -255,22 +272,26 @@ export async function getAgentCostBreakdown(
     loopDetected: bigint
     escalated: bigint
     responseEmpty: bigint
+    unscoredRuns: bigint
+    unpricedRuns: bigint
   }>>(Prisma.sql`
     SELECT
       "agentType",
       "model",
-      COUNT(*) FILTER (WHERE "success" = true)            AS "promiseSuccesses",
-      COUNT(*) FILTER (
-        WHERE "success" = true
-          AND "hitMaxTurns" = false
-          AND "loopDetected" = false
-          AND "escalated" = false
-          AND "responseEmpty" = false
-      )                                                   AS "qualitySuccesses",
-      COUNT(*) FILTER (WHERE "hitMaxTurns" = true)        AS "hitMaxTurns",
-      COUNT(*) FILTER (WHERE "loopDetected" = true)       AS "loopDetected",
-      COUNT(*) FILTER (WHERE "escalated" = true)          AS "escalated",
-      COUNT(*) FILTER (WHERE "responseEmpty" = true)      AS "responseEmpty"
+      SUM(CASE WHEN "success" AND NOT (${qualityUnknown}) THEN 1 ELSE 0 END) AS "promiseSuccesses",
+      SUM(CASE WHEN "success"
+            AND NOT "hitMaxTurns"
+            AND NOT "loopDetected"
+            AND NOT "escalated"
+            AND NOT "responseEmpty"
+            AND NOT (${qualityUnknown})
+          THEN 1 ELSE 0 END)                              AS "qualitySuccesses",
+      SUM(CASE WHEN "hitMaxTurns" THEN 1 ELSE 0 END)      AS "hitMaxTurns",
+      SUM(CASE WHEN "loopDetected" THEN 1 ELSE 0 END)     AS "loopDetected",
+      SUM(CASE WHEN "escalated" THEN 1 ELSE 0 END)        AS "escalated",
+      SUM(CASE WHEN "responseEmpty" THEN 1 ELSE 0 END)    AS "responseEmpty",
+      SUM(CASE WHEN ${qualityUnknown} THEN 1 ELSE 0 END) AS "unscoredRuns",
+      SUM(CASE WHEN COALESCE(CAST("metadata" AS TEXT), '') LIKE '%"pricingUnknown":%true%' THEN 1 ELSE 0 END) AS "unpricedRuns"
     FROM "agent_cost_metrics"
     WHERE "workspaceId" = ${workspaceId}
       AND "createdAt"   >= ${since}
@@ -290,10 +311,12 @@ export async function getAgentCostBreakdown(
     const loopDetected = Number(f?.loopDetected ?? 0)
     const escalated = Number(f?.escalated ?? 0)
     const responseEmpty = Number(f?.responseEmpty ?? 0)
+    const scoredRuns = Math.max(0, totalRuns - Number(f?.unscoredRuns ?? 0))
 
     const totalInputTokens = g._sum.inputTokens ?? 0
     const totalOutputTokens = g._sum.outputTokens ?? 0
     const totalCachedInputTokens = g._sum.cachedInputTokens ?? 0
+    const totalCacheWriteTokens = g._sum.cacheWriteTokens ?? 0
     const totalToolCalls = g._sum.toolCalls ?? 0
     const totalCreditCost = g._sum.creditCost ?? 0
     const totalWallTimeMs = g._sum.wallTimeMs ?? 0
@@ -303,6 +326,7 @@ export async function getAgentCostBreakdown(
       model: g.model,
       modelLabel: resolveModelLabelSync(g.model),
       totalRuns,
+      scoredRuns,
       promiseSuccesses,
       qualitySuccesses,
       hitMaxTurns,
@@ -312,22 +336,36 @@ export async function getAgentCostBreakdown(
       totalInputTokens,
       totalOutputTokens,
       totalCachedInputTokens,
+      totalCacheWriteTokens,
       totalToolCalls,
       totalCreditCost,
+      unpricedRuns: Number(f?.unpricedRuns ?? 0),
       totalWallTimeMs,
       avgCostPerRun: totalRuns > 0 ? Math.round((totalCreditCost / totalRuns) * 100) / 100 : 0,
       avgLatencyMs: totalRuns > 0 ? Math.round(totalWallTimeMs / totalRuns) : 0,
-      qualitySuccessRate: totalRuns > 0 ? Math.round((qualitySuccesses / totalRuns) * 1000) / 10 : 0,
-      escalationRate: totalRuns > 0 ? Math.round((escalated / totalRuns) * 1000) / 10 : 0,
-      successRate: totalRuns > 0 ? Math.round((promiseSuccesses / totalRuns) * 1000) / 10 : 0,
+      qualitySuccessRate: scoredRuns > 0 ? Math.round((qualitySuccesses / scoredRuns) * 1000) / 10 : 0,
+      escalationRate: scoredRuns > 0 ? Math.round((escalated / scoredRuns) * 1000) / 10 : 0,
+      successRate: scoredRuns > 0 ? Math.round((promiseSuccesses / scoredRuns) * 1000) / 10 : 0,
     }
   }).sort((a, b) => b.totalCreditCost - a.totalCreditCost)
 
+  const totalCreditCost = breakdown.reduce((s, e) => s + e.totalCreditCost, 0)
+  // `creditCost` is raw provider cost. Cloud usage is billed at
+  // MARKUP_MULTIPLIER, so the difference is the Shogo fee; desktop usage is
+  // never billed.
+  const shogoFeeUsd = process.env.SHOGO_LOCAL_MODE === 'true'
+    ? 0
+    : totalCreditCost * (MARKUP_MULTIPLIER - 1)
   const totals = {
-    totalCreditCost: breakdown.reduce((s, e) => s + e.totalCreditCost, 0),
+    totalCreditCost,
+    shogoFeeUsd,
+    totalWithFeeUsd: totalCreditCost + shogoFeeUsd,
     totalRuns: breakdown.reduce((s, e) => s + e.totalRuns, 0),
+    unpricedRuns: breakdown.reduce((s, e) => s + e.unpricedRuns, 0),
     totalInputTokens: breakdown.reduce((s, e) => s + e.totalInputTokens, 0),
     totalOutputTokens: breakdown.reduce((s, e) => s + e.totalOutputTokens, 0),
+    totalCachedInputTokens: breakdown.reduce((s, e) => s + e.totalCachedInputTokens, 0),
+    totalCacheWriteTokens: breakdown.reduce((s, e) => s + e.totalCacheWriteTokens, 0),
     totalToolCalls: breakdown.reduce((s, e) => s + e.totalToolCalls, 0),
     uniqueAgents: new Set(breakdown.map(b => b.agentType)).size,
     uniqueModels: new Set(breakdown.map(b => b.model)).size,
@@ -362,13 +400,13 @@ export async function getCostRecommendations(
   const daysInPeriod = periodToDays(period)
 
   for (const entry of breakdown) {
-    if (entry.totalRuns < RECOMMENDATION_THRESHOLDS.minRuns) continue
+    if (entry.scoredRuns < RECOMMENDATION_THRESHOLDS.minRuns) continue
 
     const currentTier = MODEL_QUALITY_TIER[entry.model] ?? 3
     const currentOutputCost = getModelCostPerMillionOutput(entry.model)
     const monthlyCost = (entry.totalCreditCost / daysInPeriod) * 30
     const evidenceBase = {
-      runs: entry.totalRuns,
+      runs: entry.scoredRuns,
       qualitySuccessRate: entry.qualitySuccessRate,
       escalationRate: entry.escalationRate,
       loopTrips: entry.loopDetected,
@@ -427,7 +465,7 @@ export async function getCostRecommendations(
           reason: `${entry.agentType} succeeds on only ${entry.qualitySuccessRate}% of runs (loop trips: ${entry.loopDetected}, max-turn hits: ${entry.hitMaxTurns}, escalations: ${entry.escalated}). Upgrading to ${resolveModelLabelSync(candidate)} should reduce wasted spend on retries.`,
           estimatedSavingsPercent: -30,
           estimatedMonthlySavings: -Math.round(monthlyCost * 0.3 * 100) / 100,
-          confidence: entry.totalRuns >= 30 ? 'medium' : 'low',
+          confidence: entry.scoredRuns >= 30 ? 'medium' : 'low',
           currentMonthlyCost: Math.round(monthlyCost * 100) / 100,
           evidence: evidenceBase,
         })
@@ -435,7 +473,10 @@ export async function getCostRecommendations(
     }
 
     // Cache-utilization hint (unchanged from the original recommender).
-    const cacheRatio = entry.totalCachedInputTokens / Math.max(entry.totalInputTokens + entry.totalCachedInputTokens, 1)
+    const cacheRatio = entry.totalCachedInputTokens / Math.max(
+      entry.totalInputTokens + entry.totalCachedInputTokens + entry.totalCacheWriteTokens,
+      1,
+    )
     if (cacheRatio < 0.1 && entry.totalInputTokens > 100_000 && currentTier >= 3) {
       recommendations.push({
         agentType: entry.agentType,
@@ -460,8 +501,8 @@ function deriveConfidence(
   entry: AgentBreakdownEntry,
   evalAnchor: { passRate: number } | null,
 ): 'high' | 'medium' | 'low' {
-  if (evalAnchor && evalAnchor.passRate >= 0.85 && entry.totalRuns >= 50) return 'high'
-  // entry.totalRuns is guaranteed >= RECOMMENDATION_THRESHOLDS.minRuns (20) at the
+  if (evalAnchor && evalAnchor.passRate >= 0.85 && entry.scoredRuns >= 50) return 'high'
+  // entry.scoredRuns is guaranteed >= RECOMMENDATION_THRESHOLDS.minRuns (20) at the
   // call site, so the only other outcome is medium.
   return 'medium'
 }
@@ -472,7 +513,7 @@ function buildDowngradeReason(
   evalAnchor: { suite: string; passRate: number; model: string } | null,
 ): string {
   const parts = [
-    `${entry.totalRuns} runs`,
+    `${entry.scoredRuns} runs`,
     `${entry.qualitySuccessRate}% quality success`,
   ]
   if (entry.escalated > 0) parts.push(`${entry.escalated} escalations`)
@@ -991,12 +1032,23 @@ export interface ExperimentRunResult {
   responseEmpty?: boolean
 }
 
+/** Incremental mean of `column` over `runsColumn` runs, rounded; SQLite (local mode) has no ::casts. */
+function runningAverageSql(column: string, runsColumn: string, value: number, digits: number) {
+  const col = Prisma.raw(`"${column}"`)
+  const runs = Prisma.raw(`"${runsColumn}"`)
+  const places = Prisma.raw(String(digits))
+  return process.env.SHOGO_LOCAL_MODE === 'true'
+    ? Prisma.sql`ROUND(${col} + ((CAST(${value} AS REAL) - ${col}) / (${runs} + 1)), ${places})`
+    : Prisma.sql`ROUND((${col} + ((${value}::float - ${col}) / (${runs} + 1)))::numeric, ${places})::float`
+}
+
 export async function recordExperimentResult(
   experimentId: string,
   variant: 'A' | 'B',
   result: ExperimentRunResult,
 ) {
   const successInt = result.success ? 100 : 0
+  const now = new Date()
   // Quality-signal increments expressed as ints so the SQL stays simple.
   const incEsc   = result.escalated     ? 1 : 0
   const incLoop  = result.loopDetected  ? 1 : 0
@@ -1009,13 +1061,13 @@ export async function recordExperimentResult(
         "totalRunsA"     = "totalRunsA"  + 1,
         "totalCostA"     = "totalCostA"  + ${result.creditCost},
         "totalTokensA"   = "totalTokensA" + ${result.tokens},
-        "successRateA"   = ROUND(("successRateA"  + ((${successInt}::float - "successRateA")  / ("totalRunsA" + 1)))::numeric, 1)::float,
-        "avgLatencyMsA"  = ROUND(("avgLatencyMsA" + ((${result.latencyMs}::float - "avgLatencyMsA") / ("totalRunsA" + 1)))::numeric, 0)::float,
+        "successRateA"   = ${runningAverageSql('successRateA', 'totalRunsA', successInt, 1)},
+        "avgLatencyMsA"  = ${runningAverageSql('avgLatencyMsA', 'totalRunsA', result.latencyMs, 0)},
         "escalationsA"   = "escalationsA"   + ${incEsc},
         "loopDetectedA"  = "loopDetectedA"  + ${incLoop},
         "hitMaxTurnsA"   = "hitMaxTurnsA"   + ${incMax},
         "responseEmptyA" = "responseEmptyA" + ${incEmpty},
-        "updatedAt"      = NOW()
+        "updatedAt"      = ${now}
       WHERE "id" = ${experimentId} AND "status" IN ('running', 'shadow')
     `)
   } else {
@@ -1024,13 +1076,13 @@ export async function recordExperimentResult(
         "totalRunsB"     = "totalRunsB"  + 1,
         "totalCostB"     = "totalCostB"  + ${result.creditCost},
         "totalTokensB"   = "totalTokensB" + ${result.tokens},
-        "successRateB"   = ROUND(("successRateB"  + ((${successInt}::float - "successRateB")  / ("totalRunsB" + 1)))::numeric, 1)::float,
-        "avgLatencyMsB"  = ROUND(("avgLatencyMsB" + ((${result.latencyMs}::float - "avgLatencyMsB") / ("totalRunsB" + 1)))::numeric, 0)::float,
+        "successRateB"   = ${runningAverageSql('successRateB', 'totalRunsB', successInt, 1)},
+        "avgLatencyMsB"  = ${runningAverageSql('avgLatencyMsB', 'totalRunsB', result.latencyMs, 0)},
         "escalationsB"   = "escalationsB"   + ${incEsc},
         "loopDetectedB"  = "loopDetectedB"  + ${incLoop},
         "hitMaxTurnsB"   = "hitMaxTurnsB"   + ${incMax},
         "responseEmptyB" = "responseEmptyB" + ${incEmpty},
-        "updatedAt"      = NOW()
+        "updatedAt"      = ${now}
       WHERE "id" = ${experimentId} AND "status" IN ('running', 'shadow')
     `)
   }
@@ -1672,6 +1724,7 @@ export async function recordAgentCostMetric(data: {
   inputTokens: number
   outputTokens: number
   cachedInputTokens?: number
+  cacheWriteTokens?: number
   toolCalls: number
   creditCost: number
   wallTimeMs: number
@@ -1695,14 +1748,20 @@ export async function recordAgentCostMetric(data: {
     // every caller (main-chat, sub-agents, pre-LLM failures) is consistent
     // without each write site having to remember to do it.
     const normalizedModel = resolveModelId(data.model)
+    const cachedInputTokens = data.cachedInputTokens ?? 0
+    const cacheWriteTokens = data.cacheWriteTokens ?? 0
     let creditCost = data.creditCost
-    if (creditCost === 0 && (data.inputTokens > 0 || data.outputTokens > 0)) {
-      creditCost = serverComputeCreditCost(
-        normalizedModel,
+    let metadata = data.metadata
+    if (creditCost === 0 && (data.inputTokens > 0 || data.outputTokens > 0 || cachedInputTokens > 0 || cacheWriteTokens > 0)) {
+      const cost = calculateUsageCost(
         data.inputTokens,
         data.outputTokens,
-        data.cachedInputTokens ?? 0,
+        normalizedModel,
+        cachedInputTokens,
+        cacheWriteTokens,
       )
+      creditCost = cost.rawUsd
+      if (cost.pricingUnknown) metadata = { ...metadata, pricingUnknown: true }
     }
     await prisma.agentCostMetric.create({
       data: {
@@ -1713,7 +1772,8 @@ export async function recordAgentCostMetric(data: {
         model: normalizedModel,
         inputTokens: data.inputTokens,
         outputTokens: data.outputTokens,
-        cachedInputTokens: data.cachedInputTokens ?? 0,
+        cachedInputTokens,
+        cacheWriteTokens,
         toolCalls: data.toolCalls,
         creditCost,
         wallTimeMs: data.wallTimeMs,
@@ -1722,7 +1782,7 @@ export async function recordAgentCostMetric(data: {
         loopDetected: data.loopDetected ?? false,
         escalated: data.escalated ?? false,
         responseEmpty: data.responseEmpty ?? false,
-        metadata: data.metadata ? (data.metadata as Prisma.InputJsonValue) : undefined,
+        metadata: metadata ? (metadata as Prisma.InputJsonValue) : undefined,
       },
     })
 
@@ -1761,25 +1821,4 @@ async function maybeRecordExperimentRun(
     escalated: data.escalated ?? false,
     responseEmpty: data.responseEmpty ?? false,
   })
-}
-
-/** Token-cost recomputation in dollar units. Mirrors the catalog used by the
- * proxy billing path so analytics and billing agree on numbers. DB-defined
- * models (custom providers, admin-added models) use their per-token pricing
- * so analytics agrees with `usage-cost.calculateUsageCost`. */
-function serverComputeCreditCost(
-  model: string,
-  inputTokens: number,
-  outputTokens: number,
-  cachedInputTokens: number,
-): number {
-  const dbPricing = getDbModelPricing(model)
-  if (dbPricing) {
-    const rawUsd =
-      (inputTokens * dbPricing.inputPerMillion / 1_000_000) +
-      (cachedInputTokens * dbPricing.cachedInputPerMillion / 1_000_000) +
-      (outputTokens * dbPricing.outputPerMillion / 1_000_000)
-    return Math.max(0, rawUsd)
-  }
-  return Math.max(0, calculateDollarCost(model, inputTokens, outputTokens, cachedInputTokens, 0))
 }

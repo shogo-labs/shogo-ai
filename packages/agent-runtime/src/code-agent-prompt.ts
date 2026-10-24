@@ -25,6 +25,7 @@
 
 import { MOBILE_FIRST_LAYOUT_RULES } from './canvas-v2-prompt'
 import { isSearchEnabled } from './search-flag'
+import { isWorkspaceAgentRuntime } from './workspace-runtime-mode'
 
 export { buildCodeAgentGeneralGuide, OUTPUT_CONTRACT_GUIDE }
 
@@ -96,12 +97,22 @@ const RG_SEARCH_SECTION = `### Searching the workspace
 Use \`exec\` with ripgrep: \`exec({ command: 'rg -n "pattern" src' })\` for content, \`exec({ command: 'rg --files | rg name' })\` for file names. Uploaded files live under \`files/\` — search them the same way (\`rg -n "revenue" files\`). Follow up with \`read_file\` to see full context.
 `
 
+const CODE_REVIEW_SUBAGENT_SECTION = `### Code Analysis & Review
+
+The code-graph tools (\`impact_radius\`, \`detect_changes\`, \`review_context\`) are bound to the \`explore\` and \`code-reviewer\` subagents, not to you. To find the blast radius of a change before editing, or for a detailed review (risk scoring, test gap analysis, execution flow tracing), spawn one:
+\`agent_spawn({ type: "code-reviewer", prompt: "Review the recent changes and check for risks and test gaps" })\`
+
+`
+
 /**
  * The general coding guide. `search` is only registered when
  * SHOGO_SEARCH_ENABLED=1, so its section and mentions are gated on the same
  * flag; otherwise the guide points at `exec` + ripgrep.
  */
-function buildCodeAgentGeneralGuide(searchEnabled: boolean = isSearchEnabled()): string {
+function buildCodeAgentGeneralGuide(
+  searchEnabled: boolean = isSearchEnabled(),
+  subagents: boolean = !isWorkspaceAgentRuntime(),
+): string {
   const exploreTools = searchEnabled ? '\`search\`, \`read_file\`, or \`exec\`' : '\`read_file\` or \`exec\` (e.g. \`rg\`)'
   const exploreToolsAnd = searchEnabled ? '\`search\`, \`read_file\`, and \`exec\`' : '\`read_file\` and \`exec\` (\`rg\`, \`ls\`)'
   const enumerateTools = searchEnabled ? '\`search\`/\`exec rg\`' : '\`exec rg\`'
@@ -159,12 +170,7 @@ Before your first edit, you MUST run at least one exploratory command (${explore
 - Read the files involved in the bug or feature before making changes.
 
 ${searchEnabled ? SEARCH_TOOL_SECTION : RG_SEARCH_SECTION}
-### Code Analysis & Review
-
-The code-graph tools (\`impact_radius\`, \`detect_changes\`, \`review_context\`) are bound to the \`explore\` and \`code-reviewer\` subagents, not to you. To find the blast radius of a change before editing, or for a detailed review (risk scoring, test gap analysis, execution flow tracing), spawn one:
-\`agent_spawn({ type: "code-reviewer", prompt: "Review the recent changes and check for risks and test gaps" })\`
-
-### Debugging and Bug Fixing
+${subagents ? CODE_REVIEW_SUBAGENT_SECTION : ''}### Debugging and Bug Fixing
 
 - Follow the traceback — error messages, class names, and function names mentioned in the error are your search terms. Use \`exec({ command: 'rg ...' })\` to locate them in the codebase.
 - Read the failing test or test file to understand expected behavior — tests often describe the correct behavior more precisely than the issue description.
@@ -293,6 +299,7 @@ When you write and run tests:
 - Update status as you progress with \`merge: true\`
 - Mark tasks complete immediately after finishing each one
 - Keep only ONE task as \`in_progress\` at a time
+- Never end a turn with a status report while your todo list has unfinished items; keep going until they are done, or say in one line what you are blocked on.
 
 ### Scripts & General Execution
 
@@ -309,7 +316,7 @@ When you write and run tests:
 
 Managed integrations (Jira, Slack, Gmail, Google Calendar, Meta Ads, etc.) are exposed two places: as **tools bound to YOU** (callable directly by name like \`JIRA_LIST_BOARDS\`), and to the user's app via \`@shogo-ai/sdk/tools\`.
 
-**Step 0 — check what's already bound.** Before reaching for \`search_integrations\` / \`connect\` / \`agent_spawn\`, scan your own tool list. If a \`<TOOLKIT>_<ACTION>\` tool is already there, just call it. Don't search for what you already have. Don't spawn the \`integration\` subagent to call it — that subagent only does discovery / install / uninstall, it has no provider tools bound and will just spin.
+**Step 0 — check what's already bound.** Before reaching for \`search_integrations\` / \`connect\`${subagents ? ' / `agent_spawn`' : ''}, scan your own tool list. If a \`<TOOLKIT>_<ACTION>\` tool is already there, just call it. Don't search for what you already have.${subagents ? " Don't spawn the `integration` subagent to call it — that subagent only does discovery / install / uninstall, it has no provider tools bound and will just spin." : ''}
 
 **Calling a bound tool.** Just call it like any other tool:
 
@@ -384,6 +391,7 @@ To clone, import, or "hook up" a GitHub repository, or to switch the project to 
 - If the user pasted a GitHub token, pass it as \`token\` (it is stored on the connection — don't also write it to \`.env\`). Otherwise call it without one and offer the user both options it returns.
 - \`github_connect\` needs \`repo\` (owner/name). If the user pasted a token without naming a repository, ask which one. A token meant only for one-off \`gh\` work outside a project's repository goes in workspace \`.env\` as \`GITHUB_TOKEN\`.
 - Once connected, \`git\` and \`gh\` in \`exec\` authenticate on their own.
+- Opening a pull request is \`gh pr create\` in \`exec\` after you push the branch: \`gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md\`. \`github_create_pr\` is optional — it only works when the project has a Shogo GitHub connection. Either way, end the body with the standard Made with Shogo footer and a \`Card: <KEY>\` line.
 
 ### Handling user-provided secrets
 

@@ -111,6 +111,7 @@ import { SAMSARA_EVALS } from './test-cases-samsara'
 import { COMPANY_OPS_EVALS } from './test-cases-company-ops'
 import { KNOWLEDGE_GRAPH_EVALS } from './test-cases-knowledge-graph'
 import { TOKEN_BUDGET_EVALS } from './test-cases-token-budget'
+import { CACHE_EFFICIENCY_EVALS } from './test-cases-cache-efficiency'
 import { PLAN_EVALS } from './test-cases-plans'
 import { WORKSPACE_ATTACHMENT_EVALS } from './test-cases-workspace-attachments'
 // Agent-hardening tracks — P0/P1 regression reproductions from the Subliminal analysis.
@@ -151,7 +152,11 @@ const trackArg = getArg(args, 'track', 'all')!
 // cheap `haiku` smoke-test default for ad-hoc runs. Pinned to the current
 // Hoshi generation via its public alias (`hoshi-2-0`), not a fixed backing
 // model, so this default tracks future Hoshi upgrades automatically.
-const modelArg = getArg(args, 'model', trackArg === 'reliability-regression' ? 'hoshi-2-0' : 'haiku')!
+// Tracks whose baseline is recorded on hoshi (DeepSeek-backed) default to it:
+// `cache-efficiency` measures DeepSeek's implicit prefix cache, which a Claude
+// model would not reproduce. Every other track keeps the cheap `haiku` default.
+const HOSHI_DEFAULT_TRACKS = new Set(['reliability-regression', 'cache-efficiency'])
+const modelArg = getArg(args, 'model', HOSHI_DEFAULT_TRACKS.has(trackArg) ? 'hoshi-2-0' : 'haiku')!
 const workersArg = parseInt(getArg(args, 'workers', '1')!)
 const timeoutMsArg = parseInt(getArg(args, 'timeout-ms', '1200000')!)
 const filterArg = getArg(args, 'filter')
@@ -335,6 +340,10 @@ const AGENT_HARDENING_EVALS: AgentEval[] = [
 // same failure classes (read-before-edit, preview URL, loops/convergence,
 // long-task/autonomy, verification). Each case is tagged to a prod error
 // signature so the track maps 1:1 to prod-baseline.sql metrics post-deploy.
+// The two structural cache tests build the prompt in the runtime and never
+// call a model, so they are free to include in every non-agentic run.
+const NO_LLM_CACHE_EVALS: AgentEval[] = CACHE_EFFICIENCY_EVALS.filter((e) => e.noLlm)
+
 const RELIABILITY_REGRESSION_EVALS: AgentEval[] = [
   ...AUTONOMY_EVALS,          // WS1 — premature "continue" stops
   ...CHECKPOINT_EVALS,        // WS4 — "no git history" / work loss
@@ -407,6 +416,7 @@ function getEvals(track: string): AgentEval[] {
     case 'samsara': return SAMSARA_EVALS
     case 'knowledge-graph': return KNOWLEDGE_GRAPH_EVALS
     case 'token-budget': return TOKEN_BUDGET_EVALS
+    case 'cache-efficiency': return CACHE_EFFICIENCY_EVALS
     case 'plan': return PLAN_EVALS
     case 'workspace-attachments': return WORKSPACE_ATTACHMENT_EVALS
     case 'preview-url': return PREVIEW_URL_EVALS
@@ -431,10 +441,10 @@ function getEvals(track: string): AgentEval[] {
     // Useful when you've already scored a model on the agentic suite and
     // want to fill in the rest of the matrix without re-running the
     // expensive long-pipeline persona evals.
-    case 'non-agentic': return [...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_SMOKE_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS, ...BACKGROUND_TASK_EVALS]
-    case 'all': return [...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS, ...BACKGROUND_TASK_EVALS, ...ORCHESTRATION_EVALS, ...REACTIVE_EVALS, ...SAMSARA_EVALS]
+    case 'non-agentic': return [...NO_LLM_CACHE_EVALS, ...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_SMOKE_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS, ...BACKGROUND_TASK_EVALS]
+    case 'all': return [...NO_LLM_CACHE_EVALS, ...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS, ...BACKGROUND_TASK_EVALS, ...ORCHESTRATION_EVALS, ...REACTIVE_EVALS, ...SAMSARA_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, tool-discipline, typed-build, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, orchestration, reactive, samsara, knowledge-graph, token-budget, plan, workspace-attachments, preview-url, truncation, codegen-safety, verification, loops, long-task, background-tasks, test-hygiene, agent-hardening, autonomy, checkpoints, error-convergence, secret-hygiene, context-retention, secure-auth, reliability-regression, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, tool-discipline, typed-build, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, orchestration, reactive, samsara, knowledge-graph, token-budget, plan, workspace-attachments, preview-url, truncation, codegen-safety, verification, loops, long-task, background-tasks, test-hygiene, agent-hardening, autonomy, checkpoints, error-convergence, secret-hygiene, context-retention, secure-auth, reliability-regression, cache-efficiency, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
       process.exit(1)
   }
 }
@@ -1240,6 +1250,8 @@ async function runEvalOnWorker(
         timing: { totalMs: Date.now() - startTime },
         ...(resourceMetrics ? { resourceMetrics } : {}),
       },
+      perTurnUsage: [],
+      perCallUsage: [],
       errors: [err.message],
     }
   }

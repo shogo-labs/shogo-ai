@@ -18,8 +18,40 @@ export const FILE_HREF_PREFIX = "/shogo-file?path="
 /** Href that marks a markdown link as an @-mention, drawn as a highlight rather than a link. */
 export const MENTION_HREF_PREFIX = "/shogo-mention"
 
+/**
+ * Who a mention points at: a person, an agent, a user group, or a channel.
+ * The id rides in the href so a tap can open that target's profile or take
+ * the reader to the channel; a mention with no target (`@here`, `@channel`,
+ * and a `#channel` the reader cannot see) keeps the bare prefix.
+ */
+export type MentionTargetKind = "u" | "a" | "g" | "c"
+
+export interface MentionTarget {
+  kind: MentionTargetKind
+  id: string
+}
+
 export function isMentionHref(href: string | undefined | null): boolean {
   return typeof href === "string" && href.startsWith(MENTION_HREF_PREFIX)
+}
+
+/** Agent keys are `ws` or `p:<projectId>`, so the id is always escaped. */
+export function mentionHref(kind: MentionTargetKind, id: string): string {
+  return `${MENTION_HREF_PREFIX}/${kind}/${encodeURIComponent(id)}`
+}
+
+/** The target a mention points at, or null for a bare or malformed href. */
+export function mentionTargetFromHref(
+  href: string | undefined | null,
+): MentionTarget | null {
+  if (!isMentionHref(href)) return null
+  const match = /^\/(u|a|g|c)\/([^/?#]+)$/.exec(href!.slice(MENTION_HREF_PREFIX.length))
+  if (!match) return null
+  try {
+    return { kind: match[1] as MentionTargetKind, id: decodeURIComponent(match[2]!) }
+  } catch {
+    return null
+  }
 }
 
 const UUID_RE =
@@ -142,10 +174,14 @@ function splitTrailingUrlPunctuation(match: string): {
 } {
   let candidate = match
   let trailing = ""
+  // A share token is base64url, so it can end in `_`. Stripping that one
+  // character breaks the signature and the link comes back "invalid" (SHO-80).
+  const shareLink = /\/f\//.test(match)
 
   while (candidate) {
     const char = candidate[candidate.length - 1]
     if (!/[.,!?;:)\]}*_~"'>]/.test(char)) break
+    if (char === "_" && shareLink) break
     if (
       (char === ")" && hasUnmatchedOpening(candidate.slice(0, -1), "(", ")")) ||
       (char === "]" && hasUnmatchedOpening(candidate.slice(0, -1), "[", "]")) ||
@@ -284,6 +320,31 @@ export function rewriteWorkspaceMedia(markdown: string): string {
   })
   text = unmask(text, inlineCode, "CODE")
   return unmask(text, fences, "FENCE")
+}
+
+/**
+ * Whether a path the agent wrote names a file in `files`, the runtime's
+ * file list. Project runtimes list project-relative paths; workspace
+ * runtimes list `<projectId>/...`, so both spellings are tried.
+ */
+export function fileIndexHas(
+  files: ReadonlySet<string>,
+  path: string,
+  projectId?: string | null,
+): boolean {
+  if (files.size === 0) return false
+  const normalized = normalizeWorkspaceMediaPath(path.trim())
+  if (!normalized) return false
+  const candidates = new Set<string>([normalized])
+  const resolved = resolveChatFilePath(normalized, projectId)
+  if (resolved) {
+    if (!projectId || resolved.projectId === projectId) candidates.add(resolved.relPath)
+    if (resolved.projectId) candidates.add(`${resolved.projectId}/${resolved.relPath}`)
+  }
+  for (const candidate of candidates) {
+    if (files.has(candidate)) return true
+  }
+  return false
 }
 
 export interface ResolvedChatFile {

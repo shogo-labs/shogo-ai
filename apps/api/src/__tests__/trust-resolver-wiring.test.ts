@@ -125,10 +125,12 @@ describe('trust resolver wiring — gateway.ts', () => {
   test('per-turn refresh runs at the top of _agentTurnInner', () => {
     // The whole point of the fix: every turn must reconcile with the
     // DB BEFORE the system prompt is built or any tool runs.
-    // Anchor on the method DEFINITION (not its earlier call site) and use a
-    // window wide enough to span the refresh + the system-prompt build, which
-    // have drifted further apart as the turn setup grew.
-    const inner = src.match(/private async _agentTurnInner\([\s\S]{0,4000}/)?.[0] ?? ''
+    // Anchor on the method DEFINITION (not its earlier call site) and read the
+    // whole method: a fixed character window is how this test broke every time
+    // the turn setup grew (SHO-145 moved model resolution above the prompt).
+    const start = src.indexOf('private async _agentTurnInner(')
+    const end = src.indexOf('\n  private ', start + 10)
+    const inner = start < 0 ? '' : src.slice(start, end < 0 ? undefined : end)
     const refreshIdx = inner.indexOf('await refreshTrust()')
     const bootstrapIdx = inner.indexOf('loadBootstrapContext')
     expect(refreshIdx).toBeGreaterThanOrEqual(0)

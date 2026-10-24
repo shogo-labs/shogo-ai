@@ -1,10 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { beforeEach, describe, expect, it } from 'bun:test'
-import { reattachStaleTurns, type ReattachDeps } from '../chat-turn-reattach'
-import * as agentCallStore from '../../lib/agent-call-store'
-import { CALLEE_TURN_LOST, settleAgentCallFromTurn } from '../../services/agent-call.service'
+import { afterAll, beforeEach, describe, expect, it } from 'bun:test'
+import { rmSync } from 'fs'
+import type { ReattachDeps } from '../chat-turn-reattach'
+
+// The call store needs a database, and `chat-turn-state.service` builds the
+// Prisma client at import time — so the test database has to exist before any
+// of these are imported.
+const { setupChannelsTestDb } = await import('../../__tests__/helpers/channels-test-db')
+const { dir } = setupChannelsTestDb()
+const { reattachStaleTurns } = await import('../chat-turn-reattach')
+const agentCallStore = await import('../../lib/agent-call-store')
+const { CALLEE_TURN_LOST, settleAgentCallFromTurn } = await import('../../services/agent-call.service')
+const { prisma } = await import('../../lib/prisma')
+const callDb = prisma as any
 
 const NOW = Date.parse('2026-10-16T12:00:00Z')
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000)
@@ -118,9 +128,16 @@ function harness(sessions: Session[], opts: { streamStatus?: number; trackResult
   return { deps, log, finished }
 }
 
-beforeEach(() => {
-  agentCallStore._testing.records.clear()
-  agentCallStore._testing.sessionLinks.clear()
+beforeEach(async () => {
+  await callDb.agentCall.deleteMany({})
+  await callDb.agentCallSessionLink.deleteMany({})
+})
+
+afterAll(async () => {
+  await callDb.agentCall.deleteMany({})
+  await callDb.agentCallSessionLink.deleteMany({})
+  await callDb.$disconnect?.()
+  rmSync(dir, { recursive: true, force: true })
 })
 
 describe('chat turn reattach', () => {

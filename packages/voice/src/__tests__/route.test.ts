@@ -11,8 +11,8 @@
  *    with the runtime token + projectId on the wire
  *  - `audio-tags` `GET` returns the static catalog without touching
  *    the network
- *  - `tts-preview` / `agent` return 501 in proxy mode (per the
- *    server's documented behavior)
+ *  - `tts-preview` forwards to the hosted `/api/voice/tts` in proxy mode,
+ *    while `agent.*` still returns 501 (no end-user context)
  *  - `createVoiceRoute()` returns the same shape and routes through
  *    BYO-EL config without env auto-detection
  *  - Wrong HTTP verb → 405 (delegation is intact, not silently
@@ -33,6 +33,7 @@ import { createVoiceRoute } from '../route/index'
 const ORIGINAL_RT = process.env.RUNTIME_AUTH_SECRET
 const ORIGINAL_PID = process.env.PROJECT_ID
 const ORIGINAL_API = process.env.SHOGO_API_URL
+const ORIGINAL_CLOUD = process.env.SHOGO_CLOUD_URL
 
 let originalFetch: typeof globalThis.fetch
 type Call = { url: string; init: RequestInit }
@@ -46,6 +47,7 @@ beforeEach(() => {
   delete process.env.RUNTIME_AUTH_SECRET
   delete process.env.PROJECT_ID
   delete process.env.SHOGO_API_URL
+  delete process.env.SHOGO_CLOUD_URL
   fetchCalls = []
   fetchHandler = () => ({ status: 200, body: {} })
   originalFetch = globalThis.fetch
@@ -69,6 +71,8 @@ afterEach(() => {
   else process.env.PROJECT_ID = ORIGINAL_PID
   if (ORIGINAL_API === undefined) delete process.env.SHOGO_API_URL
   else process.env.SHOGO_API_URL = ORIGINAL_API
+  if (ORIGINAL_CLOUD === undefined) delete process.env.SHOGO_CLOUD_URL
+  else process.env.SHOGO_CLOUD_URL = ORIGINAL_CLOUD
 })
 
 describe('per-resource module exports', () => {
@@ -212,20 +216,38 @@ describe('audio-tags GET', () => {
   })
 })
 
-describe('tts-preview / agent in proxy mode → 501', () => {
+describe('tts-preview / agent in proxy mode', () => {
   beforeEach(() => {
     process.env.RUNTIME_AUTH_SECRET = 'rt'
     process.env.PROJECT_ID = 'p'
+    process.env.SHOGO_API_URL = 'http://api.test'
   })
 
-  test('tts-preview POST returns 501 with explanatory body', async () => {
+  test('tts-preview POST forwards to /api/voice/tts instead of 501', async () => {
+    fetchHandler = () => ({ status: 200, body: 'audio-bytes' })
+    const res = await ttsPreviewRoute.POST(
+      new Request('http://pod/api/voice/tts-preview', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'Narration check.', modelId: 'eleven_v4' }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    expect(fetchCalls).toHaveLength(1)
+    expect(fetchCalls[0]!.url).toBe('http://api.test/api/voice/tts?projectId=p')
+    const headers = (fetchCalls[0]!.init.headers ?? {}) as Record<string, string>
+    expect(headers['x-runtime-token']).toBe('rt')
+    expect(JSON.parse(fetchCalls[0]!.init.body as string)).toEqual({
+      text: 'Narration check.',
+      modelId: 'eleven_v4',
+    })
+  })
+
+  test('tts-preview without text is a 400 and never hits the network', async () => {
     const res = await ttsPreviewRoute.POST(
       new Request('http://pod/api/voice/tts-preview', { method: 'POST' }),
     )
-    expect(res.status).toBe(501)
-    const body = (await res.json()) as { error: string; detail: string }
-    expect(body.error).toBe('Not Implemented')
-    expect(body.detail).toContain('runtime-token proxy mode')
+    expect(res.status).toBe(400)
+    expect(fetchCalls).toHaveLength(0)
   })
 
   test('agent.POST / PATCH / DELETE all return 501', async () => {

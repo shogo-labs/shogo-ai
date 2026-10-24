@@ -215,7 +215,10 @@ describe("ChatInput integration — chat and plan mentions", () => {
     // it) would no longer be in the DOM afterward.
     expect(screen.getByText("History Search")).toBeTruthy()
     fireEvent.click(screen.getByText("SQLite decision"))
-    expect(input.value).toContain("@chat:chat-1")
+    // A chat tag reads like the chat it names; the `<@c:ID>` wire form is
+    // swapped in on submit (covered by lib/__tests__/chat-mention-text.test.ts).
+    expect(input.value).toContain("@SQLite decision")
+    expect(input.value).not.toContain("chat:chat-1")
   })
 })
 

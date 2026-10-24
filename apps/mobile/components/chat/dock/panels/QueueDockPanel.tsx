@@ -8,7 +8,7 @@
  * job, so this only renders the row list.
  */
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { View, Text, Pressable, Image, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -19,14 +19,18 @@ import {
   Trash2,
   WifiOff,
   AlertTriangle,
+  AlarmClock,
   Image as ImageIcon,
   ListOrdered,
+  PauseCircle,
+  Play,
 } from "lucide-react-native"
 import { useDockPanel } from "../useDockPanel"
 import type {
   DockPanelDescriptor,
   DockIconComponent,
 } from "../../../../lib/chat-dock-store"
+import { wakeRefusalMessage } from "../../../../lib/wake-refusal"
 import type { QueuedMessage } from "../../ChatInput"
 import { stripAskUserAnswerMarker } from "../../turns/askUserAnswers"
 
@@ -36,6 +40,91 @@ export interface QueueDockPanelProps {
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
   onEditQueuedMessage?: (messageId: string) => void
   onSendQueuedMessageNow?: (messageId: string) => void
+  onResumeTaskWakes?: (messageId: string) => void
+  /** Team-chat wakes: their own queue, so their own routes. A rejected promise
+   *  is the server's refusal (409 not_pending, 403 viewer), shown on the row. */
+  onSendAgentWakeNow?: (wakeId: string) => void | Promise<void>
+  onRemoveAgentWake?: (wakeId: string) => void | Promise<void>
+}
+
+/** The agent's own updates, held back by a wake pause. Never a queued message. */
+export function waitingTaskWakes(queuedMessages: QueuedMessage[]): QueuedMessage[] {
+  return queuedMessages.filter((msg) => msg.kind === "task_wake" && msg.paused)
+}
+
+/** The messages a person actually typed and is still waiting on. */
+export function chatQueuedMessages(queuedMessages: QueuedMessage[]): QueuedMessage[] {
+  return queuedMessages.filter(
+    (msg) => msg.kind !== "task_wake" && msg.kind !== "agent_wake",
+  )
+}
+
+/** Team-chat messages waiting behind a reply: one `AgentWake` row each. */
+export function agentWakeMessages(
+  queuedMessages: QueuedMessage[],
+): QueuedMessage[] {
+  return queuedMessages.filter((msg) => msg.kind === "agent_wake")
+}
+
+/**
+ * One chip for everything a paused session is holding: the count, the titles,
+ * why the session stopped, and Resume. The same updates in the task dock read
+ * "waiting" rather than finished-and-unseen, and the agent's own prompt says
+ * they are queued.
+ */
+/** The task's title off a queued wake note ("[Task update] SHO-88 Sim kernel (t_ab12) completed."). */
+export function taskTitle(content: string): string {
+  const first = content.split("\n")[0]!.trim()
+  const note = /^\[Task update\]\s*(.*?)\s*\(t_[^)]*\)/.exec(first)
+  return (note?.[1] ?? first).trim()
+}
+
+export function WaitingWakes({
+  wakes,
+  onResume,
+}: {
+  wakes: QueuedMessage[]
+  onResume?: (messageId: string) => void
+}) {
+  const newest = wakes[wakes.length - 1]
+  if (!newest) return null
+  const count = wakes.length
+  const titles = wakes.map((wake) => taskTitle(wake.content)).filter(Boolean)
+  return (
+    <View className="border-b border-border/40 bg-amber-500/10 px-3 py-2">
+      <View className="flex-row items-center gap-2">
+        <PauseCircle size={12} className="text-amber-600 dark:text-amber-400 flex-shrink-0" />
+        <Text
+          className="text-xs font-medium text-foreground flex-1 min-w-0"
+          numberOfLines={1}
+        >
+          {count === 1
+            ? "1 background update waiting"
+            : `${count} background updates waiting`}
+        </Text>
+        {onResume ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Resume background updates"
+            onPress={() => onResume(newest.id)}
+            className="flex-row items-center gap-1 rounded border border-border px-2 py-0.5 active:opacity-60"
+          >
+            <Play size={10} className="text-foreground" />
+            <Text className="text-[10px] font-medium text-foreground">Resume</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {titles.length > 0 ? (
+        <Text className="mt-0.5 text-[10px] text-muted-foreground" numberOfLines={2}>
+          {titles.join(" · ")}
+        </Text>
+      ) : null}
+      <Text className="mt-0.5 text-[10px] text-muted-foreground" numberOfLines={2}>
+        Paused after several automatic wake turns without a message. Resume to
+        deliver them now.
+      </Text>
+    </View>
+  )
 }
 
 // Hover is CSS-only. RN-Web's JS `hovered` state goes stale when the dock
@@ -71,16 +160,119 @@ function QueueAction({
   )
 }
 
+/**
+ * A team-chat message waiting behind this session's reply. Its two buttons press
+ * the wake routes, and a refusal (409 not_pending, 403 viewer) is shown on the
+ * row rather than swallowed, so the dock says the same thing the thread's note does.
+ */
+function AgentWakeRow({
+  msg,
+  onSendNow,
+  onRemove,
+}: {
+  msg: QueuedMessage
+  onSendNow?: (wakeId: string) => void | Promise<void>
+  onRemove?: (wakeId: string) => void | Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const act = (run: () => void | Promise<void>) => {
+    if (busy) return
+    setError(null)
+    setBusy(true)
+    void Promise.resolve(run())
+      .catch((err: unknown) => setError(wakeRefusalMessage(err)))
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <View
+      testID={`agent-wake-${msg.id}`}
+      accessibilityLabel="Queued team-chat message"
+      className={cn(
+        "group flex-row items-center gap-2 px-3 py-0.5 border-b border-border/40 last:border-b-0",
+        Platform.OS === "web" && "hover:bg-muted/40",
+      )}
+    >
+      <AlarmClock
+        size={11}
+        className="text-amber-600 dark:text-amber-400 flex-shrink-0"
+      />
+      <View className="flex-1 min-w-0 py-1">
+        {msg.source ? (
+          <Text
+            className="text-[10px] text-muted-foreground"
+            numberOfLines={1}
+          >
+            {msg.source}
+          </Text>
+        ) : null}
+        <Text className="text-xs text-foreground" numberOfLines={1}>
+          {msg.content}
+        </Text>
+        {error ? (
+          <Text className="text-[10px] text-destructive" numberOfLines={2}>
+            {error}
+          </Text>
+        ) : null}
+      </View>
+      <View className="flex-row items-center gap-0.5">
+        {onSendNow && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Send queued message now"
+            disabled={busy}
+            onPress={() => act(() => onSendNow(msg.id))}
+            className={cn(
+              "flex-row items-center gap-1 rounded border border-border px-2 py-0.5 active:opacity-60",
+              busy && "opacity-60",
+            )}
+          >
+            <SendHorizontal size={10} className="text-foreground" />
+            <Text className="text-[10px] font-medium text-foreground">
+              Send now
+            </Text>
+          </Pressable>
+        )}
+        {onRemove && (
+          <QueueAction
+            label="Delete queued message"
+            icon={Trash2}
+            destructive
+            onPress={() => act(() => onRemove(msg.id))}
+          />
+        )}
+      </View>
+    </View>
+  )
+}
+
 function QueueBody({
   queuedMessages,
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
   onEditQueuedMessage,
   onSendQueuedMessageNow,
+  onResumeTaskWakes,
+  onSendAgentWakeNow,
+  onRemoveAgentWake,
 }: QueueDockPanelProps) {
+  const wakes = waitingTaskWakes(queuedMessages)
+  const messages = chatQueuedMessages(queuedMessages)
+  const agentWakes = agentWakeMessages(queuedMessages)
   return (
     <View>
-      {queuedMessages.map((msg, index) => {
+      <WaitingWakes wakes={wakes} onResume={onResumeTaskWakes} />
+      {agentWakes.map((msg) => (
+        <AgentWakeRow
+          key={msg.id}
+          msg={msg}
+          onSendNow={onSendAgentWakeNow}
+          onRemove={onRemoveAgentWake}
+        />
+      ))}
+      {messages.map((msg, index) => {
         const files = msg.files ?? []
         const imageFiles = files.filter((f) => f.type?.startsWith("image/"))
         const otherFiles = files.filter((f) => !f.type?.startsWith("image/"))
@@ -171,7 +363,7 @@ function QueueBody({
               )}
             >
               {onReorderQueuedMessage &&
-                queuedMessages.length > 1 &&
+                messages.length > 1 &&
                 index > 0 && (
                   <QueueAction
                     label="Move queued message up"
@@ -180,8 +372,8 @@ function QueueBody({
                   />
                 )}
               {onReorderQueuedMessage &&
-                queuedMessages.length > 1 &&
-                index < queuedMessages.length - 1 && (
+                messages.length > 1 &&
+                index < messages.length - 1 && (
                   <QueueAction
                     label="Move queued message down"
                     icon={ChevronDown}
@@ -220,7 +412,16 @@ function QueueBody({
 
 export function QueueDockPanel(props: QueueDockPanelProps) {
   const { queuedMessages } = props
-  const offlineCount = queuedMessages.filter((m) => m.offline).length
+  const messages = chatQueuedMessages(queuedMessages)
+  const wakeCount = waitingTaskWakes(queuedMessages).length
+  const agentWakeCount = agentWakeMessages(queuedMessages).length
+  const offlineCount = messages.filter((m) => m.offline).length
+  const queuedCount = messages.length + agentWakeCount
+  const parts = [
+    offlineCount > 0 ? `${offlineCount} waiting` : null,
+    queuedCount > offlineCount ? `${queuedCount - offlineCount} queued` : null,
+    wakeCount > 0 ? `${wakeCount} update${wakeCount === 1 ? "" : "s"} paused` : null,
+  ].filter(Boolean)
 
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (queuedMessages.length === 0) return null
@@ -230,17 +431,14 @@ export function QueueDockPanel(props: QueueDockPanelProps) {
       order: 70,
       title: "Queue",
       icon: ListOrdered,
-      accent: offlineCount > 0 ? "warning" : "default",
-      summary:
-        offlineCount > 0
-          ? `${offlineCount} waiting${queuedMessages.length > offlineCount ? ` · ${queuedMessages.length - offlineCount} queued` : ""}`
-          : `${queuedMessages.length} queued`,
+      accent: wakeCount > 0 ? "warning" : offlineCount > 0 ? "warning" : "default",
+      summary: parts.join(" · "),
       defaultExpanded: true,
       flushBody: true,
       render: () => <QueueBody {...props} />,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props, offlineCount])
+  }, [props, offlineCount, wakeCount, parts.join("|")])
 
   useDockPanel(descriptor)
   return null

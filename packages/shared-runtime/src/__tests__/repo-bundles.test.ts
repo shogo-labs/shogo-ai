@@ -7,7 +7,7 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, copyFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -257,6 +257,70 @@ describe('repo bundles: chain rules', () => {
     expect(next.bundles[1].kind).toBe('incr')
     const restored = await restore(next, objects)
     expect(git(restored, 'rev-list', '--count', 'HEAD')).toBe('2')
+  })
+
+  // A CI runner left a `.rev` next to a restored pack that `git fsck` could not
+  // load, so the restore died with "unable to load rev-index for pack" although
+  // the objects were fine. The reverse index is only a cache; a restore must
+  // never depend on one.
+  test('a restore imports packs without a reverse-index cache for fsck to load', async () => {
+    const root = tmp('revindex')
+    const repo = newRepo(root)
+    const objects = store(tmp('objs'))
+    const work = join(root, 'w')
+    const base = await commitState(repo, work, null, objects)
+    commitFile(repo, 'b.txt', 'b\n', 'second')
+    const next = await commitState(repo, work, base, objects)
+
+    const restored = await restore(next, objects)
+    const packDir = join(restored, '.git', 'objects', 'pack')
+    const entries = readdirSync(packDir)
+    // Still a pack-based import — the assertion below must not pass vacuously.
+    expect(entries.filter((f) => f.endsWith('.pack')).length).toBeGreaterThan(0)
+    expect(entries.filter((f) => f.endsWith('.rev'))).toEqual([])
+  })
+
+  // The shape CI hit (job 117622129115): the packs were fine and the objects
+  // were all there, but a `.rev` beside them could not be loaded, so fsck exited
+  // 64 before reading anything. The first restore here stands in for the pack
+  // dir the runner ended up with; we cannot truncate git's file mid-write, so
+  // the unreadable cache is planted afterwards. The restore must drop it and
+  // check the objects, never trust it and never fail because of it.
+  test('a restore survives a pack whose reverse-index cache cannot be loaded', async () => {
+    const root = tmp('poisoned-rev')
+    const repo = newRepo(root)
+    const objects = store(tmp('objs'))
+    const work = join(root, 'w')
+    const base = await commitState(repo, work, null, objects)
+    commitFile(repo, 'b.txt', 'b\n', 'second')
+    const next = await commitState(repo, work, base, objects)
+
+    const stage = join(root, 'stage')
+    await materializeRepoFromBundles(stage, next, objects.fetch)
+    const packDir = join(stage, '.git', 'objects', 'pack')
+    const packs = readdirSync(packDir).filter((f) => f.endsWith('.pack'))
+    expect(packs.length).toBeGreaterThan(0)
+    for (const pack of packs) {
+      const rev = join(packDir, pack.replace(/\.pack$/, '.rev'))
+      writeFileSync(rev, 'JUNK')
+    }
+
+    // Sanity: on a git with reverse-index support that cache is what a bare
+    // connectivity check dies on. Older gits ignore the file, so only assert
+    // when git actually reports an error.
+    let fsckError = ''
+    try {
+      git(stage, 'fsck', '--connectivity-only', '--no-dangling', '--no-progress')
+    } catch (err: any) {
+      fsckError = String(err.stderr ?? err.message)
+    }
+    if (fsckError) expect(fsckError).toContain('unable to load rev-index')
+
+    await materializeRepoFromBundles(stage, next, objects.fetch)
+    expect(readdirSync(packDir).filter((f) => f.endsWith('.rev'))).toEqual([])
+    // The objects were actually checked and the history is intact.
+    expect(git(stage, 'rev-list', '--count', 'HEAD')).toBe('2')
+    expect(git(stage, 'cat-file', '-t', git(stage, 'rev-parse', 'HEAD~1'))).toBe('commit')
   })
 })
 

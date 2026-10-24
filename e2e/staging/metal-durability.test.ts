@@ -44,7 +44,7 @@ const PREVIEW_BOOT_TIMEOUT_MS = 180_000
 const PREVIEW_CONTENT_TIMEOUT_MS = 90_000
 
 async function ensureAuthenticated(page: Page, user: TestUser): Promise<void> {
-  await page.goto("/")
+  await page.goto("/home")
   const home = page.getByText("What are we building", { exact: false }).first()
   const signUpTab = page.getByRole("tab", { name: "Sign Up" })
   await Promise.race([
@@ -96,7 +96,7 @@ async function setHeading(page: Page, heading: string): Promise<void> {
 }
 
 async function reopen(page: Page, projectId: string): Promise<void> {
-  await page.goto("/")
+  await page.goto("/home")
   await page.waitForSelector("text=What are we building", { timeout: 30_000 })
   await page.goto(`/projects/${projectId}`)
 }

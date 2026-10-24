@@ -861,6 +861,24 @@ describe('resolveWorkspaceTechStackId + applyEnvTechStackMarker', () => {
     }
   })
 
+  test('a Remotion package.json infers the video-editor stack, not custom', () => {
+    for (const deps of [{ remotion: '4.0.537' }, { '@remotion/player': '4.0.537' }]) {
+      const dir = makeTmp()
+      writeFileSync(join(dir, '.tech-stack'), 'react-app')
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: deps }))
+      expect(wd.resolveWorkspaceTechStackId(dir)).toBe('video-editor')
+    }
+  })
+
+  test('inference prefers video-editor over the custom/static line', () => {
+    const dir = makeTmp()
+    // A Vite marker on a Remotion project is the imported/overlaid path the
+    // inference exists for: the files say what the project is.
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { remotion: '4', astro: '5' } }))
+    expect(wd.resolveWorkspaceTechStackId(dir)).toBe('video-editor')
+  })
+
   test('refreshTechStackMarker rewrites a starter marker to the detected stack once', () => {
     const dir = makeTmp()
     writeFileSync(join(dir, '.tech-stack'), 'react-app')

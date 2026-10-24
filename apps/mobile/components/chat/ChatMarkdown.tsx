@@ -8,15 +8,26 @@
 import type { ReactElement } from "react"
 import { Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import type { MentionTarget } from "./file-links"
+import type { MarkdownVariant } from "./MarkdownText"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 
 export interface ChatMarkdownProps {
   children: string
   isStreaming?: boolean
+  /**
+   * Type scale. `card` is the compact body copy a tool card needs; every
+   * other caller keeps the chat-body default.
+   */
+  variant?: MarkdownVariant
   /** Opens a workspace file when the text mentions its path. */
   onFilePress?: (path: string) => void
+  /** Mentioned paths that pass this check render as file chips. */
+  fileExists?: (path: string) => boolean
   /** Return true to handle a link in the app instead of opening it in a browser. */
   onLinkPress?: (href: string) => boolean
+  /** Opens a person's or agent's profile when their @-mention is tapped. */
+  onMentionPress?: (target: MentionTarget) => void
   /** Extra classes. A color class such as `text-white` overrides the default. */
   className?: string
 }
@@ -32,22 +43,33 @@ const MarkdownText: (props: ChatMarkdownProps) => ReactElement =
 export function ChatMarkdown({
   children,
   isStreaming,
+  variant,
   onFilePress,
+  fileExists,
   onLinkPress,
+  onMentionPress,
   className,
 }: ChatMarkdownProps) {
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
+  // A card body stays card-sized on every surface; the chat default is 16/24
+  // in the phone chrome and 12px elsewhere.
+  const isCard = variant === "card"
   return (
     <MarkdownText
       className={cn(
-        Platform.OS !== "web" || usesMobileWorkspaceChrome
+        isCard
+          ? "text-foreground text-xs prose-sm"
+          : Platform.OS !== "web" || usesMobileWorkspaceChrome
           ? "text-foreground text-base leading-6"
           : "text-foreground text-xs prose-sm",
         className,
       )}
+      variant={variant}
       isStreaming={isStreaming}
       onFilePress={onFilePress}
+      fileExists={fileExists}
       onLinkPress={onLinkPress}
+      onMentionPress={onMentionPress}
     >
       {children}
     </MarkdownText>

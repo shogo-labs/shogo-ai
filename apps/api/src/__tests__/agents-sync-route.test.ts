@@ -132,7 +132,10 @@ class MockClient {
   deleteAgent = mock(async () => undefined)
   getSignedUrl = mock(async () => 'wss://x')
 }
-mock.module('@shogo-ai/sdk/voice', () => ({
+// routes/voice.ts pulls in voice-media.ts, which uses the real helpers
+// (model table, normalizers); keep everything except the client class.
+const voiceActualExports = await import('@shogo-ai/voice')
+mock.module('@shogo-ai/sdk/voice', () => ({ ...voiceActualExports,
   ElevenLabsClient: MockClient,
 }))
 mock.module('@shogo/agent-runtime/src/voice-mode/translator-persona', () => ({

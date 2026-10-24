@@ -46,7 +46,7 @@ const CODE_MARKER = `Recycle Notes ${RUN}`
 const NOTE_MARKER = `note-${RUN}-${Math.random().toString(36).slice(2, 8)}`
 
 async function ensureAuthenticated(page: Page, user: TestUser): Promise<void> {
-  await page.goto("/")
+  await page.goto("/home")
   const home = page.getByText("What are we building", { exact: false }).first()
   const signUpTab = page.getByRole("tab", { name: "Sign Up" })
   await Promise.race([
@@ -157,7 +157,7 @@ test.describe("Runtime recycle", () => {
     expect(r!.body.coldBoot?.apiReady, JSON.stringify(r!.body.coldBoot)).toBe(true)
 
     // 4. Reopen from scratch: the code and the note must both survive.
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 30_000 })
     await page.goto(`/projects/${projectId}`)
     await expectPreviewText(page, CODE_MARKER)

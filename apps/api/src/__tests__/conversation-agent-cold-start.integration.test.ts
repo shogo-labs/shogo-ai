@@ -18,6 +18,7 @@ const { conversationRoutes } = await import('../routes/conversations')
 const bus = await import('../lib/conversation-bus')
 const dispatcher = await import('../services/conversation-agent-dispatcher')
 const teamChannels = await import('../services/conversation-team-channels')
+const { invalidateAgentReplyCapacity } = await import('../services/agent-reply-capacity')
 const chatMessages = await import('../generated/chat-message.routes')
 
 const db = prisma as any
@@ -379,6 +380,10 @@ describe('opening the session before the run starts', () => {
         return answer('ok')
       },
     })
+    // Pin the workspace to six slots: the local default is 24, so six tags would
+    // not fill it and the seventh would start instead of waiting.
+    await db.workspace.update({ where: { id: seed.workspaceId }, data: { agentReplyConcurrency: 6 } })
+    invalidateAgentReplyCapacity(seed.workspaceId)
     const id = await channel('slot-wait')
     for (let i = 0; i < 6; i++) {
       await call(seed.member, 'POST', `/conversations/${id}/messages`, { text: `${tag(builder)} hold ${i}` })
@@ -401,6 +406,8 @@ describe('opening the session before the run starts', () => {
       expect(JSON.parse(prompts[0].parts).some((p: any) => p.type === 'data-channel-dispatch')).toBe(true)
     } finally {
       release()
+      await db.workspace.update({ where: { id: seed.workspaceId }, data: { agentReplyConcurrency: null } })
+      invalidateAgentReplyCapacity(seed.workspaceId)
     }
     await settled(root, builder)
     await waitFor(async () => !(await db.conversationMessage.findFirst({ where: { agentStatus: 'running' } })))

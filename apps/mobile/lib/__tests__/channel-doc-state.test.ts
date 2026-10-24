@@ -5,7 +5,11 @@ import { describe, expect, test } from 'bun:test'
 import type { ChannelDoc } from '../team-chat-api'
 import {
   baseVersionOf,
+  DOC_LIMIT,
+  docBudgetFor,
   docReducer,
+  docSections,
+  formatDocBudget,
   initialDocState,
   isDirty,
   shouldSave,
@@ -167,5 +171,31 @@ describe('doc markdown helpers', () => {
     expect(toggleTask(md, 0)).toBe('- [x] a\n- [x] b\nplain')
     expect(toggleTask(md, 1)).toBe('- [ ] a\n- [ ] b\nplain')
     expect(toggleTask(md, 2)).toBe(md)
+  })
+})
+
+describe('doc budget', () => {
+  test('reports ok below 70%, warn to 85% and critical above it', () => {
+    expect(docBudgetFor('x'.repeat(139_999))).toMatchObject({ level: 'ok', chars: 139_999, limit: DOC_LIMIT })
+    expect(docBudgetFor('x'.repeat(140_000))).toMatchObject({ level: 'warn', pct: 70 })
+    expect(docBudgetFor('x'.repeat(169_999)).level).toBe('warn')
+    expect(docBudgetFor('x'.repeat(170_000))).toMatchObject({ level: 'critical', pct: 85 })
+    expect(docBudgetFor('x'.repeat(175_492))).toMatchObject({ level: 'critical', pct: 87.7 })
+  })
+
+  test('formats the meter as used / limit', () => {
+    expect(formatDocBudget({ chars: 184_210, limit: 200_000 })).toBe('184,210 / 200,000')
+    expect(formatDocBudget({ chars: 0, limit: DOC_LIMIT })).toBe('0 / 200,000')
+  })
+
+  test('docSections lists each heading with the characters it occupies', () => {
+    const md = '# Doc\n\nintro\n\n## A\n\nbody a\n\n### A.1\n\nnested\n\n## B\n\nbody b\n'
+    expect(docSections(md)).toEqual([
+      { heading: 'Doc', chars: md.trimEnd().length },
+      { heading: 'A', chars: '## A\n\nbody a\n\n### A.1\n\nnested'.length },
+      { heading: 'A.1', chars: '### A.1\n\nnested'.length },
+      { heading: 'B', chars: '## B\n\nbody b'.length },
+    ])
+    expect(docSections('no headings here')).toEqual([])
   })
 })

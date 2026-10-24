@@ -18,6 +18,7 @@ import {
   ISLAND_BUDDY_TAILS,
   ISLAND_BUDDY_TOPPERS,
   ISLAND_MAX_PARAM_CHARS,
+  ISLAND_WORKSPACE_AGENT_PROJECT_ID,
   mergeIslandSnapshots,
   parseIslandAction,
   parseIslandConfigPatch,
@@ -220,6 +221,18 @@ describe('mergeIslandSnapshots', () => {
     const focused: IslandSnapshot = { sessions: [], recentProjects: [], focusedSessionKey: 'p2:s2', updatedAt: 1 }
     expect(mergeIslandSnapshots([background, focused]).focusedSessionKey).toBeUndefined()
     expect(mergeIslandSnapshots([background, focused], focused).focusedSessionKey).toBe('p2:s2')
+  })
+
+  test('accepts a workspace-agent session without listing it as a project', () => {
+    const snapshot: IslandSnapshot = {
+      sessions: [session(ISLAND_WORKSPACE_AGENT_PROJECT_ID, 'ws-1', { projectName: 'Shogo' }), session('p1', 's1')],
+      recentProjects: [{ projectId: ISLAND_WORKSPACE_AGENT_PROJECT_ID, name: 'Shogo' }, { projectId: 'p1', name: 'One' }],
+      focusedSessionKey: `${ISLAND_WORKSPACE_AGENT_PROJECT_ID}:ws-1`,
+      updatedAt: 1,
+    }
+    const parsed = parseIslandSnapshot(snapshot)
+    expect(parsed.sessions.map((s) => s.sessionId)).toEqual(['ws-1', 's1'])
+    expect(mergeIslandSnapshots([parsed], parsed).recentProjects.map((p) => p.projectId)).toEqual(['p1'])
   })
 })
 

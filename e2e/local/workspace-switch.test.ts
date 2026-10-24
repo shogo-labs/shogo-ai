@@ -1,29 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, expect, type Page, type Locator } from "@playwright/test"
+import { test, expect, type Page, type Locator, type Request as PlaywrightRequest } from "@playwright/test"
 import { LOCAL_API_BASE } from "./helpers"
 
 /**
  * Workspace switching — local/desktop E2E test.
  *
- * Local counterpart to `e2e/staging/workspace-switch.test.ts`. A *second*
- * workspace can't be reached the same way in local mode, so this test both
- * exercises and depends on a different pair of things than the staging one:
+ * Local counterpart to `e2e/staging/workspace-switch.test.ts`. Both suites
+ * exercise the same thing (switch between two workspaces and check the shell
+ * follows), but local mode gets there differently:
  *
- *   - `create-local-app.ts` deliberately doesn't mount the generic
- *     workspace CRUD routes (`workspace.routes.ts` / `workspaceHooks`) —
- *     desktop only needs a narrow route surface (`local-workspaces.ts`) —
- *     so there's no `POST /api/workspaces` for a second workspace to go
- *     through, and no "Create new workspace" entry in the sidebar/account
- *     menu (`!localMode` gate in `AppSidebar.tsx` / `account.tsx`).
- *   - Instead, `bootstrapLocalDatabase` (apps/api/src/lib/local-bootstrap.ts)
- *     seeds the single local user with one free workspace of *each* kind up
- *     front — a `personal` one via the normal signup hook, and a `team`
- *     one via an explicit backfill — mirroring the cloud "every account
- *     gets one free `personal` + one free `team`" rule
- *     (`workspaceHooks.beforeCreate`) without needing a creation UI. That
- *     backfill runs on every boot (not just fresh installs), so this test
- *     works against any local dev DB, however old.
+ *   - `bootstrapLocalDatabase` (apps/api/src/lib/local-bootstrap.ts) seeds the
+ *     single local user with one free workspace of *each* kind up front — a
+ *     `personal` one via the normal signup hook, and a `team` one via an
+ *     explicit backfill — so any local DB, however old, has at least two
+ *     workspaces to switch between without the test creating one.
+ *   - Since SHO-43 a local user can also create workspaces themselves
+ *     (`workspace-create.test.ts` covers that path); this spec deliberately
+ *     still only switches between the seeded ones, so a failure here never
+ *     leaves a workspace behind in the developer's DB.
  *
  * Workspace *names* aren't asserted — a pre-existing local DB may already
  * have owned a team (or extra personal) workspace under some other name
@@ -200,6 +195,67 @@ async function switchWorkspaceNarrow(page: Page, toName: string) {
   await expect.poll(() => activeWorkspaceName(page), { timeout: 30_000 }).toBe(toName)
 }
 
+/** The workspace id behind a switcher row's name. */
+async function workspaceIdFor(page: Page, name: string): Promise<string> {
+  const response = await page.request.get(`${LOCAL_API_BASE}/api/workspaces`)
+  const body = await response.json()
+  const items = (body?.items ?? body?.data?.items ?? []) as Array<{ id: string; name?: string }>
+  const match = items.find((item) => item.name === name)
+  if (!match) throw new Error(`/api/workspaces has no workspace named "${name}"`)
+  return match.id
+}
+
+async function createChatSession(page: Page, workspaceId: string): Promise<string> {
+  const response = await page.request.post(
+    `${LOCAL_API_BASE}/api/workspaces/${workspaceId}/sessions`,
+    { data: { name: "QA workspace switch" } },
+  )
+  const body = (await response.json().catch(() => ({}))) as { session?: { id?: string } }
+  if (!body.session?.id) {
+    throw new Error(`Could not create a chat session in ${workspaceId} (HTTP ${response.status()})`)
+  }
+  return body.session.id
+}
+
+/**
+ * An `/agent?chatSessionId=` URL for a chat in `name`, creating a session when
+ * the workspace has none — the SHO-157 trace needs a chat open in the
+ * workspace being left.
+ */
+async function chatInWorkspace(page: Page, name: string): Promise<string> {
+  const workspaceId = await workspaceIdFor(page, name)
+  const listed = (await (
+    await page.request.get(`${LOCAL_API_BASE}/api/workspaces/${workspaceId}/sessions`)
+  )
+    .json()
+    .catch(() => ({}))) as { sessions?: Array<{ id?: string }> }
+  const existing = listed.sessions?.find((session) => session.id)?.id
+  const sessionId = existing ?? (await createChatSession(page, workspaceId))
+  return `/agent?chatSessionId=${sessionId}`
+}
+
+/** The workspace agent's composer (ChatInput's default accessibility label). */
+function composer(page: Page) {
+  return page
+    .getByRole("textbox", { name: "Chat message input" })
+    .filter({ visible: true })
+    .first()
+}
+
+/**
+ * Switch from *this* page without navigating home first: the bug needs a chat
+ * screen mounted when the switch happens, which `goHome` would unmount.
+ */
+async function switchInPlace(page: Page, toName: string) {
+  const trigger = anyAccountTrigger(page)
+  await expect(trigger).toBeVisible({ timeout: 30_000 })
+  if (await accountTrigger(page, toName).isVisible().catch(() => false)) return
+  await openAccountPopover(page, trigger)
+  await expect(page.getByLabel("Sign in to Shogo Cloud")).toBeVisible({ timeout: 10_000 })
+  await clickAndWaitForReload(page, page.getByLabel(toName, { exact: true }))
+  await expect(accountTrigger(page, toName)).toBeVisible({ timeout: 30_000 })
+}
+
 test.describe("Workspace switching (local mode)", () => {
   test.describe.configure({ mode: "serial" })
 
@@ -247,6 +303,58 @@ test.describe("Workspace switching (local mode)", () => {
     await switchWorkspaceWide(page, WORKSPACE_A)
   })
 
+  test("wide desktop (1280×800): the switcher asks for workspace activity", async () => {
+    test.setTimeout(60_000)
+    await page.setViewportSize({ width: 1280, height: 800 })
+
+    // "Working in N other workspaces" (Decision 3) is fed by
+    // /api/workspaces/activity. The popover renders through a portal outside
+    // SDKDomainProvider, so a context-only client silently skipped the request
+    // and the badge never appeared on the surface this card is about (QA round
+    // 2). Count the request rather than staging a live agent turn.
+    const activityRequests: string[] = []
+    const onRequest = (request: PlaywrightRequest) => {
+      if (new URL(request.url()).pathname === "/api/workspaces/activity") {
+        activityRequests.push(request.url())
+      }
+    }
+    page.on("request", onRequest)
+    try {
+      const trigger = await goHome(page)
+      await openAccountPopover(page, trigger)
+      await expect(page.getByLabel("Sign in to Shogo Cloud")).toBeVisible({ timeout: 10_000 })
+      await expect.poll(() => activityRequests.length, { timeout: 10_000 }).toBeGreaterThan(0)
+    } finally {
+      page.off("request", onRequest)
+      await page.keyboard.press("Escape")
+    }
+
+    // …and the badge itself renders there. Staging a real agent turn in another
+    // workspace is out of scope for a local spec, so answer the activity call
+    // with one busy workspace and assert the label the user actually sees.
+    await page.route("**/api/workspaces/activity", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          items: [{ workspaceId: "qa-other-workspace", inFlight: true }],
+        }),
+      }),
+    )
+    try {
+      await page.goto("/")
+      const trigger = await goHome(page)
+      await openAccountPopover(page, trigger)
+      await expect(page.getByLabel("Working in 1 other workspace")).toBeVisible({
+        timeout: 15_000,
+      })
+    } finally {
+      await page.unroute("**/api/workspaces/activity")
+      await page.keyboard.press("Escape")
+    }
+  })
+
   test("narrow web (390×844): switches both directions via the /account screen", async () => {
     test.setTimeout(60_000)
     await page.setViewportSize({ width: 390, height: 844 })
@@ -254,5 +362,29 @@ test.describe("Workspace switching (local mode)", () => {
     await switchWorkspaceNarrow(page, WORKSPACE_B)
     await switchWorkspaceNarrow(page, WORKSPACE_A)
     await switchWorkspaceNarrow(page, WORKSPACE_B)
+  })
+
+  test("wide desktop: switching with a chat open keeps the chosen workspace (SHO-157)", async () => {
+    test.setTimeout(180_000)
+    await page.setViewportSize({ width: 1280, height: 800 })
+
+    await switchWorkspaceWide(page, WORKSPACE_A)
+    const chatUrl = await chatInWorkspace(page, WORKSPACE_A)
+
+    // Russell's staging trace: `/agent?chatSessionId=<old chat>` is open when
+    // the switch happens, and the screen re-runs its load against the new
+    // workspace with that chat still in hand (~10 ms after the switch).
+    await page.goto(chatUrl)
+    await expect(composer(page)).toBeVisible({ timeout: 90_000 })
+    await page.waitForTimeout(1_500)
+
+    await switchInPlace(page, WORKSPACE_B)
+    await expect.poll(() => activeWorkspaceName(page), { timeout: 30_000 }).toBe(WORKSPACE_B)
+
+    // The bad writer landed *before* the reload, so landing on the new
+    // workspace is most of the assertion — staying there is the rest of it.
+    await page.waitForTimeout(2_500)
+    await expect.poll(() => activeWorkspaceName(page)).toBe(WORKSPACE_B)
+    await expect(accountTrigger(page, WORKSPACE_B)).toBeVisible({ timeout: 30_000 })
   })
 })

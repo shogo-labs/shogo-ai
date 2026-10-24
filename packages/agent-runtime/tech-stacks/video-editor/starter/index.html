@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Video Editor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0b0f;
+        --panel: #15151c;
+        --border: #26262f;
+        --text: #f4f4f6;
+        --muted: #8d8d99;
+        --accent: #6d5efc;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      #root { min-height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/preview.tsx"></script>
+  </body>
+</html>

@@ -13,6 +13,8 @@ import type { Message } from '@mariozechner/pi-ai'
 import {
   runSubagent,
   getBuiltinSubagentConfig,
+  BUILTIN_SUBAGENT_TYPES,
+  RETIRED_SUBAGENT_TYPES,
   type SubagentConfig,
   type SubagentResult,
   type SubagentStreamCallbacks,
@@ -142,6 +144,7 @@ export interface AgentCostMetricData {
   inputTokens: number
   outputTokens: number
   cachedInputTokens: number
+  cacheWriteTokens?: number
   toolCalls: number
   creditCost: number
   wallTimeMs: number
@@ -331,7 +334,12 @@ export class AgentManager {
       config = getBuiltinSubagentConfig(type, parentCtx, allTools)
     }
     if (!config) {
-      return { ok: false, error: `Unknown agent type: ${type}` }
+      const valid = [...BUILTIN_SUBAGENT_TYPES, ...[...this.registry.keys()].filter(n => !(BUILTIN_SUBAGENT_TYPES as readonly string[]).includes(n))]
+      const retired = RETIRED_SUBAGENT_TYPES[type]
+      return {
+        ok: false,
+        error: `${retired ? `${retired} ` : ''}Unknown agent type: ${type}. Valid types: ${valid.join(', ')}. Omit type for fork mode.`,
+      }
     }
 
     const instanceId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -389,6 +397,7 @@ export class AgentManager {
           inputTokens: result.inputTokens,
           outputTokens: result.outputTokens,
           cachedInputTokens: result.cacheReadTokens,
+          cacheWriteTokens: result.cacheWriteTokens,
           toolCalls: result.toolCalls,
           creditCost: 0, // computed by the API server from tokens
           wallTimeMs: wallTime,
@@ -413,6 +422,9 @@ export class AgentManager {
           inst.result = {
             responseText: wasCancelled ? 'Subagent cancelled' : err.message,
             toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+            // The rejection reason has to survive with the instance, or a spawn
+            // that died at setup reaches its parent as "no output".
+            ...(wasCancelled ? {} : { error: { message: err.message }, responseEmpty: true }),
           }
         }
         const wallTime = Date.now() - startTime

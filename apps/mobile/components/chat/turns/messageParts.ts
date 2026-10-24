@@ -152,6 +152,20 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
       if (part.text && part.text.trim()) {
         result.push({ type: "text", text: part.text, id: `text-${index}` })
       }
+    } else if (part.type === "data-context-summarized") {
+      // Context-summarization divider. Emitted by the runtime mid-turn (and
+      // persisted by the API) since SHO-96; it sits in the transcript so the
+      // user can see why the context ring dropped.
+      const payload = (part as { data?: Record<string, unknown> }).data ?? {}
+      result.push({
+        type: "compaction",
+        trigger: payload.trigger === "manual" ? "manual" : "auto",
+        tokensBefore: Number(payload.tokensBefore) || 0,
+        tokensAfter: Number(payload.tokensAfter) || 0,
+        messagesBefore: Number(payload.messagesBefore) || 0,
+        messagesAfter: Number(payload.messagesAfter) || 0,
+        id: `compaction-${index}`,
+      })
     } else if (part.type === "tool-invocation") {
       const inv = part.toolInvocation
       if (inv) {

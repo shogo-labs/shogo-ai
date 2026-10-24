@@ -15,6 +15,7 @@ const { prisma } = await import('../lib/prisma')
 const { agentModeFor, settleOrphanedAgentReplies } = await import('../services/conversation-agent-dispatcher')
 const { setAgentDefaultModel } = await import('../services/workspace-agent.service')
 const { invalidateWorkspaceModels } = await import('../services/workspace-models.service')
+const registry = await import('../services/model-registry.service')
 
 const db = prisma as any
 let seed: SeededWorkspace
@@ -58,6 +59,59 @@ describe('agentModeFor', () => {
     invalidateWorkspaceModels(seed.workspaceId)
     await setAgentDefaultModel(seed.workspaceId, null)
     expect(await agentModeFor(null, seed.workspaceId)).toBe('auto')
+  })
+})
+
+describe('resolveAgentRunModelLabel', () => {
+  test('a model someone picked is named the way the app names it, not by id', async () => {
+    const models = await import('../services/agent-run-model.service')
+    await db.agentConfig.update({ where: { projectId: seed.projectId }, data: { modelName: 'claude-sonnet-4-6' } })
+    expect(await models.resolveAgentRunModelLabel(seed.projectId)).toEqual({ id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' })
+  })
+
+  test('auto stays "Auto" for both agent kinds, including the untouched haiku default', async () => {
+    const models = await import('../services/agent-run-model.service')
+    await db.agentConfig.update({ where: { projectId: seed.projectId }, data: { modelName: 'claude-haiku-4-5' } })
+    expect(await models.resolveAgentRunModelLabel(seed.projectId)).toEqual({ id: 'auto', label: 'Auto' })
+    // No config row at all (nobody chose anything) is the same answer.
+    await db.agentConfig.delete({ where: { projectId: seed.projectId } })
+    expect(await models.resolveAgentRunModelLabel(seed.projectId)).toEqual({ id: 'auto', label: 'Auto' })
+    await db.agentConfig.create({ data: { projectId: seed.projectId } })
+    await setAgentDefaultModel(seed.workspaceId, null)
+    expect(await models.resolveAgentRunModelLabel(null, seed.workspaceId)).toEqual({ id: 'auto', label: 'Auto' })
+    expect(await models.resolveAgentRunModelLabel(null)).toEqual({ id: 'auto', label: 'Auto' })
+  })
+
+  test('the workspace agent is labelled from the admin-set default, and falls back to Auto when it is no longer allowed', async () => {
+    const models = await import('../services/agent-run-model.service')
+    await setAgentDefaultModel(seed.workspaceId, 'claude-sonnet-4-6')
+    expect(await models.resolveAgentRunModelLabel(null, seed.workspaceId)).toEqual({ id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' })
+    await db.workspaceModelVisibility.create({ data: { workspaceId: seed.workspaceId, modelId: 'gpt-5.4-nano' } })
+    invalidateWorkspaceModels(seed.workspaceId)
+    expect(await models.resolveAgentRunModelLabel(null, seed.workspaceId)).toEqual({ id: 'auto', label: 'Auto' })
+    await db.workspaceModelVisibility.deleteMany({ where: { workspaceId: seed.workspaceId } })
+    invalidateWorkspaceModels(seed.workspaceId)
+    await setAgentDefaultModel(seed.workspaceId, null)
+  })
+
+  test('a DB-defined model is labelled by its display name, never the UUID', async () => {
+    const models = await import('../services/agent-run-model.service')
+    const id = crypto.randomUUID()
+    await db.modelDefinition.create({
+      data: { id, provider: 'anthropic', apiModel: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', shortDisplayName: 'Opus 5.5' },
+    })
+    await db.agentConfig.upsert({
+      where: { projectId: seed.projectId },
+      create: { projectId: seed.projectId, modelName: id },
+      update: { modelName: id },
+    })
+    // What an admin model-write route does, so the label comes from the live registry.
+    await registry.invalidateModelRegistry()
+    const resolved = await models.resolveAgentRunModelLabel(seed.projectId)
+    expect(resolved).toEqual({ id, label: 'Claude Opus 5.5' })
+    expect(resolved.label).not.toContain(id)
+    await db.agentConfig.update({ where: { projectId: seed.projectId }, data: { modelName: 'claude-haiku-4-5' } })
+    await db.modelDefinition.delete({ where: { id } })
   })
 })
 

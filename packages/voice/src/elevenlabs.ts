@@ -20,21 +20,129 @@ import { composeAgentPrompt } from './prompt.js'
 
 export const DEFAULT_ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io'
 
-/** TTS models the convai runtime supports as of 2026-Q2. */
-export const CONVAI_SUPPORTED_TTS_MODELS = new Set<string>([
-  'eleven_turbo_v2',
-  'eleven_turbo_v2_5',
-  'eleven_flash_v2',
-  'eleven_flash_v2_5',
-  'eleven_multilingual_v2',
-])
+/**
+ * The one ElevenLabs TTS model table. Everything that needs to know which
+ * models exist, which are realtime/convai-capable and how much text each
+ * accepts reads from here — `resolveConvaiTtsModel*()` below, the hosted
+ * `/api/voice/tts` route, and the docs.
+ *
+ * `maxChars` is ElevenLabs' per-request character cap for the model;
+ * `realtime` marks the subset that a convai agent can run on.
+ */
+export interface VoiceTtsModel {
+  id: string
+  label: string
+  /** Usable as a convai agent's TTS model (low-latency websocket path). */
+  realtime: boolean
+  /** Per-request character cap enforced by ElevenLabs. */
+  maxChars: number
+  /** Listed for back-compat; still callable, but not what new agents get. */
+  deprecated?: boolean
+}
 
-export const CONVAI_TTS_MODEL_FALLBACK = 'eleven_turbo_v2_5'
+export const VOICE_TTS_MODELS: readonly VoiceTtsModel[] = [
+  { id: 'eleven_v4', label: 'Eleven v4', realtime: false, maxChars: 10_000 },
+  { id: 'eleven_v4_turbo', label: 'Eleven v4 Turbo', realtime: true, maxChars: 10_000 },
+  { id: 'eleven_v3', label: 'Eleven v3', realtime: false, maxChars: 5_000 },
+  {
+    id: 'eleven_v3_conversational',
+    label: 'Eleven v3 Conversational',
+    realtime: true,
+    maxChars: 5_000,
+  },
+  { id: 'eleven_multilingual_v2', label: 'Eleven Multilingual v2', realtime: false, maxChars: 10_000 },
+  { id: 'eleven_flash_v2_5', label: 'Eleven Flash v2.5', realtime: true, maxChars: 40_000 },
+  { id: 'eleven_flash_v2', label: 'Eleven Flash v2', realtime: true, maxChars: 30_000 },
+  { id: 'eleven_turbo_v2_5', label: 'Eleven Turbo v2.5', realtime: true, maxChars: 40_000 },
+  { id: 'eleven_turbo_v2', label: 'Eleven Turbo v2', realtime: true, maxChars: 30_000, deprecated: true },
+]
+
+/** Every model id we know about, in table order. */
+export const VOICE_TTS_MODEL_IDS: readonly string[] = VOICE_TTS_MODELS.map((m) => m.id)
+
+/** Default model for a plain one-shot `textToSpeech()` call. */
+export const DEFAULT_TTS_MODEL = 'eleven_v4'
+
+/** TTS models a convai agent can run on. */
+export const CONVAI_SUPPORTED_TTS_MODELS = new Set<string>(
+  VOICE_TTS_MODELS.filter((m) => m.realtime).map((m) => m.id),
+)
+
+export const CONVAI_TTS_MODEL_FALLBACK = 'eleven_v4_turbo'
+
+/** Look up a model's metadata, or `undefined` when the id is unknown. */
+export function getVoiceTtsModel(modelId: string | null | undefined): VoiceTtsModel | undefined {
+  if (!modelId) return undefined
+  return VOICE_TTS_MODELS.find((m) => m.id === modelId)
+}
+
+export interface ConvaiTtsModelResolution {
+  /** The model the agent will actually be configured with. */
+  modelId: string
+  /** What the caller asked for (null/undefined when they asked for nothing). */
+  requested: string | null
+  /** True when a requested model was replaced by {@link CONVAI_TTS_MODEL_FALLBACK}. */
+  downgraded: boolean
+  /** Why the requested model was rejected (absent when nothing was requested). */
+  reason?: string
+}
+
+/** Values we've already logged a downgrade for — warn once, not per request. */
+const loggedDowngrades = new Set<string>()
+
+/**
+ * Resolve a requested convai TTS model, reporting whether we had to
+ * substitute it. `eleven_v4`, `eleven_v3` and any unknown id are not
+ * convai-capable and resolve to {@link CONVAI_TTS_MODEL_FALLBACK}; every
+ * distinct downgrade is logged once so a caller can see it in pod logs
+ * instead of silently getting a different voice model.
+ */
+export function resolveConvaiTtsModelDetailed(
+  requested: string | null | undefined,
+): ConvaiTtsModelResolution {
+  if (requested && CONVAI_SUPPORTED_TTS_MODELS.has(requested)) {
+    return { modelId: requested, requested, downgraded: false }
+  }
+  const known = getVoiceTtsModel(requested)
+  const reason = !requested
+    ? undefined
+    : known
+      ? `${requested} is not supported by the convai realtime runtime`
+      : `unknown TTS model ${requested}`
+  if (reason && !loggedDowngrades.has(requested!)) {
+    loggedDowngrades.add(requested!)
+    try {
+      console.warn(
+        `[voice] convai TTS model ${requested} is unavailable (${reason}); using ${CONVAI_TTS_MODEL_FALLBACK}`,
+      )
+    } catch {
+      // consoles can be absent in edge workers — the resolution still stands.
+    }
+  }
+  return {
+    modelId: CONVAI_TTS_MODEL_FALLBACK,
+    requested: requested ?? null,
+    downgraded: Boolean(requested),
+    ...(reason ? { reason } : {}),
+  }
+}
 
 /** If `requested` isn't a convai-compatible TTS model, fall back to the default. */
 export function resolveConvaiTtsModel(requested: string | null | undefined): string {
-  if (requested && CONVAI_SUPPORTED_TTS_MODELS.has(requested)) return requested
-  return CONVAI_TTS_MODEL_FALLBACK
+  return resolveConvaiTtsModelDetailed(requested).modelId
+}
+
+/**
+ * Whether an ElevenLabs TTS failure is plausibly about the model rather than
+ * about the request as a whole: 402 (model not in the plan) always counts,
+ * and 400/403/404/422 count only when the body mentions model / plan /
+ * permission. 401, 429, 5xx and network errors never do — retrying those on
+ * another model only hides the real problem.
+ */
+export function isModelRelatedTtsFailure(status: number, body: string): boolean {
+  if (status === 402) return true
+  if (status !== 400 && status !== 403 && status !== 404 && status !== 422) return false
+  return /model|plan|permission/i.test(body)
 }
 
 export interface ElevenLabsClientConfig {
@@ -96,10 +204,25 @@ export interface PatchAgentParams {
 export interface TextToSpeechParams {
   voiceId: string
   text: string
+  /** Defaults to {@link DEFAULT_TTS_MODEL} (`eleven_v4`). */
   modelId?: string
   voiceSettings?: VoiceSettings
   /** Accept header; defaults to `audio/mpeg`. */
   accept?: string
+}
+
+/** Result of {@link ElevenLabsClient.textToSpeech}. */
+export interface TextToSpeechResult {
+  audio: ArrayBuffer
+  /** The model that actually produced the audio. */
+  modelId: string
+  /** The model the caller asked for (defaulted when they passed none). */
+  requestedModel: string
+  /** True when `modelId !== requestedModel` because of a model-related error. */
+  fellBack: boolean
+  /** Why we fell back (upstream status + body snippet). */
+  fallbackReason?: string
+  contentType: string
 }
 
 /** Options for the low-level {@link ElevenLabsClient.request} escape hatch. */
@@ -148,6 +271,83 @@ export interface ComposeMusicParams {
 }
 
 export const DEFAULT_MUSIC_MODEL = 'music_v1'
+
+/**
+ * ElevenLabs speech-to-speech ("voice changer") models. The multilingual one
+ * is the cross-language default; the English one is cheaper and sharper on
+ * English input.
+ */
+export const VOICE_STS_MODEL_IDS: readonly string[] = [
+  'eleven_multilingual_sts_v2',
+  'eleven_english_sts_v2',
+]
+
+export const DEFAULT_STS_MODEL = 'eleven_multilingual_sts_v2'
+
+/** ElevenLabs Scribe speech-to-text models. */
+export const VOICE_SPEECH_TO_TEXT_MODEL_IDS: readonly string[] = ['scribe_v1']
+
+export const DEFAULT_SPEECH_TO_TEXT_MODEL = 'scribe_v1'
+
+/** ElevenLabs text-to-sound-effects models. */
+export const VOICE_SOUND_GENERATION_MODEL_IDS: readonly string[] = ['eleven_text_to_sound_v2']
+
+export const DEFAULT_SOUND_GENERATION_MODEL = 'eleven_text_to_sound_v2'
+
+/** Parameters for {@link ElevenLabsClient.speechToSpeech} (the voice changer). */
+export interface SpeechToSpeechParams {
+  /** Target voice. `POST /v1/speech-to-speech/{voiceId}`. */
+  voiceId: string
+  /** Source audio to convert. */
+  audio: Blob
+  /** Filename sent in the multipart part; defaults to `audio`. */
+  fileName?: string
+  /** One of `VOICE_STS_MODEL_IDS`; defaults to `eleven_multilingual_sts_v2`. */
+  modelId?: string
+  voiceSettings?: VoiceSettings
+  /** Output container/quality, e.g. `mp3_44100_192`. */
+  outputFormat?: string
+  /** `pcm_s16le_16` / `other` (mp3) / `ulaw_8000`. */
+  fileFormat?: string
+  seed?: number
+  removeBackgroundNoise?: boolean
+}
+
+/** Parameters for {@link ElevenLabsClient.soundEffects}. */
+export interface SoundEffectsParams {
+  text: string
+  /** 0.5–30 s. */
+  durationSeconds?: number
+  /** 0–1; how literally the prompt is followed. */
+  promptInfluence?: number
+  loop?: boolean
+  /** Defaults to `eleven_text_to_sound_v2`. */
+  modelId?: string
+  outputFormat?: string
+}
+
+/** Parameters for {@link ElevenLabsClient.transcribe} (Scribe speech-to-text). */
+export interface TranscribeParams {
+  file: Blob
+  /** Filename sent in the multipart part; defaults to `audio`. */
+  fileName?: string
+  /** Defaults to `scribe_v1`. */
+  modelId?: string
+  /** ISO-639-1/3 code; omit to auto-detect. */
+  languageCode?: string
+  diarize?: boolean
+  tagAudioEvents?: boolean
+  numSpeakers?: number
+}
+
+/** A Scribe transcription. Extra provider fields are passed through as-is. */
+export interface TranscriptionResult {
+  text: string
+  language_code?: string
+  language_probability?: number
+  words?: unknown[]
+  [key: string]: unknown
+}
 
 /**
  * An error thrown when ElevenLabs returns a non-2xx response. Preserves the
@@ -340,14 +540,19 @@ export class ElevenLabsClient {
   }
 
   /**
-   * One-shot TTS. Returns the raw audio bytes plus the model id that was
-   * actually used (some models aren't available for every account, so we
-   * fall back to `eleven_turbo_v2_5` on the first failure).
+   * One-shot TTS. Returns the raw audio bytes plus the model that actually
+   * produced them.
+   *
+   * The requested model is never swapped silently: we only retry on
+   * {@link CONVAI_TTS_MODEL_FALLBACK} when the failure is plausibly about
+   * the model (400/403/404/422 whose body mentions model/plan/permission,
+   * or 402 for an out-of-plan model). Auth (401), rate limit (429), 5xx and
+   * network errors are surfaced as-is. When a fallback does happen the
+   * result reports `requestedModel`, `fellBack` and `fallbackReason`.
    */
-  async textToSpeech(
-    params: TextToSpeechParams,
-  ): Promise<{ audio: ArrayBuffer; modelId: string; contentType: string }> {
-    const modelId = params.modelId && params.modelId.length > 0 ? params.modelId : 'eleven_v3'
+  async textToSpeech(params: TextToSpeechParams): Promise<TextToSpeechResult> {
+    const requestedModel =
+      params.modelId && params.modelId.length > 0 ? params.modelId : DEFAULT_TTS_MODEL
     const accept = params.accept ?? 'audio/mpeg'
 
     const attempt = async (m: string) => {
@@ -366,19 +571,44 @@ export class ElevenLabsClient {
       return res
     }
 
-    let res = await attempt(modelId)
-    let used = modelId
-    if (!res.ok && modelId !== 'eleven_turbo_v2_5') {
-      res = await attempt('eleven_turbo_v2_5')
-      used = 'eleven_turbo_v2_5'
-    }
+    let res = await attempt(requestedModel)
+    let used = requestedModel
+    let fellBack = false
+    let fallbackReason: string | undefined
+
     if (!res.ok) {
-      const text = await res.text()
-      throw new ElevenLabsApiError(`textToSpeech failed: ${res.status}`, res.status, text)
+      const body = await res.text()
+      if (
+        requestedModel !== CONVAI_TTS_MODEL_FALLBACK &&
+        isModelRelatedTtsFailure(res.status, body)
+      ) {
+        fallbackReason = `elevenlabs ${res.status} for ${requestedModel}: ${body.slice(0, 200)}`
+        res = await attempt(CONVAI_TTS_MODEL_FALLBACK)
+        used = CONVAI_TTS_MODEL_FALLBACK
+        fellBack = true
+        if (!res.ok) {
+          const retryBody = await res.text()
+          throw new ElevenLabsApiError(
+            `textToSpeech failed: ${res.status}`,
+            res.status,
+            retryBody,
+          )
+        }
+      } else {
+        throw new ElevenLabsApiError(`textToSpeech failed: ${res.status}`, res.status, body)
+      }
     }
+
     const audio = await res.arrayBuffer()
     const contentType = res.headers.get('content-type') ?? accept
-    return { audio, modelId: used, contentType }
+    return {
+      audio,
+      modelId: used,
+      requestedModel,
+      fellBack,
+      ...(fallbackReason ? { fallbackReason } : {}),
+      contentType,
+    }
   }
 
   /**
@@ -500,6 +730,131 @@ export class ElevenLabsClient {
       )
     }
     return { audio, contentType }
+  }
+
+  /**
+   * Convert speech to speech — the "voice changer": keep the performance,
+   * swap the voice. `POST /v1/speech-to-speech/{voiceId}` with a multipart
+   * audio part. Returns the converted audio bytes.
+   *
+   * @example
+   * ```ts
+   * const { audio } = await el.speechToSpeech({
+   *   voiceId: '21m00Tcm4TlvDq8ikWAM',
+   *   audio: await fetch(myRecording).then((r) => r.blob()),
+   *   modelId: 'eleven_multilingual_sts_v2',
+   * })
+   * ```
+   */
+  async speechToSpeech(
+    params: SpeechToSpeechParams,
+  ): Promise<{ audio: ArrayBuffer; contentType: string }> {
+    if (!params.voiceId) throw new Error('speechToSpeech: voiceId is required')
+    if (!params.audio) throw new Error('speechToSpeech: audio is required')
+
+    const form = new FormData()
+    form.set('audio', params.audio, params.fileName ?? 'audio')
+    form.set('model_id', params.modelId ?? DEFAULT_STS_MODEL)
+    if (params.voiceSettings) {
+      form.set('voice_settings', JSON.stringify(params.voiceSettings))
+    }
+    if (params.outputFormat) form.set('output_format', params.outputFormat)
+    if (params.fileFormat) form.set('file_format', params.fileFormat)
+    if (params.seed !== undefined) form.set('seed', String(params.seed))
+    if (params.removeBackgroundNoise !== undefined) {
+      form.set('remove_background_noise', String(params.removeBackgroundNoise))
+    }
+
+    const { audio, contentType } = await this.request({
+      method: 'POST',
+      path: `/v1/speech-to-speech/${encodeURIComponent(params.voiceId)}`,
+      body: form,
+      accept: 'audio/mpeg',
+    })
+    if (!audio) {
+      throw new ElevenLabsApiError(
+        'speechToSpeech: expected audio bytes but got a JSON response',
+        500,
+        '',
+      )
+    }
+    return { audio, contentType }
+  }
+
+  /**
+   * Generate a sound effect from a text prompt. `POST /v1/sound-generation`.
+   *
+   * @example
+   * ```ts
+   * const { audio } = await el.soundEffects({ text: 'heavy wooden door creaking' })
+   * ```
+   */
+  async soundEffects(
+    params: SoundEffectsParams,
+  ): Promise<{ audio: ArrayBuffer; contentType: string }> {
+    if (!params.text || !params.text.trim()) {
+      throw new Error('soundEffects: text is required')
+    }
+    const body: Record<string, unknown> = {
+      text: params.text,
+      model_id: params.modelId ?? DEFAULT_SOUND_GENERATION_MODEL,
+    }
+    if (params.durationSeconds !== undefined) body.duration_seconds = params.durationSeconds
+    if (params.promptInfluence !== undefined) body.prompt_influence = params.promptInfluence
+    if (params.loop !== undefined) body.loop = params.loop
+
+    const { audio, contentType } = await this.request({
+      method: 'POST',
+      path: '/v1/sound-generation',
+      body,
+      accept: 'audio/mpeg',
+      ...(params.outputFormat ? { query: { output_format: params.outputFormat } } : {}),
+    })
+    if (!audio) {
+      throw new ElevenLabsApiError(
+        'soundEffects: expected audio bytes but got a JSON response',
+        500,
+        '',
+      )
+    }
+    return { audio, contentType }
+  }
+
+  /**
+   * Transcribe audio with Scribe. `POST /v1/speech-to-text` (multipart).
+   *
+   * @example
+   * ```ts
+   * const { text } = await el.transcribe({ file: recording })
+   * ```
+   */
+  async transcribe(params: TranscribeParams): Promise<TranscriptionResult> {
+    if (!params.file) throw new Error('transcribe: file is required')
+
+    const form = new FormData()
+    form.set('file', params.file, params.fileName ?? 'audio')
+    form.set('model_id', params.modelId ?? DEFAULT_SPEECH_TO_TEXT_MODEL)
+    if (params.languageCode) form.set('language_code', params.languageCode)
+    if (params.diarize !== undefined) form.set('diarize', String(params.diarize))
+    if (params.tagAudioEvents !== undefined) {
+      form.set('tag_audio_events', String(params.tagAudioEvents))
+    }
+    if (params.numSpeakers !== undefined) form.set('num_speakers', String(params.numSpeakers))
+
+    const { json } = await this.request({
+      method: 'POST',
+      path: '/v1/speech-to-text',
+      body: form,
+      accept: 'application/json',
+    })
+    if (!json || typeof json !== 'object') {
+      throw new ElevenLabsApiError(
+        'transcribe: expected a JSON transcription but got audio',
+        500,
+        '',
+      )
+    }
+    return json as TranscriptionResult
   }
 
   /** Probe whether a given voice id still exists on the caller's account. */

@@ -97,7 +97,7 @@ export function EnvironmentPicker({
                 <Pressable
                   key={option.id}
                   accessibilityRole="radio"
-                  accessibilityState={{ selected: isSelected }}
+                  aria-checked={isSelected}
                   onPress={() => {
                     setSelected(option.id);
                     setError(null);

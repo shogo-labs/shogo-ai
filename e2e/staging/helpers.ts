@@ -34,10 +34,25 @@ export const STRIPE_CARDS = {
 // ── Core helpers ─────────────────────────────────────────────────────────────
 
 /**
+ * The app's pre-landing home (phone feed / wide "What are we building" builder).
+ *
+ * `/` is the workspace agent chat on an empty session for a team workspace
+ * (SHO-4) — every `page.goto("/")` that then waits for the builder heading has
+ * to come here instead.
+ */
+export const APP_HOME_PATH = "/home"
+
+/** Opens the app home (phone feed / builder) and waits for it to paint. */
+export async function gotoAppHome(page: Page, timeout = 30_000): Promise<void> {
+  await page.goto(APP_HOME_PATH)
+  await page.waitForSelector("text=What are we building", { timeout })
+}
+
+/**
  * Signs up a new account at /sign-in, then walks through the cloud onboarding
  * flow into the Team workspace:
  *
- *   team setup → build prompt (skip) → home
+ *   team setup → build prompt (skip) → app home
  *
  * Leaves the browser on the home screen with "What are we building" visible.
  */
@@ -48,12 +63,18 @@ export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void
   }
 
   // ── Home screen ────────────────────────────────────────────────────────────
-  await page.waitForSelector("text=What are we building", { timeout: 30_000 })
+  // Skipping onboarding lands on `/` (the empty agent chat); the builder is at
+  // `/home` now.
+  await gotoAppHome(page)
 }
 
 /** Signs up a new account at /sign-in and waits to leave the sign-in page. */
 export async function signUp(page: Page, user: TestUser): Promise<void> {
   watchChatHealth(page)
+  // Mark the sign-up request as an automated test signup. Test addresses are
+  // @mailnull.com (a disposable domain), so without this header the signup
+  // risk scorer would hand them no credit. Only the sign-up call is touched.
+  await markSignupAsE2e(page)
   // ── Sign up ────────────────────────────────────────────────────────────────
   await page.goto("/sign-in")
   // Switch to the Sign Up tab. The LoginScreen renders both tabs as
@@ -100,6 +121,119 @@ export async function onboardToBuildPrompt(page: Page): Promise<boolean> {
 /** The onboarding "What do you want to build?" input. */
 export function buildPromptInput(page: Page) {
   return page.getByTestId("onboarding-build-prompt-input")
+}
+
+/**
+ * Adds the e2e bootstrap header to the sign-up request only. The signup risk
+ * scorer treats a request carrying a valid secret as an allowlisted test
+ * signup (no penalties, full credit path). No-op when the secret is unset,
+ * so local runs without the backdoor keep the normal risk behaviour.
+ */
+export async function markSignupAsE2e(page: Page): Promise<void> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return
+  await page.route("**/api/auth/sign-up/**", (route) =>
+    route.continue({
+      headers: { ...route.request().headers(), "x-e2e-bootstrap-secret": secret },
+    }),
+  )
+}
+
+export interface SignupCreditState {
+  ok: boolean
+  userId: string
+  workspaceId: string | null
+  emailVerified: boolean
+  assessment: {
+    band: string
+    score: number
+    decision: string
+    signals: unknown
+    reviewDecision: string | null
+  } | null
+  promoCredit: {
+    availableUsd: number
+    grantedUsd: number
+    stage: number
+    expiresAt: string | null
+  } | null
+}
+
+/**
+ * Reads the e2e user's signup risk assessment and promo credit through the
+ * backdoor (GET /api/internal/e2e/signup-credit-state). Returns null when the
+ * backdoor is unavailable, so callers can `test.skip`.
+ */
+export async function signupCreditStateViaBackdoor(
+  page: Page,
+  userEmail: string,
+): Promise<SignupCreditState | null> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return null
+  const res = await page.request
+    .get(`${bootstrapApiBase()}/api/internal/e2e/signup-credit-state`, {
+      headers: { "x-e2e-bootstrap-secret": secret },
+      params: { userEmail },
+    })
+    .catch(() => null)
+  if (!res || res.status() === 503 || res.status() === 401) return null
+  if (!res.ok()) throw new Error(`signup-credit-state failed: HTTP ${res.status()} ${await res.text().catch(() => "")}`)
+  return (await res.json()) as SignupCreditState
+}
+
+export interface VerifyEmailOutcome {
+  released: boolean
+  reason?: string
+  band?: string
+  amountUsd?: number
+}
+
+/**
+ * Marks the e2e user's email verified and runs the same credit-release path as
+ * the real `afterEmailVerification` hook (POST /api/internal/e2e/verify-email).
+ * Returns null when the backdoor is unavailable.
+ */
+export async function verifyEmailViaBackdoor(
+  page: Page,
+  userEmail: string,
+): Promise<VerifyEmailOutcome | null> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return null
+  const res = await page.request
+    .post(`${bootstrapApiBase()}/api/internal/e2e/verify-email`, {
+      headers: { "x-e2e-bootstrap-secret": secret, "content-type": "application/json" },
+      data: { userEmail },
+    })
+    .catch(() => null)
+  if (!res || res.status() === 503 || res.status() === 401) return null
+  if (!res.ok()) throw new Error(`verify-email failed: HTTP ${res.status()} ${await res.text().catch(() => "")}`)
+  const body = (await res.json()) as { ok: boolean; outcome: VerifyEmailOutcome }
+  return body.outcome
+}
+
+/**
+ * Starts a Stripe trial on the e2e workspace without Checkout, through the
+ * backdoor with `status: 'trialing'`. Mirrors the real trial path: the
+ * subscription is trialing, and only the free wallet is allocated (the monthly
+ * allowance waits for the first paid invoice).
+ */
+export async function bootstrapTrialSubscriptionViaApi(
+  page: Page,
+  user: TestUser,
+  planId: "basic" | "pro" | "business" = "pro",
+  trialDays = 7,
+): Promise<boolean> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return false
+  const res = await page.request
+    .post(`${bootstrapApiBase()}/api/internal/e2e/bootstrap-subscription`, {
+      headers: { "x-e2e-bootstrap-secret": secret, "content-type": "application/json" },
+      data: { userEmail: user.email, planId, status: "trialing", daysUntilPeriodEnd: trialDays },
+    })
+    .catch(() => null)
+  if (!res || !res.ok()) return false
+  const body = await res.json().catch(() => ({ ok: false }))
+  return body?.ok === true
 }
 
 /**
@@ -399,8 +533,7 @@ export async function waitForProjectChat(page: Page, timeoutMs = RUNTIME_READY_T
 export async function createProjectAndWait(page: Page, prompt: string) {
   extendTestTimeout(90_000)
   watchChatHealth(page)
-  await page.goto("/")
-  await page.waitForSelector("text=What are we building", { timeout: 15_000 })
+  await gotoAppHome(page, 15_000)
 
   const input = homeComposerInput(page)
   await input.click()

@@ -327,7 +327,7 @@ export default function NewWorkspacePage() {
                   billingInterval === 'monthly' && 'bg-primary'
                 )}
                 accessibilityRole="button"
-                accessibilityState={{ selected: billingInterval === 'monthly' }}
+                aria-selected={billingInterval === 'monthly'}
               >
                 <Text className={cn(
                   'text-sm font-medium',
@@ -343,7 +343,7 @@ export default function NewWorkspacePage() {
                   billingInterval === 'annual' && 'bg-primary'
                 )}
                 accessibilityRole="button"
-                accessibilityState={{ selected: billingInterval === 'annual' }}
+                aria-selected={billingInterval === 'annual'}
               >
                 <Text className={cn(
                   'text-sm font-medium',
@@ -408,7 +408,7 @@ export default function NewWorkspacePage() {
                     )}
                     accessibilityRole="button"
                     accessibilityLabel="Subscribe to Pro and create workspace"
-                    accessibilityState={{ disabled: isCheckoutLoading }}
+                    aria-disabled={isCheckoutLoading}
                   >
                     <Text className={cn(
                       'text-sm font-semibold',
@@ -484,7 +484,7 @@ export default function NewWorkspacePage() {
                     )}
                     accessibilityRole="button"
                     accessibilityLabel="Subscribe to Business and create workspace"
-                    accessibilityState={{ disabled: isCheckoutLoading }}
+                    aria-disabled={isCheckoutLoading}
                   >
                     <Text className={cn(
                       'text-sm font-semibold',

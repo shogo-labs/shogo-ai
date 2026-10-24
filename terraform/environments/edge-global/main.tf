@@ -140,12 +140,46 @@ module "preview_router" {
 # This is IP/ASN-agnostic — it fixes every headless client, not a single IP —
 # and matches on path (all CLI versions), while newer workers also send a
 # `User-Agent: shogo-cli/<version>` for observability (packages/shogo-worker).
+#
+# NOTE (SHO-173): Cloudflare allows exactly ONE zone ruleset per phase, so this
+# resource is the zone's whole `http_request_firewall_custom` container — every
+# WAF custom rule goes in this `rules` block, in evaluation order. A second
+# `cloudflare_ruleset` on the same phase would fight this one for the same slot
+# and silently drop rules from whichever state applied last. (It also has to
+# live here rather than in production-global: that env still has a local
+# backend and is not in terraform.yml's dispatchable environments, so nothing
+# there is applied by CI.)
 resource "cloudflare_ruleset" "worker_m2m_bot_skip" {
   zone_id     = var.cloudflare_zone_id
   name        = "Worker M2M API bot-mitigation exception"
   description = "Skip bot/IP challenges for authenticated shogo M2M / API-key endpoints (issue #783)"
   kind        = "zone"
   phase       = "http_request_firewall_custom"
+
+  # Retired preview host scheme, dropped at the edge (SHO-173).
+  #
+  # Previews are served from `{projectId}.preview.shogo.ai` by the preview_router
+  # Worker; the old per-preview `preview--{id}.shogo.ai` A records are gone
+  # (lib/cloudflare-dns.ts keeps the helper, but nothing calls it), and a
+  # published subdomain cannot contain `--` (apps/api/src/routes/publish.ts), so
+  # no live host under the zone can legitimately start with `preview--`.
+  #
+  # On 2026-10-22 a distributed scanner sent 13k-41k req/min at random
+  # `preview--<uuid>.shogo.ai` hosts. Every one was a 404 at Kourier, but the
+  # volume crash-looped the single prod-US gateway pod and the region 502'd for
+  # ~10 minutes (same pattern 10-21, 10-18). Blocking the scheme at the edge
+  # drops the flood before it costs an origin request at all.
+  rules {
+    ref         = "block_retired_preview_hosts"
+    description = "Block the retired preview--<id>.shogo.ai host scheme (scanner flood, SHO-173)"
+    expression  = "starts_with(http.host, \"preview--\")"
+    action      = "block"
+    enabled     = true
+
+    logging {
+      enabled = true
+    }
+  }
 
   rules {
     ref         = "skip_bot_mitigation_m2m_api"

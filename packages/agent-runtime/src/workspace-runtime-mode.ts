@@ -29,7 +29,7 @@
  */
 
 import { existsSync } from 'fs'
-import { join } from 'path'
+import { isAbsolute, join, relative, resolve, sep } from 'path'
 import { isMetalRuntime, remoteProjectsGuidance } from './remote-tools'
 
 export type WorkingMode = 'managed' | 'external'
@@ -37,6 +37,16 @@ export type WorkingMode = 'managed' | 'external'
 /** True when the runtime was booted as a multi-project workspace runtime. */
 export function isWorkspaceRuntimeMode(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.WORKSPACE_RUNTIME === 'true'
+}
+
+/** The workspace agent: a workspace runtime not anchored on a project. */
+export function isWorkspaceAgentRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isWorkspaceRuntimeMode(env) && !env.WORKSPACE_ANCHOR_PROJECT_ID
+}
+
+/** `copy_to_project` exists only for the workspace agent on metal. */
+export function copyToProjectAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isWorkspaceAgentRuntime(env) && isMetalRuntime(env)
 }
 
 /** The workspace id this runtime serves, if any (workspace mode only). */
@@ -313,7 +323,7 @@ export function renderWorkspaceManifestMarkdown(
     '',
     `This is a **multi-project workspace** runtime (workspace \`${workspaceId}\`).`,
     ...(metal
-      ? ['The folder below is the current project.', remoteProjectsGuidance()]
+      ? ['The folder below is the current project.', remoteProjectsGuidance({ copyToProject: copyToProjectAvailable() })]
       : [
           'Each top-level UUID-named folder below is a separate project you can',
           'read and edit. Treat them as sibling repos under one root.',
@@ -360,15 +370,26 @@ export function renderWorkspaceManifestMarkdown(
       : 'Projects below are available but not necessarily mounted. Use the `list_projects` tool to refresh this catalog, and use `mount_project` only when you need to inspect or change a project.',
   )
   lines.push('')
-  lines.push(
-    '## Previewing a mounted project\'s app',
-    '',
-    'Never construct or hand out a `localhost`/bare-port link yourself (including this runtime\'s own ' +
-      'base URL or `PORT` env var — that only serves the chat/tool API, not any project\'s app). To share a ' +
-      'working preview link, call the `preview_project` tool with the mounted project\'s id and use ONLY the ' +
-      '`url` it returns. If it errors, tell the user honestly rather than guessing a link.',
-    '',
-  )
+  lines.push(metal ? "## Previewing a project's app" : "## Previewing a mounted project's app")
+  lines.push('')
+  if (metal) {
+    lines.push(
+      'Each project is served by its own runtime. To share a working preview link, call the ' +
+        '`preview_project` tool with that project id and use ONLY the `url` it returns — it starts that ' +
+        "project's build and answers with the one reachable address. Never construct or hand out a " +
+        '`localhost`/bare-port link yourself (including this runtime\'s own base URL or `PORT` env var — ' +
+        "that only serves the chat/tool API, not any project's app). If it errors, tell the user honestly " +
+        'rather than guessing a link.',
+    )
+  } else {
+    lines.push(
+      'Never construct or hand out a `localhost`/bare-port link yourself (including this runtime\'s own ' +
+        'base URL or `PORT` env var — that only serves the chat/tool API, not any project\'s app). To share a ' +
+        "working preview link, call the `preview_project` tool with the mounted project's id and use ONLY the " +
+        '`url` it returns. If it errors, tell the user honestly rather than guessing a link.',
+    )
+  }
+  lines.push('')
   lines.push(
     'All of these projects belong to the current user and are part of this',
     'workspace — you have been granted access to every folder above. They are',
@@ -377,6 +398,43 @@ export function renderWorkspaceManifestMarkdown(
     '',
   )
   return lines.join('\n')
+}
+
+const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * On a metal workspace runtime, the other project a path under
+ * `workspaceDir` would land in, or null. Other projects are never on this
+ * runtime there, so a `<workspaceDir>/<otherId>/...` path is a folder only
+ * this runtime sees. Both paths must already be resolved the same way
+ * (realpath vs. not). A top-level segment counts as another project when it
+ * is a catalog project id other than the anchor, or UUID-shaped and not one
+ * of this runtime's mounts (projects created after boot are not in the env
+ * catalog).
+ */
+export function otherProjectForPath(
+  workspaceDir: string,
+  targetPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!isWorkspaceRuntimeMode(env) || !isMetalRuntime(env)) return null
+  const rel = relative(workspaceDir, targetPath)
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null
+  const first = rel.split(sep)[0]
+  if (!first || first === env.WORKSPACE_ANCHOR_PROJECT_ID) return null
+  if (parseWorkspaceMounts(env).some((m) => m.mount === first)) return null
+  const catalog = [...workspaceAvailableProjectsManifest(env), ...workspaceProjectsManifest(env)]
+  if (catalog.some((p) => p.id === first)) return first
+  return UUID_SEGMENT.test(first) ? first : null
+}
+
+/** Tool-facing explanation for a path that `otherProjectForPath` flagged. */
+export function otherProjectPathMessage(projectId: string, env: NodeJS.ProcessEnv = process.env): string {
+  const remote = `pass \`project: "${projectId}"\` to read_file, write_file, edit_file, or exec`
+  return (
+    `\`${projectId}\` is another project and is not on this runtime: files here are never seen by it. ` +
+    (copyToProjectAvailable(env) ? `Use \`copy_to_project\` to send files to it, or ${remote}.` : `Instead, ${remote}.`)
+  )
 }
 
 /**
@@ -516,6 +574,24 @@ export function shouldEnforceProjectIdSanity(opts: {
   isWorkspaceRuntime: boolean
 }): boolean {
   return opts.workingMode !== 'external' && !opts.isWorkspaceRuntime
+}
+
+/**
+ * Whether `dir` is positively NOT the workspace dir this process serves.
+ *
+ * `WORKSPACE_DIR` is the merged root the runtime was booted on; a gateway
+ * pointed anywhere else (a test's scratch dir, a leftover checkout) must not
+ * write this workspace's settings into its `config.json`. When `WORKSPACE_DIR`
+ * is unset there is nothing to compare against, so the answer is `false` and
+ * callers keep their previous behaviour.
+ */
+export function isForeignWorkspaceDir(
+  dir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const own = env.WORKSPACE_DIR
+  if (!own) return false
+  return resolve(own) !== resolve(dir)
 }
 
 /**
