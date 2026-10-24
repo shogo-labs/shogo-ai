@@ -739,4 +739,43 @@ test.describe("send now takes a queued row out of the dock — local UI", () => 
     await expect(queuedRow(page, alpha)).toHaveCount(0)
     expect(state.rows).toHaveLength(0)
   })
+
+  /**
+   * SHO-198. The click stops the reply in front of the row and hides the row,
+   * and the dispatch that should follow can find the session still busy — the
+   * turn it was waiting for is the one the click just stopped, so nothing else
+   * comes along. The row then stayed hidden with no turn and no error, which is
+   * the message vanishing: gone from the dock, never in the transcript. A row
+   * the server leaves `pending` is one nobody claimed, and the message has to
+   * come back where the person can send it again.
+   */
+  test("a dispatch that never claims the row comes back to the dock, not gone", async ({
+    page,
+  }) => {
+    const state = newState()
+    const { alpha } = prompts(`unclaimed-${Date.now().toString(36)}`)
+    state.rows.push(restoredRow(alpha))
+    // `hold` is the real route's shape: the row is promoted, still `pending`.
+    state.sendNowMode = "hold"
+    await installStreamingFetch(page, state, {
+      lead: `unused lead prompt ${Date.now().toString(36)}`,
+      leadReply: "unused lead reply",
+      sentReply: "unused sent reply",
+    })
+    await installServerMocks(page, state)
+    await openProject(page, page.request)
+    await expect(queuedRow(page, alpha).first()).toBeVisible({ timeout: 15_000 })
+
+    await queuedRow(page, alpha).first().getByLabel(SEND_NOW_LABEL).click()
+    await expect
+      .poll(() => queuedRow(page, alpha).count(), { timeout: 1_000 })
+      .toBe(0)
+
+    // Nobody claims the row: no turn, no error, nothing to wait for.
+    await expect(queuedRow(page, alpha).first()).toBeVisible({ timeout: 10_000 })
+    expect(state.rows.map((row) => row.content)).toEqual([alpha])
+    expect(state.rows[0].status).toBe("pending")
+    // It is queued, not sent: it must not have leaked into the transcript.
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
+  })
 })
