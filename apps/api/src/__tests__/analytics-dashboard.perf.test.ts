@@ -24,6 +24,7 @@
 
 import { beforeAll, describe, expect, test } from 'bun:test'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
+import { inOneCacheBucket } from './helpers/analytics-bucket'
 
 const SEEDED_EVENTS = 100_000
 const WINDOW_DAYS = 30
@@ -32,7 +33,7 @@ setupChannelsTestDb()
 
 const { prisma } = await import('../lib/prisma')
 const analytics = await import('../services/analytics.service')
-const { ANALYTICS_CACHE_BUCKET_MS, clearAnalyticsCache } = await import('../lib/analytics-cache')
+const { clearAnalyticsCache } = await import('../lib/analytics-cache')
 const db = prisma as any
 
 /** `setupChannelsTestDb` points the client at SQLite unless CHANNELS_TEST_PG_URL is set. */
@@ -175,20 +176,23 @@ describe('the dashboard reads usage_events once, without the JSON', () => {
   })
 
   test('a second open inside the TTL does not scan again', async () => {
-    // Align to the key's bucket first: the cache key buckets the rolling window,
-    // so a run that straddled a bucket boundary would legitimately miss and the
-    // test would be measuring the clock (QA round 1 saw exactly that flake with
-    // a 30 s bucket under a 60 s TTL).
-    const toBoundary = ANALYTICS_CACHE_BUCKET_MS - (Date.now() % ANALYTICS_CACHE_BUCKET_MS)
-    if (toBoundary < 10_000) await new Promise((r) => setTimeout(r, toBoundary + 50))
+    // The cache key buckets the rolling window, so a run whose two opens
+    // straddled a bucket boundary would legitimately miss (QA round 1 saw
+    // exactly that with a 30 s bucket under a 60 s TTL). Re-run the pair in
+    // that case instead of sleeping up to the boundary: the sleep used to be
+    // longer than this test's timeout, which is what made it fail ~8 % of runs
+    // in CI (SHO-186).
+    const scans = await inOneCacheBucket(async () => {
+      resetCounters()
+      await analytics.getUsageDashboard({ workspaceId }, { period: '30d' })
+      const afterFirst = queries.length + usageEventSelects
+      await analytics.getUsageDashboard({ workspaceId }, { period: '30d' })
+      return { afterFirst, afterSecond: queries.length + usageEventSelects }
+    })
 
-    resetCounters()
-    await analytics.getUsageDashboard({ workspaceId }, { period: '30d' })
-    const afterFirst = queries.length + usageEventSelects
-    await analytics.getUsageDashboard({ workspaceId }, { period: '30d' })
-    expect(afterFirst).toBe(1)
-    expect(queries.length + usageEventSelects).toBe(1)
-  })
+    expect(scans.afterFirst).toBe(1)
+    expect(scans.afterSecond).toBe(1)
+  }, 20_000)
 
   test('the window scan is served by the composite index', async () => {
     const from = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000)

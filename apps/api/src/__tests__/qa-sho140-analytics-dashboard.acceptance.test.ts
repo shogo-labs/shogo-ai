@@ -22,6 +22,7 @@
 
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
+import { inOneCacheBucket } from './helpers/analytics-bucket'
 
 const QA_USER = 'qa-140-user'
 mock.module('../middleware/auth', () => ({
@@ -36,7 +37,7 @@ setupChannelsTestDb()
 
 const { prisma } = await import('../lib/prisma')
 const analytics = await import('../services/analytics.service')
-const { clearAnalyticsCache, ANALYTICS_CACHE_BUCKET_MS } = await import('../lib/analytics-cache')
+const { clearAnalyticsCache } = await import('../lib/analytics-cache')
 const { scopedAnalyticsRoutes } = await import('../routes/scoped-analytics')
 const db = prisma as any
 
@@ -141,13 +142,12 @@ function watch(tracker: { scans: number; raw: string[] }) {
   }
 }
 
-/** Put the clock early in a cache bucket so two calls share one key. */
-async function alignToBucketStart() {
-  const into = Date.now() % ANALYTICS_CACHE_BUCKET_MS
-  if (into > ANALYTICS_CACHE_BUCKET_MS / 3) {
-    await new Promise((r) => setTimeout(r, ANALYTICS_CACHE_BUCKET_MS - into + 250))
-  }
-}
+/**
+ * Two opens share a cache key only inside one bucket, so a run whose pair
+ * straddled a boundary would legitimately miss. `inOneCacheBucket` re-runs the
+ * pair in that case; it replaces the old "sleep up to the next boundary", which
+ * could stall a test for 40 s (SHO-186).
+ */
 
 beforeEach(() => {
   clearAnalyticsCache()
@@ -232,16 +232,19 @@ describe('SHO-140 QA: one request, the same numbers', () => {
   }, 60_000)
 
   test('a second open inside the cache bucket reuses the scan', async () => {
-    await alignToBucketStart()
-    const tracker = { scans: 0, raw: [] as string[] }
-    const stop = watch(tracker)
-    try {
-      await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=50`)
-      await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=50`)
-    } finally {
-      stop()
-    }
-    expect(tracker.scans).toBe(1)
+    const scans = await inOneCacheBucket(async () => {
+      clearAnalyticsCache()
+      const tracker = { scans: 0, raw: [] as string[] }
+      const stop = watch(tracker)
+      try {
+        await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=50`)
+        await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=50`)
+      } finally {
+        stop()
+      }
+      return tracker.scans
+    })
+    expect(scans).toBe(1)
   }, 90_000)
 
   test('the summary table takes a page size and the page changes the rows', async () => {
@@ -268,21 +271,25 @@ describe('SHO-140 QA: one request, the same numbers', () => {
   }, 60_000)
 
   test('a chart toggle and a log page each cost one request and leave the summary alone', async () => {
-    await alignToBucketStart()
-    const first = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=model&metric=spend&limit=50`)
-    const tracker = { scans: 0, raw: [] as string[] }
-    const stop = watch(tracker)
-    let toggled: any
-    try {
-      toggled = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=day&metric=tokens&limit=50`)
-    } finally {
-      stop()
-    }
+    const { first, toggled, scans } = await inOneCacheBucket(async () => {
+      clearAnalyticsCache()
+      const firstCall = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=model&metric=spend&limit=50`)
+      const tracker = { scans: 0, raw: [] as string[] }
+      const stop = watch(tracker)
+      let toggledCall: any
+      try {
+        toggledCall = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=day&metric=tokens&limit=50`)
+      } finally {
+        stop()
+      }
+      return { first: firstCall, toggled: toggledCall, scans: tracker.scans }
+    })
+
     expect(toggled.status).toBe(200)
     expect(toggled.data.timeseries.groupBy).toBe('day')
     expect(toggled.data.timeseries.metric).toBe('tokens')
     // Same rows, same window: the toggle must not need a new scan.
     expect(toggled.data.summary.totals).toEqual(first.data.summary.totals)
-    expect(tracker.scans).toBe(0)
+    expect(scans).toBe(0)
   }, 90_000)
 })
