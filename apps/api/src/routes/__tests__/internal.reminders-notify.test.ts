@@ -23,15 +23,22 @@ const store = {
 
 mock.module('../../lib/k8s-auth', () => ({
   validatePodToken: async (_t: string) => store.podIdentity,
+  verifyServiceAssignment: async () => null,
 }))
 
+const actualRuntimeToken = await import('../../lib/runtime-token')
+
 mock.module('../../lib/runtime-token', () => ({
+  ...actualRuntimeToken,
   getSigningSecret: () => 'test-runtime-secret',
   verifyRuntimeToken: (_t: string, _p?: string) => ({ ok: false, reason: 'bad' }),
   deriveRuntimeToken: (projectId: string) => `rt_v1_${projectId}_mock`,
 }))
 
+const actualWorkspaceRuntimeToken = await import('../../lib/workspace-runtime-token')
+
 mock.module('../../lib/workspace-runtime-token', () => ({
+  ...actualWorkspaceRuntimeToken,
   verifyWorkspaceRuntimeToken: (_t: string) => ({ ok: false, reason: 'malformed' }),
   deriveWorkspaceRuntimeToken: (_workspaceId: string) => 'mock-workspace-runtime-token',
 }))
@@ -60,14 +67,20 @@ mock.module('../../lib/prisma', () => ({
   },
 }))
 
+const actualNotificationService = await import('../../services/notification.service')
+
 mock.module('../../services/notification.service', () => ({
+  ...actualNotificationService,
   createNotification: async (input: Record<string, unknown>) => {
     store.created.push(input)
     return { id: `note-${store.created.length}` }
   },
 }))
 
+const actualPushNotifications = await import('../../lib/push-notifications')
+
 mock.module('../../lib/push-notifications', () => ({
+  ...actualPushNotifications,
   sendPushToUser: async (userId: string, payload: Record<string, unknown>) => {
     store.pushed.push({ userId, payload })
     return { sent: 1 }
