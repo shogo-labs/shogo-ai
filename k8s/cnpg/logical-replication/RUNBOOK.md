@@ -492,9 +492,17 @@ each holds a row the other will never accept.
 
 Use the model's `@default(cuid())` — omit `"id"` from the statement and let the
 default fire — or a `gen_random_uuid()` expression that references no column.
-The CI check reports `file:line` and the offending expression; the only
-legitimate exemptions are the two migrations it already lists, which are
-applied history.
+The CI check reports `file:line` and the offending expression.
+
+`LEGACY_EXEMPT` in `scripts/check-migration-derived-ids.ts` is the only way past
+it, and it is a ledger of applied history rather than an escape hatch: an entry
+names the already-applied migration **and** the later migration that rewrote its
+ids to random ones, covers one table rather than the whole file, and is verified
+on every run — a missing repair, a repair that rewrites nothing, or an entry
+whose file no longer offends all fail the check. A migration written after the
+check landed cannot be exempted; write the repair migration instead (see
+`20261022120000_device_version_events_region_ids` and
+`20261024100000_project_agents_random_ids`).
 
 ### 2. A unique index on non-region-scoped columns is the same poison pill
 

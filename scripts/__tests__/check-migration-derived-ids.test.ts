@@ -20,9 +20,11 @@ import { resolve } from 'node:path'
 
 import {
   LEGACY_EXEMPT,
+  checkLegacyExemptions,
   checkMigrationSources,
   extractWrittenId,
   isDerivedExpression,
+  listMigrations,
   splitTopLevel,
   type MigrationSource,
 } from '../check-migration-derived-ids'
@@ -62,11 +64,137 @@ describe('check-migration-derived-ids (e2e, current repo state)', () => {
     expect(violations[0].expression).toContain('md5(')
   })
 
-  test('the exemption list is exactly the two known historical offenders', () => {
-    expect([...LEGACY_EXEMPT]).toEqual([
-      '20261021120000_add_device_version_events',
-      '20260507000000_add_project_agents',
+  test('the guard has teeth: the project_agents backfill still fails under any other name', () => {
+    // SHO-146 repaired the *data*; it could not repair the file, which is
+    // applied history. So the exemption must stay — but it may not blind the
+    // guard to the statement. Rename the file and the guard rejects it.
+    const sql = readFileSync(
+      resolve(REPO_ROOT, 'prisma/migrations/20260507000000_add_project_agents/migration.sql'),
+      'utf-8',
+    )
+    const violations = check(sql, '20260101000000_not_exempt')
+    expect(violations.length).toBe(1)
+    expect(violations[0].table).toBe('project_agents')
+    expect(violations[0].expression).toContain("'pa_default_'")
+  })
+
+  test('LEGACY_EXEMPT is applied history, and every entry names the migration that repaired it', () => {
+    // Two entries mean two incidents' worth of history, not two exceptions
+    // granted to new code: both files were applied in every region before this
+    // check existed, and neither can be rewritten (that would invalidate the
+    // checksum recorded for every database that already ran it). What SHO-146
+    // changed is that an entry is now *accountable* — see the cases below.
+    expect(LEGACY_EXEMPT).toEqual([
+      {
+        migration: '20261021120000_add_device_version_events',
+        table: 'device_version_events',
+        repairedBy: '20261022120000_device_version_events_region_ids',
+      },
+      {
+        migration: '20260507000000_add_project_agents',
+        table: 'project_agents',
+        repairedBy: '20261024100000_project_agents_random_ids',
+      },
     ])
+  })
+
+  test('every exemption on the real tree is verified: the repair exists and rewrites the ids', () => {
+    expect(checkLegacyExemptions(listMigrations())).toEqual([])
+  })
+})
+
+// ===========================================================================
+// An exemption may not become a permanent blind spot (SHO-146).
+// ===========================================================================
+
+describe('LEGACY_EXEMPT stays honest', () => {
+  /** The real SQL of an exempted migration, so the entry matches it. */
+  function realSql(name: string): string {
+    return readFileSync(resolve(REPO_ROOT, 'prisma/migrations', name, 'migration.sql'), 'utf-8')
+  }
+
+  test('a repair that does not exist is reported, not tolerated', () => {
+    const problems = checkLegacyExemptions([
+      { name: '20260507000000_add_project_agents', sql: realSql('20260507000000_add_project_agents') },
+    ])
+    expect(problems.map((p) => p.message)).toContain(
+      'repair migration 20261024100000_project_agents_random_ids does not exist; the guard would be blind',
+    )
+  })
+
+  test('a repair that never rewrites the ids is not a repair', () => {
+    const problems = checkLegacyExemptions([
+      { name: '20260507000000_add_project_agents', sql: realSql('20260507000000_add_project_agents') },
+      { name: '20261024100000_project_agents_random_ids', sql: 'SELECT 1;' },
+      {
+        name: '20261021120000_add_device_version_events',
+        sql: realSql('20261021120000_add_device_version_events'),
+      },
+      {
+        name: '20261022120000_device_version_events_region_ids',
+        sql: realSql('20261022120000_device_version_events_region_ids'),
+      },
+    ])
+    expect(problems.map((p) => p.message)).toContain(
+      'repair 20261024100000_project_agents_random_ids never rewrites the derived ids of "project_agents"',
+    )
+  })
+
+  test('a repair that points backwards is reported', () => {
+    // An entry whose "repair" sorts before the migration it claims to repair
+    // would silently leave the ids derived. Passed a synthetic entry so the
+    // real list is not perturbed.
+    const problems = checkLegacyExemptions(
+      [
+        { name: '20260507000000_add_project_agents', sql: realSql('20260507000000_add_project_agents') },
+        { name: '20250101000000_project_agents_repair', sql: realSql('20261024100000_project_agents_random_ids') },
+      ],
+      [
+        {
+          migration: '20260507000000_add_project_agents',
+          table: 'project_agents',
+          repairedBy: '20250101000000_project_agents_repair',
+        },
+      ],
+    )
+    expect(problems.map((p) => p.message)).toContain(
+      'repair 20250101000000_project_agents_repair does not come after it',
+    )
+  })
+
+  test('an exemption whose migration no longer offends is stale and must go', () => {
+    const problems = checkLegacyExemptions(
+      [
+        { name: '20260101000000_cleaned_up', sql: 'ALTER TABLE "project_agents" ADD COLUMN "note" TEXT;' },
+        { name: '20261024100000_project_agents_random_ids', sql: realSql('20261024100000_project_agents_random_ids') },
+      ],
+      [
+        {
+          migration: '20260101000000_cleaned_up',
+          table: 'project_agents',
+          repairedBy: '20261024100000_project_agents_random_ids',
+        },
+      ],
+    )
+    expect(problems.map((p) => p.message)).toContain(
+      'no longer writes a derived id into "project_agents"; delete the entry',
+    )
+  })
+
+  test('an exemption covers one table in the file, never the whole file', () => {
+    // A second offender added to an exempted migration must still be caught:
+    // the failure that caused this card is exactly "we exempted a file".
+    const violations = checkMigrationSources([
+      {
+        name: '20260507000000_add_project_agents',
+        sql: `
+          INSERT INTO "project_agents" ("id", "projectId") SELECT 'pa_default_' || "id", "projectId" FROM "voice_project_configs";
+          INSERT INTO "device_version_events" ("id", "deviceId") SELECT 'dve_' || md5("deviceId"), "deviceId" FROM "api_keys";
+        `,
+      },
+    ])
+    expect(violations).toHaveLength(1)
+    expect(violations[0].table).toBe('device_version_events')
   })
 })
 
