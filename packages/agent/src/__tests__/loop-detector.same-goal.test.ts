@@ -15,7 +15,7 @@ import { LoopDetector } from '../loop-detector'
 
 describe('LoopDetector — no-progress / same-goal heuristic', () => {
   test('varied tool calls that ALL fail on one goal are flagged as a loop', () => {
-    const d = new LoopDetector()
+    const d = new LoopDetector({ maxConsecutiveNoProgress: 5 })
 
     // Six genuinely different attempts at the same unreachable endpoint. Every
     // command differs and every error differs, so identical-call / identical-
@@ -36,6 +36,18 @@ describe('LoopDetector — no-progress / same-goal heuristic', () => {
 
     expect(last?.loopDetected).toBe(true)
     expect(last?.reason).toBe('no_progress')
+  })
+
+  test('default no-progress threshold is 20 consecutive failed calls', () => {
+    const d = new LoopDetector()
+    for (let i = 0; i < 19; i++) {
+      const r = d.recordAndCheck('exec', { command: `attempt ${i}` }, { exitCode: 1, stderr: `error ${i}` })
+      expect(r.loopDetected).toBe(false)
+    }
+    const last = d.recordAndCheck('exec', { command: 'attempt 19' }, { exitCode: 1, stderr: 'error 19' })
+    expect(last.loopDetected).toBe(true)
+    expect(last.reason).toBe('no_progress')
+    expect(last.pattern).toContain('20 consecutive tool calls failed')
   })
 
   test('varied calls that make progress (interleaved successes) are NOT flagged', () => {
