@@ -126,6 +126,32 @@ const WORKSPACE_TOOL_MOCKS: ToolMockMap = {
     type: 'static',
     response: { ok: true, mounted: true, projectId: PORTFOLIO_ID, mode: 'readwrite' },
   },
+  // `preview_project` and `share_file` reach the API for a running-project URL
+  // and a signed link. Unmocked they answer 401 inside an eval, and the turn
+  // ends with "I couldn't confirm the result" instead of "built" — a mock the
+  // agent cannot tell from the real thing, so the turn is graded on its build
+  // behaviour rather than on an auth error it can never fix.
+  preview_project: {
+    type: 'static',
+    response: {
+      ok: true,
+      status: 'running',
+      url: `https://preview.eval.shogo.test/p/${CREATED_ID}/`,
+      builtAt: 'eval',
+    },
+  },
+  share_file: {
+    type: 'static',
+    response: {
+      ok: true,
+      url: 'https://files.eval.shogo.test/f/eval-link',
+      filename: 'index.html',
+      size: 1024,
+      expiresAt: '2026-11-01T00:00:00.000Z',
+      path: 'index.html',
+      linkPath: 'index.html',
+    },
+  },
   goal_create: {
     type: 'static',
     response: { ok: true, goal: { id: 'eval-goal-1', status: 'active', steps: [] } },
@@ -502,17 +528,19 @@ export const WORKSPACE_BUILDS_EVALS: AgentEval[] = [
     validationCriteria: [NO_ROOT_BUILD, ROOT_STILL_CLEAN, createsAndDelegates()],
   },
   {
-    id: 'ws-build-canvas-off',
-    name: 'Builds in a project with the canvas capability off (as on staging)',
+    id: 'ws-build-canvas-on',
+    name: 'Builds in a project with the canvas capability on (the default surface)',
     category: 'workspace-builds',
     level: 2,
+    // The capability axis. Every other case in the track boots with the canvas
+    // off (`initialMode: 'none'`), which is the staging shape; this one boots
+    // with it on, the default for a team workspace, where the agent has a
+    // preview surface of its own to fall back on. A canvas must not become
+    // "there is somewhere to build right here — use the root".
     input: 'build me a one-page portfolio site',
-    initialMode: 'none',
+    initialMode: 'canvas',
     workspaceRuntime: TEAM_EMPTY,
     toolMocks: WORKSPACE_TOOL_MOCKS,
-    // The staging workspace had canvas disabled; a missing canvas must not
-    // turn into "there is nowhere to build, use the root".
-    tags: ['canvas-off'],
     maxScore: 100,
     validationCriteria: [NO_ROOT_BUILD, ROOT_STILL_CLEAN, createsAndDelegates()],
   },

@@ -572,10 +572,15 @@ export function snapshotWorkspaceRoot(
  * Verify a workspace root still holds no app of its own after the run.
  *
  * Fails when the root grew one of {@link WORKSPACE_ROOT_APP_ENTRIES} that the
- * eval did not seed (`forbidden`), when a seeded template file was edited
- * (`modified`), or when the run deleted seeded files (`missing`). Files the
- * agent legitimately creates at the root — `notes/…`, `WORKSPACE.md`, its own
- * scratch files — are not app artifacts and pass.
+ * eval did not seed (`forbidden`) or when a seeded template file was edited
+ * (`modified`). Files the agent legitimately creates at the root — `notes/…`,
+ * `WORKSPACE.md`, its own scratch files — are not app artifacts and pass.
+ *
+ * A seeded template that is **gone** (`missing`) does not fail the check: the
+ * platform itself clears a pool pre-seed at assign, so on any runtime that
+ * boots after the cleanup the baseline no longer exists on disk. A root the
+ * cleanup emptied is cleaner than one we seeded, and the run that emptied it
+ * did not leave an app behind. `missing` is still reported for visibility.
  */
 export function checkWorkspaceRootClean(
   workspaceDir: string,
@@ -615,7 +620,7 @@ export function checkWorkspaceRootClean(
   }
 
   return {
-    ok: forbidden.length === 0 && modified.length === 0 && missing.length === 0,
+    ok: forbidden.length === 0 && modified.length === 0,
     forbidden,
     modified,
     missing,

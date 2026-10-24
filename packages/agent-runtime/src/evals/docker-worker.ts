@@ -242,6 +242,36 @@ export async function ensureDockerImage(
 // Worker lifecycle
 // ---------------------------------------------------------------------------
 
+/**
+ * Render the `-e` flags for one `docker run`.
+ *
+ * `baseEnv` is what the worker gets by default; `workspaceEnv` (SHO-195) is the
+ * per-eval delta and may replace or remove base keys.
+ *
+ * `PROJECT_ID` is special: `entrypoint.sh` and the shared server framework
+ * exit 1 without it, so a delta that removes it must not leave the container
+ * without one. When the delta does not set it, the base value is restored —
+ * a plain single-project eval boots as its own runtime instead of dying on
+ * start, which is what happens when the identity strip is applied to every
+ * eval but only workspace evals put a `PROJECT_ID` back.
+ */
+export function buildDockerEnvFlags(
+  baseEnv: Array<[string, string]>,
+  workspaceEnv?: EvalWorkerEnv,
+): string[] {
+  const kept = baseEnv.filter(([key]) => !workspaceEnv?.unset.includes(key))
+  const flags = kept.map(([key, value]) => `-e ${key}=${value}`)
+  const set = workspaceEnv?.set ?? {}
+  if (!('PROJECT_ID' in set) && !kept.some(([key]) => key === 'PROJECT_ID')) {
+    const base = baseEnv.find(([key]) => key === 'PROJECT_ID')
+    if (base) flags.push(`-e ${base[0]}=${base[1]}`)
+  }
+  for (const [key, value] of Object.entries(set)) {
+    flags.push(`-e ${key}=${value}`)
+  }
+  return flags
+}
+
 export async function startDockerWorker(
   id: number,
   config: DockerWorkerConfig,
@@ -324,12 +354,7 @@ export async function startDockerWorker(
   }
 
   const workspaceEnv = opts?.workspaceEnv
-  const envFlags = baseEnv
-    .filter(([k]) => !workspaceEnv?.unset.includes(k))
-    .map(([k, v]) => `-e ${k}=${v}`)
-  for (const [k, v] of Object.entries(workspaceEnv?.set ?? {})) {
-    envFlags.push(`-e ${k}=${v}`)
-  }
+  const envFlags = buildDockerEnvFlags(baseEnv, workspaceEnv)
 
   const networkFlags: string[] = []
   if (config.extraNetworks?.length) {

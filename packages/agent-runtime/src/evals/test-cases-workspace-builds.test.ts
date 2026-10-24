@@ -361,6 +361,27 @@ describe('WORKSPACE_BUILDS_EVALS', () => {
       expect(ev.toolMocks?.project_create).toBeDefined()
     }
   })
+
+  test('every case mocks the workspace tools that would otherwise reach the API', () => {
+    // Unmocked, these 401 inside an eval and the turn ends "I couldn't confirm
+    // the result" instead of reporting a build (QA round 1).
+    for (const ev of WORKSPACE_BUILDS_EVALS) {
+      for (const tool of ['project_create', 'project_call', 'preview_project', 'share_file', 'mount_project']) {
+        expect(ev.toolMocks?.[tool]).toBeDefined()
+      }
+    }
+  })
+
+  test('the canvas case is the track\'s one capability axis', () => {
+    // Every other case runs the staging shape, canvas off. A duplicate that
+    // also ran canvas-off would test nothing (QA round 1).
+    const canvasOn = WORKSPACE_BUILDS_EVALS.filter((e) => e.initialMode === 'canvas')
+    expect(canvasOn.map((e) => e.id)).toEqual(['ws-build-canvas-on'])
+    for (const ev of WORKSPACE_BUILDS_EVALS) {
+      if (ev.id === 'ws-build-canvas-on') continue
+      expect(ev.initialMode).toBe('none')
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
