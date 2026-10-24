@@ -428,6 +428,56 @@ describe('the pusher', () => {
     expect(rejections).toHaveLength(0)
   })
 
+  test('a delete made while the snapshot pages are read is replayed, not pruned', async () => {
+    const { db, changes, state, tables } = fakeDesktopDb({
+      rows: {
+        workspace: [
+          { id: 'w1', name: 'Samsara', slug: 'samsara' },
+          { id: 'w2', name: 'Scratch', slug: 'scratch' },
+        ],
+      },
+      seedState: false,
+    })
+    const cloud = { epoch: null as string | null, cursor: 0 }
+    const rejections: SyncBatchRequest[] = []
+    const inner = epochRuleFetch(cloud, rejections)
+    // The Workspace page has already been read (and sent) when this delete
+    // lands, so the cloud holds w2 from the snapshot itself: only a replayed
+    // delta can take it away again.
+    let removed = false
+    const fetchImpl = (async (url: string, init: any) => {
+      if (!removed) {
+        removed = true
+        tables.get('workspace')!.delete('w2')
+        rowSeq(changes, 'Workspace', 'w2', 'delete')
+      }
+      return inner(url, init)
+    }) as unknown as typeof fetch
+
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl,
+    })
+    await pusher.tick()
+
+    // The delete was not part of the snapshot's pages' honest content, so it
+    // must stay in the log rather than be pruned unsent.
+    expect(state.cursor).toBe(0)
+    expect(changes.map((change) => `${change.recordId}:${change.op}`)).toEqual(['w2:delete'])
+    expect(posted.some((batch) =>
+      batch.models.some((model) => model.rows.some((row) => row.id === 'w2')),
+    )).toBe(true)
+
+    await pusher.tick()
+    const delta = posted[posted.length - 1]
+    expect(delta.mode).toBe('changes')
+    expect(delta.deletes).toEqual([{ model: 'Workspace', recordId: 'w2' }])
+    expect(rejections).toHaveLength(0)
+  })
+
   test('nothing is pushed without a device key or an instance id', async () => {
     const { db, changes } = fakeDesktopDb({ rows: { chatMessage: [] } })
     rowSeq(changes, 'ChatMessage', 'm1')
