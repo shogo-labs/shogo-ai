@@ -983,7 +983,7 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       CHANNELS_TEST_PG_URL: postgresql://shogo:shogo@127.0.0.1:5432/shogo
       # SHO-185's two-pod relay and machine-copy suites need a real Redis next to
@@ -1095,9 +1095,23 @@ jobs:
       - name: Machine relay + machine copy (two pods, Postgres + Redis)
         working-directory: apps/api
         run: |
-          for f in src/__tests__/machine-relay-two-pods.integration.test.ts src/__tests__/machine-workspaces.integration.test.ts; do
+          for f in src/__tests__/machine-relay-two-pods.integration.test.ts; do
             echo "::group::$f"
             bun --no-env-file test "$f" || exit 1
+            echo "::endgroup::"
+          done
+
+      # TEMPORARY (QA, SHO-188): 20 separate processes of the file that ejected
+      # three PRs from the merge queue. `--rerun-each` is not usable here: bun
+      # re-runs in-process and the suite's afterAll drops the shared Postgres
+      # test DB, so round 2 would fail with DatabaseDoesNotExist. Throwaway
+      # branch — never merged.
+      - name: SHO-188 soak — machine-workspaces.integration.test.ts x20
+        working-directory: apps/api
+        run: |
+          for i in $(seq 1 20); do
+            echo "::group::run $i of 20"
+            bun --no-env-file test src/__tests__/machine-workspaces.integration.test.ts || exit 1
             echo "::endgroup::"
           done
 
