@@ -628,3 +628,79 @@ describe('SHO-126 — the current version follows the newest version event', () 
     }
   })
 })
+
+// =========================================================================
+// SHO-126 QA round 1 — the invariant the read model depends on: history is
+// only written by a request that actually carried a version.
+// =========================================================================
+
+describe('SHO-126 — a version-less request cannot re-stamp a stale sibling key', () => {
+  const deviceId = 'stale-stamp-1'
+  const liveKey = 'shogo_sk_stale_stamp_live'
+  const staleKey = 'shogo_sk_stale_stamp_old'
+  const hash = (key: string) => createHash('sha256').update(key).digest('hex')
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 150))
+
+  const createRealKey = (workspace: string, key: string, version: string, seenAt: Date) =>
+    db.apiKey.create({
+      data: {
+        name: `device-${deviceId}-${workspace}`,
+        keyHash: hash(key),
+        keyPrefix: 'shogo_sk',
+        workspaceId: workspace,
+        userId,
+        kind: 'device',
+        deviceId,
+        deviceName: 'machine',
+        devicePlatform: 'darwin-arm64',
+        deviceAppVersion: version,
+        lastSeenAt: seenAt,
+        createdAt: ago(60 * DAY),
+      },
+    })
+
+  test('the tools-proxy path leaves the reported version alone; a real report still lands', async () => {
+    const { resolveApiKey } = await import('../routes/api-keys')
+    const second = await db.workspace.create({
+      data: { name: 'Stale 126', slug: `stale-126-${Date.now()}`, kind: 'team' },
+    })
+
+    try {
+      // One machine, two keys. The secondary workspace's key still carries the
+      // version it moved off — the row a version-less touch used to bump.
+      await createRealKey(workspaceId, liveKey, '2.3.6', ago(1 * HOUR))
+      await createRealKey(second.id, staleKey, '2.2.27', ago(20 * DAY))
+      await deviceVersionEvents.recordDeviceVersionEvent({
+        deviceId, version: '2.3.6', platform: 'darwin-arm64', seenAt: ago(1 * HOUR),
+      })
+      await deviceVersionEvents.recordDeviceVersionEvent({
+        deviceId, version: '2.2.27', platform: 'darwin-arm64', seenAt: ago(20 * DAY),
+      })
+
+      const staleSeenAt = (await db.deviceVersionEvent.findFirst({ where: { deviceId, version: '2.2.27' } }))!
+        .lastSeenAt.getTime()
+      expect((await analytics.getActiveDevices({ days: 365, includeDormant: true }))
+        .devices.find((device) => device.id === deviceHandle(deviceId))!.version).toBe('2.3.6')
+
+      // What tools-proxy / instances / live-auth do: authenticate the stale key
+      // with no version in hand.
+      expect(await resolveApiKey(staleKey)).not.toBeNull()
+      await settle()
+
+      const staleRow = await db.deviceVersionEvent.findFirst({ where: { deviceId, version: '2.2.27' } })
+      expect(staleRow.lastSeenAt.getTime()).toBe(staleSeenAt)
+      expect((await analytics.getActiveDevices({ days: 365, includeDormant: true }))
+        .devices.find((device) => device.id === deviceHandle(deviceId))!.version).toBe('2.3.6')
+
+      // A request that does report a version is never throttled away.
+      expect(await resolveApiKey(staleKey, { deviceAppVersion: '2.2.28' })).not.toBeNull()
+      await settle()
+      expect((await analytics.getActiveDevices({ days: 365, includeDormant: true }))
+        .devices.find((device) => device.id === deviceHandle(deviceId))!.version).toBe('2.2.28')
+    } finally {
+      await db.apiKey.deleteMany({ where: { deviceId } })
+      await db.deviceVersionEvent.deleteMany({ where: { deviceId } })
+      await db.workspace.delete({ where: { id: second.id } })
+    }
+  })
+})

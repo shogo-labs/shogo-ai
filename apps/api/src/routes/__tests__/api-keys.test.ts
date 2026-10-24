@@ -756,10 +756,25 @@ describe('planApiKeyTouch', () => {
   })
 
   test('null timestamps write everything and record the version', () => {
-    const t = planApiKeyTouch(deviceKey(), { now: NOW, touchLastUsed: true })
+    const t = planApiKeyTouch(deviceKey(), { now: NOW, touchLastUsed: true, reportedVersion: '1.0.0' })
     expect(t.data).toEqual({ lastUsedAt: NOW, lastSeenAt: NOW })
     expect(t.recordVersion).toBe(true)
     expect(t.version).toBe('1.0.0')
+  })
+
+  test('a request that carries no version writes timestamps but no history (SHO-126)', () => {
+    // The tools-proxy / instances / live-auth path: none of them send a
+    // version. Stamping the key's stored one would refresh a stale sibling
+    // key's row and outrank what the device really runs.
+    const t = planApiKeyTouch(deviceKey({ lastSeenAt: ago(6 * 60_000) }), { now: NOW, touchLastUsed: true })
+    expect(t.data).toEqual({ lastUsedAt: NOW, lastSeenAt: NOW })
+    expect(t.recordVersion).toBe(false)
+    expect(t.version).toBeNull()
+
+    // Not even on the very first touch of a freshly minted key.
+    expect(planApiKeyTouch(deviceKey(), { now: NOW, touchLastUsed: true }).recordVersion).toBe(false)
+    // Blank is not a version either.
+    expect(planApiKeyTouch(deviceKey(), { now: NOW, touchLastUsed: true, reportedVersion: '   ' }).recordVersion).toBe(false)
   })
 
   test('lastUsedAt: 59 s old → no write, 61 s old → write', () => {
@@ -797,16 +812,16 @@ describe('planApiKeyTouch', () => {
   test('unchanged version: event only when a lastSeenAt write enters a new 5-min window', () => {
     expect(DEVICE_VERSION_EVENT_INTERVAL_MS).toBe(300_000)
     // 4 min ago, but in the previous window (NOW is on a boundary) → write + event
-    const crossing = planApiKeyTouch(deviceKey({ lastSeenAt: ago(4 * 60_000), lastUsedAt: ago(4 * 60_000) }), { now: NOW, touchLastUsed: true })
+    const crossing = planApiKeyTouch(deviceKey({ lastSeenAt: ago(4 * 60_000), lastUsedAt: ago(4 * 60_000) }), { now: NOW, touchLastUsed: true, reportedVersion: '1.0.0' })
     expect(crossing.data).toEqual({ lastUsedAt: NOW, lastSeenAt: NOW })
     expect(crossing.recordVersion).toBe(true)
     // 61 s ago within the same window → write, no event
     const later = new Date(NOW.getTime() + 2 * 60_000)
-    const same = planApiKeyTouch(deviceKey({ lastSeenAt: ago(0), lastUsedAt: ago(0) }), { now: later, touchLastUsed: true })
+    const same = planApiKeyTouch(deviceKey({ lastSeenAt: ago(0), lastUsedAt: ago(0) }), { now: later, touchLastUsed: true, reportedVersion: '1.0.0' })
     expect(same.data).toEqual({ lastUsedAt: later, lastSeenAt: later })
     expect(same.recordVersion).toBe(false)
     // 6 min ago → write + event
-    expect(planApiKeyTouch(deviceKey({ lastSeenAt: ago(6 * 60_000) }), { now: NOW, touchLastUsed: true }).recordVersion).toBe(true)
+    expect(planApiKeyTouch(deviceKey({ lastSeenAt: ago(6 * 60_000) }), { now: NOW, touchLastUsed: true, reportedVersion: '1.0.0' }).recordVersion).toBe(true)
   })
 
   test('an active device keeps recording at least once per window', () => {
@@ -883,6 +898,17 @@ describe('resolveApiKey write throttle', () => {
     await settle()
     expect(versionEventUpserts.length).toBe(1)
     expect(versionEventUpserts[0].create).toMatchObject({ deviceId: 'dev-1', version: '2.2.27' })
+  })
+
+  test('a version-less request writes timestamps but no history row (SHO-126)', async () => {
+    // What tools-proxy / instances / live-auth do: authenticate a device key
+    // without a version. The key's stored 1.0.0 must not be re-stamped.
+    pushDevice({ lastSeenAt: new Date(Date.now() - 6 * 60_000) })
+    await resolveApiKey('shogo_sk_x')
+    await settle()
+    expect(updateCalls.length).toBe(1)
+    expect(updateCalls[0].data.lastSeenAt).toBeInstanceOf(Date)
+    expect(versionEventUpserts.length).toBe(0)
   })
 
   test('revoked, expired and app tokens are still rejected', async () => {

@@ -38,7 +38,7 @@ import {
   hashApiKey,
   mintDeviceApiKey,
 } from '../lib/api-keys-mint'
-import { recordDeviceVersionEvent } from '../lib/device-version-events'
+import { normalizeDeviceVersion, recordDeviceVersionEvent } from '../lib/device-version-events'
 import { getAccess } from '../lib/authz'
 
 export function apiKeyRoutes() {
@@ -366,6 +366,15 @@ export const DEVICE_VERSION_EVENT_INTERVAL_MS = 5 * 60_000
  * version is written immediately, and a version event is recorded when the
  * version changes or once per {@link DEVICE_VERSION_EVENT_INTERVAL_MS} window.
  * The stored timestamps are the throttle, so it holds across replicas.
+ *
+ * History is written only for a request that actually carried a version
+ * (SHO-126). Most callers send none — no client sets
+ * `X-Shogo-Device-App-Version`, only the desktop heartbeat and the mint do — and
+ * stamping the key's *stored* version would refresh a stale sibling key's row.
+ * A device holds one key per workspace, so that write outranked the version the
+ * device really reported and flipped install analytics back to it. The read
+ * model treats the newest row as the truth, so a caller with no version in hand
+ * must not create one.
  */
 export function planApiKeyTouch(
   stored: {
@@ -392,7 +401,7 @@ export function planApiKeyTouch(
     data.lastUsedAt = opts.now
   }
 
-  const reported = opts.reportedVersion ? opts.reportedVersion.slice(0, 32) : null
+  const reported = normalizeDeviceVersion(opts.reportedVersion)
   const versionChanged = isDevice && reported !== null && reported !== stored.deviceAppVersion
   if (versionChanged) data.deviceAppVersion = reported
 
@@ -403,7 +412,7 @@ export function planApiKeyTouch(
   // `lastSeenAt` advances every minute on an active device, so "older than 5
   // min" would never fire again; record when this write enters a new window.
   const windowOf = (t: number) => Math.floor(t / DEVICE_VERSION_EVENT_INTERVAL_MS)
-  const recordVersion = isDevice && (
+  const recordVersion = isDevice && reported !== null && (
     versionChanged ||
     stored.lastSeenAt == null ||
     ('lastSeenAt' in data && windowOf(stored.lastSeenAt.getTime()) !== windowOf(now))
@@ -412,7 +421,7 @@ export function planApiKeyTouch(
   return {
     data: Object.keys(data).length > 0 ? data : null,
     recordVersion,
-    version: versionChanged ? reported : (reported ?? stored.deviceAppVersion),
+    version: reported,
   }
 }
 
