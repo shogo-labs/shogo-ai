@@ -21,7 +21,7 @@ mock.module('../../s3', () => ({
   }),
 }))
 
-const { enqueueArchiveRecord, enqueueBlob, flushArchive, getArchiveWriterStats } = await import('../archive-writer')
+const { enqueueArchiveRecord, enqueueBlob, flushArchive, flushAndStopArchive, getArchiveWriterStats, trackPersist, writeChainNode } = await import('../archive-writer')
 
 const MiB = 1024 * 1024
 const hour = new Date('2026-09-26T05:00:00.000Z')
@@ -131,5 +131,74 @@ describe('proxy capture archive writer', () => {
     } finally {
       setSystemTime()
     }
+  })
+
+  test('writes each chain node once and hands every caller the same in-flight PUT', async () => {
+    let release!: () => void
+    uploadGate = new Promise((resolve) => { release = resolve })
+    try {
+      const key = 'v2/chain/workspace-a/node-shared.json.gz'
+      const first = writeChainNode(key, { parent: null, append: [{ role: 'user', content: 'one' }] })
+      const second = writeChainNode(key, { parent: null, append: [{ role: 'user', content: 'one' }] })
+      expect(second).toBe(first)
+      release()
+      uploadGate = null
+      await Promise.all([first, second])
+      expect(state.sends.filter((send) => send.input.Key === key)).toHaveLength(1)
+    } finally {
+      uploadGate = null
+      release()
+    }
+  })
+
+  test('releases a failed chain node so a later record can retry it', async () => {
+    const key = 'v2/chain/workspace-b/node-retry.json.gz'
+    state.fail = true
+    const first = writeChainNode(key, { parent: null, append: [] })
+    const shared = writeChainNode(key, { parent: null, append: [] })
+    expect(shared).toBe(first)
+    await expect(first).rejects.toThrow('bucket unavailable')
+
+    state.fail = false
+    await writeChainNode(key, { parent: null, append: [] })
+    expect(state.sends.filter((send) => send.input.Key === key)).toHaveLength(1)
+  })
+
+  test('re-puts a chain node on a new UTC day', async () => {
+    const key = 'v2/chain/workspace-c/node-daily.json.gz'
+    try {
+      setSystemTime(new Date('2030-02-01T23:59:00.000Z'))
+      await writeChainNode(key, { parent: null, append: [] })
+      await writeChainNode(key, { parent: null, append: [] })
+      setSystemTime(new Date('2030-02-02T00:01:00.000Z'))
+      await writeChainNode(key, { parent: null, append: [] })
+      expect(state.sends.filter((send) => send.input.Key === key)).toHaveLength(2)
+    } finally {
+      setSystemTime()
+    }
+  })
+
+  test('partitions v2 records under the v2 prefix', async () => {
+    enqueueArchiveRecord({ id: 'v2-record' }, hour, 'v2')
+    enqueueArchiveRecord({ id: 'v1-record' }, hour, 'v1')
+    await flushArchive()
+    const keys = state.sends.map((send) => send.input.Key)
+    expect(keys.some((key: string) => key.startsWith('v2/region='))).toBe(true)
+    expect(keys.some((key: string) => key.startsWith('v1/region='))).toBe(true)
+  })
+
+  test('shutdown waits for a persist that is still running', async () => {
+    let release!: () => void
+    const finished = new Promise<void>((resolve) => { release = resolve })
+    trackPersist(finished)
+
+    let stopped = false
+    const shutdown = flushAndStopArchive().then(() => { stopped = true })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(stopped).toBe(false)
+
+    release()
+    await shutdown
+    expect(stopped).toBe(true)
   })
 })
