@@ -262,7 +262,48 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   dismissUpdate: () => ipcRenderer.invoke('dismiss-update'),
-  installUpdate: () => ipcRenderer.invoke('install-update'),
+  /**
+   * Restart to install (SHO-181). With no options this only *asks*: the main
+   * process answers `{ needsChoice: true, activity }` when agent runs are live,
+   * and restarts straight away when nothing is. `mode: 'now'` is the explicit
+   * "interrupt them"; `mode: 'when-idle'` drains and restarts once the counts
+   * settle.
+   */
+  installUpdate: (options?: { mode?: 'now' | 'when-idle' }): Promise<{
+    ok: boolean
+    mode?: 'now' | 'when-idle' | 'immediate'
+    needsChoice?: boolean
+    message?: string
+    activity?: { liveTurns: number; runningTasks: number; runningAgentReplies: number } | null
+    error?: string
+  }> => ipcRenderer.invoke('install-update', options),
+  cancelIdleRestart: (): Promise<{ ok: boolean; cancelled: boolean }> =>
+    ipcRenderer.invoke('cancel-idle-restart'),
+  getLiveActivity: (): Promise<{
+    ok: boolean
+    total: number
+    activity: { liveTurns: number; runningTasks: number; runningAgentReplies: number } | null
+  }> => ipcRenderer.invoke('get-live-activity'),
+  /** "Restarting when idle — N working", and the counts under it. */
+  onRestartDrain: (
+    callback: (data: { active: boolean; activity: { liveTurns: number; runningTasks: number; runningAgentReplies: number } | null }) => void,
+  ) => {
+    ipcRenderer.on('desktop-restart-drain', (_event, data) => callback(data))
+  },
+  removeRestartDrainListener: () => {
+    ipcRenderer.removeAllListeners('desktop-restart-drain')
+  },
+  /** The one line the last deliberate stop owes the user (SHO-181). */
+  getInterruptedNotice: (): Promise<{ notice: string | null }> =>
+    ipcRenderer.invoke('get-interrupted-notice'),
+  dismissInterruptedNotice: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('dismiss-interrupted-notice'),
+  onInterruptedNotice: (callback: (data: { notice: string | null }) => void) => {
+    ipcRenderer.on('desktop-interrupted-notice', (_event, data) => callback(data))
+  },
+  removeInterruptedNoticeListener: () => {
+    ipcRenderer.removeAllListeners('desktop-interrupted-notice')
+  },
   onUpdateStatus: (
     callback: (data: { status: string; releaseName: string | null; availableVersion: string | null; channel?: 'stable' | 'beta' }) => void,
   ) => {

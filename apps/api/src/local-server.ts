@@ -34,6 +34,7 @@ import { ensureTranscriptionEngine } from './services/transcription-install.serv
 import { startCloudWorkspaceSync } from './services/cloud-workspaces'
 import { startInstanceTunnel, stopInstanceTunnel } from './lib/instance-tunnel'
 import { startMachineSync, stopMachineSync } from './lib/machine-sync/local-sync'
+import { registerLocalShutdownHandler } from './lib/local-shutdown'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 import { cloudSocketRelayHandlers, isCloudSocketRelayData } from './routes/local-cloud-proxy'
 
@@ -156,6 +157,12 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(0)
   }
 }
+
+// The desktop's graceful stop on platforms without a usable SIGTERM (Windows):
+// `POST /api/local/system/shutdown` reaches this, so the runtimes get to record
+// their final state instead of being taken by `taskkill /F` (SHO-181).
+registerLocalShutdownHandler(shutdown)
+
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 process.on('SIGINT', () => void shutdown('SIGINT'))
 

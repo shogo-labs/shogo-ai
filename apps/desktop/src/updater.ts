@@ -1,11 +1,25 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { app, autoUpdater, ipcMain, BrowserWindow, net } from 'electron'
+import { join } from 'path'
 import { readConfig, writeConfig } from './config'
 import { resolveFeedUrl, parseUpdateChannel, type UpdateChannel } from './update-channel'
+import { getApiUrl } from './local-server'
+import {
+  describeLiveActivity,
+  fetchLiveActivity,
+  liveActivityTotal,
+  setApiDrain,
+  type LiveActivity,
+  type LiveActivityReport,
+} from './live-activity'
+import { IdleRestart } from './restart-when-idle'
+import { LAST_QUIT_FILE, buildLastQuitRecord, takeInterruptedNotice, writeLastQuit } from './last-quit'
 
 const TAG = '[Updater]'
 const CHECK_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
+/** How long after `quitAndInstall()` to assume the restart simply did not take (SHO-181). */
+const RESTART_GUARD_MS = 30_000
 const SUPPORTED_PLATFORMS = ['darwin', 'win32']
 
 // Updates are opt-in: we probe the feed manually so we can show the user
@@ -35,6 +49,110 @@ let currentChannel: UpdateChannel = 'stable'
 
 export function getIsApplyingUpdate(): boolean {
   return isApplyingUpdate
+}
+
+/**
+ * What is live on this machine, from the API's own count (SHO-181). Null when
+ * the API cannot answer — the callers treat that as nothing to interrupt.
+ */
+export async function readLiveActivity(): Promise<LiveActivityReport | null> {
+  const report = await fetchLiveActivity(getApiUrl())
+  lastKnownActivity = report
+  return report
+}
+
+let lastKnownActivity: LiveActivity | null = null
+let idleRestart: IdleRestart | null = null
+let interruptedNotice: string | null = null
+
+function broadcastRestartDrain(payload: { active: boolean; activity: LiveActivity | null }): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('desktop-restart-drain', payload)
+  }
+}
+
+function broadcastInterruptedNotice(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('desktop-interrupted-notice', { notice: interruptedNotice })
+  }
+}
+
+/**
+ * The one line the last deliberate stop owes the person who chose it: "Restart
+ * now" killed N runs, and they come back on their own (SHO-181). Read once at
+ * boot; the file is deleted as it is read.
+ */
+export function loadInterruptedNotice(): void {
+  try {
+    interruptedNotice = takeInterruptedNotice(join(app.getPath('userData'), LAST_QUIT_FILE))
+  } catch {
+    interruptedNotice = null
+  }
+  if (interruptedNotice) console.log(`${TAG} Reporting an interrupted stop: ${interruptedNotice}`)
+  broadcastInterruptedNotice()
+}
+
+/** Record what a "now" choice is about to interrupt, so the next boot can say so. */
+export function recordLastQuit(reason: 'update' | 'quit' | 'restart', activity: LiveActivity | null): void {
+  try {
+    writeLastQuit(
+      join(app.getPath('userData'), LAST_QUIT_FILE),
+      buildLastQuitRecord({ reason, version: app.getVersion(), activity }),
+    )
+  } catch (err) {
+    console.warn(`${TAG} Could not record the interrupted stop:`, err)
+  }
+}
+
+/**
+ * `quitAndInstall()` returning does not mean the app is on its way out. If it is
+ * still here half a minute later the install did not take — release the drain so
+ * automatic work is not frozen behind a restart that never happened, and let the
+ * banner go back to offering the button.
+ */
+function guardRestartTookEffect(): void {
+  const timer = setTimeout(() => {
+    if (!isApplyingUpdate) return
+    console.warn(`${TAG} The restart did not take effect — releasing the drain and retrying is up to the user`)
+    isApplyingUpdate = false
+    void setApiDrain(getApiUrl(), false).catch(() => false)
+    broadcastRestartDrain({ active: false, activity: lastKnownActivity })
+    broadcastUpdateStatus()
+  }, RESTART_GUARD_MS)
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+  app.once('will-quit', () => clearTimeout(timer))
+}
+
+/**
+ * "Restart when idle": hold new automatic starts, wait for the live counts to
+ * settle, then restart. Shared by the banner and (via the same loop) the Quit
+ * dialog in `main.ts`.
+ */
+async function startIdleRestart(): Promise<{
+  ok: boolean
+  mode?: 'when-idle'
+  activity?: LiveActivity | null
+  error?: string
+}> {
+  if (!idleRestart) {
+    idleRestart = new IdleRestart({
+      readActivity: async () => await readLiveActivity(),
+      setDrain: async (on) => await setApiDrain(getApiUrl(), on),
+      quit: () => {
+        recordLastQuit('update', lastKnownActivity)
+        isApplyingUpdate = true
+        broadcastRestartDrain({ active: false, activity: null })
+        autoUpdater.quitAndInstall()
+        guardRestartTookEffect()
+      },
+      onProgress: (activity) => broadcastRestartDrain({ active: true, activity }),
+      log: (line) => console.log(`${TAG} ${line}`),
+    })
+  }
+  const started = await idleRestart.start()
+  if (!started.ok) return { ok: false, error: started.error }
+  broadcastRestartDrain({ active: true, activity: started.activity })
+  return { ok: true, mode: 'when-idle', activity: started.activity }
 }
 
 function broadcastUpdateStatus() {
@@ -216,12 +334,61 @@ export function initAutoUpdater(): void {
     return { ok: true }
   })
 
-  ipcMain.handle('install-update', () => {
-    if (currentStatus === 'ready') {
-      console.log(`${TAG} User triggered restart — applying update`)
-      isApplyingUpdate = true
-      autoUpdater.quitAndInstall()
+  /**
+   * The banner's Restart button (SHO-181).
+   *
+   * With no `mode` this is a probe: if nothing is live it restarts exactly as it
+   * always did, and if agent runs are working it answers `needsChoice` so the
+   * banner can offer "Restart when idle / Restart now / Cancel" instead of
+   * killing them silently. `mode: 'now'` is the user's explicit "kill it".
+   */
+  ipcMain.handle('install-update', async (_event, options?: { mode?: 'now' | 'when-idle' }) => {
+    if (currentStatus !== 'ready') {
+      return { ok: false, error: `not ready (status=${currentStatus})` }
     }
+    const mode = options?.mode === 'now' || options?.mode === 'when-idle' ? options.mode : null
+    if (mode === 'when-idle') return await startIdleRestart()
+
+    const activity = await readLiveActivity()
+    const total = liveActivityTotal(activity)
+    if (!mode && total > 0) {
+      console.log(`${TAG} Restart requested with ${total} run(s) live — offering the choice`)
+      return {
+        ok: false,
+        needsChoice: true,
+        message: `${describeLiveActivity(activity)}. Restart now, or wait until they finish?`,
+        activity,
+      }
+    }
+
+    console.log(`${TAG} User triggered restart — applying update (${mode ?? 'immediate'}, ${total} run(s) live)`)
+    // A "when idle" loop may still be holding the drain from an earlier choice.
+    await idleRestart?.cancel()
+    recordLastQuit('update', activity)
+    isApplyingUpdate = true
+    autoUpdater.quitAndInstall()
+    guardRestartTookEffect()
+    return { ok: true, mode: mode ?? 'immediate' }
+  })
+
+  ipcMain.handle('cancel-idle-restart', async () => {
+    if (!idleRestart?.isWaiting) return { ok: true, cancelled: false }
+    await idleRestart.cancel()
+    broadcastRestartDrain({ active: false, activity: null })
+    return { ok: true, cancelled: true }
+  })
+
+  ipcMain.handle('get-live-activity', async () => {
+    const activity = await readLiveActivity()
+    return { ok: true, activity, total: liveActivityTotal(activity) }
+  })
+
+  ipcMain.handle('get-interrupted-notice', () => ({ notice: interruptedNotice }))
+
+  ipcMain.handle('dismiss-interrupted-notice', () => {
+    interruptedNotice = null
+    broadcastInterruptedNotice()
+    return { ok: true }
   })
 
   autoUpdater.on('checking-for-update', () => {
