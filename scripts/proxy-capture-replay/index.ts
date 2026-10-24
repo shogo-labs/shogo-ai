@@ -52,6 +52,16 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
   return args
 }
 
+// `--chunk 1,2,4` and `--writers 1,3` run every combination. A bad value is a
+// usage error, never a silent zero: a pass with no writer state has no dedupe
+// state to reuse and cannot report a ratio.
+function numberList(value: string | boolean | undefined, fallback: string): number[] {
+  const raw = typeof value === 'string' ? value : fallback
+  const values = raw.split(',').map((item) => Number(item.trim())).filter((item) => Number.isFinite(item) && item >= 1)
+  if (values.length === 0) throw new Error(`expected a positive number or a comma-separated list, got "${raw}"`)
+  return values
+}
+
 function isRecordFile(key: string): boolean {
   return key.endsWith('.jsonl') || key.endsWith('.jsonl.gz')
 }
@@ -416,25 +426,27 @@ async function main(): Promise<void> {
   const workspaces = new Set(archive.records.map((record) => record.workspaceId))
   console.log(`[replay] ${archive.records.length} records, ${workspaces.size} workspaces, ${archive.objects.size} stored objects`)
 
-  const chunks = String(args.chunk || '2').split(',').map((value) => Number(value.trim())).filter((value) => value >= 1)
-  const writers = Number(args.writers || 3)
+  const chunks = numberList(args.chunk, '2')
+  const writerCounts = numberList(args.writers, '3')
   const output = typeof args.output === 'string' ? args.output : null
 
   for (const chunk of chunks) {
-    const { result, files } = await runPass(archive, chunk, writers, 20261024)
-    if (output) {
-      const written = await writeOutput(output, result, files)
-      console.log(`[replay] wrote ${written}`)
+    for (const writers of writerCounts) {
+      const { result, files } = await runPass(archive, chunk, writers, 20261024)
+      if (output) {
+        const written = await writeOutput(output, result, files)
+        console.log(`[replay] wrote ${written}`)
+      }
+      const ratio = result.v2Bytes > 0 ? result.v1Bytes / result.v2Bytes : 0
+      console.log([
+        `chunk=${result.chunk} writers=${result.writers} records=${result.records}`,
+        `  v1 ${formatBytes(result.v1Bytes)} in ${result.v1Objects} objects`,
+        `  v2 ${formatBytes(result.v2Bytes)} in ${result.v2Objects} objects (${result.nodes} chain nodes, ${result.nodePuts} node PUTs)`,
+        `  ratio ${ratio.toFixed(1)}x`,
+        `  reconstruction ${result.mismatches === 0 ? 'identical' : `${result.mismatches} MISMATCH`}`,
+        ...(result.sample ? [`  first mismatch ${result.sample}`] : []),
+      ].join('\n'))
     }
-    const ratio = result.v2Bytes > 0 ? result.v1Bytes / result.v2Bytes : 0
-    console.log([
-      `chunk=${result.chunk} writers=${result.writers} records=${result.records}`,
-      `  v1 ${formatBytes(result.v1Bytes)} in ${result.v1Objects} objects`,
-      `  v2 ${formatBytes(result.v2Bytes)} in ${result.v2Objects} objects (${result.nodes} chain nodes, ${result.nodePuts} node PUTs)`,
-      `  ratio ${ratio.toFixed(1)}x`,
-      `  reconstruction ${result.mismatches === 0 ? 'identical' : `${result.mismatches} MISMATCH`}`,
-      ...(result.sample ? [`  first mismatch ${result.sample}`] : []),
-    ].join('\n'))
   }
 }
 
