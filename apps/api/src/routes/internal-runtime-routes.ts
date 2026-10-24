@@ -405,7 +405,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   /**
    * POST /api/internal/reminders/notify
-   *   body: { workspaceId, projectId?, userId, title, body, actionUrl?,
+   *   body: { workspaceId, projectId?, userId?, title, body, actionUrl?,
    *           dedupeKey?, metadata?, type?, pushType?, channelId? }
    *
    * Boundary capability behind the runtime `notify_user` tool: write one
@@ -414,6 +414,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * the user" half of the reminder path — the agent detects a due reminder in
    * MEMORY.md and calls the tool; there is no server-side reminder row or
    * scheduler here (see issue #1046).
+   *
+   * `userId` is optional: without it the workspace owner is the recipient, so a
+   * runtime-side notice that is not about one specific user (the workspace
+   * backup parking itself, SHO-180) can still reach a human.
    *
    * `type` is an existing `NotificationType` member (the enum is deliberately
    * NOT migrated — reminder-specific context rides in `metadata`), and
@@ -437,7 +441,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: 'Unauthorized' }, 401)
     }
 
-    const userId = typeof body.userId === 'string' ? body.userId : ''
+    const userId = typeof body.userId === 'string' && body.userId
+      ? body.userId
+      // A runtime knows its workspace, not its users: fall back to the
+      // workspace owner so a runtime-originated notice (e.g. "your workspace
+      // backup is failing", SHO-180) can reach a human.
+      : workspaceId
+        ? ((await prisma.member.findFirst({
+            where: { workspaceId, projectId: null, role: 'owner' },
+            orderBy: { createdAt: 'asc' },
+            select: { userId: true },
+          }))?.userId ?? '')
+        : ''
     const title = typeof body.title === 'string' ? body.title.trim() : ''
     const message = typeof body.body === 'string' ? body.body : ''
     if (!userId || !title || !message) {

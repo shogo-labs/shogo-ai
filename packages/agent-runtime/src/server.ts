@@ -166,7 +166,7 @@ import {
   type PortBridgeWsData,
   type PortHttpWsData,
 } from './port-bridge'
-import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorkspaceNotification, postWorktreeStatus, postPlanMirror } from './internal-api'
 import { acceptsAppToolToken } from './app-runtime-token'
 import {
   detachMemberFromRootRepo,
@@ -6912,6 +6912,26 @@ async function initializeEssentials(): Promise<void> {
           if (cloudSyncMode === 'git_only') {
             s3SyncInstance?.setSuppressProjectArchive(true)
           }
+        },
+        // Parked means git has failed the same way 20 times in a row and will
+        // not fix itself — tell the user once instead of failing silently for
+        // days (SHO-180 / #1686).
+        onPark: (info) => {
+          const workspaceId = process.env.WORKSPACE_ID || ''
+          const what = cloudSyncMode === 'git_only' ? 'checkpoint commit' : 'push'
+          console.warn(
+            `[agent-runtime] git sync parked after ${info.consecutiveFailures} failed ${what}s: ${info.reason}`,
+          )
+          if (!workspaceId) return
+          void postWorkspaceNotification({
+            workspaceId,
+            title: 'Workspace backup has failed',
+            body:
+              `Workspace backup has failed ${info.consecutiveFailures} times: ${info.reason}` +
+              (info.lifetimeFailures > info.consecutiveFailures
+                ? ` (${info.lifetimeFailures} failures since ${info.firstFailureAt ?? 'the first attempt'})`
+                : ''),
+          })
         },
       })
       if (gitSyncInstance) {

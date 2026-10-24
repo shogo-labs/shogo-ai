@@ -712,6 +712,45 @@ export async function getPublishState(projectId: string): Promise<CheckpointCall
   })
 }
 
+/**
+ * Tell the workspace's user that something needs them (SHO-180). Goes through
+ * the same internal route as `notify_user`, which resolves the recipient
+ * (the workspace owner) server-side — a runtime has no user id to name.
+ *
+ * Best-effort by design: this reports a durability problem, so it must never
+ * throw into the durability path that reported it.
+ */
+export async function postWorkspaceNotification(input: {
+  workspaceId: string
+  title: string
+  body: string
+  actionUrl?: string
+}): Promise<boolean> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl || !input.workspaceId) return false
+  try {
+    const res = await fetch(`${apiUrl}/api/internal/reminders/notify`, {
+      method: 'POST',
+      headers: getInternalHeaders(),
+      body: JSON.stringify({
+        workspaceId: input.workspaceId,
+        title: input.title,
+        body: input.body,
+        ...(input.actionUrl ? { actionUrl: input.actionUrl } : {}),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) {
+      console.warn(`[internal-api] notify returned HTTP ${res.status}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn(`[internal-api] notify failed: ${err?.message ?? err}`)
+    return false
+  }
+}
+
 export async function publishProject(
   projectId: string,
   opts: PublishOptions,
