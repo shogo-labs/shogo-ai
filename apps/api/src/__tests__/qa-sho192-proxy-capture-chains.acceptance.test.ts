@@ -389,6 +389,27 @@ describe('SHO-192 chain archive acceptance', () => {
     expect(fromV2[0]!.messages.length).toBeGreaterThan(30)
   })
 
+  test('writes only the v2 layout once the format flag flips', async () => {
+    process.env.PROXY_CAPTURE_ARCHIVE_FORMAT = 'v2'
+    const history: any[] = [
+      { role: 'system', content: 'You are a release agent.' },
+      { role: 'user', content: 'Investigate the failing deploy.' },
+    ]
+    for (let step = 0; step < 8; step += 1) history.push(...toolLoop(step))
+
+    nextFetchResponses.push(reply(0))
+    expect((await postChat({ model: 'gpt-4o-mini', messages: history }, { 'x-chat-session-id': 'session-v2-only' })).status).toBe(200)
+    await flushAndStopArchive()
+
+    expect(storedRecords('v1')).toHaveLength(0)
+    const records = storedRecords('v2')
+    expect(records).toHaveLength(1)
+    expect(records[0]!.request.chain).toBeDefined()
+    const summary = proxyTurnUpsert.mock.calls.at(-1)![0] as any
+    expect(summary.create.archivePrefix).toStartWith('v2/region=')
+    expect(summary.create.truncated).toBe(false)
+  })
+
   test('a history over the 5 MB cap is stored untruncated as v2 and exported', async () => {
     const history: any[] = [{ role: 'system', content: 'You are a release agent.' }]
     for (let index = 0; index < 200; index += 1) {
