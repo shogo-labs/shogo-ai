@@ -16,6 +16,7 @@
     "./checkpoint-repo-repair": "./src/checkpoint-repo-repair.ts",
     "./sse-keepalive": "./src/sse-keepalive.ts",
     "./stream-trace": "./src/stream-trace.ts",
+    "./heartbeat-session": "./src/heartbeat-session.ts",
     "./interrupted-turn": "./src/interrupted-turn.ts",
     "./child-process": "./src/child-process.ts"
   },

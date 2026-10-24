@@ -580,6 +580,41 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
+  // Every agent in the workspace with a heartbeat on (plus any that spent in the
+  // window and has since been switched off): schedule, model and what it cost.
+  // Members see their own projects, admins see everyone; Business plan or higher.
+  router.get('/workspaces/:workspaceId/analytics/heartbeats', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
+      if (!access) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getWorkspaceHeartbeats(workspaceId, {
+        period: analytics.parseHeartbeatPeriod(new URL(c.req.url).searchParams.get('period')),
+        ...(access.isAdmin
+          ? {}
+          : { projectWhere: await accessibleProjectsWhere(principalOf(c), workspaceId) }),
+      })
+
+      // Turning one off is a PATCH on the project's heartbeat, so the row says
+      // whether this caller may do it. Admins may, for every project.
+      const principals = access.isAdmin
+        ? data.agents.map((agent) => ({ ...agent, canEdit: true }))
+        : await Promise.all(
+          data.agents.map(async (agent) => ({
+            ...agent,
+            canEdit: await can(c, 'project:update', { projectId: agent.projectId }),
+          })),
+        )
+
+      return c.json({ ok: true, data: { ...data, agents: principals } })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
   // --------------------------------------------------------------------------
   // Project Analytics
   // --------------------------------------------------------------------------
