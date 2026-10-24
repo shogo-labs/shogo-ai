@@ -25,10 +25,12 @@ import { getProfileByExternalId, type SocialProfileRow } from './profiles.servic
 import {
   ZERNIO_EVENT_ID_HEADER,
   ZERNIO_SIGNATURE_HEADER,
+  ZERNIO_TEST_EVENT,
   parseZernioEvent,
   scopeForExternalId,
   socialEventTypeFor,
   verifyZernioSignature,
+  zernioEventType,
   type ZernioEvent,
 } from './zernio-webhook'
 
@@ -262,8 +264,18 @@ export async function handleZernioWebhook(input: ZernioWebhookInput): Promise<{ 
     return { status: 401, body: { error: { code: 'invalid_signature', message: 'Signature check failed' } } }
   }
 
+  const eventType = zernioEventType(input.rawBody)
+  if (eventType === ZERNIO_TEST_EVENT) {
+    return { status: 200, body: { ok: true, test: true } }
+  }
   const event = parseZernioEvent(input.rawBody, input.eventId)
   if (!event) {
+    if (eventType) {
+      // A signed, named event with no profile routing id (`webhook.test` aside,
+      // Zernio sends `workflow.run.*`, `support.run.*` and `verification.*` this
+      // way). A 400 would make Zernio retry it seven times, so accept and drop.
+      return { status: 200, body: { ok: true, ignored: 'no_profile' } }
+    }
     return { status: 400, body: { error: { code: 'invalid_body', message: 'Not a Zernio event we can read' } } }
   }
 

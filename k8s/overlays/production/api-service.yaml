@@ -320,6 +320,17 @@ spec:
                   name: api-secrets
                   key: HIGGSFIELD_API_KEY
                   optional: true
+            - name: ZERNIO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ZERNIO_API_KEY
+            - name: ZERNIO_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ZERNIO_WEBHOOK_SECRET
+                  optional: true
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "https://ingest.us.signoz.cloud:443"
             # OTLP export deadline. The default (3s) is tripped under event-loop

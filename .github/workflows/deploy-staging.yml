@@ -135,6 +135,8 @@ jobs:
           if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
           if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
           if [ -n "${{ secrets.HIGGSFIELD_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=HIGGSFIELD_API_KEY="${{ secrets.HIGGSFIELD_API_KEY }}"); fi
+          if [ -n "${{ secrets.ZERNIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_API_KEY="${{ secrets.ZERNIO_API_KEY }}"); fi
+          if [ -n "${{ secrets.ZERNIO_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_WEBHOOK_SECRET="${{ secrets.ZERNIO_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
