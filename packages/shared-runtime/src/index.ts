@@ -51,10 +51,14 @@ export {
   GitWorkspaceSync,
   createGitSyncFromEnv,
   resolveCloudSyncMode,
+  unindexablePath,
   type GitWorkspaceSyncConfig,
   type SpawnGitFn,
+  type SyncParkInfo,
   type CloudSyncMode,
 } from './git-sync'
+
+export { isWindowsReservedPath, findReservedPaths } from './git-reserved-names'
 
 export {
   applyGitSafeDirectoryEnv,
