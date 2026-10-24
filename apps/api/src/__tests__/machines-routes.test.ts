@@ -234,6 +234,18 @@ describe('GET /api/machines', () => {
     expect(res.status).toBe(401)
   })
 
+  // PERF-6: every open Studio tab polls this list. Marking the viewer here put
+  // all of the caller's desktops on the 5 s heartbeat whenever a tab was open.
+  test('listing machines does not put them on the fast viewer poll', async () => {
+    seedInstance({ id: 'i-1', workspaceId: 'ws-a' })
+    seedInstance({ id: 'i-2', workspaceId: 'ws-b', hostname: 'mac-2' })
+    const res = await buildApp().request('/api/machines')
+    expect(res.status).toBe(200)
+    expect(instanceTesting.activeViewers.size).toBe(0)
+    expect(await instanceTesting.isViewerActive('ws-a')).toBe(false)
+    expect(await instanceTesting.isViewerActive('ws-b')).toBe(false)
+  })
+
   test('carries the cached heartbeat snapshot so an offline row can still render', async () => {
     seedInstance({ lastSeenAt: new Date(Date.now() - 60 * 60 * 1000), metadata: { machine: SNAPSHOT } })
     const res = await buildApp().request('/api/machines')
@@ -412,6 +424,26 @@ describe('machine workspace relay', () => {
     expect(res.status).toBe(403)
     const body = (await res.json()) as any
     expect(body.error.code).toBe('forbidden')
+    expect(instanceTesting.activeViewers.size).toBe(0)
+  })
+
+  // PERF-6 keeps SHO-185's goal for the machine actually in use: using one of
+  // its workspaces keeps that desktop on the 5 s poll, and only that one.
+  test('using a machine workspace marks only that machine as viewed', async () => {
+    seedInstance({ id: 'i-1', workspaceId: 'ws-a' })
+    seedInstance({ id: 'i-2', workspaceId: 'ws-b', hostname: 'mac-2' })
+    attachTunnel('i-1', respondJson({ projects: [] }))
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects')
+    expect(res.status).toBe(200)
+    expect(await instanceTesting.isViewerActive('ws-a')).toBe(true)
+    expect(await instanceTesting.isViewerActive('ws-b')).toBe(false)
+  })
+
+  test('a sleeping machine in use is marked too, so its next heartbeat comes fast', async () => {
+    seedInstance({ workspaceId: 'ws-a', lastSeenAt: new Date(Date.now() - 20_000) })
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects')
+    expect(res.status).toBe(503)
+    expect(await instanceTesting.isViewerActive('ws-a')).toBe(true)
   })
 
   test('a machine that heartbeated recently is `waking`, not `offline`', async () => {
