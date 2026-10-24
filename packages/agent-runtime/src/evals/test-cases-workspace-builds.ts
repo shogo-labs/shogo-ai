@@ -214,6 +214,22 @@ export const WORKSPACE_TOOL_MOCKS: ToolMockMap = {
     type: 'static',
     response: { ok: true, goal: { id: 'eval-goal-1', status: 'active', steps: [] } },
   },
+  // A personal workspace may answer a build request by filing a goal, and a
+  // team workspace may tidy the catalog afterwards. Both reach the API, which
+  // an eval sandbox has no identity for, so both answer here (QA round 2:
+  // real trials lost a turn each to `goal_log` and `unmount_project` 401s).
+  goal_log: {
+    type: 'static',
+    response: { ok: true, goal: { id: 'eval-goal-1', status: 'active', steps: [] } },
+  },
+  goal_update: {
+    type: 'static',
+    response: { ok: true, goal: { id: 'eval-goal-1', status: 'active', steps: [] } },
+  },
+  unmount_project: {
+    type: 'static',
+    response: { ok: true, unmounted: true },
+  },
 }
 
 /** A team workspace with no projects — the staging shape. */

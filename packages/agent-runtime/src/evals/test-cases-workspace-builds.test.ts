@@ -410,7 +410,10 @@ describe('WORKSPACE_BUILDS_EVALS', () => {
         'preview_project',
         'share_file',
         'mount_project',
+        'unmount_project',
         'connect_project',
+        'goal_create',
+        'goal_log',
         'exec',
       ]) {
         expect(ev.toolMocks?.[tool]).toBeDefined()
