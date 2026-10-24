@@ -529,7 +529,8 @@ describe('gateway-tools', () => {
       // The 3D tools add generate_3d_model and edit_3d_model (registered, then
       // hidden unless threeDGenEnabled).
       // `chat_handoff` (SHO-52) adds one more: handing a turn to another chat.
-      expect(createTools(createCtx())).toHaveLength(76)
+      // `list_models` adds one: the workspace's chat models for project_configure.
+      expect(createTools(createCtx())).toHaveLength(77)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
