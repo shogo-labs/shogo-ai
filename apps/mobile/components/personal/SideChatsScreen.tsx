@@ -12,7 +12,7 @@ import { useCallback } from 'react'
 import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
-import { ArrowLeft, ChevronRight, MessageSquare, MessagesSquare, Plus } from 'lucide-react-native'
+import { ArrowLeft, ChevronRight, Loader2, MessageSquare, MessagesSquare, Pin, Plus } from 'lucide-react-native'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceChats } from '../../hooks/useWorkspaceChats'
 import { sideChatLabel, type SideChatItem } from '../../lib/side-chats'
@@ -32,9 +32,10 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
 
   const openChat = useCallback(
     (sessionId: string) => {
+      chats.markSeen(sessionId)
       router.push({ pathname: '/(app)/agent', params: { chatSessionId: sessionId } } as any)
     },
-    [router],
+    [chats.markSeen, router],
   )
 
   const startNewChat = useCallback(async () => {
@@ -98,6 +99,27 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
               accessibilityRole="button"
               className="flex-row items-center gap-3 border-b border-border/60 px-4 py-4 active:bg-muted/50"
             >
+              {/* Same leading slot as the sidebar row: running › unread › pinned. */}
+              <View className="w-4 items-center justify-center">
+                {chats.streamingIds.has(item.id) ? (
+                  <Loader2
+                    size={14}
+                    className="text-primary animate-spin"
+                    accessibilityLabel="Chat running"
+                  />
+                ) : chats.completedIds.has(item.id) ? (
+                  <View
+                    className="h-1.5 w-1.5 rounded-full bg-primary"
+                    accessibilityLabel="Chat has new activity"
+                  />
+                ) : item.isPinned ? (
+                  <Pin
+                    size={13}
+                    className="text-muted-foreground"
+                    accessibilityLabel="Pinned"
+                  />
+                ) : null}
+              </View>
               <View className="h-9 w-9 items-center justify-center rounded-xl bg-muted">
                 <MessageSquare size={16} className="text-foreground" />
               </View>

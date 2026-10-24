@@ -296,16 +296,19 @@ export function ChatTreeItem({
                 className="text-primary animate-spin"
                 accessibilityLabel="Chat running"
               />
-            ) : (
+            ) : isCompleted ? (
               <View
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  isCompleted ? "bg-primary" : "bg-muted-foreground/70"
-                )}
-                accessibilityLabel={
-                  isCompleted ? "Chat has new activity" : undefined
-                }
+                className="h-1.5 w-1.5 rounded-full bg-primary"
+                accessibilityLabel="Chat has new activity"
               />
+            ) : session.isPinned ? (
+              <Pin
+                size={11}
+                className="text-muted-foreground"
+                accessibilityLabel="Pinned"
+              />
+            ) : (
+              <View className="h-1.5 w-1.5 rounded-full bg-muted-foreground/70" />
             )}
           </View>
         ) : isStreaming ? (
@@ -319,10 +322,13 @@ export function ChatTreeItem({
             className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"
             accessibilityLabel="Chat has new activity"
           />
-        ) : session.isPinned && !comfortable ? (
+        ) : session.isPinned ? (
+          // Same pin in every density: a pinned chat has to be findable on a
+          // phone row, not just in the compact desktop tree.
           <Pin
-            size={comfortable ? density.icon.sm : 10}
+            size={comfortable ? density.icon.sm : 11}
             className="text-muted-foreground shrink-0"
+            accessibilityLabel="Pinned"
           />
         ) : null}
         <Text

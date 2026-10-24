@@ -5946,6 +5946,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
         )
       }
 
+      // The chat lists keep their own rows (they are not MST collections), so
+      // the same bump has to reach them: this re-stamps just this row and
+      // re-sorts it to "now" without a list re-fetch.
+      chatSessionEvents.emit({
+        touchedSessionId: currentSessionId,
+        lastActiveAt: Date.now(),
+      })
+
       const messagePayload: {
         text: string
         files?: Array<{
