@@ -119,16 +119,30 @@ describe('refreshAvailableModels', () => {
 
 describe('availableModelsHint', () => {
   test('offers only auto before the list has loaded', () => {
-    expect(availableModelsHint()).toBe('Use "auto" (recommended).')
+    const hint = availableModelsHint()
+    expect(hint).toStartWith('Use "auto" (recommended).')
+    expect(hint).toContain('list_models')
   })
 
-  test('lists the loaded model ids', async () => {
+  test('lists the loaded model ids with display names', async () => {
     mockProxyModels(WORKSPACE_LIST)
     await refreshAvailableModels()
     const hint = availableModelsHint()
     expect(hint).toContain('"auto" (recommended)')
-    expect(hint).toContain('"claude-sonnet-5"')
-    expect(hint).toContain('"gpt-6-luna"')
+    expect(hint).toContain('"claude-sonnet-5" (Claude Sonnet 5)')
+    expect(hint).toContain('"gpt-6-luna" (GPT-6 Luna)')
+    expect(hint).not.toContain('list_models')
+  })
+
+  test('points at list_models when the list is truncated', async () => {
+    mockProxyModels({
+      object: 'list',
+      data: Array.from({ length: 20 }, (_, i) => ({ id: `model-${i}`, owned_by: 'x', display_name: `Model ${i}`, available: true })),
+    })
+    await refreshAvailableModels()
+    const hint = availableModelsHint()
+    expect(hint).not.toContain('"model-19"')
+    expect(hint).toContain('call list_models for the full list')
   })
 })
 

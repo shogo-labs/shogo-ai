@@ -6,7 +6,7 @@
  * call happens; disk I/O uses a real temp directory so file/lock behavior is
  * exercised for real.
  */
-import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -123,8 +123,10 @@ const {
   createCapabilitiesConfigureTool,
   createProjectCallTool,
   createSystemApplyTool,
+  createListModelsTool,
   resolveProjectDir,
 } = await import('../project-tools')
+const { __resetAvailableModelsForTests } = await import('../available-models')
 type ToolContext = import('../gateway-tools').ToolContext
 
 // ─── Test harness ──────────────────────────────────────────────────────
@@ -325,6 +327,76 @@ describe('project_detach', () => {
     expect(out.ok).toBe(true)
     expect(out.removed).toBe(true)
     expect(calls.find((c) => c.fn === 'detachProject')?.args).toEqual(['caller-1', 'proj-2'])
+  })
+})
+
+// ─── list_models ─────────────────────────────────────────────────────────────
+
+describe('list_models', () => {
+  const realFetch = globalThis.fetch
+  const savedProxy = { url: process.env.AI_PROXY_URL, token: process.env.AI_PROXY_TOKEN }
+  const LIST = {
+    object: 'list',
+    data: [
+      { id: 'claude-opus-5-5', owned_by: 'anthropic', display_name: 'Claude Opus 5.5', available: true },
+      { id: 'claude-opus-5', owned_by: 'anthropic', display_name: 'Claude Opus 5', available: true },
+      { id: 'gpt-6-luna', owned_by: 'openai', display_name: 'GPT-6 Luna', available: true },
+      { id: 'gpt-live-1', owned_by: 'openai', display_name: 'GPT-Live 1', kind: 'live', available: true },
+    ],
+  }
+
+  beforeEach(() => {
+    __resetAvailableModelsForTests()
+    process.env.AI_PROXY_URL = 'https://api.example.test/api/ai/v1'
+    process.env.AI_PROXY_TOKEN = 'proxy-token'
+  })
+
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    if (savedProxy.url === undefined) delete process.env.AI_PROXY_URL
+    else process.env.AI_PROXY_URL = savedProxy.url
+    if (savedProxy.token === undefined) delete process.env.AI_PROXY_TOKEN
+    else process.env.AI_PROXY_TOKEN = savedProxy.token
+    __resetAvailableModelsForTests()
+  })
+
+  function mockModels(payload: unknown, status = 200) {
+    let count = 0
+    globalThis.fetch = (async () => {
+      count++
+      return new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } })
+    }) as any
+    return () => count
+  }
+
+  test('returns every usable chat model with id, display name and provider', async () => {
+    mockModels(LIST)
+    const out = await run(createListModelsTool())
+    expect(out.default).toBe('auto')
+    expect(out.models).toEqual([
+      { id: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', provider: 'anthropic' },
+      { id: 'claude-opus-5', displayName: 'Claude Opus 5', provider: 'anthropic' },
+      { id: 'gpt-6-luna', displayName: 'GPT-6 Luna', provider: 'openai' },
+    ])
+  })
+
+  test('filters by a picker-style name', async () => {
+    mockModels(LIST)
+    const out = await run(createListModelsTool(), { query: 'Opus 5.5' })
+    expect(out.models.map((m: any) => m.id)).toEqual(['claude-opus-5-5'])
+  })
+
+  test('refetches on every call instead of using the cache', async () => {
+    const count = mockModels(LIST)
+    await run(createListModelsTool())
+    await run(createListModelsTool())
+    expect(count()).toBe(2)
+  })
+
+  test('errors when the list cannot be loaded', async () => {
+    mockModels({ error: 'boom' }, 500)
+    const out = await run(createListModelsTool())
+    expect(out.code).toBe('models_unavailable')
   })
 })
 
