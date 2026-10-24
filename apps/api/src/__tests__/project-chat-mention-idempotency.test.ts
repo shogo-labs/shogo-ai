@@ -102,6 +102,7 @@ mock.module('../lib/chat-mentionables', () => ({
   chatTitleOf: (session: any) => session?.name ?? 'chat',
   chatScopeOf: () => ({ projectId: null, projectName: null, workspaceId: 'ws-2', workspaceName: 'Other team' }),
   readChatTranscript: async () => null,
+  describeChatForUser: async () => null,
 }))
 
 mock.module('../services/chat-queue-dispatcher.service', () => ({

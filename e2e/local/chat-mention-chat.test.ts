@@ -1,28 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Tagging another chat from the composer (SHO-52).
+ * Tagging another chat from the workspace composer (SHO-52 → SHO-191).
  *
- * The acceptance path this spec owns — the one the API suites cannot see:
+ * In the **workspace chat** a tag is context, not a send. The acceptance path
+ * this spec owns — the one the API suites cannot see:
  *
  *   1. typing `@` in the composer offers a chat that lives in **another
  *      workspace** (the `GET /api/chat-mentionables` picker, not the
  *      current-workspace-only history search);
- *   2. the sent message renders a chip with that chat's title and a delivery
- *      state, instead of the raw `<@c:…>` wire token;
- *   3. the tag actually reaches the target chat — a queue row / message lands
- *      in the target session, which is the thing `Queued`/`Working`/`Replied`
- *      is derived from;
+ *   2. the sent message renders a chip with that chat's title, instead of the
+ *      raw `<@c:…>` wire token, and **no delivery state** — nothing was sent;
+ *   3. nothing reaches the tagged chat: no queue row, no message, no turn;
  *   4. pressing the chip opens that chat **in its own workspace**, which is
  *      what `openInWorkspace` is for: the chat screens read the active
  *      workspace, so a plain push would land on a chat that cannot be sent to
  *      (`session_not_in_workspace`).
  *
+ * The pointer block the agent receives (title, id, where it lives, and the
+ * exact `read_history` call, with no transcript) is built server-side and never
+ * persists, so it is pinned by unit tests instead:
+ * `apps/api/src/__tests__/chat-pointer-references.test.ts` (the reference and
+ * the cross-workspace `read_history`) and
+ * `packages/agent-runtime/src/__tests__/reference-context-history.test.ts`
+ * (the rendered prompt block).
+ *
  * Local mode seeds one personal and one team workspace, so the second
  * workspace exists without this spec creating (and having to delete) one. The
- * target chat is created through the API and removed again at the end. The
- * handoff is delivered without needing a model reply, so this runs on the plain
- * local stack:
+ * target chat is created through the API and removed again at the end:
  *
  *   E2E_LOCAL_START_STACK=1 npx playwright test \
  *     --config e2e/local/playwright.config.ts chat-mention-chat --project chromium
@@ -38,9 +43,8 @@ type WorkspaceRow = { id: string; name?: string; kind?: string }
 type SessionRow = { id: string; workspaceId: string }
 
 // `statusLabel()` renders these lower-case ("replied 3:42 PM"); match either
-// case so a copy change does not silently skip the assertion. `delivered` is
-// the durable one — it survives a target turn that never answers.
-const TAG_LINE = /(queued|delivered|working|replied)/i
+// case so a copy change does not silently skip the assertion.
+const TAG_STATUS = /(queued|delivered|working|replied)/i
 
 /** Local mode auto-signs in; onboarding has to be complete before workspaces list. */
 async function establishLocalSession(page: Page): Promise<void> {
@@ -113,41 +117,17 @@ async function activeWorkspaceName(page: Page): Promise<string | null> {
 const composer = (page: Page) =>
   page.getByTestId("project-composer-input").filter({ visible: true }).first()
 
-/** True once a line of the visible chat shows the tagged chat and its state. */
+/** True when a visible line shows the tagged chat **and** a delivery state. */
 async function chipShowsStatus(page: Page, title: string): Promise<boolean> {
   const text = await page.evaluate(() => document.body.innerText)
   return text
     .split("\n")
-    .some((line) => line.includes(`@${title}`) && TAG_LINE.test(line))
-}
-
-type TagStatus = { queued: number; working: boolean; delivered: boolean; replied: number }
-
-/** What the chip's suffix is derived from, read from the same route it uses. */
-async function chatMentionStatus(
-  page: Page,
-  sessionId: string,
-  sinceMs: number,
-): Promise<TagStatus> {
-  return page.evaluate(async ({ apiBase, id, since }) => {
-    const params = new URLSearchParams({ ids: id, since })
-    const response = await fetch(`${apiBase}/api/chat-mention-status?${params}`, {
-      credentials: "include",
-    })
-    const body = await response.json().catch(() => null)
-    const status = body?.statuses?.[id] ?? {}
-    return {
-      queued: Number(status.queued ?? 0),
-      working: Boolean(status.working),
-      delivered: Boolean(status.deliveredAt),
-      replied: status.repliedAt ? 1 : 0,
-    }
-  }, { apiBase: API, id: sessionId, since: new Date(sinceMs).toISOString() })
+    .some((line) => line.includes(`@${title}`) && TAG_STATUS.test(line))
 }
 
 /**
- * Everything the server holds for `sessionId` that proves delivery: the queue
- * row while it waits, or the persisted message once its turn started.
+ * Everything the server holds for `sessionId` that would prove a delivery: the
+ * queue row while it waits, or the persisted message once a turn started.
  */
 async function deliveredText(page: Page, sessionId: string): Promise<string> {
   return page.evaluate(
@@ -171,8 +151,8 @@ async function deliveredText(page: Page, sessionId: string): Promise<string> {
   )
 }
 
-test.describe("SHO-52 — a chat tag is an address", () => {
-  test("a chat from another workspace is offered, delivered to, and opens in that workspace", async ({
+test.describe("SHO-191 — a chat tag in the workspace chat is a reference", () => {
+  test("a chat from another workspace is offered, rendered as a chip, sent nothing, and opens in that workspace", async ({
     page,
   }) => {
     await establishLocalSession(page)
@@ -189,11 +169,10 @@ test.describe("SHO-52 — a chat tag is an address", () => {
     expect(target, "need a second workspace to tag into").toBeTruthy()
 
     const stamp = Date.now()
-    // The title identifies the chat in the picker; the body is what has to
-    // arrive in the other workspace (the title of the *target* chat is the one
-    // thing a delivered message never contains).
-    const title = `SHO-52 ${stamp}`
-    const body = `please pick this up ${stamp}`
+    // The title identifies the chat in the picker; the body is the phrase that
+    // must never arrive in the other workspace.
+    const title = `SHO-191 ${stamp}`
+    const body = `just reading this ${stamp}`
     const targetChat = await createChatInWorkspace(page, target.id, title)
 
     try {
@@ -201,7 +180,7 @@ test.describe("SHO-52 — a chat tag is an address", () => {
       // chat that was already there.
       const input = composer(page)
       await input.click()
-      await input.fill("@SHO-52")
+      await input.fill("@SHO-191")
       const option = page.getByText(title, { exact: false }).first()
       await expect(option).toBeVisible({ timeout: 30_000 })
 
@@ -214,29 +193,26 @@ test.describe("SHO-52 — a chat tag is an address", () => {
       await expect(chip).toBeVisible({ timeout: 30_000 })
       await expect(page.getByText("<@c:", { exact: false })).toHaveCount(0)
 
-      // (3) it reached the other workspace's chat
-      await expect
-        .poll(() => deliveredText(page, targetChat.id), { timeout: 90_000 })
-        .toContain(body)
-
-      // The suffix mirrors `/api/chat-mention-status`: whatever state the
-      // server reports, the chip has to be showing it.
-      const status = await chatMentionStatus(page, targetChat.id, stamp)
-      if (status.queued > 0 || status.working || status.delivered || status.replied > 0) {
-        await expect.poll(() => chipShowsStatus(page, title), { timeout: 30_000 }).toBe(true)
-      }
+      // (3) nothing was posted to the tagged chat: no queue row, no message,
+      // and therefore no turn. Give the (now removed) delivery path room to
+      // have raced us, then assert it stayed empty.
+      const sourceChatBefore = await deliveredText(page, targetChat.id)
+      await page.waitForTimeout(5_000)
+      expect(await deliveredText(page, targetChat.id)).toBe(sourceChatBefore)
+      expect(sourceChatBefore).not.toContain(body)
+      // AC 7: a reference has no delivery state to show.
+      expect(await chipShowsStatus(page, title)).toBe(false)
 
       // (4) pressing the chip opens it there
       await chip.click()
       await expect(page).toHaveURL(new RegExp(`/agent\\?chatSessionId=${targetChat.id}`), {
         timeout: 60_000,
       })
-      await expect(page.getByText(body, { exact: false }).first()).toBeVisible({
-        timeout: 90_000,
-      })
       await expect
         .poll(() => activeWorkspaceName(page), { timeout: 30_000 })
         .toBe(target.name ?? "")
+      // The tagged chat is empty: the phrase we wrote never got here.
+      await expect(page.getByText(body, { exact: false })).toHaveCount(0)
     } finally {
       if (process.env.E2E_KEEP_TARGET !== "1") {
         await page.evaluate(

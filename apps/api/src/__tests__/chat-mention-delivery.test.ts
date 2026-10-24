@@ -245,9 +245,8 @@ const { deliverChatMentions, handOffToChat, chatHandoffText, isChatHandoff } = a
   '../services/chat-mention-delivery.service'
 )
 const { listChatMentionables, resolveChatForUser } = await import('../lib/chat-mentionables')
-const { mentionedChatIds, renderMentionsAsText, chatMentionToken, parseMentions } = await import(
-  '../services/conversation-mentions'
-)
+const { mentionedChatIds, chatReferenceIds, renderMentionsAsText, chatMentionToken, parseMentions } =
+  await import('../services/conversation-mentions')
 
 beforeEach(() => {
   queued.length = 0
@@ -260,6 +259,16 @@ describe('chat mention tokens', () => {
     expect(mentionedChatIds('hi <@c:a> and <@c:b> and again <@c:a>')).toEqual(['a', 'b'])
     expect(chatMentionToken('x')).toBe('<@c:x>')
     expect(parseMentions('<@c:x>')).toEqual([{ targetType: 'chat', chatId: 'x' }])
+  })
+
+  // SHO-191: the workspace chat turns these ids into pointer references instead
+  // of delivering to them, so the list has to skip the chat itself and anything
+  // the composer already sent as a reference.
+  test('picks the chats a workspace tag should point at', () => {
+    const text = 'look at <@c:a> and <@c:b>'
+    expect(chatReferenceIds(text, { selfSessionId: 'self', existing: ['a'] })).toEqual(['b'])
+    expect(chatReferenceIds('only <@c:self>', { selfSessionId: 'self' })).toEqual([])
+    expect(chatReferenceIds('no tags here', { selfSessionId: 'self' })).toEqual([])
   })
 
   test('renders a token as its title, falling back to "chat"', () => {

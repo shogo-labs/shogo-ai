@@ -34,7 +34,13 @@ export type ChatReference =
   | { type: 'file'; path?: string; name?: string }
   | { type: 'folder'; path?: string; name?: string }
   | { type: 'project'; id?: string; name?: string }
-  | { type: 'chat'; id?: string; name?: string; projectId?: string; label?: string; transcript?: string }
+  | { type: 'chat'; id?: string; name?: string; projectId?: string; projectName?: string; label?: string; transcript?: string
+      /** Set when the tag is context only: name the chat, do not inline it (SHO-191). */
+      pointer?: boolean
+      workspaceId?: string
+      workspaceName?: string
+      messageCount?: number
+      lastActivityAt?: string }
   | { type: 'plan'; filename?: string; name?: string; planId?: string; projectId?: string; label?: string; content?: string }
   | { type: 'workspace'; id?: string; name?: string; slug?: string; summary?: string }
 
@@ -75,6 +81,42 @@ function workspaceLabel(ref: Extract<ChatReference, { type: 'workspace' }>): str
 
 function projectLabel(ref: Extract<ChatReference, { type: 'project' }>): string {
   return ref.name || ref.id || 'project'
+}
+
+/** "12m ago" / "3h ago" / "2d ago" — how long since a chat last moved. */
+function relativeAge(iso?: string): string | null {
+  if (!iso) return null
+  const then = new Date(iso).getTime()
+  if (Number.isNaN(then)) return null
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000))
+  if (seconds < 60) return 'just now'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.round(hours / 24)}d ago`
+}
+
+/**
+ * A chat the person tagged as context rather than addressed: say which chat it
+ * is and exactly how to read it, and inline nothing. The workspace chat never
+ * posts to a tagged chat (SHO-191), so a transcript here would be context the
+ * agent did not ask for on top of a send that never happened.
+ */
+function pointerChatSection(ref: Extract<ChatReference, { type: 'chat' }>, id: string): string {
+  const title = (ref.label || ref.name || id).replace(/"/g, "'")
+  const where = [ref.projectName || 'workspace chat', ref.workspaceName].filter(Boolean).join(' in ')
+  const facts: string[] = []
+  if (typeof ref.messageCount === 'number') facts.push(`${ref.messageCount} messages`)
+  const age = relativeAge(ref.lastActivityAt)
+  if (age) facts.push(`last active ${age}`)
+  const header = `[Referenced Chat: "${title}" — id ${id}${where ? ` — ${where}` : ''}${facts.length ? ` — ${facts.join(', ')}` : ''}]`
+  return (
+    `${header}\n` +
+    `Its history is not included. Read it with read_history({ kind: "chat", id: "${id}", scope: "workspace" }) ` +
+    `(page with fromSeq/limit). Nothing was sent to that chat; use chat_handoff only if the person asks you to send it something.\n` +
+    `[End of Referenced Chat]`
+  )
 }
 
 /** Caps for a referenced project's injected file tree (keep the prompt small). */
@@ -245,6 +287,10 @@ export function buildReferencedContext(
       const id = typeof ref.id === 'string' ? ref.id : ''
       if (!id || id === options.currentChatSessionId) {
         if (id === options.currentChatSessionId) sections.push(`[Referenced Chat: ${ref.name || id}] (current chat omitted)`)
+        continue
+      }
+      if (ref.pointer) {
+        sections.push(pointerChatSection(ref, id))
         continue
       }
       let transcript = typeof ref.transcript === 'string' ? ref.transcript : ''

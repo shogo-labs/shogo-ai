@@ -571,9 +571,10 @@ export interface ChatInputProps {
   ) => Promise<AgentHistoryResult[]>;
   /**
    * Chats the user can tag from the "@" menu, from every workspace they belong
-   * to (server-checked). Unlike `workspaceHistorySearch` these are addresses,
-   * not context: selecting one inserts `<@c:ID>` and the message is handed to
-   * that chat when it is sent.
+   * to (server-checked). Selecting one inserts `<@c:ID>` and adds a chat
+   * reference. In a workspace chat that reference is context — the agent is
+   * told which chat it is and reads it with `read_history` — while a project
+   * chat still hands the message to the tagged chat when it is sent.
    */
   chatMentionables?: (query: string) => Promise<ChatMentionable[]>;
   ideMode?: boolean;
@@ -1718,9 +1719,10 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     const fileData = combinedFiles.length > 0 ? combinedFiles : undefined;
     const refData = references.length > 0 ? references : undefined;
 
-    // A tagged chat is an address, not decoration: send `<@c:ID>` in place of
-    // its "@Title" label so the message can be delivered there and a reader
-    // never sees an id.
+    // A tagged chat travels as `<@c:ID>` in place of its "@Title" label, so the
+    // chip renders and a reader never sees an id. What that token means is the
+    // surface's call: a reference the agent reads (workspace chat, SHO-191) or
+    // an address the message is handed to (project chat, SHO-52).
     onSubmit(
       encodeChatMentionTokens(trimmedContent, refData),
       fileData,
