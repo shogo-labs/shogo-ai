@@ -170,6 +170,41 @@ describe('builtInRoot', () => {
     }
   })
 
+  test('a relative cd inside a project stays in the project', () => {
+    // From the green run: the agent made a scratch copy under
+    // `<project>/.tmp/contact-test` and ran `bun add hono` there. That is a
+    // project build, not a root build — a relative cd cannot leave the folder.
+    const r = result([
+      call('exec', {
+        command: `cd ${CREATED_ID} && mkdir -p .tmp/contact-test && cd .tmp/contact-test && bun add hono`,
+      }),
+    ])
+    expect(builtInRoot(r)).toBe(false)
+  })
+
+  test('a cd that pops out of the project is back in the root', () => {
+    const r = result([
+      call('exec', { command: `cd ${CREATED_ID} && cd .. && bun install` }),
+      call('exec', { command: `cd ${CREATED_ID} && cd .tmp/x && cd ../.. && bun install` }),
+    ])
+    expect(builtInRoot(r)).toBe(true)
+  })
+
+  test('an edit that failed wrote nothing and is not a root build', () => {
+    // `edit_file { path: 'src/App.tsx' }` resolves against the workspace root,
+    // so on a root with no app it returns `File not found`. Nothing was
+    // written; `workspaceRootClean` is the gate on the outcome.
+    const failed = result([
+      call('edit_file', { path: 'src/App.tsx' }, { error: 'File not found: src/App.tsx' }),
+    ])
+    expect(builtInRoot(failed)).toBe(false)
+
+    const wrote = result([
+      call('edit_file', { path: 'src/App.tsx' }, { ok: true, replacements: 1 }),
+    ])
+    expect(builtInRoot(wrote)).toBe(true)
+  })
+
   test('a read that merely names prisma or vite is not a root build', () => {
     // From a real red run: this was flagged as "bun add at the root".
     for (const command of [

@@ -293,6 +293,8 @@ export function walkCommand(
     .map((s) => s.trim())
     .filter(Boolean)
   let inProject = startsInProject
+  /** Levels below the current project folder (or below the root, when none). */
+  let depth = 0
   let rootWrite: string | null = null
   let rootBuild = false
   let wrote = false
@@ -301,14 +303,33 @@ export function walkCommand(
     const segment = raw.replace(/^(?:time|timeout\s+\d+)\s+/i, '')
     if (/^cd\s/i.test(segment)) {
       const target = segment.match(CD_TARGET)?.[1] ?? ''
-      const parts = normalizeToolPath(target).split('/')
+      const parts = normalizeToolPath(target)
+        .split('/')
+        .filter((part) => part && part !== '.')
       const project = parts.find((part) => UUID_SEGMENT.test(part))
-      if (project) inProject = project
-      else if (/^\.\.?$|^-$/.test(target)) {
-        // `cd ..` / `cd .` — only `..` from a project leaves it, and a
-        // project folder is exactly one level down.
-        if (target === '..') inProject = null
-      } else inProject = null
+      if (project) {
+        inProject = project
+        depth = parts.length - parts.indexOf(project) - 1
+      } else if (target.startsWith('/')) {
+        // An absolute path with no project folder in it is the workspace root.
+        inProject = null
+        depth = 0
+      } else {
+        // A relative `cd` moves within where the shell already is:
+        // `cd .tmp/x` from a project is still that project, and only a `..`
+        // that pops past the project folder is back in the root.
+        for (const part of parts) {
+          if (part !== '..') {
+            depth += 1
+            continue
+          }
+          depth -= 1
+          if (depth < 0) {
+            inProject = null
+            depth = 0
+          }
+        }
+      }
       continue
     }
     // Writes that bypass write_file entirely (`cat > src/App.tsx`), judged
@@ -356,6 +377,14 @@ export function isRootAppPath(path: string): boolean {
   return APP_SOURCE.test(p)
 }
 
+/** A tool call that came back an error wrote nothing. */
+function callFailed(call: ToolCallRecord): boolean {
+  const output: any = call.output
+  if (!output || typeof output !== 'object') return false
+  if (output.ok === false) return true
+  return typeof output.error === 'string' && output.error.length > 0
+}
+
 /** App-code paths a file tool wrote into the workspace root. `exec` is handled by `builtInRoot`. */
 function rootPathsForCall(call: ToolCallRecord): string[] {
   // `write_file { path: 'src/App.tsx', project: '<id>' }` writes into that
@@ -364,6 +393,10 @@ function rootPathsForCall(call: ToolCallRecord): string[] {
   if (typeof explicitProject === 'string' && explicitProject.trim()) return []
 
   if (call.name !== 'write_file' && call.name !== 'edit_file') return []
+  // `edit_file { path: 'src/App.tsx' }` on a root that has no such file comes
+  // back `File not found` and writes nothing, so it is not a root build. The
+  // disk check (`workspaceRootClean`) is what proves the outcome either way.
+  if (callFailed(call)) return []
   const raw = call.input?.path
   if (typeof raw === 'string' && isRootAppPath(raw)) return [normalizeToolPath(raw)]
   return []
