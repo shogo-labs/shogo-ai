@@ -13,13 +13,14 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Image, Linking, Pressable, ScrollView, View } from 'react-native'
+import { ActivityIndicator, Image, Pressable, ScrollView, View } from 'react-native'
 import { ChevronDown, ChevronUp, Download, Lock } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { api } from '../../lib/api'
-import { memberMessagesCsvUrl, useUsageLogCsvMachine } from '../../lib/usage-log-csv'
+import { useUsageLogCsvMachine } from '../../lib/usage-log-csv'
+import { exportMemberMessages } from '../../lib/member-messages-export'
 import {
   compactNumber,
   deviceTimezone,
@@ -41,12 +42,6 @@ type SortKey =
   | 'activeDays'
   | 'streak'
   | 'lastActive'
-
-/** The export window for a period, as ISO — the messages route takes explicit bounds. */
-export function memberMessagesSince(period: EngagementPeriod, now: Date = new Date()): string | undefined {
-  const days = period === '7d' ? 7 : period === '30d' ? 30 : period === '90d' ? 90 : null
-  return days ? new Date(now.getTime() - days * 864e5).toISOString() : undefined
-}
 
 const ACTION_WIDTH = 76
 
@@ -158,16 +153,8 @@ export function TeamWorkTable({
   )
 
   // "What did this person send?" — the records behind their row, as a CSV.
-  const exportMessages = (userId: string) => {
-    const url = memberMessagesCsvUrl({
-      workspaceId,
-      userId,
-      params: { since: memberMessagesSince(period) },
-      machine,
-    })
-    if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener')
-    else Linking.openURL(url)
-  }
+  const exportMessages = (userId: string) =>
+    exportMemberMessages({ workspaceId, userId, period, machine })
 
   if (locked) {
     return (
