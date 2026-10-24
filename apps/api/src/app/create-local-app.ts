@@ -192,11 +192,15 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', aiProxyRoutes())
   app.route('/api', aiLiveRoutes())
   app.route('/api', voiceRoutes())
-  // The desktop composer must serve TTS too. `server.ts` (cloud) mounts this
-  // next to `voiceRoutes()`, but this composer is the one desktop boots
+  // The desktop composer must serve hosted TTS too. `server.ts` (cloud) mounts
+  // this next to `voiceRoutes()`, but this composer is the one desktop boots
   // (`entry.ts` → `local-server.ts` → `createLocalApp()`), so without it
   // `POST /api/voice/tts` — and with it every pod-shaped TTS call that the SDK
   // proxy forwards here — 404s on desktop.
+  //
+  // `voiceMediaRoutes()` is the *single* owner of the hosted media paths
+  // (`/voice/tts`, `/voice/music`, `/voice/op/*`): `voiceRoutes()` registers
+  // none of them, so mounting both here does not duplicate a route (SHO-73).
   app.route('/api', voiceMediaRoutes())
   app.route('/api', rbacRoutes())
   app.route('/api', chatRoutes())

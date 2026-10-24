@@ -929,8 +929,11 @@ reported fallback.
   quietly becoming another model.
 - `textToSpeech()` only retries on the fallback model when the failure is
   model-related (402, or 400/403/404/422 whose body mentions
-  model/plan/permission). 401, 429, 5xx and network errors are surfaced. The
-  result carries `requestedModel`, `fellBack` and `fallbackReason`.
+  model/plan/permission). The retry target is `TTS_FALLBACK_MODEL`
+  (`eleven_flash_v2_5`, the widest-available model) — not the convai
+  `eleven_v4_turbo` default, so a BYO plan without v4 entitlement still gets
+  audio. 401, 429, 5xx and network errors are surfaced. The result carries
+  `requestedModel`, `fellBack` and `fallbackReason`.
 
 ### Hosted media through the proxy
 
