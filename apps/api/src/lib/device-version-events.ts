@@ -38,6 +38,55 @@ export function normalizeDeviceVersion(version: string | null | undefined): stri
   return value.slice(0, MAX_DEVICE_VERSION_LENGTH)
 }
 
+/** The columns of a history row the read model needs. */
+export interface DeviceVersionEventRow {
+  deviceId: string
+  version: string
+  firstSeenAt: Date
+  lastSeenAt: Date
+}
+
+/** The version a device last reported. */
+export type DeviceVersionObservation = DeviceVersionEventRow
+
+/**
+ * Reduce version history to the version each device is on *now*: the row with
+ * the newest `lastSeenAt`, i.e. the last version the device actually reported.
+ *
+ * Newest sighting beats highest semver on purpose (SHO-126). `api_keys` only
+ * keeps the current row and its `lastSeenAt` is bumped by touches that carry no
+ * version, which is why the aggregates used to prefer the highest version ever
+ * seen — and why a device that moved *down* (a rollback, a beta opt-out, a
+ * re-pinned install) kept its higher label forever. A history row is only
+ * written by a caller that carried a version, so the newest one is the truth.
+ * `firstSeenAt` breaks a tie (a backfilled 2.3.6 -> 2.2.27 pair shares a
+ * `lastSeenAt`) in favour of the version seen later.
+ */
+export function newestVersionPerDevice(
+  rows: DeviceVersionEventRow[],
+): Map<string, DeviceVersionObservation> {
+  const current = new Map<string, DeviceVersionObservation>()
+  for (const row of rows) {
+    const deviceId = row.deviceId?.trim()
+    if (!deviceId) continue
+    const seen = current.get(deviceId)
+    if (seen && !isLaterObservation(row, seen)) continue
+    current.set(deviceId, {
+      deviceId,
+      version: row.version,
+      firstSeenAt: row.firstSeenAt,
+      lastSeenAt: row.lastSeenAt,
+    })
+  }
+  return current
+}
+
+function isLaterObservation(candidate: DeviceVersionEventRow, current: DeviceVersionEventRow): boolean {
+  const seen = candidate.lastSeenAt.getTime() - current.lastSeenAt.getTime()
+  if (seen !== 0) return seen > 0
+  return candidate.firstSeenAt.getTime() > current.firstSeenAt.getTime()
+}
+
 /**
  * Minimal surface of the prisma client this module needs. Callers that already
  * hold a client (the device mint) pass theirs so the write lands in the same
