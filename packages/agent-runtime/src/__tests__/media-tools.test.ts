@@ -223,6 +223,14 @@ describe('list_media_models', () => {
     expect(r.images).toBeUndefined()
   })
 
+  test('says 3D is off instead of returning an empty list while 3D generation is off', async () => {
+    on(`${PROXY}/media/models`, () => json(payload))
+    const r = await run('list_media_models', { kind: '3d' })
+    expect(r.models_3d).toEqual([])
+    expect(r.models_3d_note).toContain('off')
+    expect(calls.some((c) => c.url.includes('/3d/models'))).toBe(false)
+  })
+
   test('kind "presets" lists the restyle styles instead of models', async () => {
     on(`${PROXY}/media/presets`, () => json({ presets: [{ id: 'preset-1', name: 'Anime' }] }))
     const r = await run('list_media_models', { kind: 'presets' })

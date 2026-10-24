@@ -543,7 +543,11 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
         const show3d = kind === 'all' || kind === '3d'
         // 3D models come from their own route, and only when the capability is on:
         // each task is billed, so there is no point advertising them otherwise.
-        const models3d = threeDOn && show3d ? await fetchThreeDModels(proxy, signal) : undefined
+        const models3d = !show3d
+          ? undefined
+          : threeDOn
+            ? await fetchThreeDModels(proxy, signal)
+            : { models_3d: [], models_3d_note: '3D generation is off for this project (the Tripo key is not the problem). The user can enable it in Capabilities.' }
         const images = data.images ?? []
         const videos = data.videos ?? []
         return textResult({
