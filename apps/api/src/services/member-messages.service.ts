@@ -289,7 +289,16 @@ export async function getMemberMessages(
               createdAt: true,
               content: true,
               sessionId: true,
-              session: { select: { id: true, name: true, inferredName: true, projectId: true, createdByUserId: true } },
+              session: {
+                select: {
+                  id: true,
+                  name: true,
+                  inferredName: true,
+                  createdByUserId: true,
+                  contextType: true,
+                  contextId: true,
+                },
+              },
             },
           }),
     ])
@@ -310,7 +319,9 @@ export async function getMemberMessages(
         ? {
             id: row.session.id,
             name: row.session.name ?? row.session.inferredName ?? null,
-            projectId: row.session.projectId ?? null,
+            // ChatSession has no projectId: a project chat is contextType +
+            // contextId (the FK on contextId), so the project is read from there.
+            projectId: row.session.contextType === 'project' ? (row.session.contextId ?? null) : null,
           }
         : null,
       mentions: [],

@@ -98,7 +98,15 @@ const agentMessage = (over: any = {}) => ({
   createdAt: at(20),
   content: 'add the export button',
   sessionId: 'sess-1',
-  session: { id: 'sess-1', name: 'Export work', inferredName: null, projectId: 'proj-1', createdByUserId: 'alice' },
+  session: {
+    id: 'sess-1',
+    name: 'Export work',
+    inferredName: null,
+    createdByUserId: 'alice',
+    // A project chat is contextType + contextId; ChatSession has no projectId.
+    contextType: 'project',
+    contextId: 'proj-1',
+  },
   ...over,
 })
 
@@ -145,6 +153,34 @@ describe('getMemberMessages', () => {
     expect(agentWhere.AND[1].OR[0]).toEqual({ authorUserId: 'alice' })
     // Agent output, replies and project-call relays never appear.
     expect(agentWhere.agent).toEqual({ not: expect.anything() })
+  })
+
+  test('reports the project from the session context, and nothing for a workspace chat', async () => {
+    fx.agent = [
+      agentMessage(),
+      agentMessage({
+        id: 'am-2',
+        createdAt: at(5),
+        session: {
+          id: 'sess-2',
+          name: null,
+          inferredName: 'Workspace chat',
+          createdByUserId: 'alice',
+          contextType: 'workspace',
+          contextId: null,
+        },
+      }),
+    ]
+
+    const out = await svc.getMemberMessages(WS, 'alice', { source: 'agent_chat' })
+
+    expect(out.items.find((i) => i.id === 'am-1')?.chatSession).toMatchObject({ projectId: 'proj-1' })
+    // A workspace-scoped session is not a project chat, and it falls back to
+    // the inferred name when that is all the session has.
+    expect(out.items.find((i) => i.id === 'am-2')?.chatSession).toMatchObject({
+      name: 'Workspace chat',
+      projectId: null,
+    })
   })
 
   test('a DM with a person is a message to a person; one tagging an agent is not', async () => {

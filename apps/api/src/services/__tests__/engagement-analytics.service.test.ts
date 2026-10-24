@@ -525,7 +525,7 @@ describe('getMemberWorkActivity', () => {
         createdAt: new Date('2026-07-07T09:00:00Z'),
         content: 'add the export button',
         sessionId: 's1',
-        session: { name: 'SHO-7 work', inferredName: null, createdByUserId: 'bob', projectId: 'proj1' },
+        session: { name: 'SHO-7 work', inferredName: null, createdByUserId: 'bob', contextType: 'project', contextId: 'proj1' },
       },
       // Legacy row with no stamped author: the session owner is the sender.
       {
@@ -534,7 +534,7 @@ describe('getMemberWorkActivity', () => {
         createdAt: new Date('2026-07-07T10:00:00Z'),
         content: 'and a CSV',
         sessionId: 's2',
-        session: { name: null, inferredName: 'Export work', createdByUserId: 'alice', projectId: 'proj1' },
+        session: { name: null, inferredName: 'Export work', createdByUserId: 'alice', contextType: 'project', contextId: 'proj1' },
       },
     ]
 
@@ -546,11 +546,20 @@ describe('getMemberWorkActivity', () => {
     const where = calls.chatMessage.at(-1).where
     expect(where.role).toBe('user')
     // Scoped to this workspace's agent chats, never another workspace's.
-    expect(where.AND[0].chatSession.OR[0]).toEqual({ workspaceId: { in: [WS] } })
+    // The relation is `session`: `chatSession` belongs to ToolCallLog and
+    // throws against a real database, which no mock would ever show.
+    expect(where.AND[0].session.OR[0]).toEqual({ workspaceId: { in: [WS] } })
     expect(where.AND[1].OR).toEqual([
       { authorUserId: 'alice' },
-      { authorUserId: null, chatSession: { createdByUserId: 'alice' } },
+      { authorUserId: null, session: { createdByUserId: 'alice' } },
     ])
+    expect(JSON.stringify(where)).not.toContain('chatSession')
+    // The project of a prompt comes from the session's context, where a
+    // project chat keeps it (ChatSession has no projectId column).
+    expect(calls.chatMessage.at(-1).select.session.select).toMatchObject({
+      contextType: true,
+      contextId: true,
+    })
   })
 
   test('reports prompts nobody can be credited for as a number, not a guess', async () => {

@@ -134,7 +134,10 @@ export async function collectActivity(
   const createdAt = { gte: from, lte: to }
   const user = scope.userId
 
-  const chatSessionScope = {
+  // ChatSession scope: a session belongs to the workspace directly, or
+  // through the project it runs in. Named for `session` — `chatSession` is the
+  // relation name on `ToolCallLog`, not here.
+  const sessionScope = {
     OR: [
       { workspaceId: { in: workspaceIds } },
       { project: { workspaceId: { in: workspaceIds } } },
@@ -267,18 +270,18 @@ export async function collectActivity(
         agent: { not: PROJECT_CALL_MESSAGE_AGENT },
         createdAt,
         AND: [
-          { chatSession: chatSessionScope },
+          { session: sessionScope },
           user
             ? {
                 OR: [
                   { authorUserId: user },
-                  { authorUserId: null, chatSession: { createdByUserId: user } },
+                  { authorUserId: null, session: { createdByUserId: user } },
                 ],
               }
             : {
                 OR: [
                   { authorUserId: { not: null } },
-                  { authorUserId: null, chatSession: { createdByUserId: { not: null } } },
+                  { authorUserId: null, session: { createdByUserId: { not: null } } },
                 ],
               },
         ],
@@ -289,7 +292,9 @@ export async function collectActivity(
         createdAt: true,
         content: true,
         sessionId: true,
-        session: { select: { name: true, inferredName: true, createdByUserId: true, projectId: true } },
+        session: {
+          select: { name: true, inferredName: true, createdByUserId: true, contextType: true, contextId: true },
+        },
       },
     }),
     // User prompts in a chat whose sender is unknowable: no stamped author and
@@ -300,8 +305,8 @@ export async function collectActivity(
         agent: { not: PROJECT_CALL_MESSAGE_AGENT },
         authorUserId: null,
         createdAt,
-        chatSession: {
-          AND: [chatSessionScope, { createdByUserId: null }],
+        session: {
+          AND: [sessionScope, { createdByUserId: null }],
         },
       },
     }),
@@ -410,7 +415,8 @@ export async function collectActivity(
       id: r.id,
       sessionId: r.sessionId,
       sessionName: r.session?.name ?? r.session?.inferredName ?? null,
-      projectId: r.session?.projectId ?? null,
+      projectId:
+        r.session?.contextType === 'project' ? (r.session.contextId ?? null) : null,
       text: r.content,
     })),
     cardEvents: cardEvents.map(toCardEventRow),
