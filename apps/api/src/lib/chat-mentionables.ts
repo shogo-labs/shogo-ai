@@ -218,6 +218,42 @@ export async function resolveChatByRef(userId: string, ref: string) {
   return resolveChatForUser(userId, match.id)
 }
 
+/** What a prompt needs to point at a chat without inlining it (SHO-191). */
+export interface ChatPointer {
+  id: string
+  title: string
+  projectId: string | null
+  projectName: string | null
+  workspaceId: string
+  workspaceName: string
+  messageCount: number
+  lastActivityAt: string
+}
+
+/**
+ * Name a chat the person can open and say where it lives and how much is in it
+ * — everything the workspace agent needs to go read it itself. Same access rule
+ * as the "@" picker and `chat_handoff` (`resolveChatForUser`).
+ */
+export async function describeChatForUser(userId: string, chatId: string): Promise<ChatPointer | null> {
+  const session = await resolveChatForUser(userId, chatId)
+  if (!session) return null
+  const scope = chatScopeOf(session)
+  const messageCount = await prisma.chatMessage.count({
+    where: { sessionId: session.id, role: { in: ['user', 'assistant'] } },
+  })
+  return {
+    id: session.id,
+    title: chatTitleOf(session),
+    projectId: scope.projectId,
+    projectName: scope.projectName,
+    workspaceId: scope.workspaceId,
+    workspaceName: scope.workspaceName,
+    messageCount,
+    lastActivityAt: new Date(session.lastActiveAt).toISOString(),
+  }
+}
+
 /**
  * A bounded transcript of any chat the person can open, across workspaces.
  * Feeds the "@" chat reference: the runtime may not have the referenced chat's
@@ -226,25 +262,27 @@ export async function resolveChatByRef(userId: string, ref: string) {
 export async function readChatTranscript(
   userId: string,
   chatId: string,
-  options: { limit?: number; maxBytes?: number } = {},
-): Promise<{ id: string; title: string; projectId: string | null; messages: Array<{ role: string; text: string }>; truncated: boolean } | null> {
+  options: { from?: number; limit?: number; maxBytes?: number } = {},
+): Promise<{ id: string; title: string; projectId: string | null; messages: Array<{ role: string; text: string; createdAt: string }>; truncated: boolean } | null> {
   const session = await resolveChatForUser(userId, chatId)
   if (!session) return null
+  const from = Math.max(0, Math.floor(options.from ?? 0))
   const limit = Math.max(1, Math.min(200, options.limit ?? 100))
   const maxBytes = Math.min(256 * 1024, Math.max(1024, options.maxBytes ?? 64 * 1024))
   const rows = await prisma.chatMessage.findMany({
     where: { sessionId: chatId, role: { in: ['user', 'assistant'] } },
     orderBy: { createdAt: 'asc' },
+    skip: from,
     take: limit,
-    select: { role: true, content: true },
+    select: { role: true, content: true, createdAt: true },
   })
-  const messages: Array<{ role: string; text: string }> = []
+  const messages: Array<{ role: string; text: string; createdAt: string }> = []
   let used = 0
   for (const row of rows) {
     const text = typeof row.content === 'string' ? row.content : ''
     if (!text) continue
     const clipped = text.slice(0, Math.max(0, maxBytes - used))
-    messages.push({ role: row.role, text: clipped })
+    messages.push({ role: row.role, text: clipped, createdAt: new Date(row.createdAt).toISOString() })
     used += clipped.length
     if (clipped.length < text.length) break
   }

@@ -2,6 +2,7 @@
 
 import { prisma } from './prisma'
 import { accessibleProjectsWhere } from './authz'
+import { readChatTranscript } from './chat-mentionables'
 
 export type HistoryKind = 'chat' | 'plan' | 'all'
 
@@ -170,6 +171,39 @@ export async function renderWorkspaceTranscript(
   return {
     sessionId, title: titleOf(result), ...(result.project ? { projectId: result.project.id, projectName: result.project.name } : {}),
     messages, truncated: used >= maxBytes || messages.length < result.messages.length,
+  }
+}
+
+/**
+ * A chat transcript for the runtime's `read_history`, from whichever access
+ * rule reaches the chat.
+ *
+ * A chat that belongs to this workspace renders as today. One that lives in
+ * another workspace the person can open has no row in this workspace's history
+ * scope, so it falls back to the same rule the "@" picker and `chat_handoff`
+ * use (`readChatTranscript` → `resolveChatForUser`) — that is what makes the
+ * pointer block's `read_history({kind:'chat', id, scope:'workspace'})` work for
+ * every chat the picker offers (SHO-191). A chat the person cannot open, or a
+ * caller with no identity to check against, returns null (the route's 404).
+ */
+export async function readRuntimeChatTranscript(
+  sessionId: string,
+  options: { workspaceId: string; userId?: string | null; from?: number; limit?: number },
+) {
+  const local = await renderWorkspaceTranscript(sessionId, options)
+  if (local) return local
+  if (!options.userId) return null
+  const elsewhere = await readChatTranscript(options.userId, sessionId, {
+    from: options.from,
+    limit: options.limit,
+  })
+  if (!elsewhere) return null
+  return {
+    sessionId: elsewhere.id,
+    title: elsewhere.title,
+    ...(elsewhere.projectId ? { projectId: elsewhere.projectId } : {}),
+    messages: elsewhere.messages,
+    truncated: elsewhere.truncated,
   }
 }
 

@@ -5811,7 +5811,8 @@ function createReadHistoryTool(ctx: ToolContext): AgentTool {
   const local = () => (index ??= new HistoryIndex(ctx.workspaceDir))
   return {
     name: 'read_history',
-    description: 'Read a previous chat transcript or plan returned by search_history.',
+    description:
+      'Read a previous chat transcript or plan returned by search_history, or a chat the person tagged with @.',
     label: 'Read Chat History',
     parameters: Type.Object({
       kind: Type.Union([Type.Literal('chat'), Type.Literal('plan')]),

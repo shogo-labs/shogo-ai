@@ -5,10 +5,12 @@
  *
  * The wire form is `<@c:CHAT_ID>`; readers see `@Chat title` as a chip that
  * opens that chat. Titles (and the owning workspace) are not in the message,
- * so they come from `lib/chat-mention-meta`. The source chip also shows
- * delivery state — queued, working, replied — polled from
- * `/api/chat-mention-status`, so nobody has to refresh to know the handoff
- * landed.
+ * so they come from `lib/chat-mention-meta`. Where a tag actually delivers (a
+ * project chat), the source chip also shows delivery state — queued, working,
+ * replied — polled from `/api/chat-mention-status`, so nobody has to refresh to
+ * know the handoff landed. In a workspace chat a tag is context, not a send
+ * (SHO-191): nothing was handed off, so the server reports no state and the
+ * chip shows the title alone.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react"

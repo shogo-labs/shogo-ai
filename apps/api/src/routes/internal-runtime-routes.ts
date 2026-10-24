@@ -40,7 +40,7 @@ import { REMOTE_IMPORT_MAX_BASE64_CHARS, remoteToolPermission } from '../lib/rem
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { resolve as resolvePath } from 'path'
-import { searchWorkspaceHistory, renderWorkspaceTranscript, readWorkspacePlan } from '../lib/history-search'
+import { searchWorkspaceHistory, renderWorkspaceTranscript, readRuntimeChatTranscript, readWorkspacePlan } from '../lib/history-search'
 import {
   workspaceAgentRoutes,
   type WorkspaceAgentAuthContext,
@@ -973,7 +973,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       const plan = await readWorkspacePlan(id, { workspaceId, userId })
       return plan ? c.json(plan) : c.json({ error: 'Not found' }, 404)
     }
-    const transcript = await renderWorkspaceTranscript(id, {
+    const transcript = await readRuntimeChatTranscript(id, {
       workspaceId,
       userId,
       from: Number(c.req.query('from') || 0),

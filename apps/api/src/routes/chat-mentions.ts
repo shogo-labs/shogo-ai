@@ -11,7 +11,10 @@
  *                           timestamp. `delivered` is durable — it comes from
  *                           the target's persisted handoff message, so it
  *                           survives dispatch even when the target's turn
- *                           fails and no reply is ever written.
+ *                           fails and no reply is ever written. Only a chat
+ *                           that actually took a handoff in the window is
+ *                           reported: a tag in the workspace chat is context,
+ *                           not a send (SHO-191), so it has no delivery state.
  *
  * Both are access-checked per chat here, on the server, so a chat the caller
  * cannot open is never offered or described.
@@ -94,7 +97,7 @@ export function chatMentionRoutes(config: ChatMentionRoutesConfig): Hono {
       }),
       (prisma as any).chatQueuedMessage.findMany({
         where: { sessionId: { in: accessible }, status: 'pending' },
-        select: { sessionId: true },
+        select: { sessionId: true, parts: true },
       }),
       (prisma as any).chatMessage.findMany({
         where: {
@@ -117,8 +120,17 @@ export function chatMentionRoutes(config: ChatMentionRoutesConfig): Hono {
       }),
     ])
 
+    // A tag is a delivery only where the surface delivers: the workspace chat
+    // tags a chat as context and sends nothing to it (SHO-191). So a status is
+    // reported only for a chat that actually took a handoff in this window —
+    // a queued handoff row, or the persisted handoff message. Anything derived
+    // from the chat's own activity (a turn of its own, a reply to someone
+    // else) would otherwise read as a delivery that never happened.
     const queued = new Map<string, number>()
-    for (const row of pending) queued.set(row.sessionId, (queued.get(row.sessionId) ?? 0) + 1)
+    for (const row of pending) {
+      if (!isPersistedHandoff(row.parts)) continue
+      queued.set(row.sessionId, (queued.get(row.sessionId) ?? 0) + 1)
+    }
     const repliedAt = new Map<string, string>()
     for (const row of replies) {
       const id = row.sessionId as string
@@ -131,6 +143,7 @@ export function chatMentionRoutes(config: ChatMentionRoutesConfig): Hono {
       if (deliveredAt.has(id) || !isPersistedHandoff(row.parts)) continue
       deliveredAt.set(id, new Date(row.createdAt).toISOString())
     }
+    const handoffChatIds = new Set<string>([...queued.keys(), ...deliveredAt.keys()])
 
     const statuses: Record<
       string,
@@ -138,6 +151,7 @@ export function chatMentionRoutes(config: ChatMentionRoutesConfig): Hono {
     > = {}
     const now = Date.now()
     for (const session of sessions) {
+      if (!handoffChatIds.has(session.id)) continue
       const heartbeat = session.activeTurnHeartbeatAt
         ? new Date(session.activeTurnHeartbeatAt).getTime()
         : 0

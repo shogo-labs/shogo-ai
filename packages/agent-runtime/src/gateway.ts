@@ -6289,6 +6289,9 @@ export class AgentGateway {
     return buildConcurrentChatsPrompt(chats, {
       isolatedEdits: this.isWorktreesEnabled(),
       ...(reachable ? { reachable } : {}),
+      // A workspace runtime tags chats as context (SHO-191); a project runtime
+      // still delivers to them, so it keeps the delivery wording.
+      workspaceRuntime: Boolean(resolveRuntimeIdentity().workspaceId),
     })
   }
 

@@ -45,6 +45,22 @@ export function mentionedChatIds(text: string): string[] {
   return ids
 }
 
+/**
+ * Chat ids a message names that are worth pointing at: not the chat it is
+ * written in, and not one already carried as a `{type:'chat'}` reference.
+ *
+ * The workspace chat turns these into pointer references (SHO-191) instead of
+ * delivering to them, so a token typed or pasted reaches the agent exactly like
+ * one picked from the "@" menu.
+ */
+export function chatReferenceIds(
+  text: string,
+  options: { selfSessionId?: string | null; existing?: Iterable<string> } = {},
+): string[] {
+  const existing = new Set(options.existing ?? [])
+  return mentionedChatIds(text).filter((id) => id !== options.selfSessionId && !existing.has(id))
+}
+
 
 export function userMentionToken(userId: string): string {
   return `<@u:${userId}>`
