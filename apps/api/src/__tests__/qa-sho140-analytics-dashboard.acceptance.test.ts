@@ -20,9 +20,9 @@
  *   cd apps/api && bun test ./src/__tests__/qa-sho140-analytics-dashboard.acceptance.test.ts
  */
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
-import { inOneCacheBucket } from './helpers/analytics-bucket'
+import { pinClockIntoCacheBucket, restoreClock } from './helpers/analytics-bucket'
 
 const QA_USER = 'qa-140-user'
 mock.module('../middleware/auth', () => ({
@@ -71,7 +71,14 @@ beforeAll(async () => {
   workspaceId = workspace.id
   const project = await db.project.create({ data: { name: 'QA 140 project', workspaceId } })
   projectId = project.id
-  const user = await db.user.create({ data: { id: QA_USER, name: 'QA', email: `${QA_USER}-${suffix}@example.com` } })
+  // `--rerun-each` re-evaluates this file, so `beforeAll` runs again against the
+  // same database: the session user id is fixed, so adopt the row when it is
+  // already there instead of dying on a unique violation (SHO-186).
+  const user = await db.user.upsert({
+    where: { id: QA_USER },
+    create: { id: QA_USER, name: 'QA', email: `${QA_USER}-${suffix}@example.com` },
+    update: {},
+  })
   await db.member.create({ data: { userId: user.id, workspaceId, role: 'admin' } })
   const team = await Promise.all(
     ['m1', 'm2', 'm3'].map((n) =>
@@ -143,15 +150,18 @@ function watch(tracker: { scans: number; raw: string[] }) {
 }
 
 /**
- * Two opens share a cache key only inside one bucket, so a run whose pair
- * straddled a boundary would legitimately miss. `inOneCacheBucket` re-runs the
- * pair in that case; it replaces the old "sleep up to the next boundary", which
- * could stall a test for 40 s (SHO-186).
+ * The two calls below only share a cache key while the clock stays inside one
+ * bucket, so pin it inside one (`pinClockIntoCacheBucket`). This replaces the
+ * old "sleep up to the next boundary", which could stall a test for 40 s and
+ * left it depending on the real clock (SHO-186).
  */
 
 beforeEach(() => {
   clearAnalyticsCache()
 })
+
+/** A pinned clock never outlives the test that pinned it. */
+afterEach(() => restoreClock())
 
 /**
  * The grouped scan sums in a different order than the three legacy loops, so a
@@ -232,19 +242,16 @@ describe('SHO-140 QA: one request, the same numbers', () => {
   }, 60_000)
 
   test('a second open inside the cache bucket reuses the scan', async () => {
-    const scans = await inOneCacheBucket(async () => {
-      clearAnalyticsCache()
-      const tracker = { scans: 0, raw: [] as string[] }
-      const stop = watch(tracker)
-      try {
-        await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=50`)
-        await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=50`)
-      } finally {
-        stop()
-      }
-      return tracker.scans
-    })
-    expect(scans).toBe(1)
+    pinClockIntoCacheBucket()
+    const tracker = { scans: 0, raw: [] as string[] }
+    const stop = watch(tracker)
+    try {
+      await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=50`)
+      await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=50`)
+    } finally {
+      stop()
+    }
+    expect(tracker.scans).toBe(1)
   }, 90_000)
 
   test('the summary table takes a page size and the page changes the rows', async () => {
@@ -271,25 +278,21 @@ describe('SHO-140 QA: one request, the same numbers', () => {
   }, 60_000)
 
   test('a chart toggle and a log page each cost one request and leave the summary alone', async () => {
-    const { first, toggled, scans } = await inOneCacheBucket(async () => {
-      clearAnalyticsCache()
-      const firstCall = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=model&metric=spend&limit=50`)
-      const tracker = { scans: 0, raw: [] as string[] }
-      const stop = watch(tracker)
-      let toggledCall: any
-      try {
-        toggledCall = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=day&metric=tokens&limit=50`)
-      } finally {
-        stop()
-      }
-      return { first: firstCall, toggled: toggledCall, scans: tracker.scans }
-    })
-
+    pinClockIntoCacheBucket()
+    const first = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=model&metric=spend&limit=50`)
+    const tracker = { scans: 0, raw: [] as string[] }
+    const stop = watch(tracker)
+    let toggled: any
+    try {
+      toggled = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=day&metric=tokens&limit=50`)
+    } finally {
+      stop()
+    }
     expect(toggled.status).toBe(200)
     expect(toggled.data.timeseries.groupBy).toBe('day')
     expect(toggled.data.timeseries.metric).toBe('tokens')
     // Same rows, same window: the toggle must not need a new scan.
     expect(toggled.data.summary.totals).toEqual(first.data.summary.totals)
-    expect(scans).toBe(0)
+    expect(tracker.scans).toBe(0)
   }, 90_000)
 })

@@ -22,9 +22,9 @@
  *   bun test apps/api/src/__tests__/analytics-dashboard.perf.test.ts
  */
 
-import { beforeAll, describe, expect, test } from 'bun:test'
+import { afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
-import { inOneCacheBucket } from './helpers/analytics-bucket'
+import { pinClockIntoCacheBucket, restoreClock } from './helpers/analytics-bucket'
 
 const SEEDED_EVENTS = 100_000
 const WINDOW_DAYS = 30
@@ -35,6 +35,9 @@ const { prisma } = await import('../lib/prisma')
 const analytics = await import('../services/analytics.service')
 const { clearAnalyticsCache } = await import('../lib/analytics-cache')
 const db = prisma as any
+
+/** A pinned clock never outlives the test that pinned it. */
+afterEach(() => restoreClock())
 
 /** `setupChannelsTestDb` points the client at SQLite unless CHANNELS_TEST_PG_URL is set. */
 const isSqlite = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -125,7 +128,9 @@ beforeAll(async () => {
       return original(...args)
     }) as any
   }
-})
+  // Seeding 100k rows takes 4-7 s on a cold runner, past bun's 5 s default hook
+  // budget: state it instead of hoping the machine is fast (SHO-186).
+}, 120_000)
 
 function resetCounters() {
   queries.length = 0
@@ -176,23 +181,21 @@ describe('the dashboard reads usage_events once, without the JSON', () => {
   })
 
   test('a second open inside the TTL does not scan again', async () => {
-    // The cache key buckets the rolling window, so a run whose two opens
-    // straddled a bucket boundary would legitimately miss (QA round 1 saw
-    // exactly that with a 30 s bucket under a 60 s TTL). Re-run the pair in
-    // that case instead of sleeping up to the boundary: the sleep used to be
-    // longer than this test's timeout, which is what made it fail ~8 % of runs
-    // in CI (SHO-186).
-    const scans = await inOneCacheBucket(async () => {
-      resetCounters()
-      await analytics.getUsageDashboard({ workspaceId }, { period: '30d' })
-      const afterFirst = queries.length + usageEventSelects
-      await analytics.getUsageDashboard({ workspaceId }, { period: '30d' })
-      return { afterFirst, afterSecond: queries.length + usageEventSelects }
-    })
+    // The cache key buckets the rolling window, so both opens have to share a
+    // bucket — that is the invariant, not something to wait for. Pin the clock
+    // inside one: the old sleep up to the next boundary reached 10 050 ms,
+    // longer than this test's timeout, so a run starting within ~5 s of a
+    // boundary failed before it asserted and the immediate retry failed with it
+    // (SHO-186).
+    pinClockIntoCacheBucket()
 
-    expect(scans.afterFirst).toBe(1)
-    expect(scans.afterSecond).toBe(1)
-  }, 20_000)
+    resetCounters()
+    await analytics.getUsageDashboard({ workspaceId }, { period: '30d' })
+    const afterFirst = queries.length + usageEventSelects
+    await analytics.getUsageDashboard({ workspaceId }, { period: '30d' })
+    expect(afterFirst).toBe(1)
+    expect(queries.length + usageEventSelects).toBe(1)
+  })
 
   test('the window scan is served by the composite index', async () => {
     const from = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000)

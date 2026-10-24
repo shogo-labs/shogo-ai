@@ -1,66 +1,46 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The retry path of `inOneCacheBucket` is what keeps a cache-pair test off the
- * clock. It is rare in a real run (two opens straddle a 60 s boundary ~0.5 % of
- * the time), so drive it with a fake clock rather than waiting for it.
+ * The pin is the whole fix for SHO-186, so assert what the cache actually sees:
+ * a `Date.now()` inside the bucket we asked for, held still across both opens,
+ * and a real clock again afterwards.
  */
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { ANALYTICS_CACHE_BUCKET_MS } from '../../lib/analytics-cache'
-import { inOneCacheBucket } from './analytics-bucket'
+import { CLOCK_INTO_BUCKET_MS, pinClockIntoCacheBucket, restoreClock } from './analytics-bucket'
 
-describe('inOneCacheBucket', () => {
-  test('runs the pair once when both opens share a bucket', async () => {
-    let clock = 0
-    let runs = 0
-    const result = await inOneCacheBucket(
-      async () => {
-        runs += 1
-        clock += 300
-        return `run-${runs}`
-      },
-      { now: () => clock },
-    )
-    expect(runs).toBe(1)
-    expect(result).toBe('run-1')
+afterEach(() => restoreClock())
+
+describe('pinClockIntoCacheBucket', () => {
+  test('pins Date.now() into the requested offset of one bucket', () => {
+    pinClockIntoCacheBucket()
+    const pinned = Date.now()
+    expect(pinned % ANALYTICS_CACHE_BUCKET_MS).toBe(CLOCK_INTO_BUCKET_MS)
+    // The clock is frozen, so both opens land in the same bucket by construction.
+    expect(Date.now()).toBe(pinned)
+    expect(new Date().getTime()).toBe(pinned)
   })
 
-  test('re-runs the pair when a boundary fell between the two opens', async () => {
-    let clock = ANALYTICS_CACHE_BUCKET_MS - 100
-    let runs = 0
-    const startedAt = performance.now()
-
-    const result = await inOneCacheBucket(
-      async () => {
-        runs += 1
-        // The first pair starts 100 ms before a boundary, so it straddles it;
-        // the second pair is 300 ms into the new bucket and lands cleanly.
-        if (runs === 1) clock += 400
-        else clock += 300
-        return `run-${runs}`
-      },
-      { now: () => clock },
-    )
-
-    expect(runs).toBe(2)
-    expect(result).toBe('run-2')
-    // The whole point: straddling costs an extra attempt, never a wait.
-    expect(performance.now() - startedAt).toBeLessThan(250)
+  test('holds the bucket wherever the pin sits, including 100 ms before the next one', () => {
+    for (const intoBucket of [0, 500, 53_000, 59_900]) {
+      pinClockIntoCacheBucket(intoBucket)
+      const bucket = Math.floor(Date.now() / ANALYTICS_CACHE_BUCKET_MS)
+      expect(Date.now() % ANALYTICS_CACHE_BUCKET_MS).toBe(intoBucket)
+      // Same bucket before and after the work a test does between two opens.
+      expect(Math.floor(Date.now() / ANALYTICS_CACHE_BUCKET_MS)).toBe(bucket)
+    }
   })
 
-  test('fails loudly instead of asserting on a straddled pair', async () => {
-    let clock = 0
-    let runs = 0
-    const alwaysStraddles = inOneCacheBucket(
-      async () => {
-        runs += 1
-        clock += ANALYTICS_CACHE_BUCKET_MS
-        return null
-      },
-      { now: () => clock, attempts: 3 },
-    )
+  test('restoreClock puts the real wall clock back', () => {
+    const realBefore = Date.now()
+    pinClockIntoCacheBucket()
+    expect(Date.now()).toBe(realBefore - (realBefore % ANALYTICS_CACHE_BUCKET_MS) + CLOCK_INTO_BUCKET_MS)
 
-    await expect(alwaysStraddles).rejects.toThrow(/one 60000 ms cache bucket in 3 attempts/)
-    expect(runs).toBe(3)
+    restoreClock()
+    const realAfter = Date.now()
+    expect(realAfter).toBeGreaterThanOrEqual(realBefore)
+    // Restored to real time, not to some other instant: the only time that can
+    // have passed is this test's own.
+    expect(realAfter - realBefore).toBeLessThan(5_000)
   })
 })
