@@ -430,12 +430,17 @@ export class MachineSyncPusher {
     return false
   }
 
-  /** Move the acked cursor and prune what the cloud now has. */
-  private async advance(instanceId: string, seq: number): Promise<void> {
+  /**
+   * Move the acked cursor and prune what the cloud now has.
+   *
+   * A snapshot claims a new epoch on the cloud, so it passes it here too: the
+   * epoch the cloud holds is the one every later delta has to be sent under.
+   */
+  private async advance(instanceId: string, seq: number, epoch?: string): Promise<void> {
     const prisma = this.opts.prisma as any
     await prisma.machineSyncState.update({
       where: { instanceId },
-      data: { cursor: seq, lastIngestAt: new Date() },
+      data: { cursor: seq, lastIngestAt: new Date(), ...(epoch ? { epoch } : {}) },
     })
     await prisma.machineSyncChange.deleteMany({ where: { seq: { lte: seq } } })
     this.cursor = seq
@@ -451,6 +456,10 @@ export class MachineSyncPusher {
   private async runSnapshot(instanceId: string, apiKey: string): Promise<void> {
     const prisma = this.opts.prisma as any
     const epoch = crypto.randomUUID()
+    // The change-log position this snapshot speaks for, taken *before* the
+    // pages: a row written while a page is being read may not be in it, and
+    // claiming a later position would prune that change unsent.
+    const claimed = await this.maxSeq()
     const order = modelOrder()
     const models = [...MIRROR_MODELS].sort(
       (a, b) => (order.get(a) ?? 999) - (order.get(b) ?? 999),
@@ -477,13 +486,13 @@ export class MachineSyncPusher {
       }
     }
 
-    // Changes made while the snapshot ran are already in the pages; start the
-    // delta stream from now, so nothing is replayed or lost.
-    const seq = await this.maxSeq()
+    // Anything written while the pages were read is replayed as a delta: the
+    // upserts are idempotent, and a change can never be pruned before it was
+    // sent.
     const done = await this.post(instanceId, apiKey, {
       epoch,
       mode: 'snapshot',
-      cursor: seq,
+      cursor: claimed,
       models: [],
       snapshot: { complete: true, models },
     })
@@ -491,7 +500,9 @@ export class MachineSyncPusher {
 
     this.snapshotNeeded = false
     this.epoch = epoch
-    await this.advance(instanceId, seq)
+    // The cloud now holds `epoch`; keep the same one here, or every later
+    // delta goes out under a stale epoch and is answered with a full snapshot.
+    await this.advance(instanceId, claimed, epoch)
     this.log(`[MachineSync] Snapshot complete under epoch ${epoch.slice(0, 8)}`)
   }
 }

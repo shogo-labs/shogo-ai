@@ -326,6 +326,158 @@ describe('the pusher', () => {
     expect(last.snapshot?.complete).toBe(true)
   })
 
+  /**
+   * A cloud stub that enforces the same rule as `applyBatch`: a delta under an
+   * epoch the cloud does not hold is refused, and the desktop has to snapshot
+   * again. Any refusal is recorded, because one after the first snapshot is the
+   * bug this suite exists for (SHO-188).
+   */
+  function epochRuleFetch(cloud: { epoch: string | null; cursor: number }, rejections: SyncBatchRequest[]) {
+    return (async (_url: string, init: any) => {
+      const body = JSON.parse(init.body) as SyncBatchRequest
+      posted.push(body)
+      if (body.mode === 'changes') {
+        if (cloud.epoch && body.epoch && cloud.epoch !== body.epoch) {
+          rejections.push(body)
+          return new Response(JSON.stringify({ error: { code: 'epoch_mismatch' } }), { status: 409 })
+        }
+        cloud.cursor = body.cursor
+        return new Response(JSON.stringify({ ok: true, cursor: body.cursor }), { status: 200 })
+      }
+      cloud.epoch = body.epoch
+      if (body.snapshot?.complete) cloud.cursor = body.cursor
+      return new Response(JSON.stringify({ ok: true, cursor: body.cursor }), { status: 200 })
+    }) as unknown as typeof fetch
+  }
+
+  test('a snapshot adopts its epoch locally, so later deltas are not refused', async () => {
+    const { db, changes, state } = fakeDesktopDb({
+      rows: { workspace: [{ id: 'w1', name: 'Samsara', slug: 'samsara' }] },
+      seedState: false,
+    })
+    const cloud = { epoch: null as string | null, cursor: 0 }
+    const rejections: SyncBatchRequest[] = []
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: epochRuleFetch(cloud, rejections),
+    })
+
+    // The first push is a snapshot under a brand new epoch.
+    await pusher.tick()
+    expect(posted.every((batch) => batch.mode === 'snapshot')).toBe(true)
+    const snapshots = posted.filter((batch) => batch.mode === 'snapshot').length
+    // The desktop keeps the epoch the cloud just claimed. Without this the next
+    // delta goes out under the pre-snapshot epoch and every change costs a
+    // full snapshot, forever.
+    expect(state.epoch).toBe(cloud.epoch as string)
+
+    // A local write after the snapshot is a plain delta: pushed, accepted, and
+    // no second snapshot.
+    rowSeq(changes, 'Workspace', 'w1')
+    await pusher.tick()
+
+    expect(rejections).toHaveLength(0)
+    expect(posted.filter((batch) => batch.mode === 'snapshot')).toHaveLength(snapshots)
+    const delta = posted[posted.length - 1]
+    expect(delta.mode).toBe('changes')
+    expect(delta.epoch).toBe(cloud.epoch as string)
+    expect(delta.models).toEqual([{ model: 'Workspace', rows: [expect.objectContaining({ id: 'w1' })] }])
+  })
+
+  test('a row written while the snapshot pages are read is replayed, not pruned', async () => {
+    const { db, changes, state, tables } = fakeDesktopDb({
+      rows: { workspace: [{ id: 'w1', name: 'Samsara', slug: 'samsara' }] },
+      seedState: false,
+    })
+    const cloud = { epoch: null as string | null, cursor: 0 }
+    const rejections: SyncBatchRequest[] = []
+    const inner = epochRuleFetch(cloud, rejections)
+    // A desktop write that lands between the snapshot's first page and its
+    // completion request: the page it belongs to has already been read.
+    let wrote = false
+    const fetchImpl = (async (url: string, init: any) => {
+      if (!wrote) {
+        wrote = true
+        tables.get('workspace')!.set('w2', { id: 'w2', name: 'Later', slug: 'later' })
+        rowSeq(changes, 'Workspace', 'w2')
+      }
+      return inner(url, init)
+    }) as unknown as typeof fetch
+
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl,
+    })
+    await pusher.tick()
+
+    // The snapshot claims only what existed before its pages, so the racing
+    // change is still in the log rather than deleted unsent.
+    expect(state.cursor).toBe(0)
+    expect(changes.map((change) => change.recordId)).toEqual(['w2'])
+
+    await pusher.tick()
+    const delta = posted[posted.length - 1]
+    expect(delta.mode).toBe('changes')
+    expect(delta.models).toEqual([{ model: 'Workspace', rows: [expect.objectContaining({ id: 'w2' })] }])
+    expect(rejections).toHaveLength(0)
+  })
+
+  test('a delete made while the snapshot pages are read is replayed, not pruned', async () => {
+    const { db, changes, state, tables } = fakeDesktopDb({
+      rows: {
+        workspace: [
+          { id: 'w1', name: 'Samsara', slug: 'samsara' },
+          { id: 'w2', name: 'Scratch', slug: 'scratch' },
+        ],
+      },
+      seedState: false,
+    })
+    const cloud = { epoch: null as string | null, cursor: 0 }
+    const rejections: SyncBatchRequest[] = []
+    const inner = epochRuleFetch(cloud, rejections)
+    // The Workspace page has already been read (and sent) when this delete
+    // lands, so the cloud holds w2 from the snapshot itself: only a replayed
+    // delta can take it away again.
+    let removed = false
+    const fetchImpl = (async (url: string, init: any) => {
+      if (!removed) {
+        removed = true
+        tables.get('workspace')!.delete('w2')
+        rowSeq(changes, 'Workspace', 'w2', 'delete')
+      }
+      return inner(url, init)
+    }) as unknown as typeof fetch
+
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl,
+    })
+    await pusher.tick()
+
+    // The delete was not part of the snapshot's pages' honest content, so it
+    // must stay in the log rather than be pruned unsent.
+    expect(state.cursor).toBe(0)
+    expect(changes.map((change) => `${change.recordId}:${change.op}`)).toEqual(['w2:delete'])
+    expect(posted.some((batch) =>
+      batch.models.some((model) => model.rows.some((row) => row.id === 'w2')),
+    )).toBe(true)
+
+    await pusher.tick()
+    const delta = posted[posted.length - 1]
+    expect(delta.mode).toBe('changes')
+    expect(delta.deletes).toEqual([{ model: 'Workspace', recordId: 'w2' }])
+    expect(rejections).toHaveLength(0)
+  })
+
   test('nothing is pushed without a device key or an instance id', async () => {
     const { db, changes } = fakeDesktopDb({ rows: { chatMessage: [] } })
     rowSeq(changes, 'ChatMessage', 'm1')
