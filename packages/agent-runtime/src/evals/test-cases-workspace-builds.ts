@@ -35,6 +35,7 @@
 
 import type { AgentEval, EvalResult, ToolCallRecord, ValidationCriterion } from './types'
 import type { ToolMockMap } from './tool-mocks'
+import { cliExecMock } from './tool-mocks'
 import { usedTool, responseContains } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -79,7 +80,7 @@ const PORTFOLIO_CATALOG_ENTRY = {
  * reaches the real API and comes back `401 Unauthorized` — which reads to the
  * agent as a broken session and derails the turn.
  */
-const WORKSPACE_TOOL_MOCKS: ToolMockMap = {
+export const WORKSPACE_TOOL_MOCKS: ToolMockMap = {
   project_create: {
     type: 'static',
     response: {
@@ -126,6 +127,34 @@ const WORKSPACE_TOOL_MOCKS: ToolMockMap = {
     type: 'static',
     response: { ok: true, mounted: true, projectId: PORTFOLIO_ID, mode: 'readwrite' },
   },
+  // Reaching a project remotely: `connect_project` wakes the other runtime and
+  // lists the tools that take a `project` parameter. An eval has no other
+  // runtime to wake, so unmocked it answers 401 and the metal path reads as a
+  // broken session. No id is echoed back — the agent already has the one it
+  // passed, and a fixed id would misdescribe the project it actually named.
+  connect_project: {
+    type: 'static',
+    response: {
+      ok: true,
+      reachable: true,
+      readOnly: false,
+      tools: ['exec', 'exec_wait', 'exec_list', 'read_file', 'write_file', 'edit_file', 'delete_file', 'search'],
+      note: 'Pass `project: "<id>"` to those tools to run them inside it.',
+    },
+  },
+  // The same tools called with `project` route to that project's runtime, which
+  // an eval has no container for either. Only the project-scoped form is
+  // mocked: a plain `exec` has no `project` param and falls through to the real
+  // tool, so grading still sees the files the agent writes here. Built on
+  // cliExecMock so the gh/CLI safety patterns every eval carries still win.
+  exec: cliExecMock({
+    patterns: [
+      {
+        match: { project: 're:.+' },
+        response: { ok: true, exitCode: 0, stdout: '', stderr: '', cwd: '/' },
+      },
+    ],
+  }),
   // `preview_project` and `share_file` reach the API for a running-project URL
   // and a signed link. Unmocked they answer 401 inside an eval, and the turn
   // ends with "I couldn't confirm the result" instead of "built" — a mock the

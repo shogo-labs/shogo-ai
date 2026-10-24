@@ -11,6 +11,7 @@ import { describe, expect, test } from 'bun:test'
 import type { AgentEval, EvalResult, ToolCallRecord } from './types'
 import {
   WORKSPACE_BUILDS_EVALS,
+  WORKSPACE_TOOL_MOCKS,
   CREATED_ID,
   PORTFOLIO_ID,
   builtInRoot,
@@ -21,6 +22,7 @@ import {
   usedExistingProject,
   workspaceRootClean,
 } from './test-cases-workspace-builds'
+import { compileInstallBody } from './tool-mocks-runtime'
 import { WORKSPACE_ROOT_APP_ENTRIES } from './runtime-checks'
 
 // ---------------------------------------------------------------------------
@@ -364,12 +366,34 @@ describe('WORKSPACE_BUILDS_EVALS', () => {
 
   test('every case mocks the workspace tools that would otherwise reach the API', () => {
     // Unmocked, these 401 inside an eval and the turn ends "I couldn't confirm
-    // the result" instead of reporting a build (QA round 1).
+    // the result" instead of reporting a build (QA round 1), or the metal path
+    // reads as a broken session (QA round 2).
     for (const ev of WORKSPACE_BUILDS_EVALS) {
-      for (const tool of ['project_create', 'project_call', 'preview_project', 'share_file', 'mount_project']) {
+      for (const tool of [
+        'project_create',
+        'project_call',
+        'preview_project',
+        'share_file',
+        'mount_project',
+        'connect_project',
+        'exec',
+      ]) {
         expect(ev.toolMocks?.[tool]).toBeDefined()
       }
     }
+  })
+
+  test('a project-scoped tool answers, while a plain exec still runs for real', async () => {
+    // The mocks must not swallow the agent's own work: grading reads the files
+    // a real exec writes here, so only the `project` arm is answered.
+    const { fns } = compileInstallBody(WORKSPACE_TOOL_MOCKS, { sleepFn: async () => {} })
+    expect(await fns.exec({ command: 'ls' })).toBe('__passthrough')
+    expect(await fns.exec({ command: 'ls', project: CREATED_ID })).toMatchObject({ ok: true, exitCode: 0 })
+    expect(await fns.connect_project({ project: PORTFOLIO_ID })).toMatchObject({
+      ok: true,
+      reachable: true,
+      readOnly: false,
+    })
   })
 
   test('the canvas case is the track\'s one capability axis', () => {
