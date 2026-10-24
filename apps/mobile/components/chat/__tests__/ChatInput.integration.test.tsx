@@ -352,3 +352,112 @@ describe("ChatInput integration — mobile-web TextInput changes", () => {
     expect(commits).toBe(commitsAfterTyping)
   })
 })
+
+describe("ChatInput integration — beforeSubmit guard", () => {
+  const typeInto = (value: string) => {
+    const input = screen.getByTestId("project-composer-input") as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value } })
+    return input
+  }
+  const composerValue = () =>
+    (screen.getByTestId("project-composer-input") as HTMLTextAreaElement).value
+
+  test("a decline holds the message back and leaves it in the box", async () => {
+    const onSubmit = mock(() => {})
+    const beforeSubmit = mock(async () => false)
+    render(<ChatInput onSubmit={onSubmit} isPro beforeSubmit={beforeSubmit} />)
+
+    const input = typeInto("<!channel> standup in five")
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+
+    expect(beforeSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+    // The whole point of asking before the clear: a change of mind costs nothing.
+    // Asking afterwards would have to restore text whose draft was saved empty.
+    expect(composerValue()).toBe("<!channel> standup in five")
+  })
+
+  test("a confirmation sends once with the box cleared", async () => {
+    const onSubmit = mock(() => {})
+    const beforeSubmit = mock(async () => true)
+    render(<ChatInput onSubmit={onSubmit} isPro beforeSubmit={beforeSubmit} />)
+
+    const input = typeInto("<!channel> standup in five")
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit.mock.calls[0][0]).toBe("<!channel> standup in five")
+    expect(composerValue()).toBe("")
+  })
+
+  test("a second Enter while the question is open does not ask again or send twice", async () => {
+    const onSubmit = mock(() => {})
+    let release: (allowed: boolean) => void = () => {}
+    const beforeSubmit = mock(
+      () => new Promise<boolean>((resolve) => { release = resolve }),
+    )
+    render(<ChatInput onSubmit={onSubmit} isPro beforeSubmit={beforeSubmit} />)
+
+    const input = typeInto("<!channel> ship it")
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+
+    expect(beforeSubmit).toHaveBeenCalledTimes(1)
+
+    await act(async () => { release(true) })
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  test("the question sees exactly what would be sent", async () => {
+    const beforeSubmit = mock(async () => false)
+    render(<ChatInput onSubmit={mock(() => {})} isPro beforeSubmit={beforeSubmit} />)
+
+    const input = typeInto("please review")
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+
+    const [content, files] = beforeSubmit.mock.calls[0] as [string, unknown]
+    expect(content).toBe("please review")
+    expect(files).toBeUndefined()
+  })
+
+  test("a question that throws never swallows the message", async () => {
+    const onSubmit = mock(() => {})
+    const beforeSubmit = mock(async () => {
+      throw new Error("consent module failed to load")
+    })
+    render(<ChatInput onSubmit={onSubmit} isPro beforeSubmit={beforeSubmit} />)
+
+    const input = typeInto("plain message")
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+
+    // Failing closed here would leave a reader pressing send and watching
+    // nothing happen, which is worse than sending without the question.
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(composerValue()).toBe("")
+  })
+
+  test("without beforeSubmit the composer still sends synchronously", async () => {
+    const onSubmit = mock(() => {})
+    render(<ChatInput onSubmit={onSubmit} isPro />)
+
+    const input = typeInto("plain message")
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(composerValue()).toBe("")
+  })
+})

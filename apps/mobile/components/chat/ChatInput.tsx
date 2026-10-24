@@ -531,6 +531,21 @@ export interface ChatInputProps {
   onTextChange?: (text: string, references: ChatReference[]) => void;
   /** Web keydown hook; return true to swallow the key. */
   onKeyPress?: (event: any, text: string) => boolean | void;
+  /**
+   * Asked immediately before submitting, with exactly what would be sent.
+   * Return false to hold the message back.
+   *
+   * It runs *before* the box is cleared, which is the whole point: a dismissed
+   * question leaves the text, the attachments and the draft untouched. Asking
+   * after `onSubmit` instead would have to put the message back, and the draft
+   * would already have been saved empty.
+   */
+  beforeSubmit?: (
+    content: string,
+    files?: FileAttachment[],
+    modelId?: string,
+    references?: ChatReference[],
+  ) => boolean | Promise<boolean>;
   maxFileSizeBytes?: number;
   inputTestID?: string;
   /** Accessible name of the text box; surfaces with their own composer (team chat) name it themselves. */
@@ -591,6 +606,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   transformText,
   onTextChange,
   onKeyPress: onKeyPressProp,
+  beforeSubmit,
   maxFileSizeBytes,
   inputTestID = "project-composer-input",
   inputAccessibilityLabel = "Chat message input",
@@ -1587,6 +1603,9 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     [cancelPendingTextChangeFlush]
   );
 
+  /** A `beforeSubmit` question is open; hold further submits until it answers. */
+  const awaitingConsentRef = useRef(false);
+
   const handleSubmit = useCallback(() => {
     // Submit exactly what the composer is painting: same precedence as
     // `composerDisplayValue`, minus the live voice transcript (voice has its own
@@ -1629,31 +1648,59 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     const fileData = combinedFiles.length > 0 ? combinedFiles : undefined;
     const refData = references.length > 0 ? references : undefined;
 
-    // A tagged chat travels as `<@c:ID>` in place of its "@Title" label, so the
-    // chip renders and a reader never sees an id. What that token means is the
-    // surface's call: a reference the agent reads (workspace chat, SHO-191) or
-    // an address the message is handed to (project chat, SHO-52).
-    onSubmit(
-      encodeChatMentionTokens(trimmedContent, refData),
-      fileData,
-      currentModelId,
-      refData
-    );
-    // Drop any still-pending coalesced text-change flush (see
-    // `handleChangeText`) so it can't fire AFTER this clear and resurrect
-    // text the user already sent.
-    cancelPendingTextChangeFlush();
-    inputValueRef.current = "";
-    setInputValue("");
-    setInputHeightTarget(inputMinHeight);
-    resetAttachments();
-    setReferences([]);
-    closeMentionMenu();
+    const wireContent = encodeChatMentionTokens(trimmedContent, refData);
 
-    textInputRef.current?.focus();
+    const putOut = () => {
+      // A tagged chat travels as `<@c:ID>` in place of its "@Title" label, so the
+      // chip renders and a reader never sees an id. What that token means is the
+      // surface's call: a reference the agent reads (workspace chat, SHO-191) or
+      // an address the message is handed to (project chat, SHO-52).
+      onSubmit(wireContent, fileData, currentModelId, refData);
+      // Drop any still-pending coalesced text-change flush (see
+      // `handleChangeText`) so it can't fire AFTER this clear and resurrect
+      // text the user already sent.
+      cancelPendingTextChangeFlush();
+      inputValueRef.current = "";
+      setInputValue("");
+      setInputHeightTarget(inputMinHeight);
+      resetAttachments();
+      setReferences([]);
+      closeMentionMenu();
+
+      textInputRef.current?.focus();
+    };
+
+    if (!beforeSubmit) {
+      putOut();
+      return;
+    }
+
+    // Hold the box until the question is answered. Clearing first and asking
+    // after would leave a dialog over an empty composer, and a dismissed one
+    // would have to restore text whose draft had already been saved as empty.
+    // The ref keeps a second Enter, or the send button, from stacking a second
+    // question or sending twice while the first is still open.
+    if (awaitingConsentRef.current) return;
+    awaitingConsentRef.current = true;
+    void Promise.resolve()
+      .then(() => beforeSubmit(wireContent, fileData, currentModelId, refData))
+      .then(
+        (allowed) => {
+          if (allowed) putOut();
+        },
+        // A question that cannot be asked must never swallow the message: the
+        // reader pressed send and would otherwise watch nothing happen. The
+        // rejection handler covers only `beforeSubmit`, never `putOut`, so a
+        // throwing submit cannot be retried out of it.
+        () => putOut(),
+      )
+      .finally(() => {
+        awaitingConsentRef.current = false;
+      });
   }, [
     inputLocked,
     onSubmit,
+    beforeSubmit,
     pendingFiles,
     isProcessingFiles,
     currentModelId,
