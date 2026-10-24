@@ -383,12 +383,25 @@ describe('WORKSPACE_BUILDS_EVALS', () => {
     }
   })
 
-  test('a project-scoped tool answers, while a plain exec still runs for real', async () => {
+  test('a project-scoped tool answers, while a plain call still runs for real', async () => {
     // The mocks must not swallow the agent's own work: grading reads the files
-    // a real exec writes here, so only the `project` arm is answered.
+    // a real call writes here, so only the `project` arm is answered.
     const { fns } = compileInstallBody(WORKSPACE_TOOL_MOCKS, { sleepFn: async () => {} })
-    expect(await fns.exec({ command: 'ls' })).toBe('__passthrough')
-    expect(await fns.exec({ command: 'ls', project: CREATED_ID })).toMatchObject({ ok: true, exitCode: 0 })
+    const plain = { command: 'ls', path: 'src/App.tsx', query: 'portfolio' }
+    for (const tool of [
+      'exec',
+      'read_file',
+      'write_file',
+      'edit_file',
+      'delete_file',
+      'search',
+      'exec_wait',
+      'exec_list',
+      'copy_to_project',
+    ]) {
+      expect(await fns[tool](plain)).toBe('__passthrough')
+      expect(await fns[tool]({ ...plain, project: CREATED_ID })).not.toBe('__passthrough')
+    }
     expect(await fns.connect_project({ project: PORTFOLIO_ID })).toMatchObject({
       ok: true,
       reachable: true,

@@ -34,7 +34,7 @@
  */
 
 import type { AgentEval, EvalResult, ToolCallRecord, ValidationCriterion } from './types'
-import type { ToolMockMap } from './tool-mocks'
+import type { ToolMockMap, ToolMockSpec } from './tool-mocks'
 import { cliExecMock } from './tool-mocks'
 import { usedTool, responseContains } from './eval-helpers'
 
@@ -70,6 +70,22 @@ const PORTFOLIO_CATALOG_ENTRY = {
   isCurrent: false,
   mounted: false,
   onDisk: true,
+}
+
+/**
+ * A tool whose only mocked shape is the `project`-addressed one.
+ *
+ * Reaching another project runs the tool inside that project's runtime, which
+ * an eval has no container for: unmocked, the API answers `401 Unauthorized`
+ * and the turn reads as a broken session. A call with no `project` is the
+ * agent's own work in this workspace, so it must fall through to the real tool.
+ */
+function remoteArm(response: any): ToolMockSpec {
+  return {
+    type: 'pattern',
+    patterns: [{ match: { project: 're:.+' }, response }],
+    default: '__passthrough',
+  }
 }
 
 /**
@@ -155,6 +171,19 @@ export const WORKSPACE_TOOL_MOCKS: ToolMockMap = {
       },
     ],
   }),
+  // The rest of the remote allowlist. Each one, addressed to a project, runs in
+  // that project's own runtime — the last 401 source in this track, hit by
+  // `read_file { project }` in metal and in the unmounted-portfolio case. Only
+  // the `project` arm is answered; without it the call is the agent's own work
+  // in this workspace and falls through to the real tool.
+  read_file: remoteArm({ ok: true, content: '', bytes: 0 }),
+  write_file: remoteArm({ ok: true, bytes: 0 }),
+  edit_file: remoteArm({ ok: true, replacements: 1 }),
+  delete_file: remoteArm({ ok: true, deleted: true }),
+  search: remoteArm({ ok: true, results: [] }),
+  exec_wait: remoteArm({ ok: true, status: 'completed', exitCode: 0, stdout: '' }),
+  exec_list: remoteArm({ ok: true, tasks: [] }),
+  copy_to_project: remoteArm({ ok: true, copied: [] }),
   // `preview_project` and `share_file` reach the API for a running-project URL
   // and a signed link. Unmocked they answer 401 inside an eval, and the turn
   // ends with "I couldn't confirm the result" instead of "built" — a mock the
