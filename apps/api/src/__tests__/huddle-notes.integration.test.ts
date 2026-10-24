@@ -10,6 +10,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { Hono } from 'hono'
 import { rmSync } from 'fs'
 import { seedWorkspace, setupChannelsTestDb, type SeededWorkspace } from './helpers/channels-test-db'
 
@@ -36,6 +37,9 @@ mock.module('livekit-server-sdk', () => ({
     async deleteRoom(room: string) {
       liveRooms.delete(room)
     }
+    async sendData(room: string, data: Uint8Array, _kind?: unknown, options?: { topic?: string }) {
+      roomData.push({ room, topic: options?.topic, payload: JSON.parse(new TextDecoder().decode(data)) })
+    }
     async updateRoomMetadata(room: string, metadata: string) {
       roomMetadata.set(room, JSON.parse(metadata))
     }
@@ -50,6 +54,8 @@ mock.module('livekit-server-sdk', () => ({
 
 const liveRooms = new Map<string, string[]>()
 const roomMetadata = new Map<string, any>()
+/** What the server pushed over the room data channel, in order. */
+const roomData: Array<{ room: string; topic?: string; payload: any }> = []
 
 const { prisma } = await import('../lib/prisma')
 const bus = await import('../lib/conversation-bus')
@@ -57,6 +63,18 @@ const service = await import('../services/conversation.service')
 const meetings = await import('../services/meeting.service')
 const { verifyStreamTicket } = await import('../lib/meeting-stream-ticket')
 const huddles = await import('../services/huddle.service')
+const wakeService = await import('../services/huddle-wake.service')
+
+// The wake runs the workspace agent; here it only records that it was asked to.
+// Spread the real module so the internal app's other importers still link.
+const dispatcher = await import('../services/conversation-agent-dispatcher')
+const replies: any[] = []
+mock.module('../services/conversation-agent-dispatcher', () => ({
+  ...dispatcher,
+  runAgentReply: async (args: any) => {
+    replies.push(args)
+  },
+}))
 
 const db = prisma as any
 let seed: SeededWorkspace
@@ -72,8 +90,11 @@ beforeAll(async () => {
 beforeEach(() => {
   events = []
   dispatches.length = 0
+  replies.length = 0
   roomMetadata.clear()
+  roomData.length = 0
   huddles._resetHuddlesForTests()
+  wakeService._resetHuddleWakeForTests()
 })
 
 afterAll(async () => {
@@ -280,6 +301,126 @@ describe('the fallback agent', () => {
     await huddles.notesLivekitFallback({ huddleId, identity: seed.member, seconds: 60, streamNo: 1, flushNo: 1, totalSeconds: 60 })
     const row = await db.huddle.findUnique({ where: { id: huddleId } })
     expect(row.notesLivekitSeconds).toBe(300)
+  })
+})
+
+describe('a fallback final, written through the API', () => {
+  /** The draft's transcript as stored right now. */
+  async function transcriptOf(meetingId: string) {
+    const row = await db.meeting.findUnique({ where: { id: meetingId } })
+    return meetings.readTranscript(row.transcript)!
+  }
+
+  test('lands under the speaker’s name and user id, not their raw identity', async () => {
+    const { huddleId } = await liveHuddle()
+    const draft = await meetings.ensureHuddleNotesDraft(huddleId)
+
+    const written = await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.member,
+      itemId: `lk:${seed.member}:1:1`,
+      text: 'we should ship friday',
+      start: 4,
+      end: 7,
+    })
+
+    expect(written).toEqual({ ok: true, stored: true })
+    const transcript = await transcriptOf(draft.id)
+    expect(transcript.segments).toHaveLength(1)
+    expect(transcript.segments[0].speaker).toBe('member')
+    expect(transcript.segments[0].speakerId).toBe(seed.member)
+    expect(transcript.segments[0].itemId).toBe(`lk:${seed.member}:1:1`)
+  })
+
+  test('three finals from one worker stream are three stored lines', async () => {
+    const { huddleId } = await liveHuddle()
+    const draft = await meetings.ensureHuddleNotesDraft(huddleId)
+    for (const [n, text] of ['one line', 'two lines', 'three lines'].entries()) {
+      await huddles.appendHuddleNoteFinal({
+        huddleId,
+        identity: seed.member,
+        itemId: `lk:${seed.member}:1:${n + 1}`,
+        text,
+        start: n * 3,
+        end: n * 3 + 2,
+      })
+    }
+    expect((await transcriptOf(draft.id)).segments).toHaveLength(3)
+  })
+
+  test('the same final posted twice is stored once', async () => {
+    const { huddleId } = await liveHuddle()
+    const draft = await meetings.ensureHuddleNotesDraft(huddleId)
+    const final = { huddleId, identity: seed.member, itemId: `lk:${seed.member}:1:1`, text: 'only once', start: 1, end: 3 }
+    expect(await huddles.appendHuddleNoteFinal(final)).toEqual({ ok: true, stored: true })
+    expect(await huddles.appendHuddleNoteFinal(final)).toEqual({ ok: true, stored: false })
+    expect((await transcriptOf(draft.id)).segments).toHaveLength(1)
+  })
+
+  test('a handover duplicate is removed at finalize, through the writers production uses', async () => {
+    const { huddleId } = await liveHuddle()
+    const draft = await meetings.ensureHuddleNotesDraft(huddleId)
+
+    // The client's own stream stores the line first (`c:…`, as the stream
+    // session writes it), then the fallback's final for the same utterance
+    // arrives through the API (`lk:…`) while the track changes hands.
+    await meetings.appendStreamFinal(draft.id, {
+      itemId: `c:${seed.owner}:item-1`,
+      segment: { start: 10, end: 12, text: 'ship it friday' },
+      speaker: 'owner',
+      speakerId: seed.owner,
+    })
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: `lk:${seed.owner}:1:1`,
+      text: 'Ship it Friday',
+      start: 11,
+      end: 13,
+    })
+    expect((await transcriptOf(draft.id)).segments).toHaveLength(2)
+
+    // Promote the live transcript the way the end of a call does, then finalize.
+    await meetings.finalizeLiveTranscript(draft.id, 60)
+    await db.meeting.update({ where: { id: draft.id }, data: { enhanceStatus: 'ready', enhancedNotes: '## Notes\n- ship it' } })
+    await db.huddle.update({ where: { id: huddleId }, data: { startedAt: new Date(Date.now() - 120_000), endedAt: new Date() } })
+    await huddles.finalizeHuddleNotes(huddleId)
+
+    const view = await huddles.getHuddleNotes(huddleId, seed.owner)
+    expect(view.transcript.segments).toHaveLength(1)
+    expect(view.transcript.segments[0]).toMatchObject({ text: 'ship it friday', speaker: 'owner', itemId: `c:${seed.owner}:item-1` })
+  })
+
+  test('the internal route refuses a call without the worker token, and takes one with it', async () => {
+    const { huddleId } = await liveHuddle()
+    const { default: internal } = await import('../routes/internal')
+    const app = new Hono()
+    app.route('/api/internal', internal)
+    const body = JSON.stringify({ huddleId, identity: seed.member, itemId: `lk:${seed.member}:2:1`, text: 'hello from the worker', start: 2, end: 4 })
+
+    delete process.env.SHOGO_NOTES_WORKER_TOKEN
+    const refused = await app.request('/api/internal/huddle-notes/finals', { method: 'POST', body, headers: { 'content-type': 'application/json' } })
+    expect(refused.status).toBe(401)
+
+    process.env.SHOGO_NOTES_WORKER_TOKEN = 'worker-token-for-test'
+    try {
+      const wrong = await app.request('/api/internal/huddle-notes/finals', {
+        method: 'POST',
+        body,
+        headers: { 'content-type': 'application/json', 'x-shogo-notes-worker': 'nope' },
+      })
+      expect(wrong.status).toBe(401)
+
+      const accepted = await app.request('/api/internal/huddle-notes/finals', {
+        method: 'POST',
+        body,
+        headers: { 'content-type': 'application/json', 'x-shogo-notes-worker': 'worker-token-for-test' },
+      })
+      expect(accepted.status).toBe(200)
+      expect(await accepted.json()).toEqual({ ok: true, stored: true })
+    } finally {
+      delete process.env.SHOGO_NOTES_WORKER_TOKEN
+    }
   })
 })
 
@@ -524,5 +665,233 @@ describe('deleting the notes', () => {
   test('someone else in the call may not delete them', async () => {
     const { huddleId } = await liveHuddle()
     await expect(huddles.deleteHuddleNotes(huddleId, seed.member)).rejects.toMatchObject({ status: 403 })
+  })
+})
+
+describe('saying "hey Shogo" in a huddle', () => {
+  /** The wake is fire-and-forget, so wait for it to land rather than racing it. */
+  async function until<T>(read: () => Promise<T | null | undefined>, ms = 4_000): Promise<T> {
+    const deadline = Date.now() + ms
+    for (;;) {
+      const value = await read()
+      if (value) return value
+      if (Date.now() > deadline) throw new Error('the wake never happened')
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+  }
+
+  const wakesOf = (huddleId: string) => db.huddleWake.findMany({ where: { huddleId } })
+
+  test('a spoken phrase posts a note and runs the agent as the person who said it', async () => {
+    const { conv, huddleId } = await liveHuddle()
+    // A little context before the wake, so the note has something to hand over.
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.member,
+      itemId: `lk:${seed.member}:1:1`,
+      text: 'the login button is broken on safari',
+      start: 1,
+      end: 3,
+    })
+
+    const stored = await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: `lk:${seed.owner}:1:1`,
+      text: 'hey shogo can you make a card for the login bug',
+      start: 4,
+      end: 7,
+    })
+    expect(stored).toEqual({ ok: true, stored: true })
+
+    const row = await until(() => db.huddleWake.findFirst({ where: { huddleId } }))
+    expect(row).toMatchObject({ speakerId: seed.owner, itemId: `lk:${seed.owner}:1:1` })
+
+    await until(() => (replies.length ? replies : null))
+    expect(replies).toHaveLength(1)
+    expect(replies[0]).toMatchObject({ userId: seed.owner })
+
+    const note = await db.conversationMessage.findUnique({ where: { id: row.messageId } })
+    expect(note.conversationId).toBe(conv.id)
+    expect(note.authorType).toBe('system')
+    // The request, and the last minute of the call with a name on every line.
+    expect(note.text).toContain('make a card for the login bug')
+    expect(note.text).toContain('the login button is broken on safari')
+    expect(note.blocks.huddleWake).toMatchObject({ huddleId, speakerId: seed.owner })
+    expect((await db.huddle.findUnique({ where: { id: huddleId } })).lastWakeAt).toBeTruthy()
+
+    // The call learns where the agent is without reading the chat bus.
+    const statuses = roomData.filter((entry) => entry.payload?.type === 'wake').map((entry) => entry.payload.status)
+    expect(statuses).toEqual(['running', 'replied'])
+    expect(roomData[0].topic).toBe('shogo.huddle')
+    expect(roomData[0].payload.by).toBe('owner')
+  })
+
+  test('a second phrase inside 10 s does not start a second run', async () => {
+    const { huddleId } = await liveHuddle()
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: `lk:${seed.owner}:1:1`,
+      text: 'hey shogo summarise where we are',
+      start: 1,
+      end: 3,
+    })
+    await until(() => db.huddleWake.findFirst({ where: { huddleId } }))
+    await until(() => (replies.length ? replies : null))
+
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.member,
+      itemId: `lk:${seed.member}:1:1`,
+      text: 'hey shogo what about the other thing',
+      start: 4,
+      end: 6,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(1)
+    expect(replies).toHaveLength(1)
+  })
+
+  test('the same transcript item can never wake twice', async () => {
+    const { huddleId } = await liveHuddle()
+    const text = 'hey shogo file this as a bug please'
+    await huddles.appendHuddleNoteFinal({ huddleId, identity: seed.owner, itemId: 'lk:dup:1', text, start: 1, end: 3 })
+    await until(() => db.huddleWake.findFirst({ where: { huddleId } }))
+    // Move the cooldown out of the way, leaving the item-id guard as the only thing left.
+    await db.huddle.update({ where: { id: huddleId }, data: { lastWakeAt: new Date(Date.now() - 60_000) } })
+    await huddles.appendHuddleNoteFinal({ huddleId, identity: seed.owner, itemId: 'lk:dup:1', text, start: 1, end: 3 })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(1)
+  })
+
+  test('a guest’s words are captioned but never woken', async () => {
+    const { huddleId } = await liveHuddle()
+    wakeService.onHuddleFinalStored({
+      meetingId: (await meetings.ensureHuddleNotesDraft(huddleId)).id,
+      huddleId,
+      itemId: 'lk:guest:1',
+      speakerId: `guest_${crypto.randomUUID().slice(0, 6)}`,
+      speaker: 'Guest',
+      segment: { start: 1, end: 3, text: 'hey shogo can you hear the guest' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(0)
+    expect(replies).toHaveLength(0)
+  })
+
+  test('with the notes off there is nothing to wake from', async () => {
+    const { huddleId } = await liveHuddle()
+    await db.huddle.update({ where: { id: huddleId }, data: { notesEnabled: false } })
+    wakeService.onHuddleFinalStored({
+      meetingId: (await meetings.ensureHuddleNotesDraft(huddleId)).id,
+      huddleId,
+      itemId: 'lk:owner:9',
+      speakerId: seed.owner,
+      speaker: 'owner',
+      segment: { start: 1, end: 3, text: 'hey shogo are the notes even on' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(0)
+    expect(replies).toHaveLength(0)
+  })
+
+  // QA (SHO-187): the answer has to land where the call's chat panel reads it,
+  // and a call that has used up its wakes or lost its speaker must stay quiet.
+  test('a channel huddle puts the note and the agent’s answer in the huddle’s thread', async () => {
+    const { huddleId } = await liveHuddle()
+    const huddle = await db.huddle.findUnique({ where: { id: huddleId } })
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: 'lk:thread:1',
+      text: 'hey shogo where did we land on the release',
+      start: 1,
+      end: 3,
+    })
+    const row = await until(() => db.huddleWake.findFirst({ where: { huddleId } }))
+    await until(() => (replies.length ? replies : null))
+
+    const note = await db.conversationMessage.findUnique({ where: { id: row.messageId } })
+    expect(note.threadRootId).toBe(huddle.messageId)
+    // HuddleThreadPanel reads that thread, so the answer must be written into it.
+    expect(replies[0].threadRootId).toBe(huddle.messageId)
+  })
+
+  test('a DM huddle puts the note and the answer at the top level, where its chat panel reads', async () => {
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+    await huddles.joinHuddle(dm.id, seed.owner)
+    const joined = await huddles.joinHuddle(dm.id, seed.member)
+    const huddleId = joined.huddle.id
+
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: 'lk:dm:1',
+      text: 'hey shogo make a card for the safari login bug',
+      start: 1,
+      end: 3,
+    })
+    const row = await until(() => db.huddleWake.findFirst({ where: { huddleId } }))
+    await until(() => (replies.length ? replies : null))
+
+    const note = await db.conversationMessage.findUnique({ where: { id: row.messageId } })
+    expect(note.conversationId).toBe(dm.id)
+    // A thread here is a thread the call's chat panel never shows.
+    expect(note.threadRootId).toBeNull()
+    expect(replies[0].threadRootId).toBeNull()
+  })
+
+  test('someone who has left the call cannot wake the agent', async () => {
+    const { conv, huddleId } = await liveHuddle()
+    await huddles.leaveHuddle(conv.id, seed.member)
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.member,
+      itemId: 'lk:left:1',
+      text: 'hey shogo am I still here',
+      start: 1,
+      end: 3,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(0)
+    expect(replies).toHaveLength(0)
+  })
+
+  test('a call that has used its 20 wakes stays quiet, and says nothing it cannot back up', async () => {
+    const { huddleId } = await liveHuddle()
+    const wakeAt = Date.now() - 5 * 60_000
+    await db.huddleWake.createMany({
+      data: Array.from({ length: 20 }, (_, i) => ({
+        huddleId,
+        speakerId: seed.owner,
+        itemId: `lk:used:${i}`,
+        status: 'replied',
+        createdAt: new Date(wakeAt + i * 1_000),
+      })),
+    })
+    const before = await db.conversationMessage.count({})
+
+    await huddles.appendHuddleNoteFinal({
+      huddleId,
+      identity: seed.owner,
+      itemId: 'lk:cap:1',
+      text: 'hey shogo one more thing',
+      start: 320,
+      end: 322,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await wakesOf(huddleId)).toHaveLength(20)
+    expect(replies).toHaveLength(0)
+    expect(await db.conversationMessage.count({})).toBe(before)
+
+    // The call is told the cap was reached, so "hey Shogo" going quiet does not
+    // look like a broken agent — and it says nothing it cannot back up: no note,
+    // no run, just the one notice.
+    const notices = roomData.filter((entry) => entry.payload?.type === 'wake')
+    expect(notices.map((entry) => entry.payload.status)).toEqual(['limit'])
+    expect(notices[0].topic).toBe('shogo.huddle')
+    expect(notices[0].payload.by).toBe('owner')
+    expect(notices[0].payload.messageId).toBeUndefined()
   })
 })

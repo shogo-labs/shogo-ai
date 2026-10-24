@@ -223,4 +223,23 @@ describe('dedupeHandoverSegments', () => {
     const kept = dedupeHandoverSegments([seg({ itemId: null }), seg({ itemId: null, start: 11, end: 13 })])
     expect(kept).toHaveLength(2)
   })
+
+  test('two people who share a name are not one speaker', () => {
+    const kept = dedupeHandoverSegments([
+      seg({ speaker: 'Alex', speakerId: 'u-alex-1' }),
+      seg({ speaker: 'Alex', speakerId: 'u-alex-2', itemId: 'lk:u-alex-2:1', start: 11, end: 13 }),
+    ])
+    expect(kept).toHaveLength(2)
+  })
+
+  test('one person under two labels is still one speaker', () => {
+    // A coverer labels the phone by its guest name, the phone's own stream by
+    // its display name: the id is what identifies them.
+    const kept = dedupeHandoverSegments([
+      seg({ speaker: 'Ben', speakerId: 'u-ben', itemId: 'c:u-ben:1' }),
+      seg({ speaker: 'Ben (phone)', speakerId: 'u-ben', itemId: 'lk:u-ben:1', start: 11, end: 13 }),
+    ])
+    expect(kept).toHaveLength(1)
+    expect(kept[0].itemId).toBe('c:u-ben:1')
+  })
 })

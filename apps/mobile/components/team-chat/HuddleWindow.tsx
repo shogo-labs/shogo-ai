@@ -37,6 +37,8 @@ import {
 import { getHuddleHostBridge } from '../../lib/desktop-huddle'
 import { setHuddlePrefs, useHuddlePrefs, type MiniCorner } from '../../lib/huddle-prefs'
 import { miniFeature, miniScreen, miniSelfView, summarizeNames, type RosterEntry } from '../../lib/huddle-roster'
+import { captionsNotice } from '../../lib/huddle-captions'
+import { HuddleCaptions } from './HuddleCaptions'
 import { HuddleControls } from './HuddleControls'
 import { HuddleInviteSheet } from './HuddleInviteSheet'
 import { HuddleRequests, HuddleRequestStrip } from './HuddleRequests'
@@ -229,6 +231,7 @@ export function HuddlePanel() {
   const chatConversationId = chatTarget?.conversationId ?? call.conversationId!
   const pip = usePictureInPicture()
   const win = useWindowDimensions()
+  const prefs = useHuddlePrefs()
   const sideBySide = win.width >= 760
   const copyLink = useCallback(async () => {
     const link = await getHuddleShareLink()
@@ -241,6 +244,12 @@ export function HuddlePanel() {
   const actions: TileActions = useMemo(
     () => ({ pinned: call.pinned, onPin: pinHuddleParticipant, canModerate, onMute: (id) => void muteHuddleParticipant(id), onRemove: (id) => void removeHuddleParticipant(id) }),
     [call.pinned, canModerate],
+  )
+  // Caption labels come from the call's own roster, never from the stream's text.
+  const captionNameOf = useCallback(
+    (speakerId: string) =>
+      call.participants.find((p) => p.userId === speakerId)?.name ?? roster.find((e) => e.userId === speakerId)?.name,
+    [call.participants, roster],
   )
   const inCallNames = roster.filter((e) => e.status === 'in-call' && !e.isLocal).map((e) => e.name)
   const ringing = roster.filter((e) => e.status === 'ringing').length
@@ -325,6 +334,14 @@ export function HuddlePanel() {
       ) : null}
 
       <View className="border-t border-border px-3 py-3">
+        {prefs.captions ? (
+          <HuddleCaptions
+            lines={call.captions}
+            nameOf={captionNameOf}
+            notesOff={!call.notes.enabled}
+            notice={captionsNotice(call.wake)}
+          />
+        ) : null}
         <HuddleControls
           call={call}
           onInvite={guest ? undefined : () => setInvite(true)}
@@ -333,6 +350,8 @@ export function HuddlePanel() {
           linkCopied={linkCopied}
           onToggleChat={guest ? undefined : () => setChat((v) => !v)}
           chatOpen={chat}
+          captions={prefs.captions}
+          onToggleCaptions={() => setHuddlePrefs({ captions: !prefs.captions })}
         />
       </View>
 

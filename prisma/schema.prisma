@@ -4465,15 +4465,41 @@ model Huddle {
   notesClientSeconds  Int @default(0)
   /// Audit: audio seconds the LiveKit fallback forwarded to Inference STT for this call.
   notesLivekitSeconds Int @default(0)
+  /// When someone last said "hey Shogo" out loud and woke the workspace agent.
+  /// Written with a compare-and-set so one wake runs per huddle per 10 s, whatever the pod.
+  lastWakeAt DateTime?
 
   conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   participants HuddleParticipant[]
   invites      HuddleInvite[]
   joinRequests HuddleJoinRequest[]
+  wakes        HuddleWake[]
 
   @@index([workspaceId, endedAt])
   @@index([conversationId, startedAt])
   @@map("huddles")
+}
+
+/// One spoken "hey Shogo" and the agent turn it started. `@@unique([huddleId, itemId])`
+/// is the replay guard: a re-sent final can never wake twice. status: running | replied | failed.
+model HuddleWake {
+  id        String   @id @default(uuid())
+  huddleId  String
+  /// The person whose words woke it; the turn runs as them, with their permissions.
+  speakerId String
+  /// The transcript item that carried the phrase, so a replay is recognised.
+  itemId    String
+  /// The note posted into the huddle's chat, which is the agent's trigger.
+  messageId String?
+  status    String   @default("running")
+  reason    String?
+  createdAt DateTime @default(now())
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@unique([huddleId, itemId])
+  @@index([huddleId, createdAt])
+  @@map("huddle_wakes")
 }
 
 /// Someone a participant rang into a live huddle. An invite lets the person

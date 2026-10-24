@@ -24,11 +24,17 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { AudioStream, Room, RoomEvent, TrackKind, type RemoteParticipant, type RemoteTrack } from '@livekit/rtc-node'
 import { AgentServer, JobContext, WorkerOptions, defineAgent, inference, initializeLogger, stt } from '@livekit/agents'
 import { liveKitConfig, type LiveKitConfig } from '../lib/livekit'
+import { resolveLocalApiPort } from '../lib/local-api-port'
 import {
+  CAPTION_FINAL_ATTRIBUTE,
+  CAPTION_SEGMENT_ATTRIBUTE,
+  CAPTION_SPEAKER_ATTRIBUTE,
+  CAPTION_TOPIC,
   NOTES_AGENT_ATTRIBUTE,
   NOTES_AGENT_NAME,
   notesFallbackAvailability,
@@ -71,6 +77,8 @@ interface StreamMeter {
   flushedSeconds: number
   streamNo: number
   flushNo: number
+  /** How many finals this stream has produced, so each one gets its own item id. */
+  itemNo: number
 }
 
 /**
@@ -96,6 +104,65 @@ export interface NotesJobDeps {
 
 function log(message: string): void {
   console.log(`[huddle-notes] ${message}`)
+}
+
+/** How many times a final is re-posted before it is given up on. */
+const FINAL_POST_ATTEMPTS = 3
+
+/** Partials go to the room at most five times a second, per speaker. */
+const CAPTION_PARTIAL_INTERVAL_MS = 200
+
+/** The env var `startNotesWorker` puts in the API's environment; forked jobs inherit it. */
+export const NOTES_WORKER_TOKEN_ENV = 'SHOGO_NOTES_WORKER_TOKEN'
+
+export interface NoteFinalInput {
+  huddleId: string
+  identity: string
+  itemId: string
+  text: string
+  start: number
+  end: number
+}
+
+/**
+ * Hand one final to the API process, which stores it and runs the huddle-wake
+ * hook. The job's own process must not: on desktop the conversation bus and the
+ * agent runtime live in the API, and a short-lived fork must not start a run.
+ *
+ * Retries a failed post (a pod mid-deploy, a busy API) and then gives up: a lost
+ * caption is better than a job that never ends.
+ */
+export async function postHuddleNoteFinal(
+  input: NoteFinalInput,
+  options: { fetchImpl?: typeof fetch; url?: string } = {},
+): Promise<boolean> {
+  const token = process.env[NOTES_WORKER_TOKEN_ENV]
+  if (!token) {
+    log('no worker token in this process; dropping a final')
+    return false
+  }
+  const url = options.url ?? `http://127.0.0.1:${resolveLocalApiPort()}/api/internal/huddle-notes/finals`
+  const doFetch = options.fetchImpl ?? fetch
+  for (let attempt = 0; attempt < FINAL_POST_ATTEMPTS; attempt++) {
+    try {
+      const res = await doFetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-shogo-notes-worker': token },
+        body: JSON.stringify(input),
+      })
+      if (res.ok) return true
+      // Anything but a rate limit means the request itself is wrong: stop.
+      if (res.status !== 429 && res.status < 500) {
+        log(`final for ${input.identity} rejected (${res.status})`)
+        return false
+      }
+    } catch (err) {
+      if (attempt === FINAL_POST_ATTEMPTS - 1) log(`final for ${input.identity} failed: ${(err as Error).message}`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)))
+  }
+  log(`gave up storing a final for ${input.identity} after ${FINAL_POST_ATTEMPTS} attempts`)
+  return false
 }
 
 /** Participant view the coverage model needs, from whatever a room reports. */
@@ -185,16 +252,23 @@ export async function runNotesJob(options: {
     const track = (publication as any)?.track as RemoteTrack | undefined
     if (!track) return
 
-    const meter: StreamMeter = { identity, seconds: 0, flushedSeconds: 0, streamNo: meters.length + 1, flushNo: 0 }
+    const meter: StreamMeter = { identity, seconds: 0, flushedSeconds: 0, streamNo: meters.length + 1, flushNo: 0, itemNo: 0 }
     meters.push(meter)
     const engine = sttFor(identity)
     const speck = engine.stream()
-    const audio = new AudioStream(track, 16_000)
+    // A track that can't be tapped still yields finals from the recognizer; the
+    // pump below is the only part that needs real audio frames.
+    let audio: AudioStream | null = null
+    try {
+      audio = new AudioStream(track, 16_000)
+    } catch (err) {
+      log(`could not tap ${identity}: ${(err as Error).message}`)
+    }
     let closed = false
     const close = () => {
       if (closed) return
       closed = true
-      void audio.cancel().catch(() => {})
+      void audio?.cancel().catch(() => {})
       try {
         speck.endInput?.()
       } catch {}
@@ -202,14 +276,62 @@ export async function runNotesJob(options: {
     open.set(identity, { close, meters: meter })
     log(`covering ${identity} with ${notesSttModel()}`)
 
+    /**
+     * Captions go straight into the room, on LiveKit's own transcription topic,
+     * so everyone sees them live — guests and phones included — without a
+     * server hop. The speaker id has to ride along in an attribute: this
+     * worker's own participant identity is the agent, and receivers report an
+     * empty identity for it anyway. Best effort: a lost caption is not a lost call.
+     */
+    let lastInterimAt = 0
+    const publishCaption = async (text: string, final: boolean, itemId: string) => {
+      const local = (room as any).localParticipant
+      if (!local?.sendText) return
+      try {
+        await local.sendText(text, {
+          topic: CAPTION_TOPIC,
+          attributes: {
+            [CAPTION_SEGMENT_ATTRIBUTE]: itemId,
+            [CAPTION_FINAL_ATTRIBUTE]: final ? 'true' : 'false',
+            [CAPTION_SPEAKER_ATTRIBUTE]: identity,
+          },
+        })
+      } catch {
+        // A caption is a nicety; the line itself still reaches the notes.
+      }
+    }
+
     void (async () => {
       try {
         for await (const event of speck) {
+          if (event?.type === stt.SpeechEventType.INTERIM_TRANSCRIPT) {
+            const text = String(event.alternatives?.[0]?.text ?? '').trim()
+            if (!text) continue
+            // Partials are throttled to five a second; finals always go.
+            const at = now()
+            if (at - lastInterimAt < CAPTION_PARTIAL_INTERVAL_MS) continue
+            lastInterimAt = at
+            // A partial carries the id its final will claim, so the final replaces it.
+            await publishCaption(text, false, `lk:${identity}:${meter.streamNo}:${meter.itemNo + 1}`)
+            continue
+          }
           if (event?.type !== stt.SpeechEventType.FINAL_TRANSCRIPT) continue
           const text = String(event.alternatives?.[0]?.text ?? '').trim()
           if (!text) continue
           const at = secondsOf(now())
-          await deps.appendFinal({ huddleId, identity, text, start: Math.max(0, at - 3), end: at, itemId: `lk:${identity}:${meter.streamNo}` })
+          // One item id per final: `appendStreamFinal` is idempotent per id, so
+          // reusing the stream's id would dedupe every later line away.
+          meter.itemNo += 1
+          const itemId = `lk:${identity}:${meter.streamNo}:${meter.itemNo}`
+          await publishCaption(text, true, itemId)
+          await deps.appendFinal({
+            huddleId,
+            identity,
+            text,
+            start: Math.max(0, at - 3),
+            end: at,
+            itemId,
+          })
         }
       } catch (err) {
         if (!closed) log(`stream for ${identity} ended: ${(err as Error).message}`)
@@ -218,6 +340,7 @@ export async function runNotesJob(options: {
 
     // Frames are dropped once the stream closes, so a covered track costs nothing.
     void (async () => {
+      if (!audio) return
       let lastFlush = now()
       try {
         for await (const frame of audio) {
@@ -299,7 +422,6 @@ const worker = defineAgent({
       log('job without a huddleId; leaving')
       return
     }
-    const { appendStreamFinal, ensureHuddleNotesDraft } = await import('../services/meeting.service')
     const { findHuddleNotesTarget, notesLivekitFallback } = await import('../services/huddle.service')
     const { prisma } = await import('../lib/prisma')
 
@@ -318,22 +440,16 @@ const worker = defineAgent({
     } catch (err) {
       log(`could not mark this agent in the room: ${(err as Error).message}`)
     }
-    const draft = await ensureHuddleNotesDraft(huddleId)
 
     await runNotesJob({
       huddleId,
       room: ctx.room as any,
       deps: {
         async appendFinal(input) {
-          await appendStreamFinal(
-            draft.id,
-            {
-              itemId: input.itemId,
-              segment: { start: input.start, end: input.end, text: input.text },
-              speaker: input.identity,
-            },
-            { attempts: 25 },
-          )
+          // Through the API process, which resolves the name and stores the line
+          // (see `POST /api/internal/huddle-notes/finals`). The child that runs
+          // this job has neither the bus nor a reason to start an agent run.
+          await postHuddleNoteFinal(input)
         },
         async meteredSeconds(input) {
           await notesLivekitFallback(input)
@@ -376,6 +492,10 @@ export async function startNotesWorker(): Promise<any | null> {
   }
   const config = liveKitConfig()
   if (!config) return null
+  // The job child writes its finals through the API (`POST /api/internal/huddle-notes/finals`);
+  // a per-boot secret, set before the fork so every child inherits it, and never
+  // in the room or on disk.
+  process.env[NOTES_WORKER_TOKEN_ENV] = randomBytes(24).toString('hex')
   initializeLogger({ pretty: process.env.NODE_ENV !== 'production', level: process.env.LOG_LEVEL ?? 'info' })
   const server: any = new AgentServer(serverOptions(config))
   // run() only settles when the worker shuts down, so it cannot be awaited: the
@@ -413,8 +533,9 @@ function serverOptions(config: LiveKitConfig): any {
     production: false,
     port: 0,
     // Hidden and subscribe-only: it never shows in a tile, roster or count,
-    // and it can never publish audio into the call.
-    permissions: { canSubscribe: true, canPublish: false, canPublishData: false, hidden: true },
+    // and it can never publish audio into the call. It *does* publish data,
+    // because its captions are text streams on `lk.transcription`.
+    permissions: { canSubscribe: true, canPublish: false, canPublishData: true, hidden: true },
     requestFunc: async (job: any) => {
       // Accepting is explicit in JS: an un-accepted request just sits until
       // LiveKit times it out, which is exactly how the fallback stays dark.

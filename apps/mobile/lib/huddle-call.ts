@@ -29,6 +29,8 @@ import {
 } from './huddle-prefs'
 import { getHuddleAppBridge, type DesktopHuddleCommand } from './desktop-huddle'
 import { startHuddleNotes, type HuddleNotesEngine, type NotesMode, type NotesPeer } from './huddle-notes'
+import { captionsReducer, type CaptionEvent, type CaptionLine } from './huddle-captions'
+import type { HuddleWakeNotice } from './huddle-room'
 import { toWsBase } from './live-stream'
 import { API_URL } from './api'
 import { huddleJoinLink } from './team-chat-links'
@@ -95,6 +97,16 @@ export interface HuddleCallState {
    * participant covers.
    */
   notes: { enabled: boolean; mode: NotesMode; message: string | null; covering: string[] }
+  /**
+   * Live captions: the notes transcript as it is being written, from whoever
+   * transcribed each speaker. Oldest first; the strip shows the newest.
+   */
+  captions: CaptionLine[]
+  /**
+   * The workspace agent, woken by "hey Shogo": who said it and what it is doing.
+   * Cleared a few seconds after it answers, or when the call ends.
+   */
+  wake: HuddleWakeNotice | null
 }
 
 const IDLE: HuddleCallState = {
@@ -120,6 +132,8 @@ const IDLE: HuddleCallState = {
   notice: null,
   guest: null,
   notes: { enabled: true, mode: 'off', message: null, covering: [] },
+  captions: [],
+  wake: null,
 }
 
 let state: HuddleCallState = IDLE
@@ -263,6 +277,7 @@ function ensureNotesEngine(): void {
     getRemoteStreams: () => media?.remoteAudioStreams?.() ?? [],
     getPeers: notesPeers,
     isMuted: (forUserId) => media?.micMuted?.(forUserId ?? selfId) === true,
+    publishCaption: (line) => publishCaption(line),
     setSource: async (source) => {
       await media?.setNotesSource?.(source)
     },
@@ -288,6 +303,8 @@ function syncNotes(): void {
 async function stopNotes(): Promise<void> {
   const engine = notesEngine
   notesEngine = null
+  // Nothing is transcribed any more, so nothing is captioned either.
+  clearCaptions()
   await engine?.stop({ discard: true }).catch(() => {})
 }
 
@@ -329,8 +346,69 @@ export function applyHuddleNotesEvent(event: { conversationId: string; enabled: 
   applyNotesState(event.enabled)
 }
 
+// ─── Captions: the notes transcript, live ───────────────────────────────────
+
+/** Recent lines the store keeps; each surface shows as many as fit on it. */
+const CAPTION_STORE_LINES = 12
+
+/** While any line is up, one tick a second drops the ones already read. */
+let captionTimer: ReturnType<typeof setInterval> | null = null
+
+function clearCaptionTimer(): void {
+  if (captionTimer) clearInterval(captionTimer)
+  captionTimer = null
+}
+
+function reduceCaptions(event: CaptionEvent): void {
+  const next = captionsReducer({ lines: state.captions }, event, { window: CAPTION_STORE_LINES })
+  if (next.lines === state.captions) return
+  set({ captions: next.lines })
+  if (!next.lines.length) clearCaptionTimer()
+  else if (!captionTimer) captionTimer = setInterval(() => reduceCaptions({ type: 'expire', now: Date.now() }), 1_000)
+}
+
+/** A caption arrived from the room, or this device published one. */
+function pushCaption(line: CaptionLine): void {
+  reduceCaptions({ type: line.final ? 'final' : 'partial', itemId: line.itemId, speakerId: line.speakerId, text: line.text, at: line.at, start: line.start })
+}
+
+/** Hand one line to the room, for a speaker this device transcribes. */
+function publishCaption(line: { itemId: string; speakerId: string; text: string; final: boolean; start?: number }): void {
+  if (!state.notes.enabled) return
+  void media?.publishCaption?.(line).catch(() => {})
+}
+
+/** Notes are off (or the call is over): the strip goes with them. */
+function clearCaptions(): void {
+  clearCaptionTimer()
+  if (state.captions.length) set({ captions: [] })
+}
+
+/** How long "Shogo replied in chat" stays up once the agent is done. */
+const WAKE_NOTICE_LINGER_MS = 5_000
+let wakeNoticeTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearWakeNoticeTimer(): void {
+  if (wakeNoticeTimer) clearTimeout(wakeNoticeTimer)
+  wakeNoticeTimer = null
+}
+
+/** The server said what the agent is doing: running, answered, couldn't — or the call is out of wakes. */
+function applyHuddleWake(notice: HuddleWakeNotice): void {
+  clearWakeNoticeTimer()
+  set({ wake: notice })
+  // Hitting the cap is a fact about the rest of the call, not a passing status, so it stays.
+  if (notice.status === 'running' || notice.status === 'limit') return
+  wakeNoticeTimer = setTimeout(() => {
+    wakeNoticeTimer = null
+    set({ wake: null })
+  }, WAKE_NOTICE_LINGER_MS)
+}
+
 async function teardown(conversationId: string | null, workspaceId: string | null, guest: HuddleCallState['guest'] = null): Promise<void> {
   clearNoAnswer()
+  clearCaptionTimer()
+  clearWakeNoticeTimer()
   await stopNotes()
   const current = media
   media = null
@@ -400,6 +478,14 @@ function callHandlers(gen: number) {
       syncNotes()
     },
     onReaction: (reaction: HuddleReactionEvent) => gen === generation && addReaction(reaction),
+    onCaption: (line: CaptionLine) => {
+      if (gen !== generation) return
+      pushCaption(line)
+    },
+    onHuddleWake: (notice: HuddleWakeNotice) => {
+      if (gen !== generation) return
+      applyHuddleWake(notice)
+    },
     onDevicesChanged: () => gen === generation && deviceListeners.forEach((l) => l()),
     onError: (message: string) => gen === generation && set({ notice: message }),
   }

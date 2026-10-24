@@ -233,6 +233,7 @@ const NEVER_MACHINE_LOCAL = [
 const NEVER_LIVE_CALL = [
   'HuddleInvite', // ringing state for the call in progress
   'HuddleJoinRequest', // the waiting room in front of a call in progress
+  'HuddleWake', // which transcript line already woke the agent, for the call in progress
 ] as const
 
 const NEVER_REASONS: Array<[readonly string[], string]> = [

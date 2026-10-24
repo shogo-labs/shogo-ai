@@ -1739,6 +1739,13 @@ export interface RunAgentReplyArgs {
   userId: string
   /** Chain state for this reply; a fresh human-started chain when omitted. */
   chain?: AgentChain
+  /**
+   * Where the reply lands, when the caller knows better than the default rule:
+   * `null` posts at the top level. A huddle wake in a DM or group DM sets this,
+   * because the call's chat panel shows top-level messages only there, so a
+   * reply nested under the wake note would be invisible in the call.
+   */
+  threadRootId?: string | null
 }
 
 /**
@@ -1763,7 +1770,9 @@ async function workspaceFileFetcher(input: { workspaceId: string; projectId: str
 
 export async function runAgentReply(args: RunAgentReplyArgs, opts: { drained?: boolean } = {}): Promise<string | null> {
   const { conversation, trigger, target, userId } = args
-  const threadRootId = replyThreadRoot(conversation, trigger)
+  // A caller that knows where the answer belongs (a huddle wake) wins over the
+  // default rule; `null` means top level.
+  const threadRootId = args.threadRootId === undefined ? replyThreadRoot(conversation, trigger) : args.threadRootId
   // Any wake that reaches this point carries its own instruction, so a move
   // hint still waiting out its window for this agent is now redundant.
   await supersedePendingMoveNudges(threadRootId, agentRefForTarget(target))

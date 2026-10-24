@@ -16,9 +16,17 @@ import {
   VideoPresets,
   type Participant,
   type RemoteTrack,
+  type TextStreamReader,
   type TrackPublication,
 } from 'livekit-client'
 import type { CameraEffectsConfig } from './huddle-camera-effects'
+import {
+  CAPTION_TOPIC,
+  captionAttributes,
+  captionFromAttributes,
+  partialAllowed,
+  type CaptionLine,
+} from './huddle-captions'
 
 /** A camera or screen track to show on the stage. `track` is the LiveKit track (attach it to render). */
 export interface HuddleVideoTile {
@@ -64,6 +72,16 @@ export interface HuddleReactionEvent {
   at: number
 }
 
+/** What the server says the workspace agent is doing after "hey Shogo". */
+export interface HuddleWakeNotice {
+  /** The person whose words woke it. */
+  by: string
+  /** The wake note in the chat, when there is one. */
+  messageId: string | null
+  status: 'running' | 'replied' | 'failed' | 'limit'
+  reason?: string
+}
+
 export type HuddleDeviceKind = 'audioinput' | 'videoinput' | 'audiooutput'
 
 export interface HuddleDevice {
@@ -83,6 +101,12 @@ export interface HuddleMediaOptions {
 
 /** Topic for the small messages (reactions) sent between participants. */
 export const HUDDLE_DATA_TOPIC = 'huddle'
+/**
+ * Topic the server uses to tell the whole room what the workspace agent is
+ * doing after someone says "hey Shogo". Server-sent, so it reaches guests and
+ * phones that have no conversation bus of their own.
+ */
+export const HUDDLE_WAKE_TOPIC = 'shogo.huddle'
 /** Participant attribute that holds when a hand went up; attributes reach people who join later. */
 export const HAND_ATTRIBUTE = 'hand'
 /**
@@ -121,6 +145,10 @@ export interface HuddleMediaHandlers {
   onDevicesChanged?: () => void
   /** Something optional failed (a camera effect, a device switch); the call carries on. */
   onError?: (message: string) => void
+  /** A caption line arrived from whoever transcribed that speaker, or was just published here. */
+  onCaption?: (line: CaptionLine) => void
+  /** The server said the workspace agent is on it, answered, or couldn't. */
+  onHuddleWake?: (notice: HuddleWakeNotice) => void
 }
 
 export interface HuddleMedia {
@@ -149,6 +177,12 @@ export interface HuddleMedia {
   remoteAudioStreams?: () => HuddleRemoteAudio[]
   /** Publish whether this device streams its own audio: `'self'`, `'unsupported'`, or `''` to clear. */
   setNotesSource?: (state: 'self' | 'unsupported' | '') => Promise<void>
+  /**
+   * Publish one caption line into the room, so everyone (guests included) sees
+   * it live. `speakerId` is the person whose words these are — the device's own
+   * id, or one it covers. Best effort: a failed send never disturbs the call.
+   */
+  publishCaption?: (line: { itemId: string; speakerId: string; text: string; final: boolean; start?: number }) => Promise<void>
 }
 
 function dropReason(reason: DisconnectReason | undefined): string {
@@ -205,6 +239,24 @@ export function parseHuddleData(payload: Uint8Array): { t: 'reaction'; emoji: st
     }
   } catch {}
   return null
+}
+
+/** Parse the server's wake status message; anything malformed is ignored. */
+export function parseHuddleWake(payload: Uint8Array): HuddleWakeNotice | null {
+  try {
+    const value = JSON.parse(new TextDecoder().decode(payload))
+    if (value?.type !== 'wake') return null
+    const status = value.status
+    if (status !== 'running' && status !== 'replied' && status !== 'failed' && status !== 'limit') return null
+    return {
+      by: typeof value.by === 'string' ? value.by : 'Someone',
+      messageId: typeof value.messageId === 'string' ? value.messageId : null,
+      status,
+      ...(typeof value.reason === 'string' ? { reason: value.reason } : {}),
+    }
+  } catch {
+    return null
+  }
 }
 
 export function participantStateOf(participant: Participant, isLocal: boolean): HuddleParticipantState {
@@ -281,6 +333,8 @@ export async function connectHuddleRoom(
     },
   })
   const elements = new Map<string, HTMLMediaElement[]>()
+  /** Last partial caption published per speaker, so partials don't flood the room. */
+  const lastPartialAt = new Map<string, number>()
   let leaving = false
 
   const emitVideo = () => {
@@ -379,6 +433,11 @@ export async function connectHuddleRoom(
   room.on(RoomEvent.ConnectionQualityChanged, emitParticipants)
   room.on(RoomEvent.MediaDevicesChanged, () => handlers.onDevicesChanged?.())
   room.on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+    if (topic === HUDDLE_WAKE_TOPIC) {
+      const wake = parseHuddleWake(payload)
+      if (wake) handlers.onHuddleWake?.(wake)
+      return
+    }
     if (topic !== HUDDLE_DATA_TOPIC || !participant) return
     const message = parseHuddleData(payload)
     if (!message) return
@@ -413,6 +472,28 @@ export async function connectHuddleRoom(
     handlers.onVideo?.([])
     if (!leaving) handlers.onDropped(dropReason(reason))
   })
+
+  /**
+   * Captions arrive as text streams on LiveKit's own transcription topic, from
+   * whichever participant transcribed that speaker (their own device, a coverer,
+   * or the hidden fallback worker). The handler has to be in place before the
+   * room connects, or a line said while connecting is lost.
+   */
+  if (handlers.onCaption) {
+    room.registerTextStreamHandler(CAPTION_TOPIC, (reader: TextStreamReader, info: { identity: string }) => {
+      void (async () => {
+        try {
+          const caption = captionFromAttributes(reader.info.attributes, info.identity)
+          if (!caption) return
+          const text = await reader.readAll()
+          if (!text.trim()) return
+          handlers.onCaption?.({ ...caption, text, at: Date.now(), start: 0 })
+        } catch {
+          // A malformed or abandoned stream is one lost caption; the call is fine.
+        }
+      })()
+    })
+  }
 
   await room.connect(url, token)
   try {
@@ -519,6 +600,29 @@ export async function connectHuddleRoom(
     setNotesSource: async (state) => {
       await room.localParticipant.setAttributes({ [NOTES_ATTRIBUTE]: state })
       emitParticipants()
+    },
+    publishCaption: async (line) => {
+      const now = Date.now()
+      // Partials arrive many times a second; finals always go.
+      if (!line.final) {
+        if (!partialAllowed(lastPartialAt.get(line.speakerId), now)) return
+        lastPartialAt.set(line.speakerId, now)
+      }
+      // The sender never receives its own text stream, so show it here as well.
+      handlers.onCaption?.({ ...line, text: line.text, at: now, start: line.start ?? 0 })
+      const speaker =
+        line.speakerId === room.localParticipant.identity
+          ? room.localParticipant
+          : room.remoteParticipants.get(line.speakerId)
+      const trackId = speaker?.getTrackPublication(Track.Source.Microphone)?.trackSid
+      try {
+        await room.localParticipant.sendText(line.text, {
+          topic: CAPTION_TOPIC,
+          attributes: captionAttributes({ itemId: line.itemId, speakerId: line.speakerId, final: line.final, trackId }),
+        })
+      } catch {
+        // Captions are best effort; the line is still in the room's notes.
+      }
     },
     disconnect: async () => {
       leaving = true

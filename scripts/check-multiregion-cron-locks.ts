@@ -297,6 +297,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'One queued wake per (trigger message, agent): written by the message-post, card-move and chained-hand-off paths in the region serving that conversation. A cross-region duplicate would only queue the same wake twice, which the drain runs serially anyway — dedupe, not leader election.',
   },
   {
+    key: 'HuddleWake.(huddleId,itemId)',
+    category: 'request_scoped',
+    reason:
+      'One agent turn per (huddle, transcript item): inserted by the API pod that stored that final, in the region holding the huddle. It is the replay guard, not a lock — a cross-region duplicate would already be stopped by the Huddle.lastWakeAt compare-and-set that runs first, and a lost duplicate only means one wake did not happen.',
+  },
+  {
     key: 'DeviceVersionEvent.(deviceId,region,version)',
     category: 'request_scoped',
     reason:

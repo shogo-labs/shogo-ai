@@ -650,7 +650,7 @@ export interface StreamSessionDeps {
   ): Promise<{ id: string; status: string }>
   appendFinal(
     meetingId: string,
-    input: { itemId: string; segment: { start: number; end: number; text: string }; speaker?: string },
+    input: { itemId: string; segment: { start: number; end: number; text: string }; speaker?: string; speakerId?: string },
     options?: { attempts?: number },
   ): Promise<StreamFinalResult>
   publish(meetingId: string, event: MeetingLiveEvent): void
@@ -884,12 +884,17 @@ export class LiveStreamSession {
       const speaker = this.ticket.speaker
       // Several people stream into one huddle draft, so their provider item
       // ids are namespaced by speaker: otherwise one person's item 3 would
-      // dedupe away another person's item 3.
+      // dedupe away another person's item 3. The `c:` prefix says which path
+      // wrote the line, so a handover's duplicate can be recognised later.
       const speakerId = this.ticket.speakerId
-      const itemId = speakerId ? `${speakerId}:${event.itemId}` : event.itemId
+      const itemId = speakerId ? `c:${speakerId}:${event.itemId}` : event.itemId
       const options = speakerId ? { attempts: HUDDLE_FINAL_ATTEMPTS } : undefined
       this.persist = this.persist.then(async () => {
-        const result = await this.deps.appendFinal(meetingId, { itemId, segment, ...(speaker ? { speaker } : {}) }, options)
+        const result = await this.deps.appendFinal(
+          meetingId,
+          { itemId, segment, ...(speaker ? { speaker } : {}), ...(speakerId ? { speakerId } : {}) },
+          options,
+        )
         if (!result.ok) {
           this.lost = true
           if (result.reason === 'not_recording') this.close()

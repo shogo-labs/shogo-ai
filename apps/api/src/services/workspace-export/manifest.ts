@@ -84,6 +84,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   HuddleParticipant: { decision: 'include', reason: 'Who joined each huddle.', scope: { kind: 'parent', field: 'huddleId', parent: 'Huddle' } },
   HuddleInvite: { decision: 'include', reason: 'Who was rung into each huddle, and whether they came.', scope: { kind: 'parent', field: 'huddleId', parent: 'Huddle' } },
   HuddleJoinRequest: { decision: 'include', reason: 'People who knocked to join a huddle, and how it was answered.', scope: { kind: 'parent', field: 'huddleId', parent: 'Huddle' } },
+  HuddleWake: { decision: 'include', reason: 'Spoken "hey Shogo" wakes: who said it, and the agent turn it started.', scope: { kind: 'parent', field: 'huddleId', parent: 'Huddle' } },
   Meeting: { decision: 'include', reason: 'Meetings with their transcript/recording references.', scope: { kind: 'workspace' } },
   MeetingTemplate: { decision: 'include', reason: 'Meeting templates.', scope: { kind: 'workspace' } },
   Board: { decision: 'include', reason: 'Work boards.', scope: { kind: 'workspace' } },

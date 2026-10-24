@@ -41,6 +41,7 @@ import { createStreamTicket, STREAM_TICKET_TTL_MS, STREAM_WS_PATH } from '../lib
 import { describeStreamAvailability, FINISH_TIMEOUT_MS } from './meeting-live-stream'
 import {
   appendLiveTranscript,
+  appendStreamFinal,
   enhanceMeeting,
   ensureHuddleNotesDraft,
   finalizeLiveTranscript,
@@ -1802,8 +1803,11 @@ async function postNotesChunk(
     start: notesOffset(row),
     seq: input.seq,
     speaker: await speakerName(row, target),
+    speakerId: target,
     // Seqs collide between people sharing the draft, so huddle chunks dedupe by speaker too.
-    itemKey: `${target}:chunk-${input.seq}`,
+    // The `c:` prefix marks it as a client-transcribed line, so a fallback worker's
+    // `lk:` copy of the same utterance is recognisable as a duplicate at handover.
+    itemKey: `c:${target}:chunk-${input.seq}`,
   })
   if (!result.ok) {
     throw result.reason === 'not_recording'
@@ -1815,6 +1819,43 @@ async function postNotesChunk(
           : new ConversationError(502, 'busy', 'Live transcript is busy. Try again in a moment.')
   }
   return { meetingId: draft.id, segment: result.segment }
+}
+
+/**
+ * One final from the hidden fallback worker, written in the API process.
+ *
+ * The worker runs in a forked child (`@livekit/agents`), which on desktop has no
+ * conversation bus and must not start agent runs from a short-lived job. So it
+ * posts each final here and *this* call stores it, which is also the only place
+ * the huddle-wake hook fires for the fallback path.
+ *
+ * The label is resolved here too: a LiveKit identity is the user id, and a
+ * transcript that says `cmpunx5…` instead of `Russell` is not a transcript.
+ */
+export async function appendHuddleNoteFinal(input: {
+  huddleId: string
+  identity: string
+  itemId: string
+  text: string
+  start: number
+  end: number
+}): Promise<{ ok: boolean; stored: boolean; reason?: 'huddle_ended' | 'notes_off' | 'busy' }> {
+  const row = await db.huddle.findUnique({ where: { id: input.huddleId }, select: { id: true, endedAt: true, notesEnabled: true } })
+  if (!row || row.endedAt) return { ok: false, stored: false, reason: 'huddle_ended' }
+  if (!row.notesEnabled) return { ok: false, stored: false, reason: 'notes_off' }
+  const draft = await ensureHuddleNotesDraft(input.huddleId)
+  const result = await appendStreamFinal(
+    draft.id,
+    {
+      itemId: input.itemId,
+      segment: { start: input.start, end: input.end, text: input.text },
+      speaker: await speakerName({ id: input.huddleId }, input.identity),
+      speakerId: input.identity,
+    },
+    { attempts: 25 },
+  )
+  if (!result.ok) return { ok: false, stored: false, reason: result.reason === 'not_recording' ? 'huddle_ended' : 'busy' }
+  return { ok: true, stored: result.stored }
 }
 
 /** Fallback when the socket can't run: one short WAV chunk at a time. */

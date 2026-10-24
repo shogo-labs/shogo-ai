@@ -61,13 +61,24 @@ export function HuddleNotesPill({
 }
 
 /** The notice a pre-join screen and the guest join page show before anyone speaks. */
-export function HuddleNotesNotice({ compact }: { compact?: boolean }) {
+export function HuddleNotesNotice({ compact, guest }: { compact?: boolean; guest?: boolean }) {
   return (
     <View className={cn('flex-row items-center gap-1.5 rounded-lg bg-muted px-2 py-1.5', compact && 'px-1.5')} testID="huddle-notes-notice">
       <NotebookPen size={12} className="text-muted-foreground" />
       <Text className="flex-1 text-[11px] text-muted-foreground">
-        This huddle is transcribed: everyone gets speaker-labelled notes and a summary afterwards. Any participant can
-        turn notes off, which stops transcription for everyone.
+        {guest ? (
+          <>
+            This huddle is transcribed: everyone gets live captions, speaker-labelled notes and a summary afterwards. Any
+            participant can turn notes off, which stops transcription for everyone. Asking Shogo to act on the
+            conversation is a member's job, so a guest's words are transcribed but wake nothing.
+          </>
+        ) : (
+          <>
+            This huddle is transcribed: everyone gets live captions, speaker-labelled notes and a summary afterwards. Any
+            participant can turn notes off, which stops transcription for everyone. Say “hey Shogo” to ask the workspace
+            agent about the conversation so far.
+          </>
+        )}
       </Text>
     </View>
   )
