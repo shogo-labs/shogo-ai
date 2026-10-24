@@ -14,6 +14,12 @@ export type WorkspaceChatActivityState = {
   streamingSessionId: string | null
   /** Chats that finished streaming and have not been opened since. */
   completedSessionIds: string[]
+  /**
+   * The chat whose turn just ended, for the emit that follows. A real
+   * transition only — a chat switch clears the state without setting it, so
+   * the list never mistakes "you navigated away" for "the turn is over".
+   */
+  finishedSessionId?: string | null
 }
 
 export const emptyWorkspaceChatActivity: WorkspaceChatActivityState = {
@@ -38,6 +44,7 @@ export function nextWorkspaceChatActivity(
       completedSessionIds: state.completedSessionIds.filter(
         (id) => id !== sessionId,
       ),
+      finishedSessionId: null,
     }
   }
 
@@ -51,6 +58,7 @@ export function nextWorkspaceChatActivity(
     completedSessionIds: shouldFlag
       ? [...state.completedSessionIds, sessionId]
       : state.completedSessionIds,
+    finishedSessionId: sessionId,
   }
 }
 
@@ -65,5 +73,6 @@ export function workspaceChatActivityEvent(
       ? [state.streamingSessionId]
       : [],
     completedSessionIds: [...state.completedSessionIds],
+    finishedSessionIds: state.finishedSessionId ? [state.finishedSessionId] : [],
   }
 }
