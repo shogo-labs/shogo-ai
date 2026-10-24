@@ -2728,3 +2728,74 @@ describe('MessageList wheel passthrough', () => {
     expect(seen).toHaveLength(1)
   })
 })
+
+/**
+ * Slack puts the caret in the message box when you open a conversation on the
+ * desktop. The trigger is the conversation opening, not the composer mounting —
+ * a re-render of the same conversation must never take focus back from
+ * wherever the reader has since moved it.
+ */
+describe('opening a conversation', () => {
+  const channel = {
+    id: 'c-eng', workspaceId: 'ws', kind: 'public', name: 'eng', slug: 'eng',
+    topic: null, lastSeq: 1, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
+    joined: true, starred: false, muted: false, notifyLevel: 'all', lastReadSeq: 1,
+    canPost: true, canReply: true, canManage: false, members: [],
+  }
+  const pane = (overrides: Record<string, unknown> = {}) =>
+    createElement(TimelinePane as any, {
+      workspaceId: 'ws',
+      conversation: { ...channel, ...overrides } as any,
+      me: 'u-me',
+      mentionables: { ...mentionables, agents: [] },
+      visible: true,
+    })
+  /** The composer's own input, which is what the focus lands on. */
+  const composerInput = () => screen.getByLabelText('Message') as HTMLInputElement
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  test('puts the caret in the message box so you can start typing', async () => {
+    render(pane())
+    const input = composerInput()
+    await act(async () => {})
+    expect(document.activeElement).toBe(input)
+  })
+
+  test('leaves the caret alone in a channel you cannot post to', async () => {
+    render(pane({ canPost: false }))
+    await act(async () => {})
+    // Read-only: the composer is replaced by its reason, so there is nothing
+    // to focus and nothing grabs the caret.
+    expect(screen.queryByLabelText('Message')).toBeNull()
+    expect(screen.getByText('You do not have permission to post here.')).toBeTruthy()
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  test('does not take the caret later if the conversation opened read-only', async () => {
+    // Permissions can resolve a beat after the conversation opens. Focusing
+    // then would steal the caret from wherever the reader has since moved it.
+    const view = render(pane({ canPost: false }))
+    await act(async () => {})
+    view.rerender(pane({ canPost: true }))
+    await act(async () => {})
+    expect(document.activeElement).not.toBe(composerInput())
+  })
+
+  test('does not grab the caret back when the same conversation re-renders', async () => {
+    const view = render(pane())
+    const input = composerInput()
+    await act(async () => {})
+    expect(document.activeElement).toBe(input)
+
+    input.blur()
+    expect(document.activeElement).not.toBe(input)
+
+    // A mute or presence update re-renders the pane with the same conversation.
+    view.rerender(pane({ muted: true }))
+    await act(async () => {})
+    expect(document.activeElement).not.toBe(input)
+  })
+})

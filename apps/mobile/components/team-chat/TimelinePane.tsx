@@ -19,6 +19,7 @@ import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive
 import { TIMELINE_SOFT_LIMIT, useChannelDirectory, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
 import { threadCrumbs } from '../../lib/team-chat-nav'
+import { composerAutofocusesOnOpen } from '../../lib/composer-autofocus'
 import { nonMemberMentionIds } from '../../lib/team-chat-mention-nudge'
 import { dismissMentionNudgeForever, getMentionNudgeDismissed } from '../../lib/mention-nudge-preference'
 import { Breadcrumb } from './SessionBreadcrumb'
@@ -360,6 +361,18 @@ export function TimelinePane(props: TimelinePaneProps) {
   const canPostHere = threadRootId ? conversation.canReply : conversation.canPost
   const showComposer = !(!conversation.joined && isChannel && !threadRootId)
   const dragging = useFileDrop(rootRef, showComposer && canPostHere, (files) => composerRef.current?.addFiles(files))
+
+  // Opening a conversation leaves you ready to type, the way Slack does on the
+  // desktop. Recorded per conversation id so a re-render — or a permission
+  // flipping to allowed a beat later — never re-steals focus from wherever the
+  // reader has since moved it.
+  const autofocusedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (autofocusedFor.current === conversation.id) return
+    autofocusedFor.current = conversation.id
+    if (!composerAutofocusesOnOpen({ platform: Platform.OS, canPost: canPostHere })) return
+    composerRef.current?.focus()
+  }, [conversation.id, canPostHere])
 
   const crumbs = threadCrumbs({ kind: conversation.kind, label: conversationTitle(conversation) })
   // Running agents are the dock's business; this line is only ever people.
