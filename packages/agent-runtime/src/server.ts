@@ -48,8 +48,8 @@ import {
 import {
   POOL_DIST_BASE_PLACEHOLDER,
   adoptPoolPreseedIntoMember,
-  discardPoolPreseed,
   discardPoolPreseedArtifacts,
+  discardPoolPreseedAtAssign,
   listRootEntries,
   poolDistDir,
   removePoolTemplateDist,
@@ -113,6 +113,7 @@ import {
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
   seedWorkspaceDefaults,
+  seedWorkspaceRuntimeDefaults,
   seedPersonalCompanionTemplate,
   seedLSPConfig,
   seedRuntimeTemplate,
@@ -1120,12 +1121,16 @@ function ensureWorkspaceFiles(): void {
     // or running the legacy APP-layout migration here would corrupt the
     // user's repo (external) or the sibling project subfolders
     // (workspace). Lay down only the workspace-level `.shogo` skeleton.
-    seedWorkspaceDefaults(WORKSPACE_DIR)
     if (IS_WORKSPACE_RUNTIME) {
+      // A workspace root has no app, so its AGENTS.md must send "build me an
+      // app" through `project_create` instead of `src/App.tsx` (SHO-194).
+      seedWorkspaceRuntimeDefaults(WORKSPACE_DIR)
       writeWorkspaceManifest(WORKSPACE_DIR)
       if (workspaceKind() === 'personal') {
         seedPersonalCompanionTemplate(WORKSPACE_DIR)
       }
+    } else {
+      seedWorkspaceDefaults(WORKSPACE_DIR)
     }
     workspaceStatus.templateSeeded = true
     logTiming(
@@ -6715,12 +6720,22 @@ async function initializeEssentials(): Promise<void> {
         console.error(`[agent-runtime] Seeding anchor ${anchorId} failed:`, error.message)
       }
     }
+    // This process pre-seeded the root only when it booted as an unassigned
+    // pool VM, which is the assign — see discardPoolPreseedAtAssign for why
+    // that is the only path allowed to delete.
+    const bootedFromPool = poolPreseedDone !== null
     const discardRootPreseed = () => {
-      const removed = discardPoolPreseed(WORKSPACE_DIR)
-      if (removed.length) logTiming(`Workspace runtime: removed pool pre-seed from workspace root (${removed.join(', ')})`)
+      const result = discardPoolPreseedAtAssign(WORKSPACE_DIR, { bootedFromPool })
+      if (result.source === 'manifest') {
+        logTiming(`Workspace runtime: removed pool pre-seed from workspace root (${result.removed.join(', ')})`)
+      } else if (result.source === 'template') {
+        console.warn(
+          `[agent-runtime] Workspace runtime: the pool pre-seed manifest was missing or empty — removed the runtime template from the workspace root by name (${result.removed.join(', ')})`,
+        )
+      }
     }
-    if (preseedSettled) discardRootPreseed()
-    else poolPreseedDone?.then(discardRootPreseed).catch(() => {})
+    if (bootedFromPool && !preseedSettled) poolPreseedDone?.then(discardRootPreseed).catch(() => {})
+    else discardRootPreseed()
   } else if (poolPreseedDone) {
     poolPreseedDone.then(() => discardPoolPreseedArtifacts(WORKSPACE_DIR)).catch(() => {})
   }
@@ -7505,6 +7520,15 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
 } else if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: pre-seeding workspace with runtime template...')
   const rootEntriesBeforePreseed = listRootEntries(WORKSPACE_DIR)
+  if (rootEntriesBeforePreseed.length > 0) {
+    // A resumed snapshot, a reused /data/workspace drive or a container
+    // restart boots with last boot's pre-seed already in the root. The
+    // pre-seed still owns all of it, so the manifest lists every entry —
+    // this line is here so the reused-root case is visible in the logs.
+    logTiming(
+      `Pool mode: workspace root already held ${rootEntriesBeforePreseed.length} entries before the pre-seed (reused drive or snapshot)`,
+    )
+  }
   ensureWorkspaceFiles()
   const poolTechStackId = resolveWorkspaceTechStackId(WORKSPACE_DIR) || null
   let poolDistBuilt = false
@@ -7541,7 +7565,6 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
   }).finally(() => {
     try {
       writePoolPreseedManifest(WORKSPACE_DIR, {
-        entriesBefore: rootEntriesBeforePreseed,
         techStackId: poolTechStackId,
         distBuilt: poolDistBuilt,
         exclude: IS_WORKSPACE_RUNTIME
