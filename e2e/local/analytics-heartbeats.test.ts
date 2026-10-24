@@ -6,15 +6,41 @@
  * its schedule and edit permission, then renders the tab on desktop and on a
  * ~390px phone.
  *
- * Spend is not seeded here — a billed tick needs the fake-LLM stack
- * (`heartbeat-local-tick.test.ts` covers that path). What this asserts is the
- * report's contract: which agents are on, on what schedule, at what interval,
- * and that they can be switched off from the tab.
+ * The money path is seeded straight into the stack's SQLite file — the same
+ * trick `heartbeat-local-tick.test.ts` uses to force a due tick, because a
+ * billed tick needs the fake-LLM stack. One heartbeat charge and one ordinary
+ * chat charge go in, so the tab has to show the agent's spend *and* its share of
+ * the workspace's spend (25% of $5.00), which is the number the card is about.
  *
- * Needs the local stack (`E2E_LOCAL_START_STACK=1` starts it).
+ * Needs the local stack (`E2E_LOCAL_START_STACK=1` starts it). Set
+ * `E2E_LOCAL_DB` when running against a stack you started yourself.
  */
 import { expect, test, type Page } from "@playwright/test"
+import { existsSync } from "fs"
+import { randomUUID } from "crypto"
+import { resolve } from "path"
+import { DatabaseSync } from "node:sqlite"
 import { activateTeamWorkspace, api, signIn, teamWorkspaceId } from "./team-nav-seed"
+
+const REPO_ROOT = resolve(__dirname, "../..")
+
+/** The stack's SQLite file: `E2E_LOCAL_START_STACK` boots the API against it. */
+function localDbPath(): string | null {
+  if (process.env.E2E_LOCAL_DB) return process.env.E2E_LOCAL_DB
+  const bundled = resolve(REPO_ROOT, "test-results/e2e-local.db")
+  if (process.env.E2E_LOCAL_START_STACK === "1") return bundled
+  const fromEnv = process.env.DATABASE_URL
+  if (fromEnv?.startsWith("file:")) return fromEnv.slice("file:".length)
+  return existsSync(bundled) ? bundled : null
+}
+
+const DB_PATH = localDbPath()
+
+/** Prisma writes SQLite DateTime as ISO text with a `+00:00` offset. */
+const prismaDate = (date: Date) => date.toISOString().replace("Z", "+00:00")
+
+const HEARTBEAT_SPEND = 1.25
+const OTHER_SPEND = 3.75
 
 const suffix = Date.now().toString(36)
 const agentName = `hb-report-${suffix}`
@@ -22,6 +48,9 @@ const agentName = `hb-report-${suffix}`
 let page: Page
 let workspaceId: string
 let projectId: string
+let memberId: string
+let db: DatabaseSync | null = null
+const seededEventIds: string[] = []
 
 /** Opens the workspace Analytics screen the way a person does — the More tab. */
 async function openAnalytics(target: Page) {
@@ -52,10 +81,11 @@ test.describe("Analytics heartbeats", () => {
     await activateTeamWorkspace(page, workspaceId)
 
     const session = await (await page.request.get("/api/auth/get-session")).json().catch(() => null)
+    memberId = session?.user?.id
     const created = await api(page, "POST", "/api/projects", {
       name: agentName,
       workspaceId,
-      createdBy: session?.user?.id,
+      createdBy: memberId,
       tier: "starter",
       status: "draft",
       accessLevel: "anyone",
@@ -70,11 +100,27 @@ test.describe("Analytics heartbeats", () => {
     })
     expect(enabled.status).toBeLessThan(400)
     expect(enabled.json?.heartbeatEnabled).toBe(true)
+
+    if (DB_PATH) db = new DatabaseSync(DB_PATH, { readOnly: false })
+    // A usage event must name the member it charged. The session is the normal
+    // source; the local DB knows the workspace's own member either way.
+    if (!memberId && db) {
+      const row = db
+        .prepare("SELECT userId FROM members WHERE workspaceId = ? AND projectId IS NULL LIMIT 1")
+        .get(workspaceId) as { userId?: string } | undefined
+      memberId = row?.userId ?? ""
+    }
   })
 
   test.afterAll(async () => {
     // Do not leave a 15-minute schedule running behind the rest of the suite.
     await api(page, "PATCH", `/api/projects/${projectId}/heartbeat`, { heartbeatEnabled: false }).catch(() => {})
+    // Nor the charges this spec invented.
+    if (db) {
+      for (const id of seededEventIds) db.prepare("DELETE FROM usage_events WHERE id = ?").run(id)
+      db.close()
+      db = null
+    }
     await page.context().close()
   })
 
@@ -122,6 +168,54 @@ test.describe("Analytics heartbeats", () => {
 
     const back = await api(page, "PATCH", `/api/projects/${projectId}/heartbeat`, { heartbeatEnabled: true })
     expect(back.status).toBeLessThan(400)
+  })
+
+  test("a seeded heartbeat charge shows its spend and its share of workspace spend", async () => {
+    test.skip(!db || !memberId, "no local SQLite database to seed a heartbeat charge in (set E2E_LOCAL_DB)")
+
+    // One heartbeat tick and one ordinary chat, both charged by the same
+    // project, so the share is a number a person can check by hand:
+    // 1.25 / 5.00 = 25%.
+    const charge = (sessionId: string, billedUsd: number) => {
+      const id = randomUUID()
+      db!.prepare(
+        `INSERT INTO usage_events
+           (id, workspaceId, projectId, memberId, actionType, actionMetadata, rawUsd, billedUsd, source, balanceBefore, balanceAfter, createdAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id, workspaceId, projectId, memberId, "chat_message",
+        JSON.stringify({ chatSessionId: sessionId, model: "claude-haiku-4-5", inputTokens: 1000, outputTokens: 200 }),
+        null, billedUsd, "daily", 0, 0, prismaDate(new Date()),
+      )
+      seededEventIds.push(id)
+    }
+    charge("heartbeat", HEARTBEAT_SPEND)
+    charge("cs_not_a_heartbeat", OTHER_SPEND)
+
+    const res = await api(page, "GET", `/api/workspaces/${workspaceId}/analytics/heartbeats?period=24h`)
+    expect(res.status).toBe(200)
+
+    const row = ((res.json?.data?.agents ?? []) as any[]).find((r) => r.projectId === projectId)
+    expect(row.billedUsd).toBeCloseTo(HEARTBEAT_SPEND, 6)
+    expect(row.ticks).toBe(1)
+    expect(row.avgUsdPerTick).toBeCloseTo(HEARTBEAT_SPEND, 6)
+    // The ordinary chat is in the denominator, not in the heartbeat column. The
+    // rest of the suite shares this database, so the totals are a floor and the
+    // share the UI must show is computed from what the API actually returned.
+    const totals = res.json.data.totals
+    expect(totals.billedUsd).toBeGreaterThanOrEqual(HEARTBEAT_SPEND)
+    expect(totals.workspaceBilledUsd).toBeGreaterThanOrEqual(HEARTBEAT_SPEND + OTHER_SPEND)
+    const share = `${Math.round((totals.billedUsd / totals.workspaceBilledUsd) * 100)}%`
+
+    await openAnalytics(page)
+    const tab = page.getByTestId("analytics-view-heartbeats")
+    await expect(tab).toBeVisible({ timeout: 60_000 })
+    await tab.click()
+
+    const table = page.getByTestId("heartbeats-table")
+    await expect(table.getByText("$1.25").first()).toBeVisible({ timeout: 30_000 })
+    // The card's whole point: the team can see what fraction of the bill it is.
+    await expect(page.getByText(share).first()).toBeVisible()
   })
 
   test("the Heartbeats tab renders the agent on desktop", async () => {
