@@ -1196,6 +1196,11 @@ jobs:
           set -euo pipefail
           cd packages/agent-runtime
           bun --no-env-file test src/__tests__/path-boundary.test.ts src/__tests__/permission-engine.test.ts src/__tests__/runtime-trust.test.ts src/__tests__/canvas-file-watcher.test.ts src/__tests__/fs-tree-walker.test.ts src/__tests__/workspace-file-routes.test.ts src/__tests__/canvas-file-watcher-mounts.test.ts src/__tests__/trust-resolver-workspace-mounts.test.ts src/__tests__/runtime-lsp-routes-scope.test.ts src/__tests__/workspace-runtime-mode.test.ts src/__tests__/process-tree.test.ts src/__tests__/qa-sho144-windows-tree.acceptance.test.ts
+          # SHO-180 / #1686: the two halves that only exist on this platform —
+          # the `>nul` -> `/dev/null` rewrite in the exec path, and a real repo
+          # whose backup parks itself (Windows cannot create a reserved name, so
+          # the test scopes those assertions to the names the host can make).
+          bun --no-env-file test src/__tests__/exec-nul-redirect.test.ts src/__tests__/qa-sho180-park-notify.acceptance.test.ts
           cd ../..
           bun --no-env-file test scripts/__tests__/desktop-next-beta-version.test.ts
           # The Windows installer ships this bundle; build it on the platform that packages it.

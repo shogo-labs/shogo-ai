@@ -11,15 +11,17 @@
  *      rest of the work lands, and the same failure twenty times in a row parks
  *      the sync and reports once.
  *
- * The dev's tests use the fake `spawnGit`; these drive real `git` on the
- * platform CI runs on, which is where the `:(exclude,literal)` pathspec has to
- * behave.
+ * The dev's tests drive the fake `spawnGit`; these drive real `git`, which is
+ * where the `:(exclude,literal)` pathspec has to behave. They also run in the
+ * Windows CI job: on Windows a reserved name cannot exist as a regular file, so
+ * the reserved-path assertions are scoped to the names this host could actually
+ * create (`present`) and the park/report half runs everywhere.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 import { GitWorkspaceSync, type SyncParkInfo } from '@shogo/shared-runtime'
@@ -108,10 +110,30 @@ function git(dir: string, ...args: string[]): string {
   return r.stdout
 }
 
+/**
+ * Write `rel` into `dir` and report whether it became a real file. On Windows a
+ * reserved device name cannot: the write goes to the device and nothing lands.
+ */
+function tryWrite(dir: string, rel: string): boolean {
+  const abs = join(dir, rel)
+  mkdirSync(dirname(abs), { recursive: true })
+  try {
+    writeFileSync(abs, 'junk\n')
+  } catch {
+    return false
+  }
+  try {
+    return existsSync(abs) && statSync(abs).isFile()
+  } catch {
+    return false
+  }
+}
+
 describe('a real repository that cannot be made durable', () => {
   let dir: string
   let logs: string[]
   let parks: SyncParkInfo[]
+  let present: string[]
 
   function logger() {
     return {
@@ -127,10 +149,7 @@ describe('a real repository that cannot be made durable', () => {
     dir = mkdtempSync(join(tmpdir(), 'qa-sho180-real-'))
     git(dir, 'init', '-q')
     writeFileSync(join(dir, 'keep.txt'), 'work the user cares about\n')
-    writeFileSync(join(dir, 'nul'), 'junk from `cmd > nul` under Git Bash\n')
-    writeFileSync(join(dir, 'aux.txt'), 'junk\n')
-    mkdirSync(join(dir, 'sub'), { recursive: true })
-    writeFileSync(join(dir, 'sub', 'CON'), 'junk\n')
+    present = ['nul', 'aux.txt', 'sub/CON'].filter((rel) => tryWrite(dir, rel))
   })
 
   afterEach(() => {
@@ -145,8 +164,8 @@ describe('a real repository that cannot be made durable', () => {
       projectId: 'proj-qa',
       localOnly: true,
       afterCommit: () => {
-        // The pod-owned durability step (persist `.git` + checkpoint row) is
-        // dead: the same failure on every cycle, which is what parks the sync.
+        // Pod-owned durability (persist `.git` + checkpoint row) is dead: the
+        // same failure on every cycle, which is what parks the sync.
         throw new Error('object store unreachable')
       },
       onPark: (info) => parks.push(info),
@@ -160,23 +179,30 @@ describe('a real repository that cannot be made durable', () => {
     expect(parks[0].reason).toContain('object store unreachable')
     expect(parks[0].consecutiveFailures).toBeGreaterThanOrEqual(20)
 
-    // The workspace still backed up: the user's file is committed, the names
-    // Windows cannot index are not — and they are still on disk, untouched.
+    // The workspace still backed up: the user's file is committed, and every
+    // reserved name this host could create stayed out of the index (and is
+    // still on disk, untouched).
     const tracked = git(dir, 'ls-files').split('\n').filter(Boolean)
     expect(tracked).toContain('keep.txt')
-    expect(tracked).not.toContain('nul')
-    expect(tracked).not.toContain('aux.txt')
-    expect(tracked).not.toContain('sub/CON')
+    for (const rel of present) {
+      expect(tracked).not.toContain(rel)
+      expect(existsSync(join(dir, rel))).toBe(true)
+    }
+
+    // Each reserved name is reported once, with the way to get rid of it.
+    const reserved = logs.filter((l) => l.includes('not staging'))
+    expect(reserved).toHaveLength(present.length)
+    for (const rel of present) {
+      expect(reserved.some((l) => l.includes(`"${rel}"`) && l.includes('rm -f'))).toBe(true)
+    }
+
+    // No "push" wording in local-only mode.
+    expect(logs.some((l) => /S3 Layer 2|\bpush(es|ed)?\b/i.test(l))).toBe(false)
 
     // The lifetime counter is on disk, so a restart continues the same streak.
     const state = JSON.parse(readFileSync(join(dir, '.git', 'shogo-sync-state.json'), 'utf8'))
     expect(state.lifetimeFailures).toBeGreaterThanOrEqual(20)
     expect(typeof state.firstFailureAt).toBe('string')
-
-    // Reserved names are named once, with the way to get rid of them.
-    const reserved = logs.filter((l) => l.includes('not staging'))
-    expect(reserved).toHaveLength(3)
-    expect(reserved.some((l) => l.includes('"nul"') && l.includes('rm -f'))).toBe(true)
 
     await sync.flushAndShutdown(200)
   })
