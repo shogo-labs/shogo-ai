@@ -238,6 +238,15 @@ describe('createdThenDelegated', () => {
     ])
     expect(createdThenDelegated(r)).toBe(false)
   })
+
+  test('credits a good create after a rejected one', () => {
+    const r = result([
+      call('project_create', { project: 'run-tracker', message: 'placeholder' }, 'Validation failed: name is required'),
+      call('project_create', { name: 'Run Tracker' }, { ok: true, project: { id: CREATED_ID } }),
+      call('project_call', { project: CREATED_ID, message: 'build it' }, { ok: true }),
+    ])
+    expect(createdThenDelegated(r)).toBe(true)
+  })
 })
 
 describe('usedExistingProject', () => {

@@ -335,14 +335,20 @@ function callTargetsProject(call: ToolCallRecord, id: string): boolean {
  * True when the agent created a project and then delegated the work to that
  * same project. The order matters: a `project_call` before the create cannot
  * be the same project.
+ *
+ * Every create is considered, not just the first: a rejected attempt (wrong
+ * arguments, so no id comes back) followed by a good one still delegated, and
+ * grading the failed attempt alone scored a correct run 0.
  */
 export function createdThenDelegated(result: EvalResult): boolean {
   const calls = result.toolCalls
-  const createIndex = calls.findIndex((c) => c.name === 'project_create')
-  if (createIndex === -1) return false
-  const id = createdProjectId(calls[createIndex])
-  if (!id) return false
-  return calls.some((call, i) => i > createIndex && callTargetsProject(call, id))
+  for (let createIndex = 0; createIndex < calls.length; createIndex++) {
+    if (calls[createIndex].name !== 'project_create') continue
+    const id = createdProjectId(calls[createIndex])
+    if (!id) continue
+    if (calls.some((call, i) => i > createIndex && callTargetsProject(call, id))) return true
+  }
+  return false
 }
 
 /**
