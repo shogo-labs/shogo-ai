@@ -1,18 +1,28 @@
 # =============================================================================
 # Publish @shogo-ai/* packages to npm
 # =============================================================================
-# Triggered when an `sdk-v*` tag is pushed. The single tag version is
-# applied to all seven MIT packages, which are published together in
-# one workflow run:
+# The SDK ships with the product: every production release tag (`vX.Y.Z`,
+# the same tag that drives deploy.yml, the desktop builds and
+# publish-agent-runtime.yml) publishes the SDK at that version, so what a
+# project installs never lags what production runs (SHO-106 — 1.10.0 sat on
+# npm for months while main moved on). `sdk-v*` tags still work for an
+# out-of-band SDK hotfix. The single tag version is applied to all seven
+# MIT packages, which are published together in one workflow run:
 #
-#   sdk-v1.6.0  →  publishes
-#                    @shogo-ai/core@1.6.0
-#                    @shogo-ai/agent@1.6.0
-#                    @shogo-ai/db@1.6.0
-#                    @shogo-ai/email@1.6.0
-#                    @shogo-ai/voice@1.6.0
-#                    @shogo-ai/cli@1.6.0
-#                    @shogo-ai/sdk@1.6.0
+#   v2.4.0 (or sdk-v2.4.0)  →  publishes
+#                    @shogo-ai/core@2.4.0
+#                    @shogo-ai/agent@2.4.0
+#                    @shogo-ai/db@2.4.0
+#                    @shogo-ai/email@2.4.0
+#                    @shogo-ai/voice@2.4.0
+#                    @shogo-ai/cli@2.4.0
+#                    @shogo-ai/sdk@2.4.0
+#
+# Smoke check: the packed tarballs are installed into a scratch project and
+# `packages/sdk/scripts/smoke-voice-proxy.mjs` asserts the hosted voice
+# endpoints (signed-url, tts, music) forward in runtime-token proxy mode
+# instead of answering 501. It gates the publish, then runs again against
+# the registry copy once npm serves it.
 #
 # Why lockstep on the SDK tag?
 #   The packages were just split out and the surfaces are still
@@ -41,11 +51,12 @@ name: Publish SDK
 on:
   push:
     tags:
+      - 'v[0-9]*'
       - 'sdk-v[0-9]*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to publish (e.g. sdk-v1.6.0). Must already exist.'
+        description: 'Existing tag to publish (e.g. v2.4.0 or sdk-v2.4.0). Must already exist.'
         required: true
         type: string
       dry_run:
@@ -114,11 +125,12 @@ jobs:
         id: version
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ ! "$TAG" =~ ^sdk-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Tag '$TAG' is not a valid SDK tag (expected sdk-vX.Y.Z or sdk-vX.Y.Z-prerelease)"
+          if [[ ! "$TAG" =~ ^(sdk-)?v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a valid release tag (expected vX.Y.Z, sdk-vX.Y.Z, or a -prerelease of either)"
             exit 1
           fi
-          VERSION="${TAG#sdk-v}"
+          VERSION="${TAG#sdk-}"
+          VERSION="${VERSION#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Publishing @shogo-ai/{${PACKAGES// /,}} @ $VERSION (from tag $TAG)"
@@ -220,6 +232,27 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Smoke check packed tarballs (gates publish)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Install exactly what npm will receive and fail if a hosted voice
+          # endpoint 501s in runtime-token proxy mode. All seven tarballs go
+          # in together so the lockstep `@shogo-ai/*@$VERSION` deps resolve
+          # locally instead of from a registry that doesn't have them yet.
+          set -euo pipefail
+          SMOKE=/tmp/sdk-smoke
+          rm -rf "$SMOKE" && mkdir -p "$SMOKE/tarballs" "$SMOKE/packed"
+          tarballs=()
+          for pkg in $PACKAGES; do
+            (cd "packages/$pkg" && npm pack --pack-destination "$SMOKE/tarballs" >/dev/null)
+          done
+          for t in "$SMOKE"/tarballs/*.tgz; do tarballs+=("$t"); done
+          cd "$SMOKE/packed"
+          echo '{"name":"sdk-smoke-packed","private":true}' > package.json
+          npm install --no-audit --no-fund --legacy-peer-deps "${tarballs[@]}"
+          node "$GITHUB_WORKSPACE/packages/sdk/scripts/smoke-voice-proxy.mjs" . "$VERSION"
+
       - name: Check existing published versions
         id: check
         env:
@@ -261,6 +294,31 @@ jobs:
             (cd "packages/$pkg" && npm publish --access public --tag "$NPM_TAG")
             echo "::endgroup::"
           done
+
+      - name: Smoke check published packages
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Same check against what `npm install` now serves, so a skipped,
+          # partial or mis-tagged publish fails the release loudly.
+          set -euo pipefail
+          DIR=/tmp/sdk-smoke/registry
+          rm -rf "$DIR" && mkdir -p "$DIR" && cd "$DIR"
+          echo '{"name":"sdk-smoke-registry","private":true}' > package.json
+          for attempt in $(seq 1 10); do
+            if npm install --no-audit --no-fund --legacy-peer-deps --prefer-online \
+                "@shogo-ai/sdk@$VERSION" "@shogo-ai/voice@$VERSION"; then
+              break
+            fi
+            if [ "$attempt" = 10 ]; then
+              echo "::error::@shogo-ai/sdk@$VERSION / @shogo-ai/voice@$VERSION not installable from npm after publish"
+              exit 1
+            fi
+            echo "npm does not serve $VERSION yet (attempt $attempt) — retrying in 30s"
+            sleep 30
+          done
+          node "$GITHUB_WORKSPACE/packages/sdk/scripts/smoke-voice-proxy.mjs" . "$VERSION"
 
       - name: Summary
         if: always()
