@@ -58,7 +58,7 @@ function isOpenRouterModel(id: string): boolean {
   return typeof id === 'string' && id.startsWith(OPENROUTER_MODEL_PREFIX)
 }
 import { getOpenRouterPricing, type PerTokenPricing } from './openrouter-pricing'
-import { resetWorkspaceDefaults, seedLSPConfig, seedRuntimeTemplate } from '../workspace-defaults'
+import { resetWorkspaceDefaults, seedLSPConfig, seedRuntimeTemplate, runtimeTemplateTopLevelEntries } from '../workspace-defaults'
 import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
 import { PERSONALITY_EVALS } from './test-cases-personality'
@@ -114,6 +114,13 @@ import { TOKEN_BUDGET_EVALS } from './test-cases-token-budget'
 import { CACHE_EFFICIENCY_EVALS } from './test-cases-cache-efficiency'
 import { PLAN_EVALS } from './test-cases-plans'
 import { WORKSPACE_ATTACHMENT_EVALS } from './test-cases-workspace-attachments'
+import { WORKSPACE_BUILDS_EVALS } from './test-cases-workspace-builds'
+import {
+  evalWorkspaceEnv,
+  evalWorkspaceEnvKey,
+  type EvalWorkerEnv,
+} from './workspace-runtime-env'
+import { snapshotWorkspaceRoot, WORKSPACE_ROOT_APP_ENTRIES, type WorkspaceRootGuard } from './runtime-checks'
 // Agent-hardening tracks — P0/P1 regression reproductions from the Subliminal analysis.
 import { PREVIEW_URL_EVALS } from './test-cases-preview-url'
 import { TRUNCATION_EVALS } from './test-cases-truncation'
@@ -419,6 +426,9 @@ function getEvals(track: string): AgentEval[] {
     case 'cache-efficiency': return CACHE_EFFICIENCY_EVALS
     case 'plan': return PLAN_EVALS
     case 'workspace-attachments': return WORKSPACE_ATTACHMENT_EVALS
+    // A workspace agent asked to build an app or site must use a project and
+    // never build in the workspace root (SHO-195, regression for SHO-194).
+    case 'workspace-builds': return WORKSPACE_BUILDS_EVALS
     case 'preview-url': return PREVIEW_URL_EVALS
     case 'truncation': return TRUNCATION_EVALS
     case 'codegen-safety': return CODEGEN_SAFETY_EVALS
@@ -441,10 +451,10 @@ function getEvals(track: string): AgentEval[] {
     // Useful when you've already scored a model on the agentic suite and
     // want to fill in the rest of the matrix without re-running the
     // expensive long-pipeline persona evals.
-    case 'non-agentic': return [...NO_LLM_CACHE_EVALS, ...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_SMOKE_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS, ...BACKGROUND_TASK_EVALS]
-    case 'all': return [...NO_LLM_CACHE_EVALS, ...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS, ...BACKGROUND_TASK_EVALS, ...ORCHESTRATION_EVALS, ...REACTIVE_EVALS, ...SAMSARA_EVALS]
+    case 'non-agentic': return [...NO_LLM_CACHE_EVALS, ...WORKSPACE_ATTACHMENT_EVALS, ...WORKSPACE_BUILDS_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_SMOKE_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS, ...BACKGROUND_TASK_EVALS]
+    case 'all': return [...NO_LLM_CACHE_EVALS, ...WORKSPACE_ATTACHMENT_EVALS, ...WORKSPACE_BUILDS_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS, ...BACKGROUND_TASK_EVALS, ...ORCHESTRATION_EVALS, ...REACTIVE_EVALS, ...SAMSARA_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, tool-discipline, typed-build, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, orchestration, reactive, samsara, knowledge-graph, token-budget, plan, workspace-attachments, preview-url, truncation, codegen-safety, verification, loops, long-task, background-tasks, test-hygiene, agent-hardening, autonomy, checkpoints, error-convergence, secret-hygiene, context-retention, secure-auth, reliability-regression, cache-efficiency, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
+      console.error(`Unknown track: ${track}. Valid: workspace-builds, canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, tool-discipline, typed-build, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, orchestration, reactive, samsara, knowledge-graph, token-budget, plan, workspace-attachments, preview-url, truncation, codegen-safety, verification, loops, long-task, background-tasks, test-hygiene, agent-hardening, autonomy, checkpoints, error-convergence, secret-hygiene, context-retention, secure-auth, reliability-regression, cache-efficiency, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
       process.exit(1)
   }
 }
@@ -807,6 +817,41 @@ function clearPerEvalShogoState(shogoDir: string): void {
 // Eval execution on a worker
 // ---------------------------------------------------------------------------
 
+/**
+ * Files an eval's workspace fixture puts inside its projects, i.e.
+ * `projects[].files` expanded to `<id>/<path>`. Layered under the eval's own
+ * `workspaceFiles` so a case can still override a fixture file explicitly.
+ */
+function workspaceProjectFiles(ev: AgentEval): Record<string, string> {
+  const files: Record<string, string> = {}
+  for (const project of ev.workspaceRuntime?.projects ?? []) {
+    if (project.mounted === false) continue
+    for (const [relPath, content] of Object.entries(project.files ?? {})) {
+      files[`${project.id}/${relPath}`] = content
+    }
+  }
+  return files
+}
+
+/**
+ * Guard for the workspace-root check. A `poolPreseedAtRoot` case seeds the
+ * runtime template into the root (the staging trap) and the guard is "still
+ * byte-identical to what we seeded"; every other workspace case seeds nothing
+ * there, so any app artifact at the root is the agent's own.
+ *
+ * Only the app entries are hashed: the runtime rewrites its own scaffolding on
+ * boot (`AGENTS.md`, `MEMORY.md`, `WORKSPACE.md`), and those changing is the
+ * fix working, not the bug.
+ */
+function workspaceRootGuardFor(ev: AgentEval, dir: string): WorkspaceRootGuard | null {
+  if (!ev.workspaceRuntime) return null
+  const templateEntries = runtimeTemplateTopLevelEntries().filter((entry) =>
+    (WORKSPACE_ROOT_APP_ENTRIES as readonly string[]).includes(entry),
+  )
+  if (!ev.workspaceRuntime.poolPreseedAtRoot) return { baseline: {} }
+  return { baseline: snapshotWorkspaceRoot(dir, templateEntries) }
+}
+
 async function runEvalOnWorker(
   worker: DockerWorker,
   ev: AgentEval,
@@ -822,12 +867,26 @@ async function runEvalOnWorker(
      * pipeline's cumulative work, not just this phase's.
      */
     pipelineToolCalls?: ToolCallRecord[]
+    /**
+     * Restart the worker with this eval's workspace-runtime env (SHO-195).
+     * Called after the workspace setup below, because a workspace root's
+     * `AGENTS.md` / `WORKSPACE.md` are written by the runtime at boot and the
+     * setup just wiped them.
+     */
+    restartWorker?: () => Promise<void>
   },
 ): Promise<EvalResult> {
   // Force GC between evals to prevent memory pressure crashes in Bun
   try { Bun.gc(true) } catch {}
 
   const skipCleanup = opts?.skipCleanup ?? false
+
+  // Project fixture files (`projects[].files`) and the eval's own
+  // `workspaceFiles`, in that order so a case can override a fixture file.
+  const fixtureFiles: Record<string, string> = {
+    ...workspaceProjectFiles(ev),
+    ...(ev.workspaceFiles ?? {}),
+  }
 
   if (skipCleanup) {
     // Pipeline continuation — keep workspace intact, only overlay new files
@@ -878,16 +937,16 @@ async function runEvalOnWorker(
     if (verboseFlag) console.log(`      [setup] Seeding workspace via K8s pod HTTP...`)
     const base = getWorkerBaseUrl(worker)
 
-    if (ev.workspaceFiles) {
+    if (Object.keys(fixtureFiles).length > 0) {
       const seedRes = await fetch(`${base}/agent/workspace/seed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: ev.workspaceFiles }),
+        body: JSON.stringify({ files: fixtureFiles }),
       })
       if (!seedRes.ok) {
         console.warn(`[setup] Failed to seed workspace files into K8s pod: ${seedRes.status}`)
       } else if (verboseFlag) {
-        console.log(`      [setup] Seeded ${Object.keys(ev.workspaceFiles).length} file(s) into K8s pod workspace`)
+        console.log(`      [setup] Seeded ${Object.keys(fixtureFiles).length} file(s) into K8s pod workspace`)
       }
     }
   } else {
@@ -928,14 +987,58 @@ async function runEvalOnWorker(
 
     if (verboseFlag) console.log(`      [setup] Seeding workspace files...`)
 
-    if (ev.workspaceFiles) {
-      for (const [relPath, content] of Object.entries(ev.workspaceFiles)) {
+    if (Object.keys(fixtureFiles).length > 0) {
+      for (const [relPath, content] of Object.entries(fixtureFiles)) {
         const absPath = join(worker.dir, relPath)
         mkdirSync(dirname(absPath), { recursive: true })
         writeFileSync(absPath, content, 'utf-8')
       }
     }
+
+    // The staging trap, reproduced: the pool template sitting in the
+    // workspace ROOT, so an agent that reads `src/App.tsx` finds a working
+    // app there and builds in it instead of creating a project (SHO-195).
+    if (ev.workspaceRuntime?.poolPreseedAtRoot) {
+      seedRuntimeTemplate(worker.dir)
+      if (verboseFlag) console.log(`      [setup] Seeded the runtime template into the workspace ROOT (pool pre-seed trap)`)
+    }
   }
+
+  // A workspace root's `AGENTS.md` and `WORKSPACE.md` are written by the
+  // runtime at boot, and the setup above just removed them — so restart the
+  // worker onto the fresh root before the turn (SHO-195).
+  if (opts?.restartWorker) await opts.restartWorker()
+
+  // The pool pre-seed is cleared when the root it landed in is assigned to a
+  // workspace — before the agent ever sees it. Reproduce that step here, with
+  // the platform's own function, so a `poolPreseedAtRoot` case measures the
+  // real flow: pool seeds the root → root boots as a workspace → assign clears
+  // the app → the agent has to build in a project (SHO-194/SHO-195).
+  //
+  // On a runtime without the assign-time cleanup the call is skipped and the
+  // app stays in the root, which is the bug: the case then fails on the root
+  // its agent built in.
+  if (ev.workspaceRuntime?.poolPreseedAtRoot) {
+    const poolAdopt = await import('../workspace-pool-adopt').catch(() => null)
+    const discardAtAssign = (poolAdopt as any)?.discardPoolPreseedAtAssign as
+      | ((root: string, opts: { bootedFromPool: boolean }) => { source: string; removed: string[] })
+      | undefined
+    if (typeof discardAtAssign === 'function') {
+      // `bootedFromPool: true` — this root booted as an unassigned pool VM and
+      // is being assigned now, which is the only case the platform deletes in.
+      const cleared = discardAtAssign(worker.dir, { bootedFromPool: true })
+      if (verboseFlag) {
+        console.log(
+          `      [setup] Pool pre-seed cleared at assign (${cleared.source}): ` +
+            `${cleared.removed.length ? cleared.removed.join(', ') : 'nothing removed'}`,
+        )
+      }
+    } else if (verboseFlag) {
+      console.log(`      [setup] This runtime has no assign-time pool cleanup — the root keeps the app`)
+    }
+  }
+
+  const workspaceRoot = workspaceRootGuardFor(ev, worker.dir)
 
   const pipelineTag = ev.pipeline ? `[${ev.pipeline}:${ev.pipelinePhase}] ` : ''
   const evalLabel = `${pipelineTag}E${index + 1}:${ev.name.replace(/^[^:]*:\s*/, '').toLowerCase().replace(/\s+/g, '-').substring(0, 30)}`
@@ -1037,6 +1140,12 @@ async function runEvalOnWorker(
     const useRemoteChecks = k8sFlag
     if (useRemoteChecks) {
       try {
+        // The workspace-root guard is host-side: its baseline is hashed from
+        // `worker.dir` before the turn, and a k8s pod runs off a copy of that
+        // directory (docker bind-mounts it, which is why docker takes the local
+        // path below). So `workspaceRoot` is not sent here and
+        // `workspaceRootClean` comes back null — a workspace-build eval then
+        // fails its root gate instead of passing unverified.
         const res = await fetch(`${getWorkerBaseUrl(worker)}/agent/runtime-checks`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1068,6 +1177,7 @@ async function runEvalOnWorker(
         verbose: verboseFlag,
         runtimePort: worker.port,
         tenantProbe,
+        workspaceRoot: workspaceRoot ?? undefined,
       })
     }
     if (runtimeResults) {
@@ -1088,36 +1198,45 @@ async function runEvalOnWorker(
 
       const isFullstack = ev.useSkillServer === true
 
-      const runtimeCriteria: { id: string; desc: string; pts: number; passed: boolean; skip?: boolean }[] = [
-        {
-          id: 'runtime-server-healthy',
-          desc: 'Skill server boots and responds to /health',
-          pts: 2,
-          passed: runtimeResults.serverHealthy === true,
-          skip: runtimeResults.serverHealthy === null,
-        },
-        {
-          id: 'runtime-crud-functional',
-          desc: 'Can list and create records via API',
-          pts: 2,
-          passed: runtimeResults.canListModels && runtimeResults.canCreateRecord,
-          skip: runtimeResults.serverHealthy === null || !runtimeResults.workspaceIntegrity?.schemaHasModels,
-        },
-        {
-          id: 'runtime-canvas-port',
-          desc: 'Canvas references the correct skill server port',
-          pts: 1,
-          passed: runtimeResults.canvasPortCorrect === true,
-          skip: runtimeResults.canvasPortCorrect === null,
-        },
-        {
-          id: 'runtime-canvas-compiles',
-          desc: 'Canvas app source files transpile without syntax errors',
-          pts: 3,
-          passed: runtimeResults.canvasCompiles === true,
-          skip: runtimeResults.canvasCompiles === null,
-        },
-      ]
+      // A workspace-runtime eval has no app at its root by design — the whole
+      // point of the case is that the app belongs to a project — so the
+      // project-shaped criteria below (root server health, root canvas port and
+      // compile) measure nothing here. Worse, `runtime-canvas-compiles` paid
+      // points for exactly the root app a `poolPreseedAtRoot` case exists to
+      // catch. Omitting them also keeps `maxScore` at the case's own 100.
+      const runtimeCriteria: { id: string; desc: string; pts: number; passed: boolean; skip?: boolean }[] =
+        ev.workspaceRuntime
+          ? []
+          : [
+              {
+                id: 'runtime-server-healthy',
+                desc: 'Skill server boots and responds to /health',
+                pts: 2,
+                passed: runtimeResults.serverHealthy === true,
+                skip: runtimeResults.serverHealthy === null,
+              },
+              {
+                id: 'runtime-crud-functional',
+                desc: 'Can list and create records via API',
+                pts: 2,
+                passed: runtimeResults.canListModels && runtimeResults.canCreateRecord,
+                skip: runtimeResults.serverHealthy === null || !runtimeResults.workspaceIntegrity?.schemaHasModels,
+              },
+              {
+                id: 'runtime-canvas-port',
+                desc: 'Canvas references the correct skill server port',
+                pts: 1,
+                passed: runtimeResults.canvasPortCorrect === true,
+                skip: runtimeResults.canvasPortCorrect === null,
+              },
+              {
+                id: 'runtime-canvas-compiles',
+                desc: 'Canvas app source files transpile without syntax errors',
+                pts: 3,
+                passed: runtimeResults.canvasCompiles === true,
+                skip: runtimeResults.canvasCompiles === null,
+              },
+            ]
 
       // Opt-in hardening checks, gated by eval tags so existing evals are
       // unaffected. These power the agent-hardening reproductions.
@@ -1343,6 +1462,16 @@ async function main() {
     process.exit(1)
   }
 
+  // Workspace-runtime evals need to control WORKSPACE_RUNTIME / WORKSPACE_ID /
+  // PROJECT_ID at boot, which only the local and Docker workers expose (SHO-195).
+  if (k8sFlag && evals.some((e) => e.workspaceRuntime)) {
+    console.error(
+      'workspace-builds evals boot a workspace runtime and need per-eval env: ' +
+        'run them with --local or Docker, not --k8s.',
+    )
+    process.exit(1)
+  }
+
   // Worker config setup — one of three backends
   let dockerWorkerConfig: DockerWorkerConfig | undefined
   let localWorkerConfig: LocalWorkerConfig | undefined
@@ -1464,6 +1593,18 @@ async function main() {
     }
   }
 
+  // Workspace-runtime env each worker was last booted with (SHO-195). A
+  // worker is only reusable while an eval's env key matches, since
+  // WORKSPACE_RUNTIME / WORKSPACE_ID / PROJECT_ID are read at boot.
+  const workerWorkspaceEnvs = new Map<number, EvalWorkerEnv>()
+  const workerWorkspaceEnvKeys = new Map<number, string>()
+  for (const w of workers) {
+    // Workers booted at startup carry the base (single-project) identity.
+    const baseEnv = evalWorkspaceEnv(undefined)
+    workerWorkspaceEnvs.set(w.id, baseEnv)
+    workerWorkspaceEnvKeys.set(w.id, evalWorkspaceEnvKey(baseEnv))
+  }
+
   async function ensureWorkerHealthy(worker: DockerWorker) {
     const healthy = k8sFlag
       ? await (await import('./k8s-worker')).isK8sWorkerHealthy(worker)
@@ -1472,14 +1613,47 @@ async function main() {
       if (verboseFlag) console.log(`      [lifecycle] Worker ${worker.id} unhealthy, restarting...`)
       stopWorker(worker)
       await Bun.sleep(500)
-      // Mirror the initial start branching (k8s → local → docker).
+      // Mirror the initial start branching (k8s → local → docker), keeping the
+      // workspace env this worker was last booted with.
+      const workspaceEnv = workerWorkspaceEnvs.get(worker.id) ?? evalWorkspaceEnv(undefined)
       const fresh = k8sFlag
         ? await startK8sWorker(worker.id, k8sWorkerConfig!)
         : localFlag
-          ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
-          : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
+          ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir, workspaceEnv })
+          : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir, workspaceEnv })
       Object.assign(worker, fresh)
     }
+  }
+
+  /**
+   * Boot a worker with the eval's workspace-runtime env (SHO-195).
+   *
+   * Env is read once at process/container start, so a worker can only serve an
+   * eval whose env matches what it was booted with. `force` covers the case
+   * where the env is the same but the workspace was reset under the running
+   * process: a workspace root's `AGENTS.md` / `WORKSPACE.md` are written by the
+   * runtime at boot, so the boot has to come after the reset.
+   */
+  async function ensureWorkerEnv(worker: DockerWorker, env: EvalWorkerEnv, force: boolean) {
+    const key = evalWorkspaceEnvKey(env)
+    const current = workerWorkspaceEnvKeys.get(worker.id)
+    if (!force && current === key) return
+    if (verboseFlag) {
+      console.log(
+        `      [lifecycle] Worker ${worker.id} restarting for workspace env ` +
+          `${current === key ? '(workspace reset)' : '(env changed)'}`,
+      )
+    }
+    stopWorker(worker)
+    await Bun.sleep(300)
+    const fresh = k8sFlag
+      ? await startK8sWorker(worker.id, k8sWorkerConfig!)
+      : localFlag
+        ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir, workspaceEnv: env })
+        : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir, workspaceEnv: env })
+    Object.assign(worker, fresh)
+    workerWorkspaceEnvs.set(worker.id, env)
+    workerWorkspaceEnvKeys.set(worker.id, key)
   }
 
   const evalLogs: Record<string, string> = {}
@@ -1519,10 +1693,16 @@ async function main() {
     }
     await reportProgress()
     await ensureWorkerHealthy(worker)
+    const workspaceEnv = evalWorkspaceEnv(ev.workspaceRuntime)
+    // A workspace eval always boots after the workspace reset, so the runtime
+    // writes the root's AGENTS.md / WORKSPACE.md onto a clean root. Pipeline
+    // continuations keep the running process (the workspace must persist).
+    const forceRestart = Boolean(ev.workspaceRuntime) && !skipCleanup
     const result = await runEvalOnWorker(worker, ev, idx, evals.length, runTimestamp, {
       skipCleanup,
       runDir,
       pipelineToolCalls,
+      restartWorker: () => ensureWorkerEnv(worker, workspaceEnv, forceRestart),
     })
     results.push(result)
     workerStatus[worker.id].evalsCompleted++

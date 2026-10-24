@@ -47,6 +47,7 @@ export type EvalCategory =
   | 'teammate-coordination'
   | 'plan'
   | 'workspace-attachments'
+  | 'workspace-builds'
   | 'company-sim'
   | 'company-ops'
   | 'orchestration'
@@ -75,6 +76,22 @@ export interface AgentEval {
   toolMocks?: import('./tool-mocks').ToolMockMap
   /** Files to write into the workspace before running the eval (path relative to workspace root -> content) */
   workspaceFiles?: Record<string, string>
+  /**
+   * Boot the worker as a real multi-project WORKSPACE runtime instead of a
+   * single-project one (SHO-195).
+   *
+   * Without this, every eval ran the way a project runtime runs, and no case
+   * could reproduce the staging bug where a workspace chat asked to build a
+   * portfolio built it into the workspace root: a workspace root holds
+   * sibling project folders, so "build an app" there has to go through
+   * `project_create` + `project_call` (SHO-194).
+   *
+   * When set, the worker gets `WORKSPACE_RUNTIME=true`, `WORKSPACE_ID`,
+   * `WORKSPACE_KIND`, `WORKSPACE_PROJECT_IDS`, the project catalog, and no
+   * anchor; the runtime itself then writes the workspace `AGENTS.md` and
+   * `WORKSPACE.md` at boot, exactly as it does for a real workspace agent.
+   */
+  workspaceRuntime?: EvalWorkspaceRuntime
   /** Seed workspace with the runtime template (Vite + React + Tailwind + shadcn/ui). Provides index.html, package.json, tsconfig, etc. */
   useRuntimeTemplate?: boolean
   /**
@@ -134,6 +151,31 @@ export interface AgentEval {
 export interface ConversationTurn {
   role: 'user' | 'assistant'
   content: string
+}
+
+/** One project in the workspace catalog an eval fixture boots with. */
+export interface EvalWorkspaceProject {
+  id: string
+  name: string
+  /** Mounted projects get a `<id>/` folder; unmounted ones are only in the catalog. */
+  mounted?: boolean
+  /** Files written under `<id>/` before the turn. */
+  files?: Record<string, string>
+}
+
+/** How an eval's worker boots: a real workspace runtime, not a project runtime. */
+export interface EvalWorkspaceRuntime {
+  kind: 'team' | 'personal'
+  /** Projects in the workspace. Mounted ones become `<id>/` folders in the root. */
+  projects?: EvalWorkspaceProject[]
+  /** Render `WORKSPACE.md` the metal way (remote-project guidance). */
+  metal?: boolean
+  /**
+   * Put the runtime template (Vite + React + Tailwind app) into the **root**
+   * before the turn, the way a leftover pool pre-seed did in staging. An agent
+   * that reads `src/App.tsx` finds a working app there and builds in it.
+   */
+  poolPreseedAtRoot?: boolean
 }
 
 export interface ValidationCriterion {
@@ -218,7 +260,30 @@ export interface RuntimeCheckResults {
   previewReachable?: boolean | null
   /** Whether an unauthenticated request to the tenant-probe route was rejected (401/403). null = not probed. */
   tenantIsolationOk?: boolean | null
+  /**
+   * Workspace-runtime root check (SHO-195): the root holds no app of its own,
+   * and any template an eval seeded there (the staging pool pre-seed) is
+   * unmodified. null = the eval didn't boot as a workspace runtime.
+   */
+  workspaceRootClean?: WorkspaceRootCheck | null
   errors: string[]
+}
+
+/**
+ * Result of `checkWorkspaceRootClean`. A workspace root is Shogo scaffolding
+ * around sibling project folders: it must never grow `package.json`, `src/`,
+ * `prisma/` or a Vite scaffold of its own (SHO-195 / SHO-194).
+ */
+export interface WorkspaceRootCheck {
+  ok: boolean
+  /** App artifacts at the root that the eval did not seed. */
+  forbidden: string[]
+  /** Files seeded at the root (the pool pre-seed) whose content changed. */
+  modified: string[]
+  /** Seeded files the run removed. */
+  missing: string[]
+  /** Root entries after the run, for debugging a failure. */
+  entries: string[]
 }
 
 export interface PromptBreakdownSection {
