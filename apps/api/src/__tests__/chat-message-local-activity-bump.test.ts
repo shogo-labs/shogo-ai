@@ -12,6 +12,11 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
 import { Hono } from 'hono'
 
+import {
+  bumpChatSessionActivity,
+  chatMessageHooks,
+  localChatMessageHooks,
+} from '../generated/chat-message.hooks'
 import { createLocalGeneratedRoutes } from '../generated/local-routes'
 
 const SESSIONS: Record<string, any> = {
@@ -110,5 +115,41 @@ describe('POST /api/chat-messages on the local route set', () => {
       role: 'user',
       content: 'quick question',
     })
+  })
+})
+
+describe('the cloud hook set', () => {
+  test('runs the same bump as the desktop set', () => {
+    // One function, two hook sets: the desktop fix cannot drift from cloud.
+    expect(chatMessageHooks.afterCreate).toBe(bumpChatSessionActivity as any)
+    expect(localChatMessageHooks.afterCreate).toBe(bumpChatSessionActivity as any)
+  })
+
+  // AC7: the extraction left cloud behaviour unchanged. Calls the exact hook
+  // `generated/index.ts` installs via `setChatMessageHooks(chatMessageHooks)`.
+  test('still moves lastActiveAt and the project stamp', async () => {
+    await chatMessageHooks.afterCreate!(
+      { sessionId: 'chat-project' },
+      { prisma: makePrisma(), body: {}, params: {}, query: {} } as any,
+    )
+
+    expect(sessionUpdates).toHaveLength(1)
+    expect(sessionUpdates[0].where).toEqual({ id: 'chat-project' })
+    expect(sessionUpdates[0].data.lastActiveAt).toEqual(sessionUpdates[0].data.updatedAt)
+    expect(projectUpdates).toHaveLength(1)
+    expect(projectUpdates[0]).toMatchObject({
+      where: { id: 'proj-1' },
+      data: { lastMessageAt: sessionUpdates[0].data.lastActiveAt },
+    })
+  })
+
+  test('still leaves a workspace chat’s project alone', async () => {
+    await chatMessageHooks.afterCreate!(
+      { sessionId: 'chat-workspace' },
+      { prisma: makePrisma(), body: {}, params: {}, query: {} } as any,
+    )
+
+    expect(sessionUpdates).toHaveLength(1)
+    expect(projectUpdates).toEqual([])
   })
 })
