@@ -16,6 +16,7 @@ import { resolve, join } from 'path'
 import { tmpdir } from 'os'
 import { encodeSecurityPolicy } from '../permission-engine'
 import { type DockerWorker, REPO_ROOT } from './docker-worker'
+import { evalWorkspaceEnv, type EvalWorkerEnv } from './workspace-runtime-env'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,6 +29,17 @@ export interface LocalWorkerConfig {
   model: string
   verbose: boolean
   envOverrides?: Record<string, string>
+}
+
+export interface LocalWorkerStartOptions {
+  workspaceDir?: string
+  /**
+   * Workspace-runtime env for the eval this worker is about to run (SHO-195).
+   * Applied over the inherited `process.env`, after its identity keys are
+   * stripped — a developer running evals from inside a workspace runtime must
+   * not leak that workspace's identity into the worker.
+   */
+  workspaceEnv?: EvalWorkerEnv
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +105,7 @@ export function isolatedCredentialEnv(root: string): Record<string, string> {
 export async function startLocalWorker(
   id: number,
   config: LocalWorkerConfig,
-  opts?: { workspaceDir?: string },
+  opts?: LocalWorkerStartOptions,
 ): Promise<DockerWorker> {
   const port = config.baseHostPort + id
   const name = `${config.containerPrefix}-${id}`
@@ -122,10 +134,19 @@ export async function startLocalWorker(
     }, null, 2))
   }
 
+  // Strip the parent process's workspace/project identity first (SHO-195). A
+  // developer running evals from inside their own workspace runtime has
+  // WORKSPACE_RUNTIME / WORKSPACE_ID / WORKSPACE_MOUNTS in `process.env`, and
+  // this spread would otherwise hand every eval that identity.
+  const workerEnv = opts?.workspaceEnv ?? evalWorkspaceEnv(undefined)
+  const inheritedEnv = { ...(process.env as Record<string, string | undefined>) }
+  for (const key of workerEnv.unset) delete inheritedEnv[key]
+
   const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+    ...(inheritedEnv as Record<string, string>),
     NODE_ENV: 'development',
     PORT: String(port),
+    WORKING_MODE: 'managed',
     WORKSPACE_DIR: dir,
     AGENT_DIR: dir,
     PROJECT_DIR: dir,
@@ -144,6 +165,10 @@ export async function startLocalWorker(
   if (config.envOverrides) {
     Object.assign(env, config.envOverrides)
   }
+
+  // The eval's workspace env wins over every default above (it carries the
+  // workspace `PROJECT_ID` / `WORKSPACE_*` when the eval boots as one).
+  Object.assign(env, workerEnv.set)
 
   const runtimeDir = resolve(REPO_ROOT, 'packages/agent-runtime')
   const proc = spawn(['bun', 'run', 'src/server.ts'], {

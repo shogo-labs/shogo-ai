@@ -14,6 +14,7 @@ import { resolve, join } from 'path'
 import { tmpdir } from 'os'
 import { encodeSecurityPolicy } from '../permission-engine'
 import { MODEL_ALIASES, inferProviderFromModel as catalogInferProvider } from '@shogo/model-catalog'
+import type { EvalWorkerEnv } from './workspace-runtime-env'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -249,6 +250,13 @@ export async function startDockerWorker(
     imageOverride?: string
     extraVolumeMounts?: string[]
     containerWorkspaceDir?: string
+    /**
+     * Workspace-runtime env for the eval this worker is about to run
+     * (SHO-195). `set` replaces/adds `-e` flags; `unset` removes the base ones
+     * so the eval genuinely boots as a workspace runtime (no `PROJECT_ID` from
+     * the container name, no inherited identity).
+     */
+    workspaceEnv?: EvalWorkerEnv
   },
 ): Promise<DockerWorker> {
   const hostPort = config.baseHostPort + id
@@ -281,15 +289,20 @@ export async function startDockerWorker(
   }
 
   const wsDir = opts?.containerWorkspaceDir || '/app/workspace'
-  const envFlags = [
-    `-e NODE_ENV=development`,
-    `-e PORT=${config.containerAgentPort}`,
-    `-e WORKSPACE_DIR=${wsDir}`,
-    `-e AGENT_DIR=${wsDir}`,
-    `-e PROJECT_DIR=${wsDir}`,
-    `-e PROJECT_ID=${containerName}`,
-    `-e AGENT_MODEL=${config.model}`,
-    `-e SECURITY_POLICY=${encodeSecurityPolicy({ mode: 'full_autonomy' })}`,
+  // (key, value) pairs rather than a pre-rendered string list, so an eval's
+  // workspace env can replace or remove a base flag instead of racing it
+  // (SHO-195). Docker keeps the last `-e` for a key, `-e KEY=` would leave an
+  // empty-but-set var, so the removal has to happen here.
+  const baseEnv: Array<[string, string]> = [
+    ['NODE_ENV', 'development'],
+    ['PORT', String(config.containerAgentPort)],
+    ['WORKING_MODE', 'managed'],
+    ['WORKSPACE_DIR', wsDir],
+    ['AGENT_DIR', wsDir],
+    ['PROJECT_DIR', wsDir],
+    ['PROJECT_ID', containerName],
+    ['AGENT_MODEL', config.model],
+    ['SECURITY_POLICY', encodeSecurityPolicy({ mode: 'full_autonomy' })],
   ]
 
   if (config.extraPortMappings) {
@@ -299,15 +312,23 @@ export async function startDockerWorker(
       // to override its default — match the published port so the
       // host's runtime checks reach the API server. Keep the legacy
       // SKILL_SERVER_PORT alias for any rolled-back binaries.
-      envFlags.push(`-e API_SERVER_PORT=${m.container}`)
-      envFlags.push(`-e SKILL_SERVER_PORT=${m.container}`)
+      baseEnv.push(['API_SERVER_PORT', String(m.container)])
+      baseEnv.push(['SKILL_SERVER_PORT', String(m.container)])
     }
   }
 
   if (config.envOverrides) {
     for (const [k, v] of Object.entries(config.envOverrides)) {
-      envFlags.push(`-e ${k}=${v}`)
+      baseEnv.push([k, v])
     }
+  }
+
+  const workspaceEnv = opts?.workspaceEnv
+  const envFlags = baseEnv
+    .filter(([k]) => !workspaceEnv?.unset.includes(k))
+    .map(([k, v]) => `-e ${k}=${v}`)
+  for (const [k, v] of Object.entries(workspaceEnv?.set ?? {})) {
+    envFlags.push(`-e ${k}=${v}`)
   }
 
   const networkFlags: string[] = []
