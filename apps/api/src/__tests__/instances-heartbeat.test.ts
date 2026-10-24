@@ -9,7 +9,7 @@
  * Run: bun test apps/api/src/__tests__/instances-heartbeat.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 import { Hono } from 'hono'
 
@@ -94,7 +94,98 @@ describe('POST /api/instances/heartbeat', () => {
     mockPrisma.instance.upsert.mockImplementation(() =>
       Promise.resolve({ ...mockInstance, wsRequestedAt: null }),
     )
+    // First heartbeat of a machine: no row yet, so the upsert path runs.
+    mockPrisma.instance.findUnique.mockReset()
+    mockPrisma.instance.findUnique.mockImplementation(() => Promise.resolve(null) as any)
     _testing.activeViewers.clear()
+  })
+
+  afterEach(() => {
+    mockPrisma.instance.findUnique.mockReset()
+    mockPrisma.instance.findUnique.mockImplementation(() => Promise.resolve({ ...mockInstance }))
+  })
+
+  // PERF-6: at the 5 s viewer poll every heartbeat rewrote the row.
+  describe('skips the row write when nothing changed (PERF-6)', () => {
+    const meta = {
+      hostname: 'my-laptop',
+      uptime: 100,
+      tunnelStatus: 'polling',
+      machine: { workspaces: [{ id: 'lw-1', name: 'Personal' }], generatedAt: '2026-10-24T10:00:00.000Z' },
+    }
+    const existingRow = (overrides: Record<string, unknown> = {}) => ({
+      ...mockInstance,
+      kind: 'desktop',
+      lastSeenAt: new Date(Date.now() - 5_000),
+      // jsonb hands keys back in its own order
+      metadata: {
+        machine: { generatedAt: '2026-10-24T09:59:40.000Z', workspaces: [{ name: 'Personal', id: 'lw-1' }] },
+        tunnelStatus: 'polling',
+        uptime: 95,
+        hostname: 'my-laptop',
+      },
+      ...overrides,
+    })
+    const beat = (metadata: Record<string, unknown> = meta) =>
+      createTestApp().request('/api/instances/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': 'shogo_valid_key' },
+        body: JSON.stringify({ hostname: 'my-laptop', os: 'darwin', arch: 'arm64', metadata }),
+      })
+
+    test('a fresh, unchanged row is not rewritten (uptime and generatedAt ignored)', async () => {
+      mockPrisma.instance.findUnique.mockImplementation(() => Promise.resolve(existingRow()) as any)
+      const res = await beat()
+      expect(res.status).toBe(200)
+      const data = await res.json()
+      expect(data.instanceId).toBe('inst-1')
+      expect(data.nextPollIn).toBe(_testing.POLL_INTERVAL_IDLE_S)
+      expect(mockPrisma.instance.upsert).not.toHaveBeenCalled()
+    })
+
+    test('still reports wsRequested from the row it did not rewrite', async () => {
+      mockPrisma.instance.findUnique.mockImplementation(
+        () => Promise.resolve(existingRow({ wsRequestedAt: new Date() })) as any,
+      )
+      const data = await (await beat()).json()
+      expect(data.wsRequested).toBe(true)
+      expect(data.nextPollIn).toBe(_testing.POLL_INTERVAL_WS_REQUESTED_S)
+      expect(mockPrisma.instance.upsert).not.toHaveBeenCalled()
+    })
+
+    test('a lastSeenAt older than 30 s is refreshed', async () => {
+      mockPrisma.instance.findUnique.mockImplementation(
+        () => Promise.resolve(existingRow({ lastSeenAt: new Date(Date.now() - 31_000) })) as any,
+      )
+      await beat()
+      expect(mockPrisma.instance.upsert).toHaveBeenCalledTimes(1)
+    })
+
+    test('changed metadata is written straight away', async () => {
+      mockPrisma.instance.findUnique.mockImplementation(() => Promise.resolve(existingRow()) as any)
+      await beat({ ...meta, tunnelStatus: 'connected' })
+      expect(mockPrisma.instance.upsert).toHaveBeenCalledTimes(1)
+    })
+
+    test('a renamed machine is written straight away', async () => {
+      mockPrisma.instance.findUnique.mockImplementation(
+        () => Promise.resolve(existingRow({ name: 'old-name' })) as any,
+      )
+      await beat()
+      expect(mockPrisma.instance.upsert).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  test('markViewerActive refreshes at most every 30 s per workspace', async () => {
+    await _testing.markViewerActive('ws-1')
+    const first = _testing.activeViewers.get('ws-1')!
+    await _testing.markViewerActive('ws-1')
+    expect(_testing.activeViewers.get('ws-1')).toBe(first)
+
+    _testing.activeViewers.set('ws-1', Date.now() - 31_000)
+    await _testing.markViewerActive('ws-1')
+    expect(_testing.activeViewers.get('ws-1')!).toBeGreaterThan(Date.now() - 1_000)
+    expect(await _testing.isViewerActive('ws-1')).toBe(true)
   })
 
   test('returns 401 without API key', async () => {
