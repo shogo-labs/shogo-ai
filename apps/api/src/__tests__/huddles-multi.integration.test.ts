@@ -234,6 +234,66 @@ describe('share link and knock to join', () => {
     expect(insider).toMatchObject({ access: 'member', conversationId: conv.id, workspaceId: seed.workspaceId })
   })
 
+  /** A huddle started by someone with no display name, so a name-or-email fallback would leak their address. */
+  async function namelessHuddle() {
+    const starter = await db.user.create({ data: { name: null, email: `nameless-${slug()}@example.com` } })
+    await db.member.create({ data: { userId: starter.id, workspaceId: seed.workspaceId, role: 'member' } })
+    const conv = await service.createChannel({ workspaceId: seed.workspaceId, userId: starter.id, name: `huddle-nameless-${slug()}`, kind: 'private', topic: null, memberUserIds: [] })
+    await huddles.joinHuddle(conv.id, starter.id)
+    const link = await huddles.getHuddleLink(conv.id, starter.id)
+    return { starter, conv, link }
+  }
+
+  test('link info never reveals the starter email, even when they have no display name', async () => {
+    const { starter, conv, link } = await namelessHuddle()
+
+    const asGuest = await huddles.getHuddleLinkInfo(link.token, null)
+    expect(asGuest).toMatchObject({ live: true, access: 'knock', participantCount: 1 })
+    expect(asGuest.startedBy ?? null).toBeNull()
+    expect(JSON.stringify(asGuest)).not.toContain(starter.email)
+
+    const asOutsider = await huddles.getHuddleLinkInfo(link.token, seed.owner)
+    expect(asOutsider.access).toBe('knock')
+    expect(asOutsider.startedBy ?? null).toBeNull()
+    expect(JSON.stringify(asOutsider)).not.toContain(starter.email)
+
+    // One rule for the whole response: the member view does not add the email back.
+    const asMember = await huddles.getHuddleLinkInfo(link.token, starter.id)
+    expect(asMember).toMatchObject({ access: 'member', conversationId: conv.id })
+    expect(asMember.startedBy ?? null).toBeNull()
+    expect(JSON.stringify(asMember)).not.toContain(starter.email)
+  })
+
+  test('a signed-out GET of the public link answers with no email in the body', async () => {
+    const { starter, link } = await namelessHuddle()
+    const { Hono } = await import('hono')
+    const { mountHuddleRoutes } = await import('../routes/huddles')
+    const app = new Hono()
+    const unauthorized = () => new Response('unauthorized', { status: 401 })
+    mountHuddleRoutes(app as any, {
+      optionalUser: async () => null,
+      requireUser: async () => unauthorized(),
+      requireWorkspace: async () => unauthorized(),
+      errorResponse: (_c: any, err: any) => Response.json({ error: { code: err?.code ?? 'error' } }, { status: 400 }),
+    })
+
+    const res = await app.request(`/huddle-links/${link.token}`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    expect(body).toMatchObject({ enabled: true, live: true, access: 'knock', participantCount: 1 })
+    expect(body.startedBy ?? null).toBeNull()
+    expect(JSON.stringify(body)).not.toContain(starter.email)
+    expect(JSON.stringify(body)).not.toContain('@')
+  })
+
+  test('link info still shows a display name when the starter has one', async () => {
+    const { link } = await liveHuddle()
+    const starter = await db.user.findUnique({ where: { id: seed.owner }, select: { name: true } })
+    for (const caller of [null, seed.member, seed.owner]) {
+      expect((await huddles.getHuddleLinkInfo(link.token, caller)).startedBy).toBe(starter.name)
+    }
+  })
+
   test('a guest knocks, is admitted by someone in the call, and gets a guest token that reaches only the call', async () => {
     const { conv, huddle, link } = await liveHuddle()
     const knock = await huddles.knockOnHuddle(link.token, { userId: null, guestName: '  Gus   Guest ' })

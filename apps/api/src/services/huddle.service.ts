@@ -1244,15 +1244,15 @@ async function huddleByLink(token: string): Promise<any | null> {
 
 /**
  * What the join page shows before anyone is let in. Reveals nothing about the
- * conversation to people who can't already see it.
+ * conversation to people who can't already see it, or the starter's email.
  */
 export async function getHuddleLinkInfo(token: string, userId: string | null): Promise<HuddleLinkInfo> {
   const row = await huddleByLink(token)
   if (!row || row.endedAt) return { live: false }
-  const starter = await db.user.findUnique({ where: { id: row.startedById }, select: { name: true, email: true } })
+  const starter = await db.user.findUnique({ where: { id: row.startedById }, select: { name: true } })
   const info: HuddleLinkInfo = {
     live: true,
-    startedBy: starter?.name || starter?.email || null,
+    startedBy: starter?.name || null,
     participantCount: new Set((row.participants ?? []).map((p: any) => p.userId)).size,
     access: 'knock',
     signedIn: !!userId,
