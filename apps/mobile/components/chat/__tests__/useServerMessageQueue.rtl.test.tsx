@@ -511,6 +511,28 @@ describe("team-chat wakes waiting behind this session", () => {
     expect(queueApi!.queuedMessages.map((m) => m.id)).toEqual(["w1"])
   }, 15_000)
 
+  /**
+   * SHO-198, the other side of the wait: a wake the drain *does* claim is a turn
+   * now, not a queued message. It must not be put back in the dock by the same
+   * counter that rescues one nobody claimed — that would send the agent the same
+   * thread message twice.
+   */
+  test("a wake the drain claims leaves the dock and is never put back", async () => {
+    reset()
+    wakeList = [wake()]
+    render(<Probe isStreaming />)
+    await settle()
+    await act(async () => { await queueApi!.sendWakeNow("w1") })
+    expect(queueApi!.queuedMessages).toEqual([])
+
+    // Claimed: the wake is gone from the pending list, so the dock's next polls
+    // find nothing to wait for.
+    wakeList = []
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5200)) })
+    expect(queueApi!.queuedMessages).toEqual([])
+    expect(pendingIds).toEqual([])
+  }, 15_000)
+
   test("Send now keeps the row on screen until the server answers", async () => {
     reset()
     wakeList = [wake()]
