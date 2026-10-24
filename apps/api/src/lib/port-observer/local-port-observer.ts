@@ -54,8 +54,23 @@ import { prisma } from '../prisma'
 
 const SCAN_THROTTLE_MS = 1500
 const FOLDER_CACHE_TTL_MS = 30_000
-const HTTP_PROBE_TIMEOUT_MS = 300
+/**
+ * A dev server answering a HEAD probe in the middle of a compile can take a
+ * couple of seconds (SHO-200 S2). 300 ms flagged a live server as gone, which
+ * cleared the detected URL and made the Preview tab re-open.
+ */
+const HTTP_PROBE_TIMEOUT_MS = 1500
 const LSOF_TIMEOUT_MS = 2000
+/** How long a port may be absent before it is dropped from a project's result. */
+const PORT_MEMORY_TTL_MS = 10_000
+/** …and it must be missing for this many real scans in a row, too. */
+const PORT_MEMORY_MAX_MISSES = 2
+/**
+ * Listeners that are never a project's app: Node's inspector is not an app at
+ * all, and Shogo's own API/agent-runtime processes (this process and anything
+ * it spawned) are not the user's dev server.
+ */
+const IGNORED_PORTS = new Set<number>([9229])
 
 /** A listening TCP socket reported by the platform scanner. */
 export interface ListeningSocket {
@@ -203,6 +218,11 @@ export function parseLsofCwd(raw: string): string | null {
   return null
 }
 
+export function parsePsPpid(raw: string): number | null {
+  const value = Number((raw ?? '').trim())
+  return Number.isInteger(value) && value > 0 ? value : null
+}
+
 export const defaultScanner: PortScanner = {
   async listListeningSockets() {
     const p = platform()
@@ -218,14 +238,18 @@ export const defaultScanner: PortScanner = {
     const p = platform()
     if (p !== 'darwin' && p !== 'linux') return null
     if (!Number.isInteger(pid) || pid <= 0) return null
-    const raw = await runCommand('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-F', 'n'], LSOF_TIMEOUT_MS)
+    const [raw, ppidRaw] = await Promise.all([
+      runCommand('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-F', 'n'], LSOF_TIMEOUT_MS),
+      runCommand('ps', ['-o', 'ppid=', '-p', String(pid)], LSOF_TIMEOUT_MS),
+    ])
+    const ppid = parsePsPpid(ppidRaw) ?? undefined
     const cwd = parseLsofCwd(raw)
-    if (!cwd) return { pid, cwd: null }
+    if (!cwd) return { pid, cwd: null, ppid }
     try {
       const resolved = await realpath(cwd)
-      return { pid, cwd: resolved.replace(/\/+$/, '') }
+      return { pid, cwd: resolved.replace(/\/+$/, ''), ppid }
     } catch {
-      return { pid, cwd: cwd.replace(/\/+$/, '') }
+      return { pid, cwd: cwd.replace(/\/+$/, ''), ppid }
     }
   },
 }
@@ -346,6 +370,20 @@ export interface LocalPortObserverOptions {
   now?: () => number
   /** Override for tests; defaults to 1500ms. */
   scanThrottleMs?: number
+  /** Pids that are never a project's app (this API process, for one). */
+  internalPids?: () => ReadonlySet<number>
+}
+
+/** A port a project has reported, kept across the scans that miss it. */
+interface RememberedPort {
+  port: number
+  pid: number
+  command: string
+  url: string
+  matchedFolder: string
+  lastSeenAt: number
+  /** Consecutive *real* scans that did not see this port. */
+  misses: number
 }
 
 export class LocalPortObserver {
@@ -354,11 +392,21 @@ export class LocalPortObserver {
   private readonly folderResolver: FolderResolver
   private readonly now: () => number
   private readonly scanThrottleMs: number
+  private readonly internalPids: () => ReadonlySet<number>
 
   private lastScanAt = 0
   private lastScan: ListeningSocket[] = []
   private inflight: Promise<ListeningSocket[]> | null = null
   private readonly processCache = new Map<number, { info: ProcessInfo | null; expiresAt: number }>()
+  /**
+   * Ports each project has reported recently, keyed by project. Keeping this is
+   * what stops a single missed probe (or a slow compile) from clearing
+   * `detectedUrl` and re-opening the Preview tab (SHO-200 S2/S4).
+   */
+  private readonly remembered = new Map<string, Map<number, RememberedPort>>()
+  /** The URL last handed out per project, so a second listener can't steal it. */
+  private readonly chosen = new Map<string, string>()
+  private readonly internalPidCache = new Map<number, boolean>()
 
   constructor(opts: LocalPortObserverOptions = {}) {
     this.scanner = opts.scanner ?? defaultScanner
@@ -366,27 +414,117 @@ export class LocalPortObserver {
     this.folderResolver = opts.folderResolver ?? makePrismaFolderResolver()
     this.now = opts.now ?? Date.now
     this.scanThrottleMs = opts.scanThrottleMs ?? SCAN_THROTTLE_MS
+    this.internalPids = opts.internalPids ?? (() => new Set([process.pid]))
   }
 
   /**
-   * Return every HTTP-speaking listening port that belongs to `projectId`.
+   * Return every HTTP-speaking listening port that belongs to `projectId`,
+   * with the project's previous answer kept sticky.
    *
    * Steps:
    *   1. Coalesced, throttled scan of all listening sockets.
    *   2. Filter to sockets whose owning PID's cwd is inside one of the
-   *      project's folders.
+   *      project's folders, skipping Node's inspector and Shogo's own
+   *      processes.
    *   3. HEAD-probe each candidate; drop the ones that don't speak HTTP.
-   *   4. Return the survivors, newest first.
+   *   4. Fold the survivors into the project's remembered set. A port is only
+   *      forgotten after `PORT_MEMORY_MAX_MISSES` real scans without it *and*
+   *      `PORT_MEMORY_TTL_MS` — one slow answer is not the server going away.
+   *   5. Order the result with the URL this project already reported first, so
+   *      a second server appearing or disappearing cannot re-rank it.
    */
   async attributedPorts(projectId: string): Promise<AttributedPort[]> {
     if (!projectId) return []
     const folders = await this.folderResolver.resolveFolders(projectId)
     if (folders.length === 0) return []
 
-    const sockets = await this.scan()
-    if (sockets.length === 0) return []
+    const { sockets, fresh } = await this.scan()
+    const live = sockets.length === 0 ? [] : await this.livePorts(projectId, folders, sockets)
 
-    const out: AttributedPort[] = []
+    const memory = this.remembered.get(projectId) ?? new Map<number, RememberedPort>()
+    this.remembered.set(projectId, memory)
+
+    if (fresh) {
+      for (const entry of memory.values()) entry.misses += 1
+    }
+    const ts = this.now()
+    for (const port of live) {
+      memory.set(port.port, {
+        port: port.port,
+        pid: port.pid,
+        command: port.command,
+        url: port.url,
+        matchedFolder: port.matchedFolder,
+        lastSeenAt: ts,
+        misses: 0,
+      })
+    }
+    for (const [port, entry] of memory) {
+      if (entry.misses === 0) continue
+      const expired =
+        entry.misses >= PORT_MEMORY_MAX_MISSES || ts - entry.lastSeenAt >= PORT_MEMORY_TTL_MS
+      if (expired) memory.delete(port)
+    }
+    if (memory.size === 0) {
+      this.chosen.delete(projectId)
+      return []
+    }
+
+    const out: AttributedPort[] = [...memory.values()].map((entry) => ({
+      projectId,
+      port: entry.port,
+      pid: entry.pid,
+      command: entry.command,
+      url: entry.url,
+      matchedFolder: entry.matchedFolder,
+      observedAt: entry.lastSeenAt,
+    }))
+
+    // Sticky first, then the freshest match, then the lowest port.
+    const previous = this.chosen.get(projectId)
+    out.sort((a, b) => {
+      if (a.url === previous && b.url !== previous) return -1
+      if (b.url === previous && a.url !== previous) return 1
+      return b.observedAt - a.observedAt || a.port - b.port
+    })
+    this.chosen.set(projectId, out[0].url)
+    return out
+  }
+
+  /**
+   * Returns the single best URL for a project, or null if none. "Best" is
+   * whatever this project last reported — not a fresh ranking by port, which is
+   * what made a second listener steal the address bar (SHO-200 S3).
+   */
+  async detectedUrl(projectId: string): Promise<string | null> {
+    const ports = await this.attributedPorts(projectId)
+    return ports[0]?.url ?? null
+  }
+
+  /** Force a scan now, bypassing the throttle. Used by tests. */
+  async scanNow(): Promise<ListeningSocket[]> {
+    this.lastScanAt = 0
+    const { sockets } = await this.scan()
+    return sockets
+  }
+
+  /** Drop the in-memory caches. Used by tests. */
+  reset(): void {
+    this.lastScanAt = 0
+    this.lastScan = []
+    this.inflight = null
+    this.processCache.clear()
+    this.remembered.clear()
+    this.chosen.clear()
+    this.internalPidCache.clear()
+  }
+
+  /** Attribute + probe one scan's sockets to this project. */
+  private async livePorts(
+    projectId: string,
+    folders: string[],
+    sockets: ListeningSocket[],
+  ): Promise<AttributedPort[]> {
     // Group by pid so we describe each process at most once per call.
     const pids = new Set(sockets.map((s) => s.pid))
     const pidToInfo = new Map<number, ProcessInfo | null>()
@@ -399,6 +537,8 @@ export class LocalPortObserver {
     const candidates: ListeningSocket[] = []
     const folderByPid = new Map<number, string>()
     for (const sock of sockets) {
+      if (IGNORED_PORTS.has(sock.port)) continue
+      if (await this.isInternalPid(sock.pid)) continue
       const info = pidToInfo.get(sock.pid) ?? null
       if (!info || !info.cwd) continue
       const matched = folders.find((f) => pathIsWithin(info.cwd!, f))
@@ -424,6 +564,7 @@ export class LocalPortObserver {
     )
 
     const ts = this.now()
+    const out: AttributedPort[] = []
     for (const r of probeResults) {
       if (!r) continue
       out.push({
@@ -436,47 +577,41 @@ export class LocalPortObserver {
         observedAt: ts,
       })
     }
-
-    // Newest match first; with one scan, all timestamps are equal, so
-    // we secondary-sort by port for deterministic output.
-    out.sort((a, b) => b.observedAt - a.observedAt || a.port - b.port)
     return out
   }
 
   /**
-   * Returns the single best URL for a project, or null if none. The
-   * "best" choice is: most recently observed, lowest port number as a
-   * tiebreaker (so 3000 wins over 9229 — Node's debug port — when both
-   * happen to be running and attributable).
+   * True for this process and anything it spawned (the agent runtime, the API
+   * sidecar) — none of those are the user's dev server, even when their cwd is
+   * inside the project folder.
    */
-  async detectedUrl(projectId: string): Promise<string | null> {
-    const ports = await this.attributedPorts(projectId)
-    if (ports.length === 0) return null
-    // Re-sort with port asc as the tiebreaker for "best URL".
-    const sorted = [...ports].sort((a, b) => b.observedAt - a.observedAt || a.port - b.port)
-    return sorted[0].url
+  private async isInternalPid(pid: number): Promise<boolean> {
+    const cached = this.internalPidCache.get(pid)
+    if (cached !== undefined) return cached
+    const roots = this.internalPids()
+    const seen = new Set<number>()
+    let cursor: number | undefined = pid
+    let internal = false
+    for (let depth = 0; depth < 16 && cursor && cursor > 1; depth += 1) {
+      if (seen.has(cursor)) break
+      seen.add(cursor)
+      if (roots.has(cursor)) {
+        internal = true
+        break
+      }
+      const info = await this.describeProcessCached(cursor)
+      cursor = info?.ppid
+    }
+    this.internalPidCache.set(pid, internal)
+    return internal
   }
 
-  /** Force a scan now, bypassing the throttle. Used by tests. */
-  async scanNow(): Promise<ListeningSocket[]> {
-    this.lastScanAt = 0
-    return this.scan()
-  }
-
-  /** Drop the in-memory caches. Used by tests. */
-  reset(): void {
-    this.lastScanAt = 0
-    this.lastScan = []
-    this.inflight = null
-    this.processCache.clear()
-  }
-
-  private async scan(): Promise<ListeningSocket[]> {
+  private async scan(): Promise<{ sockets: ListeningSocket[]; fresh: boolean }> {
     const now = this.now()
     if (now - this.lastScanAt < this.scanThrottleMs && this.lastScan.length > 0) {
-      return this.lastScan
+      return { sockets: this.lastScan, fresh: false }
     }
-    if (this.inflight) return this.inflight
+    if (this.inflight) return { sockets: await this.inflight, fresh: false }
     const p = (async () => {
       try {
         const sockets = await this.scanner.listListeningSockets()
@@ -492,7 +627,7 @@ export class LocalPortObserver {
       }
     })()
     this.inflight = p
-    return p
+    return { sockets: await p, fresh: true }
   }
 
   private async describeProcessCached(pid: number): Promise<ProcessInfo | null> {
