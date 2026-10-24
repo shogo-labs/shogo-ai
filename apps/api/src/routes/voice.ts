@@ -79,7 +79,6 @@ import { loadAccess } from '../lib/authz'
 import { apiKeyOrSession, authorizeProject, type AuthContext } from '../middleware/auth'
 import {
   DEFAULT_PROJECT_AGENT_VOICE_ID as DEFAULT_PROJECT_VOICE_ID,
-  handleVoiceMusic,
   resolveShogoElevenLabsClient,
 } from './voice-media'
 import { resolveVoiceContext, composeVoiceSystemPrompt } from '../lib/voice-context'
@@ -831,23 +830,6 @@ export function voiceRoutes() {
       return c.json({ error: 'Voice delegation failed', detail: err?.message ?? String(err) }, 502)
     }
   })
-
-  /**
-   * POST /voice/music
-   *
-   * Generate music via the ElevenLabs Music API using Shogo's pooled
-   * EL key. Body mirrors the SDK `ComposeMusicParams`: exactly one of
-   * `prompt` / `compositionPlan`, plus optional `musicLengthMs`,
-   * `modelId`, `forceInstrumental`, `outputFormat`. Returns the raw
-   * generated audio bytes.
-   *
-   * Project-scoped (not per-end-user), so runtime-token callers are
-   * accepted here — they reach this via the SDK voice proxy. The handler
-   * lives in `voice-media.ts` and is mounted in both cloud and desktop, so
-   * this route only exists for pre-existing cloud callers that hit
-   * `/api/voice/music` before the media module did.
-   */
-  router.post('/voice/music', (c) => handleVoiceMusic(c))
 
   /**
    * POST /voice/translator/chat/:chatSessionId

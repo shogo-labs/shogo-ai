@@ -8,6 +8,7 @@ import {
   ElevenLabsApiError,
   ElevenLabsClient,
   MEMORY_CLIENT_TOOLS,
+  TTS_FALLBACK_MODEL,
   VOICE_TTS_MODELS,
   VOICE_TTS_MODEL_IDS,
   resolveConvaiTtsModel,
@@ -272,12 +273,41 @@ describe('ElevenLabsClient.textToSpeech', () => {
       text: 'hi',
       modelId: 'eleven_multilingual_v2',
     })
-    expect(res.modelId).toBe(CONVAI_TTS_MODEL_FALLBACK)
+    expect(res.modelId).toBe(TTS_FALLBACK_MODEL)
     expect(res.requestedModel).toBe('eleven_multilingual_v2')
     expect(res.fellBack).toBe(true)
     expect(res.fallbackReason).toContain('400')
     expect(calls).toHaveLength(2)
-    expect((calls[1]!.body as { model_id: string }).model_id).toBe(CONVAI_TTS_MODEL_FALLBACK)
+    expect((calls[1]!.body as { model_id: string }).model_id).toBe(TTS_FALLBACK_MODEL)
+  })
+
+  test('a v4-less BYO plan asking for eleven_v3 lands on flash v2.5, not v4 turbo', async () => {
+    // SHO-73: the retry target is its own constant. With the old shared
+    // CONVAI_TTS_MODEL_FALLBACK an account without v4 entitlement went
+    // v3 → 403 → eleven_v4_turbo → 403 → throw, i.e. the retry could never
+    // succeed for exactly the accounts that need it.
+    const { impl, calls } = mockFetch([
+      { status: 403, body: { detail: { status: 'model_not_in_plan', message: 'model not available on your plan' } } },
+      { status: 200, body: 'ok', headers: { 'content-type': 'audio/mpeg' } },
+    ])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    const res = await el.textToSpeech({ voiceId: 'v', text: 'hi', modelId: 'eleven_v3' })
+
+    expect(res.modelId).toBe('eleven_flash_v2_5')
+    expect(res.requestedModel).toBe('eleven_v3')
+    expect(res.fellBack).toBe(true)
+    expect(calls).toHaveLength(2)
+    expect((calls[1]!.body as { model_id: string }).model_id).toBe('eleven_flash_v2_5')
+    expect(res.modelId).not.toBe(CONVAI_TTS_MODEL_FALLBACK)
+  })
+
+  test('does not retry when the request already asked for the fallback model', async () => {
+    const { impl, calls } = mockFetch([{ status: 402, body: 'model not in plan' }])
+    const el = new ElevenLabsClient({ apiKey: 'k', fetch: impl })
+    await expect(
+      el.textToSpeech({ voiceId: 'v', text: 'hi', modelId: TTS_FALLBACK_MODEL }),
+    ).rejects.toBeInstanceOf(ElevenLabsApiError)
+    expect(calls).toHaveLength(1)
   })
 
   for (const status of [401, 429, 500, 503]) {
