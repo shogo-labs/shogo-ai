@@ -79,6 +79,21 @@ function accountFromPayload(payload: any): ZernioEvent['account'] {
   }
 }
 
+/** Zernio's dashboard/API test delivery; it belongs to no profile. */
+export const ZERNIO_TEST_EVENT = 'webhook.test'
+
+/** The event name of a body, or null when it is not a JSON object naming one. */
+export function zernioEventType(rawBody: string): string | null {
+  try {
+    const payload = JSON.parse(rawBody)
+    if (!payload || typeof payload !== 'object') return null
+    const type = typeof payload.event === 'string' ? payload.event : typeof payload.type === 'string' ? payload.type : ''
+    return type || null
+  } catch {
+    return null
+  }
+}
+
 /** Read a verified body into the shape routing and the event map need. */
 export function parseZernioEvent(rawBody: string, eventIdHeader: string | null | undefined): ZernioEvent | null {
   let payload: any
