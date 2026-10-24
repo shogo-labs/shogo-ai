@@ -67,6 +67,10 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
   const openChatIdRef = useRef<string | null>(null)
   const sessionsRef = useRef(sessions)
   sessionsRef.current = sessions
+  // The last server answer, so a poll can spot the turn that just ended — the
+  // one case that has no local event at all (you are on another screen, or the
+  // turn came from a schedule).
+  const serverRunningRef = useRef(new Set<string>())
   // Read through a ref so the poll callback keeps one identity for its whole
   // life: it runs on a timer, and an unstable callback would restart the loop
   // on every render.
@@ -94,6 +98,7 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
     setLocalRunningIds(new Set())
     localRunningAtRef.current = new Map()
     setServerRunning(new Map())
+    serverRunningRef.current = new Set()
     setFinishedAt(new Map())
     setCompletedIds(new Set())
     openChatIdRef.current = null
@@ -112,12 +117,24 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
       const chats = await api.listWorkspaceActiveChats(httpRef.current, workspaceId)
       const startedAt = new Map<string, string>()
       for (const chat of chats) startedAt.set(chat.chatSessionId, chat.startedAt)
+      // A turn the server stops reporting has really ended — the only signal for
+      // a turn that finished while you were on another screen. It is not a dot
+      // for the chat you are looking at, and not for a project chat that has no
+      // row here.
+      const knownIds = new Set(sessionsRef.current.map((session) => session.id))
+      const ended: string[] = []
+      for (const id of serverRunningRef.current) {
+        if (startedAt.has(id)) continue
+        if (id === openChatIdRef.current) continue
+        if (knownIds.size > 0 && !knownIds.has(id)) continue
+        ended.push(id)
+      }
+      serverRunningRef.current = new Set(startedAt.keys())
       // The endpoint answers for the whole workspace, including project chats.
       // Only this person's workspace chats have rows in this list.
-      const known = new Set(sessionsRef.current.map((session) => session.id))
-      if (known.size > 0) {
+      if (knownIds.size > 0) {
         for (const id of [...startedAt.keys()]) {
-          if (!known.has(id)) startedAt.delete(id)
+          if (!knownIds.has(id)) startedAt.delete(id)
         }
       }
       setServerRunning((current) =>
@@ -149,6 +166,19 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
         }
         return changed ? next : current
       })
+      if (ended.length > 0) {
+        setCompletedIds((current) => {
+          let changed = false
+          const next = new Set(current)
+          for (const id of ended) {
+            if (!next.has(id)) {
+              next.add(id)
+              changed = true
+            }
+          }
+          return changed ? next : current
+        })
+      }
       return startedAt.size > 0
     } catch {
       // Keep the last known set and the current cadence.

@@ -251,6 +251,36 @@ describe("useWorkspaceChats running state", () => {
     expect(result.current.streamingIds.has("chat-2")).toBe(true);
   });
 
+  test("a turn that ends while you are on another screen gets the dot from the poll", async () => {
+    activeChatsResult = async () => [turn("chat-2")];
+    const { result } = await mount();
+    expect(result.current.streamingIds.has("chat-2")).toBe(true);
+
+    // The user is reading chat-1 while chat-2 finishes elsewhere.
+    act(() => result.current.markSeen("chat-1"));
+    activeChatsResult = async () => [];
+    act(() => appStateListeners.forEach((fn) => fn("background")));
+    act(() => appStateListeners.forEach((fn) => fn("active")));
+    await flush();
+
+    expect(result.current.streamingIds.has("chat-2")).toBe(false);
+    expect(result.current.completedIds.has("chat-2")).toBe(true);
+  });
+
+  test("the chat on screen ending in a poll flags nothing", async () => {
+    activeChatsResult = async () => [turn("chat-2")];
+    const { result } = await mount();
+
+    act(() => result.current.markSeen("chat-2"));
+    activeChatsResult = async () => [];
+    act(() => appStateListeners.forEach((fn) => fn("background")));
+    act(() => appStateListeners.forEach((fn) => fn("active")));
+    await flush();
+
+    expect(result.current.streamingIds.has("chat-2")).toBe(false);
+    expect(result.current.completedIds.has("chat-2")).toBe(false);
+  });
+
   test("a failed poll keeps the last known set instead of flashing the spinner off", async () => {
     activeChatsResult = async () => [turn("chat-2")];
     const { result } = await mount();
