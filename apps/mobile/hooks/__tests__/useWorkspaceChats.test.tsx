@@ -281,6 +281,34 @@ describe("useWorkspaceChats running state", () => {
     expect(result.current.completedIds.has("chat-2")).toBe(false);
   });
 
+  test("a quick reply that ends before any poll sees it running still gets the dot", async () => {
+    jest.useFakeTimers();
+    const { result } = await mount();
+
+    // A send in chat-1, then the user leaves for chat-2 straight away.
+    act(() => emitActivity({ streamingSessionIds: ["chat-1"], completedSessionIds: [] }));
+    act(() => result.current.markSeen("chat-2"));
+    act(() => emitActivity({ streamingSessionIds: [], completedSessionIds: [] }));
+    expect(result.current.streamingIds.has("chat-1")).toBe(true);
+    const afterSend = listWorkspaceActiveChats.mock.calls.length;
+
+    // It is over 3s later. No finished event arrives (that chat's screen is not
+    // on screen), and the server never reports the turn. The local start alone
+    // keeps the fast cadence, so a poll comes at 5s rather than 15s.
+    advance(5_000);
+    await flush();
+    expect(listWorkspaceActiveChats.mock.calls.length).toBe(afterSend + 1);
+    expect(result.current.completedIds.has("chat-1")).toBe(false);
+
+    // Past the grace window the missing turn reads as an ending: spinner off,
+    // dot on — the quick reply that finished while you were elsewhere.
+    advance(5_000);
+    await flush();
+
+    expect(result.current.streamingIds.has("chat-1")).toBe(false);
+    expect(result.current.completedIds.has("chat-1")).toBe(true);
+  });
+
   test("a failed poll keeps the last known set instead of flashing the spinner off", async () => {
     activeChatsResult = async () => [turn("chat-2")];
     const { result } = await mount();
@@ -299,6 +327,12 @@ describe("useWorkspaceChats running state", () => {
     await flush();
 
     expect(result.current.streamingIds.has("chat-2")).toBe(true);
+
+    // A failure must not drop the fast cadence: the next poll is 5s out, not 15.
+    const failedAt = listWorkspaceActiveChats.mock.calls.length;
+    advance(5_000);
+    await flush();
+    expect(listWorkspaceActiveChats.mock.calls.length).toBe(failedAt + 1);
   });
 });
 

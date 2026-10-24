@@ -71,6 +71,11 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
   // one case that has no local event at all (you are on another screen, or the
   // turn came from a schedule).
   const serverRunningRef = useRef(new Set<string>())
+  // The cadence the last good poll asked for, so a failed one can keep it.
+  const wasRunningRef = useRef(false)
+  // Tightens the pending poll to the fast cadence the moment a turn starts here,
+  // so a quick reply gets polled before it can finish unseen.
+  const tightenPollRef = useRef<(() => void) | null>(null)
   // Read through a ref so the poll callback keeps one identity for its whole
   // life: it runs on a timer, and an unstable callback would restart the loop
   // on every render.
@@ -99,6 +104,7 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
     localRunningAtRef.current = new Map()
     setServerRunning(new Map())
     serverRunningRef.current = new Set()
+    wasRunningRef.current = false
     setFinishedAt(new Map())
     setCompletedIds(new Set())
     openChatIdRef.current = null
@@ -117,17 +123,28 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
       const chats = await api.listWorkspaceActiveChats(httpRef.current, workspaceId)
       const startedAt = new Map<string, string>()
       for (const chat of chats) startedAt.set(chat.chatSessionId, chat.startedAt)
-      // A turn the server stops reporting has really ended — the only signal for
+      // A turn that stops being reported has really ended — the only signal for
       // a turn that finished while you were on another screen. It is not a dot
       // for the chat you are looking at, and not for a project chat that has no
       // row here.
       const knownIds = new Set(sessionsRef.current.map((session) => session.id))
+      const now = Date.now()
       const ended: string[] = []
-      for (const id of serverRunningRef.current) {
-        if (startedAt.has(id)) continue
-        if (id === openChatIdRef.current) continue
-        if (knownIds.size > 0 && !knownIds.has(id)) continue
+      const considerEnded = (id: string) => {
+        if (startedAt.has(id)) return
+        if (id === openChatIdRef.current) return
+        if (knownIds.size > 0 && !knownIds.has(id)) return
         ended.push(id)
+      }
+      for (const id of serverRunningRef.current) considerEnded(id)
+      // A turn this client watched start is equally known to have ended once the
+      // server stops reporting it — the quick reply that finished before any
+      // poll ever saw it running. Only past the grace window, so an optimistic
+      // start the server has not caught up with yet does not read as an ending.
+      for (const [id, startedAtLocal] of localRunningAtRef.current) {
+        if (serverRunningRef.current.has(id)) continue
+        if (now - startedAtLocal < UNCONFIRMED_START_MS) continue
+        considerEnded(id)
       }
       serverRunningRef.current = new Set(startedAt.keys())
       // The endpoint answers for the whole workspace, including project chats.
@@ -152,7 +169,6 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
         return changed ? next : current
       })
       // An optimistic start the server has had time to report and does not.
-      const now = Date.now()
       setLocalRunningIds((current) => {
         let changed = false
         const next = new Set(current)
@@ -179,10 +195,15 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
           return changed ? next : current
         })
       }
-      return startedAt.size > 0
+      // A local start has to keep the fast cadence too: a quick reply can begin
+      // and end between two idle polls, and only a poll can see that it ended.
+      const fast = startedAt.size > 0 || localRunningAtRef.current.size > 0
+      wasRunningRef.current = fast
+      return fast
     } catch {
-      // Keep the last known set and the current cadence.
-      return false
+      // Keep the last known set and the cadence it implies, so a blip neither
+      // flashes spinners off nor drops a running turn to the idle interval.
+      return wasRunningRef.current || localRunningAtRef.current.size > 0
     }
   }, [workspaceId])
 
@@ -231,13 +252,18 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
       if (event.workspaceId !== workspaceId) return
       if (event.streamingSessionIds.length > 0) {
         const started = event.streamingSessionIds
+        let fresh = false
+        for (const id of started) {
+          if (localRunningAtRef.current.has(id)) continue
+          localRunningAtRef.current.set(id, Date.now())
+          fresh = true
+        }
+        // A turn just started here: get a poll in before it can finish unseen.
+        if (fresh) tightenPollRef.current?.()
         setLocalRunningIds((current) => {
           let changed = false
           const next = new Set(current)
           for (const id of started) {
-            if (!localRunningAtRef.current.has(id)) {
-              localRunningAtRef.current.set(id, Date.now())
-            }
             if (next.has(id)) continue
             next.add(id)
             changed = true
@@ -315,12 +341,24 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
     const schedulePoll = (running: boolean) => {
       clearPoll()
       if (!live || !foreground()) return
+      // A turn started here keeps the fast cadence even before the server has
+      // confirmed it: a quick reply can begin and end between two idle polls,
+      // and only a poll can see that it ended.
+      const fast = running || localRunningAtRef.current.size > 0
       timer = setTimeout(async () => {
         schedulePoll(await pollActiveChats())
-      }, running ? POLL_RUNNING_MS : POLL_IDLE_MS)
+      }, fast ? POLL_RUNNING_MS : POLL_IDLE_MS)
     }
     const pollNow = async () => {
       schedulePoll(await pollActiveChats())
+    }
+    // Bring the pending poll forward to the fast cadence, never push it back.
+    tightenPollRef.current = () => {
+      if (!live || !foreground() || !timer) return
+      clearPoll()
+      timer = setTimeout(async () => {
+        schedulePoll(await pollActiveChats())
+      }, POLL_RUNNING_MS)
     }
 
     void pollNow()
@@ -332,6 +370,7 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
     return () => {
       live = false
       clearPoll()
+      tightenPollRef.current = null
       appStateSubscription.remove()
     }
   }, [pollActiveChats, workspaceId])
