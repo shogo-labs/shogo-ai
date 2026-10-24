@@ -125,6 +125,12 @@ RUN node scripts/inject-analytics.js
 # fails closed on the third.
 RUN sh docker/upload-sourcemaps.sh
 
+# Precompress the hashed JS/CSS (brotli q11 + gzip -9) so nginx serves the
+# .br/.gz copies instead of gzipping on the fly (PERF-5: __common 3.08 MB gzip
+# -> 1.78 MB br). Runs after the .map strip so no maps get compressed, and
+# before both the nginx and web-assets stages copy dist/.
+RUN node scripts/precompress-assets.mjs dist/_expo
+
 # =============================================================================
 # Asset export stage (CDN upload source)
 # =============================================================================
