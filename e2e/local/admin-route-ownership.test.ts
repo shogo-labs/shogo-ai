@@ -14,8 +14,8 @@
  * console away from these four paths.
  *
  * The marketplace tab strip's `href`/`match` strings do not reach the router
- * here — `/admin/marketplace` cannot be cold-loaded until the local-mode admin
- * URL race is fixed (SHO-116) — so the resolver guard pins those literals.
+ * here, so the resolver guard pins those literals. (`/admin/*` deep links are
+ * reachable by URL again — `admin-deep-link.test.ts`, SHO-116.)
  */
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
