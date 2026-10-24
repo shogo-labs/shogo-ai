@@ -26,6 +26,7 @@ let members: MemberRow[]
 let workspaces: Map<string, WorkspaceRow>
 let usersMap: Map<string, UserRow>
 let updateCalls: any[]
+let versionEventUpserts: any[]
 let mintCalls: any[]
 let nextId = 0
 function gen(p='id'): string { nextId++; return `${p}_${nextId}` }
@@ -135,6 +136,12 @@ const prismaStub = {
       return row
     },
   },
+  deviceVersionEvent: {
+    upsert: async ({ create }: any) => {
+      versionEventUpserts.push({ create })
+      return create
+    },
+  },
 }
 
 let throwMintNext = false
@@ -190,6 +197,7 @@ beforeEach(() => {
   workspaces = new Map()
   usersMap = new Map()
   updateCalls = []
+  versionEventUpserts = []
   mintCalls = []
   nextId = 0
   throwMintNext = false
@@ -855,6 +863,26 @@ describe('resolveApiKey write throttle', () => {
     await settle()
     expect(updateCalls.length).toBe(1)
     expect(updateCalls[0].data.deviceAppVersion).toBe('1.1.0')
+  })
+
+  test('the same version twice inside the window writes one version event, not two (SHO-126)', async () => {
+    // 6 min ago: past the 60 s touch interval *and* in the previous 5-min
+    // window, so the first call is the one that records.
+    pushDevice({ lastSeenAt: new Date(Date.now() - 6 * 60_000) })
+    await resolveApiKey('shogo_sk_x', { deviceAppVersion: '1.0.0' })
+    await settle()
+    await resolveApiKey('shogo_sk_x', { deviceAppVersion: '1.0.0' })
+    await settle()
+    expect(versionEventUpserts.length).toBe(1)
+    expect(versionEventUpserts[0].create).toMatchObject({ deviceId: 'dev-1', version: '1.0.0' })
+  })
+
+  test('a version change is never throttled away', async () => {
+    pushDevice({ lastUsedAt: new Date(), lastSeenAt: new Date() })
+    await resolveApiKey('shogo_sk_x', { deviceAppVersion: '2.2.27' })
+    await settle()
+    expect(versionEventUpserts.length).toBe(1)
+    expect(versionEventUpserts[0].create).toMatchObject({ deviceId: 'dev-1', version: '2.2.27' })
   })
 
   test('revoked, expired and app tokens are still rejected', async () => {
