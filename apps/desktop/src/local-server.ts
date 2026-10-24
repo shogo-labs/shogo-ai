@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { spawn, execSync, execFileSync, type ChildProcess } from './child-process'
+import { randomUUID } from 'crypto'
 import { createServer } from 'net'
 import { existsSync } from 'fs'
 import path from 'path'
@@ -18,6 +19,7 @@ import {
   type ApiSupervisorEvent,
 } from './api-crash-log'
 import { addLocalApiBreadcrumb } from './sentry'
+import { formatIntentionalStopLog, stopApiProcess, type StopReason } from './api-stop'
 
 // Shogo-reserved port range — chosen to avoid conflicts with common dev tools
 const PREFERRED_PORT = 39100
@@ -55,6 +57,20 @@ let launchSpec: ApiLaunchSpec | null = null
  * asked for must never trigger a respawn — quitting has to stay quit.
  */
 let intentionalStop = false
+
+/**
+ * Why the current stop is happening, for the one log line a deliberate stop
+ * writes (SHO-181). `quit` is the default: an unlabelled stop is a person
+ * closing the app.
+ */
+let stopReason: StopReason = 'quit'
+
+/**
+ * The per-launch token the API checks on `POST /api/local/system/shutdown`
+ * (SHO-181). Minted here, handed to the child in its environment, and never
+ * written anywhere else.
+ */
+const shutdownToken = randomUUID()
 
 /**
  * Watches the API child and brings it back when something in userland kills it
@@ -512,6 +528,10 @@ export async function startLocalServer(): Promise<void> {
     // (SHO-75). Generated once beside `.auth-secret` and reused forever.
     SECRETS_ENCRYPTION_KEY: getOrCreateSecretsEncryptionKey(getDataDir()),
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
+    // The per-launch key the API checks on `POST /api/local/system/shutdown`
+    // (SHO-181). Regenerated on every boot, so a stale page or another local
+    // process cannot stop the API.
+    SHOGO_DESKTOP_SHUTDOWN_TOKEN: shutdownToken,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
     SHOGO_BUN_PATH: bunPath,
     ...(process.env.TERMINAL_EXEC_URL ? { TERMINAL_EXEC_URL: process.env.TERMINAL_EXEC_URL } : {}),
@@ -645,7 +665,17 @@ function spawnApiServer(spec: ApiLaunchSpec): ChildProcess {
   })
 
   child.on('exit', (code, signal) => {
-    console.log(`[Desktop] API server exited: code=${code}, signal=${signal}`)
+    // A stop we asked for is not a crash, and must not read like one: the old
+    // single line said `exited: code=1` for the Windows forced kill, which is
+    // the "the API died" sentence people sent us (SHO-181).
+    if (intentionalStop) {
+      console.log(formatIntentionalStopLog(stopReason, code, signal))
+    } else {
+      console.log(`[Desktop] API server exited: code=${code}, signal=${signal}`)
+    }
+    if (intentionalStop) {
+      logApiEvent('deliberate_stop', { pid: child.pid, code, signal, reason: stopReason })
+    }
     logApiEvent('exit', { pid: child.pid, code, signal, stderr: apiStderrTail() })
     // A stale child's exit must never clobber the pid/handle of its replacement.
     const wasCurrent = apiProcess === child
@@ -695,10 +725,14 @@ async function bootApiServer(healthRetries = MAX_HEALTH_RETRIES): Promise<number
 }
 
 /**
- * SIGTERM the child's process group, escalating to SIGKILL after the shutdown
- * timeout. Shared by `stopLocalServer()` and a failed respawn.
+ * Stop the API child: ask it first, kill it only if it will not go.
+ *
+ * `graceful` is for a deliberate stop (`stopLocalServer`) — on Windows that means
+ * the token-guarded shutdown request instead of an immediate `taskkill /T /F`,
+ * so the runtimes record their final state and the exit is not reported as a
+ * crash (SHO-181). A failed boot has nothing to save, so it is killed.
  */
-async function terminateApiChild(child: ChildProcess): Promise<boolean> {
+async function terminateApiChild(child: ChildProcess, graceful = false): Promise<boolean> {
   const pid = child.pid
   if (!pid) {
     console.warn('[Desktop] API process has no pid, cannot kill')
@@ -707,56 +741,98 @@ async function terminateApiChild(child: ChildProcess): Promise<boolean> {
 
   const isWindows = process.platform === 'win32'
 
-  if (isWindows) {
-    try {
-      execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'pipe' })
-      console.log(`[Desktop] Killed API process tree pid=${pid}`)
-    } catch (err) {
-      console.log(`[Desktop] taskkill failed (already dead?): ${err}`)
-    }
-    return true
-  }
-
-  if (child.exitCode !== null || child.signalCode !== null) {
+  if (!isWindows && (child.exitCode !== null || child.signalCode !== null)) {
     console.log(`[Desktop] API process ${pid} already exited`)
     return true
   }
 
-  const pgid = -pid
+  const forceKill = () => {
+    if (isWindows) {
+      try {
+        execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'pipe' })
+        console.log(`[Desktop] Killed API process tree pid=${pid}`)
+      } catch (err) {
+        console.log(`[Desktop] taskkill failed (already dead?): ${err}`)
+      }
+      return
+    }
+    try {
+      process.kill(-pid, 'SIGKILL')
+      console.log(`[Desktop] Sent SIGKILL to process group ${-pid}`)
+    } catch (err) {
+      console.log(`[Desktop] SIGKILL to group ${-pid} failed: ${err}`)
+    }
+  }
 
-  try {
-    process.kill(pgid, 'SIGTERM')
-    console.log(`[Desktop] Sent SIGTERM to process group ${pgid}`)
-  } catch (err) {
-    console.log(`[Desktop] SIGTERM to group ${pgid} failed (already dead?): ${err}`)
+  if (!graceful) {
+    // A boot that never went healthy has nothing to save and may not answer at
+    // all: kill it now instead of waiting out a shutdown timeout.
+    forceKill()
     return false
   }
 
-  const exited = await new Promise<boolean>((resolve) => {
-    const timeout = setTimeout(() => {
-      console.log(`[Desktop] Shutdown timeout (${SHUTDOWN_TIMEOUT_MS}ms) reached, sending SIGKILL`)
+  const result = await stopApiProcess({
+    platform: process.platform,
+    reason: stopReason,
+    requestGracefulStop: () => requestApiShutdown(stopReason),
+    signalTerm: () => {
       try {
-        process.kill(pgid, 'SIGKILL')
-        console.log(`[Desktop] Sent SIGKILL to process group ${pgid}`)
+        process.kill(-pid, 'SIGTERM')
+        console.log(`[Desktop] Sent SIGTERM to process group ${-pid}`)
       } catch (err) {
-        console.log(`[Desktop] SIGKILL to group ${pgid} failed: ${err}`)
+        console.log(`[Desktop] SIGTERM to group ${-pid} failed (already dead?): ${err}`)
       }
-      resolve(false)
-    }, SHUTDOWN_TIMEOUT_MS)
-
-    child.on('exit', () => {
-      clearTimeout(timeout)
-      resolve(true)
-    })
+    },
+    forceKill,
+    waitForExit: (timeoutMs) =>
+      new Promise<boolean>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolve(true)
+          return
+        }
+        const timeout = setTimeout(() => {
+          child.removeListener('exit', onExit)
+          resolve(false)
+        }, timeoutMs)
+        const onExit = () => {
+          clearTimeout(timeout)
+          resolve(true)
+        }
+        child.once('exit', onExit)
+      }),
+    timeoutMs: SHUTDOWN_TIMEOUT_MS,
   })
 
-  console.log(`[Desktop] API server process group terminated (graceful=${exited})`)
-  return exited
+  if (result.graceful) console.log(`[Desktop] API server process group terminated (graceful=true)`)
+  return result.graceful
 }
 
-export async function stopLocalServer(): Promise<void> {
+/**
+ * The Windows half of a graceful stop: ask the API to run its own shutdown
+ * (`POST /api/local/system/shutdown`, guarded by this launch's token). The
+ * request only proves it was delivered — `waitForExit` is what confirms it
+ * actually stopped.
+ */
+async function requestApiShutdown(reason: StopReason): Promise<boolean> {
+  try {
+    const res = await fetch(`${getApiUrl()}/api/local/system/shutdown`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-shogo-shutdown-token': shutdownToken },
+      body: JSON.stringify({ reason }),
+      signal: AbortSignal.timeout(2_000),
+    })
+    return res.ok
+  } catch (err) {
+    console.log(`[Desktop] Graceful stop request failed: ${err instanceof Error ? err.message : err}`)
+    return false
+  }
+}
+
+export async function stopLocalServer(reason: StopReason = 'quit'): Promise<void> {
   // Belt and braces with `apiSupervisor.stop()`: the exit event that follows
-  // must be recognised as ours, so quitting never resurrects the API.
+  // must be recognised as ours, so quitting never resurrects the API. The
+  // reason is set first so the exit line can name it (SHO-181).
+  stopReason = reason
   intentionalStop = true
   apiSupervisor.stop()
 
@@ -766,9 +842,9 @@ export async function stopLocalServer(): Promise<void> {
   }
 
   const pid = apiProcess.pid
-  console.log(`[Desktop] Stopping local API server (pid=${pid})...`)
+  console.log(`[Desktop] Stopping local API server (pid=${pid}, reason=${reason})...`)
 
-  await terminateApiChild(apiProcess)
+  await terminateApiChild(apiProcess, true)
 
   apiProcess = null
   removePidFile()

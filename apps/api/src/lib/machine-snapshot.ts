@@ -53,6 +53,55 @@ async function readDeviceId(db: any): Promise<string | null> {
   }
 }
 
+export interface LiveWorkCounts {
+  /** Open agent turns — one per chat with a turn in flight. */
+  liveTurns: number
+  /** Background tasks still running. */
+  runningTasks: number
+  /** Team-chat agent replies that have not finished. */
+  runningAgentReplies: number
+}
+
+/**
+ * The "is anything running on this machine" counts, defined once.
+ *
+ * Two readers with different needs: the cloud heartbeat (below) wants totals,
+ * and the desktop's update/quit gate (SHO-181) wants to know when they hit zero
+ * before it restarts — for which a turn whose heartbeat has stopped is not live.
+ * Both go through here so the two can never disagree about what "running" means.
+ */
+export async function countLiveWork(
+  db: any = prisma,
+  opts: {
+    /** Treat a turn whose last heartbeat is older than this as dead. */
+    staleTurnBefore?: Date | null
+    /** Skip the team-chat count (the heartbeat does not need it). */
+    agentReplies?: boolean
+  } = {},
+): Promise<LiveWorkCounts> {
+  const turnWhere: Record<string, unknown> = { activeTurnId: { not: null } }
+  if (opts.staleTurnBefore) {
+    const stale = opts.staleTurnBefore
+    turnWhere.OR = [
+      { activeTurnHeartbeatAt: { gte: stale } },
+      { AND: [{ activeTurnHeartbeatAt: null }, { activeTurnStartedAt: { gte: stale } }] },
+      { AND: [{ activeTurnHeartbeatAt: null }, { activeTurnStartedAt: null }] },
+    ]
+  }
+  const [liveTurns, runningTasks, runningAgentReplies] = await Promise.all([
+    db.chatSession.count({ where: turnWhere }),
+    db.backgroundTask.count({ where: { status: 'running' } }),
+    opts.agentReplies
+      ? db.conversationMessage.count({ where: { authorType: 'agent', agentStatus: 'running', deletedAt: null } })
+      : Promise.resolve(0),
+  ])
+  return {
+    liveTurns: liveTurns ?? 0,
+    runningTasks: runningTasks ?? 0,
+    runningAgentReplies: runningAgentReplies ?? 0,
+  }
+}
+
 function latest(...dates: (Date | string | null | undefined)[]): Date | null {
   let max: Date | null = null
   for (const value of dates) {
@@ -67,7 +116,7 @@ function latest(...dates: (Date | string | null | undefined)[]): Date | null {
 export async function collectMachineSnapshot(): Promise<MachineSnapshot> {
   const db = prisma as any
 
-  const [workspaces, deviceId, projectStats, chatStats, runningTurns, runningTasks, chats] =
+  const [workspaces, deviceId, projectStats, chatStats, liveWork, chats] =
     await Promise.all([
       db.workspace.findMany({ select: { id: true, name: true, kind: true } }),
       readDeviceId(db),
@@ -81,8 +130,7 @@ export async function collectMachineSnapshot(): Promise<MachineSnapshot> {
         by: ['workspaceId'],
         _max: { lastActiveAt: true },
       }),
-      db.chatSession.count({ where: { activeTurnId: { not: null } } }),
-      db.backgroundTask.count({ where: { status: 'running' } }),
+      countLiveWork(db),
       db.chatSession.count(),
     ])
 
@@ -127,8 +175,8 @@ export async function collectMachineSnapshot(): Promise<MachineSnapshot> {
     },
     workspaces: summaries,
     activity: {
-      runningTurns: runningTurns ?? 0,
-      runningTasks: runningTasks ?? 0,
+      runningTurns: liveWork.liveTurns,
+      runningTasks: liveWork.runningTasks,
       chats: chats ?? 0,
       lastActivityAt: overall ? overall.toISOString() : null,
     },

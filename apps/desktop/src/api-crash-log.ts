@@ -34,6 +34,8 @@ export type ApiSupervisorEvent =
   | 'gave_up'
   | 'health_watchdog_tripped'
   | 'manual_restart'
+  /** The app asked the API to stop (quit, update restart) — not a crash (SHO-181). */
+  | 'deliberate_stop'
 
 export interface ApiCrashLogOptions {
   /** Absolute path of the JSONL file. */

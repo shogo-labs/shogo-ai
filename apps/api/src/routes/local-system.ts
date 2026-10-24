@@ -105,6 +105,125 @@ export function localSystemRoutes(): Hono {
     }
   })
 
+  /**
+   * GET /local/system/activity — what is live right now (SHO-181).
+   *
+   * The desktop's update banner and its Quit dialog both need one honest answer
+   * to "will a restart interrupt someone?", so the counts come from the same
+   * places the rest of the product already trusts: an open agent turn, a running
+   * background task, and a team-chat agent reply that has not finished.
+   *
+   * A turn whose heartbeat is older than `TURN_REATTACH_AFTER_MS` is not live —
+   * that is the threshold the reattach job already uses to call a turn dead. It
+   * has to agree, or a turn killed without clearing `activeTurnId` would make
+   * "restart when idle" wait forever.
+   */
+  router.get('/local/system/activity', async (c) => {
+    try {
+      const { TURN_REATTACH_AFTER_MS } = await import('../services/chat-turn-state.service')
+      const { countLiveWork } = await import('../lib/machine-snapshot')
+      const staleBefore = new Date(Date.now() - TURN_REATTACH_AFTER_MS)
+      const [counts, sessions] = await Promise.all([
+        countLiveWork(prisma as any, { staleTurnBefore: staleBefore, agentReplies: true }),
+        prisma.chatSession.findMany({
+          where: {
+            activeTurnId: { not: null },
+            OR: [
+              { activeTurnHeartbeatAt: { gte: staleBefore } },
+              { AND: [{ activeTurnHeartbeatAt: null }, { activeTurnStartedAt: { gte: staleBefore } }] },
+              { AND: [{ activeTurnHeartbeatAt: null }, { activeTurnStartedAt: null }] },
+            ],
+          },
+          select: {
+            id: true,
+            name: true,
+            inferredName: true,
+            workspaceId: true,
+            contextType: true,
+            contextId: true,
+          },
+          orderBy: { lastActiveAt: 'desc' },
+        }),
+      ])
+      return c.json({
+        ok: true,
+        liveTurns: counts.liveTurns,
+        runningTasks: counts.runningTasks,
+        runningAgentReplies: counts.runningAgentReplies,
+        sessions: sessions.map((session: any) => ({
+          id: session.id,
+          title: session.name || session.inferredName || null,
+          workspaceId: session.workspaceId ?? null,
+          contextType: session.contextType ?? null,
+          contextId: session.contextId ?? null,
+        })),
+      })
+    } catch (err: any) {
+      console.error('[local-system] activity failed', err)
+      return c.json({ ok: false, error: 'activity_failed', message: err?.message ?? err }, 500)
+    }
+  })
+
+  /**
+   * POST /local/system/drain {on, reason?} — hold new automatic starts.
+   *
+   * "Restart when idle" has a race: the moment the user chooses it, a due
+   * schedule or a task wake may start a brand-new run, and the counts never
+   * reach zero. Draining closes it by reusing the pause every automatic entry
+   * point already consults; it is process-wide and in memory (see
+   * `workspace-pause.service`), so a restart clears it and no crash can leave
+   * the machine silently starting nothing.
+   *
+   * `on: false` lifts the hold *and* re-runs the sweeps, so work held during the
+   * drain is delivered now instead of on the next tick.
+   */
+  router.post('/local/system/drain', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { on?: unknown; reason?: unknown }
+    if (typeof body?.on !== 'boolean') {
+      return c.json({ ok: false, error: 'on must be a boolean' }, 400)
+    }
+    const { setDrainHold, readDrainHold, releaseDrainHold } = await import(
+      '../services/workspace-pause.service'
+    )
+    if (!body.on) {
+      await releaseDrainHold()
+      return c.json({ ok: true, drain: null })
+    }
+    if (!readDrainHold()) {
+      setDrainHold(true, typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim() : 'desktop-restart')
+    }
+    return c.json({ ok: true, drain: readDrainHold() })
+  })
+
+  /**
+   * POST /local/system/shutdown — the graceful stop the desktop asks for before
+   * it force-kills the tree (SHO-181).
+   *
+   * On Windows there is no SIGTERM: `taskkill /T /F` used to take the API and
+   * every runtime under it mid-write, and the watchdog reported the forced kill
+   * as `code=1`. This route is that missing polite request — it stops the
+   * workers, lets the runtimes record their final state and exits 0.
+   *
+   * Guarded by a per-launch token the desktop passes in the child's environment,
+   * so it is not reachable from a web page or another local process.
+   */
+  router.post('/local/system/shutdown', async (c) => {
+    const expected = process.env.SHOGO_DESKTOP_SHUTDOWN_TOKEN
+    if (!expected || c.req.header('x-shogo-shutdown-token') !== expected) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    const body = (await c.req.json().catch(() => ({}))) as { reason?: unknown }
+    const reason = body?.reason === 'update' || body?.reason === 'restart' ? body.reason : 'quit'
+    const { runLocalShutdown } = await import('../lib/local-shutdown')
+    // Answer first: the caller is holding its own exit open for this response.
+    setTimeout(() => {
+      void runLocalShutdown(reason).catch((err) => {
+        console.error('[local-system] graceful shutdown failed', err)
+      })
+    }, 25)
+    return c.json({ ok: true, reason })
+  })
+
   router.post('/local/auto-sign-in', async (c) => {
     try {
       const user = await prisma.user.findFirst()
