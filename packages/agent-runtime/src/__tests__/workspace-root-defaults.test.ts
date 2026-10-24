@@ -10,19 +10,39 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   DEFAULT_WORKSPACE_FILES,
   PROJECT_AGENTS_MD,
   WORKSPACE_RUNTIME_AGENTS_MD,
+  getRuntimeTemplatePath,
+  seedPersonalCompanionTemplate,
   seedWorkspaceDefaults,
   seedWorkspaceRuntimeDefaults,
 } from '../workspace-defaults'
 import { initWorkspaceMembers } from '../workspace-members'
 
 const RULE = 'project_create'
+
+function templateAgentsMd(): string {
+  const templatePath = getRuntimeTemplatePath()
+  if (!templatePath) throw new Error('runtime-template not found — this suite needs the checked-in template')
+  return readFileSync(join(templatePath, 'AGENTS.md'), 'utf-8')
+}
+
+/**
+ * The order a cloud warm-pool pre-seed runs in: `seedWorkspaceDefaults` first,
+ * then `seedRuntimeTemplate` copies over it — and AGENTS.md is not in
+ * `RUNTIME_TEMPLATE_SKIP`, so the root file ends up the template's own document.
+ */
+function seedAsPoolPreseed(target: string): void {
+  seedWorkspaceDefaults(target)
+  const templatePath = getRuntimeTemplatePath()
+  if (!templatePath) throw new Error('runtime-template not found')
+  cpSync(join(templatePath, 'AGENTS.md'), join(target, 'AGENTS.md'))
+}
 
 let dir: string
 let saved: Record<string, string | undefined>
@@ -85,6 +105,60 @@ describe('workspace-runtime AGENTS.md', () => {
   test('a single-project workspace still gets the project default', () => {
     seedWorkspaceDefaults(dir)
     expect(readFileSync(join(dir, 'AGENTS.md'), 'utf-8')).toBe(PROJECT_AGENTS_MD)
+  })
+
+  /**
+   * The cloud warm pool never reaches `seedRuntimeTemplate`'s skip list for
+   * AGENTS.md: `ensureWorkspaceFiles` seeds the project default and the template
+   * copy lands on top of it, so the root file is the template's own document.
+   */
+  test("upgrades the runtime template's AGENTS.md a pool pre-seed left at the root", () => {
+    seedAsPoolPreseed(dir)
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf-8')).toBe(templateAgentsMd())
+
+    seedWorkspaceRuntimeDefaults(dir)
+    const agents = readFileSync(join(dir, 'AGENTS.md'), 'utf-8')
+    expect(agents).toContain(RULE)
+    expect(agents).toContain('project_call')
+    expect(agents).not.toContain('The workspace is a standard Vite + React')
+    expect(agents).not.toContain('Edit src/App.tsx for the main UI')
+    // Only the App Development section changes; the template's own sections stay.
+    expect(agents).toContain('## Testing')
+    expect(agents).toContain('## Custom server code that must survive regeneration')
+  })
+
+  test('upgrading a pool-booted root twice changes nothing', () => {
+    seedAsPoolPreseed(dir)
+    seedWorkspaceRuntimeDefaults(dir)
+    const once = readFileSync(join(dir, 'AGENTS.md'), 'utf-8')
+    seedWorkspaceRuntimeDefaults(dir)
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf-8')).toBe(once)
+  })
+
+  test("leaves an edited runtime-template AGENTS.md alone", () => {
+    seedAsPoolPreseed(dir)
+    const edited = `${templateAgentsMd()}\n- Never touch production.\n`
+    writeFileSync(join(dir, 'AGENTS.md'), edited)
+    seedWorkspaceRuntimeDefaults(dir)
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf-8')).toBe(edited)
+  })
+})
+
+describe('personal companion on a pool-booted root', () => {
+  test("replaces the runtime template's AGENTS.md with the companion persona", () => {
+    seedAsPoolPreseed(dir)
+    expect(seedPersonalCompanionTemplate(dir)).toBe(true)
+    const agents = readFileSync(join(dir, 'AGENTS.md'), 'utf-8')
+    expect(agents).toContain('# Personal Companion')
+    expect(agents).not.toContain('Edit src/App.tsx for the main UI')
+  })
+
+  test('replaces the workspace-runtime upgrade too, in the boot order server.ts uses', () => {
+    seedAsPoolPreseed(dir)
+    seedWorkspaceRuntimeDefaults(dir)
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf-8')).toContain(RULE)
+    expect(seedPersonalCompanionTemplate(dir)).toBe(true)
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf-8')).toContain('# Personal Companion')
   })
 })
 

@@ -368,20 +368,66 @@ export function seedWorkspaceDefaults(
 }
 
 /**
+ * The runtime template's own AGENTS.md, or null when the template is not
+ * reachable from this process.
+ *
+ * A warm-pool pre-seed runs `seedWorkspaceDefaults` and then
+ * `seedRuntimeTemplate`, which copies the template over the same root — so on
+ * the cloud path the root's AGENTS.md is *this* file, not the project default
+ * (SHO-194).
+ */
+function readRuntimeTemplateAgentsMd(): string | null {
+  try {
+    const templatePath = getRuntimeTemplatePath()
+    if (!templatePath) return null
+    return readFileSync(join(templatePath, 'AGENTS.md'), 'utf-8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Every AGENTS.md a root can carry without a person having edited it: the
+ * project default, the workspace-runtime default, and the runtime template's
+ * own file with and without its App Development section already swapped.
+ */
+function pristineAgentsMdVariants(): string[] {
+  const variants = [PROJECT_AGENTS_MD, WORKSPACE_RUNTIME_AGENTS_MD]
+  const templateMd = readRuntimeTemplateAgentsMd()
+  if (templateMd !== null) variants.push(templateMd, replaceAppDevelopmentSection(templateMd))
+  return variants
+}
+
+/**
  * Seed a workspace runtime's root (`WORKSPACE_RUNTIME=true`): the project
  * defaults, except AGENTS.md describes the root as a meta-agent sandbox where
  * building an app means `project_create`, not editing `src/App.tsx`.
  *
- * An AGENTS.md already on disk is upgraded only when it is byte-identical to
- * the pristine project default — the same "never clobber an edit" rule as
- * `seedPersonalCompanionTemplate`. A workspace whose agent was customized keeps
- * its file; `WORKSPACE.md` carries the same rule on every boot for those.
+ * An AGENTS.md already on disk is upgraded only when it is one of the pristine
+ * shapes a seed can leave behind — the same "never clobber an edit" rule as
+ * `seedPersonalCompanionTemplate`. The runtime template's own file is one of
+ * them: a pool pre-seed copies it over the root, so its other sections are kept
+ * and only the App Development section is swapped. A workspace whose agent was
+ * customized keeps its file; `WORKSPACE.md` carries the same rule on every boot
+ * for those.
  */
 export function seedWorkspaceRuntimeDefaults(dir: string): void {
   seedWorkspaceDefaults(dir, DEFAULT_WORKSPACE_RUNTIME_FILES)
   const destination = join(dir, 'AGENTS.md')
   try {
-    if (readFileSync(destination, 'utf-8') !== PROJECT_AGENTS_MD) return
+    const current = readFileSync(destination, 'utf-8')
+    if (current === WORKSPACE_RUNTIME_AGENTS_MD) return
+    if (current === readRuntimeTemplateAgentsMd()) {
+      const upgraded = replaceAppDevelopmentSection(current)
+      if (upgraded === current) {
+        console.warn('[workspace-defaults] runtime-template AGENTS.md has no `## App Development` section — left as it is')
+        return
+      }
+      writeFileSync(destination, upgraded, 'utf-8')
+      console.log('[workspace-defaults] Upgraded the runtime-template AGENTS.md to the workspace-runtime default')
+      return
+    }
+    if (current !== PROJECT_AGENTS_MD) return
     writeFileSync(destination, WORKSPACE_RUNTIME_AGENTS_MD, 'utf-8')
     console.log('[workspace-defaults] Upgraded the pristine project AGENTS.md to the workspace-runtime default')
   } catch { /* nothing to upgrade */ }
@@ -425,11 +471,12 @@ export function seedPersonalCompanionTemplate(dir: string): boolean {
   for (const filename of ['AGENTS.md', 'HEARTBEAT.md']) {
     const destination = join(dir, filename)
     const current = existsSync(destination) ? readFileSync(destination, 'utf-8') : null
-    // A workspace root is seeded with the workspace-runtime AGENTS.md first, so
-    // that one counts as untouched too — otherwise a personal workspace whose
-    // runtime upgraded it would never receive the companion persona.
+    // A workspace root is seeded with the workspace-runtime AGENTS.md first, and
+    // a cloud pool pre-seed leaves the runtime template's own file there, so
+    // both count as untouched — otherwise a personal workspace booted from the
+    // pool would never receive the companion persona (SHO-194).
     const pristine = filename === 'AGENTS.md'
-      ? [PROJECT_AGENTS_MD, WORKSPACE_RUNTIME_AGENTS_MD]
+      ? pristineAgentsMdVariants()
       : [DEFAULT_WORKSPACE_FILES[filename]]
     if (
       current === null ||
