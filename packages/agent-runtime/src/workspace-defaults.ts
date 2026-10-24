@@ -233,6 +233,38 @@ whole-file replacement that keeps less than half of the current content.
 }
 
 /**
+ * The `## App Development` section a workspace-runtime root needs: the root is
+ * a meta-agent sandbox with no app in it, so building means a project.
+ */
+const WORKSPACE_ROOT_APP_DEVELOPMENT = `## App Development
+- The workspace root is not an app. To build an app or site, call \`project_create\` with a short brief, then \`project_call\` to build it in that project, or work inside a project folder that is already mounted (\`<projectId>/\`)
+- Never create \`package.json\`, \`src/\` or \`prisma/\`, run \`bun add\`, or start a preview in the workspace root
+- Use edit_file to update existing files — avoid full rewrites`
+
+function replaceAppDevelopmentSection(agentsMd: string): string {
+  const start = agentsMd.indexOf('## App Development\n')
+  if (start === -1) return agentsMd
+  const end = agentsMd.indexOf('\n## ', start + 1)
+  return agentsMd.slice(0, start) + WORKSPACE_ROOT_APP_DEVELOPMENT + (end === -1 ? '' : agentsMd.slice(end))
+}
+
+/** The project-scoped default AGENTS.md, unchanged. */
+export const PROJECT_AGENTS_MD = DEFAULT_WORKSPACE_FILES['AGENTS.md']
+
+/**
+ * AGENTS.md for a workspace runtime (`WORKSPACE_RUNTIME=true`), where the root
+ * holds projects as sibling folders and never an app of its own. Derived from
+ * the project default so everything except "App Development" stays identical.
+ */
+export const WORKSPACE_RUNTIME_AGENTS_MD = replaceAppDevelopmentSection(PROJECT_AGENTS_MD)
+
+/** Defaults for a workspace runtime: the project defaults with the root-scoped AGENTS.md. */
+export const DEFAULT_WORKSPACE_RUNTIME_FILES: Record<string, string> = {
+  ...DEFAULT_WORKSPACE_FILES,
+  'AGENTS.md': WORKSPACE_RUNTIME_AGENTS_MD,
+}
+
+/**
  * Write default workspace files into a directory, creating subdirectories as needed.
  * Only writes files that don't already exist (won't overwrite user customizations).
  */
@@ -265,7 +297,10 @@ function removeStaleShogoSymlink(dir: string): void {
   } catch {}
 }
 
-export function seedWorkspaceDefaults(dir: string): void {
+export function seedWorkspaceDefaults(
+  dir: string,
+  files: Record<string, string> = DEFAULT_WORKSPACE_FILES,
+): void {
   // External (VS Code-style) projects: NEVER seed default workspace
   // files into the user's repo root. The user's tree gets:
   //   - `.shogo/` (skills/, plans/, local/, project.json, AGENTS.md)
@@ -324,12 +359,32 @@ export function seedWorkspaceDefaults(dir: string): void {
   mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
   mkdirSync(join(dir, '.shogo', 'plans'), { recursive: true })
 
-  for (const [filename, content] of Object.entries(DEFAULT_WORKSPACE_FILES)) {
+  for (const [filename, content] of Object.entries(files)) {
     const filepath = join(dir, filename)
     if (!existsSync(filepath)) {
       writeFileSync(filepath, content, 'utf-8')
     }
   }
+}
+
+/**
+ * Seed a workspace runtime's root (`WORKSPACE_RUNTIME=true`): the project
+ * defaults, except AGENTS.md describes the root as a meta-agent sandbox where
+ * building an app means `project_create`, not editing `src/App.tsx`.
+ *
+ * An AGENTS.md already on disk is upgraded only when it is byte-identical to
+ * the pristine project default — the same "never clobber an edit" rule as
+ * `seedPersonalCompanionTemplate`. A workspace whose agent was customized keeps
+ * its file; `WORKSPACE.md` carries the same rule on every boot for those.
+ */
+export function seedWorkspaceRuntimeDefaults(dir: string): void {
+  seedWorkspaceDefaults(dir, DEFAULT_WORKSPACE_RUNTIME_FILES)
+  const destination = join(dir, 'AGENTS.md')
+  try {
+    if (readFileSync(destination, 'utf-8') !== PROJECT_AGENTS_MD) return
+    writeFileSync(destination, WORKSPACE_RUNTIME_AGENTS_MD, 'utf-8')
+    console.log('[workspace-defaults] Upgraded the pristine project AGENTS.md to the workspace-runtime default')
+  } catch { /* nothing to upgrade */ }
 }
 
 function getPersonalCompanionTemplatePath(): string | null {
@@ -370,8 +425,17 @@ export function seedPersonalCompanionTemplate(dir: string): boolean {
   for (const filename of ['AGENTS.md', 'HEARTBEAT.md']) {
     const destination = join(dir, filename)
     const current = existsSync(destination) ? readFileSync(destination, 'utf-8') : null
-    const pristine = DEFAULT_WORKSPACE_FILES[filename]
-    if (current === null || current === pristine || (filename === 'HEARTBEAT.md' && current.trim() === '')) {
+    // A workspace root is seeded with the workspace-runtime AGENTS.md first, so
+    // that one counts as untouched too — otherwise a personal workspace whose
+    // runtime upgraded it would never receive the companion persona.
+    const pristine = filename === 'AGENTS.md'
+      ? [PROJECT_AGENTS_MD, WORKSPACE_RUNTIME_AGENTS_MD]
+      : [DEFAULT_WORKSPACE_FILES[filename]]
+    if (
+      current === null ||
+      pristine.includes(current) ||
+      (filename === 'HEARTBEAT.md' && current.trim() === '')
+    ) {
       copyFileSync(join(templatePath, filename), destination)
       changed = true
     }
