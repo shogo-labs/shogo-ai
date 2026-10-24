@@ -63,15 +63,13 @@ import {
   ShieldAlert,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useAuth } from '../../contexts/auth'
-import { DomainProvider, useDomainHttp } from '../../contexts/domain'
+import { DomainProvider } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
-import { api, API_URL } from '../../lib/api'
+import { API_URL } from '../../lib/api'
 import { usePlatformConfig } from '../../lib/platform-config';
 import { densityFor } from "../../lib/phone-density"
 import { adminPageTitle, isAdminNavActive } from '../../lib/admin-nav'
-
-type UserRole = 'user' | 'super_admin'
+import { useAdminCheck } from '../../hooks/useAdminCheck'
 
 /**
  * Nav item access markers:
@@ -182,48 +180,6 @@ const LOCAL_SETTINGS_ITEMS = [
   { href: '/(admin)/admin/settings' as const, icon: BrainCircuit, label: 'AI' },
 ] as const
 
-function useAdminCheck() {
-  const { user, isAuthenticated, isLoading: authLoading } = useAuth()
-  const http = useDomainHttp()
-  const [role, setRole] = useState<UserRole | null>(null)
-  const [scopes, setScopes] = useState<string[]>([])
-  const [checking, setChecking] = useState(true)
-
-  useEffect(() => {
-    if (authLoading) return
-    if (!isAuthenticated) {
-      setChecking(false)
-      return
-    }
-    let cancelled = false
-    setChecking(true)
-    api.getMe(http)
-      .then((data) => {
-        if (!cancelled && data.ok && data.data?.role) {
-          setRole(data.data.role as UserRole)
-          setScopes(Array.isArray(data.data.adminScopes) ? data.data.adminScopes : [])
-        }
-      })
-      .catch((e) => console.error('[AdminLayout] Failed to verify admin role:', e))
-      .finally(() => {
-        if (!cancelled) setChecking(false)
-      })
-    return () => { cancelled = true }
-  }, [http, isAuthenticated, authLoading, user?.id])
-
-  const isSuperAdmin = role === 'super_admin'
-
-  return {
-    isSuperAdmin,
-    scopes,
-    // Portal access: full super admins OR users granted at least one scope.
-    hasAdminAccess: isSuperAdmin || scopes.length > 0,
-    isPending: authLoading || checking,
-    isAuthenticated,
-    userEmail: user?.email,
-    userName: user?.name,
-  }
-}
 
 type HealthStatus = 'healthy' | 'degraded' | 'critical' | 'unknown'
 
@@ -541,6 +497,16 @@ export default function AdminLayout() {
   )
 }
 
+/**
+ * The URL the document was opened at, captured while the bundle evaluates —
+ * before the router can rewrite history. `null` on native, where there is no
+ * address bar.
+ */
+const ENTRY_PATHNAME: string | null =
+  Platform.OS === 'web' && typeof window !== 'undefined'
+    ? window.location?.pathname ?? null
+    : null
+
 function AdminLayoutInner() {
   const router = useRouter()
   const pathname = usePathname()
@@ -551,8 +517,8 @@ function AdminLayoutInner() {
   const isWide = !isNativeApp && width >= ADMIN_WEB_WIDE_MIN_WIDTH
   const nativeSheetDrawer =
     isNativeApp || (Platform.OS === 'web' && width <= WEB_PHONE_MAX_WIDTH)
-  const { isSuperAdmin, scopes, hasAdminAccess, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
-  const { localMode } = usePlatformConfig()
+  const { isSuperAdmin, scopes, hasAdminAccess, gate, localMode, isAuthenticated, userEmail, userName } = useAdminCheck()
+  const isPending = gate === 'loading'
   const infraHealth = useInfraHealth(isSuperAdmin)
   const drawer = useNativeSheetDrawer({
     windowWidth: width,
@@ -571,12 +537,15 @@ function AdminLayoutInner() {
     scopes,
   } as const
 
-  // Portal entry: must be authenticated AND have some admin access.
+  // Portal entry: must be authenticated AND have some admin access. `gate`
+  // holds at `loading` while the session resolves — and, locally, while
+  // auto-sign-in is still in flight — so a cold admin deep link is never
+  // forwarded to `/(app)` before the answer is known (SHO-116).
   useEffect(() => {
-    if (!isPending && (!isAuthenticated || !hasAdminAccess)) {
+    if (gate === 'redirect') {
       router.replace('/(app)')
     }
-  }, [isPending, isAuthenticated, hasAdminAccess, router])
+  }, [gate, router])
 
   // Per-route guard: a partial admin who deep-links to a page they lack
   // permission for is bounced to their first permitted page (the backend
@@ -592,20 +561,25 @@ function AdminLayoutInner() {
     }
   }, [isPending, isAuthenticated, hasAdminAccess, isSuperAdmin, localMode, scopes, pathname, router])
 
+  // Local mode has no console index, so the console root hops to Projects. It
+  // must only do that when the console root is where the visitor *arrived*:
+  // expo-router publishes its initial navigation state as `/` on a cold load
+  // before it applies the URL the document was opened at, so `usePathname()`
+  // briefly reads `/` on every deep link. Acting on that frame is what turned a
+  // cold `/admin/settings` into `/admin/projects` (SHO-116).
   useEffect(() => {
-    if (localMode && !isPending && hasAdminAccess) {
-      const p = pathname
-      if (p === '/' || p === '' || p === '/(admin)' || p === '/index') {
-        router.replace('/(admin)/admin/projects' as any)
-      }
-    }
+    if (!localMode || isPending || !hasAdminAccess) return
+    const p = pathname
+    if (p !== '/' && p !== '' && p !== '/(admin)' && p !== '/index') return
+    if (ENTRY_PATHNAME !== null && ENTRY_PATHNAME !== '/' && ENTRY_PATHNAME !== '') return
+    router.replace('/(admin)/admin/projects' as any)
   }, [localMode, isPending, hasAdminAccess, pathname, router])
 
   useEffect(() => {
     if (isWide) resetDrawer()
   }, [isWide, resetDrawer])
 
-  if (isPending) {
+  if (gate === 'loading') {
     return (
       <SafeAreaView className="flex-1 bg-background">
         <View className="flex-1 items-center justify-center">
@@ -618,7 +592,7 @@ function AdminLayoutInner() {
     )
   }
 
-  if (!isAuthenticated || !hasAdminAccess) return null
+  if (gate !== 'render') return null
 
   return (
     <NativeSheetDrawerShell
