@@ -152,8 +152,20 @@ describe('a real repository that cannot be made durable', () => {
     present = ['nul', 'aux.txt', 'sub/CON'].filter((rel) => tryWrite(dir, rel))
   })
 
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+  afterEach(async () => {
+    // A git child that has just exited keeps its handles on the repo for a
+    // moment on Windows, so EBUSY on the first pass is not a test failure.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        rmSync(dir, { recursive: true, force: true })
+        return
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        const locked = code === 'EBUSY' || code === 'EPERM' || code === 'EACCES'
+        if (!locked || attempt >= 20) throw err
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    }
   })
 
   test('commits the real work, skips the reserved names, parks after 20 identical failures and reports once', async () => {
