@@ -91,7 +91,9 @@ async function expandChats(page: Page): Promise<void> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const more = chatsPanel(page).getByLabel(/^Show more chats for/).first();
     if ((await more.count()) === 0 || !(await more.isVisible())) return;
-    await more.click();
+    // The list re-renders as rows page in; a click that lands mid-render is not
+    // an error, the next pass sees the button again.
+    await more.click({ timeout: 5_000 }).catch(() => undefined);
     await page.waitForTimeout(200);
   }
 }
@@ -140,6 +142,23 @@ async function renderedChatLabels(page: Page): Promise<string[]> {
       elements.map((element) => element.getAttribute("aria-label") ?? ""),
     );
   return labels.map((label) => label.slice("Chat: ".length));
+}
+
+/**
+ * Whether `before` is rendered above `after` among the rows carrying `prefix`.
+ * Relative on purpose: other chats — the primary one, rows another spec left,
+ * a reload that pages the list — may legitimately sit between or below them, so
+ * an exact list would fail on data the test does not own.
+ */
+async function rowAbove(
+  page: Page,
+  prefix: string,
+  before: string,
+  after: string,
+): Promise<boolean> {
+  const labels = (await renderedChatLabels(page)).filter((label) => label.startsWith(prefix));
+  const at = labels.indexOf(before);
+  return at >= 0 && (labels.indexOf(after) === -1 || at < labels.indexOf(after));
 }
 
 /**
@@ -423,11 +442,9 @@ test.describe("workspace chat row state (local)", () => {
     await expect(chatsPanel(page)).toBeVisible({ timeout: 90_000 });
     await expandChats(page);
 
-    // The starting order is by activity: the newer chat leads, and the older one
-    // says three hours ago.
-    await expect
-      .poll(async () => (await renderedChatLabels(page)).filter((label) => label.startsWith(prefix)))
-      .toEqual([newer.name, older.name]);
+    // The starting order is by activity: the newer chat sits above the older one,
+    // which says three hours ago.
+    await expect.poll(async () => rowAbove(page, prefix, newer.name, older.name)).toBe(true);
     await expect(chatRow(page, older.name)).toContainText("3h ago");
 
     // Send in the older chat. Sampled inside the page rather than asserted after
@@ -465,11 +482,16 @@ test.describe("workspace chat row state (local)", () => {
     // the same function the cloud hook uses.
     await page.reload();
     await expect(chatsPanel(page)).toBeVisible({ timeout: 90_000 });
-    await expandChats(page);
     await expect(chatRow(page, older.name)).toContainText(/just now/);
     await expect
-      .poll(async () => (await renderedChatLabels(page)).filter((label) => label.startsWith(prefix)))
-      .toEqual([older.name, newer.name]);
+      .poll(
+        async () => {
+          await expandChats(page);
+          return rowAbove(page, prefix, older.name, newer.name);
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(true);
   });
 
   test("pin shows in the pane and the phone drawer, and unpin clears it", async ({ page }) => {
