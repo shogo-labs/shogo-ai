@@ -128,6 +128,25 @@ const getMemberWorkActivity = mock(async (_ws: string, member: any, input: any) 
 }))
 mock.module('../services/engagement-analytics.service', () => ({ findWorkspaceMember, getMemberWorkActivity }))
 
+const memberMessage = {
+  id: 'msg-1',
+  source: 'team_chat',
+  audience: 'person',
+  createdAt: '2026-07-01T10:00:00.000Z',
+  text: 'can you take this, "urgent"',
+  conversation: { id: 'conv-1', kind: 'public', name: 'shogo-dev' },
+  threadRootId: null,
+  workItemKey: null,
+  chatSession: null,
+}
+const getMemberMessages = mock(async (_ws: string, _userId: string, input: any) => ({
+  items: [memberMessage],
+  hasMore: Boolean(input?.cursor),
+  nextCursor: input?.cursor ? null : 'cursor-2',
+}))
+const getAllMemberMessages = mock(async (_ws: string, _userId: string) => ({ items: [memberMessage] }))
+mock.module('../services/member-messages.service', () => ({ getMemberMessages, getAllMemberMessages }))
+
 const { workspaceAgentRoutes, sessionAuthorize } = await import('../routes/workspace-agent')
 
 function appFor(userId: string | null) {
@@ -537,4 +556,73 @@ describe('GET /workspaces/:id/member-activity (admin-only "what did PERSON work 
     const asAdmin = await internalApp().request(url('user=alice@example.com&requestedBy=user-admin'))
     expect(asAdmin.status).toBe(200)
   })
+
+  test('detail=board asks for the board view; anything else is the summary', async () => {
+    getMemberWorkActivity.mockClear()
+    await appFor('user-admin').request(url('user=alice@example.com&detail=board'))
+    expect(getMemberWorkActivity.mock.calls[0][4]).toEqual({ boardOnly: true })
+    await appFor('user-admin').request(url('user=alice@example.com'))
+    expect(getMemberWorkActivity.mock.calls[1][4]).toEqual({ boardOnly: false })
+  })
 })
+
+describe('GET /workspaces/:id/member-activity/messages (the records behind a row)', () => {
+  const url = (qs: string) => `/api/workspaces/workspace-1/member-activity/messages?${qs}`
+
+  test('is gated the same way as the summary', async () => {
+    getMemberMessages.mockClear()
+    expect((await appFor('user-1').request(url('user=alice@example.com'))).status).toBe(403)
+    expect(getMemberMessages).not.toHaveBeenCalled()
+  })
+
+  test('returns a page of what that person sent, with range, audience and source filters', async () => {
+    getMemberMessages.mockClear()
+    const res = await appFor('user-admin').request(
+      url('user=alice@example.com&since=2026-07-01T00:00:00Z&until=2026-07-02T00:00:00Z&audience=person&source=team_chat&limit=25'),
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ items: [{ id: 'msg-1', audience: 'person' }], nextCursor: 'cursor-2' })
+
+    const [workspaceId, userId, query] = getMemberMessages.mock.calls[0]
+    expect(workspaceId).toBe('workspace-1')
+    expect(userId).toBe('user-1')
+    expect(query).toMatchObject({ audience: 'person', source: 'team_chat', limit: 25 })
+    expect((query as any).since.toISOString()).toBe('2026-07-01T00:00:00.000Z')
+  })
+
+  test('rejects params it cannot honour instead of silently ignoring them', async () => {
+    getMemberMessages.mockClear()
+    expect((await appFor('user-admin').request(url('user=alice@example.com&since=nope'))).status).toBe(400)
+    expect((await appFor('user-admin').request(url('user=alice@example.com&audience=everyone'))).status).toBe(400)
+    expect((await appFor('user-admin').request(url('user=alice@example.com&source=email'))).status).toBe(400)
+    expect((await appFor('user-admin').request(url('user=alice@example.com&limit=0'))).status).toBe(400)
+    expect(getMemberMessages).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /workspaces/:id/member-activity/messages.csv (the export)', () => {
+  const url = (qs: string) => `/api/workspaces/workspace-1/member-activity/messages.csv?${qs}`
+
+  test('is gated the same way as the summary', async () => {
+    getAllMemberMessages.mockClear()
+    expect((await appFor('user-1').request(url('user=alice@example.com'))).status).toBe(403)
+    expect(getAllMemberMessages).not.toHaveBeenCalled()
+  })
+
+  test('streams a CSV with ids and quotes values containing commas or quotes', async () => {
+    getAllMemberMessages.mockClear()
+    const res = await appFor('user-admin').request(url('user=alice@example.com&source=team_chat'))
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/csv')
+    expect(res.headers.get('content-disposition')).toContain('attachment; filename="messages-user-1-all.csv"')
+
+    const lines = (await res.text()).split('\n')
+    expect(lines[0]).toBe('created_at,source,audience,conversation,thread_root_id,card,chat_session_id,message_id,text')
+    // The row carries the message id, and the text is escaped rather than splitting the row.
+    expect(lines[1]).toBe(
+      '2026-07-01T10:00:00.000Z,team_chat,person,shogo-dev,,,,msg-1,"can you take this, ""urgent"""',
+    )
+    expect(getAllMemberMessages.mock.calls[0][2]).toMatchObject({ source: 'team_chat' })
+  })
+})
+
