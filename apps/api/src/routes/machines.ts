@@ -34,6 +34,7 @@ import { isMachineTimeoutError } from '../lib/tunnel-errors'
 import { classifyAction, logRemoteAction } from './remote-audit'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 import { applyBatch, deleteMachineCopy, ownershipFailure } from '../lib/machine-sync/ingest'
+import { invalidateMachineWorkspaceIds } from '../lib/machine-workspace'
 import { PRIMARY_REGION, RAW_REGION_ID } from '../lib/region'
 
 /**
@@ -613,6 +614,11 @@ export function machineRoutes() {
         // was recreated): 409 tells it to send a snapshot, not that it broke.
         const detail = 'detail' in result ? result.detail : undefined
         return c.json({ error: { code: result.code, message: result.message, ...(detail ?? {}) } }, 409)
+      }
+      // A batch can tag a new machine workspace; background workers on this pod
+      // must skip it from the next tick, not after the id cache expires.
+      if (!result.disabled && result.applied > 0) {
+        invalidateMachineWorkspaceIds()
       }
       return c.json(result)
     } catch (err: any) {
