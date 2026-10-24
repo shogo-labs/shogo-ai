@@ -1,10 +1,14 @@
-import { createHash } from 'node:crypto'
+import { chainRequest, sha256, stableStringify, type ChainWriter } from './chain'
 
 const DATA_URL_RE = /^data:([^;,]+)(?:;[^,]*)?,([A-Za-z0-9+/=\s]+)$/i
 const SECRET_HEADER_RE = /^(authorization|x-api-key|api-key|cookie|set-cookie)$/i
 
 export interface NormalizedCapture {
   request: unknown
+  // The same request without a chain. v1 archives keep this shape, and a record
+  // whose chain nodes failed to upload falls back to it.
+  requestInline: unknown
+  chainWrites: Promise<void>[]
   response?: unknown
   source: 'desktop_proxy' | 'cloud_runtime' | 'api_key' | 'internal'
   provider: string
@@ -19,17 +23,6 @@ export interface NormalizedCapture {
 }
 
 type BlobWriter = (key: string, value: unknown) => void
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
-  const record = value as Record<string, unknown>
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`
-}
-
-function sha256(value: string | Buffer): string {
-  return createHash('sha256').update(value).digest('hex')
-}
 
 function collectMedia(value: unknown, media: NormalizedCapture['media']): unknown {
   if (typeof value === 'string') {
@@ -207,9 +200,17 @@ export function normalizeCapture(
   requestBody: unknown,
   responseBody: unknown,
   writeBlob: BlobWriter,
+  writeChainNode?: ChainWriter,
 ): NormalizedCapture {
   const media: NormalizedCapture['media'] = []
-  const request = deduplicateRequest(requestBody, (key, value) => writeBlob(key, value), media)
+  const requestInline = deduplicateRequest(requestBody, (key, value) => writeBlob(key, value), media)
+  let request = requestInline
+  let chainWrites: Promise<void>[] = []
+  if (writeChainNode && requestInline && typeof requestInline === 'object' && !Array.isArray(requestInline)) {
+    const chained = chainRequest(requestInline as Record<string, unknown>, metadata.workspaceId, writeChainNode)
+    request = chained.request
+    chainWrites = chained.writes
+  }
   const response = collectMedia(responseBody, media)
   const userText = extractUserText(requestBody)
   const assistantText = responseText(responseBody)
@@ -226,6 +227,8 @@ export function normalizeCapture(
 
   return {
     request,
+    requestInline,
+    chainWrites,
     response,
     source: sourceFor(metadata.authKind, metadata.client, metadata.internal),
     provider: metadata.provider || 'unknown',

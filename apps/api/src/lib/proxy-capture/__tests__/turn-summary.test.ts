@@ -93,4 +93,32 @@ describe('proxy turn summaries', () => {
       reasoningTokens: 2,
     })
   })
+
+  test('caps the stored text at what the analytics views read', async () => {
+    const prompt = `START-${'u'.repeat(1_400)}`
+    const answer = `${'a'.repeat(1_400)}-END`
+    const capture = await beginCapture({
+      tokenPayload: token,
+      endpoint: 'chat.completions',
+      requestBody: { model: 'gpt-5', messages: [{ role: 'user', content: prompt }] },
+      requestedModel: 'gpt-5',
+      resolvedModel: 'gpt-5',
+      provider: 'openai',
+      chatSessionId: 'session-caps',
+    })
+
+    capture!.recordResponse({
+      status: 200,
+      body: { choices: [{ message: { role: 'assistant', content: answer } }] },
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const write = state.upserts[0].create
+    // The view reads LEFT(userText, 1000) and RIGHT(assistantText, 1000).
+    expect(write.userText).toBe(prompt.slice(0, 1_000))
+    expect(write.userText.startsWith('START-')).toBe(true)
+    expect(write.assistantText).toBe(answer.slice(-1_000))
+    expect(write.assistantText.endsWith('-END')).toBe(true)
+    expect(write.archivePrefix).toStartWith('v2/region=')
+  })
 })

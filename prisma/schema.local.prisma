@@ -261,7 +261,6 @@ model ProxyTurn {
   @@unique([workspaceId, turnKey])
   @@index([workspaceId, lastAt])
   @@index([chatSessionId, lastAt])
-  @@index([source])
   @@map("proxy_turns")
 }
 
