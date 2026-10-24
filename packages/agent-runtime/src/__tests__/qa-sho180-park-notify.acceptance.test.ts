@@ -222,13 +222,19 @@ describe('a real repository that cannot be made durable', () => {
     for (let i = 0; i < 20; i++) await sync.flush()
     expect(sync.isParked).toBe(true)
 
+    // Backoff timers scheduled before the park can still fire while the loop
+    // runs, so snapshot the counter once the sync is parked rather than
+    // assuming it landed on exactly 20.
+    const failuresAtPark = sync.lifetimeFailures
+    expect(failuresAtPark).toBeGreaterThanOrEqual(20)
+
     writeFileSync(join(dir, 'later.txt'), 'a change made after the park\n')
     const headBefore = git(dir, 'rev-parse', 'HEAD').trim()
     for (let i = 0; i < 5; i++) sync.triggerSync(true)
     await new Promise((r) => setTimeout(r, 100))
     // Trigger after trigger inside the 10-minute window is skipped, so neither
     // the attempt counter nor HEAD moves.
-    expect(sync.lifetimeFailures).toBe(20)
+    expect(sync.lifetimeFailures).toBe(failuresAtPark)
     expect(git(dir, 'rev-parse', 'HEAD').trim()).toBe(headBefore)
 
     await sync.flushAndShutdown(200)
