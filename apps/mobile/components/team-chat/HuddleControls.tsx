@@ -10,6 +10,7 @@ import {
   LayoutGrid,
   Check,
   Link as LinkIcon,
+  Maximize2,
   MessageSquare,
   Mic,
   MicOff,
@@ -20,6 +21,7 @@ import {
   Presentation,
   Settings,
   Smile,
+  ThumbsUp,
   UserPlus,
   Video,
   VideoOff,
@@ -41,6 +43,35 @@ import {
   type HuddleCallState,
 } from '../../lib/huddle-call'
 import { ReactionPicker } from './HuddleReactions'
+import { cameraControl, handControl, leaveControl, micControl, reactionControl, type HuddleControlGlyph, type HuddleControlModel } from '../../lib/huddle-control-model'
+import type { PipIconName } from '../../lib/huddle-pip-icons'
+
+const CONTROL_ICONS: Record<PipIconName, typeof Mic> = {
+  mic: Mic,
+  micOff: MicOff,
+  video: Video,
+  videoOff: VideoOff,
+  hand: Hand,
+  smile: Smile,
+  thumbsUp: ThumbsUp,
+  maximize2: Maximize2,
+  phoneOff: PhoneOff,
+}
+
+const GLYPH_CLASS: Record<Exclude<HuddleControlGlyph, 'white'>, string> = {
+  foreground: 'text-foreground',
+  destructive: 'text-destructive',
+}
+
+/** Paints a glyph the same way the floating bar does, so both bars agree. */
+function glyphProps(glyph: HuddleControlGlyph) {
+  return glyph === 'white' ? { color: 'white' } : { className: GLYPH_CLASS[glyph] }
+}
+
+function ControlGlyph({ control, size }: { control: HuddleControlModel; size: number }) {
+  const Icon = CONTROL_ICONS[control.icon]
+  return <Icon size={size} {...glyphProps(control.glyph)} />
+}
 
 export function ControlButton({
   label,
@@ -101,6 +132,11 @@ export function HuddleControls({ call, compact, onInvite, onSettings, onCopyLink
   const size = compact ? 32 : 40
   const icon = compact ? 15 : 18
   const white = 'white'
+  const mic = micControl(call.muted)
+  const camera = cameraControl(call.camera)
+  const reaction = reactionControl(reactions)
+  const hand = handControl(call.handRaised)
+  const leave = leaveControl()
 
   return (
     <View className="relative items-center" testID="huddle-controls">
@@ -115,19 +151,19 @@ export function HuddleControls({ call, compact, onInvite, onSettings, onCopyLink
             <Volume2 size={icon} color={white} />
           </ControlButton>
         ) : null}
-        <ControlButton label={call.muted ? 'Unmute' : 'Mute'} size={size} onPress={() => void setHuddleMuted(!call.muted)}>
-          {call.muted ? <MicOff size={icon} className="text-destructive" /> : <Mic size={icon} className="text-foreground" />}
+        <ControlButton label={mic.label} size={size} tone={mic.tone} active={mic.active} onPress={() => void setHuddleMuted(!call.muted)}>
+          <ControlGlyph control={mic} size={icon} />
         </ControlButton>
         {huddleVideoSupported ? (
-          <ControlButton label={call.camera ? 'Turn off camera' : 'Turn on camera'} size={size} active={call.camera} onPress={() => void setHuddleCamera(!call.camera)}>
-            {call.camera ? <Video size={icon} color={white} /> : <VideoOff size={icon} className="text-foreground" />}
+          <ControlButton label={camera.label} size={size} tone={camera.tone} active={camera.active} onPress={() => void setHuddleCamera(!call.camera)}>
+            <ControlGlyph control={camera} size={icon} />
           </ControlButton>
         ) : null}
-        <ControlButton label="Send a reaction" size={size} active={reactions} onPress={() => setReactions((v) => !v)}>
-          <Smile size={icon} color={reactions ? white : undefined} className={reactions ? undefined : 'text-foreground'} />
+        <ControlButton label={reaction.label} size={size} tone={reaction.tone} active={reaction.active} onPress={() => setReactions((v) => !v)}>
+          <ControlGlyph control={reaction} size={icon} />
         </ControlButton>
-        <ControlButton label={call.handRaised ? 'Lower hand' : 'Raise hand'} size={size} active={call.handRaised} onPress={() => void setHuddleHand(!call.handRaised)}>
-          <Hand size={icon} color={call.handRaised ? white : undefined} className={call.handRaised ? undefined : 'text-foreground'} />
+        <ControlButton label={hand.label} size={size} tone={hand.tone} active={hand.active} onPress={() => void setHuddleHand(!call.handRaised)}>
+          <ControlGlyph control={hand} size={icon} />
         </ControlButton>
         {!compact && screenShareSupported ? (
           <ControlButton label={call.screen ? 'Stop sharing' : 'Share screen'} size={size} active={call.screen} onPress={() => void setHuddleScreenShare(!call.screen)}>
@@ -194,8 +230,8 @@ export function HuddleControls({ call, compact, onInvite, onSettings, onCopyLink
             <Settings size={icon} className="text-foreground" />
           </ControlButton>
         ) : null}
-        <ControlButton label="Leave huddle" size={size} tone="danger" onPress={() => void leaveHuddleCall()}>
-          <PhoneOff size={icon} color={white} />
+        <ControlButton label={leave.label} size={size} tone={leave.tone} onPress={() => void leaveHuddleCall()}>
+          <ControlGlyph control={leave} size={icon} />
         </ControlButton>
       </View>
     </View>
