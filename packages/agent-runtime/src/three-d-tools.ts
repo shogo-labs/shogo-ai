@@ -236,7 +236,7 @@ function errorFromBody(status: number, body: string): string {
     // Not JSON — fall through.
   }
   if (status === 402) return 'This project is out of usage credit, so no 3D model was generated. Add credit and try again.'
-  if (status === 503) return '3D generation is not configured on this server yet (no Tripo key).'
+  if (status === 503) return '3D generation is temporarily unavailable (HTTP 503). Try again in a minute.'
   return `3D generation failed (HTTP ${status}).`
 }
 
