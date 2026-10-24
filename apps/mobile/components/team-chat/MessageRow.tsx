@@ -10,7 +10,7 @@ import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text
 import { createPortal } from 'react-dom'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
-import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, ExternalLink, FileText, Headphones, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, NotebookPen, Pencil, Pin, SmilePlus, Square, Trash2, UserPlus } from 'lucide-react-native'
+import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, Headphones, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, NotebookPen, Pencil, Pin, SmilePlus, Trash2, UserPlus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import type { MentionTarget } from '../chat/file-links'
@@ -35,7 +35,7 @@ import { approvalOf, audienceQuestionOf, connectRequestsOf, pollOf, isAskedOf, m
 import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { ImagePreviewModal } from '../chat/ImagePreviewModal'
-import { AgentWorkedFor, AgentWorkingStatus, AgentQueueStatus } from './AgentWork'
+import { AgentWorkedFor } from './AgentWork'
 import { markdownToPlainText, renderMentions, renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
 import { isVoiceNote } from '../../lib/voice-note'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
@@ -99,7 +99,6 @@ export interface MessageRowProps {
   onReact: (message: ChatMessage, emoji: string, on?: boolean) => void
   onEdit: (message: ChatMessage, text: string) => Promise<void>
   onDelete: (message: ChatMessage) => void
-  onStopAgent: (message: ChatMessage) => void
   onRetry: (message: ChatMessage) => void
   onDiscard: (message: ChatMessage) => void
   onOpenSession?: (message: ChatMessage) => void
@@ -468,9 +467,6 @@ function MessageRowImpl(props: MessageRowProps) {
     setProfileOpen(true)
   }, [message.authorType, message.authorUserId, props.onOpenProfile])
   const running = message.authorType === 'agent' && message.agentStatus === 'running'
-  // A reply created while there was no free slot carries `blocks.queued` until it
-  // starts, so its place in line survives a reload.
-  const queuedSince = !!(message.blocks as { queued?: { since?: string } } | null | undefined)?.queued
   const rawBody = running ? streaming?.text ?? '' : message.text
   // A link to another message renders as a quote of it and is taken out of the
   // text; the quote itself is fetched per viewer and never stored on the row.
@@ -491,29 +487,6 @@ function MessageRowImpl(props: MessageRowProps) {
   const kind = message.authorType === 'agent' ? messageKind(message) : null
   const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
   const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!props.onOpenSession
-  // Open and Stop live in the header beside the AGENT tag and time, never beside the streamed work.
-  const runningControls = running ? (
-    <>
-      {canOpenSession ? (
-        <Pressable
-          onPress={() => props.onOpenSession!(message)}
-          accessibilityLabel="Open the session this agent is working in"
-          className="flex-row items-center gap-1 rounded-md border border-border px-2 py-0.5 active:bg-muted"
-        >
-          <ExternalLink size={10} className="text-muted-foreground" />
-          <Text className="text-[11px] text-muted-foreground">Open session</Text>
-        </Pressable>
-      ) : null}
-      <Pressable
-        onPress={() => props.onStopAgent(message)}
-        accessibilityLabel="Stop agent"
-        className="flex-row items-center gap-1 rounded-md border border-border px-2 py-0.5 active:bg-muted"
-      >
-        <Square size={10} className="text-muted-foreground" />
-        <Text className="text-[11px] text-muted-foreground">Stop</Text>
-      </Pressable>
-    </>
-  ) : null
   const work = !running && message.authorType === 'agent' ? workOf(message) : null
   const connectRequests = !running && message.authorType === 'agent' ? connectRequestsOf(message) : []
   const [continuedConnects, setContinuedConnects] = useState<string[]>([])
@@ -860,14 +833,8 @@ function MessageRowImpl(props: MessageRowProps) {
             <TimeTooltip iso={message.createdAt}>
               {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
             </TimeTooltip>
-            {runningControls}
           </View>
         )}
-
-        {/* A grouped reply has no header, so a running one gets a header line carrying only its controls. */}
-        {grouped && runningControls ? (
-          <View className="flex-row items-baseline gap-2">{runningControls}</View>
-        ) : null}
 
         {message.pinned && !deleted && (
           <View className="flex-row items-center gap-1">
@@ -992,16 +959,12 @@ function MessageRowImpl(props: MessageRowProps) {
             {!deleted && <MessageQuoteCards quotes={quotes} names={names} />}
             {!running && <UnfurlCards message={message} />}
             {running && (
-              // Display only: navigation is the header's Open session button, so the status takes no hover or press.
-              <View className="mt-1" pointerEvents="none" testID="agent-working-status">
-                {streaming?.waiting ? (
-                  <AgentQueueStatus waiting={streaming.waiting} />
-                ) : streaming?.queue || queuedSince ? (
-                  <AgentQueueStatus position={streaming?.queue?.position ?? null} />
-                ) : (
-                  <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} />
-                )}
-              </View>
+              // A run in progress is a marker, not a report: the live tool
+              // status and Stop/Open live in the dock above the composer, so
+              // this row only keeps its place until the reply lands in it.
+              <Text className="mt-0.5 text-sm text-muted-foreground" testID="running-reply-marker">
+                Replying…
+              </Text>
             )}
             {message.authorType === 'agent' && message.agentStatus === 'error' && (
               <View className="mt-1 flex-row items-center gap-1">

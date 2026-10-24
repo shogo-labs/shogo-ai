@@ -2,28 +2,27 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
- * Who is "typing" in a channel or thread: people who are typing right now,
- * plus agents whose reply is still running. Both render through one label.
+ * Who is "typing" in a channel or thread: people who are typing right now, and
+ * nothing else. A running agent is not typing — it gets a row in the
+ * running-agents dock above the composer (`runningAgentReplies`), so the line
+ * under the list and the dock never report the same run twice.
  */
 import type { ChatMessage } from './team-chat-api'
 
-/** A person or agent shown in the typing indicator. `id` is the identity used for deduplication. */
+/** A person shown in the typing indicator. `id` is the identity used for deduplication. */
 export interface Typist {
   id: string
   name: string
 }
 
 /**
- * The running agents in a timeline, one entry per agent. Two running replies
- * from the same agent produce the same id, so they are listed once.
+ * The agent replies still running in a timeline, oldest first — one entry per
+ * reply, so two parallel runs of the same agent are two rows. The dock above
+ * the composer renders these: they stay reachable there after later messages
+ * have pushed their own row up the thread.
  */
-export function runningAgentTypists(messages: ChatMessage[]): Typist[] {
-  return messages
-    .filter((m) => m.authorType === 'agent' && m.agentStatus === 'running')
-    .map((m) => ({
-      id: `agent:${m.authorAgent?.projectId ?? m.id}`,
-      name: m.authorAgent?.name ?? 'Agent',
-    }))
+export function runningAgentReplies(messages: ChatMessage[]): ChatMessage[] {
+  return messages.filter((m) => m.authorType === 'agent' && m.agentStatus === 'running')
 }
 
 /** Drops repeat identities, keeping the first-seen order. */

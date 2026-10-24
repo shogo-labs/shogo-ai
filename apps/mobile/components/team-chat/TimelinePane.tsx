@@ -13,7 +13,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import type { MentionTarget } from '../chat/file-links'
 import { mentionNames, newestReadableSeq } from '../../lib/team-chat-state'
-import { runningAgentTypists, typingLabel } from '../../lib/team-chat-typing'
+import { runningAgentReplies, typingLabel } from '../../lib/team-chat-typing'
 import { useComposerColumnStyle } from '../chat/composer/useComposerColumnStyle'
 import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive, matchesActivityFilters, type ActivityFilterState } from '../../lib/activity-channel-filters'
 import { TIMELINE_SOFT_LIMIT, useChannelDirectory, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
@@ -24,6 +24,7 @@ import { dismissMentionNudgeForever, getMentionNudgeDismissed } from '../../lib/
 import { Breadcrumb } from './SessionBreadcrumb'
 import { ActivityFilterPicker } from './ActivityFilterPicker'
 import { MessageList } from './MessageList'
+import { RunningAgentsDock } from './RunningAgentsDock'
 import { Composer, type ComposerHandle } from './Composer'
 import { MentionNudgeCard } from './MentionNudgeCard'
 import { EphemeralNotice } from './EphemeralNotice'
@@ -360,7 +361,20 @@ export function TimelinePane(props: TimelinePaneProps) {
   const dragging = useFileDrop(rootRef, showComposer && canPostHere, (files) => composerRef.current?.addFiles(files))
 
   const crumbs = threadCrumbs({ kind: conversation.kind, label: conversationTitle(conversation) })
-  const typingText = cardNotice ?? typingLabel([...typing, ...runningAgentTypists(timeline.state.messages)])
+  // Running agents are the dock's business; this line is only ever people.
+  const typingText = cardNotice ?? typingLabel(typing)
+  const runningReplies = useMemo(() => runningAgentReplies(timeline.state.messages), [timeline.state.messages])
+  const runningDock = (
+    <RunningAgentsDock
+      replies={runningReplies}
+      streaming={timeline.state.streaming}
+      onJump={setHighlight}
+      onStop={onStop}
+      onOpenSession={props.onOpenSession}
+      workspaceId={workspaceId}
+      floating={floating}
+    />
+  )
   const listInsets = floating
     ? { top: (showActivityFilters ? 0 : topInset) + threadHeaderHeight, bottom: footerHeight }
     : undefined
@@ -383,7 +397,6 @@ export function TimelinePane(props: TimelinePaneProps) {
       onReact={onReact}
       onEdit={onEdit}
       onDelete={onDelete}
-      onStopAgent={onStop}
       onRetry={timeline.retry}
       onDiscard={timeline.discard}
       onOpenSession={props.onOpenSession}
@@ -544,6 +557,11 @@ export function TimelinePane(props: TimelinePaneProps) {
           style={{ marginTop: -footerHeight, paddingBottom: chrome.bottom }}
           testID="floating-composer"
         >
+          {runningReplies.length ? (
+            <View pointerEvents="box-none" className="mb-2" style={typingColumnStyle}>
+              {runningDock}
+            </View>
+          ) : null}
           {typingText ? (
             <View pointerEvents="box-none" className="mb-2" style={typingColumnStyle}>
               <GlassChip className="self-start px-3 py-1">
@@ -599,6 +617,9 @@ export function TimelinePane(props: TimelinePaneProps) {
       ) : (
         list
       )}
+      <View style={typingColumnStyle}>
+        {runningDock}
+      </View>
       <View className="h-5 justify-center" style={typingColumnStyle}>
         {typingText && <Text className="text-xs text-muted-foreground">{typingText}</Text>}
       </View>
