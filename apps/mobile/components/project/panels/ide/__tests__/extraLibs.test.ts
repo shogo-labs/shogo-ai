@@ -33,9 +33,9 @@ describe("extraLibs", () => {
     __resetExtraLibsForTest();
   });
 
-  test("registers every entry on both typescript and javascript defaults", () => {
+  test("registers every entry on both typescript and javascript defaults", async () => {
     const { monaco, tsAdd, jsAdd } = makeMockMonaco();
-    setupExtraLibs(monaco);
+    await setupExtraLibs(monaco);
     expect(tsAdd).toHaveBeenCalledTimes(EXTRA_LIBS.length);
     expect(jsAdd).toHaveBeenCalledTimes(EXTRA_LIBS.length);
     for (const lib of EXTRA_LIBS) {
@@ -44,20 +44,18 @@ describe("extraLibs", () => {
     }
   });
 
-  test("is idempotent across multiple calls", () => {
+  test("is idempotent across multiple calls", async () => {
     const { monaco, tsAdd } = makeMockMonaco();
-    setupExtraLibs(monaco);
-    setupExtraLibs(monaco);
-    setupExtraLibs(monaco);
+    await Promise.all([setupExtraLibs(monaco), setupExtraLibs(monaco), setupExtraLibs(monaco)]);
     expect(tsAdd).toHaveBeenCalledTimes(EXTRA_LIBS.length);
   });
 
-  test("__resetExtraLibsForTest re-arms the loader", () => {
+  test("__resetExtraLibsForTest re-arms the loader", async () => {
     const a = makeMockMonaco();
-    setupExtraLibs(a.monaco);
+    await setupExtraLibs(a.monaco);
     __resetExtraLibsForTest();
     const b = makeMockMonaco();
-    setupExtraLibs(b.monaco);
+    await setupExtraLibs(b.monaco);
     expect(b.tsAdd).toHaveBeenCalledTimes(EXTRA_LIBS.length);
   });
 

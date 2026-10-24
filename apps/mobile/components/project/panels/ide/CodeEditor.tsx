@@ -148,7 +148,9 @@ export function configureMonaco(monaco: MonacoNs) {
 
   // Load real @types/react, @types/react-dom, csstype, prop-types
   // declaration files as extraLibs so React autocomplete + hover work.
-  setupExtraLibs(monaco, { defer: true });
+  setupExtraLibs(monaco, { defer: true }).catch((err) => {
+    console.warn("[CodeEditor] extraLibs failed to load", err);
+  });
 
   // Register the "Fix with Shogo" hover button + quick-fix code action for
   // every language Monaco knows about. Idempotent across split editors.
