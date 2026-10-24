@@ -30,7 +30,7 @@ describe('proxyTerminalSessionsToPod', () => {
     )
 
     expect(seen.length).toBe(1)
-    expect(seen[0].url).toBe('http://proj-abc.pod.svc/terminal/sessions')
+    expect(seen[0].url).toBe('http://proj-abc.pod.svc/terminal/sessions?project=proj-abc')
     expect(seen[0].init.method).toBe('POST')
     expect(seen[0].init.headers['x-runtime-token']).toBe('token-proj-abc')
     expect(seen[0].init.headers['content-type']).toBe('application/json')
@@ -70,7 +70,7 @@ describe('proxyTerminalSessionsToPod', () => {
       makeDeps({ fetchImpl }),
       { projectId: 'proj-abc', method: 'DELETE', pathSuffix: '/sess-1', body: undefined, contentType: undefined },
     )
-    expect(url).toBe('http://proj-abc.pod.svc/terminal/sessions/sess-1')
+    expect(url).toBe('http://proj-abc.pod.svc/terminal/sessions/sess-1?project=proj-abc')
   })
 
   test('invalid projectId short-circuits to 400 before fetch', async () => {
@@ -150,6 +150,6 @@ describe('proxyTerminalSessionsToPod', () => {
       makeDeps({ resolvePodUrl: async () => 'http://x.svc/', fetchImpl }),
       { projectId: 'proj-abc', method: 'GET', pathSuffix: '', body: undefined, contentType: undefined },
     )
-    expect(url).toBe('http://x.svc/terminal/sessions')
+    expect(url).toBe('http://x.svc/terminal/sessions?project=proj-abc')
   })
 })

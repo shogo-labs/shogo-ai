@@ -83,6 +83,16 @@ function readSavedUrl(settings: unknown): string | null {
   return typeof v === 'string' && v ? v : null
 }
 
+function portOf(url: string): number | null {
+  try {
+    const parsed = new URL(url)
+    if (parsed.port) return Number(parsed.port)
+    return parsed.protocol === 'https:' ? 443 : 80
+  } catch {
+    return null
+  }
+}
+
 interface DetectedSnapshot {
   url: string
   sessionId: string
@@ -118,9 +128,10 @@ async function fetchDetected(projectId: string): Promise<DetectedPayload | null>
       try { return new URL(runtime.url ?? 'http://localhost').hostname || 'localhost' } catch { return 'localhost' }
     })()
     const base = `http://${host}:${runtime.agentPort}`
-    const res = await fetch(`${base}/preview/detected-urls`, {
-      signal: AbortSignal.timeout(2000),
-    })
+    const res = await fetch(
+      `${base}/preview/detected-urls?project=${encodeURIComponent(projectId)}`,
+      { signal: AbortSignal.timeout(2000) },
+    )
     if (!res.ok) return null
     const body = (await res.json()) as DetectedPayload
     if (!body || !Array.isArray(body.detections)) return null
@@ -177,23 +188,42 @@ export function externalPreviewRoutes() {
     //      linked folders — covers external-folder projects, servers
     //      started in Cursor / iTerm, docker-compose, anything.
     //
-    // We run both in parallel and prefer the observer when present,
-    // because it carries liveness (a port that disappeared from the
-    // scan is gone from the result), whereas the PTY buffer can hold
-    // stale URLs after a crashed server.
+    // We run both in parallel; which one wins is decided below.
     const [detected, attributedPorts] = await Promise.all([
       fetchDetected(projectId),
       fetchAttributedPorts(projectId),
     ])
 
+    // Both sources feed `detectedUrl`, and the choice has to be stable: the
+    // desktop Preview tab re-opens whenever this string goes null → non-null
+    // (SHO-200), so a ranking that changes from poll to poll is a user-visible
+    // bug, not a cosmetic one.
+    //
+    //   1. A PTY banner is the dev server's own claim about where it listens, so
+    //      it outranks the observer — but only while the observer still sees a
+    //      listener on that port. A banner left over from a crashed server must
+    //      never win over a live one.
+    //   2. Otherwise the observer's pick, which is sticky per project (see
+    //      `LocalPortObserver.attributedPorts`).
+    //
+    // `savedUrl` deliberately stays out of this: it is the user's manual
+    // override, returned in its own field, and the client already prefers it
+    // (`externalSavedUrl ?? externalDetectedUrl`). Echoing it here would report
+    // a *detection* for a server that is not running.
     const observerUrl = attributedPorts[0]?.url ?? null
     const ptyUrl = detected?.mostRecent?.url ?? null
+    const ptyPort = ptyUrl ? portOf(ptyUrl) : null
+    const ptyLive =
+      !!ptyUrl &&
+      ptyPort !== null &&
+      attributedPorts.some((p) => portOf(p.url) === ptyPort)
+    const detectedUrl = (ptyLive ? ptyUrl : null) ?? observerUrl ?? ptyUrl
 
     return c.json({
       projectId,
       workingMode: project.workingMode ?? 'managed',
       savedUrl,
-      detectedUrl: observerUrl ?? ptyUrl,
+      detectedUrl,
       detections: detected?.detections ?? [],
       attributedPorts,
     })

@@ -103,6 +103,11 @@ import {
   isApiGateLatched,
   latchApiGate,
 } from "../../../../lib/preview-gate";
+import {
+  decideAutoOpenPreview,
+  previewAutoOpenTracker,
+  previewTabUserPickKey,
+} from "../../../../lib/preview-auto-open";
 import { ChatPanel } from "../../../../components/chat/ChatPanel";
 import { TaskThreadPaneHost } from "../../../../components/chat/task/TaskThreadPaneHost";
 import { PlanStreamProvider } from "../../../../components/chat/PlanStreamContext";
@@ -1916,6 +1921,16 @@ export default observer(function ProjectLayout() {
   const [previewTabRestoredFor, setPreviewTabRestoredFor] = useState<
     string | null
   >(null);
+  // Projects whose tab the user has chosen themselves — this session, and (via
+  // `PREVIEW_TAB_USER_PICK_PREFIX`) every session after it. The folder-project
+  // Preview auto-open is off for these: user intent wins over a dev server
+  // coming up (SHO-200).
+  const previewTabUserPickedRef = useRef<Set<string>>(new Set());
+  // Set once the persisted user-pick flag has been read for this project, so
+  // the auto-open can't fire before it knows (S5 — a late read must not be
+  // clobbered, and a reload must not pop).
+  const [previewTabUserPickLoadedFor, setPreviewTabUserPickLoadedFor] =
+    useState<string | null>(null);
 
   // Sidebar "open project" tab intent. Clicking a project name in the sidebar
   // deep-links a `tab` param (canvas / chat-fullscreen / external-preview). It
@@ -1964,6 +1979,13 @@ export default observer(function ProjectLayout() {
     appliedTabIntentRef.current = token;
     previewTabInitForRef.current = projectId;
     setPreviewTabRestoredFor(projectId);
+    setPreviewTabUserPickLoadedFor(projectId);
+    // A landing-tab deep link is an explicit choice of surface; it also means
+    // the folder-project Preview auto-open must never override it.
+    previewTabUserPickedRef.current.add(projectId);
+    AsyncStorage.setItem(previewTabUserPickKey(projectId), requested).catch(
+      () => {}
+    );
     const nativePhoneChat = nativePhone;
     const landingTab =
       requested === "canvas" ||
@@ -2002,8 +2024,16 @@ export default observer(function ProjectLayout() {
       );
       return;
     }
-    AsyncStorage.getItem(`${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`)
-      .then((saved) => {
+    // Read the persisted "user chose this project's tab" flag alongside the
+    // saved tab. When it is set, the folder-project Preview auto-open is off
+    // for good — a reload must not pop Preview over the tab the user left the
+    // project on (SHO-200 S5).
+    Promise.all([
+      AsyncStorage.getItem(`${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`),
+      AsyncStorage.getItem(previewTabUserPickKey(projectId)),
+    ])
+      .then(([saved, userPicked]) => {
+        if (userPicked) previewTabUserPickedRef.current.add(projectId);
         // Legacy values written before the v1 dynamic-app -> canvas tab rename
         // (chore/remove-canvas-v1) get normalized on read so existing users don't
         // land on an unknown tab and fall back to the default.
@@ -2021,41 +2051,51 @@ export default observer(function ProjectLayout() {
         if (normalized) setPreviewTab(normalized);
       })
       .catch(() => {})
-      .finally(() => setPreviewTabRestoredFor(projectId));
+      .finally(() => {
+        setPreviewTabRestoredFor(projectId);
+        setPreviewTabUserPickLoadedFor(projectId);
+      });
     // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
     AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(
       () => {}
     );
   }, [projectId, project, isExternalProject, phoneLayout, nativePhone, isWide]);
 
-  // Folder-linked projects: when a dev server for the folder starts (seen
-  // by the API's port scan or the agent terminal), bring the Preview tab
-  // forward if it isn't already showing. Fires once per detected URL; the
-  // key resets when the server goes away so a restart re-opens it.
-  const autoOpenedPreviewKeyRef = useRef<string | null>(null);
+  // Folder-linked projects: when a dev server for the folder starts, bring the
+  // Preview tab forward — once. The detected URL flaps for reasons that have
+  // nothing to do with the user (a fixture server in the folder, one missed
+  // HTTP probe, a second listener, the dev server restarting), so the policy in
+  // `lib/preview-auto-open.ts` opens only on a real off→on transition, at most
+  // once per project per page session, and never after the user has picked a
+  // tab for this project. The detected URL itself is still tracked by the
+  // caller (address bar, empty-state chip) — only the tab switch is gated.
   useEffect(() => {
-    if (!projectId || !isExternalProject || !externalDetectedUrl) {
-      autoOpenedPreviewKeyRef.current = null;
-      return;
-    }
-    if (previewTabRestoredFor !== projectId) return;
-    if (phoneLayout || isIdeChatEmbed) return;
-    if (
-      Platform.OS !== "web" ||
-      typeof window === "undefined" ||
-      !(window as any).shogoDesktop?.preview
-    ) {
-      return;
-    }
-    const key = `${projectId}|${externalDetectedUrl}`;
-    if (autoOpenedPreviewKeyRef.current === key) return;
-    autoOpenedPreviewKeyRef.current = key;
+    if (previewTabUserPickLoadedFor !== projectId) return;
+    const decision = decideAutoOpenPreview({
+      projectId,
+      isExternalProject,
+      phoneLayout,
+      isIdeChatEmbed,
+      isDesktopShell:
+        Platform.OS === "web" &&
+        typeof window !== "undefined" &&
+        !!(window as any).shogoDesktop?.preview,
+      restoredFor: previewTabRestoredFor,
+      userPicked: projectId
+        ? previewTabUserPickedRef.current.has(projectId)
+        : false,
+      detectedUrl: externalDetectedUrl,
+      now: Date.now(),
+      tracker: previewAutoOpenTracker,
+    });
+    if (!decision.open) return;
     if (previewTab !== "external-preview") setPreviewTab("external-preview");
   }, [
     projectId,
     isExternalProject,
     externalDetectedUrl,
     previewTabRestoredFor,
+    previewTabUserPickLoadedFor,
     phoneLayout,
     isIdeChatEmbed,
     previewTab,
@@ -2253,6 +2293,14 @@ export default observer(function ProjectLayout() {
         }
       }
       setPreviewTab(tabId);
+      // An explicit tab choice disables the folder-project Preview auto-open
+      // for this project — this session and every later one (SHO-200).
+      if (projectId) {
+        previewTabUserPickedRef.current.add(projectId);
+        AsyncStorage.setItem(previewTabUserPickKey(projectId), tabId).catch(
+          () => {}
+        );
+      }
       // Keep the sidebar landing-tab URL in sync. Opening this project while
       // it was chat-only left `?tab=chat-fullscreen` in the URL; if that
       // intent effect re-fires it would yank us back off Canvas.
@@ -2260,7 +2308,7 @@ export default observer(function ProjectLayout() {
         router.setParams({ tab: tabId } as any);
       }
     },
-    [activeMode, canvasEnabled, params.tab, router, updateProjectSettings]
+    [activeMode, canvasEnabled, params.tab, projectId, router, updateProjectSettings]
   );
 
   useEffect(() => {
