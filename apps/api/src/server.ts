@@ -149,7 +149,12 @@ import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { publishedSiteSweepRoutes } from './routes/internal-published-sites'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
-import { DOCKER_CLASS_SETTING_KEY, setDockerClassOverride, loadDockerClassOverride } from './lib/runtime-class-setting'
+import {
+  DOCKER_CLASS_SETTING_KEY,
+  setDockerClassOverride,
+  loadDockerClassOverride,
+  startDockerClassOverrideRefresh,
+} from './lib/runtime-class-setting'
 import {
   WORKSPACE_BUDGET_SETTING_KEY,
   setWorkspaceBudgetOverride,
@@ -9636,6 +9641,7 @@ await (async () => {
 await loadSandboxExecOverride()
 // Load the Docker-capable project class gate (see apps/api/src/lib/runtime-class-setting.ts).
 await loadDockerClassOverride()
+startDockerClassOverrideRefresh()
 await loadWorkspaceBudgetOverride()
 
 // Self-provision in-process AI proxy credentials so the API server can reach
