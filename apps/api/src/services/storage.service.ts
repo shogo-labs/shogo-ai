@@ -11,6 +11,7 @@ import { prisma } from '../lib/prisma'
 import { listAllObjectsInS3 } from '../lib/s3'
 import { INSTANCE_SIZES, type InstanceSizeName } from '../config/instance-sizes'
 import { withGlobalJobLock } from '../lib/global-job-lock'
+import { homeRegionWorkspaceWhere } from '../lib/region'
 
 const S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET || 'shogo-workspaces'
 
@@ -196,7 +197,13 @@ export async function recalculateAllStorageUsage(): Promise<StorageRecalcOutcome
   const lock = await withGlobalJobLock<StorageRecalcOutcome>(
     'storage-recalculate-all',
     async () => {
+      // The advisory lock is per database, so it never stopped US and EU from
+      // each sweeping every workspace (PERF-8). Each region recalculates only
+      // the workspaces it is home for, and judges freshness on those alone:
+      // a peer's pass over its own slice says nothing about ours.
+      const home = homeRegionWorkspaceWhere()
       const { _max } = await prisma.storageUsage.aggregate({
+        ...(home ? { where: { workspace: home } } : {}),
         _max: { lastCalculatedAt: true },
       })
       const lastCalculatedAt = _max.lastCalculatedAt ?? null
@@ -213,6 +220,7 @@ export async function recalculateAllStorageUsage(): Promise<StorageRecalcOutcome
       }
 
       const workspaces = await prisma.workspace.findMany({
+        ...(home ? { where: home } : {}),
         select: { id: true },
       })
 

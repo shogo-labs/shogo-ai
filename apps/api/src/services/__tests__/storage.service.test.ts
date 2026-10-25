@@ -17,6 +17,8 @@ interface PrismaState {
   workspaceFindManyCalls: number
   projectFindManyCalls: number
   aggregateCalls: number
+  workspaceFindManyArgs: any[]
+  aggregateArgs: any[]
 }
 
 const ps: PrismaState = {
@@ -31,6 +33,8 @@ const ps: PrismaState = {
   workspaceFindManyCalls: 0,
   projectFindManyCalls: 0,
   aggregateCalls: 0,
+  workspaceFindManyArgs: [],
+  aggregateArgs: [],
 }
 
 mock.module('@shogo/shared-runtime', () => ({
@@ -46,8 +50,9 @@ mock.module('../../lib/prisma', () => ({
         if (ps.workspaceThrow) throw ps.workspaceThrow
         return ps.workspace
       },
-      findMany: async (_args: any) => {
+      findMany: async (args: any) => {
         ps.workspaceFindManyCalls++
+        ps.workspaceFindManyArgs.push(args)
         return ps.workspaces
       },
     },
@@ -58,8 +63,9 @@ mock.module('../../lib/prisma', () => ({
       },
     },
     storageUsage: {
-      aggregate: async (_args: any) => {
+      aggregate: async (args: any) => {
         ps.aggregateCalls++
+        ps.aggregateArgs.push(args)
         return { _max: { lastCalculatedAt: ps.lastCalculatedAtMax } }
       },
       upsert: async (args: any) => {
@@ -105,6 +111,13 @@ mock.module('../../lib/s3', () => ({
   },
 }))
 
+const regionState: { home: any } = { home: null }
+const realRegion = await import('../../lib/region')
+mock.module('../../lib/region', () => ({
+  ...realRegion,
+  homeRegionWorkspaceWhere: () => regionState.home,
+}))
+
 const {
   STORAGE_RECALC_MIN_GAP_MS,
   calculateWorkspaceStorageUsage,
@@ -128,6 +141,9 @@ beforeEach(() => {
   ps.workspaceFindManyCalls = 0
   ps.projectFindManyCalls = 0
   ps.aggregateCalls = 0
+  ps.workspaceFindManyArgs = []
+  ps.aggregateArgs = []
+  regionState.home = null
   s3.byPrefix = new Map()
   s3.errorByPrefix = new Map()
   s3.listCalls = 0
@@ -408,5 +424,30 @@ describe('recalculateAllStorageUsage freshness gate', () => {
     expect(ps.projectFindManyCalls).toBe(0)
     expect(s3.listCalls).toBe(0)
     expect(ps.upsertCalls).toHaveLength(0)
+  })
+})
+
+describe('recalculateAllStorageUsage home-region partition (PERF-8)', () => {
+  it('single-region: sweeps every workspace with no filter', async () => {
+    ps.workspaces = [{ id: 'ws-1' }]
+    await recalculateAllStorageUsage()
+    expect(ps.workspaceFindManyArgs[0].where).toBeUndefined()
+    expect(ps.aggregateArgs[0].where).toBeUndefined()
+  })
+
+  it('multi-region: sweeps and judges freshness on this region’s home workspaces only', async () => {
+    regionState.home = { homeRegion: 'eu-frankfurt-1' }
+    ps.workspaces = [{ id: 'ws-eu' }]
+    const out = await recalculateAllStorageUsage()
+    expect(out).toEqual({ status: 'ran', workspaces: 1 })
+    expect(ps.workspaceFindManyArgs[0].where).toEqual({ homeRegion: 'eu-frankfurt-1' })
+    expect(ps.aggregateArgs[0].where).toEqual({ workspace: { homeRegion: 'eu-frankfurt-1' } })
+  })
+
+  it('primary region also owns legacy rows with no homeRegion', async () => {
+    regionState.home = { OR: [{ homeRegion: 'us-ashburn-1' }, { homeRegion: null }] }
+    ps.workspaces = []
+    await recalculateAllStorageUsage()
+    expect(ps.workspaceFindManyArgs[0].where).toEqual(regionState.home)
   })
 })

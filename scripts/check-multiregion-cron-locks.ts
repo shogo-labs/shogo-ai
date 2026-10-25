@@ -560,7 +560,7 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     key: 'StorageUsage.workspaceId',
     category: 'cron_locked',
     reason:
-      'Written by recalculateAllStorageUsage (boot + 6h cron) and only by that cron. Wrapped in withGlobalJobLock.',
+      'Written by recalculateAllStorageUsage (boot + 6h cron) and only by that cron. Wrapped in withGlobalJobLock (de-dupes pods within a region) and filtered to homeRegionWorkspaceWhere() (PERF-8), so each region upserts only its own home workspaces and the workspaceId unique never collides across regions.',
     writer: 'storage-recalculate-all',
   },
   {
