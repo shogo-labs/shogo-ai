@@ -84,19 +84,26 @@ function reportPaintMarks(label: string, marks: PaintMarks): void {
   )
 }
 
-/** Holds a request open for `ms` without answering it. */
+/**
+ * Parks every matching request until the returned `release()` runs, so a cold
+ * Metro compile on a loaded runner cannot answer it before the assertions do.
+ */
 async function holdRoute(
   page: Page,
   pattern: string,
-  ms: number,
   state: { pending: boolean },
-): Promise<void> {
+): Promise<() => void> {
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = () => resolve()
+  })
   await page.route(pattern, async (route) => {
     state.pending = true
-    await new Promise((resolve) => setTimeout(resolve, ms))
+    await held
     state.pending = false
     await route.continue().catch(() => {})
   })
+  return release
 }
 
 test.describe("New project paints the builder on the first frame", () => {
@@ -106,28 +113,33 @@ test.describe("New project paints the builder on the first frame", () => {
     await installPaintMarks(page)
     const techStacks = { pending: false }
     const workspaces = { pending: false }
-    await holdRoute(page, "**/api/tech-stacks*", 15_000, techStacks)
-    await holdRoute(page, "**/api/workspaces*", 15_000, workspaces)
+    const releaseTechStacks = await holdRoute(page, "**/api/tech-stacks*", techStacks)
+    const releaseWorkspaces = await holdRoute(page, "**/api/workspaces*", workspaces)
 
-    await page.goto("/new-project")
+    try {
+      await page.goto("/new-project")
 
-    // Whatever the route paints first — the builder or the chrome skeleton —
-    // the marks below say when each piece appeared. The assertions then say
-    // which of the two it had to be.
-    await expect(page.locator(`${BUILDER}, ${SKELETON}`).first()).toBeAttached({ timeout: 20_000 })
-    reportPaintMarks("new-project, tech-stacks + workspaces held", await readPaintMarks(page))
+      // Whatever the route paints first — the builder or the chrome skeleton —
+      // the marks below say when each piece appeared. The assertions then say
+      // which of the two it had to be. The budget is a cold Metro compile.
+      await expect(page.locator(`${BUILDER}, ${SKELETON}`).first()).toBeAttached({
+        timeout: 120_000,
+      })
+      reportPaintMarks("new-project, tech-stacks + workspaces held", await readPaintMarks(page))
 
-    await expect(page.getByTestId("home-composer-input")).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByTestId("project-source-menu-trigger").first()).toBeVisible()
-    await expect(page.getByTestId("tech-stack-picker-trigger").first()).toBeVisible()
-    // Painted while both requests were still unanswered, i.e. not a "the slow
-    // part finished first" pass.
-    expect(techStacks.pending).toBe(true)
-    expect(workspaces.pending).toBe(true)
-    await expect(page.locator(SKELETON)).toHaveCount(0)
-    await expect(page.getByText("What are we building", { exact: false }).first()).toBeVisible()
-
-    reportPaintMarks("new-project (tech-stacks + workspaces held 15s)", await readPaintMarks(page))
+      await expect(page.getByTestId("home-composer-input")).toBeVisible({ timeout: 30_000 })
+      await expect(page.getByTestId("project-source-menu-trigger").first()).toBeVisible()
+      await expect(page.getByTestId("tech-stack-picker-trigger").first()).toBeVisible()
+      // Painted while both requests were still unanswered, i.e. not a "the slow
+      // part finished first" pass.
+      expect(techStacks.pending).toBe(true)
+      expect(workspaces.pending).toBe(true)
+      await expect(page.locator(SKELETON)).toHaveCount(0)
+      await expect(page.getByText("What are we building", { exact: false }).first()).toBeVisible()
+    } finally {
+      releaseTechStacks()
+      releaseWorkspaces()
+    }
   })
 
   test("the stack chip shows the fallback stacks when /api/tech-stacks fails, and a pick sticks", async ({
@@ -140,7 +152,7 @@ test.describe("New project paints the builder on the first frame", () => {
 
     await page.goto("/new-project")
     const chip = page.getByTestId("tech-stack-picker-trigger").first()
-    await expect(chip).toBeVisible({ timeout: 10_000 })
+    await expect(chip).toBeVisible({ timeout: 120_000 })
     await expect(chip).toContainText("React App")
 
     await chip.click()
@@ -158,14 +170,16 @@ test.describe("New project paints the builder on the first frame", () => {
     })
 
     await page.goto("/new-project")
-    await expect(page.getByTestId("tech-stack-picker-trigger").first()).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId("tech-stack-picker-trigger").first()).toBeVisible({
+      timeout: 120_000,
+    })
     expect(requests).toBe(1)
 
     // Leave the builder and come back through the app's own Create menu, so the
     // page (and the picker's module cache) survives.
     await page.getByRole("button", { name: "Create" }).first().click()
     await page.getByText("New project", { exact: true }).first().click()
-    await expect(page.getByTestId("home-composer-input")).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId("home-composer-input")).toBeVisible({ timeout: 60_000 })
     await expect(page.getByTestId("tech-stack-picker-trigger").first()).toBeVisible()
     expect(requests).toBe(1)
   })
@@ -175,10 +189,15 @@ test.describe("New project paints the builder on the first frame", () => {
   }) => {
     await installPaintMarks(page)
     const workspaces = { pending: false }
-    await holdRoute(page, "**/api/workspaces*", 15_000, workspaces)
+    const releaseWorkspaces = await holdRoute(page, "**/api/workspaces*", workspaces)
 
-    await page.goto("/home")
-    await expect(page.locator(SKELETON)).toBeVisible({ timeout: 10_000 })
-    await expect(page.locator(COMPOSER)).toHaveCount(0)
+    try {
+      await page.goto("/home")
+      await expect(page.locator(SKELETON)).toBeVisible({ timeout: 120_000 })
+      expect(workspaces.pending).toBe(true)
+      await expect(page.locator(COMPOSER)).toHaveCount(0)
+    } finally {
+      releaseWorkspaces()
+    }
   })
 })

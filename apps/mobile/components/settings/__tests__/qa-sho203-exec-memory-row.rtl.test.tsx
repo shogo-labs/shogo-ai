@@ -155,11 +155,16 @@ afterEach(() => cleanup())
 const byTestId = (id: string) => document.querySelector(`[data-rn-shim="${id}"]`) as HTMLElement | null
 const currentText = () => byTestId('exec-memory-current')?.textContent ?? ''
 
+// Every row change round-trips through the bridge before it re-renders. On a
+// loaded CI runner the 1 s `waitFor` default is not enough — the custom-value
+// save timed out at 1081 ms — so give the async settle a CI-sized budget.
+const SETTLE = { timeout: 5000 }
+
 async function renderPanel() {
   render(createElement(ComputerAndFilesPanel))
   await waitFor(() => {
     if (!byTestId('exec-memory-current')) throw new Error('memory row not rendered yet')
-  })
+  }, SETTLE)
 }
 
 describe('SHO-203 Settings → Memory for agent commands', () => {
@@ -190,7 +195,7 @@ describe('SHO-203 Settings → Memory for agent commands', () => {
     expect(fifty.textContent).toContain('50%')
 
     fireEvent.click(fifty)
-    await waitFor(() => expect(currentText()).toBe('64 GB of 128 GB'))
+    await waitFor(() => expect(currentText()).toBe('64 GB of 128 GB'), SETTLE)
 
     expect(setCalls).toEqual([{ execMemoryMB: 64 * GB }])
     // …and the selected chip reflects what was saved.
@@ -203,7 +208,7 @@ describe('SHO-203 Settings → Memory for agent commands', () => {
     expect(currentText()).toBe('24 GB of 128 GB')
 
     fireEvent.click(byTestId('exec-memory-auto')!)
-    await waitFor(() => expect(currentText()).toBe('Auto — 120 GB of 128 GB'))
+    await waitFor(() => expect(currentText()).toBe('Auto — 120 GB of 128 GB'), SETTLE)
     expect(setCalls).toEqual([{ execMemoryMB: 'auto' }])
   })
 
@@ -213,14 +218,14 @@ describe('SHO-203 Settings → Memory for agent commands', () => {
     fireEvent.change(input, { target: { value: '40' } })
     fireEvent.click(screen.getByText('Set'))
 
-    await waitFor(() => expect(currentText()).toBe('40 GB of 128 GB'))
+    await waitFor(() => expect(currentText()).toBe('40 GB of 128 GB'), SETTLE)
     expect(setCalls).toEqual([{ execMemoryMB: 40 * GB }])
 
     // Asking for more than the machine has must not promise it: the desktop
     // clamps, and the row shows what was actually saved.
     fireEvent.change(input, { target: { value: '900' } })
     fireEvent.click(screen.getByText('Set'))
-    await waitFor(() => expect(currentText()).toBe('128 GB of 128 GB'))
+    await waitFor(() => expect(currentText()).toBe('128 GB of 128 GB'), SETTLE)
     expect(setCalls[1]).toEqual({ execMemoryMB: 900 * GB })
   })
 
@@ -233,7 +238,7 @@ describe('SHO-203 Settings → Memory for agent commands', () => {
     await renderPanel()
 
     fireEvent.click(byTestId('exec-memory-75')!)
-    await waitFor(() => expect(document.body.textContent).toContain('EACCES'))
+    await waitFor(() => expect(document.body.textContent).toContain('EACCES'), SETTLE)
     // Still the value that is actually in effect.
     expect(currentText()).toBe('Auto — 120 GB of 128 GB')
   })
