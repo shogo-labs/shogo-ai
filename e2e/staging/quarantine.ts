@@ -54,7 +54,7 @@ export const QUARANTINE: QuarantineEntry[] = [
     title,
     owner: "@lacvapps",
     reason: CLOUD_ATTACH_404,
-    expires: "2026-10-25",
+    expires: "2026-11-08",
   })),
   {
     file: "agent-publish.test.ts",
@@ -65,7 +65,7 @@ export const QUARANTINE: QuarantineEntry[] = [
       "(k8s/overlays/staging PUBLISH_BUCKET) but mints {subdomain}.shogo.one URLs, and the " +
       "*.shogo.one Worker serves from shogo-published-apps-production, so every staging " +
       "publish 404s with ObjectNotFound. *.staging.shogo.one does not resolve yet.",
-    expires: "2026-10-25",
+    expires: "2026-11-08",
   },
   {
     file: "agent-publish.test.ts",
@@ -75,7 +75,7 @@ export const QUARANTINE: QuarantineEntry[] = [
       "Infra bug, not a flaky test: on staging the publish call times out while assigning the " +
       "subdomain (agent retried 3x, run 36605288919), so project A never reserves it and " +
       "project B has nothing to collide with. Needs staging API logs.",
-    expires: "2026-10-25",
+    expires: "2026-11-08",
   },
 ]
 
