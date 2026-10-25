@@ -8,6 +8,7 @@ import path from 'path'
 import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } from './paths'
 import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
 import { resolveHostTier } from './runtime-memory'
+import { buildHostLimits, writeHostLimits } from './host-limits'
 import { resolveDesktopPath } from './login-shell-path'
 import { getOrCreateSecretsEncryptionKey } from './local-secrets'
 import { DEFAULT_HEALTH_WATCHDOG, LocalApiSupervisor } from './local-api-supervisor'
@@ -449,6 +450,7 @@ function readHostRuntimeConfig(): import('./config').HostRuntimeConfig {
     const totalMemMB = Math.round(os.totalmem() / 1024 / 1024)
     return {
       memoryMB: computeDefaultRuntimeMemoryMB(totalMemMB),
+      execMemoryMB: 'auto',
       cpuPercent: 0,
     }
   }
@@ -491,9 +493,16 @@ export async function startLocalServer(): Promise<void> {
   }
 
   const os = require('os') as typeof import('os')
+  const totalMemMB = Math.round(os.totalmem() / 1024 / 1024)
+  // Republish on boot so the file always exists for the runtimes we are about
+  // to spawn, even on a fresh install or a config somebody hand-edited.
+  const hostLimitsFile = writeHostLimits(
+    getDataDir(),
+    buildHostLimits(hostRuntime.execMemoryMB, totalMemMB),
+  )
   const hostTier = resolveHostTier(
     process.env,
-    Math.round(os.totalmem() / 1024 / 1024),
+    totalMemMB,
     os.cpus().length,
   )
   const bunDir = path.dirname(bunPath)
@@ -575,6 +584,10 @@ export async function startLocalServer(): Promise<void> {
     // Host-mode resource limits (enforced by WorkerRuntimeManager).
     RUNTIME_MEMORY_MB: String(hostRuntime.memoryMB),
     RUNTIME_CPU_PERCENT: String(hostRuntime.cpuPercent),
+    // The command budget can't ride in the env: it has to change on a running
+    // app, not at the next spawn (SHO-203). Publish it as a file and let the
+    // exec guard and WorkerRuntimeManager watch it.
+    SHOGO_HOST_LIMITS_FILE: hostLimitsFile,
   }
 
   // Defense-in-depth for the env-bleed described above: a `DATABASE_URL` (or

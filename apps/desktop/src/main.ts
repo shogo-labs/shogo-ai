@@ -44,7 +44,9 @@ import {
   openApiCrashLog,
 } from './local-server'
 import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter, type DesktopLogLevel } from './signoz-log-exporter'
-import { getWebDir, getBunPath, getDbPath, getWorkspacesDirDecision } from './paths'
+import { getWebDir, getBunPath, getDbPath, getWorkspacesDirDecision, getDataDir } from './paths'
+import { buildHostLimits, hostRuntimeView, writeHostLimits } from './host-limits'
+import { normalizeExecMemoryMB } from './runtime-memory'
 import { runSpotlightHint, SPOTLIGHT_SETTINGS_URL } from './spotlight-hint'
 import type { WorkspacesDirDecision } from './spotlight-exclusion'
 import {
@@ -218,6 +220,11 @@ app.on('second-instance', () => {
 })
 
 const IS_DEV = !app.isPackaged
+
+/** This machine's RAM in MB, the unit every host limit is expressed in. */
+function totalSystemMemMB(): number {
+  return Math.round(os.totalmem() / 1024 / 1024)
+}
 
 let islandWindow: IslandWindow | null = null
 let huddleHostWindow: HuddleHostWindow | null = null
@@ -1374,6 +1381,38 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
+  // SHO-203: the machine-level limits an agent runtime reads from
+  // host-limits.json. Settings owns the command budget, and writing the file
+  // here (rather than at spawn) is what makes a change land on a running app.
+  ipcMain.handle('get-host-runtime-config', () =>
+    hostRuntimeView(readConfig().hostRuntime, totalSystemMemMB()),
+  )
+  ipcMain.handle('set-host-runtime-config', (_event, patch: unknown) => {
+    const totalMemMB = totalSystemMemMB()
+    try {
+      const current = readConfig().hostRuntime
+      const requested = (typeof patch === 'object' && patch !== null ? patch : {}) as {
+        execMemoryMB?: unknown
+      }
+      const next = {
+        ...current,
+        execMemoryMB:
+          'execMemoryMB' in requested
+            ? normalizeExecMemoryMB(requested.execMemoryMB)
+            : current.execMemoryMB,
+      }
+      writeConfig({ hostRuntime: next })
+      writeHostLimits(getDataDir(), buildHostLimits(next.execMemoryMB, totalMemMB))
+      return { ok: true as const, config: hostRuntimeView(next, totalMemMB) }
+    } catch (err) {
+      writeLogSync('ERROR', '[Desktop] set-host-runtime-config failed:', err)
+      return {
+        ok: false as const,
+        error: err instanceof Error ? err.message : String(err),
+        config: hostRuntimeView(readConfig().hostRuntime, totalMemMB),
+      }
+    }
+  })
   ipcMain.handle('set-island-config', (_event, patch: unknown) => {
     if (!islandWindow) return { ok: false, error: 'Island is unavailable', config: readConfig().island }
     return islandWindow.updateConfig(patch)

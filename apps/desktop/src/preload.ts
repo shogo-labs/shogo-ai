@@ -188,6 +188,11 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   },
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
+  // Machine limits for the commands an agent runs (SHO-203). `set` writes both
+  // config.json and host-limits.json, so it lands on a running app.
+  getHostRuntimeConfig: () => ipcRenderer.invoke('get-host-runtime-config'),
+  setHostRuntimeConfig: (patch: { execMemoryMB?: number | 'auto' }) =>
+    ipcRenderer.invoke('set-host-runtime-config', patch),
   setIslandConfig: (config: Partial<IslandConfig>) => ipcRenderer.invoke('set-island-config', config),
   onIslandConfigChanged: (callback: (config: IslandConfig) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, config: IslandConfig) => callback(config)

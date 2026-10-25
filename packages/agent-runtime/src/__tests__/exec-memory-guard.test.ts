@@ -10,6 +10,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'fs
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
+  execBudget,
   memoryKillNote,
   sampleOnce,
   sampleTreeRssKb,
@@ -18,7 +19,13 @@ import {
 } from '../exec-memory-guard'
 import { sandboxExecAsync } from '../sandbox-exec'
 
-const ENV_KEYS = ['SHOGO_EXEC_PIDS_FILE', 'SHOGO_EXEC_MEMORY_MB', 'SHOGO_EXEC_MEMORY_STRIKES', 'SHOGO_EXEC_MEMORY_SAMPLE_MS']
+const ENV_KEYS = [
+  'SHOGO_EXEC_PIDS_FILE',
+  'SHOGO_EXEC_MEMORY_MB',
+  'SHOGO_EXEC_MEMORY_STRIKES',
+  'SHOGO_EXEC_MEMORY_SAMPLE_MS',
+  'SHOGO_HOST_LIMITS_FILE',
+]
 let saved: Record<string, string | undefined>
 let dir: string
 let untracks: Array<() => void>
@@ -30,6 +37,7 @@ beforeEach(() => {
   process.env.SHOGO_EXEC_MEMORY_SAMPLE_MS = '600000'
   delete process.env.SHOGO_EXEC_MEMORY_MB
   delete process.env.SHOGO_EXEC_MEMORY_STRIKES
+  delete process.env.SHOGO_HOST_LIMITS_FILE
   untracks = []
 })
 
@@ -181,6 +189,86 @@ describe('memory budget for exec commands', () => {
     expect(note).toContain('13.2 GB across all running commands')
     expect(note).toContain('8.0 GB limit')
   })
+
+  test('the note names the env var when the budget came from the env', () => {
+    const note = memoryKillNote(9000, 9000, 8192, { source: 'env' })
+    expect(note).toContain('8.0 GB limit for agent commands on this computer (SHOGO_EXEC_MEMORY_MB)')
+    expect(note).toContain('Raise SHOGO_EXEC_MEMORY_MB')
+    // One command: nothing to prune.
+    expect(note).not.toContain('Run fewer or lighter processes at once')
+  })
+
+  test('the note names the setting, the machine and the no-restart part', () => {
+    const note = memoryKillNote(22528, 22528, 8192, { source: 'settings', totalMemMB: 131072 })
+    expect(note).toContain('22.0 GB')
+    expect(note).toContain('8.0 GB limit')
+    expect(note).toContain('Settings → Computer and files → Memory for agent commands')
+    expect(note).toContain('this computer has 128 GB')
+    expect(note).toContain('applies right away, with no restart')
+    expect(note).toContain('Ask the user to raise it there')
+  })
+})
+
+describe('budget source', () => {
+  const limitsPath = () => join(dir, 'host-limits.json')
+  const writeLimits = (execMemoryMB: number, totalMemMB = 131072) =>
+    writeFileSync(limitsPath(), JSON.stringify({ execMemoryMB, totalMemMB, source: 'settings' }))
+
+  test('a change to the limits file lands on a command already running', async () => {
+    // SHO-203: the setting is read from the file on every sample, so raising or
+    // lowering it applies without an app or runtime restart.
+    writeLimits(2048)
+    process.env.SHOGO_HOST_LIMITS_FILE = limitsPath()
+    const killed: string[] = []
+    track(10, (note) => { killed.push(note) })
+
+    // Under the 2 GB budget the command is fine, and strikes reset.
+    await sampleOnce(fakeSample({ 10: 1000 }))
+    expect(killed).toEqual([])
+
+    // The user lowers it to 512 MB: one breach, then a strike, then the stop —
+    // all on the same tracked process, with no restart in between.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    writeLimits(512)
+    await sampleOnce(fakeSample({ 10: 1000 }))
+    expect(killed).toEqual([])
+    await sampleOnce(fakeSample({ 10: 1000 }))
+    expect(killed).toHaveLength(1)
+    expect(killed[0]).toContain('out of memory')
+    expect(killed[0]).toContain('Settings → Computer and files')
+    expect(killed[0]).toContain('no restart')
+    expect(killed[0]).toContain('this computer has 128 GB')
+  })
+
+  test('raising the budget mid-track stops a breach instead of killing', async () => {
+    writeLimits(512)
+    process.env.SHOGO_HOST_LIMITS_FILE = limitsPath()
+    let kills = 0
+    track(10, () => { kills++ })
+    await sampleOnce(fakeSample({ 10: 1000 })) // strike 1 of 2
+
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    writeLimits(4096)
+    await sampleOnce(fakeSample({ 10: 1000 })) // now under budget → reset
+    await sampleOnce(fakeSample({ 10: 1000 }))
+    expect(kills).toBe(0)
+  })
+
+  test('an explicit SHOGO_EXEC_MEMORY_MB wins over the file', () => {
+    writeLimits(4096)
+    process.env.SHOGO_HOST_LIMITS_FILE = limitsPath()
+    expect(execBudget()).toEqual({ mb: 4096, source: 'settings', totalMemMB: 131072 })
+    process.env.SHOGO_EXEC_MEMORY_MB = '1024'
+    expect(execBudget()).toEqual({ mb: 1024, source: 'env' })
+  })
+
+  test('a missing or malformed limits file means no budget, not a crash', () => {
+    process.env.SHOGO_HOST_LIMITS_FILE = join(dir, 'missing.json')
+    expect(execBudget().mb).toBe(0)
+    writeFileSync(limitsPath(), '{oops')
+    process.env.SHOGO_HOST_LIMITS_FILE = limitsPath()
+    expect(execBudget().mb).toBe(0)
+  })
 })
 
 describe('sandboxExecAsync integration', () => {
@@ -265,4 +353,54 @@ describe('sandboxExecAsync integration', () => {
     expect(result.killReason).toBeUndefined()
     expect(trackedExecPids()).not.toContain(handle.pid!)
   }, 20_000)
+
+  /**
+   * SHO-203 regression: a budget below the allocation — here from the desktop's
+   * limits file rather than the env — stops the job with the note, never with a
+   * bare kill and never an OS OOM with no message at all.
+   */
+  test('a budget from host-limits.json stops the command with the note', async () => {
+    const limitsFile = join(dir, 'host-limits.json')
+    writeFileSync(
+      limitsFile,
+      JSON.stringify({ execMemoryMB: OVER_BUDGET_MB, totalMemMB: 131072, source: 'auto' }),
+    )
+    process.env.SHOGO_HOST_LIMITS_FILE = limitsFile
+    process.env.SHOGO_EXEC_MEMORY_STRIKES = '1'
+    const hogScript = join(dir, 'memory-hog-settings.js')
+    writeFileSync(hogScript, MEMORY_HOG_SCRIPT)
+    const handle = sandboxExecAsync({
+      command: `${quotePath(process.execPath)} ${quotePath(hogScript)}`,
+      workspaceDir: dir,
+    })
+
+    const ceilingKb = OVER_BUDGET_MB * 1024
+    const deadline = Date.now() + 20_000
+    let measuredKb = 0
+    while (Date.now() < deadline && !handle.exited()) {
+      if (hogReport(handle.stdout())) {
+        const sizes = await sampleTreeRssKb([handle.pid!])
+        measuredKb = Math.max(measuredKb, sizes.get(handle.pid!) ?? 0)
+        if (measuredKb > ceilingKb) await sampleOnce()
+      }
+      if (handle.exited()) break
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+
+    const result = await Promise.race([
+      handle.done,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+    ])
+    if (!result) {
+      handle.kill('SIGKILL')
+      throw new Error(
+        `the guard did not stop the command with a ${OVER_BUDGET_MB} MB limit from the limits file ` +
+          `(peak ${Math.floor(measuredKb / 1024)} MB). ${describeTree(handle.pid!)}`,
+      )
+    }
+    expect(result.killed).toBe(true)
+    expect(result.killReason).toContain('Settings → Computer and files')
+    expect(result.killReason).toContain('this computer has 128 GB')
+    expect(trackedExecPids()).not.toContain(handle.pid!)
+  }, 60_000)
 })
