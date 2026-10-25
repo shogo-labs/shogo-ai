@@ -3,27 +3,29 @@
 /**
  * ProjectImportModal
  *
- * Multi-step modal driving a streaming project import:
- *   1. `options` - file picker (drag & drop on web) + chat toggle + optional
- *      archive password
- *   2. `progress` - live phase progress bar + non-fatal error list
- *   3. `done` / `fatal` - summary / retry
+ * Drives a streaming project import. Import has no options step (SHO-211):
+ * the moment a file is chosen the import starts, and when it finishes the
+ * user lands on the imported project.
+ *
+ *   1. `progress` - live phase progress bar + non-fatal error list
+ *   2. `done` / `fatal` - only when there is something to read: warnings that
+ *      would otherwise be lost, or a failure with Retry
+ *
+ * Two ways in:
+ *   - `ProjectSourceMenu` picks the archive itself and passes it as
+ *     `initialFile`; this modal opens straight into `progress`.
+ *   - Nothing picked yet (drag-and-drop on web, or a caller that just mounts
+ *     the modal) - the dropzone is the first view.
+ *
+ * Password-protected (ZipCrypto) archives are the only thing that still stops
+ * the flow: the password is required input, not an option, so an encrypted
+ * archive shows one field and an Import button.
  *
  * Progress events come from `api.importProjectStream`, which reads Server-Sent
  * Events off the import endpoint. The bar weight assignments below are
  * deliberately coarse — the goal is a smoothly advancing bar, not precise ETA.
- *
- * Password-protected (ZipCrypto) archives are detected from the file header so
- * the password field is required only when it actually applies; the server
- * enforces this regardless.
  */
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, Platform, ScrollView, Pressable } from 'react-native'
 import {
   Modal,
@@ -44,12 +46,9 @@ import { Progress, ProgressFilledTrack } from '@/components/ui/progress'
 import {
   TransferModalHeader,
   OptionGroup,
-  ToggleRow,
-  Disclosure,
 } from '../project/transfer-modal-parts'
 import {
   Upload,
-  MessageSquare,
   CheckCircle2,
   AlertTriangle,
   FileArchive,
@@ -57,38 +56,31 @@ import {
   ExternalLink,
   Lock,
 } from 'lucide-react-native'
-import { api, type ProjectImportProgress, type RequiredCredential } from '../../lib/api'
+import {
+  api,
+  type ProjectImportProgress,
+  type RequiredCredential,
+} from '../../lib/api'
+import {
+  describeArchive,
+  usePickShogoArchive,
+  type PickedShogoArchive,
+} from './usePickShogoArchive'
 
 interface ProjectImportModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   workspaceId: string
-  /** Called once the imported project exists in the DB and the user clicks "Open project". */
+  /** Called as soon as the imported project exists and the user is sent to it. */
   onOpenProject: (project: { id: string; name: string }) => void
+  /**
+   * An archive the caller already picked (the source menu's file dialog).
+   * The import starts on open — there is nothing to confirm.
+   */
+  initialFile?: PickedShogoArchive | null
 }
 
-type Step = 'options' | 'progress' | 'done' | 'fatal'
-
-interface PendingFile {
-  blob: Blob
-  name: string
-  size: number
-  /** True when the archive is ZipCrypto-encrypted (password required). */
-  encrypted: boolean
-}
-
-/**
- * Detects ZipCrypto encryption from the first local file header's general
- * purpose bit flag (bit 0). Mirrors the server-side check.
- */
-function isEncryptedHeader(head: Uint8Array): boolean {
-  if (head.length < 8) return false
-  const isLocalHeader =
-    head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04
-  if (!isLocalHeader) return false
-  const flag = head[6] | (head[7] << 8)
-  return (flag & 0x0001) === 1
-}
+type Step = 'pick' | 'password' | 'progress' | 'done' | 'fatal'
 
 // Phase -> [startPercent, endPercent, label]. writeFiles and importChats use
 // their `done/total` to interpolate inside their band; the rest snap to
@@ -147,211 +139,227 @@ function phaseLabel(ev: ProjectImportProgress | null): string {
   return label
 }
 
+interface ImportedProject {
+  id: string
+  name: string
+  description?: string | null
+}
+
+interface DoneState {
+  project: ImportedProject
+  stats: {
+    filesWritten: number
+    filesSkipped: number
+    chatsImported: number
+    chatsSkipped: number
+  }
+  requiredCredentials: RequiredCredential[]
+  warnings: string[]
+  secretsAutoFilled: boolean
+}
+
 export function ProjectImportModal({
   open,
   onOpenChange,
   workspaceId,
   onOpenProject,
+  initialFile = null,
 }: ProjectImportModalProps) {
-  const [step, setStep] = useState<Step>('options')
-  const [pendingFile, setPendingFile] = useState<PendingFile | null>(null)
-  const [includeChats, setIncludeChats] = useState(true)
+  const [step, setStep] = useState<Step>('pick')
+  const [file, setFile] = useState<PickedShogoArchive | null>(null)
   const [password, setPassword] = useState('')
-  const [passwordOpen, setPasswordOpen] = useState(false)
+  const [passwordError, setPasswordError] = useState<string | null>(null)
   const [progress, setProgress] = useState<ProjectImportProgress | null>(null)
   const [errors, setErrors] = useState<string[]>([])
   const [fatalMessage, setFatalMessage] = useState<string | null>(null)
-  const [done, setDone] = useState<{
-    project: { id: string; name: string; description?: string | null }
-    stats: {
-      filesWritten: number
-      filesSkipped: number
-      chatsImported: number
-      chatsSkipped: number
-    }
-    requiredCredentials: RequiredCredential[]
-    warnings: string[]
-    secretsAutoFilled: boolean
-  } | null>(null)
+  const [done, setDone] = useState<DoneState | null>(null)
 
-  // Keep the most recent `errors` value visible during auto-re-renders in the
-  // done state. `useRef` avoids stale closure over the callback passed to the
-  // streaming API.
+  const { pickArchive } = usePickShogoArchive()
+
+  // Non-fatal errors arrive before `done`, which carries its own warnings; both
+  // have to survive until the summary is built.
   const errorsRef = useRef<string[]>([])
 
-  // Tracks whether `done` has been received. The SSE stream stays open
-  // *after* `done` so bootstrap progress can keep streaming, which means:
-  //   - We flip to the `done` step on the event itself, not on stream close.
-  //   - If the await throws AFTER `done`, we treat it as non-fatal and stay
-  //     in the done state instead of flashing back to the failure screen.
+  // The SSE stream stays open *after* `done` so bootstrap progress can keep
+  // streaming. Once `done` has arrived the import is complete, so a later
+  // stream failure means "user already left mid-bootstrap" — not a failure.
   const doneReceivedRef = useRef(false)
 
+  // Invalidates callbacks from a superseded run (a retry, or a reset after the
+  // modal closed) so they can't write state into the next import.
+  const runTokenRef = useRef(0)
+
+  // Guards the "already handed this file to the import" effect: the same
+  // archive object must not restart the import on every re-render.
+  const handledFileRef = useRef<PickedShogoArchive | null>(null)
+
   const resetAll = useCallback(() => {
-    setStep('options')
-    setPendingFile(null)
-    setIncludeChats(true)
+    runTokenRef.current++
+    setStep('pick')
+    setFile(null)
     setPassword('')
-    setPasswordOpen(false)
+    setPasswordError(null)
     setProgress(null)
     setErrors([])
     errorsRef.current = []
     setFatalMessage(null)
     setDone(null)
-    doneReceivedRef.current = false
+    handledFileRef.current = null
   }, [])
 
   const close = useCallback(() => {
     if (step === 'progress') return // don't allow mid-import close
     onOpenChange(false)
-    // Delay the reset so the user doesn't see a flash of "options" before
+    // Delay the reset so the user doesn't see a flash of the dropzone before
     // the animation finishes.
     setTimeout(resetAll, 300)
   }, [step, onOpenChange, resetAll])
 
-  // Centralised file acceptance: detect encryption, store, and reveal the
-  // password field when the archive needs one. `headBytes` lets native callers
-  // pass the already-read header (RN Blobs don't reliably support `.slice`).
-  const acceptFile = useCallback(
-    async (blob: Blob, name: string, size: number, headBytes?: Uint8Array) => {
-      let encrypted = false
-      try {
-        const head =
-          headBytes ?? new Uint8Array(await blob.slice(0, 8).arrayBuffer())
-        encrypted = isEncryptedHeader(head)
-      } catch {
-        encrypted = false
-      }
-      setPendingFile({ blob, name, size, encrypted })
-      if (encrypted) setPasswordOpen(true)
+  const finishImport = useCallback(
+    (project: ImportedProject) => {
+      onOpenProject({ id: project.id, name: project.name })
+      onOpenChange(false)
+      setTimeout(resetAll, 300)
     },
-    [],
+    [onOpenProject, onOpenChange, resetAll],
   )
 
-  const pickFile = useCallback(async () => {
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      await new Promise<void>((resolve) => {
-        const input = document.createElement('input')
-        input.type = 'file'
-        input.accept = '.shogo,.shogo-project,.zip'
-        input.style.cssText =
-          'position:fixed;left:-9999px;opacity:0;width:1px;height:1px;pointer-events:none'
-        document.body.appendChild(input)
-        const cleanup = () => {
-          if (input.parentNode) input.parentNode.removeChild(input)
-          resolve()
-        }
-        const timer = setTimeout(cleanup, 120_000)
-        input.onchange = (e: any) => {
-          clearTimeout(timer)
-          const file = e.target?.files?.[0] as File | undefined
-          if (file) void acceptFile(file, file.name, file.size)
-          cleanup()
-        }
-        input.click()
-      })
-      return
-    }
+  const runImport = useCallback(
+    async (target: PickedShogoArchive, archivePassword: string) => {
+      const token = ++runTokenRef.current
+      const isCurrent = () => runTokenRef.current === token
 
-    try {
-      const { getDocumentAsync } = await import('expo-document-picker')
-      const result = await getDocumentAsync({
-        type: ['application/zip', 'application/octet-stream'],
-        copyToCacheDirectory: true,
-        multiple: false,
-      })
-      if (result.canceled || !result.assets?.[0]) return
-      const asset = result.assets[0]
-      const { readAsStringAsync, EncodingType } = await import(
-        'expo-file-system/legacy'
-      )
-      const base64 = await readAsStringAsync(asset.uri, {
-        encoding: EncodingType.Base64,
-      })
-      const binary = atob(base64)
-      const bytes = new Uint8Array(binary.length)
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-      const blob = new Blob([bytes], { type: 'application/zip' })
-      await acceptFile(
-        blob,
-        asset.name || 'project.shogo',
-        asset.size || bytes.byteLength,
-        bytes.slice(0, 8),
-      )
-    } catch (err: any) {
-      if (err?.code !== 'ERR_CANCELED') {
-        setFatalMessage(err?.message || 'Failed to pick file')
+      setStep('progress')
+      setProgress(null)
+      setErrors([])
+      errorsRef.current = []
+      setFatalMessage(null)
+      setPasswordError(null)
+      setDone(null)
+      doneReceivedRef.current = false
+
+      try {
+        await api.importProjectStream(
+          {
+            file: target.blob,
+            workspaceId,
+            filename: target.name,
+            // Chats always come along; the toggle is gone (SHO-211).
+            includeChats: true,
+            password: archivePassword.length > 0 ? archivePassword : undefined,
+          },
+          (ev) => {
+            if (!isCurrent()) return
+            if (ev.phase === 'error') {
+              if (ev.fatal) {
+                setFatalMessage(ev.message)
+              } else {
+                errorsRef.current = [...errorsRef.current, ev.message]
+                setErrors(errorsRef.current)
+              }
+              return
+            }
+            if (ev.phase === 'done') {
+              doneReceivedRef.current = true
+              const warnings = [...errorsRef.current, ...(ev.warnings || [])]
+              const result: DoneState = {
+                project: ev.project,
+                stats: ev.stats,
+                requiredCredentials: ev.requiredCredentials || [],
+                warnings,
+                secretsAutoFilled: !!ev.secretsAutoFilled,
+              }
+              setDone(result)
+              setProgress(ev)
+              // Nothing to read -> go straight to the project. Warnings keep
+              // the summary up so they aren't lost.
+              if (warnings.length === 0) finishImport(result.project)
+              else setStep('done')
+              return
+            }
+            setProgress(ev)
+          },
+        )
+      } catch (err: any) {
+        // Post-`done` stream failures are non-fatal (see doneReceivedRef).
+        if (!isCurrent() || doneReceivedRef.current) return
+        const message = err?.message || 'Import failed'
+        // A wrong password is a correction, not a dead end: keep the field.
+        if (target.encrypted && /password/i.test(message)) {
+          setPasswordError(message)
+          setStep('password')
+          return
+        }
+        setFatalMessage(message)
         setStep('fatal')
       }
-    }
-  }, [acceptFile])
+    },
+    [workspaceId, finishImport],
+  )
 
-  const startImport = useCallback(async () => {
-    if (!pendingFile) return
-    setStep('progress')
-    setProgress(null)
-    setErrors([])
-    errorsRef.current = []
-    setFatalMessage(null)
-    setDone(null)
-    doneReceivedRef.current = false
+  /** A chosen archive starts importing unless it needs its password first. */
+  const beginImport = useCallback(
+    (next: PickedShogoArchive) => {
+      setFile(next)
+      setPassword('')
+      setPasswordError(null)
+      if (next.encrypted) {
+        setStep('password')
+        return
+      }
+      void runImport(next, '')
+    },
+    [runImport],
+  )
 
+  useEffect(() => {
+    if (!open || !initialFile) return
+    if (handledFileRef.current === initialFile) return
+    handledFileRef.current = initialFile
+    beginImport(initialFile)
+  }, [open, initialFile, beginImport])
+
+  const handlePickFromDropzone = useCallback(async () => {
     try {
-      await api.importProjectStream(
-        {
-          file: pendingFile.blob,
-          workspaceId,
-          filename: pendingFile.name,
-          includeChats,
-          password: password.length > 0 ? password : undefined,
-        },
-        (ev) => {
-          if (ev.phase === 'error') {
-            if (ev.fatal) {
-              setFatalMessage(ev.message)
-            } else {
-              errorsRef.current = [...errorsRef.current, ev.message]
-              setErrors(errorsRef.current)
-            }
-            return
-          }
-          if (ev.phase === 'done') {
-            doneReceivedRef.current = true
-            setDone({
-              project: ev.project,
-              stats: ev.stats,
-              requiredCredentials: ev.requiredCredentials || [],
-              warnings: ev.warnings || [],
-              secretsAutoFilled: !!ev.secretsAutoFilled,
-            })
-            setProgress(ev)
-            setStep('done')
-            return
-          }
-          setProgress(ev)
-        },
-      )
-      // Stream ended. Belt-and-braces in case `done` never arrived.
-      if (!doneReceivedRef.current) setStep('done')
+      const picked = await pickArchive()
+      if (!picked) return
+      beginImport(picked)
     } catch (err: any) {
-      // Surface as fatal only if we never saw `done`. Post-`done` stream
-      // failures usually mean "user navigated away mid-bootstrap".
-      if (doneReceivedRef.current) return
-      setFatalMessage(err?.message || 'Import failed')
+      setFatalMessage(err?.message || 'Failed to pick file')
       setStep('fatal')
     }
-  }, [pendingFile, workspaceId, includeChats, password])
+  }, [pickArchive, beginImport])
+
+  const handleWebDrop = useCallback(
+    (dropped: File) => {
+      void (async () => {
+        const described = await describeArchive(
+          dropped,
+          dropped.name,
+          dropped.size,
+        )
+        beginImport(described)
+      })()
+    },
+    [beginImport],
+  )
 
   const percent = useMemo(() => computePercent(progress), [progress])
   const label = useMemo(() => phaseLabel(progress), [progress])
 
-  const needsPassword = !!pendingFile?.encrypted
-  const canStart =
-    !!pendingFile && (!needsPassword || password.trim().length > 0)
+  // `initialFile` means the caller already picked: never flash the dropzone
+  // while the open effect is still a render away.
+  const view: Step =
+    step === 'pick' && initialFile
+      ? initialFile.encrypted
+        ? 'password'
+        : 'progress'
+      : step
 
   const title =
-    step === 'done'
+    view === 'done'
       ? 'Import complete'
-      : step === 'fatal'
+      : view === 'fatal'
         ? 'Import failed'
         : 'Import project'
 
@@ -360,32 +368,32 @@ export function ProjectImportModal({
       <ModalBackdrop />
       <ModalContent className="bg-background-0 p-0">
         <TransferModalHeader
-          icon={step === 'done' ? CheckCircle2 : Upload}
+          icon={view === 'done' ? CheckCircle2 : Upload}
           title={title}
-          showClose={step !== 'progress'}
+          showClose={view !== 'progress'}
         />
 
         <ModalBody className="px-6 py-5" contentContainerClassName="gap-4">
-          {step === 'options' && (
-            <OptionsStep
-              pendingFile={pendingFile}
-              onPick={pickFile}
-              onWebDrop={(file) => void acceptFile(file, file.name, file.size)}
-              onClear={() => {
-                setPendingFile(null)
-                setPassword('')
-                setPasswordOpen(false)
-              }}
-              includeChats={includeChats}
-              setIncludeChats={setIncludeChats}
-              password={password}
-              setPassword={setPassword}
-              passwordOpen={passwordOpen}
-              setPasswordOpen={setPasswordOpen}
+          {view === 'pick' && (
+            <Dropzone
+              onPick={() => void handlePickFromDropzone()}
+              onWebDrop={handleWebDrop}
             />
           )}
 
-          {step === 'progress' && (
+          {view === 'password' && (
+            <PasswordStep
+              file={file ?? initialFile}
+              password={password}
+              setPassword={(value) => {
+                setPassword(value)
+                setPasswordError(null)
+              }}
+              error={passwordError}
+            />
+          )}
+
+          {view === 'progress' && (
             <ProgressStep
               percent={percent}
               label={label}
@@ -394,55 +402,69 @@ export function ProjectImportModal({
             />
           )}
 
-          {step === 'done' && done && <DoneStep done={done} />}
+          {view === 'done' && done && (
+            <DoneStep done={done} warnings={done.warnings} />
+          )}
 
-          {step === 'fatal' && <FatalStep message={fatalMessage || 'Import failed'} />}
+          {view === 'fatal' && <FatalStep message={fatalMessage || 'Import failed'} />}
         </ModalBody>
 
         <ModalFooter className="px-6 py-4 border-t border-outline-100 gap-2">
-          {step === 'options' && (
+          {view === 'pick' && (
+            <Button variant="outline" onPress={close}>
+              <ButtonText>Cancel</ButtonText>
+            </Button>
+          )}
+
+          {view === 'password' && (
             <>
               <Button variant="outline" onPress={close}>
                 <ButtonText>Cancel</ButtonText>
               </Button>
-              <Button onPress={startImport} disabled={!canStart}>
+              <Button
+                onPress={() => {
+                  const target = file ?? initialFile
+                  if (target) void runImport(target, password.trim())
+                }}
+                disabled={password.trim().length === 0}
+              >
                 <ButtonIcon as={Upload} className="text-typography-0" />
-                <ButtonText>Start import</ButtonText>
+                <ButtonText>Import</ButtonText>
               </Button>
             </>
           )}
 
-          {step === 'progress' && (
+          {view === 'progress' && (
             <Button variant="outline" disabled>
               <ButtonSpinner />
               <ButtonText>Importing...</ButtonText>
             </Button>
           )}
 
-          {step === 'done' && done && (
+          {view === 'done' && done && (
             <>
               <Button variant="outline" onPress={close}>
                 <ButtonText>Close</ButtonText>
               </Button>
-              <Button
-                onPress={() => {
-                  onOpenProject({ id: done.project.id, name: done.project.name })
-                  onOpenChange(false)
-                  setTimeout(resetAll, 300)
-                }}
-              >
+              <Button onPress={() => finishImport(done.project)}>
                 <ButtonIcon as={ExternalLink} className="text-typography-0" />
                 <ButtonText>Open project</ButtonText>
               </Button>
             </>
           )}
 
-          {step === 'fatal' && (
+          {view === 'fatal' && (
             <>
               <Button variant="outline" onPress={close}>
                 <ButtonText>Close</ButtonText>
               </Button>
-              <Button onPress={startImport} disabled={!canStart}>
+              <Button
+                onPress={() => {
+                  const target = file ?? initialFile
+                  if (target) void runImport(target, password.trim())
+                }}
+                disabled={!(file ?? initialFile)}
+              >
                 <ButtonIcon as={RefreshCw} className="text-typography-0" />
                 <ButtonText>Retry</ButtonText>
               </Button>
@@ -456,96 +478,56 @@ export function ProjectImportModal({
 
 // ─── Steps ────────────────────────────────────────────────────
 
-function OptionsStep({
-  pendingFile,
-  onPick,
-  onWebDrop,
-  onClear,
-  includeChats,
-  setIncludeChats,
+function PasswordStep({
+  file,
   password,
   setPassword,
-  passwordOpen,
-  setPasswordOpen,
+  error,
 }: {
-  pendingFile: PendingFile | null
-  onPick: () => void
-  onWebDrop: (file: File) => void
-  onClear: () => void
-  includeChats: boolean
-  setIncludeChats: (v: boolean) => void
+  file: PickedShogoArchive | null
   password: string
-  setPassword: (v: string) => void
-  passwordOpen: boolean
-  setPasswordOpen: (v: boolean) => void
+  setPassword: (value: string) => void
+  error: string | null
 }) {
-  const needsPassword = !!pendingFile?.encrypted
   return (
     <>
       <Text className="text-sm text-typography-600 leading-relaxed">
-        Choose a <Text className="font-mono text-xs">.shogo</Text> archive to import into this workspace.
+        This archive is password-protected. Enter its password to import it.
       </Text>
 
-      {pendingFile ? (
+      {file && (
         <OptionGroup>
           <View className="flex-row items-center gap-3 px-4 py-3.5">
             <FileArchive size={20} className="text-typography-500" />
             <View className="flex-1">
-              <Text className="text-sm font-medium text-typography-900" numberOfLines={1}>
-                {pendingFile.name}
+              <Text
+                className="text-sm font-medium text-typography-900"
+                numberOfLines={1}
+              >
+                {file.name}
               </Text>
               <Text className="text-xs text-typography-500">
-                {(pendingFile.size / (1024 * 1024)).toFixed(2)} MB
-                {pendingFile.encrypted ? ' · password-protected' : ''}
+                {(file.size / (1024 * 1024)).toFixed(2)} MB · password-protected
               </Text>
             </View>
-            <Button size="xs" variant="outline" onPress={onClear}>
-              <ButtonText>Change</ButtonText>
-            </Button>
+            <Lock size={14} className="text-typography-400" />
           </View>
         </OptionGroup>
-      ) : (
-        <Dropzone onPick={onPick} onWebDrop={onWebDrop} />
       )}
 
-      {/* Import options are gated on a picked file — showing them up front is
-          noise the user can't act on yet. */}
-      {pendingFile && (
-        <>
-          <OptionGroup>
-            <ToggleRow
-              icon={MessageSquare}
-              title="Include chat history"
-              description="If the archive contains conversations, import them alongside the files."
-              value={includeChats}
-              onValueChange={setIncludeChats}
-            />
-          </OptionGroup>
+      <Input isInvalid={!!error}>
+        <InputField
+          placeholder="Archive password"
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+          autoComplete="off"
+          autoCorrect={false}
+        />
+      </Input>
 
-          <Disclosure
-            icon={Lock}
-            title={needsPassword ? 'Archive password' : 'Password-protected?'}
-            subtitle={
-              needsPassword
-                ? 'This archive is encrypted — enter its password to import.'
-                : 'Enter the password if this archive was protected.'
-            }
-            open={passwordOpen || needsPassword}
-            onToggle={() => setPasswordOpen(!passwordOpen)}
-            disabled={needsPassword}
-          >
-            <Input>
-              <InputField
-                placeholder={needsPassword ? 'Password' : 'Leave empty if not protected'}
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry
-                autoComplete="off"
-                autoCorrect={false}
-              />
-            </Input>
-          </Disclosure>
-        </>
+      {error && (
+        <Text className="text-xs text-red-500 leading-relaxed">{error}</Text>
       )}
     </>
   )
@@ -573,8 +555,8 @@ function Dropzone({
     const onDrop = (e: DragEvent) => {
       e.preventDefault()
       setDragActive(false)
-      const file = e.dataTransfer?.files?.[0]
-      if (file) onWebDrop(file)
+      const dropped = e.dataTransfer?.files?.[0]
+      if (dropped) onWebDrop(dropped)
     }
     el.addEventListener('dragover', onDragOver)
     el.addEventListener('dragleave', onDragLeave)
@@ -602,7 +584,9 @@ function Dropzone({
           Choose a <Text className="font-mono text-xs">.shogo</Text> file
         </Text>
         <Text className="text-xs text-typography-500">
-          {Platform.OS === 'web' ? 'or drag and drop it here' : 'tap to browse your files'}
+          {Platform.OS === 'web'
+            ? 'It starts importing as soon as you pick it, or drag and drop it here'
+            : 'tap to browse your files'}
         </Text>
       </View>
     </Pressable>
@@ -683,25 +667,33 @@ function ProgressStep({
 
 function DoneStep({
   done,
+  warnings,
 }: {
-  done: {
-    project: { id: string; name: string; description?: string | null }
-  }
+  done: { project: ImportedProject }
+  warnings: string[]
 }) {
-  // Intentionally minimal — see SHOG-592. The project is openable the moment we
-  // hit this view; failures belong in the fatal step, not under a green check.
   return (
-    <View className="items-center gap-3 py-2">
-      <View className="h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10">
-        <CheckCircle2 size={28} className="text-emerald-500" />
+    <>
+      <View className="items-center gap-3 py-2">
+        <View className="h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10">
+          <CheckCircle2 size={28} className="text-emerald-500" />
+        </View>
+        <View className="items-center gap-0.5">
+          <Text
+            className="text-base font-semibold text-typography-900 text-center"
+            numberOfLines={2}
+          >
+            {done.project.name}
+          </Text>
+          <Text className="text-xs text-typography-500">
+            Imported into this workspace.
+          </Text>
+        </View>
       </View>
-      <View className="items-center gap-0.5">
-        <Text className="text-base font-semibold text-typography-900 text-center" numberOfLines={2}>
-          {done.project.name}
-        </Text>
-        <Text className="text-xs text-typography-500">Imported into this workspace.</Text>
-      </View>
-    </View>
+
+      {/* The only reason this screen exists instead of navigating away. */}
+      {warnings.length > 0 && <ErrorList errors={warnings} />}
+    </>
   )
 }
 

@@ -77,7 +77,6 @@ import { useAuth } from '../../../contexts/auth'
 import { ProjectCard } from '../../../components/home/ProjectCard'
 import { api } from '../../../lib/api'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
-import { ProjectImportModal } from '../../../components/projects/ProjectImportModal'
 import { ProjectSourceMenu } from '../../../components/project/ProjectSourceMenu'
 import {
   useNativePhoneWindow, useNativePhoneSheetChrome } from '../../../lib/native-phone-layout'
@@ -293,7 +292,6 @@ export default observer(function AllProjectsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [newFolderModalVisible, setNewFolderModalVisible] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
-  const [importModalVisible, setImportModalVisible] = useState(false)
   const [moveToFolderModalVisible, setMoveToFolderModalVisible] = useState(false)
   const [sortOpen, setSortOpen] = useState(false)
   const [visibilityOpen, setVisibilityOpen] = useState(false)
@@ -788,11 +786,6 @@ export default observer(function AllProjectsPage() {
     setSelectedIds(new Set())
     setSelectMode(false)
   }, [selectedIds, store, currentWorkspace?.id])
-
-  const handleImportProject = useCallback(() => {
-    if (!currentWorkspace?.id) return
-    setImportModalVisible(true)
-  }, [currentWorkspace?.id])
 
   const handleImportCompleted = useCallback(
     (project: { id: string; name: string }) => {
@@ -1932,14 +1925,6 @@ export default observer(function AllProjectsPage() {
             onClose={() => setStatusOpen(false)}
           />
         </>
-      )}
-      {currentWorkspace?.id && (
-        <ProjectImportModal
-          open={importModalVisible}
-          onOpenChange={setImportModalVisible}
-          workspaceId={currentWorkspace.id}
-          onOpenProject={handleImportCompleted}
-        />
       )}
 
       {/* New Folder Modal */}
