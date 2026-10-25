@@ -3690,28 +3690,19 @@ app.post('/preview/watch/resume', (c) => {
 // `PtySessionManager.create()` — these routes just surface the state
 // to the desktop UI so the external-preview tab can offer a one-click
 // "Open this URL" affordance.
-//
-// Detections are per project (`?project=<id>`): a workspace runtime serves
-// several projects, and a URL printed in one project's terminal must never
-// surface as another's (SHO-200 S6). Without the parameter nothing is
-// returned rather than someone else's URL.
 // ──────────────────────────────────────────────────────────────────────
 
 app.get('/preview/detected-urls', (c) => {
-  const { listDetectionsForProject, getMostRecentDetectionForProject } =
-    require('./detected-urls') as typeof import('./detected-urls')
-  const projectId = c.req.query('project') || null
+  const { listAllDetections, getMostRecentDetection } = require('./detected-urls') as typeof import('./detected-urls')
   return c.json({
-    projectId,
-    detections: projectId ? listDetectionsForProject(projectId) : [],
-    mostRecent: projectId ? getMostRecentDetectionForProject(projectId) : null,
+    detections: listAllDetections(),
+    mostRecent: getMostRecentDetection(),
   })
 })
 
 app.get('/preview/detected-urls/stream', (c) => {
-  const { listDetectionsForProject, getMostRecentDetectionForProject, onDetectedUrl } =
+  const { listAllDetections, getMostRecentDetection, onDetectedUrl } =
     require('./detected-urls') as typeof import('./detected-urls')
-  const projectId = c.req.query('project') || null
 
   const stream = new ReadableStream({
     start(controller) {
@@ -3722,13 +3713,10 @@ app.get('/preview/detected-urls/stream', (c) => {
         } catch {}
       }
       send('snapshot', {
-        projectId,
-        detections: projectId ? listDetectionsForProject(projectId) : [],
-        mostRecent: projectId ? getMostRecentDetectionForProject(projectId) : null,
+        detections: listAllDetections(),
+        mostRecent: getMostRecentDetection(),
       })
       const unsubscribe = onDetectedUrl((detection) => {
-        if (!projectId) return
-        if (detection.projectId !== projectId) return
         send('detected', detection)
       })
       c.req.raw.signal.addEventListener('abort', () => {

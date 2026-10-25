@@ -16,12 +16,6 @@
  * reload — the buffer of "most recent URL per session" persists with
  * the agent-runtime.
  *
- * Detections are keyed by **project**, not by runtime. A workspace runtime
- * serves several projects (SHO-107), so a banner printed in project B's
- * terminal used to become project A's detected URL (SHO-200 S6). The caller
- * passes the owning project with each chunk; a runtime that only ever serves
- * one project passes the same value every time.
- *
  * What this is NOT:
  *   - Not a port scanner. We don't probe; we only observe.
  *   - Not a launcher. We don't start dev servers ourselves.
@@ -76,14 +70,12 @@ export interface DetectedUrl {
   url: string
   /** Source PTY session id, or 'unknown' when the detector is fed raw bytes. */
   sessionId: string
-  /** Owning project, or `null` when the caller could not attribute the chunk. */
-  projectId: string | null
   /** Millisecond epoch when detection fired. */
   detectedAt: number
   /**
    * Monotonic per-process sequence used as a tiebreaker when two detections
    * land in the same `Date.now()` millisecond — without it the sort in
-   * `listDetectionsForProject` is stable-equal and the "newest first" contract
+   * `listAllDetections` is stable-equal and the "newest first" contract
    * collapses to insertion order, which back-to-back dev-server starts
    * (and the corresponding test) trip routinely.
    */
@@ -92,11 +84,8 @@ export interface DetectedUrl {
 
 let detectionSeq = 0
 const detectedBySession = new Map<string, DetectedUrl>()
-const projectBySession = new Map<string, string | null>()
+let lastAnyDetection: DetectedUrl | null = null
 const listeners = new Set<(d: DetectedUrl) => void>()
-
-/** Most recent detection per project. There is no cross-project fallback. */
-const mostRecentByProject = new Map<string | null, DetectedUrl>()
 
 // Stream buffers per session — dev servers print the URL line in two
 // flushes pretty often (label, then color reset, then URL), so we
@@ -131,16 +120,8 @@ function normalize(rawUrl: string): string | null {
  * Feed a chunk of PTY output through the detector. Cheap to call on
  * every onData() emission; it only does work when one of the regexes
  * matches.
- *
- * `projectId` attributes the detection; omitting it keeps the chunk in the
- * unattributed bucket, which is never returned for a project-scoped read.
  */
-export function ingestChunk(
-  sessionId: string,
-  bytes: Uint8Array | string,
-  projectId?: string | null,
-): DetectedUrl | null {
-  if (projectId !== undefined) projectBySession.set(sessionId, projectId ?? null)
+export function ingestChunk(sessionId: string, bytes: Uint8Array | string): DetectedUrl | null {
   const text = typeof bytes === 'string' ? bytes : new TextDecoder('utf-8', { fatal: false }).decode(bytes)
   const prev = tailBuffer.get(sessionId) ?? ''
   // Roll the tail with the new chunk, capped so we don't keep megabytes
@@ -166,16 +147,14 @@ export function ingestChunk(
       tailBuffer.set(sessionId, '')
       return prevDetect
     }
-    const owner = projectBySession.get(sessionId) ?? null
     const detection: DetectedUrl = {
       url,
       sessionId,
-      projectId: owner,
       detectedAt: Date.now(),
       seq: ++detectionSeq,
     }
     detectedBySession.set(sessionId, detection)
-    mostRecentByProject.set(owner, detection)
+    lastAnyDetection = detection
     // Clear the tail buffer — the URL is captured; if the dev server
     // restarts with a new port we'll pick it up from fresh bytes.
     tailBuffer.set(sessionId, '')
@@ -191,39 +170,27 @@ export function getDetectedForSession(sessionId: string): DetectedUrl | null {
   return detectedBySession.get(sessionId) ?? null
 }
 
-export function listDetectionsForProject(projectId: string | null): DetectedUrl[] {
-  return [...detectedBySession.values()]
-    .filter((d) => d.projectId === projectId)
-    .sort((a, b) => b.detectedAt - a.detectedAt || b.seq - a.seq)
+/**
+ * Most recent detection across all sessions. Useful for the project-
+ * level "current detected URL" surface; sessions detected earlier are
+ * preserved but only the freshest one is presented as default.
+ */
+export function getMostRecentDetection(): DetectedUrl | null {
+  return lastAnyDetection
 }
 
-/**
- * The freshest detection for one project. Never falls back to another
- * project's terminal — that leak made a workspace runtime report one
- * project's dev server as another's (SHO-200 S6).
- */
-export function getMostRecentDetectionForProject(projectId: string | null): DetectedUrl | null {
-  const candidate = mostRecentByProject.get(projectId)
-  if (!candidate) return null
-  // Drop a cached entry whose session has since gone away.
-  if (detectedBySession.get(candidate.sessionId) !== candidate) {
-    mostRecentByProject.delete(projectId)
-    return null
-  }
-  return candidate
+export function listAllDetections(): DetectedUrl[] {
+  return [...detectedBySession.values()].sort(
+    (a, b) => b.detectedAt - a.detectedAt || b.seq - a.seq,
+  )
 }
 
 export function clearDetection(sessionId: string): void {
-  const existing = detectedBySession.get(sessionId)
   detectedBySession.delete(sessionId)
   tailBuffer.delete(sessionId)
-  projectBySession.delete(sessionId)
-  if (!existing) return
-  const key = existing.projectId
-  if (mostRecentByProject.get(key)?.sessionId === sessionId) {
-    const remaining = listDetectionsForProject(key)[0]
-    if (remaining) mostRecentByProject.set(key, remaining)
-    else mostRecentByProject.delete(key)
+  if (lastAnyDetection?.sessionId === sessionId) {
+    const remaining = listAllDetections()
+    lastAnyDetection = remaining[0] ?? null
   }
 }
 
@@ -235,9 +202,8 @@ export function onDetectedUrl(cb: (d: DetectedUrl) => void): () => void {
 /** Test/maintenance hook: wipe all state. */
 export function _resetForTests(): void {
   detectedBySession.clear()
-  projectBySession.clear()
   tailBuffer.clear()
-  mostRecentByProject.clear()
+  lastAnyDetection = null
   detectionSeq = 0
   listeners.clear()
 }
