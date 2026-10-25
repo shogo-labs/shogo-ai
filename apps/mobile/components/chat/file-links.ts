@@ -59,18 +59,24 @@ const UUID_RE =
 
 /** A single path segment the agent would actually write. */
 const SEGMENT = String.raw`[A-Za-z0-9_.@+-]+`
+/**
+ * A file extension: 1-12 alphanumerics that must contain a letter. Without
+ * the letter, a version number is read as a file type and `Qwen3.8` or
+ * `v1.2` becomes a link to a file that does not exist.
+ */
+const EXT = String.raw`(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{1,12}`
 const FILE_WITH_EXT = new RegExp(
-  `^(?:${SEGMENT}/)*${SEGMENT}\\.[A-Za-z0-9]{1,12}$`,
+  `^(?:${SEGMENT}/)*${SEGMENT}\\.${EXT}$`,
 )
 const ABS_FILE_WITH_EXT = new RegExp(
-  `^(?:/|[A-Za-z]:[/\\\\])(?:${SEGMENT}/)*${SEGMENT}\\.[A-Za-z0-9]{1,12}$`,
+  `^(?:/|[A-Za-z]:[/\\\\])(?:${SEGMENT}/)*${SEGMENT}\\.${EXT}$`,
 )
 
 const FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g
 const EXISTING_LINK_RE = /\[[^\]]*\]\([^)\n]*\)/g
 const INLINE_CODE_RE = /`([^`\n]+)`/g
 const BARE_PATH_RE = new RegExp(
-  `(?<![A-Za-z0-9_./:-])(?!https?:\\/\\/|www\\.)(?:${SEGMENT}/)+${SEGMENT}\\.[A-Za-z0-9]{1,12}(?![A-Za-z0-9_/])`,
+  `(?<![A-Za-z0-9_./:@+-])(?!https?:\\/\\/|www\\.)(?:${SEGMENT}/)+${SEGMENT}\\.${EXT}(?![A-Za-z0-9_/@+-]|\\.[A-Za-z0-9])`,
   "g",
 )
 const BARE_URL_RE =
@@ -133,11 +139,13 @@ function unmask(source: string, bucket: string[], tag: string): string {
 
 /**
  * Wrap detected file paths in markdown links whose href is `/shogo-file?path=`.
- * Fenced code blocks and links that are already present are left alone.
+ * Fenced code blocks, inline code that is not itself a path, and links that
+ * are already present are left alone.
  */
 export function linkifyFilePaths(markdown: string): string {
   const fences: string[] = []
   const links: string[] = []
+  const inlineCode: string[] = []
   let text = mask(markdown, FENCE_RE, fences, "FENCE")
   text = mask(text, EXISTING_LINK_RE, links, "LINK")
 
@@ -148,12 +156,17 @@ export function linkifyFilePaths(markdown: string): string {
   })
 
   text = mask(text, EXISTING_LINK_RE, links, "LINK")
+  // A code span that is not a path is code, not prose: masking it keeps the
+  // bare-path pass from writing markdown inside the backticks, where it would
+  // render as literal text (`bun run [src/server.ts](/shogo-file?...)`).
+  text = mask(text, INLINE_CODE_RE, inlineCode, "CODE")
   text = text.replace(BARE_PATH_RE, (match) => {
     const path = filePathCandidate(match, { requireSlash: true })
     if (!path) return match
     return `[${match}](${fileHref(path)})`
   })
 
+  text = unmask(text, inlineCode, "CODE")
   text = unmask(text, links, "LINK")
   text = unmask(text, fences, "FENCE")
   return text
