@@ -2641,6 +2641,7 @@ import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
 import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
+import { syncGuestClock } from './guest-clock'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
 import { scheduleLogWrite, flushAllLogWrites } from './runtime-log-writer'
 
@@ -3635,9 +3636,20 @@ app.post('/pool/quiesce', async (c) => {
 app.post('/pool/rehydrate', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const waitMs = Math.min(Math.max(Number(body?.waitMs) || 0, 0), 60_000)
+  // Before the sidecars restart, and before anything in the guest makes an
+  // HTTPS call: a guest restored from a snapshot can come back with its wall
+  // clock frozen at snapshot time (see guest-clock.ts). The host sends its
+  // clock in `hostNowMs`; a host that predates it sends nothing and this is a
+  // no-op. Logged either way, because an uncorrected skew is exactly the bug.
+  const clock = await syncGuestClock(body?.hostNowMs)
+  if (clock?.corrected) {
+    console.log(`[pool/rehydrate] clock skew ${clock.skewMs}ms corrected (residual ${clock.residualMs}ms)`)
+  } else if (clock?.error) {
+    console.error(`[pool/rehydrate] clock skew ${clock.skewMs}ms NOT corrected: ${clock.error}`)
+  }
   const projects = await rehydrateSidecars(allPreviewManagers(), waitMs)
   console.log(`[pool/rehydrate] ${JSON.stringify(projects)}`)
-  return c.json({ ok: true, projects })
+  return c.json({ ok: true, projects, ...(clock ? { clock } : {}) })
 })
 
 // Alias for `/preview/restart`. The code-agent prompt and older SDK/template

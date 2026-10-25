@@ -182,8 +182,13 @@ export class FcApi {
       // guest clock is far enough in the past that outbound TLS handshakes fail
       // with "certificate is not yet valid" (notBefore in the future relative
       // to the stale clock), breaking every HTTPS call from the guest
-      // (AI proxy, Composio, etc.). Requires kvm-clock (the x86 KVM default;
-      // our guests set no `clocksource=`) and host kernel >= 5.16 (hosts run 6.8).
+      // (AI proxy, Composio, etc.). Requires host kernel >= 5.16 (hosts run 6.8)
+      // AND a guest running on kvm-clock: this flag only moves kvm-clock, so a
+      // guest that switched to `tsc` (which every metal host's constant_tsc
+      // makes the kernel prefer) keeps its frozen clock anyway. That is why
+      // guestBootArgs pins `clocksource=kvm-clock` — do not drop it from the
+      // boot cmdline, and see the clock sync in POST /pool/rehydrate for the
+      // snapshots taken before that pin existed.
       clock_realtime: true,
     })
   }

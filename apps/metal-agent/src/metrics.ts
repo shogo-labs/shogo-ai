@@ -237,6 +237,15 @@ export const M = {
   // guest too broken to ship its own telemetry (e.g. TLS failing on clock skew).
   guestErrorTotal: 'metal_guest_error_total',
   guestTlsClockSkew: 'metal_guest_tls_clock_skew_total',
+  // Guest wall-clock skew measured against the host on the first health check
+  // after a snapshot restore (see pool.probeGuestClockSkew). `guestClockSkewMs`
+  // is the worst absolute skew seen since the agent started — a restore should
+  // read a few ms, and anything in the thousands is a guest whose clock froze at
+  // snapshot time (the 2026-10-25 staging incident: 4h40m). The counter is the
+  // number of restores that came back more than GUEST_CLOCK_SKEW_ALERT_MS off,
+  // which the rehydrate clock sync then corrects.
+  guestClockSkewMs: 'metal_guest_clock_skew_ms',
+  guestClockSkewAfterRestore: 'metal_guest_clock_skew_after_restore_total',
   guestProviderError: 'metal_guest_provider_error_total',
   guestConnectionError: 'metal_guest_connection_error_total',
   guestInferenceRetry: 'metal_guest_inference_retry_total',

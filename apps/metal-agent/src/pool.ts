@@ -298,6 +298,13 @@ const HEALTH_GATE_RETRIES = 4
  */
 const HEALTH_GATE_PATIENT_TIMEOUT_MS = 15_000
 /**
+ * Guest clock skew after a restore that is worth a warning + a metric. The
+ * `Date` header has one-second resolution and a resumed guest is measured
+ * mid-boot, so a few hundred ms is normal; five seconds means the clock really
+ * did freeze (or the guest has no working time source), not that we were late.
+ */
+const GUEST_CLOCK_SKEW_ALERT_MS = 5000
+/**
  * How long background activity polls must have been failing before open()
  * discards a running guest. Shorter than this, open() reports "busy" and the
  * caller retries.
@@ -879,6 +886,31 @@ async function probeHealth(url: string, timeoutMs = 1000): Promise<boolean> {
   }
 }
 
+/**
+ * How far the guest's wall clock is from the host's, in ms (guest - host),
+ * read from the `Date` header the guest's own Bun.serve stamps on /health.
+ * Returns null when the guest does not answer or sends no parseable Date — a
+ * missing header is not a skew of zero, so callers must not treat it as one.
+ *
+ * The header has one-second resolution, so the comparison is against the
+ * midpoint of the request; anything inside a second is noise.
+ */
+async function probeGuestClockSkew(url: string, timeoutMs = 2000): Promise<number | null> {
+  try {
+    const hostBefore = Date.now()
+    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(timeoutMs) })
+    const hostAfter = Date.now()
+    if (!res.ok) return null
+    const date = res.headers.get('date')
+    if (!date) return null
+    const guest = Date.parse(date)
+    if (!Number.isFinite(guest)) return null
+    return guest - Math.round((hostBefore + hostAfter) / 2)
+  } catch {
+    return null
+  }
+}
+
 export class MetalWarmPool {
   private available: PooledVm[] = []
   private assigned = new Map<string, AssignedVm>()
@@ -994,6 +1026,15 @@ export class MetalWarmPool {
    * mid-flight — and a wedged one keeps holding its port, so every restart
    * fails with EADDRINUSE. A 404 (guest opted out) or timeout is tolerated so
    * the substrate works with any guest.
+   *
+   * `rehydrate` also carries the host's clock, and the guest corrects its own
+   * wall clock from it before restarting the sidecars. A restored guest can
+   * come back with the clock frozen at snapshot time (see guestBootArgs), and
+   * that clock decides whether every outbound TLS handshake in the guest is
+   * valid. Snapshots taken before `clocksource=kvm-clock` was pinned stay on
+   * TSC until they cold-boot, so this sync is the backstop that fixes them —
+   * and it is harmless for a guest that is already right (the guest ignores a
+   * skew under 2 s). An old guest ignores the extra field.
    */
   protected async callGuestHook(
     url: string,
@@ -1004,7 +1045,11 @@ export class MetalWarmPool {
     try {
       const res = await fetch(`${url}/pool/${hook}`, {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(hook === 'rehydrate' ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: hook === 'rehydrate' ? JSON.stringify({ hostNowMs: Date.now() }) : undefined,
         signal: AbortSignal.timeout(timeoutMs),
       })
       if (res.status === 404) return false
@@ -4708,6 +4753,21 @@ export class MetalWarmPool {
       throw err
     } finally {
       this.inFlight.delete(handle.id)
+    }
+
+    // The first health check after the restore is also the only cheap place to
+    // see whether the guest came back with a frozen clock — the rehydrate hook
+    // below corrects it, so measure now, before the correction, and make a
+    // snapshot that still comes back skewed visible in metrics instead of only
+    // in a guest's TLS errors later.
+    const skewMs = await probeGuestClockSkew(handle.agentUrl)
+    if (skewMs !== null) {
+      const abs = Math.abs(skewMs)
+      metrics.gauge(M.guestClockSkewMs, Math.max(abs, metrics.getGauge(M.guestClockSkewMs)))
+      if (abs > GUEST_CLOCK_SKEW_ALERT_MS) {
+        metrics.inc(M.guestClockSkewAfterRestore)
+        console.warn(`[pool] guest clock skew ${skewMs}ms after restore ${handle.id} (project=${projectId})`)
+      }
     }
 
     // Now live (assigned), not a cache entry: drop the suspended entry + index.

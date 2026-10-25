@@ -24,7 +24,7 @@
  *   METAL_SNAP_STORE=fs bun run src/e2e-lifecycle.ts
  */
 
-import { mkdirSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { config } from './config'
 import { MetalWarmPool } from './pool'
@@ -40,6 +40,45 @@ async function getStatus(url: string): Promise<any> {
   const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) })
   if (!res.ok) throw new Error(`health ${res.status}`)
   return res.json()
+}
+
+/**
+ * Guest wall clock minus the host's, in ms, read from the `Date` header the
+ * guest stamps on /health. A VM restored from a snapshot must be within a
+ * couple of seconds of the host — a frozen clock is the bug this covers
+ * (staging 2026-10-25: a workspace resumed 4h40m behind, so the agent read the
+ * wrong time and every HTTPS call from the guest failed its TLS notBefore).
+ */
+async function guestClockSkewMs(url: string): Promise<number> {
+  const before = Date.now()
+  const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) })
+  const after = Date.now()
+  const date = res.headers.get('date')
+  if (!date) throw new Error('guest /health sent no Date header')
+  return Date.parse(date) - Math.round((before + after) / 2)
+}
+
+/**
+ * The clocksource the guest kernel settled on. Boot passes
+ * `clocksource=kvm-clock` because `clock_realtime` on restore only moves
+ * kvm-clock — a guest that switched to `tsc` resumes with the clock it was
+ * frozen with. The guest reports the authoritative value from sysfs; the serial
+ * console is the fallback for a guest that does not report it.
+ */
+function guestClocksource(status: any, serialLog: string | undefined): { source: string; tscSwitch: boolean } {
+  let text = ''
+  try {
+    if (serialLog) text = readFileSync(serialLog, 'utf8')
+  } catch {
+    text = ''
+  }
+  const kvm = text.lastIndexOf('Switched to clocksource kvm-clock')
+  const tsc = text.lastIndexOf('Switched to clocksource tsc')
+  const reported = typeof status?.clocksource === 'string' ? status.clocksource : ''
+  return {
+    source: reported || (kvm !== -1 ? 'kvm-clock' : 'unknown'),
+    tscSwitch: tsc !== -1 && tsc > kvm,
+  }
 }
 
 async function main() {
@@ -67,6 +106,11 @@ async function main() {
     if (pre0.projectId !== PROJECT) throw new Error(`assign not reflected in guest: ${pre0.projectId}`)
     log('assign', `ok bootID=${pre0.bootID} counter=${pre0.counter} quiesceCount=${pre0.quiesceCount}`)
 
+    // AC1: the cold boot we are about to snapshot must have stayed on kvm-clock,
+    // or `clock_realtime` on restore cannot move its clock at all.
+    const clocksource = guestClocksource(pre0, a.handle.serialLog)
+    log('clock', `clocksource=${clocksource.source} later switch to tsc=${clocksource.tscSwitch}`)
+
     // Let the counter advance so continuity is provable.
     await Bun.sleep(1000)
     const beforeSuspend = await getStatus(a.handle.agentUrl)
@@ -82,6 +126,14 @@ async function main() {
     const durableMeta = await store.head(PROJECT)
     const durablePresent = durableMeta != null
     log('store', durablePresent ? `durable copy present (identity=${durableMeta!.rootfsIdentity})` : 'MISSING durable copy')
+
+    // ---- 1b. stay suspended long enough for a frozen clock to show up -------
+    // A restore that lands within the same second it was suspended cannot tell
+    // a working clock from a frozen one, so hold the VM down past the 2 s
+    // tolerance before waking it.
+    const SUSPEND_HOLD_MS = 15_000
+    log('hold', `suspended for ${SUSPEND_HOLD_MS}ms before resume...`)
+    await Bun.sleep(SUSPEND_HOLD_MS)
 
     // ---- 2. evict hot local copy → force a durable-store pull on resume ----
     const evicted = pool.evictLocal(PROJECT)
@@ -102,6 +154,13 @@ async function main() {
         `quiesceCount=${afterRestore.quiesceCount} rehydrateCount=${afterRestore.rehydrateCount} quiesced=${afterRestore.quiesced} ` +
         `(ready=${restored.readyMs.toFixed(1)}ms)`,
     )
+    // The guest clock, read from the guest itself after the rehydrate sync. A
+    // resume that hands back a clock frozen at snapshot time fails here rather
+    // than silently in a TLS handshake minutes later.
+    const clockSkewMs = await guestClockSkewMs(restored.assigned.handle.agentUrl)
+    report.steps.suspendHoldMs = SUSPEND_HOLD_MS
+    report.steps.clockSkewMs = clockSkewMs
+    log('clock', `guest is ${clockSkewMs}ms from the host after a ${SUSPEND_HOLD_MS}ms suspend`)
 
     // ---- 3. staleness guard (store-level) ----------------------------------
     // A mismatched identity must be rejected BEFORE any artifact copy (a real
@@ -127,6 +186,12 @@ async function main() {
       rehydrateClearedQuiesced: afterRestore.quiesced === false,
       staleSnapshotRejected: stalePull === null,
       freshSnapshotAccepted: identityMatches,
+      // AC2: within 2 s of the host after a ≥ 15 s suspend. The `Date` header is
+      // whole seconds and the guest corrects to whole seconds, so 2 s is the
+      // tightest honest bound.
+      guestClockSynced: Math.abs(clockSkewMs) <= 2000,
+      // AC1: the boot that produced this snapshot pinned kvm-clock.
+      guestClocksourcePinned: clocksource.source === 'kvm-clock' && !clocksource.tscSwitch,
     }
     report.correctness = { beforeSuspend, afterRestore, durableMeta, checks }
     for (const [k, v] of Object.entries(checks)) log('verify', `${k}: ${v ? 'PASS' : 'FAIL'}`)
