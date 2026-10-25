@@ -2566,8 +2566,13 @@ export class PreviewManager {
     try {
       // A static build re-runs on any watched change, and Remotion/custom
       // output embeds render-time data, so ask the inputs instead of
-      // assuming a rebuild means a new site.
-      this.onBuildComplete?.({ outputChanged: consumeBuildInputChange(cwd) })
+      // assuming a rebuild means a new site. The plan decides where this
+      // build writes (`outDir` from shogo.preview.json, default `dist`), and
+      // the staging copy is ours too — both are output, not input.
+      const outDirs = [DEFAULT_STAGING_DIR, plan.kind === 'command' ? plan.outDir : null].filter(
+        (dir): dir is string => !!dir,
+      )
+      this.onBuildComplete?.({ outputChanged: consumeBuildInputChange(cwd, { ignore: outDirs }) })
     } catch (err: any) {
       console.warn(`[${LOG_PREFIX}] onBuildComplete subscriber threw: ${err?.message ?? err}`)
     }
@@ -4553,7 +4558,9 @@ export class PreviewManager {
           // a restart over untouched sources produces a different bundle
           // (metro ids follow traversal order) for the same app.
           try {
-            this.onBuildComplete({ outputChanged: consumeBuildInputChange(cwd) })
+            this.onBuildComplete({
+              outputChanged: consumeBuildInputChange(cwd, { ignore: ['dist', stagingDir] }),
+            })
           } catch (err: any) {
             console.warn(`[${LOG_PREFIX}] onBuildComplete subscriber threw: ${err?.message ?? err}`)
           }

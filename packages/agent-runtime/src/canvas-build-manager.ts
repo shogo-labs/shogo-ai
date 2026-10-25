@@ -493,9 +493,12 @@ export class CanvasBuildManager {
       emitBuildLine(this.buildLogPath, LOG_PREFIX, successMsg, 'stdout')
       // Metro's own output is not byte-stable between two runs over identical
       // sources (module ids follow traversal order), so "did it change?" is
-      // answered from the inputs the build consumed. See
-      // build-input-fingerprint.ts.
-      this.callbacks.onBuildComplete({ outputChanged: consumeBuildInputChange(this.workspaceDir) })
+      // answered from the inputs the build consumed. The build's own output
+      // directories are excluded: this manager always builds to `dist` via a
+      // staging dir. See build-input-fingerprint.ts.
+      this.callbacks.onBuildComplete({
+        outputChanged: consumeBuildInputChange(this.workspaceDir, { ignore: ['dist', CANVAS_STAGING_DIR] }),
+      })
     } catch (err: any) {
       // Failed build: drop the partial staging output so it doesn't
       // poison the next swap, and leave `dist/` untouched.

@@ -99,6 +99,62 @@ describe('consumeBuildInputChange', () => {
     expect(consumeBuildInputChange(ws)).toBe(true)
   })
 
+  it('ignores the running app\u2019s dev database — using the app must not arm the toast', () => {
+    consumeBuildInputChange(ws)
+    write('prisma/schema.prisma', 'datasource db {\n  provider = "sqlite"\n}\n')
+    consumeBuildInputChange(ws)
+    // The app is used: SQLite writes its WAL, SHM and journal.
+    write('prisma/dev.db-wal', 'frame\n')
+    write('prisma/dev.db-shm', 'shm\n')
+    write('prisma/dev.db-journal', 'journal\n')
+    expect(consumeBuildInputChange(ws)).toBe(false)
+  })
+
+  it('ignores agent scratch, editor state and OS droppings', () => {
+    consumeBuildInputChange(ws)
+    write('.tmp/probe-detected.ts', 'console.log(1)\n')
+    write('.tmp/sho-200/apps/api/src/index.ts', 'scratch\n')
+    write('.cursor/rules.md', 'editor\n')
+    write('.DS_Store', 'dropping\n')
+    write('app/.DS_Store', 'nested dropping\n')
+    expect(consumeBuildInputChange(ws)).toBe(false)
+  })
+
+  it('ignores test edits — a test is not served', () => {
+    consumeBuildInputChange(ws)
+    write('e2e/local/foo.test.ts', 'test("x", () => {})\n')
+    write('src/components/__tests__/Button.test.tsx', 'it("renders", () => {})\n')
+    write('src/utils.spec.ts', 'describe("util", () => {})\n')
+    expect(consumeBuildInputChange(ws)).toBe(false)
+  })
+
+  it('ignores a custom outDir when the caller names it', () => {
+    // A `custom` static stack can build to `build/` instead of `dist/`, so the
+    // caller passes the resolved plan outDir. Without it the build dirties its
+    // own inputs and the gate can never suppress.
+    write('app/index.tsx', 'export default () => null\n')
+    const options = { ignore: ['build', 'dist.staging'] }
+    expect(consumeBuildInputChange(ws, options)).toBe(true)
+    write('build/index.html', '<!doctype html>\n')
+    write('build/assets/index-AAAA.js', 'bundle\n')
+    write('dist.staging/index.html', '<!doctype html>\n')
+    expect(consumeBuildInputChange(ws, options)).toBe(false)
+    // A second build writes different output into the same folder: still not an input.
+    write('build/assets/index-BBBB.js', 'bundle 2\n')
+    expect(consumeBuildInputChange(ws, options)).toBe(false)
+    // But a source edit still is.
+    write('app/index.tsx', 'export default () => 1\n')
+    expect(consumeBuildInputChange(ws, options)).toBe(true)
+  })
+
+  it('counts a folder that looks like output but was not declared', () => {
+    // Documents the trade-off: ignoring is caller-driven, so a build writing to
+    // an undeclared directory still flips the gate — loudly, not silently.
+    consumeBuildInputChange(ws)
+    write('build/index.html', '<!doctype html>\n')
+    expect(consumeBuildInputChange(ws)).toBe(true)
+  })
+
   it('reports a workspace with nothing to hash as changed', () => {
     const empty = mkdtempSync(join(tmpdir(), 'build-input-empty-'))
     try {

@@ -199,6 +199,13 @@ const ALWAYS_IGNORED = [
   'HEARTBEAT.md',
   'WORKSPACE.md',
   'STACK.md',
+  // Runtime and tool state: the app's own SQLite (written whenever the app is
+  // used), agent scratch, and editor state. A DB write was scheduling a full
+  // Remotion rebuild that then toasted.
+  'prisma',
+  '.tmp',
+  '.cursor',
+  '.DS_Store',
 ]
 
 /**

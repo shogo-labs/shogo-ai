@@ -171,6 +171,47 @@ describe('PreviewManager with the custom stack', () => {
     }
   }, 60_000)
 
+  test('a write to the app\u2019s own dev database neither rebuilds nor toasts', async () => {
+    // Using the app (not editing it) churns prisma/dev.db-wal continuously. It
+    // is not static-build input: hashing it meant every DB write armed the
+    // "Update available · Refresh" toast and scheduled a full Remotion rebuild.
+    const dir = project({
+      '.tech-stack': 'custom',
+      'build.cjs': BUILD_SCRIPT,
+      'src/page.txt': 'first',
+      'prisma/schema.prisma': 'datasource db {\n  provider = "sqlite"\n}\n',
+      'shogo.preview.json': '{"build":"bun build.cjs"}',
+    })
+    let builds = 0
+    const changes: (boolean | undefined)[] = []
+    const pm = new PreviewManager({
+      workspaceDir: dir,
+      runtimePort: 0,
+      basePath: '/p/proj-1/',
+      onBuildComplete: (info) => {
+        builds++
+        changes.push(info?.outputChanged)
+      },
+    })
+    try {
+      await pm.start()
+      await waitFor(() => builds >= 1)
+      expect(changes[0]).toBe(true)
+
+      writeFileSync(join(dir, 'prisma/dev.db-wal'), 'a frame written by the running app\n')
+      writeFileSync(join(dir, 'prisma/dev.db-shm'), 'shm\n')
+      await new Promise((resolve) => setTimeout(resolve, 1_500))
+      expect(builds).toBe(1)
+
+      // A real edit still builds and still reports a change.
+      writeFileSync(join(dir, 'src/page.txt'), 'second')
+      await waitFor(() => builds >= 2, 10_000)
+      expect(changes[1]).toBe(true)
+    } finally {
+      pm.stop()
+    }
+  }, 60_000)
+
   test('the video-editor stack previews through the same static build', async () => {
     // The Remotion starter declares devServer: static-build — the canvas is a
     // Vite build of the Player shell, so the preview pipeline is the static one
