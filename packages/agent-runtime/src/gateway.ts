@@ -2763,7 +2763,14 @@ export class AgentGateway {
   private async flushTaskWake(sessionId: string): Promise<void> {
     const reg = this.commandRegistries.get(sessionId)
     if (!reg || this.turnAbortControllers.has(sessionId)) return
-    const notes = reg.peekNotifications().filter((n) => !reg.get(n.taskId)?.apiTracked && !reg.get(n.taskId)?.reported)
+    // The note's own flags first: the entry that queued it may have been evicted,
+    // and reading only the entry then treats an API-owned note as a local task —
+    // the API writes its stale text onto the re-armed row and wakes the session
+    // again on every turn end (SHO-196).
+    const notes = reg.peekNotifications().filter((n) => {
+      const entry = reg.get(n.taskId)
+      return !(n.apiTracked ?? entry?.apiTracked) && !(n.reported ?? entry?.reported)
+    })
     if (notes.length === 0) {
       this.clearTaskWakeRetry(sessionId)
       return
