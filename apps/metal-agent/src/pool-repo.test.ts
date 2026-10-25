@@ -19,6 +19,7 @@ import {
   RepoBundleLfsPushError,
   REPO_STAGING_DIR,
   RepoHydrateRefusedError,
+  REPO_DEFERRED_REASON,
   repoKeepPaths,
   type AssignedVm,
   type RepoExport,
@@ -763,7 +764,7 @@ describe('pool host-mediated repo persist', () => {
 
     test('stays template-origin when the repo hydrate fails', async () => {
       const { pool, run } = assignWorkspace({ url: 'https://store/ws/repo.git.tar.gz', bytes: 10, etag: '"ws-r1"' })
-      ;(pool as any).hydrateRepo = async () => {
+      ;(pool as any).prepareRepoStage = async () => {
         throw new Error('The operation timed out.')
       }
       const a = await run
@@ -774,7 +775,7 @@ describe('pool host-mediated repo persist', () => {
     test('members restored from backup make it backup-origin even when the repo hydrate fails', async () => {
       const { pool, run } = assignWorkspace({ url: 'https://store/ws/repo.git.tar.gz', bytes: 10, etag: '"ws-r1"' })
       ;(pool as any).sourceRef = async () => ({ url: 'https://store/p1/project-src.tar.gz', bytes: 10, etag: '"p1-src"' })
-      ;(pool as any).hydrateRepo = async () => {
+      ;(pool as any).prepareRepoStage = async () => {
         throw new Error('/pool/repo-hydrated failed (500)')
       }
       const a = await run
@@ -820,6 +821,140 @@ describe('pool host-mediated repo persist', () => {
       expect(await pool.saveRepoToStore(a)).toBe(false)
       expect(pool.statCalls).toBe(0)
       expect(pool.preserved).toHaveLength(0)
+    })
+  })
+
+  describe('assign-time repo restore past the foreground budget', () => {
+    const repoRef = { url: 'https://store/p1/repo.git.tar.gz', bytes: 10, etag: '"r1"' }
+
+    function assignSlowRepo(opts: { downloadMs: number; ifIdle?: boolean; adoptStatus?: number }) {
+      const seen: Array<{ path: string; body: any }> = []
+      const guest = Bun.serve({
+        port: 0,
+        fetch: async (req) => {
+          const path = new URL(req.url).pathname
+          const body = req.method === 'POST' ? await req.json().catch(() => null) : null
+          seen.push({ path, body })
+          if (path === '/pool/repo-hydrated' && body?.probe) {
+            return Response.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: opts.ifIdle ?? true })
+          }
+          if (path === '/pool/hydrate-url' && body?.destDir) await Bun.sleep(opts.downloadMs)
+          if (path === '/pool/repo-hydrated' && opts.adoptStatus) {
+            return Response.json({ error: 'workspace already in use', busy: true }, { status: opts.adoptStatus })
+          }
+          return Response.json({ ok: true })
+        },
+      })
+      const cfg = {
+        ...config,
+        work: dir,
+        snapDir: join(dir, 'snap'),
+        runDir: join(dir, 'run'),
+        poolSize: 0,
+        repoForegroundMs: 40,
+      } as typeof config
+      mkdirSync(cfg.snapDir, { recursive: true })
+      mkdirSync(cfg.runDir, { recursive: true })
+      const mgr = {
+        startVM: async () => ({ ...HANDLE, agentUrl: `http://127.0.0.1:${guest.port}`, rootfs: '/tmp/fake', vmClass: 'standard' }),
+        stopVM: async () => {},
+        isRunning: () => true,
+        procCount: () => 0,
+      } as unknown as FirecrackerVMManager
+      const pool = new TestPool(mgr, cfg, { kind: 'none' } as unknown as SnapshotStore)
+      ;(pool as any).sourceRef = async () => null
+      ;(pool as any).repoRef = async () => repoRef
+      ;(pool as any).projectDataRef = async () => null
+      ;(pool as any).hydrateHomeState = async () => ({ hydrated: false })
+      return { pool, seen, guest }
+    }
+
+    async function settle(a: AssignedVm) {
+      for (let i = 0; i < 100 && a.repoHydratePending; i++) await Bun.sleep(10)
+    }
+
+    test('serves the source .git once the budget runs out, then swaps the history in while idle', async () => {
+      const { pool, seen, guest } = assignSlowRepo({ downloadMs: 150 })
+      try {
+        const t0 = performance.now()
+        const a = await pool.assign('p1', { RUNTIME_AUTH_SECRET: 'tok' })
+        expect(performance.now() - t0).toBeLessThan(140)
+        expect(a.repoRestore?.mode).toBe('deferred')
+        expect(a.repoHydratePending).toBe(true)
+        expect(a.repoUntrustedReason).toBe(REPO_DEFERRED_REASON)
+        expect(await pool.saveRepoToStore(a)).toBe(false)
+
+        await settle(a)
+        const adopt = seen.find((s) => s.path === '/pool/repo-hydrated' && s.body?.stagingDir)
+        expect(adopt?.body.ifIdle).toBe(true)
+        expect(a.repoHydratePending).toBe(false)
+        expect(a.repoUntrustedReason).toBeUndefined()
+        expect(a.repoParentEtag).toBe('"r1"')
+        expect(a.repoLinked).toBe(true)
+
+        await pool.saveRepoToStore(a)
+        expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'descends', etag: '"r1"' })
+      } finally {
+        guest.stop(true)
+      }
+    })
+
+    test('a workspace already in use keeps the source .git and never writes the durable repo', async () => {
+      const { pool, guest } = assignSlowRepo({ downloadMs: 100, adoptStatus: 409 })
+      try {
+        const a = await pool.assign('p1', { RUNTIME_AUTH_SECRET: 'tok' })
+        await settle(a)
+        expect(a.repoHydratePending).toBe(false)
+        expect(a.repoUntrustedReason).toMatch(/in use/)
+        expect(a.sourceUntrustedReason).toBeUndefined()
+        expect(a.repoParentEtag).toBeUndefined()
+        expect(await pool.saveRepoToStore(a)).toBe(false)
+        expect(pool.uploads).toHaveLength(0)
+      } finally {
+        guest.stop(true)
+      }
+    })
+
+    test('a guest that cannot refuse a late swap is waited for, as before', async () => {
+      const { pool, seen, guest } = assignSlowRepo({ downloadMs: 100, ifIdle: false })
+      try {
+        const a = await pool.assign('p1', { RUNTIME_AUTH_SECRET: 'tok' })
+        expect(a.repoRestore?.mode).toBe('foreground')
+        expect(a.repoHydratePending).toBe(false)
+        expect(a.repoParentEtag).toBe('"r1"')
+        const adopt = seen.find((s) => s.path === '/pool/repo-hydrated' && s.body?.stagingDir)
+        expect(adopt?.body.ifIdle).toBeUndefined()
+      } finally {
+        guest.stop(true)
+      }
+    })
+
+    test('a fast download stays in the foreground', async () => {
+      const { pool, guest } = assignSlowRepo({ downloadMs: 0 })
+      try {
+        const a = await pool.assign('p1', { RUNTIME_AUTH_SECRET: 'tok' })
+        expect(a.repoRestore?.mode).toBe('foreground')
+        expect(a.repoUntrustedReason).toBeUndefined()
+        expect(a.repoParentEtag).toBe('"r1"')
+      } finally {
+        guest.stop(true)
+      }
+    })
+  })
+
+  describe('reportOpen', () => {
+    test('hands a finished open to the reused retry that follows a control-plane timeout, once', () => {
+      const pool = makePool(dir)
+      pool.add('p1', { repoRestore: { mode: 'deferred', bytes: 5, bundles: 2, foregroundMs: 10_000 } })
+      const first = (pool as any).reportOpen('p1', { handle: HANDLE, mode: 'assigned', phases: { boot: 5 }, totalMs: 90_000 })
+      expect(first.repo).toEqual({ mode: 'deferred', bytes: 5, bundles: 2, foregroundMs: 10_000 })
+
+      const retry = (pool as any).reportOpen('p1', { handle: HANDLE, mode: 'assigned', reused: true })
+      expect(retry.lateWake).toMatchObject({ mode: 'assigned', totalMs: 90_000, phases: { boot: 5 } })
+      expect(retry.lateWake.repo.mode).toBe('deferred')
+
+      const again = (pool as any).reportOpen('p1', { handle: HANDLE, mode: 'assigned', reused: true })
+      expect(again.lateWake).toBeUndefined()
     })
   })
 
