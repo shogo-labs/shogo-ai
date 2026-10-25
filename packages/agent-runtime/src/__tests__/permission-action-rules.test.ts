@@ -84,11 +84,14 @@ describe('rules', () => {
     expect(engine({ mode: 'strict', overrides: { actions: { exec: 'allow' } } }).check('shell', 'exec', { command: 'ls' }).action).toBe('allow')
   })
 
-  test('deny lists and credential-path blocks still win over an allow rule', () => {
+  test('deny lists a person configured still win over an allow rule', () => {
     const e = engine({ mode: 'full_autonomy', overrides: { actions: { exec: 'allow' }, shellCommands: { deny: ['gh pr merge*'] } } })
     expect(e.check('shell', 'exec', { command: 'gh pr merge 12' }).action).toBe('deny')
     expect(e.check('shell', 'exec', { command: 'ls' }).action).toBe('allow')
-    expect(e.check('file_read', 'read_file', { path: require('os').homedir() + '/.ssh/id_rsa' }).action).toBe('deny')
+    // Full autonomy blocks no paths at all; the same read is refused in balanced.
+    const sshPath = require('os').homedir() + '/.ssh/id_rsa'
+    expect(e.check('file_read', 'read_file', { path: sshPath }).action).toBe('allow')
+    expect(engine({ mode: 'balanced' }).check('file_read', 'read_file', { path: sshPath }).action).toBe('deny')
   })
 
   test('merging rules keeps the stricter one; a project cannot loosen the user', () => {
@@ -155,13 +158,13 @@ describe('cloud (actions only)', () => {
 })
 
 describe('cloud workspace on a worker machine (no default rules)', () => {
-  test('no built-in ask rule, but configured rules and credential-path blocks still apply', () => {
+  test('no built-in ask rule and no path blocks, but configured rules still apply', () => {
     const e = engine({ ...DEFAULT_CLOUD_SECURITY_PREFERENCE }, { noDefaultActionRules: true })
     expect(e.isActionsOnly).toBe(false)
     expect(e.actionRuleFor('github_merge_pr')).toBeUndefined()
     expect(e.check('project', 'github_merge_pr', {}).action).toBe('allow')
     expect(e.check('shell', 'exec', { command: 'rm -rf *.log' }).action).toBe('allow')
-    expect(e.check('file_read', 'read_file', { path: require('os').homedir() + '/.ssh/id_rsa' }).action).toBe('deny')
+    expect(e.check('file_read', 'read_file', { path: require('os').homedir() + '/.ssh/id_rsa' }).action).toBe('allow')
     const asked = engine({ ...DEFAULT_CLOUD_SECURITY_PREFERENCE, overrides: { actions: { github_merge_pr: 'ask' } } }, { noDefaultActionRules: true })
     expect(asked.check('project', 'github_merge_pr', {}).action).toBe('ask')
   })

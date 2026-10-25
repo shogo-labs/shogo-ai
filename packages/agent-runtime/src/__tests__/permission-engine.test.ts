@@ -146,19 +146,52 @@ describe('PermissionEngine.check — no built-in command blocks', () => {
     expect(eng.check('shell', 'exec', { command: 'rm -r /tmp/x' }).action).toBe('ask')
   })
 
-  test('blocks reads of $HOME/.ssh in every mode', () => {
-    const eng = newEngine({ preference: { mode: 'full_autonomy' } })
-    const res = eng.check('file_read', 'read_file', { path: '~/.ssh/id_rsa' })
-    // ~/ doesn't expand under resolve(), so use absolute path. Use absolute below.
-    expect(res.action === 'allow' || res.action === 'deny').toBe(true)
-
-    const real = eng.check('file_read', 'read_file', { path: require('os').homedir() + '/.ssh/id_rsa' })
-    expect(real.action).toBe('deny')
+  test('credential paths are blocked in strict/balanced and allowed in full_autonomy', () => {
+    const sshPath = require('os').homedir() + '/.ssh/id_rsa'
+    for (const mode of ['strict', 'balanced'] as const) {
+      expect(newEngine({ preference: { mode } }).check('file_read', 'read_file', { path: sshPath }).action).toBe('deny')
+    }
+    expect(newEngine({ preference: { mode: 'full_autonomy' } }).check('file_read', 'read_file', { path: sshPath }).action).toBe('allow')
   })
 
-  test('always denies the "system" category', () => {
+  test('the "system" category is denied in strict/balanced and allowed in full_autonomy', () => {
+    for (const mode of ['strict', 'balanced'] as const) {
+      expect(newEngine({ preference: { mode } }).check('system', 'sudo', {}).action).toBe('deny')
+    }
+    expect(newEngine({ preference: { mode: 'full_autonomy' } }).check('system', 'sudo', {}).action).toBe('allow')
+  })
+})
+
+describe('PermissionEngine.check — full_autonomy blocks nothing', () => {
+  // `~` is never expanded by the engine (it only compares literal prefixes), so
+  // the absolute forms are what actually reach HARD_BLOCKED_PATH_PREFIXES.
+  const HOME = require('os').homedir()
+  const TILDE_PATHS = ['~/.ssh/id_ed25519', '~/.aws/credentials', '~/.zshrc']
+  const ABSOLUTE_PATHS = [`${HOME}/.ssh/id_ed25519`, `${HOME}/.aws/credentials`, `${HOME}/.zshrc`, '/etc/passwd']
+
+  test('allows every file tool on every built-in credential path', () => {
     const eng = newEngine({ preference: { mode: 'full_autonomy' } })
-    expect(eng.check('system', 'sudo', {}).action).toBe('deny')
+    for (const path of [...TILDE_PATHS, ...ABSOLUTE_PATHS]) {
+      expect(eng.check('file_read', 'read_file', { path }).action).toBe('allow')
+      expect(eng.check('file_write', 'write_file', { path }).action).toBe('allow')
+      expect(eng.check('file_delete', 'delete_file', { path }).action).toBe('allow')
+    }
+  })
+
+  test('strict and balanced still deny those paths', () => {
+    for (const mode of ['strict', 'balanced'] as const) {
+      const eng = newEngine({ preference: { mode } })
+      for (const path of ABSOLUTE_PATHS) {
+        expect(eng.check('file_read', 'read_file', { path }).action).toBe('deny')
+        expect(eng.check('file_write', 'write_file', { path }).action).toBe('deny')
+      }
+    }
+  })
+
+  test('a fileAccess deny rule a person configured still denies', () => {
+    const eng = newEngine({ preference: { mode: 'full_autonomy', overrides: { fileAccess: { deny: ['~/.ssh/*'] } } } })
+    expect(eng.check('file_read', 'read_file', { path: '~/.ssh/id_ed25519' }).action).toBe('deny')
+    expect(eng.check('file_read', 'read_file', { path: '~/.aws/credentials' }).action).toBe('allow')
   })
 })
 
@@ -445,23 +478,48 @@ describe('assertWithinWorkspace', () => {
 
   test('throws on a path-traversal attempt outside SHOGO_LOCAL_MODE', () => {
     const old = process.env.SHOGO_LOCAL_MODE
+    const oldLinked = process.env.LINKED_FOLDERS
     delete process.env.SHOGO_LOCAL_MODE
+    // A desktop runtime sets LINKED_FOLDERS for every folder-linked project; the
+    // linked-folder branch would answer with its own message instead.
+    delete process.env.LINKED_FOLDERS
     try {
       expect(() => assertWithinWorkspace(workspaceDir, '../../etc/passwd')).toThrow(/outside workspace/i)
     } finally {
       if (old !== undefined) process.env.SHOGO_LOCAL_MODE = old
+      if (oldLinked !== undefined) process.env.LINKED_FOLDERS = oldLinked
     }
   })
 
   test('passes through traversal paths in SHOGO_LOCAL_MODE', () => {
     const old = process.env.SHOGO_LOCAL_MODE
+    const oldLinked = process.env.LINKED_FOLDERS
     process.env.SHOGO_LOCAL_MODE = 'true'
+    delete process.env.LINKED_FOLDERS
     try {
       const out = assertWithinWorkspace(workspaceDir, '../../etc/passwd')
       expect(typeof out).toBe('string')
     } finally {
       if (old === undefined) delete process.env.SHOGO_LOCAL_MODE
       else process.env.SHOGO_LOCAL_MODE = old
+      if (oldLinked !== undefined) process.env.LINKED_FOLDERS = oldLinked
+    }
+  })
+
+  test('unrestricted skips the linked-folder boundary; without it the path is refused', () => {
+    const oldLocal = process.env.SHOGO_LOCAL_MODE
+    const oldLinked = process.env.LINKED_FOLDERS
+    delete process.env.SHOGO_LOCAL_MODE
+    process.env.LINKED_FOLDERS = JSON.stringify([workspaceDir])
+    try {
+      const outside = require('path').join(require('os').tmpdir(), 'sho-209-outside-probe.txt')
+      expect(() => assertWithinWorkspace(workspaceDir, outside)).toThrow(/allowed folders/i)
+      expect(assertWithinWorkspace(workspaceDir, outside, { unrestricted: true })).toBe(outside)
+    } finally {
+      if (oldLocal === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = oldLocal
+      if (oldLinked === undefined) delete process.env.LINKED_FOLDERS
+      else process.env.LINKED_FOLDERS = oldLinked
     }
   })
 })

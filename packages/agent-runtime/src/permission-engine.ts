@@ -7,8 +7,9 @@
  *
  * Three tiers: strict (ask everything), balanced (allowlist-based), full_autonomy (YOLO).
  * Nothing is blocked by default: only rules a person configured (shell/file deny
- * lists, per-tool action rules, local-access settings) and system credential
- * paths are denied in every mode. Shell commands have no built-in blocks.
+ * lists, per-tool action rules, local-access settings) apply. The built-in blocks
+ * that remain — credential paths (`~/.ssh`, `~/.aws`, …) and the `system`
+ * category — apply only in strict/balanced; full_autonomy blocks nothing.
  */
 
 import { resolve, join, dirname } from 'path'
@@ -479,9 +480,11 @@ export class PermissionEngine {
         ?? { action: 'allow', reason: 'No rule for this action', category }
     }
 
-    // 1. Hard-block checks (always deny, all modes)
-    const hardBlock = this.checkHardBlocked(category, toolName, params)
-    if (hardBlock) return hardBlock
+    // 1. Hard-block checks (deny in strict/balanced; full_autonomy blocks nothing)
+    if (this.pref.mode !== 'full_autonomy') {
+      const hardBlock = this.checkHardBlocked(category, toolName, params)
+      if (hardBlock) return hardBlock
+    }
 
     // 2. User deny overrides
     const denyCheck = this.checkDenyOverrides(category, toolName, params)
@@ -987,8 +990,21 @@ export function scratchPathForWrite(
   return rewritten
 }
 
-export function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
+/**
+ * Refuse a path outside the workspace (and, when `LINKED_FOLDERS` is set, outside
+ * the linked folders too).
+ *
+ * `opts.unrestricted` skips the linked-folder boundary entirely. The gateway sets
+ * it for a desktop runtime in full_autonomy, where a person asked us to block
+ * nothing (SHO-209). The cloud pod boundary never sets it.
+ */
+export function assertWithinWorkspace(
+  workspaceDir: string,
+  filePath: string,
+  opts?: { unrestricted?: boolean },
+): string {
   const resolved = resolve(workspaceDir, filePath)
+  if (opts?.unrestricted) return resolved
 
   // External (VS Code-style) projects: validate against the union of
   // [WORKSPACE_DIR, ...linkedFolders]. We import lazily so tests that

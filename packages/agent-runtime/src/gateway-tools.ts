@@ -132,12 +132,17 @@ import { isShogoAgentEmail, withShogoPrFooter } from '@shogo/shared-runtime/agen
  * layer doesn't know what an `AgentToolResult` looks like — we keep
  * the dependency direction "tools → trust", not the reverse.
  */
-function assertAllowedPath(targetPath: string, mode: 'read' | 'write' | 'exec', workspaceDir?: string) {
+function assertAllowedPath(
+  targetPath: string,
+  mode: 'read' | 'write' | 'exec',
+  workspaceDir?: string,
+  opts?: { unrestricted?: boolean },
+) {
   const result = assertAllowedPathRaw(targetPath, mode)
   if (result.ok || !workspaceDir || result.reason !== 'outside_allowed_roots') return result
 
   try {
-    const resolved = assertWithinWorkspace(workspaceDir, targetPath)
+    const resolved = assertWithinWorkspace(workspaceDir, targetPath, opts)
     return { ok: true, resolved }
   } catch {
     return result
@@ -383,8 +388,22 @@ export interface ToolContext {
   depsReady?: boolean
 }
 
-function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
-  return assertWithinWorkspaceSecure(workspaceDir, filePath)
+/**
+ * Desktop full_autonomy blocks nothing, including paths (SHO-209). The cloud pod
+ * has no `SHOGO_LOCAL_MODE`, so its workspace boundary stays.
+ */
+function pathPolicy(ctx: ToolContext): { unrestricted: boolean } {
+  return {
+    unrestricted: process.env.SHOGO_LOCAL_MODE === 'true' && ctx.permissionEngine?.mode === 'full_autonomy',
+  }
+}
+
+function assertWithinWorkspace(
+  workspaceDir: string,
+  filePath: string,
+  opts?: { unrestricted?: boolean },
+): string {
+  return assertWithinWorkspaceSecure(workspaceDir, filePath, opts)
 }
 
 /**
@@ -2851,8 +2870,8 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       } else {
         offset = coerceNum(raw.offset)
       }
-      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
-      const readTrust = assertAllowedPath(resolved, 'read', ctx.workspaceDir)
+      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath, pathPolicy(ctx))
+      const readTrust = assertAllowedPath(resolved, 'read', ctx.workspaceDir, pathPolicy(ctx))
       if (!readTrust.ok && readTrust.reason === 'other_project_path') return textResult({ error: readTrust.message })
       if (!existsSync(resolved)) {
         const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
@@ -3180,7 +3199,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       }
       const scratch = scratchPathForWrite(ctx.workspaceDir, requestedPath)
       const filePath = scratch.path
-      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath, pathPolicy(ctx))
       const scratchFields = scratch.remappedFrom
         ? {
             remappedFrom: scratch.remappedFrom,
@@ -3190,7 +3209,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       // Workspace Trust gate for external (VS Code-style) projects.
       // For managed projects (the historical case) `assertAllowedPath`
       // returns ok=true because trustLevel is 'trusted' by default.
-      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir)
+      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir, pathPolicy(ctx))
       if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
@@ -3890,8 +3909,8 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       if (old_string === new_string) {
         return textResult({ error: 'old_string and new_string must differ' })
       }
-      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
-      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir)
+      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath, pathPolicy(ctx))
+      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir, pathPolicy(ctx))
       if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
@@ -9340,7 +9359,7 @@ async function resolveSocialMedia(
     const path = entry.replace(/\\/g, '/').replace(/^\.\//, '')
     let resolved: string
     try {
-      resolved = assertWithinWorkspaceSecure(ctx.workspaceDir, path)
+      resolved = assertWithinWorkspaceSecure(ctx.workspaceDir, path, pathPolicy(ctx))
     } catch {
       return { ok: false, error: `Media path is outside the workspace: ${entry}` }
     }
@@ -11855,7 +11874,7 @@ function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
         language?: string
       }
 
-      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath, pathPolicy(ctx))
       if (!existsSync(resolved)) {
         return textResult({ error: `Audio file not found: ${filePath}` })
       }
@@ -12547,7 +12566,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       const autoScopedPaths = editedThisTurn.length > 0 ? editedThisTurn : null
 
       const workspacePrefix = `file://${ctx.workspaceDir}/`
-      const targetUri = filePath ? `file://${assertWithinWorkspace(ctx.workspaceDir, filePath)}` : undefined
+      const targetUri = filePath ? `file://${assertWithinWorkspace(ctx.workspaceDir, filePath, pathPolicy(ctx))}` : undefined
 
       await new Promise((resolve) => setTimeout(resolve, 1500))
 
