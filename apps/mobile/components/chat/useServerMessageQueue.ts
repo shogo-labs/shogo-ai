@@ -53,14 +53,18 @@ const OPTIMISTIC_ID_PREFIX = "temp-"
 const SENT_NOW_HIDE_TIMEOUT_MS = 30_000
 
 /**
- * Polls of a "send now" row still sitting on the queue before the click is
- * treated as a dispatch that is not coming. `pending` means nobody claimed it —
- * a dispatch that is merely slow has claimed it (`dispatching`) — so three
- * quiet polls (about 4.5s) is a refusal, and the message goes back to the dock
- * with the queue it never left rather than staying invisible until the
- * timeout above.
+ * Polls of a "send now" *team-chat wake* still sitting on its queue before the
+ * click is treated as a drain that is not coming. `pending` means nobody
+ * claimed it, so three quiet polls (about 4.5s) is a refusal, and the row goes
+ * back to the dock with the queue it never left rather than staying invisible
+ * until the timeout above.
+ *
+ * The chat queue's own Send now has no equivalent: its route dispatches the
+ * clicked row inside the request and answers with what happened to it, so the
+ * dock follows the answer (SHO-205). A wake is a different queue whose run
+ * starts from the stopped reply's own settle, so it keeps this wait.
  */
-const SENT_NOW_WAIT_POLLS = 3
+const WAKE_SENT_NOW_WAIT_POLLS = 3
 
 /** How often the dock asks for the team-chat wakes waiting behind this session. */
 const WAKE_POLL_MS = 1_500
@@ -198,7 +202,7 @@ export function useServerMessageQueue({
    * what catches that case.
    */
   const enqueuedRef = useRef(new Map<string, UIMessage>())
-  /** Polls each tracked row has spent still `pending` — see `SENT_NOW_WAIT_POLLS`. */
+  /** Polls a sent-now *wake* has spent still `pending` — see `WAKE_SENT_NOW_WAIT_POLLS`. */
   const waitedRef = useRef(new Map<string, number>())
   const [trackedCount, setTrackedCount] = useState(0)
   /**
@@ -403,7 +407,7 @@ export function useServerMessageQueue({
       }
       const waited = (waitedRef.current.get(wake.id) ?? 0) + 1
       waitedRef.current.set(wake.id, waited)
-      if (waited >= SENT_NOW_WAIT_POLLS) {
+      if (waited >= WAKE_SENT_NOW_WAIT_POLLS) {
         waitedRef.current.delete(wake.id)
         showAgain(wake.id)
       }
@@ -445,19 +449,12 @@ export function useServerMessageQueue({
     for (const [id, userMessage] of tracked) {
       const row = byId.get(id)
       if (row?.status === "pending") {
-        // Still on the queue, unclaimed: the turn this click promised has not
-        // started, and nothing else is coming. Keep the message for a retry
-        // instead of leaving it hidden until the safety timeout.
-        if (sentIdsRef.current.has(id)) {
-          const waited = (waitedRef.current.get(id) ?? 0) + 1
-          waitedRef.current.set(id, waited)
-          if (waited >= SENT_NOW_WAIT_POLLS) {
-            waitedRef.current.delete(id)
-            tracked.delete(id)
-            dropped++
-            showAgain(id)
-          }
-        }
+        // Still on the queue, unclaimed: its turn has not started, so there is
+        // no user message to hand over yet. Keep tracking it — an ordinary
+        // queued row starts when the turn ahead of it ends, and a sent-now row
+        // was answered by its own POST (the route dispatches it), so a row
+        // still pending here is not a refusal to count down. If nothing ever
+        // starts it, the safety timeout in `hideSent` puts it back in the dock.
         continue
       }
       waitedRef.current.delete(id)
@@ -473,7 +470,7 @@ export function useServerMessageQueue({
     pendingTurnRef.current = { userMessage: dispatched }
     setPendingUserMessage(dispatched)
     flushPendingTurn()
-  }, [flushPendingTurn, readQueueNow, showAgain])
+  }, [flushPendingTurn, readQueueNow])
 
   useEffect(() => {
     void load().catch((error) => {
@@ -692,20 +689,24 @@ export function useServerMessageQueue({
         await action(id, "send-now")
       } catch (error) {
         // Nothing was sent: the row is still the person's queued message, so
-        // put it back rather than chase a turn that will never start.
+        // put it back — with the server's reason on it — rather than chase a
+        // turn that will never start. The route dispatches the clicked row
+        // inside this POST, so its answer is the outcome: a throw is the row
+        // having failed to start, and `load` is what puts its error back in
+        // the dock (SHO-205).
         untrack(id)
         showAgain(id)
+        await load().catch(() => {})
         throw error
       }
-      // The stop and the dispatch happen inside the POST, so the row is usually
-      // off the queue by the time it returns. Hand the message over here
-      // instead of waiting for the dock's next poll: the click has already
-      // hidden the row, so a hand-off that depends on a later tick — one the
-      // panel's own turn-end, a reload or an unmount can pre-empt — loses the
-      // message from both the dock and the transcript.
+      // The row is off the queue by the time the POST returns. Hand the message
+      // over here instead of waiting for the dock's next poll: the click has
+      // already hidden the row, so a hand-off that depends on a later tick —
+      // one the panel's own turn-end, a reload or an unmount can pre-empt —
+      // loses the message from both the dock and the transcript.
       drainEnqueued()
     },
-    [action, drainEnqueued, hideSent, readQueueNow, showAgain, untrack],
+    [action, drainEnqueued, hideSent, load, readQueueNow, showAgain, untrack],
   )
 
   /**
