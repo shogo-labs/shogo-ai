@@ -190,7 +190,16 @@ function normalizeError(status: number, body: SocialErrorBody, mode: SocialMode)
   if (typeof body.docUrl === 'string') details.docUrl = body.docUrl
   // A caller on a desktop sees the cloud's failure through the relay; saying so
   // is the difference between "our key is broken" and "your sign-in expired".
-  if (mode === 'relay') details.via = 'relay'
+  if (mode === 'relay') {
+    details.via = 'relay'
+    // The relay speaks this API's error shape, so anything else it put in
+    // `error` (a swallowed create failure, the routing id) is the only
+    // explanation the desktop's 502 will ever carry. Keep it.
+    for (const [key, value] of Object.entries(nested ?? {})) {
+      if (key === 'code' || key === 'message' || value === undefined) continue
+      details[key] = value
+    }
+  }
   // `profile_external_id_conflict` names the profile that already owns the
   // routing id, so a 409 is adoptable rather than fatal.
   const existing = (body.details as any)?.existingProfileId ?? body.existingProfileId

@@ -3,15 +3,18 @@
 /**
  * Profile resolution against the shapes Zernio actually returns.
  *
- * Every fixture here is a real response document (docs.zernio.com, checked
- * 2026-10-25): the id is Mongo `_id` inside `{ profile }` / `{ profiles: [] }`,
- * never a top-level `id`. The bug this file exists for is that every reader
- * said `.id`, so a genuine `201` looked like "Zernio did not return a profile
- * id" — and the fallback list, also read as `.id`, found nothing either.
+ * The fixtures are a real capture (2026-10-25, `POST`/`GET /v1/profiles` through
+ * our cloud relay, ids replaced), not the docs: the id is Mongo `_id` inside
+ * `{ profile }` / `{ profiles: [] }`, never a top-level `id`, and the conflict
+ * body is a bare `invalid_request_error` that names **no** `existingProfileId`
+ * — so adoption has to come from the exact-`externalId` list lookup. The bug
+ * this file exists for is that every reader said `.id`, so a genuine `201`
+ * looked like "Zernio did not return a profile id".
  */
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import profileCreate from './fixtures/zernio-profile-create.json'
+import profileConflict from './fixtures/zernio-profile-conflict.json'
 import profileList from './fixtures/zernio-profile-list.json'
 import profileListEmpty from './fixtures/zernio-profile-list-empty.json'
 
@@ -140,9 +143,11 @@ describe('ensureProfile', () => {
     expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['POST /profiles'])
   })
 
-  test('a 409 with no id falls back to the exact-externalId list', async () => {
+  test('the live 409 adopts through the exact-externalId list, since its body names no id', async () => {
     responder = (req) => {
-      if (req.method === 'POST') return new SocialError(409, 'conflict', 'already exists')
+      if (req.method === 'POST') {
+        return new SocialError(409, profileConflict.error.code, profileConflict.error.message)
+      }
       return profileList
     }
 
@@ -164,6 +169,29 @@ describe('ensureProfile', () => {
     expect((error as any).status).toBe(502)
     expect((error as any).code).toBe('social_profile_unresolved')
     expect(store.profiles).toHaveLength(0)
+  })
+
+  test('the 502 carries the swallowed create failure, so the next one explains itself', async () => {
+    responder = (req) => {
+      if (req.method === 'POST') {
+        return new SocialError(422, 'invalid_request_error', 'name must be 2-64 characters', {
+          field: 'name',
+        })
+      }
+      return profileListEmpty
+    }
+
+    const error = await ensureProfile(workspaceId, 'Odin AI', '').catch((err) => err)
+    const body = (error as InstanceType<typeof SocialError>).toJSON() as any
+
+    expect(body.error.code).toBe('social_profile_unresolved')
+    expect(body.error.externalId).toBe('ws_ws_1')
+    expect(body.error.create).toEqual({
+      status: 422,
+      code: 'invalid_request_error',
+      message: 'name must be 2-64 characters',
+      details: { field: 'name' },
+    })
   })
 
   test('a list holding another tenant’s profile is never adopted', async () => {

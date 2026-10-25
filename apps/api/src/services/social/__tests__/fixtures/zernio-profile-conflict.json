@@ -1,7 +1,6 @@
 {
-  "error": "A profile with this externalId already exists",
-  "type": "profile_external_id_conflict",
-  "details": {
-    "existingProfileId": "64f0c2a1b9e4d30012ab34cd"
+  "error": {
+    "code": "invalid_request_error",
+    "message": "A profile with this externalId already exists"
   }
 }

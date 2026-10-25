@@ -2,13 +2,29 @@
   "profiles": [
     {
       "_id": "64f0c2a1b9e4d30012ab99ff",
+      "userId": "64f0c2a1b9e4d30012ab3400",
       "name": "Someone else",
-      "externalId": "ws_ws_2"
+      "isDefault": false,
+      "color": "#ffeda0",
+      "timezone": null,
+      "externalId": "ws_ws_2",
+      "createdAt": "2026-10-25T07:00:00.000Z",
+      "updatedAt": "2026-10-25T07:00:00.000Z",
+      "accountUsernames": [],
+      "accountCount": 0
     },
     {
       "_id": "64f0c2a1b9e4d30012ab34cd",
+      "userId": "64f0c2a1b9e4d30012ab3400",
       "name": "Odin AI",
-      "externalId": "ws_ws_1"
+      "isDefault": false,
+      "color": "#ffeda0",
+      "timezone": null,
+      "externalId": "ws_ws_1",
+      "createdAt": "2026-10-25T08:24:00.712Z",
+      "updatedAt": "2026-10-25T08:24:00.712Z",
+      "accountUsernames": [],
+      "accountCount": 0
     }
   ]
 }

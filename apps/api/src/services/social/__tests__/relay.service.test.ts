@@ -18,7 +18,9 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import accountList from './fixtures/zernio-account-list.json'
 import connectReply from './fixtures/zernio-connect.json'
+import profileConflict from './fixtures/zernio-profile-conflict.json'
 import profileCreate from './fixtures/zernio-profile-create.json'
+import profileList from './fixtures/zernio-profile-list.json'
 
 const store = {
   profiles: [] as any[],
@@ -173,6 +175,26 @@ describe('a relayed profile create', () => {
       localWorkspaceId,
       externalId: `lws_${localWorkspaceId}`,
     })
+  })
+
+  test('the live 409 names no id, so the filtered list adopts instead', async () => {
+    responder = (req) => {
+      if (req.method === 'POST' && req.path === '/profiles') {
+        return new SocialError(409, profileConflict.error.code, profileConflict.error.message)
+      }
+      if (req.method === 'GET' && req.path === '/profiles') {
+        // The list answers with the tenant's own row, keyed by the routing id.
+        return { profiles: [{ ...profileList.profiles[1]!, externalId: `ws_${workspaceId}` }] }
+      }
+      return {}
+    }
+
+    const outcome = await relay({ method: 'POST', path: '/profiles', body: { name: 'Odin AI' } })
+
+    expect(outcome.status).toBe(200)
+    expect(outcome.body).toMatchObject({ profile: { _id: '64f0c2a1b9e4d30012ab34cd' } })
+    expect(store.profiles[0].zernioProfileId).toBe('64f0c2a1b9e4d30012ab34cd')
+    expect(calls.at(-1).query).toEqual({ externalId: `ws_${workspaceId}` })
   })
 
   test('a 409 adopts the named profile instead of failing the desktop', async () => {

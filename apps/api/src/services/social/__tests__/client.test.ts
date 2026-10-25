@@ -239,8 +239,20 @@ describe('social client requests', () => {
     expect((error as SocialError).details.via).toBe('relay')
   })
 
-  test('a profile conflict carries the profile id Zernio already owns', async () => {
+  test('the live 409 is a plain invalid_request_error, and a named conflict still carries its id', async () => {
     useCloudEnv()
+    globalThis.fetch = mock(async () =>
+      jsonResponse({ error: { code: 'invalid_request_error', message: 'A profile with this externalId already exists' } }, 409),
+    ) as any
+
+    const error = await getSocialClient()
+      .request({ method: 'POST', path: '/profiles', body: { name: 'Acme' } })
+      .catch((err) => err)
+
+    expect((error as SocialError).status).toBe(409)
+    expect((error as SocialError).code).toBe('invalid_request_error')
+    expect((error as SocialError).details.existingProfileId).toBeUndefined()
+
     globalThis.fetch = mock(async () =>
       jsonResponse(
         {
@@ -252,12 +264,41 @@ describe('social client requests', () => {
       ),
     ) as any
 
+    const named = await getSocialClient()
+      .request({ method: 'POST', path: '/profiles', body: { name: 'Acme' } })
+      .catch((err) => err)
+
+    expect((named as SocialError).details.existingProfileId).toBe('64f0c2a1b9e4d30012ab34cd')
+  })
+
+  test('a relayed 502 keeps the create failure the cloud swallowed', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    process.env.SHOGO_API_KEY = 'shogo_sk_desktop'
+    delete process.env.ZERNIO_API_KEY
+
+    const create = { status: 422, code: 'invalid_request_error', message: 'name must be 2-64', details: {} }
+    globalThis.fetch = mock(async () =>
+      jsonResponse(
+        {
+          error: {
+            code: 'social_profile_unresolved',
+            message: 'Zernio did not return a profile id.',
+            externalId: 'ws_ws_1',
+            create,
+          },
+        },
+        502,
+      ),
+    ) as any
+
     const error = await getSocialClient()
       .request({ method: 'POST', path: '/profiles', body: { name: 'Acme' } })
       .catch((err) => err)
 
-    expect((error as SocialError).status).toBe(409)
-    expect((error as SocialError).details.existingProfileId).toBe('64f0c2a1b9e4d30012ab34cd')
+    expect((error as SocialError).status).toBe(502)
+    expect((error as SocialError).details.via).toBe('relay')
+    expect((error as SocialError).details.create).toEqual(create)
+    expect((error as SocialError).details.externalId).toBe('ws_ws_1')
   })
 
   test('an unreachable provider is a 502, not a thrown fetch error', async () => {
