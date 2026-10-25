@@ -37,6 +37,12 @@ import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust
 
 const TMP_ROOT = realpathSync(tmpdir())
 const HOME = homedir()
+// The outside-root fixture cannot live under `tmpdir()`: `write_file` rewrites a
+// `/tmp/...` write into the workspace's `.tmp/` (`scratchPathForWrite`, which this
+// card deliberately leaves alone), and on Linux — including CI — `tmpdir()` *is*
+// `/tmp`, so the write lands inside the workspace and never where the test reads.
+// `$HOME` is writable on every runner and the directory is removed in `afterEach`.
+const OUTSIDE_ROOT = HOME
 
 let TEST_DIR = ''
 let OUTSIDE_DIR = ''
@@ -103,7 +109,7 @@ const DENIED = /Permission denied|never allowed|managed by Shogo/
 describe('SHO-209 part 2 — full_autonomy blocks no file paths', () => {
   beforeEach(() => {
     TEST_DIR = realpathSync(mkdtempSync(join(TMP_ROOT, 'qa-sho209p2-ws-')))
-    OUTSIDE_DIR = realpathSync(mkdtempSync(join(TMP_ROOT, 'qa-sho209p2-out-')))
+    OUTSIDE_DIR = realpathSync(mkdtempSync(join(OUTSIDE_ROOT, '.qa-sho209p2-out-')))
     trustWorkspaceForTests(TEST_DIR)
     saveEnv('SHOGO_LOCAL_MODE', 'LINKED_FOLDERS')
   })
