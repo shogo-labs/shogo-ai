@@ -196,8 +196,76 @@ test.describe("New project paints the builder on the first frame", () => {
       await expect(page.locator(SKELETON)).toBeVisible({ timeout: 120_000 })
       expect(workspaces.pending).toBe(true)
       await expect(page.locator(COMPOSER)).toHaveCount(0)
+
+      // The agent landing keeps the same gate — it picks its surface from the
+      // kind, so it must not paint a surface it may have to swap.
+      await page.goto("/")
+      await expect(page.locator(SKELETON)).toBeVisible({ timeout: 60_000 })
+      expect(workspaces.pending).toBe(true)
+      await expect(page.locator(COMPOSER)).toHaveCount(0)
     } finally {
       releaseWorkspaces()
     }
+  })
+
+  test("the builder fits a 390px phone and paints the same four pieces", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    const workspaces = { pending: false }
+    const releaseWorkspaces = await holdRoute(page, "**/api/workspaces*", workspaces)
+    const techStacks = { pending: false }
+    const releaseTechStacks = await holdRoute(page, "**/api/tech-stacks*", techStacks)
+
+    try {
+      await page.goto("/new-project")
+      await expect(page.getByTestId("home-composer-input")).toBeVisible({ timeout: 120_000 })
+      // At phone width the Import and stack chips fold into the composer's "+"
+      // sheet rather than sitting beside the input, so the first frame owes the
+      // composer plus that entry point — and the sheet already holds both.
+      const add = page.getByLabel("Add", { exact: true }).first()
+      await expect(add).toBeVisible()
+      // Painted while the workspace collection was still unanswered.
+      expect(workspaces.pending).toBe(true)
+      await expect(page.locator(SKELETON)).toHaveCount(0)
+    } finally {
+      releaseTechStacks()
+      releaseWorkspaces()
+    }
+  })
+
+  test("the stack picked from the fallback catalog is the one the new project persists", async ({
+    page,
+  }) => {
+    await page.route("**/api/tech-stacks*", (route) =>
+      route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"boom"}' }),
+    )
+    const creates: Array<Record<string, unknown>> = []
+    page.on("request", (request) => {
+      if (request.method() !== "POST") return
+      if (!/\/api\/projects\/?$/.test(new URL(request.url()).pathname)) return
+      try {
+        creates.push(JSON.parse(request.postData() ?? "{}") as Record<string, unknown>)
+      } catch {
+        // A non-JSON body is not a create we can read; the poll below fails.
+      }
+    })
+
+    await page.goto("/new-project")
+    const chip = page.getByTestId("tech-stack-picker-trigger").first()
+    await expect(chip).toBeVisible({ timeout: 120_000 })
+    // The API is down, so this list is the static fallback catalog.
+    await chip.click()
+    await page.getByText("Expo (React Native)", { exact: true }).first().click()
+    await expect(chip).toContainText("Expo (React Native)")
+
+    await page.getByTestId("home-composer-input").first().click()
+    await page.keyboard.type("a tiny kanban board")
+    await page.keyboard.press("Enter")
+
+    await expect.poll(() => creates.length, { timeout: 60_000 }).toBeGreaterThan(0)
+    const settings = creates[0]?.settings
+    const persisted = (
+      typeof settings === "string" ? JSON.parse(settings) : settings
+    ) as Record<string, unknown> | undefined
+    expect(persisted?.techStackId).toBe("expo-app")
   })
 })
