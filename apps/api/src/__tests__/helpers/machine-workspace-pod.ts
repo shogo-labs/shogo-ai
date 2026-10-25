@@ -47,8 +47,11 @@ if (role === 'cloud') {
    * code path.
    */
   app.use('/api/*', async (c, next) => {
-    const deviceKey = c.req.header('x-api-key') ?? c.req.header('authorization')?.replace(/^Bearer\s+/i, '')
-    if (deviceKey?.startsWith('shogo_sk_')) {
+    // Same rule as the real authMiddleware: only `Authorization: Bearer` is read.
+    // Accepting `x-api-key` here is how PERF-9 (every real push refused) passed.
+    const authHeader = c.req.header('authorization')
+    const deviceKey = authHeader?.startsWith('Bearer shogo_sk_') ? authHeader.slice(7) : undefined
+    if (deviceKey) {
       const resolved = await resolveApiKey(deviceKey)
       if (resolved) {
         c.set('auth', {
