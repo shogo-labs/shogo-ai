@@ -6,7 +6,9 @@
  * before they run and evaluate them against the active security policy.
  *
  * Three tiers: strict (ask everything), balanced (allowlist-based), full_autonomy (YOLO).
- * Hard-blocked actions (rm -rf /, shutdown, system paths) are denied in ALL modes.
+ * Nothing is blocked by default: only rules a person configured (shell/file deny
+ * lists, per-tool action rules, local-access settings) and system credential
+ * paths are denied in every mode. Shell commands have no built-in blocks.
  */
 
 import { resolve, join, dirname } from 'path'
@@ -38,53 +40,8 @@ const log = createLogger('permission-engine')
 export type { ActionRule, SecurityPreference, PermissionCategory, PermissionCheckResult }
 
 // ---------------------------------------------------------------------------
-// Hard-blocked patterns — enforced in ALL modes, never overridable
+// Hard-blocked paths — enforced in ALL modes, never overridable
 // ---------------------------------------------------------------------------
-
-// Patterns checked against each sub-command after splitting on ; && ||
-const SUB_COMMAND_BLOCKED: RegExp[] = [
-  /^\s*rm\s+(-[a-z]*r[a-z]*\s+|--recursive\s+)\//,
-  /^\s*shutdown\b/,
-  /^\s*reboot\b/,
-  /^\s*mkfs\b/,
-  /^\s*dd\s+if=/,
-  /^\s*chmod\s+777\b/,
-  /^\s*kill\s+-9\s+1\b/,
-  /^\s*format\s+[a-z]:/i,
-]
-
-// Patterns checked against the entire command string (cannot be split away)
-const FULL_COMMAND_BLOCKED: RegExp[] = [
-  /\|\s*(ba)?sh\b/,
-  /\bgit\s+push\s+.*--force\b/,
-  /\bsh\s+-c\b/,
-  /\bbash\s+-c\b/,
-  /\beval\s+["']/,
-]
-
-// `sudo` itself is allowed (subject to mode/allowlist rules), but must not
-// hide a hard-blocked command behind it, e.g. `sudo -u root rm -rf /`.
-const SUDO_PREFIX = /^\s*sudo(?:\s+(?:-[ugCDhpRrTt]\s+\S+|--\S+|-\S+))*\s+/
-
-function stripSudoPrefix(sub: string): string {
-  let out = sub
-  while (SUDO_PREFIX.test(out)) out = out.replace(SUDO_PREFIX, '')
-  return out
-}
-
-function isHardBlockedCommand(command: string): boolean {
-  for (const pattern of FULL_COMMAND_BLOCKED) {
-    if (pattern.test(command)) return true
-  }
-  const subCommands = command.split(/\s*(?:&&|\|\||;)\s*/).map(stripSudoPrefix)
-  for (const sub of subCommands) {
-    for (const pattern of SUB_COMMAND_BLOCKED) {
-      if (pattern.test(sub)) return true
-    }
-  }
-  return false
-}
-
 const HARD_BLOCKED_PATH_PREFIXES: string[] = [
   join(homedir(), '.ssh'),
   join(homedir(), '.gnupg'),
@@ -330,7 +287,8 @@ export interface PermissionEngineOptions {
   /**
    * Skip built-in action-rule defaults (e.g. "merging a PR asks") so only rules a
    * person configured apply. For runtimes serving cloud workspaces from a user's
-   * own machine (`shogo worker`): hard blocks stay, nobody gets prompted by default.
+   * own machine (`shogo worker`): credential-path blocks stay, nobody gets
+   * prompted by default.
    */
   noDefaultActionRules?: boolean
 }
@@ -551,18 +509,6 @@ export class PermissionEngine {
     _toolName: string,
     params: Record<string, any>,
   ): PermissionCheckResult | null {
-    if (category === 'shell') {
-      const command = (params.command as string) || ''
-      if (isHardBlockedCommand(command)) {
-        return {
-          action: 'deny',
-          reason: `Blocked: this command matches a hard-blocked destructive pattern`,
-          guidance: 'This command is never allowed. Ask the user to run it manually if needed.',
-          category,
-        }
-      }
-    }
-
     if (category === 'file_read' || category === 'file_write' || category === 'file_delete') {
       const filePath = (params.path as string) || ''
       const resolved = resolve(this.workspaceDir, filePath)

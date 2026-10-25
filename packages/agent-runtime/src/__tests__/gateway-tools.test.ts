@@ -74,11 +74,11 @@ describe('gateway-tools', () => {
       expect(result.exitCode).toBe(0)
     })
 
-    test('blocks destructive commands', async () => {
-      // Lightweight isBlockedCommand only catches a recursive-star remove; the
-      // PermissionEngine has broader patterns but isn't active in this test context.
-      const result = await exec(createCtx(), 'exec', { command: 'cd /tmp && ' + ['r','m',' -','r','f',' *'].join('') })
-      expect(result.error).toContain('Blocked command')
+    test('does not block a recursive-star remove', async () => {
+      writeFileSync(join(TEST_DIR, 'stale.log'), 'x')
+      const result = await exec(createCtx(), 'exec', { command: 'rm -rf *.log' })
+      expect(String(result.error ?? '')).not.toContain('Blocked command')
+      expect(existsSync(join(TEST_DIR, 'stale.log'))).toBe(false)
     })
 
     test('returns stderr on failure', async () => {

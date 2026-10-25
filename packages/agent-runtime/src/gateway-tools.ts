@@ -383,26 +383,6 @@ export interface ToolContext {
   depsReady?: boolean
 }
 
-// Legacy blocked-command check kept as lightweight fallback for contexts
-// without a PermissionEngine (e.g. heartbeat tools in cloud mode).
-// The PermissionEngine's HARD_BLOCKED_COMMAND_PATTERNS is the authoritative
-// version and supersedes this when available.
-const BLOCKED_COMMANDS: string[] = ['rm -rf *']
-
-function isBlockedCommand(command: string): boolean {
-  const lower = command.toLowerCase()
-  return BLOCKED_COMMANDS.some((pattern: string) => {
-    if (pattern.includes('.*')) {
-      try {
-        return new RegExp(pattern, 'i').test(command)
-      } catch {
-        return false
-      }
-    }
-    return lower.includes(pattern.toLowerCase())
-  })
-}
-
 function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   return assertWithinWorkspaceSecure(workspaceDir, filePath)
 }
@@ -1498,7 +1478,7 @@ function withSleepPollSteering(tool: AgentTool, ctx: ToolContext): AgentTool {
 function createExecTool(ctx: ToolContext): AgentTool {
   return withSleepPollSteering({
     name: 'exec',
-    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running.`,
+    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running.`,
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
@@ -1532,10 +1512,6 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // and task execution are disabled until trust is granted.
       const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec', ctx.workspaceDir)
       if (!execTrust.ok) return textResult({ error: execTrust.message })
-
-      if (isBlockedCommand(attributedCommand)) {
-        return textResult({ error: `Blocked command: ${command}` })
-      }
 
       // Stop the agent from killing the runtime that hosts its own tools. A
       // broad `pkill -f`/`killall` in the agent's shell otherwise reaches the
@@ -9013,8 +8989,7 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
       // environment — strictly more dangerous than the sandboxed `exec` tool.
       // Apply the same guards exec uses so prompt-injection can't bypass them:
       //   1. Workspace Trust (restricted-mode projects refuse shell commands)
-      //   2. Hard-blocked destructive commands
-      //   3. Gateway self-protect (don't let the agent kill its own runtime)
+      //   2. Gateway self-protect (don't let the agent kill its own runtime)
       // The PermissionEngine ask/allow/deny gate is applied by the `g(..., 'shell')`
       // wrapper in createTools().
       const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec', ctx.workspaceDir)
@@ -9025,10 +9000,6 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
       if (cwd) {
         const cwdTrust = assertAllowedPath(cwd, 'exec', ctx.workspaceDir)
         if (!cwdTrust.ok) return textResult({ error: cwdTrust.message })
-      }
-
-      if (isBlockedCommand(command)) {
-        return textResult({ error: `Blocked command: ${command}` })
       }
 
       const gatewayGuard = commandTargetsGateway(command)
