@@ -254,8 +254,25 @@ export interface AgentLoopOptions {
    * cannot decode are replaced by text placeholders. The runtime injects
    * `scrubInvalidImages` from image-size-guard; without it the loop falls back
    * to dropping image blocks outright (history first, then this turn's too).
+   *
+   * `opts.maxDimension` carries the per-image pixel cap the provider reported
+   * for this request (see `onImageDimensionLimit`); passing it replaces only
+   * the images over that cap instead of every image we cannot prove is fine.
    */
-  scrubInvalidImages?: (messages: Message[]) => Message[]
+  scrubInvalidImages?: (
+    messages: Message[],
+    opts?: { maxDimension?: number },
+  ) => Message[]
+  /**
+   * Called once the loop learns a provider's per-image *pixel* cap from a
+   * rejected request — Anthropic answers `400 … At least one of the image
+   * dimensions exceed max allowed size for many-image requests: 3000 pixels`,
+   * a cap it applies per image once a request carries many images. The runtime
+   * keeps it for the session and applies it to later calls, so a screenshot
+   * taken after the cap is learned is replaced before it goes on the wire
+   * instead of costing a failed request each time.
+   */
+  onImageDimensionLimit?: (limit: number) => void
   /**
    * Extra HTTP headers to attach to every outbound LLM request inside this
    * loop. Merged into the resolved Model's `headers` so pi-ai forwards them
@@ -875,11 +892,20 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // Image rejections (`400 ... You have uploaded an unsupported image`) are not
   // retryable as-is: the offending block lives in the transcript, so re-issuing
   // the same request fails identically — this turn and every later one. Repair
-  // the transcript instead, escalating: remove images we can prove are
-  // undecodable, then every image in history, then this turn's as well. Each
-  // stage that actually changes something buys exactly one retry.
+  // the transcript instead, escalating: replace only the images over a pixel
+  // cap the provider named, then remove images we can prove are undecodable,
+  // then every image in history, then this turn's as well. Each stage that
+  // actually changes something buys exactly one retry.
   let imageRecoveryStage = 0
-  const imageRecoveryStages: Array<() => Message[] | null> = []
+  /**
+   * Per-image pixel cap a provider named on a rejected request — Anthropic
+   * answers `400 … At least one of the image dimensions exceed max allowed size
+   * for many-image requests: 3000 pixels`, a cap it applies per image once a
+   * request carries many images. Until we know it, no image is ever rejected
+   * for its dimensions.
+   */
+  let imageMaxDimension: number | undefined
+  let imageRecoveryStages: Array<() => Message[] | null> | null = null
   const imageNote = (msg: Message) =>
     buildImageOmittedNote({
       modelId,
@@ -887,25 +913,40 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       pathHint: extractPathHint(msg),
       reason: 'the provider rejected this image',
     })
-  if (options.scrubInvalidImages) {
-    imageRecoveryStages.push(() => {
-      try {
-        const scrubbed = options.scrubInvalidImages!(agent.state.messages)
-        return scrubbed === agent.state.messages ? null : scrubbed
-      } catch (err: any) {
-        console.warn(`[AgentLoop] IMAGE_RECOVERY scrub threw: ${err?.message}`)
-        return null
-      }
-    })
+  const scrubImages = (maxDimension?: number) => {
+    if (!options.scrubInvalidImages) return null
+    try {
+      const scrubbed = options.scrubInvalidImages(agent.state.messages, { maxDimension })
+      return scrubbed === agent.state.messages ? null : scrubbed
+    } catch (err: any) {
+      console.warn(`[AgentLoop] IMAGE_RECOVERY scrub threw: ${err?.message}`)
+      return null
+    }
   }
-  imageRecoveryStages.push(() => {
-    const next = replaceImageBlocks(agent.state.messages, (i) => i < historyLength, imageNote)
-    return next === agent.state.messages ? null : next
-  })
-  imageRecoveryStages.push(() => {
-    const next = replaceImageBlocks(agent.state.messages, () => true, imageNote)
-    return next === agent.state.messages ? null : next
-  })
+  /**
+   * Laid out on the first image rejection, because whether the ladder can start
+   * with the dimension stage depends on whether the provider has named a cap by
+   * then. Building it lazily also keeps the stage numbering unchanged for every
+   * rejection that has no cap in it.
+   */
+  const buildImageRecoveryStages = (): Array<() => Message[] | null> => {
+    const stages: Array<() => Message[] | null> = []
+    if (imageMaxDimension !== undefined) {
+      // Replace only the images over the reported cap. Blanket-dropping the
+      // history would also discard the screenshots the provider accepted.
+      stages.push(() => scrubImages(imageMaxDimension))
+    }
+    if (options.scrubInvalidImages) stages.push(() => scrubImages())
+    stages.push(() => {
+      const next = replaceImageBlocks(agent.state.messages, (i) => i < historyLength, imageNote)
+      return next === agent.state.messages ? null : next
+    })
+    stages.push(() => {
+      const next = replaceImageBlocks(agent.state.messages, () => true, imageNote)
+      return next === agent.state.messages ? null : next
+    })
+    return stages
+  }
 
   if (inferenceRetry && !abortTriggered) {
     let retryAttempt = 0
@@ -974,15 +1015,27 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       unresolvedFailureText = failure.errorText
 
       if (IMAGE_REJECTION_RE.test(failure.errorText)) {
+        const dimensionLimit = parseImageDimensionLimit(failure.errorText)
+        if (dimensionLimit !== undefined && dimensionLimit !== imageMaxDimension) {
+          imageMaxDimension = dimensionLimit
+          try {
+            options.onImageDimensionLimit?.(dimensionLimit)
+          } catch { /* listener must not break the loop */ }
+          // Nothing of the ladder has run yet on the first rejection, so it can
+          // still start with the dimension stage. Once a blanket stage has run
+          // there is no image left for the cap to preserve, so leave it alone.
+          if (imageRecoveryStage === 0) imageRecoveryStages = null
+        }
+        const stages = (imageRecoveryStages ??= buildImageRecoveryStages())
         let retried = false
-        while (imageRecoveryStage < imageRecoveryStages.length) {
+        while (imageRecoveryStage < stages.length) {
           const stage = ++imageRecoveryStage
           const before = trimFailedAssistantTail()
           const imageIndexes = imageBlockIndexes(before)
-          const repaired = imageRecoveryStages[stage - 1]()
+          const repaired = stages[stage - 1]()
           if (!repaired) continue
           console.warn(
-            `[AgentLoop] IMAGE_RECOVERY stage=${stage}/${imageRecoveryStages.length} model=${modelId} ` +
+            `[AgentLoop] IMAGE_RECOVERY stage=${stage}/${stages.length} model=${modelId} ` +
               `imagesAt=[${imageIndexes.join(',')}] error=${failure.errorText.slice(0, 200)}`,
           )
           agent.state.messages = repaired
@@ -997,7 +1050,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         }
         if (retried) continue
         console.warn(
-          `[AgentLoop] IMAGE_RECOVERY exhausted after ${imageRecoveryStages.length} stage(s) — surfacing image failure: ` +
+          `[AgentLoop] IMAGE_RECOVERY exhausted after ${stages.length} stage(s) — surfacing image failure: ` +
             failure.errorText.slice(0, 300),
         )
         promptError = new Error(
@@ -1452,11 +1505,35 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
 /**
  * Provider errors that mean "there is an image in this request I cannot
- * decode". Anthropic: `messages[N].image[0]: You have uploaded an unsupported
- * image`; OpenAI-compatible providers: `invalid image` / `unsupported image`.
+ * accept". Anthropic: `messages[N].image[0]: You have uploaded an unsupported
+ * image`, and — separately — `messages.N.content.N.image.source.base64.data:
+ * At least one of the image dimensions exceed max allowed size for many-image
+ * requests: 3000 pixels`, which it raises per image once a request carries many
+ * images. OpenAI-compatible providers: `invalid image` / `unsupported image`.
+ *
+ * The dimension form uses a dotted path rather than `image[0]` and never says
+ * "unsupported", so it needs its own alternatives: without them the error fell
+ * through to `classifyRetryability`, was marked non-retryable, and the turn
+ * stopped instead of repairing the transcript.
  */
 const IMAGE_REJECTION_RE =
-  /You have uploaded an unsupported image|unsupported image|invalid image|image\[\d+\]/i
+  /You have uploaded an unsupported image|unsupported image|invalid image|image\[\d+\]|image\.source|image dimensions? exceed|exceed max allowed size for many-image requests/i
+
+/**
+ * The per-image pixel cap named in a dimension rejection
+ * (`… many-image requests: 3000 pixels`). Only consulted once
+ * `IMAGE_REJECTION_RE` has matched, so an unrelated "N pixels" cannot be
+ * mistaken for a cap.
+ */
+const IMAGE_DIMENSION_LIMIT_RE = /(\d{3,6})\s*pixels?\b/i
+
+/** Pixel cap named by a provider's image-dimension 400, if it named one. */
+function parseImageDimensionLimit(errorText: string): number | undefined {
+  const match = errorText.match(IMAGE_DIMENSION_LIMIT_RE)
+  if (!match) return undefined
+  const limit = Number.parseInt(match[1], 10)
+  return Number.isFinite(limit) && limit > 0 ? limit : undefined
+}
 
 /** Indexes of messages carrying at least one image block (for the logs). */
 function imageBlockIndexes(messages: ReadonlyArray<Message>): number[] {

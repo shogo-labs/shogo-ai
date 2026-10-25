@@ -918,6 +918,16 @@ export class AgentGateway {
    */
   private contentReplacementStates = new Map<string, ContentReplacementState>()
   /**
+   * Per-session per-image pixel cap the model provider has told us about, from
+   * an `image dimensions exceed max allowed size for many-image requests: N
+   * pixels` rejection (SHO-201). Once learned, every later request in the
+   * session has its over-cap screenshots replaced before they go on the wire,
+   * so a long image-heavy turn pays the failed call once instead of once per
+   * screenshot.
+   */
+  private sessionImageMaxDimensions = new Map<string, number>()
+
+  /**
    * The workspace agent's own capability toggles (`Workspace.settings`), held
    * separately from `this.config` (which caches the anchor project's
    * `Project.settings`). A workspace runtime serves both surfaces, so one flat
@@ -3015,6 +3025,7 @@ export class AgentGateway {
     // History wipe = prefix rewrite. Drop per-session compaction state
     // so fresh decisions are taken against the new (empty) history.
     this.contentReplacementStates.delete(sessionId)
+    this.sessionImageMaxDimensions.delete(sessionId)
     this.turnCounters.delete(sessionId)
     this.turnPrefixes.delete(sessionId)
     this.shellCwd.delete(sessionId)
@@ -4469,6 +4480,15 @@ export class AgentGateway {
         // Stage 1 of the image-400 repair ladder: drop only the blocks that
         // provably cannot decode, instead of every image in history.
         scrubInvalidImages,
+        // Anthropic names a per-image pixel cap on a long image-heavy request
+        // ("… many-image requests: 3000 pixels"). Keep it for the session so
+        // later screenshots are replaced before they go out.
+        onImageDimensionLimit: (limit) => {
+          this.sessionImageMaxDimensions.set(sessionId, limit)
+          console.warn(
+            `${this.logPrefix} Image dimension cap learned for session ${sessionId}: ${limit}px`,
+          )
+        },
         onContextOverflow: async () => {
           console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
           const fileStateSummary = this.fileStateCache.size > 0
@@ -4526,11 +4546,14 @@ export class AgentGateway {
             )
           }
           // Final guard: self-heal any image block in history that no provider
-          // can accept — corrupt/truncated bytes, an unsupported format, or an
-          // oversized payload — before it reaches the wire. Deterministic, so it
+          // can accept — corrupt/truncated bytes, an unsupported format, an
+          // oversized payload, or (once this session has been told the cap)
+          // dimensions over it — before it reaches the wire. Deterministic, so it
           // does not disturb the stable-compaction byte-identical prefix
           // invariant.
-          const wire = scrubInvalidImages(result.messages)
+          const wire = scrubInvalidImages(result.messages, {
+            maxDimension: this.sessionImageMaxDimensions.get(sessionId),
+          })
           const compacted = await midTurnCompactor.transform(wire)
           const event = compacted.event
           if (event) {

@@ -385,6 +385,52 @@ export function buildOversizedPlaceholder(opts: OversizedPlaceholderOptions): Te
   return { type: 'text', text: lines.join(' ') }
 }
 
+export interface OversizedDimensionPlaceholderOptions {
+  /** Short human-readable source label, e.g. `read_file` or `mcp:foo`. */
+  label: string
+  /** Decoded pixel size of the image that was dropped. */
+  width: number
+  height: number
+  /** Per-image pixel cap the provider reported for this request. */
+  maxDimension: number
+  /** Workspace-relative path the model can shell out to and downscale. */
+  pathHint?: string
+}
+
+/**
+ * Build a TextContent block that replaces an image over the provider's *pixel*
+ * cap — the "At least one of the image dimensions exceed max allowed size for
+ * many-image requests: 3000 pixels" 400. Distinct from
+ * `buildOversizedPlaceholder`, which is about base64 byte size: a long turn
+ * full of screenshots can cross the dimension cap while every image is well
+ * under the byte cap, and dropping the whole history over it would throw away
+ * images the provider was happy with.
+ */
+export function buildOversizedDimensionPlaceholder(opts: OversizedDimensionPlaceholderOptions): TextContent {
+  const { label, width, height, maxDimension, pathHint } = opts
+  const lines: string[] = [
+    `[Image omitted — ${label}]`,
+    `Reason: this image is ${width}×${height} pixels, which exceeds the provider's ` +
+      `per-image limit of ${maxDimension} pixels on either side once a request carries many images.`,
+  ]
+  if (pathHint) {
+    lines.push(
+      `The full image is still on disk at "${pathHint}". ` +
+        'Downscale it before reading, e.g. on macOS: ' +
+        `\`sips -Z ${maxDimension} "${pathHint}" --out "${pathHint}.small.png"\`, ` +
+        `or with ImageMagick: \`convert "${pathHint}" -resize ${maxDimension}x${maxDimension} "${pathHint}.small.png"\`, ` +
+        'then read the resized file.'
+    )
+  } else {
+    lines.push(
+      'Downscale it at the source or with a shell tool before sending it ' +
+        `(e.g. \`sips -Z ${maxDimension} <input> --out <output>\` or ` +
+        `\`convert <input> -resize ${maxDimension}x${maxDimension} <output>\`).`
+    )
+  }
+  return { type: 'text', text: lines.join(' ') }
+}
+
 /**
  * Build a TextContent block that replaces an image whose format no
  * configured provider accepts. Unlike the oversized-image placeholder this
@@ -456,20 +502,33 @@ export function buildInvalidImagePlaceholder(opts: InvalidImagePlaceholderOption
   return { type: 'text', text: lines.join(' ') }
 }
 
+/** Per-image pixel cap a provider enforces (see `ImageGuardOptions`). */
+export interface ImageGuardOptions {
+  /**
+   * Maximum width **or** height, in pixels, the provider accepts for one image
+   * in a request that carries many images. Only ever set after a provider has
+   * told us the cap for this session — with it unset the guard's behaviour is
+   * byte-for-byte what it was before, which keeps the prompt-cache prefix
+   * stable for every session that never hit the cap.
+   */
+  maxDimension?: number
+}
+
 /**
  * Return a new content array where any ImageContent that cannot be sent to a
  * provider is replaced with an actionable placeholder TextContent:
  *
  *   1. a format no configured provider accepts (bmp/ico/heic/avif/svg/…),
  *   2. bytes that do not decode (corrupt CRC, truncated, not an image at all),
- *   3. a base64 payload over the per-image cap.
+ *   3. a base64 payload over the per-image cap,
+ *   4. a decoded width or height over `opts.maxDimension` (only when given).
  *
  * Content blocks that are already valid (or already text) pass through by
  * reference so the caller can rely on cheap equality checks.
  */
 export function enforceImageSizeLimit(
   content: ReadonlyArray<TextContent | ImageContent>,
-  opts: { label: string; pathHint?: string }
+  opts: { label: string; pathHint?: string } & ImageGuardOptions
 ): (TextContent | ImageContent)[] {
   let mutated = false
   const next: (TextContent | ImageContent)[] = []
@@ -514,6 +573,23 @@ export function enforceImageSizeLimit(
       mutated = true
       continue
     }
+    // Pixel dimensions come from the same decode, so a dimension cap costs no
+    // extra work. Only images over the reported cap are replaced — everything
+    // else the provider already accepted stays on the wire.
+    if (
+      opts.maxDimension &&
+      (decoded.width > opts.maxDimension || decoded.height > opts.maxDimension)
+    ) {
+      next.push(buildOversizedDimensionPlaceholder({
+        label: opts.label,
+        width: decoded.width,
+        height: decoded.height,
+        maxDimension: opts.maxDimension,
+        pathHint: opts.pathHint,
+      }))
+      mutated = true
+      continue
+    }
     if (decoded.mimeType !== normalizedMime) {
       // Providers also reject a media type that doesn't match the bytes.
       next.push({ ...block, mimeType: decoded.mimeType })
@@ -528,18 +604,23 @@ export function enforceImageSizeLimit(
 /**
  * Walk a message history and rewrite any UserMessage / ToolResultMessage that
  * carries an image no provider will accept (unsupported format, undecodable
- * bytes, or oversized). AssistantMessages cannot contain images in pi-ai's type
- * model so they're passed through untouched.
+ * bytes, oversized payload, or — once a provider has told us its cap —
+ * dimensions over that cap). AssistantMessages cannot contain images in
+ * pi-ai's type model so they're passed through untouched.
  *
  * Returns the same array reference when no message needed scrubbing; this
  * keeps prompt-cache hashes stable across calls when nothing needed fixing.
+ * With no `maxDimension` the output is identical to what it has always been.
  */
-export function scrubInvalidImages(messages: ReadonlyArray<Message>): Message[] {
+export function scrubInvalidImages(
+  messages: ReadonlyArray<Message>,
+  opts: ImageGuardOptions = {},
+): Message[] {
   let mutated = false
   const next: Message[] = []
   for (const msg of messages) {
     if (msg.role === 'user' && Array.isArray(msg.content)) {
-      const cleaned = enforceImageSizeLimit(msg.content, { label: 'user_input' })
+      const cleaned = enforceImageSizeLimit(msg.content, { label: 'user_input', maxDimension: opts.maxDimension })
       if (cleaned !== msg.content) {
         next.push({ ...msg, content: cleaned })
         mutated = true
@@ -548,6 +629,7 @@ export function scrubInvalidImages(messages: ReadonlyArray<Message>): Message[] 
     } else if (msg.role === 'toolResult') {
       const cleaned = enforceImageSizeLimit(msg.content, {
         label: `tool:${msg.toolName}`,
+        maxDimension: opts.maxDimension,
       })
       if (cleaned !== msg.content) {
         next.push({ ...msg, content: cleaned })
