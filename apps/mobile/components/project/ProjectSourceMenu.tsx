@@ -16,7 +16,9 @@
  *      absolute paths, which the backend's validation gauntlet requires.
  *   3. **Import .shogo…** — restore a previously-exported
  *      project ZIP via `ProjectImportModal`. Legacy `.shogo-project`
- *      archives are still accepted for backward compatibility.
+ *      archives are still accepted for backward compatibility. The row
+ *      opens the file picker directly: picking an archive starts the
+ *      import, there is nothing to configure (SHO-211).
  *   4. **Connect to Remote Host (SSH)…** — choose a saved host or SSH-config
  *      alias, browse its directories, and create a folder-linked project.
  *
@@ -31,7 +33,7 @@
  * this one element.
  */
 import React, { useCallback, useState } from 'react'
-import { Pressable, Text, View } from 'react-native'
+import { Platform, Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -50,6 +52,10 @@ import {
   Server,
 } from 'lucide-react-native'
 import { ProjectImportModal } from '../projects/ProjectImportModal'
+import {
+  usePickShogoArchive,
+  type PickedShogoArchive,
+} from '../projects/usePickShogoArchive'
 import { CloudProjectPickerModal } from '../projects/CloudProjectPickerModal'
 import { RemoteHostPickerModal } from './RemoteHostPickerModal'
 import { useComposerPlusClose } from "../chat/ComposerPlusMenu"
@@ -93,8 +99,11 @@ export function ProjectSourceMenu({
   const closePlusSheet = useComposerPlusClose()
   const [open, setOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [importFile, setImportFile] = useState<PickedShogoArchive | null>(null)
   const [cloudOpen, setCloudOpen] = useState(false)
   const [remoteOpen, setRemoteOpen] = useState(false)
+
+  const { pickArchive, isPicking: isPickingImport } = usePickShogoArchive()
 
   const {
     openFolder,
@@ -127,11 +136,28 @@ export function ProjectSourceMenu({
     void openFolder()
   }, [closePlusSheet, openFolder])
 
+  // Import has no options step (SHO-211): open the OS picker right here and
+  // hand the chosen archive straight to the modal. On web the `click()` has to
+  // happen in this same tick (transient user activation), so there is no
+  // timeout in front of it; native waits for the sheet to close first.
   const handleSelectImport = useCallback(() => {
+    if (!workspaceId) return // the modal (and its workspace) isn't mounted
     setOpen(false)
     closePlusSheet?.()
-    setTimeout(() => setImportOpen(true), 320)
-  }, [closePlusSheet])
+    const pick = () => {
+      void pickArchive()
+        .then((file) => {
+          if (!file) return // cancelled: leave the user where they were
+          setImportFile(file)
+          setImportOpen(true)
+        })
+        .catch((err) => {
+          console.warn('[ProjectSourceMenu] import picker failed:', err)
+        })
+    }
+    if (Platform.OS === 'web') pick()
+    else setTimeout(pick, 320)
+  }, [closePlusSheet, pickArchive, workspaceId])
 
   const handleSelectCloud = useCallback(() => {
     setOpen(false)
@@ -160,6 +186,7 @@ export function ProjectSourceMenu({
   const handleImportCompleted = useCallback(
     (project: { id: string; name: string }) => {
       setImportOpen(false)
+      setImportFile(null)
       if (onProjectOpened) {
         onProjectOpened(project)
       } else {
@@ -281,7 +308,7 @@ export function ProjectSourceMenu({
             ? 'h-7 w-7 items-center justify-center rounded-lg border border-border/45 bg-muted/30'
             : 'h-[22px] flex-row items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-1.5',
           'active:opacity-80',
-          isPicking && 'opacity-60',
+          (isPicking || isPickingImport) && 'opacity-60',
         )}
         testID="project-source-menu-trigger"
       >
@@ -302,7 +329,7 @@ export function ProjectSourceMenu({
           isNativePhone
             ? 'h-12 w-full justify-center gap-2 px-4'
             : 'gap-1.5 px-3 py-2',
-          isPicking && 'opacity-70',
+          (isPicking || isPickingImport) && 'opacity-70',
         )}
         testID="project-source-menu-trigger"
       >
@@ -342,12 +369,17 @@ export function ProjectSourceMenu({
     <>
       {menu}
 
-      {/* Import modal lives here so the menu is the single owner. */}
+      {/* Import modal lives here so the menu is the single owner. It opens
+          already holding the picked archive, so the import starts on open. */}
       {workspaceId ? (
         <ProjectImportModal
           open={importOpen}
-          onOpenChange={setImportOpen}
+          onOpenChange={(next) => {
+            setImportOpen(next)
+            if (!next) setImportFile(null)
+          }}
           workspaceId={workspaceId}
+          initialFile={importFile}
           onOpenProject={handleImportCompleted}
         />
       ) : null}
