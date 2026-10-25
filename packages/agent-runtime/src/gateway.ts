@@ -80,6 +80,7 @@ import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
 import { buildAccountContextPrompt, sanitizeModelDisplayName, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
+import { shouldReloadForBuild } from './build-input-fingerprint'
 import { CanvasTypecheckGate } from './canvas-typecheck'
 import {
   inferProviderFromModel as catalogInferProvider,
@@ -1844,12 +1845,12 @@ export class AgentGateway {
       // callback stays silent; CanvasBuildManager fires the reload as
       // before. Both paths also kick the type-check gate.
       pm?.setOnBuildComplete((info) => {
-        if (info?.outputChanged !== false) watcher.broadcastReload()
+        if (shouldReloadForBuild(info)) watcher.broadcastReload()
         typecheckGate.trigger()
       })
       this.canvasBuildManager = new CanvasBuildManager(this.workspaceDir, {
-        onBuildComplete: () => {
-          watcher.broadcastReload()
+        onBuildComplete: (info) => {
+          if (shouldReloadForBuild(info)) watcher.broadcastReload()
           typecheckGate.trigger()
         },
         onBuildError: (err) => console.error(`${this.logPrefix} Canvas build error:`, err),

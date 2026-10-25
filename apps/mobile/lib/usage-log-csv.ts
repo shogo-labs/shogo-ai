@@ -70,3 +70,45 @@ export function useUsageLogCsvUrl(workspaceId: string | null | undefined, params
   const machine = useUsageLogCsvMachine()
   return usageLogCsvUrl({ workspaceId: workspaceId ?? '', params, machine })
 }
+
+// ============================================================================
+// Per-member message export (SHO-199)
+// ============================================================================
+
+export interface MemberMessagesCsvParams {
+  /** ISO start of the window. Omitted = all time. */
+  since?: string
+  until?: string
+  audience?: 'person' | 'agent' | 'mixed' | 'channel'
+}
+
+export function memberMessagesCsvPath(
+  workspaceId: string,
+  userId: string,
+  params: MemberMessagesCsvParams = {},
+): string {
+  const qs = new URLSearchParams({ user: userId })
+  if (params.since) qs.set('since', params.since)
+  if (params.until) qs.set('until', params.until)
+  if (params.audience) qs.set('audience', params.audience)
+  return `/api/workspaces/${encodeURIComponent(workspaceId)}/member-activity/messages.csv?${qs.toString()}`
+}
+
+/**
+ * What one person sent, as a download. Same base rules as the usage log: a
+ * paired computer's workspace exports from that machine, everything else from
+ * this app's API.
+ */
+export function memberMessagesCsvUrl(input: {
+  workspaceId: string
+  userId: string
+  params?: MemberMessagesCsvParams
+  apiUrl?: string
+  machine?: UsageLogCsvMachine | null
+}): string {
+  const params = input.params ?? {}
+  if (input.machine) {
+    return `${input.machine.relayBaseUrl.replace(/\/+$/, '')}${memberMessagesCsvPath(input.machine.localWorkspaceId, input.userId, params)}`
+  }
+  return `${input.apiUrl ?? API_URL ?? ''}${memberMessagesCsvPath(input.workspaceId, input.userId, params)}`
+}

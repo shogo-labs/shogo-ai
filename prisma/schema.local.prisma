@@ -1529,6 +1529,9 @@ model ChatMessage {
   /// Model selection (picker `agentMode` value) used to author this row.
   /// Stamped on assistant messages; null for legacy rows.
   model     String?
+  /// The person who typed this row, stamped server-side for user prompts.
+  /// Null for assistant rows and server-written prompts (see schema.prisma).
+  authorUserId String?
 
   session  ChatSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   feedback MessageFeedback[]
@@ -1536,6 +1539,7 @@ model ChatMessage {
   @@index([sessionId])
   @@index([sessionId, createdAt])
   @@index([sessionId, agent, createdAt])
+  @@index([authorUserId, createdAt])
   @@map("chat_messages")
 }
 

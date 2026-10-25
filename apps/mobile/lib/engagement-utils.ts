@@ -16,6 +16,18 @@ export type EngagementPeriod = '7d' | '30d' | '90d' | 'all'
 
 export interface WorkTotals {
   messagesSent: number
+  /** Team-chat messages split by audience; the four add up to `messagesSent`. */
+  messagesToPeople: number
+  messagesToAgents: number
+  messagesMixed: number
+  messagesToChannel: number
+  agentChatPrompts: number
+  unattributedPrompts: number
+  cardsCreated: number
+  cardsMoved: number
+  cardsCompleted: number
+  cardComments: number
+  cardAssignments: number
   approvalsDecided: number
   approvalsApproved: number
   approvalsDenied: number
@@ -41,10 +53,16 @@ export interface HeatmapCell {
 }
 
 export interface RecentWorkItem {
-  kind: 'task_completed' | 'approval'
+  kind: 'task_completed' | 'approval' | 'card_event' | 'message' | 'chat_prompt'
   at: string
   label: string
   detail?: string
+  /** Row id to dig further: the card event, message, approval or task. */
+  id?: string
+  workItemKey?: string
+  conversationId?: string
+  chatSessionId?: string
+  audience?: 'person' | 'agent' | 'mixed' | 'channel'
 }
 
 export interface EngagementStats {

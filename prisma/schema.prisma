@@ -1994,6 +1994,12 @@ model ChatMessage {
   /// picker can default to a chat's last-used model when switching chats.
   /// Null for legacy rows and rows authored before this column existed.
   model     String?
+  /// The person who typed this row, stamped server-side for `role: user`
+  /// prompts from the authenticated request (never from the request body).
+  /// Null for assistant rows and for prompts the server wrote on someone's
+  /// behalf (project_call relays, wake notes). Older project-chat rows are
+  /// null too: those chats are shared, so the sender is unknown.
+  authorUserId String?
 
   // Relations
   session  ChatSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -2002,6 +2008,7 @@ model ChatMessage {
   @@index([sessionId])
   @@index([sessionId, createdAt])
   @@index([sessionId, agent, createdAt])
+  @@index([authorUserId, createdAt])
   @@map("chat_messages")
 }
 

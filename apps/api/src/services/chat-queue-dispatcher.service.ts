@@ -184,6 +184,9 @@ async function persistQueuedUserMessage(row: QueueRow, body: QueueBody): Promise
       parts,
       agent: 'technical',
       model: typeof body.agentMode === 'string' ? body.agentMode : null,
+      // Same rule as the chat-message hook: a prompt belongs to the person who
+      // queued it. A wake note (`task_notification`) belongs to nobody.
+      authorUserId: row.kind === 'task_notification' ? null : row.userId,
     },
     update: {},
   })

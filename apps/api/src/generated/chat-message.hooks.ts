@@ -228,11 +228,18 @@ export const chatMessageHooks: ChatMessageHooks = {
       input.parts,
       input.imageData,
     )
-    if (!externalized.changed) return { ok: true }
+    // The sender of a prompt is the authenticated user. Stamped here, at the
+    // one insert point, so a forged `authorUserId` in the body is ignored and
+    // every chat (project, workspace, voice) is attributable in one place.
+    const stamped = {
+      ...input,
+      authorUserId: input.role === 'user' ? userId : null,
+    }
+    if (!externalized.changed) return { ok: true, data: stamped }
     return {
       ok: true,
       data: {
-        ...input,
+        ...stamped,
         parts: externalized.parts,
         imageData: externalized.imageData,
       },

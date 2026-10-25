@@ -14,11 +14,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Image, Pressable, ScrollView, View } from 'react-native'
-import { ChevronDown, ChevronUp, Lock } from 'lucide-react-native'
+import { ChevronDown, ChevronUp, Download, Lock } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { api } from '../../lib/api'
+import { useUsageLogCsvMachine } from '../../lib/usage-log-csv'
+import { exportMemberMessages } from '../../lib/member-messages-export'
 import {
   compactNumber,
   deviceTimezone,
@@ -40,6 +42,8 @@ type SortKey =
   | 'activeDays'
   | 'streak'
   | 'lastActive'
+
+const ACTION_WIDTH = 76
 
 const COLUMNS: { key: SortKey; label: string; width: number; align?: 'right' }[] = [
   { key: 'name', label: 'Member', width: 190 },
@@ -117,6 +121,7 @@ export function TeamWorkTable({
   onSelectMember?: (userId: string, label: string) => void
 }) {
   const http = useDomainHttp()
+  const machine = useUsageLogCsvMachine()
   const [period, setPeriod] = useState<EngagementPeriod>('7d')
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'approvals', dir: 'desc' })
   const [state, setState] = useState<{ data: TeamWork | null; loading: boolean; error: string | null }>({
@@ -146,6 +151,10 @@ export function TeamWorkTable({
     () => (state.data ? sortTeamRows(state.data.rows, sort.key, sort.dir) : []),
     [state.data, sort],
   )
+
+  // "What did this person send?" — the records behind their row, as a CSV.
+  const exportMessages = (userId: string) =>
+    exportMemberMessages({ workspaceId, userId, period, machine })
 
   if (locked) {
     return (
@@ -211,6 +220,7 @@ export function TeamWorkTable({
                   </Pressable>
                 )
               })}
+              <View style={{ width: ACTION_WIDTH }} />
             </View>
 
             {rows.map((row) => {
@@ -263,6 +273,17 @@ export function TeamWorkTable({
                   <Cell width={100} align="right">
                     <Text className="text-xs text-muted-foreground">{formatLastActive(t.lastActiveAt)}</Text>
                   </Cell>
+                  <View style={{ width: ACTION_WIDTH }} className="items-end">
+                    <Pressable
+                      onPress={() => exportMessages(row.userId)}
+                      testID={`export-messages-${row.userId}`}
+                      accessibilityLabel={`Export messages from ${label}`}
+                      className="flex-row items-center gap-1 px-2 h-7 rounded-md border border-border bg-background active:bg-muted"
+                    >
+                      <Download size={12} className="text-foreground" />
+                      <Text className="text-[11px] font-medium text-foreground">Export</Text>
+                    </Pressable>
+                  </View>
                 </Pressable>
               )
             })}
@@ -298,6 +319,7 @@ export function TeamWorkTable({
                 <Cell width={100} align="right">
                   <Text className="text-xs text-muted-foreground"> </Text>
                 </Cell>
+                <View style={{ width: ACTION_WIDTH }} />
               </View>
             ) : null}
           </View>

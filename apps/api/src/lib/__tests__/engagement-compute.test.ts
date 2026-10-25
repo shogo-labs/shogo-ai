@@ -4,6 +4,8 @@ import { describe, expect, test } from 'bun:test'
 import {
   activeDaySet,
   addDays,
+  classifyAudience,
+  computeCards,
   computeEngagement,
   computeRecentWork,
   computeStreaks,
@@ -351,5 +353,135 @@ describe('resolveActivityWindow', () => {
     const w = resolveActivityWindow({ since: 'not a date', range: 'whenever', tz: 'UTC' }, now)
     expect(w.label).toBe('today')
     expect(w.from.toISOString()).toBe('2026-07-01T00:00:00.000Z')
+  })
+})
+
+describe('classifyAudience', () => {
+  test('mentions win over the conversation they are posted in', () => {
+    expect(classifyAudience({ conversationKind: 'public', hasPersonMention: true })).toBe('person')
+    expect(classifyAudience({ conversationKind: 'public', hasAgentMention: true })).toBe('agent')
+    expect(classifyAudience({ conversationKind: 'public', hasPersonMention: true, hasAgentMention: true })).toBe('mixed')
+  })
+
+  test('a DM belongs to its other members', () => {
+    expect(classifyAudience({ conversationKind: 'dm', otherMemberTypes: ['user'] })).toBe('person')
+    expect(classifyAudience({ conversationKind: 'group_dm', otherMemberTypes: ['agent'] })).toBe('agent')
+    expect(classifyAudience({ conversationKind: 'group_dm', otherMemberTypes: ['user', 'agent'] })).toBe('mixed')
+  })
+
+  test('a shared conversation with no other members is a channel post', () => {
+    expect(classifyAudience({ conversationKind: 'dm', otherMemberTypes: [] })).toBe('channel')
+    expect(classifyAudience({ conversationKind: 'dm' })).toBe('channel')
+  })
+
+  test('an untagged reply in an agent thread is aimed at that agent', () => {
+    expect(classifyAudience({ conversationKind: 'public', threadRootAuthorType: 'agent' })).toBe('agent')
+    expect(classifyAudience({ conversationKind: 'public', threadRootAuthorType: 'user' })).toBe('channel')
+  })
+})
+
+describe('computeRecentWork: what a person sent', () => {
+  test('lists chat prompts and team-chat messages newest first, with ids to dig further', () => {
+    const raw: RawActivity = {
+      ...emptyRaw(),
+      chatPrompts: [
+        { userId: 'u1', createdAt: at('2026-07-01T09:00:00Z'), id: 'p1', sessionId: 's1', sessionName: 'Export work', text: 'add a CSV  export' },
+      ],
+      messages: [
+        { userId: 'u1', createdAt: at('2026-07-01T10:00:00Z'), id: 'm1', conversationId: 'c1', text: 'shipped it', audience: 'person' },
+      ],
+    }
+
+    const recent = computeRecentWork(raw)
+    expect(recent.map((r) => r.kind)).toEqual(['message', 'chat_prompt'])
+    expect(recent[0]).toMatchObject({ label: 'shipped it', id: 'm1', conversationId: 'c1', audience: 'person' })
+    // Whitespace is flattened so a preview never breaks the row.
+    expect(recent[1]).toMatchObject({ label: 'add a CSV export', id: 'p1', chatSessionId: 's1', detail: 'Export work' })
+  })
+
+  test('a long or empty message still yields a readable label', () => {
+    const raw: RawActivity = {
+      ...emptyRaw(),
+      messages: [
+        { userId: 'u1', createdAt: at('2026-07-01T10:00:00Z'), text: 'x'.repeat(400) },
+        { userId: 'u1', createdAt: at('2026-07-01T09:00:00Z') },
+      ],
+    }
+    const [long, empty] = computeRecentWork(raw)
+    expect(long.label.length).toBe(160)
+    expect(long.label.endsWith('…')).toBe(true)
+    expect(empty.label).toBe('(no text)')
+  })
+})
+
+describe('computeCards', () => {
+  test('one row per card, keeping the latest action and where it stands', () => {
+    const raw: RawActivity = {
+      ...emptyRaw(),
+      cardEvents: [
+        { userId: 'u1', at: at('2026-07-01T09:00:00Z'), type: 'created', workItemId: 'wi1', key: 'SHO-7', title: 'Export', board: 'Dev', column: 'In Dev', category: 'active', label: 'created the card' },
+        { userId: 'u1', at: at('2026-07-01T11:00:00Z'), type: 'moved', workItemId: 'wi1', key: 'SHO-7', title: 'Export', board: 'Dev', column: 'Done', category: 'done', label: 'moved to Done' },
+        { userId: 'u1', at: at('2026-07-01T10:00:00Z'), type: 'assigned', workItemId: 'wi2', key: 'SHO-8', title: 'Docs', board: 'Dev', column: 'In Dev', label: 'assigned Shogo QA' },
+      ],
+    }
+
+    const cards = computeCards(raw)
+    expect(cards.map((c) => c.key)).toEqual(['SHO-7', 'SHO-8'])
+    expect(cards[0]).toMatchObject({ column: 'Done', lastAction: 'moved to Done', at: '2026-07-01T11:00:00.000Z' })
+    expect(cards[1]).toMatchObject({ key: 'SHO-8', lastAction: 'assigned Shogo QA' })
+  })
+
+  test('respects the limit and ignores events with no card', () => {
+    const raw: RawActivity = {
+      ...emptyRaw(),
+      cardEvents: [
+        { userId: 'u1', at: at('2026-07-01T09:00:00Z'), type: 'commented', workItemId: 'wi1', key: 'SHO-7', label: 'commented' },
+        { userId: 'u1', at: at('2026-07-01T10:00:00Z'), type: 'commented', workItemId: 'wi2', key: 'SHO-8', label: 'commented' },
+        { userId: 'u1', at: at('2026-07-01T11:00:00Z'), type: 'commented', label: 'commented' },
+      ],
+    }
+    expect(computeCards(raw, 1).map((c) => c.key)).toEqual(['SHO-8'])
+    expect(computeCards(raw)).toHaveLength(2)
+  })
+})
+
+describe('computeWorkTotals: the new splits add up', () => {
+  test('audience buckets, board actions and chat prompts are counted', () => {
+    const clock = makeZoneClock('UTC')
+    const raw: RawActivity = {
+      ...emptyRaw(),
+      messages: [
+        { userId: 'u1', createdAt: at('2026-07-01T09:00:00Z'), audience: 'person' },
+        { userId: 'u1', createdAt: at('2026-07-01T09:00:00Z'), audience: 'agent' },
+        { userId: 'u1', createdAt: at('2026-07-01T09:00:00Z'), audience: 'mixed' },
+        { userId: 'u1', createdAt: at('2026-07-01T09:00:00Z') },
+      ],
+      chatPrompts: [{ userId: 'u1', createdAt: at('2026-07-01T09:00:00Z'), id: 'p1' }],
+      unattributedChatPrompts: 2,
+      cardEvents: [
+        { userId: 'u1', at: at('2026-07-01T09:00:00Z'), type: 'created', id: 'e1' },
+        { userId: 'u1', at: at('2026-07-01T10:00:00Z'), type: 'moved', id: 'e2', category: 'done' },
+        { userId: 'u1', at: at('2026-07-01T11:00:00Z'), type: 'moved', id: 'e3', category: 'review' },
+        { userId: 'u1', at: at('2026-07-01T12:00:00Z'), type: 'commented', id: 'e4' },
+        { userId: 'u1', at: at('2026-07-01T13:00:00Z'), type: 'assigned', id: 'e5' },
+      ],
+    }
+
+    const totals = computeWorkTotals(raw, clock, { from: at('2026-07-01T00:00:00Z'), to: at('2026-07-01T23:59:59Z') })
+    expect(totals).toMatchObject({
+      messagesSent: 4,
+      messagesToPeople: 1,
+      messagesToAgents: 1,
+      messagesMixed: 1,
+      messagesToChannel: 1,
+      agentChatPrompts: 1,
+      unattributedPrompts: 2,
+      cardsCreated: 1,
+      cardsMoved: 2,
+      cardsCompleted: 1,
+      cardComments: 1,
+      cardAssignments: 1,
+      activeDays: 1,
+    })
   })
 })

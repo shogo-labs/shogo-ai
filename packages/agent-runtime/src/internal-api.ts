@@ -1731,6 +1731,11 @@ export interface MemberActivityQuery {
   since?: string
   until?: string
   timezone?: string
+  /** summary (default) | messages | board */
+  detail?: 'summary' | 'messages' | 'board'
+  audience?: 'person' | 'agent' | 'mixed' | 'channel'
+  cursor?: string
+  limit?: number
 }
 
 /** Admin-only summary of what one teammate did in a window; the API enforces who may ask. */
@@ -1743,9 +1748,15 @@ export async function getMemberActivity(
   if (query.since) params.set('since', query.since)
   if (query.until) params.set('until', query.until)
   if (query.timezone) params.set('tz', query.timezone)
-  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/member-activity?${params}`, {
+  if (query.audience) params.set('audience', query.audience)
+  if (query.cursor) params.set('cursor', query.cursor)
+  if (query.limit) params.set('limit', String(query.limit))
+  // `messages` is the records route; `board` narrows the summary on the same one.
+  const path = query.detail === 'messages' ? 'member-activity/messages' : 'member-activity'
+  if (query.detail === 'board') params.set('detail', 'board')
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/${path}?${params}`, {
     method: 'GET',
-    parse: (j) => (j?.activity ?? {}) as Record<string, unknown>,
+    parse: (j) => (query.detail === 'messages' ? j : (j?.activity ?? {})) as Record<string, unknown>,
   })
 }
 

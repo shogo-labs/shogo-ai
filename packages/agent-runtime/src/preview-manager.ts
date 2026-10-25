@@ -26,6 +26,7 @@ import {
   consumeBuildOutputChange,
   pruneStaleBuildOutput,
 } from './build-output-prune'
+import { consumeBuildInputChange } from './build-input-fingerprint'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
@@ -2563,7 +2564,15 @@ export class PreviewManager {
     this.lastSetupError = null
     this._phase = 'ready'
     try {
-      this.onBuildComplete?.({ outputChanged: true })
+      // A static build re-runs on any watched change, and Remotion/custom
+      // output embeds render-time data, so ask the inputs instead of
+      // assuming a rebuild means a new site. The plan decides where this
+      // build writes (`outDir` from shogo.preview.json, default `dist`), and
+      // the staging copy is ours too — both are output, not input.
+      const outDirs = [DEFAULT_STAGING_DIR, plan.kind === 'command' ? plan.outDir : null].filter(
+        (dir): dir is string => !!dir,
+      )
+      this.onBuildComplete?.({ outputChanged: consumeBuildInputChange(cwd, { ignore: outDirs }) })
     } catch (err: any) {
       console.warn(`[${LOG_PREFIX}] onBuildComplete subscriber threw: ${err?.message ?? err}`)
     }
@@ -4544,9 +4553,14 @@ export class PreviewManager {
         } else if (promote && this.onBuildComplete) {
           // Cloud Expo has no HMR. `/preview/restart` and the boot-time
           // seed both land here; fire the same reload toast CBM uses so
-          // the canvas iframe picks up the new hashed `entry-*.js`.
+          // the canvas iframe picks up the new hashed `entry-*.js` — but
+          // only when the export actually came from changed inputs, since
+          // a restart over untouched sources produces a different bundle
+          // (metro ids follow traversal order) for the same app.
           try {
-            this.onBuildComplete({ outputChanged: true })
+            this.onBuildComplete({
+              outputChanged: consumeBuildInputChange(cwd, { ignore: ['dist', stagingDir] }),
+            })
           } catch (err: any) {
             console.warn(`[${LOG_PREFIX}] onBuildComplete subscriber threw: ${err?.message ?? err}`)
           }
