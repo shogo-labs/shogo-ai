@@ -497,6 +497,12 @@ spec:
                   name: api-secrets
                   key: HIGGSFIELD_API_KEY
                   optional: true
+            - name: TRIPO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: TRIPO_API_KEY
+                  optional: true
             - name: ELEVENLABS_API_KEY
               valueFrom:
                 secretKeyRef:
