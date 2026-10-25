@@ -820,28 +820,25 @@ async function drainWakes(conversationId: string, threadRootId: string | null, a
 }
 
 /**
- * Hand a chat session on now that its turn is gone: its own queue first, then
- * the wakes waiting for the same session in team chat.
+ * Hand a chat session on now that its turn is gone: start the row waiting on its
+ * own chat queue.
  *
- * One starter per session, in one order, at the one moment a session becomes
- * free. `chat-turn-state.service` calls this whenever a turn is cleared, so no
- * ender can forget it — and because the queue's own turn ends here too, the wake
- * behind it drains on the next pass instead of waiting for the 15 s sweep.
+ * `chat-turn-state.service` calls this whenever a turn is cleared, so no ender
+ * can forget it — the HTTP chat routes, a channel run's `endTurn`, the stop
+ * routes, the stale-turn recovery. A pending row with no starter was how "Send
+ * now" stopped a reply and then sent nothing.
+ *
+ * Wakes are deliberately not started here. Their single starter is the run's own
+ * `finally` (`drainWakes`) plus the sweep behind it, and starting one from here
+ * as well put two runs on one key: the second found the first still reserving
+ * the thread, re-queued it, and the `(triggerMessageId, agentRef)` row it was
+ * re-queuing already existed. A wake that yields to a person's row (see
+ * `chatQueueAhead`) is picked up by that same starter once the row's own turn
+ * ends, so nothing is stranded.
  */
 export async function drainSessionAfterTurn(chatSessionId: string): Promise<void> {
   const { dispatchNext } = await import('./chat-queue-dispatcher.service')
-  if (await dispatchNext(chatSessionId)) return
-  // A row still waiting is a person's message that did not start; the wakes
-  // behind it keep waiting rather than taking the session first.
-  if (await chatQueueAhead(chatSessionId)) return
-  const waiting = await db.agentWake
-    .findMany({
-      where: { chatSessionId, status: 'pending', reason: 'wake' },
-      select: { conversationId: true, threadRootId: true, agentRef: true },
-      take: 20,
-    })
-    .catch(() => [])
-  for (const row of waiting) await startDrainIfIdle(row)
+  await dispatchNext(chatSessionId)
 }
 
 /** How the note beside a queued message reads its row's state. */

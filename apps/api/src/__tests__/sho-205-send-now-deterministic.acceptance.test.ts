@@ -291,9 +291,11 @@ describe('SHO-205 · one starter per session, in one order', () => {
     expect(afterClick.status).toBe('pending')
     expect(afterClick.attempts).toBe(0)
 
-    // The message's own turn ends: now the wake is next in line, with no
-    // timer in between — the same turn-end hand-off, one step further along.
-    await dispatcher.drainSessionAfterTurn(sessionId)
+    // The person's message is the only turn that started. The wake was not
+    // claimed, not consumed and not failed — it is still next in line, and the
+    // sweep is the starter that picks it up (the same one production relies on
+    // when a wake yields).
+    await dispatcher.sweepPendingAgentWakes(0)
     const ran = await waitFor(async () => {
       const row = await db.agentWake.findUnique({ where: { id: wake.id } })
       return ['done', 'failed', 'superseded'].includes(row.status) ? row : null
