@@ -29,7 +29,7 @@
 import { describe, test, expect, beforeEach, afterEach, afterAll } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { homedir, tmpdir } from 'os'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
 import { PermissionEngine, type SecurityPreference } from '../permission-engine'
@@ -37,12 +37,13 @@ import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust
 
 const TMP_ROOT = realpathSync(tmpdir())
 const HOME = homedir()
-// The outside-root fixture cannot live under `tmpdir()`: `write_file` rewrites a
+// The outside-root fixture cannot live under `/tmp`: `write_file` rewrites a
 // `/tmp/...` write into the workspace's `.tmp/` (`scratchPathForWrite`, which this
-// card deliberately leaves alone), and on Linux — including CI — `tmpdir()` *is*
-// `/tmp`, so the write lands inside the workspace and never where the test reads.
-// `$HOME` is writable on every runner and the directory is removed in `afterEach`.
-const OUTSIDE_ROOT = HOME
+// card deliberately leaves alone). On Linux — CI included — `tmpdir()` *is* `/tmp`
+// and the isolated runner even puts `$HOME` under it, so either one is redirected
+// inside the workspace. The package dir is never `/tmp`, and the directory is
+// removed in `afterEach`.
+const OUTSIDE_ROOT = process.cwd()
 
 let TEST_DIR = ''
 let OUTSIDE_DIR = ''
@@ -139,16 +140,23 @@ describe('SHO-209 part 2 — full_autonomy blocks no file paths', () => {
     // without ever going near the person's real shell rc. (`delete_file` is out of
     // scope: it only ever accepts paths under the workspace `files/` directory.)
     const probe = join(HOME, '.zshrc-sho-209-qa-probe')
+    let onDisk = probe
     try {
       const written = await tool(makeCtx(FULL), 'write_file', { path: probe, content: 'qa\n' })
       expect(String(written.error ?? '')).not.toMatch(/Permission denied/)
-      expect(readFileSync(probe, 'utf-8')).toBe('qa\n')
+      // The isolated runner puts HOME under /tmp, and `write_file` scratch-rewrites a
+      // /tmp write into the workspace (`scratchPathForWrite`, which this card leaves
+      // alone). The assertion that matters is that full_autonomy did not refuse it;
+      // follow the remap the tool reports so the bytes are still checked.
+      onDisk = written.remappedFrom ? resolve(TEST_DIR, written.path) : probe
+      expect(readFileSync(onDisk, 'utf-8')).toBe('qa\n')
 
-      const read = await tool(makeCtx(FULL), 'read_file', { path: probe })
+      const read = await tool(makeCtx(FULL), 'read_file', { path: onDisk })
       expect(String(read.error ?? '')).not.toMatch(/Permission denied/)
       expect(read.content).toBe('qa\n')
     } finally {
-      rmSync(probe, { force: true })
+      rmSync(onDisk, { force: true })
+      if (onDisk !== probe) rmSync(probe, { force: true })
     }
   })
 
