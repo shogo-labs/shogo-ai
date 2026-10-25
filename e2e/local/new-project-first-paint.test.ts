@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+import { expect, test, type Page } from "@playwright/test"
+
+/**
+ * SHO-210: **New project** must paint its builder on the first frame.
+ *
+ * `/(app)/new-project` renders `HomeScreen forceBuilder`. Nothing on it needs
+ * the network to draw — the greeting, the composer, the **Import** chip and the
+ * **stack** chip are all static until the user types — yet it used to show the
+ * workspace-chrome skeleton until `useWorkspaceExperience().resolved` and hide
+ * the stack chip until `GET /api/tech-stacks` answered.
+ *
+ * The specs below hold the network back (a delayed `/api/tech-stacks` and an
+ * unloaded workspace collection) and assert on what is painted *while the
+ * requests are still in flight*, plus the marks that say when each piece of the
+ * builder appeared relative to navigation start.
+ */
+
+const COMPOSER = '[data-testid="home-composer-input"]'
+const IMPORT_CHIP = '[data-testid="project-source-menu-trigger"]'
+const STACK_CHIP = '[data-testid="tech-stack-picker-trigger"]'
+const SKELETON = '[data-testid="home-chrome-skeleton"]'
+const BUILDER = '[data-testid="home-builder"]'
+
+type PaintMarks = Record<string, number>
+
+/**
+ * Records, in the page and before any app code runs, the first frame each piece
+ * of the builder exists in the DOM. `performance.now()` shares its origin with
+ * the navigation entry, so `navStart` → `composer` is real elapsed time.
+ */
+async function installPaintMarks(page: Page): Promise<void> {
+  await page.addInitScript(
+    ({ composer, importChip, stackChip, skeleton, builder }) => {
+      const marks: Record<string, number> = {}
+      ;(window as unknown as { __paintMarks: PaintMarks }).__paintMarks = marks
+      const mark = (key: string) => {
+        if (marks[key] === undefined) marks[key] = performance.now()
+      }
+      const navigation = performance.getEntriesByType("navigation")[0] as
+        | PerformanceNavigationTiming
+        | undefined
+      marks.navStart = navigation?.startTime ?? 0
+      mark("scriptsLoaded")
+
+      const watch = () => {
+        if (document.querySelector(builder)) mark("routeMounted")
+        if (document.querySelector(composer)) mark("composer")
+        if (document.querySelector(importChip)) mark("importChip")
+        if (document.querySelector(stackChip)) mark("stackChip")
+        if (document.querySelector(skeleton)) mark("skeleton")
+      }
+      const start = () => {
+        watch()
+        new MutationObserver(watch).observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+        })
+      }
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", start, { once: true })
+      } else {
+        start()
+      }
+    },
+    { composer: COMPOSER, importChip: IMPORT_CHIP, stackChip: STACK_CHIP, skeleton: SKELETON, builder: BUILDER },
+  )
+}
+
+async function readPaintMarks(page: Page): Promise<PaintMarks> {
+  return page.evaluate(
+    () => (window as unknown as { __paintMarks?: PaintMarks }).__paintMarks ?? {},
+  )
+}
+
+function reportPaintMarks(label: string, marks: PaintMarks): void {
+  const at = (key: string) => (marks[key] === undefined ? "never" : `${Math.round(marks[key])}ms`)
+  console.log(
+    `[first-paint] ${label}: navStart 0ms · route mounted ${at("routeMounted")} · ` +
+      `composer ${at("composer")} · import chip ${at("importChip")} · stack chip ${at("stackChip")} · ` +
+      `skeleton ${at("skeleton")}`,
+  )
+}
+
+/** Holds a request open for `ms` without answering it. */
+async function holdRoute(
+  page: Page,
+  pattern: string,
+  ms: number,
+  state: { pending: boolean },
+): Promise<void> {
+  await page.route(pattern, async (route) => {
+    state.pending = true
+    await new Promise((resolve) => setTimeout(resolve, ms))
+    state.pending = false
+    await route.continue().catch(() => {})
+  })
+}
+
+test.describe("New project paints the builder on the first frame", () => {
+  test("composer, Import and stack chips are there before /api/tech-stacks and the workspace list answer", async ({
+    page,
+  }) => {
+    await installPaintMarks(page)
+    const techStacks = { pending: false }
+    const workspaces = { pending: false }
+    await holdRoute(page, "**/api/tech-stacks*", 15_000, techStacks)
+    await holdRoute(page, "**/api/workspaces*", 15_000, workspaces)
+
+    await page.goto("/new-project")
+
+    // Whatever the route paints first — the builder or the chrome skeleton —
+    // the marks below say when each piece appeared. The assertions then say
+    // which of the two it had to be.
+    await expect(page.locator(`${BUILDER}, ${SKELETON}`).first()).toBeAttached({ timeout: 20_000 })
+    reportPaintMarks("new-project, tech-stacks + workspaces held", await readPaintMarks(page))
+
+    await expect(page.getByTestId("home-composer-input")).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId("project-source-menu-trigger").first()).toBeVisible()
+    await expect(page.getByTestId("tech-stack-picker-trigger").first()).toBeVisible()
+    // Painted while both requests were still unanswered, i.e. not a "the slow
+    // part finished first" pass.
+    expect(techStacks.pending).toBe(true)
+    expect(workspaces.pending).toBe(true)
+    await expect(page.locator(SKELETON)).toHaveCount(0)
+    await expect(page.getByText("What are we building", { exact: false }).first()).toBeVisible()
+
+    reportPaintMarks("new-project (tech-stacks + workspaces held 15s)", await readPaintMarks(page))
+  })
+
+  test("the stack chip shows the fallback stacks when /api/tech-stacks fails, and a pick sticks", async ({
+    page,
+  }) => {
+    await installPaintMarks(page)
+    await page.route("**/api/tech-stacks*", (route) =>
+      route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"boom"}' }),
+    )
+
+    await page.goto("/new-project")
+    const chip = page.getByTestId("tech-stack-picker-trigger").first()
+    await expect(chip).toBeVisible({ timeout: 10_000 })
+    await expect(chip).toContainText("React App")
+
+    await chip.click()
+    await page.getByText("Expo (React Native)", { exact: true }).first().click()
+    await expect(chip).toContainText("Expo (React Native)")
+  })
+
+  test("a second visit shows the chip from the cached list without refetching first", async ({
+    page,
+  }) => {
+    let requests = 0
+    await page.route("**/api/tech-stacks*", async (route) => {
+      requests += 1
+      await route.continue()
+    })
+
+    await page.goto("/new-project")
+    await expect(page.getByTestId("tech-stack-picker-trigger").first()).toBeVisible({ timeout: 10_000 })
+    expect(requests).toBe(1)
+
+    // Leave the builder and come back through the app's own Create menu, so the
+    // page (and the picker's module cache) survives.
+    await page.getByRole("button", { name: "Create" }).first().click()
+    await page.getByText("New project", { exact: true }).first().click()
+    await expect(page.getByTestId("home-composer-input")).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId("tech-stack-picker-trigger").first()).toBeVisible()
+    expect(requests).toBe(1)
+  })
+
+  test("`/` and `/home` keep the chrome skeleton while the workspace collection loads", async ({
+    page,
+  }) => {
+    await installPaintMarks(page)
+    const workspaces = { pending: false }
+    await holdRoute(page, "**/api/workspaces*", 15_000, workspaces)
+
+    await page.goto("/home")
+    await expect(page.locator(SKELETON)).toBeVisible({ timeout: 10_000 })
+    await expect(page.locator(COMPOSER)).toHaveCount(0)
+  })
+})

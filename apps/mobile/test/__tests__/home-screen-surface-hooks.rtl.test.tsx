@@ -23,6 +23,7 @@ import { createReactNativeMock } from '../react-native-mock'
 const state = {
   runtimeEnabled: true,
   kind: 'team' as string | null,
+  resolved: true,
 }
 
 const View = 'div'
@@ -124,7 +125,7 @@ mock.module('../../hooks/useWorkspaceInView', () => ({
   useWorkspaceInView: () => ({ id: 'ws-1' }),
 }))
 mock.module('../../hooks/useWorkspaceExperience', () => ({
-  useWorkspaceExperience: () => ({ resolved: true, kind: state.kind, composer: 'agent' }),
+  useWorkspaceExperience: () => ({ resolved: state.resolved, kind: state.kind, composer: 'agent' }),
 }))
 mock.module('@shogo/shared-app/hooks', () => ({
   useBillingData: () => ({ hasAdvancedModelAccess: false }),
@@ -174,12 +175,17 @@ const { HomeScreen } = await import('../../app/(app)/index')
 beforeEach(() => {
   state.runtimeEnabled = true
   state.kind = 'team'
+  state.resolved = true
 })
 
 afterEach(() => {
   state.runtimeEnabled = true
   state.kind = 'team'
+  state.resolved = true
 })
+
+/** The RN mock forwards `testID` as `data-rn-shim`, not `data-testid`. */
+const shim = (testID: string) => document.querySelector(`[data-rn-shim="${testID}"]`)
 
 describe('the home screen across surfaces', () => {
   test('flipping builder → agent → feed → builder keeps the hook count stable', () => {
@@ -206,5 +212,40 @@ describe('the home screen across surfaces', () => {
     state.runtimeEnabled = false
     rerender(createElement(HomeScreen, {}))
     expect(screen.getByTestId('home-composer-input')).toBeTruthy()
+  })
+
+  // SHO-210: `/(app)/new-project` paints its builder on the first frame. The
+  // builder is the one surface whose content does not depend on the workspace
+  // kind (`appHomeSurface` returns `builder` for `forceBuilder` before it reads
+  // `kind`), so an unresolved collection must not replace it with the skeleton.
+  test('New project paints the builder while the workspace collection is unresolved', () => {
+    state.resolved = false
+    render(createElement(HomeScreen, { forceBuilder: true }))
+
+    expect(shim('home-builder')).toBeTruthy()
+    expect(screen.getByTestId('home-composer-input')).toBeTruthy()
+    expect(shim('home-chrome-skeleton')).toBeNull()
+  })
+
+  test('New project does not claim a Team workspace before the kind is known', () => {
+    // `deriveWorkspaceExperience` keeps `kind: 'team'` (the fail-safe default
+    // for chrome) while `resolved` is false, so the subtitle has to check both
+    // or a personal workspace sees "This is a Team workspace" flash first.
+    state.resolved = false
+    state.kind = 'team'
+    render(createElement(HomeScreen, { forceBuilder: true }))
+
+    expect(screen.queryByText(/This is a Team workspace/)).toBeNull()
+  })
+
+  test('`/` and `/(app)/home` keep the skeleton until the kind resolves', () => {
+    state.resolved = false
+    const landing = render(createElement(HomeScreen, {}))
+    expect(shim('home-chrome-skeleton')).toBeTruthy()
+    expect(screen.queryByTestId('workspace-agent-chat')).toBeNull()
+    landing.unmount()
+
+    render(createElement(HomeScreen, { explicitHome: true }))
+    expect(shim('home-chrome-skeleton')).toBeTruthy()
   })
 })
