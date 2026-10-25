@@ -11,14 +11,22 @@
 # heartbeats not landing, the mesh is broken, or every host is cordoned. This is
 # the earliest fleet-health signal that doesn't need per-host inspection.
 #
-# NOTE ON "NO DATA": metal.no_host has recorded nothing in the last 30 days —
-# the counter instrument only materialises once something increments it, so the
-# healthy state is an absent series, not a zero. That is why this rule must NOT
-# set alertOnAbsent: absence is the good case here. It also means the first real
-# fallback both creates the series and trips the rule.
+# WHY LOGS, NOT THE METRIC (rewritten 2026-10-24): metal.no_host is a counter
+# whose healthy state is an ABSENT series — it only materialises once something
+# increments it. `increase` therefore reads 0 at every step across exactly the
+# interval that produced a burst: the first re-materialised sample already
+# carries the whole delta, so there is no step where the delta appears. The
+# 2026-10-24T05:22Z fleet event — 26 fallbacks — read increase=0 on every step
+# and this rule never fired. The API logs the same failure for every fallback
+# (`NoMetalHostError` -> body "no live metal host available"), so the reliable
+# signal is a count() over that log body, not the metric. The counter itself is
+# unchanged; this rule just stops depending on it. Counting logs also has no
+# absent-series problem: a healthy hour matches zero lines, and the first real
+# fallback lands in the window. The live rule was hand-edited to this shape on
+# 2026-10-24; this file codifies it so a fresh apply cannot revert it.
 
 alert: MetalNoHostFallback
-alertType: METRIC_BASED_ALERT
+alertType: LOGS_BASED_ALERT
 ruleType: threshold_rule
 schemaVersion: v2alpha1
 version: v5
@@ -30,13 +38,13 @@ condition:
       - type: builder_query
         spec:
           name: A
-          signal: metrics
+          signal: logs
           aggregations:
-            - metricName: metal.no_host
-              # increase == delta over each step; sum across replicas, since any
-              # API pod can be the one that failed to place.
-              timeAggregation: increase
-              spaceAggregation: sum
+            - expression: count()
+          filter:
+            # The NoMetalHostError message, as logged by the API on every
+            # fallback. A healthy hour logs nothing, so the count is 0.
+            expression: "body LIKE '%no live metal host%'"
           legend: no_host_fallbacks
           stepInterval: 60s
   selectedQueryName: A
