@@ -482,6 +482,44 @@ async function setPublishStatus(
 }
 
 /**
+ * Per-subdomain in-flight publish claims.
+ *
+ * The DB availability check in `publishProject` only sees *committed*
+ * reservations, and `publishedSubdomain` is written at the very END of the
+ * pipeline (after build, upload and configure). So two projects publishing the
+ * same name concurrently both pass the check, both upload into the same
+ * `{subdomain}/` prefix — the loser overwriting the winner's files — and only
+ * then does the unique constraint reject the second write (SHO-207).
+ *
+ * A claim closes that window: taken after the DB check and before any build or
+ * upload, released in `publishProject`'s `finally`, and self-healing via the
+ * same TTL backstop as `acquirePublishLock` so a crashed publish cannot wedge a
+ * name forever. Same-project re-entry is allowed so a republish stays
+ * idempotent.
+ *
+ * In-process by design: publish requests for one subdomain are served by the
+ * same API deployment, and the DB unique constraint remains the authority for
+ * cross-pod races.
+ */
+const SUBDOMAIN_CLAIM_TTL_MS = PUBLISH_IN_FLIGHT_TTL_MS
+const subdomainClaims = new Map<string, { projectId: string; expiresAt: number }>()
+
+/** Take the claim on `subdomain`, or report that someone else holds it. */
+function claimSubdomain(subdomain: string, projectId: string): boolean {
+  const now = Date.now()
+  const held = subdomainClaims.get(subdomain)
+  if (held && held.expiresAt > now && held.projectId !== projectId) return false
+  subdomainClaims.set(subdomain, { projectId, expiresAt: now + SUBDOMAIN_CLAIM_TTL_MS })
+  return true
+}
+
+/** Release the claim, but only if this project still holds it. */
+function releaseSubdomainClaim(subdomain: string, projectId: string): void {
+  const held = subdomainClaims.get(subdomain)
+  if (held?.projectId === projectId) subdomainClaims.delete(subdomain)
+}
+
+/**
  * Acquire / release a publish-in-flight lock on the project's Knative
  * Service via a `shogo.io/publish-in-flight` annotation that carries an
  * absolute unix-ms expiry. The warm-pool GC reads this annotation and
@@ -1098,6 +1136,9 @@ export async function publishProject(
   projectId: string,
   opts: PublishProjectOptions,
 ): Promise<PublishProjectResult> {
+  // Set once this publish takes the per-subdomain in-flight claim, so the
+  // `finally` below can release it on every exit path (including a throw).
+  let claimedSubdomain: string | null = null
   try {
     const { subdomain: rawSubdomain, accessLevel = "anyone", password, siteTitle, siteDescription } = opts
     const subdomain = rawSubdomain.toLowerCase()
@@ -1145,6 +1186,15 @@ export async function publishProject(
         return { ok: false, status: 409, code: "subdomain_taken", message: "Subdomain is already in use" }
       }
     }
+
+    // The DB check above only sees COMMITTED reservations, and we don't write
+    // `publishedSubdomain` until the end of the pipeline. Take the in-flight
+    // claim now — before any build or upload — so a second project cannot pass
+    // the same check and overwrite this one's files in `{subdomain}/`.
+    if (!claimSubdomain(subdomain, projectId)) {
+      return { ok: false, status: 409, code: "subdomain_taken", message: "Subdomain is already in use" }
+    }
+    claimedSubdomain = subdomain
 
     // If project already has a different subdomain, clean up old S3 files
     if (project.publishedSubdomain && project.publishedSubdomain !== subdomain) {
@@ -1336,6 +1386,10 @@ export async function publishProject(
       await setPublishStatus(projectId, 'failed', 'publish_failed')
     } catch {}
     return { ok: false, status: 500, code: "publish_failed", message: error.message }
+  } finally {
+    // Always drop the claim — success (the row is committed by now), a structured
+    // failure, or a throw. The TTL is a backstop, not the release mechanism.
+    if (claimedSubdomain) releaseSubdomainClaim(claimedSubdomain, projectId)
   }
 }
 
@@ -1485,6 +1539,10 @@ export function publishRoutes() {
         serverBacked: serverBackedFlag ?? true,
         // Whether the workspace plan (Pro+) may publish to a new subdomain.
         canPublish,
+        // The apex this environment mints `{subdomain}.<domain>` URLs under.
+        // Staging is `staging.shogo.one`, production `shogo.one`. Clients must
+        // render this instead of hardcoding the apex (SHO-207).
+        publishDomain: PUBLISH_DOMAIN,
       }, 200)
     } catch (error: any) {
       console.error("[Publish] Get publish state error:", error)

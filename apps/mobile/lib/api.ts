@@ -1251,6 +1251,12 @@ export const api = {
       serverBacked?: boolean
       /** Whether the workspace plan (Pro+) may publish to a new subdomain. */
       canPublish?: boolean
+      /**
+       * The apex this environment mints `{subdomain}.<domain>` URLs under —
+       * `staging.shogo.one` on staging, `shogo.one` in production. Render this
+       * instead of hardcoding the apex.
+       */
+      publishDomain?: string
     }>(
       `/api/projects/${projectId}/publish`,
     )
@@ -2409,8 +2415,9 @@ export const api = {
   },
 
   /**
-   * Fetch a project with its persistent attachments (the anchor merged-root
-   * runtime mounts these). Returns `{ project, attachments }`.
+   * Fetch a local project with its folders. Desktop only (`/api/local/*`);
+   * resolves to `{ project: null }` elsewhere, which the Folders panel reads as
+   * "no linked folders on this surface".
    */
   async getLocalProjectWithAttachments(
     http: HttpClient,
@@ -2436,6 +2443,32 @@ export const api = {
   },
 
   /**
+   * List the projects attached to this anchor. Available on every surface
+   * (cloud, web, desktop) — only the attachments the caller can read come back.
+   */
+  async listProjectAttachments(
+    http: HttpClient,
+    projectId: string,
+  ): Promise<{
+    attachments: Array<{
+      id: string
+      attachedProjectId: string
+      attachedProjectName: string | null
+      attachMode: 'readwrite' | 'readonly'
+    }>
+    error?: string
+  }> {
+    try {
+      const res = await http.get<any>(
+        `/api/projects/${encodeURIComponent(projectId)}/attachments`,
+      )
+      return { attachments: Array.isArray(res.data?.attachments) ? res.data!.attachments : [] }
+    } catch (err: any) {
+      return { attachments: [], error: err?.message ?? 'Failed to load attached projects' }
+    }
+  },
+
+  /**
    * Attach another Shogo project (same workspace) to this anchor project so
    * its files mount into the anchor merged-root runtime. `attachMode`
    * defaults to `readwrite`; `readonly` mounts it write-protected.
@@ -2448,7 +2481,7 @@ export const api = {
   ): Promise<{ attachment?: any; error?: string }> {
     try {
       const res = await http.post<any>(
-        `/api/local/projects/${encodeURIComponent(projectId)}/attachments`,
+        `/api/projects/${encodeURIComponent(projectId)}/attachments`,
         { attachedProjectId, attachMode },
       )
       if (res.data?.attachment) return { attachment: res.data.attachment }
@@ -2467,7 +2500,7 @@ export const api = {
   ): Promise<{ ok: boolean; error?: string }> {
     try {
       await http.delete(
-        `/api/local/projects/${encodeURIComponent(projectId)}/attachments/${encodeURIComponent(attachedProjectId)}`,
+        `/api/projects/${encodeURIComponent(projectId)}/attachments/${encodeURIComponent(attachedProjectId)}`,
       )
       return { ok: true }
     } catch (err: any) {

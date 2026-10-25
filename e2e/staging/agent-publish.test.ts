@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "./fixtures"
-import { makeTestUser, MINIMAL_APP_PROMPT, waitForAgentResponse } from "./helpers"
+import { makeTestUser, MINIMAL_APP_PROMPT, publishDomain, waitForAgentResponse } from "./helpers"
+import { publishRequestTimeoutMs } from "../../packages/shared-runtime/src/publish-timeouts"
 import {
   INITIAL_BUILD_TIMEOUT_MS,
   LOCALHOST_RE,
@@ -15,8 +16,9 @@ import {
 /**
  * Agent one-click publish (UI-driven, hosted env, Pro plan).
  *
- * Asking the agent to "publish" deploys to `{subdomain}.shogo.one` and returns
- * the live URL. Publishing to a subdomain is Pro+ (the API answers
+ * Asking the agent to "publish" deploys to `{subdomain}.{PUBLISH_DOMAIN}` (the
+ * target's apex — `staging.shogo.one` on staging, `shogo.one` elsewhere) and
+ * returns the live URL. Publishing to a subdomain is Pro+ (the API answers
  * `plan_not_allowed` on Free), so the account is upgraded before any test runs.
  *
  * Run against staging:
@@ -51,12 +53,21 @@ function publishPrompt(subdomain: string): string {
 async function publishToSubdomain(page: Page, subdomain: string): Promise<string> {
   await sendProjectChatMessage(page, publishPrompt(subdomain))
   // Publish builds/uploads/provisions (slow) on the happy path; a taken
-  // subdomain is rejected fast, well before that.
-  await waitForAgentResponse(page, 300_000)
+  // subdomain is rejected fast, well before that. Budget the wait from the
+  // API's own step timeouts instead of a literal: a 300 s cap was shorter than
+  // a legitimate staging publish, so a slow-but-working publish looked like a
+  // timeout and the collision test then had nothing to collide with (SHO-207).
+  await waitForAgentResponse(page, publishRequestTimeoutMs())
   return agentMessageText(page)
 }
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+/**
+ * Apex published apps live under for this target (`staging.shogo.one` on
+ * staging, `shogo.one` elsewhere) — see helpers.publishDomain (SHO-207).
+ */
+const PUBLISH_DOMAIN = publishDomain()
 
 /**
  * The product promise of "agent honors a user-provided subdomain verbatim": the
@@ -75,10 +86,10 @@ function assertSubdomainVerbatim(text: string, subdomain: string): void {
     `agent must use the requested subdomain "${subdomain}", not substitute its own`,
   ).toContain(wanted)
   // Any *.shogo.one URL it surfaced must be that subdomain — not a foreign one.
-  for (const m of reply.matchAll(/https?:\/\/([a-z0-9-]+)\.shogo\.one/gi)) {
+  for (const m of reply.matchAll(new RegExp(`https?:\\/\\/([a-z0-9-]+)\\.${escapeRegExp(PUBLISH_DOMAIN)}`, "gi"))) {
     expect(
       m[1],
-      `agent published to "${m[1]}.shogo.one" instead of requested "${subdomain}"`,
+      `agent published to "${m[1]}.${PUBLISH_DOMAIN}" instead of requested "${subdomain}"`,
     ).toBe(wanted)
   }
 }
@@ -97,7 +108,7 @@ function assertSubdomainTaken(text: string, subdomain: string): void {
   expect(
     text,
     "agent must not falsely report a successful publish to a taken subdomain",
-  ).not.toMatch(new RegExp(`live at[^\\n]*${escapeRegExp(subdomain)}\\.shogo\\.one`, "i"))
+  ).not.toMatch(new RegExp(`live at[^\\n]*${escapeRegExp(subdomain)}\\.${escapeRegExp(PUBLISH_DOMAIN)}`, "i"))
 }
 
 /**
@@ -127,7 +138,7 @@ async function waitForSubdomainGone(
   subdomain: string,
   timeoutMs = 90_000,
 ): Promise<number | null> {
-  const url = `https://${subdomain}.shogo.one/`
+  const url = `https://${subdomain}.${PUBLISH_DOMAIN}/`
   const deadline = Date.now() + timeoutMs
   let last: number | null = null
   while (Date.now() < deadline) {
@@ -156,7 +167,7 @@ async function probeServing(
   subdomain: string,
 ): Promise<{ serving: boolean; status: number | null }> {
   const res = await page.request
-    .get(`https://${subdomain}.shogo.one/`, {
+    .get(`https://${subdomain}.${PUBLISH_DOMAIN}/`, {
       timeout: 20_000,
       failOnStatusCode: false,
     })
@@ -223,7 +234,7 @@ test.describe("Agent publish (Pro)", () => {
       if (!before?.serving) {
         console.warn(
           `[publish-e2e] SKIPPED the delete-takes-the-site-down check for ` +
-            `${subdomain}.shogo.one: it answered ${before?.status ?? "nothing"} ` +
+            `${subdomain}.${PUBLISH_DOMAIN}: it answered ${before?.status ?? "nothing"} ` +
             `BEFORE the delete, so a 404 now proves nothing. This environment ` +
             `does not serve published sites (staging bucket/edge mismatch) — the ` +
             `check only means something where a publish actually goes live.`,
@@ -232,7 +243,7 @@ test.describe("Agent publish (Pro)", () => {
       }
       if (status !== 404 && status !== 410) {
         failures.push(
-          `${subdomain}.shogo.one served ${before.status} before its project was ` +
+          `${subdomain}.${PUBLISH_DOMAIN} served ${before.status} before its project was ` +
             `deleted and still served ${status} after`,
         )
       }
@@ -322,16 +333,24 @@ test.describe("Agent publish (Pro)", () => {
 
     const subdomain = `e2e-dup-${Date.now().toString(36)}`
 
-    // Project A reserves the subdomain. The subdomain reservation happens in
-    // the DB at publish time regardless of whether the static asset has fully
-    // propagated, so this is independent of CDN/bucket timing.
+    // Project A publishes and must actually RESERVE the subdomain. The
+    // reservation is written to the DB at the END of A's pipeline (after build,
+    // upload and configure) — not at the start, as this test used to assume.
+    // So assert it through the API here, before creating B: if A's publish
+    // failed we fail right here with A's own state instead of silently giving B
+    // nothing to collide with and timing out on B (SHO-207).
     const projectA = await createTrackedProject(page)
     projectA.subdomain = subdomain
     const textA = await publishToSubdomain(page, subdomain)
-    // The subdomain reservation lands in the DB at the start of publish (before
-    // build/upload), so Project A holds it regardless of the known bucket infra
-    // issue. We only need proof A targeted this exact subdomain.
     assertSubdomainVerbatim(textA, subdomain)
+
+    const reserved = await page.request.get(`/api/projects/${projectA.id}/publish`)
+    expect(reserved.ok(), `GET publish state for A returned ${reserved.status()}`).toBe(true)
+    const state = (await reserved.json()) as { subdomain?: string; publishStatus?: string }
+    expect(
+      state.subdomain,
+      `project A must hold "${subdomain}" before B tries it (publishStatus: ${state.publishStatus})`,
+    ).toBe(subdomain)
 
     // Project B tries to grab the same subdomain — must be rejected.
     await createTrackedProject(page)
@@ -367,7 +386,7 @@ test.describe("Agent publish subdomain assertions", () => {
     // substitution, which is exactly the hole the whole-page scope hid.
     const reply =
       `Publishing "${REQUESTED}" as you asked — your app is live at ` +
-      `https://e2e-keepme-other.shogo.one`
+      `https://e2e-keepme-other.${PUBLISH_DOMAIN}`
     expect(reply).toContain(REQUESTED)
     expect(() => assertSubdomainVerbatim(reply, REQUESTED)).toThrow(/instead of requested/)
   })
@@ -375,7 +394,7 @@ test.describe("Agent publish subdomain assertions", () => {
   test("a reply that used the requested subdomain passes", () => {
     expect(() =>
       assertSubdomainVerbatim(
-        `Published — https://${REQUESTED}.shogo.one is serving 200.`,
+        `Published — https://${REQUESTED}.${PUBLISH_DOMAIN} is serving 200.`,
         REQUESTED,
       ),
     ).not.toThrow()
@@ -384,7 +403,7 @@ test.describe("Agent publish subdomain assertions", () => {
     expect(() => assertSubdomainVerbatim(`Published to "${REQUESTED}".`, REQUESTED)).not.toThrow()
     // Case is not a substitution — DNS names are case-insensitive.
     expect(() =>
-      assertSubdomainVerbatim(`Live at https://${REQUESTED.toUpperCase()}.shogo.one`, REQUESTED),
+      assertSubdomainVerbatim(`Live at https://${REQUESTED.toUpperCase()}.${PUBLISH_DOMAIN}`, REQUESTED),
     ).not.toThrow()
   })
 
@@ -416,7 +435,7 @@ test.describe("Agent publish subdomain assertions", () => {
     // The plausible wrong answer: report the clash, then claim success anyway.
     const reply =
       `The subdomain is already in use elsewhere, but I published anyway — ` +
-      `it is live at https://${REQUESTED}.shogo.one`
+      `it is live at https://${REQUESTED}.${PUBLISH_DOMAIN}`
     expect(() => assertSubdomainTaken(reply, REQUESTED)).toThrow(/must not falsely report/)
   })
 })
