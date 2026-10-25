@@ -1,0 +1,14 @@
+{
+  "profiles": [
+    {
+      "_id": "64f0c2a1b9e4d30012ab99ff",
+      "name": "Someone else",
+      "externalId": "ws_ws_2"
+    },
+    {
+      "_id": "64f0c2a1b9e4d30012ab34cd",
+      "name": "Odin AI",
+      "externalId": "ws_ws_1"
+    }
+  ]
+}

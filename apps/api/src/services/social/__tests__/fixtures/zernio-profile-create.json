@@ -1,0 +1,9 @@
+{
+  "message": "Profile created",
+  "profile": {
+    "_id": "64f0c2a1b9e4d30012ab34cd",
+    "name": "Odin AI",
+    "externalId": "ws_ws_1",
+    "createdAt": "2026-10-25T07:00:00.000Z"
+  }
+}

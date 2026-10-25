@@ -16,10 +16,19 @@
 
 import { prisma } from '../../lib/prisma'
 import { SocialError, getSocialClient, type SocialClient } from './client'
-import { externalIdFor, getProfile, recordProfileMapping, type SocialProfileRow } from './profiles.service'
+import {
+  ensureProfile,
+  externalIdFor,
+  getProfile,
+  profileFromList,
+  recordProfileMapping,
+  workspaceName,
+  type SocialProfileRow,
+} from './profiles.service'
 import { planRelayRequest } from './relay-plan'
 import { normalizeZernioAccount, upsertAccount } from './accounts.service'
 import { storeAutomation } from './automations.service'
+import { zernioId } from './provider-ids'
 import {
   assertSocialBudget,
   meterXPost,
@@ -44,7 +53,7 @@ async function accountBelongsToWorkspace(
     query: { profileId: profile.zernioProfileId },
   })
   const list = Array.isArray(payload) ? payload : (payload?.accounts ?? payload?.data ?? [])
-  return list.some((account: any) => account?.id === zernioAccountId)
+  return list.some((account: any) => zernioId(account) === zernioAccountId)
 }
 
 /** Does this Zernio post belong to the workspace? Every relayed create is recorded. */
@@ -86,7 +95,7 @@ async function recordPost(
   payload: any,
   key: string | undefined,
 ): Promise<void> {
-  const zernioPostId = typeof payload?.id === 'string' ? payload.id : null
+  const zernioPostId = zernioId(payload, 'post')
   if (!zernioPostId) return
   const parsedSchedule = typeof body?.scheduledFor === 'string' ? new Date(body.scheduledFor) : null
   const scheduledFor =
@@ -181,10 +190,8 @@ async function recordAutomation(
   payload: any,
   localWorkspaceId: string,
 ): Promise<void> {
-  const resource =
-    payload?.automation ?? payload?.workflow ?? payload?.data ?? null
-  const zernioResourceId =
-    typeof resource?.id === 'string' ? resource.id : typeof payload?.id === 'string' ? payload.id : null
+  const resource = payload?.automation ?? payload?.workflow ?? payload?.data ?? null
+  const zernioResourceId = zernioId(payload, 'automation', 'workflow', 'data')
   if (!zernioResourceId) return
 
   const sequence = path.startsWith('/workflows')
@@ -224,6 +231,40 @@ async function recordAutomation(
   }
 }
 
+/**
+ * Resolve the profile a 409 says already owns this scope's routing id, and
+ * record it. Zernio names it in `details.existingProfileId`; when an older
+ * answer does not, the exact-`externalId` list lookup finds it. Never a
+ * first-row guess: that could adopt another tenant's profile.
+ */
+async function adoptExistingProfile(args: {
+  workspaceId: string
+  localWorkspaceId: string
+  externalId: string
+  err: SocialError
+  client: SocialClient
+}): Promise<string | null> {
+  const named = args.err.details?.existingProfileId
+  let zernioProfileId = typeof named === 'string' && named ? named : null
+  if (!zernioProfileId) {
+    const found = await args.client.request<any>({
+      workspaceId: args.workspaceId,
+      method: 'GET',
+      path: '/profiles',
+      query: { externalId: args.externalId },
+    })
+    zernioProfileId = zernioId(profileFromList(found, args.externalId))
+  }
+  if (!zernioProfileId) return null
+  await recordProfileMapping({
+    workspaceId: args.workspaceId,
+    localWorkspaceId: args.localWorkspaceId,
+    zernioProfileId,
+    externalId: args.externalId,
+  })
+  return zernioProfileId
+}
+
 export interface RelayOutcome {
   status: number
   body: unknown
@@ -252,8 +293,22 @@ export async function relayOperation(args: {
 }): Promise<RelayOutcome> {
   const localWorkspaceId = args.localWorkspaceId ?? ''
   const externalId = externalIdFor(args.workspaceId, localWorkspaceId)
-  const profile = await getProfile(args.workspaceId, localWorkspaceId)
-  const plan = planRelayRequest({ ...args, localWorkspaceId, externalId, profile })
+  let profile = await getProfile(args.workspaceId, localWorkspaceId)
+  let plan = planRelayRequest({ ...args, localWorkspaceId, externalId, profile })
+
+  // The scope's first connect creates its profile: a desktop that has never
+  // connected has no row here yet, and refusing would make the first connect
+  // impossible. The request is planned again with the profile, so what is
+  // forwarded is exactly what a scope that already had one would send.
+  if (plan.kind === 'forward' && plan.ensureProfile && !profile) {
+    try {
+      profile = await ensureProfile(args.workspaceId, await workspaceName(args.workspaceId), localWorkspaceId)
+    } catch (err) {
+      if (err instanceof SocialError) return { status: err.status, body: err.toJSON() }
+      throw err
+    }
+    plan = planRelayRequest({ ...args, localWorkspaceId, externalId, profile })
+  }
 
   if (plan.kind === 'deny') {
     const error = new SocialError(plan.status, plan.code, plan.message)
@@ -266,7 +321,13 @@ export async function relayOperation(args: {
   }
 
   if (plan.verifyAccountId) {
-    if (!profile) throw new SocialError(412, 'social_not_connected', 'Connect a social account first.')
+    if (!profile) {
+      throw new SocialError(
+        412,
+        'social_profile_missing',
+        'This workspace has no social profile yet — start a connect to create it.',
+      )
+    }
     if (!(await accountBelongsToWorkspace(args.workspaceId, plan.verifyAccountId, client, profile))) {
       return {
         status: 403,
@@ -329,23 +390,46 @@ export async function relayOperation(args: {
     throw err
   }
 
-  const result = await client.request<any>({
-    workspaceId: args.workspaceId,
-    method: args.method as any,
-    path: plan.path,
-    query: plan.query,
-    body: plan.body,
-    idempotencyKey: args.idempotencyKey,
-  })
+  let result: any
+  try {
+    result = await client.request<any>({
+      workspaceId: args.workspaceId,
+      method: args.method as any,
+      path: plan.path,
+      query: plan.query,
+      body: plan.body,
+      idempotencyKey: args.idempotencyKey,
+    })
+  } catch (err) {
+    // `profile_external_id_conflict`: our profile already exists at Zernio
+    // because an earlier attempt created it and the row was never written.
+    // Zernio names it (or the filtered list does), so adopt and record it
+    // instead of returning a 409 the desktop cannot act on.
+    if (
+      plan.record === 'profile-created' &&
+      err instanceof SocialError &&
+      (err.status === 409 || err.status === 422)
+    ) {
+      const adopted = await adoptExistingProfile({ workspaceId: args.workspaceId, localWorkspaceId, externalId, err, client })
+      if (adopted) {
+        return {
+          status: 200,
+          body: { message: 'Profile already existed', profile: { _id: adopted, externalId } },
+        }
+      }
+    }
+    throw err
+  }
 
   if (plan.record === 'profile-created') {
-    const zernioProfileId = typeof result?.id === 'string' ? result.id : null
+    const zernioProfileId = zernioId(result, 'profile')
     if (zernioProfileId) {
+      const echoed = result?.profile?.externalId ?? result?.externalId
       await recordProfileMapping({
         workspaceId: args.workspaceId,
         localWorkspaceId,
         zernioProfileId,
-        externalId: typeof result?.externalId === 'string' && result.externalId ? result.externalId : externalId,
+        externalId: typeof echoed === 'string' && echoed ? echoed : externalId,
       })
     }
   } else if (plan.record === 'accounts-listed' && profile) {

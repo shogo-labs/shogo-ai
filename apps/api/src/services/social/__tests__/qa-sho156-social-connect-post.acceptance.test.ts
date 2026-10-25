@@ -276,7 +276,7 @@ describe('acceptance 4 — desktop without Shogo Cloud says so in plain words', 
         throw new SocialError(
           412,
           'social_relay_unavailable',
-          'Social accounts on desktop go through Shogo Cloud. Connect Shogo Cloud in Settings first.',
+          'Social accounts on desktop go through Shogo Cloud. Sign in to Shogo Cloud in Settings first.',
         )
       },
     })
@@ -287,14 +287,14 @@ describe('acceptance 4 — desktop without Shogo Cloud says so in plain words', 
     })
     expect(mine.status).toBe(412)
     const mineBody = await mine.json()
-    expect(mineBody.error.message).toContain('Connect Shogo Cloud in Settings first')
+    expect(mineBody.error.message).toContain('Sign in to Shogo Cloud in Settings')
 
     const agent = await request(`/api/internal/workspaces/${workspaceId}/social/connect`, null, {
       method: 'POST',
       body: JSON.stringify({ platform: 'instagram' }),
     })
     expect(agent.status).toBe(412)
-    expect((await agent.json()).error.message).toContain('Connect Shogo Cloud in Settings first')
+    expect((await agent.json()).error.message).toContain('Sign in to Shogo Cloud in Settings')
 
     fakeProvider()
   })

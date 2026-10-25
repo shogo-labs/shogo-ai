@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto'
 import { prisma } from '../../lib/prisma'
 import { SocialError, getSocialClient } from './client'
 import { ensureProfile } from './profiles.service'
+import { zernioId } from './provider-ids'
 import { assertSocialBudget, meterXPost, projectedPublishRawUsd } from './usage.service'
 
 const db = prisma as any
@@ -429,7 +430,8 @@ export async function dispatchPost(
       where: { id: target.id },
       data: {
         status: failed ? 'failed' : remote.status === 'pending' ? 'publishing' : 'published',
-        platformPostId: typeof remote.postId === 'string' ? remote.postId : typeof remote.id === 'string' ? remote.id : null,
+        platformPostId:
+          typeof remote.postId === 'string' ? remote.postId : zernioId(remote),
         platformPostUrl: typeof remote.url === 'string' ? remote.url : typeof remote.postUrl === 'string' ? remote.postUrl : null,
         error: failed ? String(remote.error ?? remote.platformError ?? 'Publish failed') : null,
       },
@@ -463,7 +465,7 @@ export async function dispatchPost(
     where: { id: post.id },
     data: {
       status,
-      zernioPostId: typeof result?.id === 'string' ? result.id : null,
+      zernioPostId: zernioId(result, 'post'),
       publishedAt: status === 'published' || status === 'partial' ? new Date() : null,
     },
   })

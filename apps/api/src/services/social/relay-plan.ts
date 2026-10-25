@@ -17,6 +17,12 @@ export type RelayPlan =
       body?: unknown
       /** Post-forward bookkeeping the cloud needs to own: routing + billing. */
       record?: 'profile-created' | 'accounts-listed' | 'post-created' | 'automation-created'
+      /**
+       * The relay may create the scope's profile before forwarding. Only a
+       * connect does this: a workspace's first-ever call is a connect, and it
+       * has no profile row for the desktop to be scoped against.
+       */
+      ensureProfile?: boolean
       /** Resource id the route must prove belongs to the caller first. */
       verifyAccountId?: string
       verifyPostId?: string
@@ -39,8 +45,8 @@ function needsProfile(profile: SocialProfileRow | null): RelayPlan | null {
   if (profile) return null
   return deny(
     412,
-    'social_not_connected',
-    'Connect a social account in this workspace before calling the provider.',
+    'social_profile_missing',
+    'This workspace has no social profile yet — start a connect to create it.',
   )
 }
 
@@ -109,13 +115,15 @@ export function planRelayRequest(args: {
   }
 
   // ── connect ─────────────────────────────────────────────────────────────
+  // A connect is the one operation a scope with no profile may make: it is how
+  // a brand-new workspace creates its profile. The relay creates and records it
+  // (`ensureProfile`) and then plans this same request again with the profile
+  // in hand, so the forwarded call is identical either way.
   if (seg[0] === 'connect') {
-    const missing = needsProfile(args.profile)
-    if (missing) return missing
     if (method !== 'GET' || seg.length !== 2) {
       return deny(405, 'method_not_allowed', `${method} ${args.path} is not relayed`)
     }
-    const query: Record<string, string> = { profileId: args.profile!.zernioProfileId }
+    const query: Record<string, string> = {}
     if (typeof args.query.redirect_url === 'string') query.redirect_url = args.query.redirect_url
     // `forceReauth` and `expectedUsername` are how "connect *this* account"
     // holds: without them a desktop's connect lands on whichever account the
@@ -125,7 +133,19 @@ export function planRelayRequest(args: {
     if (typeof args.query.reconnectAccountId === 'string') {
       query.reconnectAccountId = args.query.reconnectAccountId
     }
-    return { kind: 'forward', path: `/connect/${encodeURIComponent(seg[1]!)}`, query }
+    if (!args.profile) {
+      return {
+        kind: 'forward',
+        path: `/connect/${encodeURIComponent(seg[1]!)}`,
+        query,
+        ensureProfile: true,
+      }
+    }
+    return {
+      kind: 'forward',
+      path: `/connect/${encodeURIComponent(seg[1]!)}`,
+      query: { profileId: args.profile.zernioProfileId, ...query },
+    }
   }
 
   // ── media: presigned uploads ────────────────────────────────────────────

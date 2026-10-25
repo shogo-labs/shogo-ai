@@ -10,6 +10,7 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { isScopeId } from './local-scope'
+import { zernioId } from './provider-ids'
 
 export const ZERNIO_SIGNATURE_HEADER = 'x-zernio-signature'
 export const ZERNIO_EVENT_ID_HEADER = 'x-zernio-event-id'
@@ -70,7 +71,8 @@ export interface ZernioEvent {
 
 function accountFromPayload(payload: any): ZernioEvent['account'] {
   const raw = payload?.account ?? payload?.accounts?.[0] ?? payload?.profiles?.[0]?.accounts?.[0]
-  const id = raw?.id ?? raw?.accountId ?? raw?.zernioAccountId
+  const legacy = raw?.zernioAccountId ?? raw?.accountId
+  const id = zernioId(raw) ?? (typeof legacy === 'string' ? legacy : null)
   if (typeof id !== 'string' || !id) return null
   return {
     zernioAccountId: id,
@@ -97,7 +99,7 @@ export function parseZernioEvent(rawBody: string, eventIdHeader: string | null |
     ''
   const id =
     (typeof eventIdHeader === 'string' && eventIdHeader.trim()) ||
-    (typeof payload.id === 'string' && payload.id) ||
+    zernioId(payload) ||
     (typeof payload.eventId === 'string' && payload.eventId) ||
     ''
   if (!type || !externalId || !id) return null

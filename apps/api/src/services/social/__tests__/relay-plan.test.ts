@@ -145,14 +145,36 @@ describe('relay scoping', () => {
       ['GET', '/accounts'],
       ['GET', '/posts'],
       ['POST', '/posts'],
-      ['GET', '/connect/instagram'],
+      ['GET', '/inbox/comments'],
     ] as const) {
       expect(plan({ method, path, profile: null })).toMatchObject({
         kind: 'deny',
         status: 412,
-        code: 'social_not_connected',
+        code: 'social_profile_missing',
       })
     }
+  })
+
+  test('a first connect may create the scope’s profile, and carries no profileId yet', () => {
+    const result = plan({
+      path: '/connect/instagram',
+      query: { redirect_url: 'https://app.example/social/callback', profileId: 'someone_else' },
+      profile: null,
+    })
+    expect(result).toMatchObject({
+      kind: 'forward',
+      path: '/connect/instagram',
+      ensureProfile: true,
+      query: { redirect_url: 'https://app.example/social/callback' },
+    })
+    expect((result as any).query.profileId).toBeUndefined()
+  })
+
+  test('a connect from a scope that has a profile is pinned to it', () => {
+    expect(plan({ path: '/connect/tiktok' })).toMatchObject({
+      kind: 'forward',
+      query: { profileId: 'zernio_profile_1' },
+    })
   })
 
   test('unsupported methods never reach the provider', () => {

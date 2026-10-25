@@ -9196,7 +9196,7 @@ async function socialInternalCall(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
   body?: Record<string, unknown>,
-): Promise<{ ok: true; data: any } | { ok: false; error: string; suggestion?: string }> {
+): Promise<{ ok: true; data: any } | { ok: false; error: string; code?: string; suggestion?: string }> {
   const workspaceId = ctx.workspaceId
   if (!workspaceId) {
     return { ok: false, error: 'No workspace in scope for social inbox calls.' }
@@ -9215,13 +9215,28 @@ async function socialInternalCall(
     )
     const data = await response.json().catch(() => ({}))
     if (!response.ok) {
+      const rawCode = (data as any)?.error?.code
+      const code = typeof rawCode === 'string' ? rawCode : undefined
       return {
         ok: false,
         error: (data as any)?.error?.message ?? (data as any)?.error ?? `HTTP ${response.status}`,
+        code,
         suggestion:
-          response.status === 409
-            ? 'Connect the account, then run action "inbox" with kind "dms" or "comments" to sync first.'
-            : undefined,
+          code === 'social_relay_unavailable'
+            ? 'Sign in to Shogo Cloud in Settings, then retry.'
+            : code === 'social_profile_missing'
+              ? 'Run action "connect" for that platform first — the connect creates the workspace’s profile.'
+              : code === 'social_profile_unresolved'
+                ? 'The social provider did not return a profile id. Retry once, then report it if it keeps happening.'
+                : code === 'social_not_configured'
+                  ? 'Social is not configured on the server: the workspace owner has to set the provider key.'
+                  : code === 'account_out_of_scope' || code === 'profile_out_of_scope'
+                    ? 'That resource belongs to another workspace. Connect this workspace’s own account.'
+                    : code === 'account_owned_elsewhere'
+                      ? 'Disconnect that account from the other workspace first, then connect it here.'
+                      : response.status === 409
+                        ? 'Connect the account, then run action "inbox" with kind "dms" or "comments" to sync first.'
+                        : undefined,
       }
     }
     return { ok: true, data }
@@ -9670,7 +9685,9 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           ...(expected ? { expectedUsername: expected } : {}),
           ...(params.force_reauth === true ? { forceReauth: true } : {}),
         })
-        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        if (!result.ok) {
+          return textResult({ error: result.error, code: result.code, suggestion: result.suggestion })
+        }
         const url = typeof result.data?.url === 'string' ? result.data.url : ''
         if (!url) return textResult({ error: 'No sign-in link was returned.' })
         return textResult({
@@ -9691,7 +9708,9 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         // Sync first: a connect that just finished in a browser wrote nothing
         // locally, and the person expects the account to be there now.
         const result = await socialInternalCall(ctx, 'POST', '/social/accounts/sync')
-        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        if (!result.ok) {
+          return textResult({ error: result.error, code: result.code, suggestion: result.suggestion })
+        }
         const accounts = Array.isArray(result.data?.accounts) ? result.data.accounts : []
         return textResult({
           count: accounts.length,

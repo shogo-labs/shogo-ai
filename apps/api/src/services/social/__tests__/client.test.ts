@@ -11,6 +11,13 @@ import {
   setSocialClient,
 } from '../client'
 
+// A desktop's key may live only in `localConfig`; stand in for the reader that
+// finds it so no test needs a database.
+let signedInKey: string | null = null
+mock.module('../../../lib/federated-upstream', () => ({
+  getUpstreamCredential: async () => signedInKey,
+}))
+
 const originalFetch = globalThis.fetch
 const savedEnv = {
   SHOGO_LOCAL_MODE: process.env.SHOGO_LOCAL_MODE,
@@ -79,6 +86,40 @@ describe('social client mode', () => {
   test('byok without a user key falls back to the relay', () => {
     const config = resolveSocialClientConfig({ SOCIAL_MODE: 'byok', SHOGO_API_KEY: 'shogo_sk_desktop' } as any)
     expect(config.mode).toBe('relay')
+  })
+
+  test('a desktop whose key is only in localConfig still relays, lazily', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    delete process.env.SHOGO_API_KEY
+    delete process.env.ZERNIO_API_KEY
+    signedInKey = 'shogo_sk_persisted'
+
+    let seen: any = null
+    globalThis.fetch = mock(async (_url: any, init: any) => {
+      seen = init
+      return jsonResponse({ id: 'post_1' })
+    }) as any
+
+    await getSocialClient().request({ method: 'GET', path: '/profiles' })
+
+    expect(seen.headers.Authorization).toBe('Bearer shogo_sk_persisted')
+    signedInKey = null
+  })
+
+  test('a signed-out desktop refuses with the Shogo Cloud sentence', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    delete process.env.SHOGO_API_KEY
+    delete process.env.ZERNIO_API_KEY
+    signedInKey = null
+
+    const error = await getSocialClient()
+      .request({ method: 'GET', path: '/profiles' })
+      .catch((err) => err)
+
+    expect(error).toBeInstanceOf(SocialError)
+    expect((error as SocialError).status).toBe(412)
+    expect((error as SocialError).code).toBe('social_relay_unavailable')
+    expect((error as SocialError).message).toContain('Sign in to Shogo Cloud in Settings')
   })
 
   test('an unconfigured cloud refuses with an actionable error', () => {
@@ -179,6 +220,44 @@ describe('social client requests', () => {
 
     await getSocialClient().request({ method: 'GET', path: '/profiles' })
     expect(seen.headers[LOCAL_SCOPE_HEADER]).toBeUndefined()
+  })
+
+  test('a relayed failure says it came through the relay', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    process.env.SHOGO_API_KEY = 'shogo_sk_desktop'
+    delete process.env.ZERNIO_API_KEY
+
+    globalThis.fetch = mock(async () =>
+      jsonResponse({ error: { code: 'social_profile_missing', message: 'no profile' } }, 412),
+    ) as any
+
+    const error = await getSocialClient()
+      .request({ method: 'GET', path: '/profiles' })
+      .catch((err) => err)
+
+    expect((error as SocialError).code).toBe('social_profile_missing')
+    expect((error as SocialError).details.via).toBe('relay')
+  })
+
+  test('a profile conflict carries the profile id Zernio already owns', async () => {
+    useCloudEnv()
+    globalThis.fetch = mock(async () =>
+      jsonResponse(
+        {
+          error: 'A profile with this externalId already exists',
+          type: 'profile_external_id_conflict',
+          details: { existingProfileId: '64f0c2a1b9e4d30012ab34cd' },
+        },
+        409,
+      ),
+    ) as any
+
+    const error = await getSocialClient()
+      .request({ method: 'POST', path: '/profiles', body: { name: 'Acme' } })
+      .catch((err) => err)
+
+    expect((error as SocialError).status).toBe(409)
+    expect((error as SocialError).details.existingProfileId).toBe('64f0c2a1b9e4d30012ab34cd')
   })
 
   test('an unreachable provider is a 502, not a thrown fetch error', async () => {
