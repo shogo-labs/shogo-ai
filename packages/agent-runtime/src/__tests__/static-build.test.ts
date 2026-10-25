@@ -128,6 +128,49 @@ describe('PreviewManager with the custom stack', () => {
     }
   }, 60_000)
 
+  test('a rewrite with identical content does not claim the output changed, and bookkeeping writes do not rebuild', async () => {
+    const dir = project({
+      '.tech-stack': 'custom',
+      'build.cjs': BUILD_SCRIPT,
+      'src/page.txt': 'first',
+      'shogo.preview.json': '{"build":"bun build.cjs"}',
+    })
+    let builds = 0
+    const changes: (boolean | undefined)[] = []
+    const pm = new PreviewManager({
+      workspaceDir: dir,
+      runtimePort: 0,
+      basePath: '/p/proj-1/',
+      onBuildComplete: (info) => {
+        builds++
+        changes.push(info?.outputChanged)
+      },
+    })
+    try {
+      await pm.start()
+      await waitFor(() => builds >= 1)
+      // The first build for a workspace announces itself.
+      expect(changes[0]).toBe(true)
+
+      // A watched file rewritten with the same bytes: the build re-runs and
+      // reproduces the page it was already serving, so the canvas must not
+      // raise the "Update available · Refresh" toast over the user.
+      writeFileSync(join(dir, 'src/page.txt'), 'first')
+      await waitFor(() => builds >= 2, 10_000)
+      expect(changes[1]).toBe(false)
+
+      // What an idle agent writes. None of it is static-build input, so it
+      // must not even trigger a rebuild.
+      writeFileSync(join(dir, 'MEMORY.md'), '# Memory\n\n- a note\n')
+      mkdirSync(join(dir, 'memory'), { recursive: true })
+      writeFileSync(join(dir, 'memory/2026-10-25.md'), '## a day\n')
+      await new Promise((resolve) => setTimeout(resolve, 1_500))
+      expect(builds).toBe(2)
+    } finally {
+      pm.stop()
+    }
+  }, 60_000)
+
   test('the video-editor stack previews through the same static build', async () => {
     // The Remotion starter declares devServer: static-build — the canvas is a
     // Vite build of the Player shell, so the preview pipeline is the static one

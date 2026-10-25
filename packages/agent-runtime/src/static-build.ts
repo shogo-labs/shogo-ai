@@ -181,7 +181,25 @@ export async function runStaticBuild(
   return { ok: true }
 }
 
-const ALWAYS_IGNORED = ['node_modules', '.git', '.shogo', '.astro', '.cache', 'dist']
+const ALWAYS_IGNORED = [
+  'node_modules',
+  '.git',
+  '.shogo',
+  '.astro',
+  '.cache',
+  'dist',
+  // The agent's own bookkeeping. No static build consumes it, and an idle
+  // agent writes it constantly — MEMORY.md and plan notes were each triggering
+  // a full rebuild and, before the input fingerprint gated it, a reload toast.
+  'memory',
+  'files',
+  'MEMORY.md',
+  'TOOLS.md',
+  'AGENTS.md',
+  'HEARTBEAT.md',
+  'WORKSPACE.md',
+  'STACK.md',
+]
 
 /**
  * Call `onChange` (debounced) when a source file changes. Build output and
@@ -199,7 +217,7 @@ export function watchStaticSources(
     watcher = watch(cwd, { recursive: true }, (_event, filename) => {
       if (!filename) return
       const top = String(filename).split(/[\\/]/)[0]
-      if (ignored.has(top) || top.startsWith('dist.')) return
+      if (ignored.has(top) || top.startsWith('dist.') || top.startsWith('.memory-index.db')) return
       if (timer) clearTimeout(timer)
       timer = setTimeout(() => {
         timer = null
