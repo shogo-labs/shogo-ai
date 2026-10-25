@@ -90,11 +90,21 @@ describe('SHO-206 · POST /pool/rehydrate clock step', () => {
     expect(body.clock.error).toBeUndefined()
   })
 
-  // Only meaningful where the clock genuinely cannot be set (macOS dev boxes,
-  // an unprivileged guest). On a root Linux runner the correction would really
-  // run and move the clock, which a test must never do.
-  const canSetClock = clockSetBlockedReason() === null
-  test.skipIf(canSetClock)('a clock it cannot set is reported, never silently skipped', async () => {
+  test('a clock it cannot set is reported, never silently skipped', async () => {
+    // A skew this size would really move the machine's clock on a privileged
+    // runner, which a test must never do — so on one, prove the reporting
+    // contract with a skew the route leaves alone instead. Both branches send
+    // a `hostNowMs`, so both prove the body reaches the clock step.
+    const blocked = clockSetBlockedReason()
+    if (!blocked) {
+      const res = await rehydrate({ hostNowMs: Date.now() - 1000 })
+      const body = await res.json()
+      expect(res.status).toBe(200)
+      expect(body.clock.corrected).toBe(false)
+      expect(body.clock.error).toBeUndefined()
+      expect(Math.abs(body.clock.skewMs)).toBeLessThanOrEqual(2500)
+      return
+    }
     const res = await rehydrate({ hostNowMs: Date.now() - 4 * 3600_000 })
     expect(res.status).toBe(200)
     const body = await res.json()
