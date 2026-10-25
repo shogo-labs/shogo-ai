@@ -47,9 +47,15 @@ const db = prisma as any
 /** The dialect under test: `setupChannelsTestDb` clears the flag for Postgres. */
 const POSTGRES = process.env.SHOGO_LOCAL_MODE !== 'true'
 
-/** Fixtures are relative to this instant, so no assertion reads the wall clock. */
-const NOW = new Date('2026-10-24T12:00:00.000Z')
 const HOUR = 3_600_000
+
+/**
+ * Fixtures are relative to this instant, so no assertion reads the wall clock —
+ * except the route, which reads `new Date()` itself. NOW therefore has to track
+ * the current hour instead of a pinned date: a pinned one drifts out of the
+ * route's 24h window and turns main red with no PR involved.
+ */
+const NOW = new Date(Math.floor(Date.now() / HOUR) * HOUR)
 
 const CONFIGURED_MODEL = 'claude-sonnet-4-5'
 const FALLBACK_MODEL = 'gpt-5'
