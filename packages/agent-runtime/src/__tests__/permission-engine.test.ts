@@ -167,7 +167,14 @@ describe('PermissionEngine.check — full_autonomy blocks nothing', () => {
   // the absolute forms are what actually reach HARD_BLOCKED_PATH_PREFIXES.
   const HOME = require('os').homedir()
   const TILDE_PATHS = ['~/.ssh/id_ed25519', '~/.aws/credentials', '~/.zshrc']
-  const ABSOLUTE_PATHS = [`${HOME}/.ssh/id_ed25519`, `${HOME}/.aws/credentials`, `${HOME}/.zshrc`, '/etc/passwd']
+  const ABSOLUTE_PATHS = [
+    `${HOME}/.ssh/id_ed25519`,
+    `${HOME}/.aws/credentials`,
+    `${HOME}/.zshrc`,
+    // POSIX-only: `resolve()` on Windows turns '/etc/passwd' into '<drive>:\etc\passwd',
+    // which never matches the literal prefix, so the engine allows it there too.
+    ...(process.platform === 'win32' ? [] : ['/etc/passwd']),
+  ]
 
   test('allows every file tool on every built-in credential path', () => {
     const eng = newEngine({ preference: { mode: 'full_autonomy' } })
