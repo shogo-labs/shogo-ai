@@ -67,6 +67,7 @@ mock.module('@aws-sdk/client-s3', () => ({
 const { deletePublishedStaticBundle, deletePublishedDataArchive } = await import(
   '../lib/publish-storage'
 )
+const { teardownPublishedSite } = await import('../services/published-site-teardown')
 
 /** One list page with the given keys, then an empty page for the verify re-list. */
 const listed = (...keys: string[]) => [
@@ -184,5 +185,75 @@ describe('deletePublishedDataArchive', () => {
     expect(err).toBeInstanceOf(Error)
     expect(err.message).toContain('Could not remove the published-data archive for site')
     expect(err.message).toContain('Content-MD5')
+  })
+})
+
+/**
+ * The wiring QA asked for: the REAL delete functions under the REAL teardown,
+ * not the `deps` seam. `qa-sho138-teardown-wiring.acceptance.test.ts` mocks
+ * `../lib/publish-storage` wholesale, so nothing there proves that a delete
+ * which did not take effect reaches the caller as `ok:false` — which is the
+ * half of SHO-207 that left sites live behind a green log line.
+ */
+describe('teardownPublishedSite + the real delete path', () => {
+  // Everything except the two delete steps, which stay real.
+  const stubbedDeps = {
+    unpublishRuntime: async () => {},
+    clearSitePassword: async () => {},
+    clearServerBackedFlag: async () => {},
+    clearCustomDomains: async () => {},
+    deletePublishPointer: async () => {},
+  }
+
+  test('a delete that did not take effect is ok:false, not ok:true', async () => {
+    listPages = [
+      { Contents: [{ Key: 'site/index.html' }], IsTruncated: false },
+      { Contents: [{ Key: 'site/index.html' }], IsTruncated: false },
+    ]
+
+    const outcomes = await teardownPublishedSite('proj-1', 'site', {
+      dropPublishPointer: false,
+      deps: stubbedDeps,
+    })
+
+    const staticBundle = outcomes.find((o) => o.step === 'static-bundle')
+    expect(staticBundle).toMatchObject({ step: 'static-bundle', ok: false })
+    expect(staticBundle?.error).toContain('still present')
+  })
+
+  test('a rejected delete is ok:false for the bundle and for the archive', async () => {
+    // Each step lists twice (find keys, then verify), so queue pages per step.
+    listPages = [
+      { Contents: [{ Key: 'site/index.html' }], IsTruncated: false },
+      { Contents: [{ Key: 'site/index.html' }], IsTruncated: false },
+      { Contents: [{ Key: 'site/data.tar.gz' }], IsTruncated: false },
+      { Contents: [{ Key: 'site/data.tar.gz' }], IsTruncated: false },
+    ]
+    deleteImpl = async () => {
+      throw new Error('AccessDenied')
+    }
+
+    const outcomes = await teardownPublishedSite('proj-1', 'site', {
+      purgePublishedData: true,
+      dropPublishPointer: false,
+      deps: stubbedDeps,
+    })
+
+    expect(outcomes.find((o) => o.step === 'static-bundle')).toMatchObject({ ok: false })
+    expect(outcomes.find((o) => o.step === 'published-data')).toMatchObject({ ok: false })
+  })
+
+  test('a clean delete is ok:true', async () => {
+    listPages = listed('site/index.html')
+
+    const outcomes = await teardownPublishedSite('proj-1', 'site', {
+      dropPublishPointer: false,
+      deps: stubbedDeps,
+    })
+
+    expect(outcomes.find((o) => o.step === 'static-bundle')).toEqual({
+      step: 'static-bundle',
+      ok: true,
+    })
   })
 })
