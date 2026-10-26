@@ -755,6 +755,23 @@ function drainPriority(a: { sendNowAt: Date | null; createdAt: Date }, b: { send
   return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
 }
 
+/**
+ * Is a person's queued message waiting on this session?
+ *
+ * A `ChatQueuedMessage` row is someone waiting — a message typed while the agent
+ * was busy, or the row they just pressed Send now on. An `AgentWake` is the
+ * automatic starter, and letting it take a freshly freed session is exactly how
+ * a Send now ended with its own row promoted, unclaimed and invisible while a
+ * rival wake ran instead (SHO-205).
+ */
+async function chatQueueAhead(chatSessionId: string | null | undefined): Promise<boolean> {
+  if (!chatSessionId) return false
+  const waiting = await db.chatQueuedMessage
+    .findFirst({ where: { sessionId: chatSessionId, status: 'pending' }, select: { id: true } })
+    .catch(() => null)
+  return !!waiting
+}
+
 /** A run ended: start the most urgent wake waiting for this agent in this thread. */
 async function drainWakes(conversationId: string, threadRootId: string | null, agentRef: string): Promise<number> {
   let ran = 0
@@ -769,10 +786,13 @@ async function drainWakes(conversationId: string, threadRootId: string | null, a
         status: 'pending',
         OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }],
       },
-      select: { id: true, sendNowAt: true, createdAt: true },
+      select: { id: true, sendNowAt: true, createdAt: true, chatSessionId: true },
     })
     if (!waiting.length) return ran
     const next = [...waiting].sort(drainPriority)[0]!
+    // The session's own queue goes first: its turn-end drains this wake, so
+    // yielding here costs nothing but starts one turn instead of two.
+    if (await chatQueueAhead(next.chatSessionId)) return ran
     const claimed = await db.agentWake.updateMany({
       where: { id: next.id, status: 'pending' },
       data: { status: 'claimed', claimedAt: new Date(), attempts: { increment: 1 } },
@@ -797,6 +817,28 @@ async function drainWakes(conversationId: string, threadRootId: string | null, a
     await syncWakeNote(wake.id, failure ? 'failed' : 'done', failure ? { error: failure } : undefined)
     ran++
   }
+}
+
+/**
+ * Hand a chat session on now that its turn is gone: start the row waiting on its
+ * own chat queue.
+ *
+ * `chat-turn-state.service` calls this whenever a turn is cleared, so no ender
+ * can forget it — the HTTP chat routes, a channel run's `endTurn`, the stop
+ * routes, the stale-turn recovery. A pending row with no starter was how "Send
+ * now" stopped a reply and then sent nothing.
+ *
+ * Wakes are deliberately not started here. Their single starter is the run's own
+ * `finally` (`drainWakes`) plus the sweep behind it, and starting one from here
+ * as well put two runs on one key: the second found the first still reserving
+ * the thread, re-queued it, and the `(triggerMessageId, agentRef)` row it was
+ * re-queuing already existed. A wake that yields to a person's row (see
+ * `chatQueueAhead`) is picked up by that same starter once the row's own turn
+ * ends, so nothing is stranded.
+ */
+export async function drainSessionAfterTurn(chatSessionId: string): Promise<void> {
+  const { dispatchNext } = await import('./chat-queue-dispatcher.service')
+  await dispatchNext(chatSessionId)
 }
 
 /** How the note beside a queued message reads its row's state. */

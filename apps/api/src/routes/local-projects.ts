@@ -33,16 +33,21 @@ import { cpSync } from 'fs'
 import { dirname, isAbsolute, join, resolve, sep } from 'path'
 import os from 'os'
 import { prisma } from '../lib/prisma'
-import { isMetalEnabled } from '../lib/metal-eligibility'
+import {
+  attachmentsMount,
+  restartAnchorRuntimeBackground,
+} from '../lib/project-attachment-runtime'
 import { parseProjectSettings } from '../lib/project-settings'
 import {
-  attachProjectToProject,
   createProjectWorkspaceSession,
-  detachProjectFromProject,
   getOrCreatePinnedWorkspaceSession,
   listAttachments,
-  ProjectAttachmentError,
 } from '../services/project-attachment.service'
+import {
+  attachProjectHandler,
+  detachProjectHandler,
+  mapAttachmentError,
+} from './project-attachments'
 
 // =============================================================================
 // Runtime pre-warm
@@ -91,74 +96,6 @@ function prewarmRuntimeBackground(projectId: string, hint: string): void {
     .catch((err) => {
       console.warn(`[local-projects] prewarm: import of runtime/manager failed: ${err?.message ?? err}`)
     })
-}
-
-/**
- * Fire-and-forget: tear down and re-warm the ANCHOR merged-root runtime
- * (`ws:proj:<anchorId>`) so a just-changed attachment / linked-folder set is
- * remounted. `LINKED_FOLDERS` / `READONLY_ROOTS` are parsed once at runtime
- * boot, so the set only takes effect after a restart.
- *
- * The anchored workspace runtime is the only project runtime topology, so
- * attachment changes always restart the same merged-root process.
- */
-async function restartAnchorRuntime(anchorProjectId: string, hint: string): Promise<void> {
-  const [{ getRuntimeManager, projectWorkspaceRuntimeKey }, resolveMod] = await Promise.all([
-    import('../lib/runtime/manager'),
-    import('../lib/resolve-workspace-runtime-url'),
-  ])
-
-  const manager: any = getRuntimeManager()
-
-  // Single source of truth for the anchor's merged-root spawn options
-  // (workspaceId + the current attachment / linked-folder / readonly sets).
-  // Shared with `RuntimeManager.start()`'s dedup path so a restart rebuilds
-  // the exact same root the bare-key callers would. Returns null when the
-  // project has no workspaceId (nothing to anchor).
-  const spawnOpts = await manager.resolveAnchorSpawnOpts(anchorProjectId)
-  if (!spawnOpts) return
-
-  try {
-    await manager.stop(projectWorkspaceRuntimeKey(anchorProjectId))
-  } catch {
-    /* not running — nothing to tear down */
-  }
-
-  // Await the resolve so the new boot (with the updated READONLY_ROOTS /
-  // member set) is actually up by the time this resolves — that's what makes
-  // the runtime-status generation bump observable to a polling client.
-  await resolveMod
-    .resolveWorkspaceRuntimeUrl(spawnOpts.workspaceId, {
-      anchorProjectId,
-      attachedProjectIds: spawnOpts.attachedProjectIds,
-      localFolders: spawnOpts.localFolders,
-      readonlyProjectIds: spawnOpts.readonlyProjectIds,
-      logTag: 'AnchorRestart',
-      runtimeManager: manager,
-    })
-    .catch((err: any) => {
-      if (err instanceof resolveMod.WorkspaceRuntimeNotEnabledError) return
-      console.warn(
-        `[local-projects] anchor restart (${hint}) for ${anchorProjectId} failed: ${err?.message ?? err}`,
-      )
-    })
-}
-
-/**
- * Metal never mounts attached projects into the anchor runtime (each project
- * is online only in its own `ws:proj:<id>`), so attaching there is a durable
- * record only and must not restart the anchor.
- */
-function attachmentsMount(): boolean {
-  return process.env.SHOGO_LOCAL_MODE === 'true' || !isMetalEnabled()
-}
-
-function restartAnchorRuntimeBackground(anchorProjectId: string, hint: string): void {
-  void restartAnchorRuntime(anchorProjectId, hint).catch((err: any) => {
-    console.warn(
-      `[local-projects] anchor restart (${hint}) for ${anchorProjectId} threw: ${err?.message ?? err}`,
-    )
-  })
 }
 
 /**
@@ -1283,62 +1220,22 @@ export function localProjectsRoutes(): Hono {
   })
 
   /**
+   * POST /:id/attachments { attachedProjectId, attachMode? } — attach
    * another Shogo project (same workspace) to this anchor. Idempotent.
+   *
+   * Desktop delegates to the shared cloud handler so both surfaces run the
+   * same authz (anchor `project:update`, target `project:read`/`project:update`
+   * by mode, same workspace) and the same mount/restart behaviour.
    */
-  router.post('/:id/attachments', async (c) => {
-    const auth = c.get('auth' as never) as { userId?: string } | undefined
-    if (!auth?.userId) return c.json({ error: 'unauthenticated' }, 401)
-    const projectId = c.req.param('id')
-
-    let body: { attachedProjectId?: string; attachMode?: string }
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ error: 'invalid_json' }, 400)
-    }
-    const attachedProjectId = body.attachedProjectId
-    if (!attachedProjectId || typeof attachedProjectId !== 'string') {
-      return c.json({ error: 'attachedProjectId_required' }, 400)
-    }
-    const attachMode = body.attachMode === 'readonly' ? 'readonly' : 'readwrite'
-
-    try {
-      const attachment = await attachProjectToProject(projectId, attachedProjectId, attachMode)
-      if (!attachmentsMount()) return c.json({ attachment, mounted: false }, 201)
-      restartAnchorRuntimeBackground(projectId, 'attach')
-      return c.json({ attachment }, 201)
-    } catch (err) {
-      return mapAttachmentError(c, err)
-    }
-  })
+  router.post('/:id/attachments', attachProjectHandler)
 
   /**
    * DELETE /:id/attachments/:attachedProjectId — detach a project. No-op if
-   * it wasn't attached.
+   * it wasn't attached. Same shared handler as the cloud route.
    */
-  router.delete('/:id/attachments/:attachedProjectId', async (c) => {
-    const auth = c.get('auth' as never) as { userId?: string } | undefined
-    if (!auth?.userId) return c.json({ error: 'unauthenticated' }, 401)
-    const projectId = c.req.param('id')
-    const attachedProjectId = c.req.param('attachedProjectId')
-
-    const removed = await detachProjectFromProject(projectId, attachedProjectId)
-    if (removed && attachmentsMount()) restartAnchorRuntimeBackground(projectId, 'detach')
-    return c.json({ ok: true, removed })
-  })
+  router.delete('/:id/attachments/:attachedProjectId', detachProjectHandler)
 
   return router
-}
-
-/** Map a ProjectAttachmentError to an HTTP response. */
-function mapAttachmentError(c: any, err: unknown): Response {
-  if (err instanceof ProjectAttachmentError) {
-    const status =
-      err.code === 'project_not_found' ? 404 : err.code === 'self_attach' ? 400 : 409
-    return c.json({ error: err.code, message: err.message }, status)
-  }
-  console.error('[local-projects] attachment error:', err)
-  return c.json({ error: 'internal_error' }, 500)
 }
 
 // =============================================================================

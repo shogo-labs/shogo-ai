@@ -321,6 +321,17 @@ export const config = {
   hydrateTimeoutPerMiBMs: parseInt(env('METAL_HYDRATE_TIMEOUT_PER_MIB_MS', '400'), 10),
 
   /**
+   * How long an open waits for the durable git history before it serves the
+   * source's own `.git` and finishes the download in the background. The
+   * history download is the long pole of a cold open: on 2026-10-25 one
+   * stalled for 128s and held a user on "starting" for 2.5 minutes, though
+   * source, data and home were all in place 25s in. A guest that cannot
+   * refuse a late adopt (no `ifIdle` in its probe) is always waited for.
+   * 0 waits for the download as before.
+   */
+  repoForegroundMs: parseInt(env('METAL_REPO_HYDRATE_FOREGROUND_MS', '10000'), 10),
+
+  /**
    * Balloon-reclaim before snapshot. Firecracker's CreateSnapshot writes the
    * whole guest RAM region; freed-but-stale pages don't gzip, so a mostly-idle
    * 4 GiB guest still yields a ~400 MiB mem.gz. Inflating the balloon just

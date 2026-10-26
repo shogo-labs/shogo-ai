@@ -9,13 +9,15 @@
  *
  * It is a *controlled* chip: the parent owns the selected `value` so the
  * choice can be threaded into `createProject(... techStackId)` at submit
- * time, persisting `settings.techStackId`. The list itself is fetched lazily
- * from `GET /api/tech-stacks` (same source as the Configuration screen).
+ * time, persisting `settings.techStackId`. The list itself comes from
+ * `GET /api/tech-stacks` (same source as the Configuration screen), but the
+ * chip is part of the builder's first frame: it paints the cached catalog —
+ * or `FALLBACK_TECH_STACKS` — and the request only refreshes labels.
  *
  * Defaults to `react-app` to match the agent-runtime fallback — the chip
  * reflects what the runtime would seed even before the user touches it.
  */
-import React, { useEffect, useMemo, useRef, useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { Layers, ChevronDown, Check } from "lucide-react-native"
 import {
@@ -25,7 +27,11 @@ import {
 } from "@/components/ui/popover"
 import { cn } from "@shogo/shared-ui/primitives"
 import { api, createHttpClient, type TechStackSummary } from "../../lib/api"
-import { mergeTechStacks, FALLBACK_TECH_STACKS, techStackDisplayName } from "../../lib/tech-stack-catalog"
+import {
+  cachedTechStacks,
+  loadTechStacks,
+  techStackDisplayName,
+} from "../../lib/tech-stack-catalog"
 import { useComposerPlusClose } from "./ComposerPlusMenu"
 import { WebTooltip } from "./WebTooltip"
 import { useNativePhoneWindow } from "../../lib/native-phone-layout"
@@ -46,27 +52,18 @@ export function TechStackPicker({ value, onChange, disabled, prominentMobile = f
   const useProminentChip = prominentMobile && isNativePhone
   const triggerMaxWidth = Math.max(useProminentChip ? 90 : 84, Math.min(useProminentChip ? 124 : 128, Math.floor(windowWidth * 0.28)))
   const [open, setOpen] = useState(false)
-  const [stacks, setStacks] = useState<TechStackSummary[]>(
-    presentation === "list" ? FALLBACK_TECH_STACKS : [],
-  )
-  const fetchedRef = useRef(false)
+  const [stacks, setStacks] = useState<TechStackSummary[]>(() => cachedTechStacks())
   const closePlusSheet = useComposerPlusClose()
 
   useEffect(() => {
-    if (fetchedRef.current) return
-    fetchedRef.current = true
-    const http = createHttpClient()
-    api
-      .getTechStacks(http)
-      .then((s) => {
-        if (presentation === "list") {
-          setStacks(mergeTechStacks(s))
-          return
-        }
-        setStacks(s)
-      })
-      .catch((e) => console.error("[TechStackPicker] Failed to fetch tech stacks:", e))
-  }, [presentation])
+    let mounted = true
+    void loadTechStacks(() => api.getTechStacks(createHttpClient())).then((next) => {
+      if (mounted) setStacks(next)
+    })
+    return () => {
+      mounted = false
+    }
+  }, [])
 
   const selected = useMemo(
     () => stacks.find((s) => s.id === value),
@@ -76,10 +73,6 @@ export function TechStackPicker({ value, onChange, disabled, prominentMobile = f
   // Until the list loads (or if the id has no match) we don't have a human
   // label, so fall back to a generic "Stack" rather than flashing the raw id.
   const displayLabel = techStackDisplayName(value, stacks)
-
-  // Chip on web: hide until the API returns something. Native plus-sheet
-  // always has fallback rows so the accordion is never an empty chevron.
-  if (presentation !== "list" && stacks.length === 0) return null
 
   const stackRows = (
     <>

@@ -110,9 +110,16 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
     setIsLoading(true)
     setError(null)
     try {
-      const { project: p, attachments: att } = await api.getLocalProjectWithAttachments(http, projectId)
+      // Project attachments live on the workspace-authorized route, so they load
+      // on cloud/web too. Linked folders and working mode only exist on desktop,
+      // where `/api/local/projects/:id` answers; elsewhere it resolves to null.
+      const [{ project: p }, attached] = await Promise.all([
+        api.getLocalProjectWithAttachments(http, projectId),
+        api.listProjectAttachments(http, projectId),
+      ])
       setProject(p)
-      setAttachments(att)
+      setAttachments(attached.attachments)
+      if (attached.error) setError(attached.error)
     } catch (err: any) {
       setError(err?.message ?? 'Failed to load folders')
     } finally {

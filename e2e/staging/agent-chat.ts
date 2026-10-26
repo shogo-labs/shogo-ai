@@ -4,6 +4,7 @@ import { expect, type Locator, type Page } from "@playwright/test"
 import {
   APP_HOME_PATH,
   homeComposerInput,
+  publishDomain,
   signUpAndOnboard,
   signUpAndUpgradeToPro,
   waitForAgentIdle,
@@ -32,7 +33,16 @@ export const LOCALHOST_RE =
   /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?|(?:\blocalhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d{2,5}/i
 // e.g. https://<id>.preview.staging.shogo.ai or <id>.preview.shogo.ai
 export const PREVIEW_URL_RE = /https?:\/\/[a-z0-9-]+\.preview\.[a-z0-9.-]*shogo\.ai/i
-export const PUBLISHED_URL_RE = /https?:\/\/[a-z0-9-]+\.shogo\.one\b/i
+// e.g. https://<sub>.shogo.one in production, https://<sub>.staging.shogo.one
+// on staging — derived from E2E_PUBLISH_DOMAIN / E2E_TARGET_URL (SHO-207).
+export const PUBLISHED_URL_RE = new RegExp(
+  `https?:\\/\\/[a-z0-9-]+\\.${escapeForRegExp(publishDomain())}\\b`,
+  "i",
+)
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
 
 /**
  * Signs `user` up (hosted) or reuses the auto-signed-in session (local

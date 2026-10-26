@@ -26,14 +26,17 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
-/** A local guest that records every /pool/* call with its auth header. */
+/** A local guest that records every /pool/* call with its auth header and body. */
 function makeGuest() {
-  const calls: Array<{ path: string; auth: string | null }> = []
+  const calls: Array<{ path: string; auth: string | null; body: any }> = []
   const server = Bun.serve({
     port: 0,
-    fetch: (req) => {
+    fetch: async (req) => {
       const path = new URL(req.url).pathname
-      if (path.startsWith('/pool/')) calls.push({ path, auth: req.headers.get('authorization') })
+      if (path.startsWith('/pool/')) {
+        const body = req.body ? await req.json().catch(() => null) : null
+        calls.push({ path, auth: req.headers.get('authorization'), body })
+      }
       if (path === '/pool/export' || path === '/pool/export-data' || path === '/pool/export-repo') {
         return new Response(null, { status: 204 })
       }
@@ -114,7 +117,7 @@ describe('guest lifecycle hooks', () => {
 
     await pool.suspend('proj-a')
     const quiesce = guest.calls.find((c) => c.path === '/pool/quiesce')
-    expect(quiesce).toEqual({ path: '/pool/quiesce', auth: 'Bearer tok-123' })
+    expect(quiesce).toEqual({ path: '/pool/quiesce', auth: 'Bearer tok-123', body: null })
     // Quiesce is the last guest call before the freeze: backups run first,
     // while the sidecar is still up.
     expect(guest.calls.at(-1)?.path).toBe('/pool/quiesce')
@@ -152,5 +155,23 @@ describe('guest lifecycle hooks', () => {
     expect(paths.indexOf('/pool/refresh-env')).toBeGreaterThanOrEqual(0)
     expect(paths.indexOf('/pool/rehydrate')).toBeGreaterThan(paths.indexOf('/pool/refresh-env'))
     expect(guest.calls.find((c) => c.path === '/pool/rehydrate')?.auth).toBe('Bearer tok-123')
+  })
+
+  test('rehydrate carries the host clock so the guest can correct a frozen one', async () => {
+    const guest = makeGuest()
+    const pool = new MetalWarmPool(fakeMgr(guest.port) as any, makeCfg(), { kind: 'none' } as unknown as SnapshotStore)
+    await pool.start()
+    await pool.assign('proj-a', ENV)
+    await pool.suspend('proj-a')
+    guest.calls.length = 0
+
+    const before = Date.now()
+    await pool.resume('proj-a', ENV)
+    const after = Date.now()
+
+    const body = guest.calls.find((c) => c.path === '/pool/rehydrate')?.body
+    expect(typeof body?.hostNowMs).toBe('number')
+    expect(body.hostNowMs).toBeGreaterThanOrEqual(before)
+    expect(body.hostNowMs).toBeLessThanOrEqual(after)
   })
 })

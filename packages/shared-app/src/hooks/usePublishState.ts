@@ -17,6 +17,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 
+/**
+ * Apex to assume when the API hasn't reported one (older server). The API is
+ * authoritative: staging mints `{sub}.staging.shogo.one`, production
+ * `{sub}.shogo.one`.
+ */
+export const DEFAULT_PUBLISH_DOMAIN = "shogo.one"
+
 export interface UsePublishStateOptions {
   baseUrl?: string
   credentials?: RequestCredentials
@@ -32,6 +39,8 @@ export interface PublishState {
   publishedCommitSha: string | null
   /** The history tag written for the most recent deploy (`publish/<sub>/<ts>`). */
   publishedTag: string | null
+  /** Apex this environment mints `{subdomain}.<domain>` under. */
+  publishDomain: string
   isPublished: boolean
   isLoading: boolean
   error: Error | null
@@ -51,6 +60,7 @@ export function usePublishState(
   const [accessLevel, setAccessLevel] = useState<string | null>(null)
   const [publishedCommitSha, setPublishedCommitSha] = useState<string | null>(null)
   const [publishedTag, setPublishedTag] = useState<string | null>(null)
+  const [publishDomain, setPublishDomain] = useState<string>(DEFAULT_PUBLISH_DOMAIN)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const [refetchCounter, setRefetchCounter] = useState(0)
@@ -81,6 +91,9 @@ export function usePublishState(
           setAccessLevel(data?.accessLevel ?? null)
           setPublishedCommitSha(data?.publishedCommitSha ?? null)
           setPublishedTag(data?.publishedTag ?? null)
+          if (typeof data?.publishDomain === "string" && data.publishDomain) {
+            setPublishDomain(data.publishDomain)
+          }
         } else {
           setSubdomain(null)
         }
@@ -106,11 +119,22 @@ export function usePublishState(
       accessLevel,
       publishedCommitSha,
       publishedTag,
+      publishDomain,
       isPublished: !!subdomain,
       isLoading,
       error,
       refetch,
     }),
-    [subdomain, publishedAt, accessLevel, publishedCommitSha, publishedTag, isLoading, error, refetch],
+    [
+      subdomain,
+      publishedAt,
+      accessLevel,
+      publishedCommitSha,
+      publishedTag,
+      publishDomain,
+      isLoading,
+      error,
+      refetch,
+    ],
   )
 }

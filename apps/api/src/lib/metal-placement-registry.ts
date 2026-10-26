@@ -145,6 +145,9 @@ const WS_RUN_KEY = 'metal:wsrun:' // + workspaceId → ZSET(member=runtimeKey, s
 const WS_MEM_KEY = 'metal:wsmem:' // + workspaceId → HASH(runtimeKey → memMiB)
 const WS_NOTICE_KEY = 'metal:wsnotice:' // + runtimeKey → JSON BudgetNotice, read once
 const WS_NOTICE_TTL_S = 300
+const WAKE_START_KEY = 'metal:wakestart:' // + runtimeKey → epoch ms the user started waiting
+/** Longer than any open we would still call one wait (the guest clamps hydrate at 30 min). */
+const WAKE_START_TTL_S = 30 * 60
 
 // Compare-and-delete / compare-and-expire so only the lease holder can
 // renew or release it (a stale holder must not free a re-acquired lease).
@@ -184,6 +187,7 @@ export class MetalPlacementRegistry {
   // workspaceId → (runtimeKey → { openedAt, memMiB }). Analog of the wsrun/wsmem keys.
   private memWorkspaceRuns = new Map<string, Map<string, WorkspaceRun>>()
   private memBudgetNotices = new Map<string, { notice: unknown; expiresAt: number }>()
+  private memWakeStarts = new Map<string, number>()
 
   constructor(private redisGetter: () => Redis | null = getSharedRedis) {}
 
@@ -782,6 +786,44 @@ export class MetalPlacementRegistry {
       await r.set(`${WS_NOTICE_KEY}${runtimeKey}`, JSON.stringify(notice), 'EX', WS_NOTICE_TTL_S)
     } catch {
       setMem()
+    }
+  }
+
+  /**
+   * Remember when a user started waiting for `runtimeKey`, if nobody has yet.
+   * A slow open is several resolves (each /assign gives up after 30s and is
+   * retried, often on another replica), so the first attempt is the start.
+   */
+  async markWakeStart(runtimeKey: string, at: number): Promise<void> {
+    const r = this.redis()
+    const setMem = () => {
+      if (!this.memWakeStarts.has(runtimeKey)) this.memWakeStarts.set(runtimeKey, at)
+    }
+    if (!r) return setMem()
+    try {
+      await r.set(`${WAKE_START_KEY}${runtimeKey}`, String(at), 'EX', WAKE_START_TTL_S, 'NX')
+    } catch {
+      setMem()
+    }
+  }
+
+  /** Read and clear when the user started waiting for `runtimeKey`; null if no earlier attempt failed. */
+  async takeWakeStart(runtimeKey: string, now: number = Date.now()): Promise<number | null> {
+    const fromMem = (): number | null => {
+      const at = this.memWakeStarts.get(runtimeKey)
+      this.memWakeStarts.delete(runtimeKey)
+      return at !== undefined && now - at <= WAKE_START_TTL_S * 1000 ? at : null
+    }
+    const r = this.redis()
+    if (!r) return fromMem()
+    try {
+      const key = `${WAKE_START_KEY}${runtimeKey}`
+      const res = await r.multi().get(key).del(key).exec()
+      const raw = res?.[0]?.[1] as string | null | undefined
+      const at = raw ? Number(raw) : NaN
+      return Number.isFinite(at) ? at : fromMem()
+    } catch {
+      return fromMem()
     }
   }
 

@@ -1,0 +1,80 @@
+# SigNoz alert: metal git history restore failing
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README.
+#
+# Why: when a project opens, the host restores its saved git history from
+# object storage. If that fails (`metal.repo_hydrate{mode="failed"}`), the
+# project runs on the source's own `.git` and the VM is marked untrusted for
+# git writes, so the user's history and pushes do not persist from that
+# session. One failure can be a single bad project. A run of them means
+# object storage is unhealthy (on 2026-10-25 a download hung for 128s).
+#
+# Like the other counters, a healthy fleet has no series at all. Do NOT set
+# alertOnAbsent.
+
+alert: MetalRepoHydrateFailing
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.repo_hydrate
+              timeAggregation: increase
+              spaceAggregation: sum
+          filter:
+            expression: "mode = 'failed'"
+          groupBy:
+            - name: host_id
+          legend: "{{$labels.host_id}} repo_hydrate_failed"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: warning
+        op: above
+        matchType: in_total
+        target: 5
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 30m
+    frequency: 5m
+labels:
+  severity: warning
+  team: platform
+  incident_class: metal
+notificationSettings:
+  renotify:
+    enabled: true
+    interval: 12h
+    alertStates: [firing]
+annotations:
+  summary: "Git history restore failing on {{$labels.host_id}} (5+ in 30m)"
+  description: |
+    Opens on this host cannot restore saved git history from object storage.
+    They run on the source's `.git` with git writes blocked.
+
+    Triage:
+    1. Metal fleet dashboard, "Git history restore at open" and "Deferred
+       history restores": are these foreground failures or background
+       downloads that failed?
+    2. Check object storage health and reachability from this host's region.
+       Compare `host.*` phases on "Wake phase p95": slow source/data phases
+       on the same host point at the network path.
+    3. Project-specific failures (one runtime key over and over) point at a
+       corrupt manifest or bundle. Open its `metal.get_pod_url` trace and look
+       at the `wake.repo.*` attributes.
+
+    Runbook: docs/runbooks/metal-fleet.md
