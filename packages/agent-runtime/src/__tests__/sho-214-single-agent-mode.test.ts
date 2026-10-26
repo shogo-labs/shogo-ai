@@ -134,3 +134,40 @@ describe('one mode: a stale interactionMode field changes nothing (SHO-214)', ()
     expect(names).toContain('exec')
   })
 })
+
+/**
+ * `agentTurn` is positional, so dropping its `interactionMode` parameter shifted
+ * every argument after it. A caller that still passed a mode string handed the
+ * truthy `'agent'` to `dualPlan`, `false` to `requesterTicket` and the ticket to
+ * `chatContext`. `processPipelineCall` (the `project_call` path) was the last
+ * caller doing that; this pins the order so the next signature change shows up
+ * here instead of on a live project call.
+ */
+describe('processPipelineCall passes the agent-turn arguments in order (SHO-214)', () => {
+  test('dualPlan is false, the requester ticket is the ticket, chatContext is unset', async () => {
+    const dir = makeTestDir()
+    setupWorkspace(dir)
+    const gateway = new AgentGateway(dir, 'test-project')
+    let seen: unknown[] = []
+    ;(gateway as any).agentTurn = (...args: unknown[]) => {
+      seen = args
+      return Promise.resolve('ok')
+    }
+    try {
+      const result = await gateway.processPipelineCall({
+        message: 'Do the thing',
+        runId: 'run-1',
+        requesterTicket: 'ticket-1',
+      })
+
+      expect(result).toEqual({ reply: 'ok', sessionId: 'run:run-1', runId: 'run-1' })
+      expect(seen).toHaveLength(9)
+      expect(seen[7]).toBe(false)
+      expect(seen[8]).toBe('ticket-1')
+      expect(seen[9]).toBeUndefined()
+    } finally {
+      await gateway.stop().catch(() => {})
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

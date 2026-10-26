@@ -2622,7 +2622,7 @@ export class AgentGateway {
     this.unattendedSessions.add(sessionId)
     try {
       const reply = await this.agentTurn(
-        prompt, sessionId, false, undefined, opts.writer, undefined, undefined, 'agent', false, opts.requesterTicket,
+        prompt, sessionId, false, undefined, opts.writer, undefined, undefined, false, opts.requesterTicket,
       )
       return { reply, sessionId, runId }
     } finally {
