@@ -60,7 +60,8 @@ export function applyMessageSnapshot<T extends UIMessage>(
  * The rest of a snapshot stream lands in a new message the SDK appends after
  * the snapshot, and the turn list shows only a turn's last assistant message.
  * Shows the two as one message: the snapshot's parts, then the rest of the
- * turn. The snapshot ends at a step boundary, so no part is split across them.
+ * turn. The snapshot ends where the last part closed, so no part is split
+ * across them.
  */
 export function foldSnapshotContinuation<T extends UIMessage>(
   messages: T[],
@@ -98,9 +99,9 @@ export function dropUnfinishedAssistantTail<T extends UIMessage>(
 /**
  * A runtime that was asked for `?snapshot=1` (see `useChatTransportConfig`'s
  * `resumeSnapshot`) opens the stream with one of these: the assistant message
- * assembled up to the last finished step. The rest of the stream continues
- * that message, so the client applies the snapshot instead of rebuilding the
- * turn chunk by chunk.
+ * assembled up to the last point where no part was open. The rest of the stream
+ * continues that message, so the client applies the snapshot instead of
+ * rebuilding the turn chunk by chunk.
  */
 export const MESSAGE_SNAPSHOT_CHUNK_TYPE = "data-message-snapshot"
 

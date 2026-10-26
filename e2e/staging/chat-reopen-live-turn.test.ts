@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, type Page } from "./fixtures"
+import { expect, test, type Page } from "./fixtures"
 import { homeComposerInput, makeTestUser, signUpAndOnboard, type TestUser } from "./helpers"
 import {
   collectChatCrashes,
@@ -53,5 +53,8 @@ test.describe("Reopen a project with a live turn", () => {
 
     await throttleCpu(page, CPU_THROTTLE)
     await expectLiveTurnRendersAfterReopen(page, mocks, crashes, RENDER_BUDGET_MS)
+    // The running sub-agent's whole update history collapses to its current
+    // state, so the joining client draws the card once instead of replaying it.
+    expect(mocks.snapshotSubagentUpdates(), "one sub-agent update, not the update history").toBe(1)
   })
 })

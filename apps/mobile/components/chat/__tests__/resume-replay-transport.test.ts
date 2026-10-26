@@ -117,6 +117,37 @@ describe("foldSnapshotContinuation", () => {
     expect(foldSnapshotContinuation(installed, snapshot.id)).toBe(installed)
   })
 
+  test("folds a continuation that opens a sub-agent tool part into the snapshot", () => {
+    // A runtime mid-turn snapshot ends where the last part closed, so the
+    // continuation starts with the part that is still open — here a running
+    // `agent_spawn`, not a `start-step`.
+    const spawnSnapshot = {
+      id: "msg_live",
+      role: "assistant",
+      parts: [{ type: "step-start" }, { type: "text", text: "spawning qa", state: "done" }],
+    } as UIMessage
+    const spawnContinuation = {
+      id: "sdk-generated",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-agent_spawn",
+          toolCallId: "spawn",
+          state: "output-available",
+          input: { type: "browser_qa" },
+          output: { parts: [{ type: "text", text: "clicking", id: "sa-text-0" }] },
+          preliminary: true,
+        },
+      ],
+    } as UIMessage
+
+    const installed = applyMessageSnapshot([user], spawnSnapshot)
+    const folded = foldSnapshotContinuation([...installed, spawnContinuation], spawnSnapshot.id)
+    expect(folded).toHaveLength(2)
+    expect(folded[1].id).toBe("msg_live")
+    expect(folded[1].parts).toEqual([...spawnSnapshot.parts, ...spawnContinuation.parts])
+  })
+
   test("leaves messages alone once the snapshot is gone or a new turn starts", () => {
     const history = [user, { ...continuation, id: "persisted" } as UIMessage]
     expect(foldSnapshotContinuation(history, snapshot.id)).toBe(history)

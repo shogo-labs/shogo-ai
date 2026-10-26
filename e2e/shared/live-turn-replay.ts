@@ -26,13 +26,19 @@ const STREAM_GLOB = "**/api/{projects,workspaces}/*/chat/*/stream*"
 export const REPLAY_TAIL = "replay-tail-marker"
 /** In the first step's text, so a snapshot replay carries it inside the snapshot. */
 export const REPLAY_HEAD = "replay-head-marker"
+/**
+ * First words of the running sub-agent's output, so the card's one-line
+ * activity label carries it: the card shows a summary, not the sub-agent's
+ * transcript.
+ */
+export const SUBAGENT_LIVE_MARKER = "subagent-live-marker"
 const TURN_ID = "turn_live"
 const HELD_STREAM_MS = 90_000
 
 export interface LiveTurnReplayOptions {
   /** Frames for the work steps (reasoning, tool calls, usage). */
   stepFrames: number
-  /** Lines of the final markdown answer, streamed a few characters at a time. */
+  /** Lines of the answer the turn has written, streamed a few characters at a time. */
   answerLines: number
 }
 
@@ -53,11 +59,18 @@ function completedTurn(text: string): string {
 }
 
 /**
- * The runtime's buffered turn, shaped like its real output: many model steps,
- * each with reasoning, a tool call whose input streams in, a tool result,
- * per-step usage frames, and the transient `data-turn-seq` heartbeat; then one
- * long markdown answer that is still being written (no `text-end`, no
- * `finish`).
+ * The runtime's buffered turn, shaped like its real output: one `start-step`
+ * for the whole turn (the gateway writes one when the turn begins and one
+ * `finish-step` when it ends, so nothing closes a step mid-turn), then many
+ * closed work parts — reasoning, a tool call whose input streams in, its result,
+ * per-step usage frames and the transient `data-turn-seq` heartbeat — then the
+ * answer the turn has written (ending with `REPLAY_TAIL`). Every tool frame
+ * carries `dynamic: true`, as the gateway writes it: the app only renders
+ * `dynamic-tool` parts, so a frame without it draws nothing. It ends with an
+ * `agent_spawn` whose sub-agent is still running: its progress arrives as
+ * `preliminary: true` outputs, each carrying the whole accumulated state, so the
+ * last one is the sub-agent's current text (starting with
+ * `SUBAGENT_LIVE_MARKER`).
  */
 export function liveTurnReplay({ stepFrames, answerLines }: LiveTurnReplayOptions): {
   body: string
@@ -75,28 +88,27 @@ export function liveTurnReplay({ stepFrames, answerLines }: LiveTurnReplayOption
   }
   push({ type: "start", messageId: "msg_live" })
   push({ type: "data-turn-start", data: { turnId: TURN_ID, startedAt: Date.now() } })
+  push({ type: "start-step" })
   for (let step = 0; frames.length < stepFrames; step++) {
-    push({ type: "start-step" })
     push({ type: "reasoning-start", id: `r${step}` })
     for (let i = 0; i < 30; i++) push({ type: "reasoning-delta", id: `r${step}`, delta: `step ${step} thought ${i} ` })
     push({ type: "reasoning-end", id: `r${step}` })
     const call = `call_${step}`
-    push({ type: "tool-input-start", toolCallId: call, toolName: "edit_file" })
+    push({ type: "tool-input-start", toolCallId: call, toolName: "edit_file", dynamic: true })
     for (let i = 0; i < 20; i++) push({ type: "tool-input-delta", toolCallId: call, inputTextDelta: `{"line":${i}}` })
-    push({ type: "tool-input-available", toolCallId: call, toolName: "edit_file", input: { path: `src/file${step}.tsx` } })
-    push({ type: "tool-output-available", toolCallId: call, output: `edited src/file${step}.tsx` })
+    push({ type: "tool-input-available", toolCallId: call, toolName: "edit_file", input: { path: `src/file${step}.tsx` }, dynamic: true })
+    push({ type: "tool-output-available", toolCallId: call, output: `edited src/file${step}.tsx`, dynamic: true })
     push({ type: "text-start", id: `t${step}` })
     if (step === 0) push({ type: "text-delta", id: "t0", delta: `${REPLAY_HEAD} ` })
     for (let i = 0; i < 40; i++) push({ type: "text-delta", id: `t${step}`, delta: `s${step}w${i} ` })
     push({ type: "text-end", id: `t${step}` })
     push({ type: "data-usage", data: { inputTokens: 1000 + step, outputTokens: 50, contextWindowTokens: 200_000, estimatedContextTokens: 1000 + step } })
     push({ type: "data-context-usage", data: { inputTokens: 1000 + step, contextWindowTokens: 200_000 } })
-    push({ type: "finish-step" })
   }
-  // Streamdown re-parses a text part as it grows, so the answer's render cost
-  // grows with the replay.
-  push({ type: "start-step" })
-  push({ type: "text-start", id: "t_tail" })
+
+  // The answer the turn has written so far, closed. Streamdown re-parses a text
+  // part as it grows, so the snapshot's render cost grows with it.
+  push({ type: "text-start", id: "t_answer" })
   for (let i = 0; i < answerLines; i++) {
     const line =
       i % 25 === 0
@@ -104,10 +116,60 @@ export function liveTurnReplay({ stepFrames, answerLines }: LiveTurnReplayOption
         : i % 25 === 10
           ? "\n```ts\nexport const value = compute(" + i + ")\n```\n"
           : `- item ${i} with **bold** and \`code\` text\n`
-    for (const token of line.match(/.{1,6}/gs) ?? []) push({ type: "text-delta", id: "t_tail", delta: token })
+    for (const token of line.match(/.{1,6}/gs) ?? []) {
+      push({ type: "text-delta", id: "t_answer", delta: token })
+    }
   }
-  push({ type: "text-delta", id: "t_tail", delta: `\n\n${REPLAY_TAIL}` })
+  push({ type: "text-delta", id: "t_answer", delta: `\n\n${REPLAY_TAIL}` })
+  push({ type: "text-end", id: "t_answer" })
+
+  // The sub-agent the user watched replay: still running, so its call stays
+  // open and each update repeats everything it has written so far. Its text
+  // starts with SUBAGENT_LIVE_MARKER, which is what the card's activity line
+  // shows — the card summarises the run, it does not print its transcript.
+  const spawn = "call_spawn"
+  push({ type: "tool-input-start", toolCallId: spawn, toolName: "agent_spawn", dynamic: true })
+  push({
+    type: "tool-input-available",
+    toolCallId: spawn,
+    toolName: "agent_spawn",
+    input: { type: "browser_qa", description: "check the app" },
+    dynamic: true,
+  })
+  const update = (text: string) =>
+    push({
+      type: "tool-output-available",
+      toolCallId: spawn,
+      output: { agentId: "qa", instance_id: "qa-1", model: "sonnet", parts: [{ type: "text", text, id: "sa-text-0" }] },
+      dynamic: true,
+      preliminary: true,
+    })
+
+  const subagent = [`${SUBAGENT_LIVE_MARKER} checking the canvas `]
+  for (let i = 0; i < Math.max(1, Math.round(answerLines / 4)); i++) subagent.push(`step ${i} `)
+  const tokens = subagent.join("").match(/.{1,6}/gs) ?? []
+  const updates = Math.max(1, Math.min(60, Math.ceil(tokens.length / 8)))
+  const perUpdate = Math.ceil(tokens.length / updates)
+  let written = ""
+  for (let i = 0; i < tokens.length; i++) {
+    written += tokens[i]
+    if ((i + 1) % perUpdate === 0 || i === tokens.length - 1) update(written)
+  }
   return { body: frames.join(""), lastSeq: seq }
+}
+
+/** How many sub-agent updates a served replay body carries. */
+export function countPreliminaryOutputs(body: string): number {
+  return body
+    .split("\n\n")
+    .filter((event) => {
+      if (!event.startsWith("data: {")) return false
+      try {
+        return JSON.parse(event.slice(6)).preliminary === true
+      } catch {
+        return false
+      }
+    }).length
 }
 
 /** The replay as the runtime serves it by default: compacted, then the exact seq. */
@@ -123,8 +185,8 @@ function compactedReplayBody(replay: { body: string; lastSeq: number }): string 
 
 /**
  * What the runtime serves a client that asks for `?snapshot=1`: the message up
- * to the last finished step in one chunk, the unfinished step, then the exact
- * seq.
+ * to the last point where no part is open in one chunk, the part that is still
+ * open (a running sub-agent, for the live turn above), then the exact seq.
  */
 export async function snapshotReplay(replay: { body: string; lastSeq: number }): Promise<{ body: string; lastSeq: number }> {
   const decoder = new TextDecoder()
@@ -152,6 +214,12 @@ export interface LiveTurnMocks {
   snapshotReplays(): number
   /** Of those, how many asked for `?snapshot=1`, whether or not it was honored. */
   snapshotRequests(): number
+  /**
+   * Sub-agent updates (`preliminary: true` tool outputs) in the snapshot the
+   * runtime served — 1 means the client got the sub-agent's current state, not
+   * its whole update history.
+   */
+  snapshotSubagentUpdates(): number
 }
 
 export async function installLiveTurnMocks(
@@ -164,6 +232,7 @@ export async function installLiveTurnMocks(
   let snapshotReplays = 0
   let snapshotRequests = 0
   const snapshotBody = snapshot ? (await snapshotReplay(replay)).body : null
+  const snapshotUpdates = snapshotBody ? countPreliminaryOutputs(snapshotBody) : 0
   // A runtime that predates snapshots replays the compacted buffer.
   const plainBody = snapshot ? null : compactedReplayBody(replay)
 
@@ -229,6 +298,7 @@ export async function installLiveTurnMocks(
     fullReplays: () => fullReplays,
     snapshotReplays: () => snapshotReplays,
     snapshotRequests: () => snapshotRequests,
+    snapshotSubagentUpdates: () => snapshotUpdates,
   }
 }
 
@@ -298,6 +368,13 @@ export async function expectLiveTurnRendersAfterReopen(
     page.getByText(REPLAY_HEAD, { exact: false }).first(),
     "the start of the live turn is missing (a snapshot hidden behind the rest of the turn)",
   ).toBeVisible()
+  // The running sub-agent came through as its current state, so its card is on
+  // screen with its latest activity — not N cards from replaying every update
+  // (`snapshotSubagentUpdates()` counts the updates the runtime served).
+  await expect(
+    page.getByText(SUBAGENT_LIVE_MARKER, { exact: false }).first(),
+    "the running sub-agent's card is missing (the snapshot's continuation never landed)",
+  ).toBeVisible({ timeout: 10_000 })
   // Give a remount loop time to show itself before counting replays.
   await page.waitForTimeout(3_000)
   expect(crashes, `chat panel render crashes:\n${crashes.join("\n")}`).toEqual([])

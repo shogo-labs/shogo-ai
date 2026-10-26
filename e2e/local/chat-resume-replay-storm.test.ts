@@ -63,6 +63,12 @@ test.describe("Reopen a project with a live server-side turn — E2E (mocked)", 
     await expectLiveTurnRendersAfterReopen(page, mocks, crashes, RENDER_BUDGET_MS)
     expect(mocks.snapshotRequests(), "reopening should ask the runtime for a message snapshot").toBe(1)
     expect(mocks.snapshotReplays()).toBe(1)
+    // The running sub-agent's whole update history collapses to its current
+    // state, so the joining client draws the card once instead of replaying it.
+    expect(
+      mocks.snapshotSubagentUpdates(),
+      "the snapshot should carry one sub-agent update, not the update history",
+    ).toBe(1)
   })
 
   test("a runtime that replays its buffer instead of a snapshot still renders without crashing", async ({ page }) => {

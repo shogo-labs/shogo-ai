@@ -2184,7 +2184,8 @@ app.post('/agent/chat', async (c) => {
 //              client doesn't render duplicates).
 //   - snapshot: `1` (with fromSeq=0) replays the turn as a single
 //              `data-message-snapshot` chunk holding the message up to the
-//              last finished step, then the unfinished step and live frames.
+//              last point where no part is open, then the part that is still
+//              open and live frames.
 //   - compact: the buffered frames are replayed compacted (one delta per
 //              part, see compactSseFrames) so a client joining a long turn
 //              rebuilds it in a few chunks. `compact=0` replays them raw.
