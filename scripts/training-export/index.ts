@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { gunzipSync } from 'node:zlib'
 import { spawnSync } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
+import { reconstructRequest } from '../../apps/api/src/lib/proxy-capture/reconstruct'
 
 export interface ArchiveRecord {
   id: string
@@ -318,10 +319,50 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
   return args
 }
 
-interface ArchiveData {
+export interface ArchiveData {
   records: ArchiveRecord[]
   blobs: Map<string, unknown>
   media: Map<string, { mime: string; bytes: Uint8Array }>
+}
+
+export interface ExampleSelection {
+  consent?: Map<string, boolean>
+  signals?: Map<string, any>
+  provider?: string
+  model?: string
+  maxChars?: number
+}
+
+// One cache for the whole run: chain nodes and blobs are shared by thousands of
+// records, and a v1 and a v2 archive of the same traffic must produce identical
+// examples.
+export async function selectExamples(archive: ArchiveData, options: ExampleSelection = {}): Promise<TrainingExample[]> {
+  const latest = new Map<string, ArchiveRecord>()
+  for (const record of archive.records) {
+    if (options.consent && !options.consent.get(record.workspaceId)) continue
+    const previous = latest.get(record.turnKey)
+    if (!previous || previous.ts < record.ts) latest.set(record.turnKey, record)
+  }
+
+  const seen = new Set<string>()
+  const examples: TrainingExample[] = []
+  const maxChars = options.maxChars ?? MAX_EXAMPLE_CHARS
+  const objects = new Map<string, unknown>()
+  const loadObject = async (key: string): Promise<unknown> => (archive.blobs.has(key) ? archive.blobs.get(key)! : null)
+  for (const record of latest.values()) {
+    const signal = options.signals?.get(record.turnKey)
+    if (signal?.revertedAt || signal?.hadError || signal?.feedback === 'down' || record.truncated) continue
+    if (options.provider && record.provider !== options.provider) continue
+    if (options.model && record.resolvedModel !== options.model) continue
+    const request = await reconstructRequest(record, loadObject, objects)
+    const example = toTrainingExample({ ...record, request }, signal, archive.blobs, maxChars)
+    if (!example) continue
+    const dedupKey = stableHash({ messages: example.messages, tools: example.tools })
+    if (seen.has(dedupKey)) continue
+    seen.add(dedupKey)
+    examples.push(example)
+  }
+  return examples
 }
 
 function parseJsonLines(bytes: Uint8Array, key: string): ArchiveRecord[] {
@@ -381,7 +422,7 @@ function collectMediaReferences(value: unknown, result: Map<string, { hash: stri
   for (const item of Object.values(record)) collectMediaReferences(item, result)
 }
 
-async function readArchiveFiles(input: string): Promise<ArchiveData> {
+export async function readArchiveFiles(input: string): Promise<ArchiveData> {
   const files = input.startsWith('s3://')
     ? await readS3Files(input)
     : await Array.fromAsync(new Bun.Glob('**/*').scan({ cwd: input, absolute: true, onlyFiles: true }))
@@ -399,6 +440,9 @@ async function readArchiveFiles(input: string): Promise<ArchiveData> {
     } else if (key.includes('/blobs/') && (key.endsWith('.json') || key.endsWith('.json.gz'))) {
       const blob = parseBlob(bytes)
       if (blob !== null) blobs.set(key, blob)
+    } else if (key.includes('/chain/') && (key.endsWith('.json') || key.endsWith('.json.gz'))) {
+      const node = parseBlob(bytes)
+      if (node !== null) blobs.set(key, node)
     } else if (key.includes('/media/')) {
       const hash = key.split('/').pop()?.split('.')[0]
       if (hash) media.set(hash, { mime: mediaMime(key), bytes })
@@ -430,7 +474,7 @@ async function readS3Files(uri: string): Promise<Array<{ key: string; bytes: Uin
       .map((item: any) => item.Key)
       .filter((key: unknown): key is string =>
         typeof key === 'string' &&
-        (key.endsWith('.jsonl') || key.endsWith('.jsonl.gz') || key.includes('/blobs/') || key.includes('/media/')),
+        (key.endsWith('.jsonl') || key.endsWith('.jsonl.gz') || key.includes('/blobs/') || key.includes('/chain/') || key.includes('/media/')),
       ))
     continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined
   } while (continuationToken)
@@ -492,30 +536,13 @@ async function main(): Promise<void> {
   await mkdir(output, { recursive: true })
   const archive = await readArchiveFiles(input)
   const records = archive.records
-  const consent = await loadConsent(records)
-  const signals = await loadSignals(records)
-  const latest = new Map<string, ArchiveRecord>()
-  for (const record of records) {
-    if (!consent.get(record.workspaceId)) continue
-    const previous = latest.get(record.turnKey)
-    if (!previous || previous.ts < record.ts) latest.set(record.turnKey, record)
-  }
-
-  const seen = new Set<string>()
-  const examples: TrainingExample[] = []
-  const maxChars = Number(args['max-chars'] || MAX_EXAMPLE_CHARS)
-  for (const record of latest.values()) {
-    const signal = signals.get(record.turnKey)
-    if (signal?.revertedAt || signal?.hadError || signal?.feedback === 'down' || record.truncated) continue
-    if (args.provider && record.provider !== args.provider) continue
-    if (args.model && record.resolvedModel !== args.model) continue
-    const example = toTrainingExample(record, signal, archive.blobs, maxChars)
-    if (!example) continue
-    const dedupKey = stableHash({ messages: example.messages, tools: example.tools })
-    if (seen.has(dedupKey)) continue
-    seen.add(dedupKey)
-    examples.push(example)
-  }
+  const examples = await selectExamples(archive, {
+    consent: await loadConsent(records),
+    signals: await loadSignals(records),
+    provider: args.provider ? String(args.provider) : undefined,
+    model: args.model ? String(args.model) : undefined,
+    maxChars: Number(args['max-chars'] || MAX_EXAMPLE_CHARS),
+  })
 
   const mediaToWrite = new Map<string, string>()
   for (const example of examples) {

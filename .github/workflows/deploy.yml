@@ -106,7 +106,7 @@ jobs:
           sparse-checkout: scripts/ci
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
       # The decision lives in scripts/ci/wait-for-ci.ts so it can be unit
       # tested (scripts/__tests__/wait-for-ci.test.ts). Both the merge-queue
       # run (which tested this exact commit on the queue's ref) and the push
@@ -775,7 +775,7 @@ jobs:
           sparse-checkout: scripts/ci
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       - name: Login to OCIR
         run: |
@@ -980,7 +980,7 @@ jobs:
           sparse-checkout: scripts/ci
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
       - name: Wait for e2e/staging-critical to pass for this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1080,7 +1080,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       - name: Download metal fleet readings
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

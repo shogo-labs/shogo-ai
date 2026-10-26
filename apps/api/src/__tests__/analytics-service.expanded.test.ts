@@ -1105,6 +1105,114 @@ describe('aggregateInstalls — platform + version normalisation', () => {
 })
 
 // =========================================================================
+// SHO-126 — the current version is the newest version event, not api_keys
+// =========================================================================
+
+describe('current version from device_version_events', () => {
+  const day = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000)
+  const hour = (n: number) => new Date(Date.now() - n * 60 * 60 * 1000)
+  const event = (deviceId: string, version: string, firstSeenAt: Date, lastSeenAt: Date) => ({
+    deviceId, version, channel: 'stable', os: 'macos', client: 'desktop', firstSeenAt, lastSeenAt,
+  })
+
+  test('a deliberate downgrade is counted on the lower version', async () => {
+    // One machine, two keys (device keys are minted per workspace): the older
+    // one still holds the version it moved off, so semver-first picks 2.3.6
+    // forever. The event history says it now runs 2.2.27.
+    store.apiKeys.push(
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin-arm64', deviceAppVersion: '2.3.6', lastSeenAt: day(6), createdAt: day(40), userId: 'u1' },
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin-arm64', deviceAppVersion: '2.2.27', lastSeenAt: hour(1), createdAt: day(35), userId: 'u1' },
+    )
+    store.deviceVersionEvents.push(
+      event('d1', '2.3.6', day(20), day(6)),
+      event('d1', '2.2.27', day(4), hour(1)),
+    )
+    rebuildModels()
+
+    const out = await analytics.getDesktopInstalls()
+
+    expect(out.byVersion).toEqual([{ version: '2.2.27', count: 1, activeD7: 1 }])
+    expect(out.versions).toHaveLength(1)
+    expect(out.versions[0]).toMatchObject({
+      version: '2.2.27',
+      devices: 1,
+      os: { macos: 1, windows: 0, linux: 0, unknown: 0 },
+    })
+    // ...and the second workspace's stale 2.3.6 key is nowhere in the number.
+    expect(out.versions.some((row) => row.version === '2.3.6')).toBe(false)
+  })
+
+  test('a version-less touch on an older key cannot relabel the device', async () => {
+    // The SHO-114 mislabel, from the other side: the newest key row says 2.2.27
+    // because a touch rewrote it, but the device last reported 2.3.6.
+    store.apiKeys.push(
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin', deviceAppVersion: '2.2.27', lastSeenAt: hour(1), createdAt: day(90), userId: 'u1' },
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin', deviceAppVersion: '2.3.6', lastSeenAt: day(3), createdAt: day(12), userId: 'u1' },
+    )
+    store.deviceVersionEvents.push(
+      event('d1', '2.2.27', day(30), day(30)),
+      event('d1', '2.3.6', day(3), day(3)),
+    )
+    rebuildModels()
+
+    const out = await analytics.getDesktopInstalls()
+    expect(out.byVersion).toEqual([{ version: '2.3.6', count: 1, activeD7: 1 }])
+  })
+
+  test('a device with no event row still resolves its version from api_keys', async () => {
+    // Pre-migration row, or a backfill that had no version to copy.
+    store.apiKeys.push(
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'win32', deviceAppVersion: '1.12.7', lastSeenAt: day(2), createdAt: day(40), userId: 'u1' },
+    )
+    rebuildModels()
+
+    const out = await analytics.getDesktopInstalls()
+    expect(out.byVersion).toEqual([{ version: '1.12.7', count: 1, activeD7: 1 }])
+  })
+
+  test('a device with neither a version nor an event stays `unknown`', async () => {
+    store.apiKeys.push(
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'darwin', deviceAppVersion: null, lastSeenAt: day(1), createdAt: day(5), userId: 'u1' },
+      { kind: 'device', revokedAt: null, deviceId: 'd2', devicePlatform: 'win32', deviceAppVersion: '2.3.6', lastSeenAt: day(1), createdAt: day(5), userId: 'u2' },
+    )
+    store.deviceVersionEvents.push(event('d2', '2.3.6', day(2), day(1)))
+    rebuildModels()
+
+    const out = await analytics.getDesktopInstalls()
+    expect(out.byVersion).toEqual([
+      { version: '2.3.6', count: 1, activeD7: 1 },
+      { version: 'unknown', count: 1, activeD7: 1 },
+    ])
+  })
+
+  test('the downgraded version drives the CLI/desktop split and the device list', async () => {
+    // The stale workspace key still reports `shogo-cli/1.4.0`; the history says
+    // the machine is a desktop on 2.2.27, so it must not land in the CLI segment.
+    store.apiKeys.push(
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'linux-x64', deviceAppVersion: 'shogo-cli/1.4.0', lastSeenAt: day(8), createdAt: day(40), userId: 'u1' },
+      { kind: 'device', revokedAt: null, deviceId: 'd1', devicePlatform: 'linux-x64', deviceAppVersion: 'shogo-cli/1.4.0', lastSeenAt: hour(2), createdAt: day(30), userId: 'u1' },
+    )
+    store.deviceVersionEvents.push(
+      event('d1', '2.3.6', day(20), day(8)),
+      event('d1', '2.2.27', day(4), hour(2)),
+    )
+    rebuildModels()
+
+    const installs = await analytics.getAppInstalls()
+    expect(installs.cli.totalDevices).toBe(0)
+    expect(installs.desktop.byVersion).toEqual([{ version: '2.2.27', count: 1, activeD7: 1 }])
+
+    const devices = await analytics.getActiveDevices({ includeDormant: true, days: 30 })
+    expect(devices.devices).toHaveLength(1)
+    expect(devices.devices[0]).toMatchObject({ client: 'desktop', version: '2.2.27', channel: 'stable' })
+
+    const versions = await analytics.getAppVersions({ days: 30 })
+    expect(versions.desktop.byVersion).toEqual([{ version: '2.2.27', count: 1, activeD7: 1 }])
+    expect(versions.cli.totalDevices).toBe(0)
+  })
+})
+
+// =========================================================================
 // getAppVersions — OS×version matrix + adoption series
 // =========================================================================
 

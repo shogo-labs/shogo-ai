@@ -86,6 +86,10 @@ describe("chat queue dispatcher", () => {
     expect(await dispatchNext("session-1")).toBe(true)
     expect(state.persisted).toHaveLength(1)
     expect((state.persisted[0] as any).id).toBe("queued-1")
+    // The prompt belongs to whoever queued it, so a teammate's activity report
+    // can credit them (SHO-199). The model the person picked is stamped too.
+    expect((state.persisted[0] as any).authorUserId).toBe("user-1")
+    expect((state.persisted[0] as any).model).toBe("auto")
     expect(state.requests).toHaveLength(1)
     expect((state.requests[0] as any).messages[0].parts[0].text).toBe("queued prompt")
     expect((state.requests[0] as any).clientTurnId).toMatch(/^queue-queued-1-/)

@@ -95,6 +95,11 @@ export interface SocialClientConfig {
  * A desktop sets `SHOGO_API_KEY` (it is how every other forwarded provider
  * call reaches the cloud), so its presence — or `SHOGO_LOCAL_MODE` — means
  * "relay". BYOK wins over both when the user supplied their own key.
+ *
+ * A desktop whose key lives only in `localConfig` (the env var was cleared on
+ * restart) still resolves to relay with an empty key: `relayCredential()` reads
+ * the signed-in session at request time, which is the only place it can be
+ * awaited.
  */
 export function resolveSocialClientConfig(env: NodeJS.ProcessEnv = process.env): SocialClientConfig {
   const base = (env.ZERNIO_API_BASE || ZERNIO_API_BASE).replace(/\/$/, '')
@@ -106,18 +111,10 @@ export function resolveSocialClientConfig(env: NodeJS.ProcessEnv = process.env):
 
   const isDesktop = env.SHOGO_LOCAL_MODE === 'true' || !!env.SHOGO_API_KEY
   if (isDesktop) {
-    const shogoKey = env.SHOGO_API_KEY?.trim()
-    if (!shogoKey) {
-      throw new SocialError(
-        412,
-        'social_relay_unavailable',
-        'Social accounts on desktop go through Shogo Cloud. Connect Shogo Cloud in Settings first.',
-      )
-    }
     return {
       mode: 'relay',
       baseUrl: `${getShogoCloudUrl()}${SOCIAL_RELAY_PATH}`,
-      apiKey: shogoKey,
+      apiKey: env.SHOGO_API_KEY?.trim() ?? '',
     }
   }
 
@@ -126,6 +123,23 @@ export function resolveSocialClientConfig(env: NodeJS.ProcessEnv = process.env):
     throw new SocialError(503, 'social_not_configured', 'ZERNIO_API_KEY is not configured on the server.')
   }
   return { mode: 'cloud', baseUrl: base, apiKey: masterKey }
+}
+
+/**
+ * The Shogo Cloud credential a relay call needs: the env var when it is set,
+ * otherwise the key a signed-in desktop persisted to `localConfig`. Same two
+ * sources `federated-upstream` already reads, so social never disagrees with
+ * the rest of the desktop about whether it is signed in.
+ */
+export async function relayCredential(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  const fromEnv = env.SHOGO_API_KEY?.trim()
+  if (fromEnv) return fromEnv
+  try {
+    const { getUpstreamCredential } = await import('../../lib/federated-upstream')
+    return (await getUpstreamCredential()) ?? null
+  } catch {
+    return null
+  }
 }
 
 function buildUrl(baseUrl: string, req: ZernioRequest): string {
@@ -155,7 +169,7 @@ async function parseErrorBody(res: Response): Promise<SocialErrorBody> {
   }
 }
 
-function normalizeError(status: number, body: SocialErrorBody): SocialError {
+function normalizeError(status: number, body: SocialErrorBody, mode: SocialMode): SocialError {
   const platform = typeof body.platform === 'string' ? body.platform : undefined
   const platformError = typeof body.platformError === 'string' ? body.platformError : undefined
   // Zernio answers with a string `error`; our own relay (and the rest of the
@@ -174,6 +188,22 @@ function normalizeError(status: number, body: SocialErrorBody): SocialError {
   if (platform) details.platform = platform
   if (platformError) details.platformError = platformError
   if (typeof body.docUrl === 'string') details.docUrl = body.docUrl
+  // A caller on a desktop sees the cloud's failure through the relay; saying so
+  // is the difference between "our key is broken" and "your sign-in expired".
+  if (mode === 'relay') {
+    details.via = 'relay'
+    // The relay speaks this API's error shape, so anything else it put in
+    // `error` (a swallowed create failure, the routing id) is the only
+    // explanation the desktop's 502 will ever carry. Keep it.
+    for (const [key, value] of Object.entries(nested ?? {})) {
+      if (key === 'code' || key === 'message' || value === undefined) continue
+      details[key] = value
+    }
+  }
+  // `profile_external_id_conflict` names the profile that already owns the
+  // routing id, so a 409 is adoptable rather than fatal.
+  const existing = (body.details as any)?.existingProfileId ?? body.existingProfileId
+  if (typeof existing === 'string' && existing) details.existingProfileId = existing
   return new SocialError(status, code, message, details)
 }
 
@@ -181,8 +211,23 @@ function createHttpSocialClient(config: SocialClientConfig): SocialClient {
   return {
     mode: config.mode,
     async request<T>(req: ZernioRequest): Promise<T> {
+      let apiKey = config.apiKey
+      if (!apiKey) {
+        if (config.mode !== 'relay') {
+          throw new SocialError(503, 'social_not_configured', 'ZERNIO_API_KEY is not configured on the server.')
+        }
+        apiKey = (await relayCredential()) ?? ''
+        if (!apiKey) {
+          throw new SocialError(
+            412,
+            'social_relay_unavailable',
+            'Social accounts on desktop go through Shogo Cloud. Sign in to Shogo Cloud in Settings first.',
+          )
+        }
+      }
+
       const headers: Record<string, string> = {
-        Authorization: `Bearer ${config.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         Accept: 'application/json',
       }
       if (req.body !== undefined) headers['Content-Type'] = 'application/json'
@@ -221,7 +266,7 @@ function createHttpSocialClient(config: SocialClientConfig): SocialClient {
           continue
         }
 
-        if (!res.ok) throw normalizeError(res.status, await parseErrorBody(res))
+        if (!res.ok) throw normalizeError(res.status, await parseErrorBody(res), config.mode)
         if (res.status === 204) return undefined as T
         return (await res.json()) as T
       }

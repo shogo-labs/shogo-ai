@@ -20,16 +20,29 @@
 # Downstream matrix Dockerfiles use `FROM ${WORKSPACE_DEPS}` to inherit
 # everything above. We bake debian (matches Dockerfile.base) so binary
 # native modules layer-copy cleanly into both python:3.12-slim
-# (runtime base) and node:25-alpine (api production) — same arm64 ABI.
+# (runtime base) and node:26-slim (api production) — same arm64 ABI.
 # =============================================================================
 
 # Keep this Bun version identical to apps/api/Dockerfile and
 # packages/agent-runtime/Dockerfile.base: both re-run `bun install` over this
 # node_modules tree, and a newer Bun fails relinking an older Bun's layout
 # (EEXIST on the root workspace symlink).
-FROM oven/bun:1.4.3-debian
+FROM oven/bun:1.4.4-debian
 
 WORKDIR /app
+
+# Node2Shell (CVE-2026-111497) guard: fail here rather than bake a
+# vulnerable Bun into every image that inherits this tree (Bun < 1.4.4
+# has an out-of-bounds write in its bundled Brotli decoder).
+RUN set -eu; \
+    ver_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$1" ]; }; \
+    bun_need=1.4.4; \
+    bun_have="$(bun --version)"; \
+    if ! ver_ge "$bun_need" "$bun_have"; then \
+      echo "FATAL: bun $bun_have is below the Node2Shell floor of $bun_need (CVE-2026-111497)" >&2; \
+      exit 1; \
+    fi; \
+    echo "Node2Shell guard OK: bun $bun_have"
 
 # Native-module build toolchain (better-sqlite3 → node-gyp → python3) and
 # git for fetch-external-skills.ts. Even on ARM-native runners, some

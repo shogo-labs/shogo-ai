@@ -33,7 +33,7 @@
  */
 import { type ChildProcess, spawn, spawnSync } from './child-process.ts';
 import { createHmac, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, unwatchFile, watchFile } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -41,6 +41,7 @@ import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
 import {
   RssWatchdog,
   applyHeapEnvCap,
+  applyLiveMemoryCap,
   attachDirectCgroup,
   readExecPidsFile,
   resolveResourceLimits,
@@ -538,6 +539,9 @@ interface InternalRuntime {
    * or when no limit is configured. Stopped on exit/stop.
    */
   limitWatchdog: RssWatchdog | null;
+  /** `systemd-run --scope` unit name when the spawn was cgroup-wrapped, so a
+   *  later budget change can be re-applied to the live scope (SHO-203). */
+  cgroupScope?: string | null;
   lastError?: string;
   spawnConfig: ProjectSpawnConfig;
   /**
@@ -688,6 +692,9 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   /** Timer that refreshes every running runtime's cached activity sample. */
   private activityTimer: ReturnType<typeof setInterval> | null = null;
 
+  /** `host-limits.json` this manager watches for live limit changes (SHO-203). */
+  private hostLimitsFile: string | null = null;
+
   constructor(opts: WorkerRuntimeManagerOptions = {}) {
     this.opts = opts;
     this.log = opts.logger ?? console;
@@ -697,6 +704,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     // time — see runtime-activity.ts. Unref'd so it never holds the process
     // open.
     this.ensureActivitySampler();
+    this.watchHostLimits();
   }
 
   /**
@@ -1339,6 +1347,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   async stopAll(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
     this.stopped = true;
+    this.unwatchHostLimits();
     if (this.activityTimer) {
       clearInterval(this.activityTimer);
       this.activityTimer = null;
@@ -1420,18 +1429,22 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     let command = baseSpawn.command;
     let args = baseSpawn.args;
     let cgroupWrapped = false;
+    let cgroupScope: string | null = null;
     if (limits) {
+      const scopeName = `shogo-rt-${slot.projectId.slice(0, 8)}-${Date.now().toString(36)}`;
       const wrapped = wrapSpawnForCgroup({
         command: baseSpawn.command,
         args: baseSpawn.args,
         limits,
-        scopeName: `shogo-rt-${slot.projectId.slice(0, 8)}-${Date.now().toString(36)}`,
+        scopeName,
         logger: this.log,
       });
       command = wrapped.command;
       args = wrapped.args;
       cgroupWrapped = wrapped.wrapped;
+      cgroupScope = wrapped.wrapped ? scopeName : null;
     }
+    slot.cgroupScope = cgroupScope;
 
     this.log.log(
       `[WorkerRuntimeManager] Spawning agent-runtime for ${slot.projectId} ` +
@@ -1603,6 +1616,60 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       this.resolvedLimits = resolveResourceLimits(this.opts.env ?? process.env);
     }
     return this.resolvedLimits;
+  }
+
+  /**
+   * Watch `host-limits.json` so a Settings change to the agent-command budget
+   * lands on the app that is already running (SHO-203). An env var can only
+   * change at spawn; a file can change now. `fs.watchFile` polls, which is why
+   * it also picks the file up on a fresh install — no IPC plumbing needed.
+   */
+  private watchHostLimits(): void {
+    const file = (this.opts.env ?? process.env).SHOGO_HOST_LIMITS_FILE;
+    if (!file || this.hostLimitsFile) return;
+    this.hostLimitsFile = file;
+    watchFile(file, { interval: 2000 }, () => this.applyHostLimitsChange());
+  }
+
+  /** Re-resolve the limits and push the new OS cap onto every live runtime. */
+  private applyHostLimitsChange(): void {
+    const env = this.opts.env ?? process.env;
+    let limits: RuntimeResourceLimits | null;
+    try {
+      limits = resolveResourceLimits(env);
+    } catch (err: any) {
+      this.log.warn(`[WorkerRuntimeManager] host limits re-read failed: ${err?.message ?? err}`);
+      return;
+    }
+    // Future spawns read the memo, so keep it in step with the file.
+    this.resolvedLimits = limits;
+    if (!limits) return;
+    const live = [...this.runtimes.values()].filter((slot) => slot.pid && slot.status !== 'stopped');
+    if (live.length === 0) return;
+    this.log.log(
+      `[WorkerRuntimeManager] agent-command budget changed — memory cap now ${limits.osMemoryMB}M ` +
+        `(${limits.memoryMB}M runtime + ${limits.osMemoryMB - limits.memoryMB}M commands)`,
+    );
+    for (const slot of live) {
+      try {
+        applyLiveMemoryCap({
+          pid: slot.pid,
+          scopeName: slot.cgroupScope ?? null,
+          limits,
+          logger: this.log,
+        });
+      } catch (err: any) {
+        this.log.warn(
+          `[WorkerRuntimeManager] live memory cap for ${slot.projectId} failed: ${err?.message ?? err}`,
+        );
+      }
+    }
+  }
+
+  private unwatchHostLimits(): void {
+    if (!this.hostLimitsFile) return;
+    unwatchFile(this.hostLimitsFile);
+    this.hostLimitsFile = null;
   }
 
   /**
@@ -1803,7 +1870,15 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       // the runtime publishes their PIDs so the watchdog leaves them out, and
       // budgets them itself, stopping the largest command instead of the turn.
       env.SHOGO_EXEC_PIDS_FILE = this.execPidsFile(slot);
-      env.SHOGO_EXEC_MEMORY_MB ??= String(limits.memoryMB);
+      const limitSource = this.opts.env ?? process.env;
+      if (limitSource.SHOGO_HOST_LIMITS_FILE) {
+        // Desktop: the budget is the user's setting, published in a file the
+        // runtime watches, so it changes on a running app (SHO-203). Never
+        // default it to the runtime ceiling — that is the bug this fixed.
+        env.SHOGO_HOST_LIMITS_FILE = limitSource.SHOGO_HOST_LIMITS_FILE;
+      } else {
+        env.SHOGO_EXEC_MEMORY_MB ??= String(limits.memoryMB);
+      }
     }
 
     return env;

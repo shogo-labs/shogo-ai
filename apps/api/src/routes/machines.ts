@@ -34,6 +34,7 @@ import { isMachineTimeoutError } from '../lib/tunnel-errors'
 import { classifyAction, logRemoteAction } from './remote-audit'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 import { applyBatch, deleteMachineCopy, ownershipFailure } from '../lib/machine-sync/ingest'
+import { invalidateMachineWorkspaceIds } from '../lib/machine-workspace'
 import { PRIMARY_REGION, RAW_REGION_ID } from '../lib/region'
 
 /**
@@ -272,15 +273,10 @@ export function machineRoutes() {
     const names = await workspaceNamesById(rows.map((row) => row.workspaceId))
     const grouped = groupMachinesByHostname(rows, { nameFor: (id) => names.get(id) })
 
-    // The workspace switcher polls this list, so it is the one place we know
-    // Studio has a machine in view. Marking the viewer active makes that
-    // desktop's heartbeat run at 5 s (POLL_INTERVAL_VIEWER_S) instead of 60 s,
-    // so a sleeping machine is reachable in seconds (SHO-185).
-    await Promise.all(
-      rows
-        .filter((row) => row.lastSeenAt)
-        .map((row) => markViewerActive(row.workspaceId).catch(() => {})),
-    )
+    // No viewer marking here: every open Studio tab polls this list, and
+    // marking all of the caller's machines from it put every desktop on the
+    // 5 s poll for as long as any tab was open (PERF-6). The relay below marks
+    // the one machine whose workspace is actually in use.
 
     // One read for every machine's copy state, so the Settings → Remote control
     // switch can show "Last synced" without a second round trip (SHO-185).
@@ -408,6 +404,11 @@ export function machineRoutes() {
     // `/instances/:id/p/*`.
     const path = rest ? `/${rest}${search}` : `/api${search}`
     const method = c.req.method
+
+    // This machine's workspace is open in Studio: keep its heartbeat at 5 s
+    // (POLL_INTERVAL_VIEWER_S) so it stays reachable in seconds (SHO-185).
+    // Throttled inside markViewerActive.
+    void markViewerActive(instance.workspaceId).catch(() => {})
 
     if (!(await ensureTunnelConnected(instance.id, wakeDeadlineMs))) {
       // Recently heartbeated means "not connected right now, but alive": say so
@@ -613,6 +614,11 @@ export function machineRoutes() {
         // was recreated): 409 tells it to send a snapshot, not that it broke.
         const detail = 'detail' in result ? result.detail : undefined
         return c.json({ error: { code: result.code, message: result.message, ...(detail ?? {}) } }, 409)
+      }
+      // A batch can tag a new machine workspace; background workers on this pod
+      // must skip it from the next tick, not after the id cache expires.
+      if (!result.disabled && result.applied > 0) {
+        invalidateMachineWorkspaceIds()
       }
       return c.json(result)
     } catch (err: any) {

@@ -80,6 +80,7 @@ import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
 import { buildAccountContextPrompt, sanitizeModelDisplayName, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
+import { shouldReloadForBuild } from './build-input-fingerprint'
 import { CanvasTypecheckGate } from './canvas-typecheck'
 import {
   inferProviderFromModel as catalogInferProvider,
@@ -917,6 +918,16 @@ export class AgentGateway {
    * gains nothing and prune on reset is simpler).
    */
   private contentReplacementStates = new Map<string, ContentReplacementState>()
+  /**
+   * Per-session per-image pixel cap the model provider has told us about, from
+   * an `image dimensions exceed max allowed size for many-image requests: N
+   * pixels` rejection (SHO-201). Once learned, every later request in the
+   * session has its over-cap screenshots replaced before they go on the wire,
+   * so a long image-heavy turn pays the failed call once instead of once per
+   * screenshot.
+   */
+  private sessionImageMaxDimensions = new Map<string, number>()
+
   /**
    * The workspace agent's own capability toggles (`Workspace.settings`), held
    * separately from `this.config` (which caches the anchor project's
@@ -1844,12 +1855,12 @@ export class AgentGateway {
       // callback stays silent; CanvasBuildManager fires the reload as
       // before. Both paths also kick the type-check gate.
       pm?.setOnBuildComplete((info) => {
-        if (info?.outputChanged !== false) watcher.broadcastReload()
+        if (shouldReloadForBuild(info)) watcher.broadcastReload()
         typecheckGate.trigger()
       })
       this.canvasBuildManager = new CanvasBuildManager(this.workspaceDir, {
-        onBuildComplete: () => {
-          watcher.broadcastReload()
+        onBuildComplete: (info) => {
+          if (shouldReloadForBuild(info)) watcher.broadcastReload()
           typecheckGate.trigger()
         },
         onBuildError: (err) => console.error(`${this.logPrefix} Canvas build error:`, err),
@@ -2752,7 +2763,14 @@ export class AgentGateway {
   private async flushTaskWake(sessionId: string): Promise<void> {
     const reg = this.commandRegistries.get(sessionId)
     if (!reg || this.turnAbortControllers.has(sessionId)) return
-    const notes = reg.peekNotifications().filter((n) => !reg.get(n.taskId)?.apiTracked && !reg.get(n.taskId)?.reported)
+    // The note's own flags first: the entry that queued it may have been evicted,
+    // and reading only the entry then treats an API-owned note as a local task —
+    // the API writes its stale text onto the re-armed row and wakes the session
+    // again on every turn end (SHO-196).
+    const notes = reg.peekNotifications().filter((n) => {
+      const entry = reg.get(n.taskId)
+      return !(n.apiTracked ?? entry?.apiTracked) && !(n.reported ?? entry?.reported)
+    })
     if (notes.length === 0) {
       this.clearTaskWakeRetry(sessionId)
       return
@@ -3015,6 +3033,7 @@ export class AgentGateway {
     // History wipe = prefix rewrite. Drop per-session compaction state
     // so fresh decisions are taken against the new (empty) history.
     this.contentReplacementStates.delete(sessionId)
+    this.sessionImageMaxDimensions.delete(sessionId)
     this.turnCounters.delete(sessionId)
     this.turnPrefixes.delete(sessionId)
     this.shellCwd.delete(sessionId)
@@ -4469,6 +4488,15 @@ export class AgentGateway {
         // Stage 1 of the image-400 repair ladder: drop only the blocks that
         // provably cannot decode, instead of every image in history.
         scrubInvalidImages,
+        // Anthropic names a per-image pixel cap on a long image-heavy request
+        // ("… many-image requests: 3000 pixels"). Keep it for the session so
+        // later screenshots are replaced before they go out.
+        onImageDimensionLimit: (limit) => {
+          this.sessionImageMaxDimensions.set(sessionId, limit)
+          console.warn(
+            `${this.logPrefix} Image dimension cap learned for session ${sessionId}: ${limit}px`,
+          )
+        },
         onContextOverflow: async () => {
           console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
           const fileStateSummary = this.fileStateCache.size > 0
@@ -4526,11 +4554,14 @@ export class AgentGateway {
             )
           }
           // Final guard: self-heal any image block in history that no provider
-          // can accept — corrupt/truncated bytes, an unsupported format, or an
-          // oversized payload — before it reaches the wire. Deterministic, so it
+          // can accept — corrupt/truncated bytes, an unsupported format, an
+          // oversized payload, or (once this session has been told the cap)
+          // dimensions over it — before it reaches the wire. Deterministic, so it
           // does not disturb the stable-compaction byte-identical prefix
           // invariant.
-          const wire = scrubInvalidImages(result.messages)
+          const wire = scrubInvalidImages(result.messages, {
+            maxDimension: this.sessionImageMaxDimensions.get(sessionId),
+          })
           const compacted = await midTurnCompactor.transform(wire)
           const event = compacted.event
           if (event) {
@@ -6289,6 +6320,9 @@ export class AgentGateway {
     return buildConcurrentChatsPrompt(chats, {
       isolatedEdits: this.isWorktreesEnabled(),
       ...(reachable ? { reachable } : {}),
+      // A workspace runtime tags chats as context (SHO-191); a project runtime
+      // still delivers to them, so it keeps the delivery wording.
+      workspaceRuntime: Boolean(resolveRuntimeIdentity().workspaceId),
     })
   }
 

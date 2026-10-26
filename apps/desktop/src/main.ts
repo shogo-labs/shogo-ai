@@ -44,7 +44,9 @@ import {
   openApiCrashLog,
 } from './local-server'
 import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter, type DesktopLogLevel } from './signoz-log-exporter'
-import { getWebDir, getBunPath, getDbPath, getWorkspacesDirDecision } from './paths'
+import { getWebDir, getBunPath, getDbPath, getWorkspacesDirDecision, getDataDir } from './paths'
+import { buildHostLimits, hostRuntimeView, writeHostLimits } from './host-limits'
+import { normalizeExecMemoryMB } from './runtime-memory'
 import { runSpotlightHint, SPOTLIGHT_SETTINGS_URL } from './spotlight-hint'
 import type { WorkspacesDirDecision } from './spotlight-exclusion'
 import {
@@ -59,7 +61,9 @@ import {
 } from './db-recovery'
 import { readConfig, writeConfig, getDeviceInfo, getCloudUrl } from './config'
 import type { BugReportPayload } from './bug-report'
-import { initAutoUpdater, getIsApplyingUpdate } from './updater'
+import { initAutoUpdater, getIsApplyingUpdate, readLiveActivity, recordLastQuit, loadInterruptedNotice } from './updater'
+import { describeLiveActivity, liveActivityTotal, setApiDrain } from './live-activity'
+import { IdleRestart } from './restart-when-idle'
 type RecordingModule = typeof import('./recording')
 import { registerFsIpcHandlers } from './fs-ipc'
 import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
@@ -216,6 +220,11 @@ app.on('second-instance', () => {
 })
 
 const IS_DEV = !app.isPackaged
+
+/** This machine's RAM in MB, the unit every host limit is expressed in. */
+function totalSystemMemMB(): number {
+  return Math.round(os.totalmem() / 1024 / 1024)
+}
 
 let islandWindow: IslandWindow | null = null
 let huddleHostWindow: HuddleHostWindow | null = null
@@ -1372,6 +1381,38 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
+  // SHO-203: the machine-level limits an agent runtime reads from
+  // host-limits.json. Settings owns the command budget, and writing the file
+  // here (rather than at spawn) is what makes a change land on a running app.
+  ipcMain.handle('get-host-runtime-config', () =>
+    hostRuntimeView(readConfig().hostRuntime, totalSystemMemMB()),
+  )
+  ipcMain.handle('set-host-runtime-config', (_event, patch: unknown) => {
+    const totalMemMB = totalSystemMemMB()
+    try {
+      const current = readConfig().hostRuntime
+      const requested = (typeof patch === 'object' && patch !== null ? patch : {}) as {
+        execMemoryMB?: unknown
+      }
+      const next = {
+        ...current,
+        execMemoryMB:
+          'execMemoryMB' in requested
+            ? normalizeExecMemoryMB(requested.execMemoryMB)
+            : current.execMemoryMB,
+      }
+      writeConfig({ hostRuntime: next })
+      writeHostLimits(getDataDir(), buildHostLimits(next.execMemoryMB, totalMemMB))
+      return { ok: true as const, config: hostRuntimeView(next, totalMemMB) }
+    } catch (err) {
+      writeLogSync('ERROR', '[Desktop] set-host-runtime-config failed:', err)
+      return {
+        ok: false as const,
+        error: err instanceof Error ? err.message : String(err),
+        config: hostRuntimeView(readConfig().hostRuntime, totalMemMB),
+      }
+    }
+  })
   ipcMain.handle('set-island-config', (_event, patch: unknown) => {
     if (!islandWindow) return { ok: false, error: 'Island is unavailable', config: readConfig().island }
     return islandWindow.updateConfig(patch)
@@ -2139,9 +2180,18 @@ app.whenReady().then(async () => {
     ipcMain.handle('check-for-updates', () => ({ ok: false, error: 'Updates disabled in dev mode' }))
     ipcMain.handle('download-update', () => ({ ok: false, error: 'Updates disabled in dev mode' }))
     ipcMain.handle('dismiss-update', () => ({ ok: true }))
-    ipcMain.handle('install-update', () => {})
+    ipcMain.handle('install-update', () => ({ ok: false, error: 'Updates disabled in dev mode' }))
+    ipcMain.handle('cancel-idle-restart', () => ({ ok: true, cancelled: false }))
+    ipcMain.handle('get-live-activity', async () => {
+      const activity = await readLiveActivity()
+      return { ok: true, activity, total: liveActivityTotal(activity) }
+    })
+    ipcMain.handle('get-interrupted-notice', () => ({ notice: null }))
+    ipcMain.handle('dismiss-interrupted-notice', () => ({ ok: true }))
   }
 
+  // The one line the last deliberate stop owes the person who chose it (SHO-181).
+  loadInterruptedNotice()
   app.on('activate', () => {
     if (!windowManager.hasWindows()) {
       createWindow()
@@ -2182,11 +2232,97 @@ app.on('window-all-closed', () => {
 })
 
 let isQuitting = false
+
+/**
+ * The Quit gate (SHO-181).
+ *
+ * Quitting kills every live agent run exactly as an update restart does, and the
+ * tray/menu Quit did it without a word. So Quit asks first, before anything is
+ * torn down — Cancel has to leave the app exactly as it was.
+ *
+ * `quitGateResolved` lets the second pass through: a decision of "quit" re-enters
+ * `app.quit()`, which fires this handler again.
+ */
+let quitGateResolved = false
+let quitGatePending = false
+let quitWhileIdle: IdleRestart | null = null
+
+async function decideQuitWithLiveWork(): Promise<'proceed' | 'cancel' | 'waiting'> {
+  const activity = await readLiveActivity().catch(() => null)
+  if (liveActivityTotal(activity) === 0) return 'proceed'
+
+  const { response } = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['Quit When Idle', 'Quit Now', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+    message: `${describeLiveActivity(activity)}. Quit Shogo?`,
+    detail:
+      'Quit When Idle lets the running agent work finish before the app closes. Quitting now stops it — it resumes automatically on the next launch.',
+  })
+
+  if (response === 2) {
+    console.log('[Desktop] Quit cancelled — live work keeps running')
+    // A previous "Quit When Idle" may still be holding automatic starts.
+    await quitWhileIdle?.cancel()
+    return 'cancel'
+  }
+  if (response === 1) {
+    console.log('[Desktop] Quit now chosen with live work')
+    await quitWhileIdle?.cancel()
+    recordLastQuit('quit', activity)
+    return 'proceed'
+  }
+
+  // The same drain-and-wait loop the update banner runs, ended by a quit instead.
+  if (!quitWhileIdle) {
+    quitWhileIdle = new IdleRestart({
+      readActivity: async () => await readLiveActivity(),
+      setDrain: async (on) => await setApiDrain(getApiUrl(), on),
+      quit: () => {
+        console.log('[Desktop] Nothing is running — finishing the quit')
+        quitGateResolved = true
+        app.quit()
+      },
+      log: (line) => console.log(`[Desktop] ${line}`),
+    })
+  }
+  await quitWhileIdle.start()
+  return 'waiting'
+}
+
 app.on('before-quit', (event) => {
   console.log(`[Desktop] before-quit fired, isQuitting=${isQuitting}, isCloudMode=${isCloudMode}, applyingUpdate=${getIsApplyingUpdate()}`)
   // Flush any queued SigNoz log records before exit (best-effort, never blocks).
   void shutdownSignozLogExporter().catch(() => {})
   if (isQuitting) return
+
+  // Ask before killing live agent runs (SHO-181). Skipped when the update path
+  // already asked, and in cloud mode, where nothing runs locally.
+  if (!isCloudMode && !getIsApplyingUpdate() && !quitGateResolved) {
+    event.preventDefault()
+    if (quitGatePending) return
+    quitGatePending = true
+    void decideQuitWithLiveWork()
+      .then((decision) => {
+        quitGatePending = false
+        if (decision === 'cancel') return
+        // 'waiting': the idle loop calls app.quit() once the counts settle.
+        if (decision === 'waiting') return
+        quitGateResolved = true
+        app.quit()
+      })
+      .catch((err) => {
+        // A gate that fails must never hold the app open.
+        quitGatePending = false
+        console.error('[Desktop] Quit gate failed — quitting anyway:', err)
+        quitGateResolved = true
+        app.quit()
+      })
+    return
+  }
+
   islandWindow?.destroy()
   islandWindow = null
   huddleHostWindow?.destroy()
@@ -2210,7 +2346,25 @@ app.on('before-quit', (event) => {
     disposeRunIpc()
     disposeDebugIfLoaded()
     disposeIdeIfLoaded()
-    stopLocalServer().catch(() => {})
+    if (process.platform === 'win32') {
+      // Windows has no SIGTERM, so the API is *told* to stop and that request
+      // needs this process to stay alive long enough to be delivered. Squirrel
+      // has already spawned its installer and waits for this process to exit,
+      // so a bounded wait costs nothing (SHO-181).
+      event.preventDefault()
+      console.log('[Desktop] Waiting up to 3s for the API to stop before the update restarts the app')
+      void Promise.race([
+        stopLocalServer('update').catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 3_000)),
+      ]).finally(() => {
+        console.log('[Desktop] Exiting app for the update')
+        app.exit(0)
+      })
+      return
+    }
+    // Elsewhere the SIGTERM has already gone out and the detached child finishes
+    // its shutdown on its own — do not hold Squirrel's install open for it.
+    stopLocalServer('update').catch(() => {})
     return
   }
 
@@ -2226,7 +2380,7 @@ app.on('before-quit', (event) => {
   disposeRunIpc()
   disposeDebugIfLoaded()
   disposeIdeIfLoaded()
-  Promise.allSettled([disposeTerminalIpc(), stopTerminalExecServer(), stopLocalServer()])
+  Promise.allSettled([disposeTerminalIpc(), stopTerminalExecServer(), stopLocalServer('quit')])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))
     .finally(() => {

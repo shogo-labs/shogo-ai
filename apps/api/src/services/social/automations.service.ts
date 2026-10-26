@@ -29,6 +29,7 @@
 import { prisma } from '../../lib/prisma'
 import { SocialError, getSocialClient } from './client'
 import { ensureProfile, workspaceName } from './profiles.service'
+import { zernioId } from './provider-ids'
 
 const db = prisma as any
 
@@ -307,9 +308,7 @@ export function planAutomationRequest(args: {
 }
 
 function providerResourceId(payload: any): string | null {
-  const candidate =
-    payload?.automation?.id ?? payload?.workflow?.id ?? payload?.id ?? payload?.data?.id
-  return typeof candidate === 'string' && candidate ? candidate : null
+  return zernioId(payload, 'automation', 'workflow', 'data')
 }
 
 function providerStatus(payload: any): string | null {
@@ -554,7 +553,7 @@ export async function recordAutomationRun(args: {
 }): Promise<{ recorded: boolean; automationId: string | null }> {
   const detail = args.detail ?? {}
   const executionId =
-    optionalText(detail.executionId) ?? optionalText(detail.execution_id) ?? optionalText(detail.id)
+    optionalText(detail.executionId) ?? optionalText(detail.execution_id) ?? optionalText(zernioId(detail))
   if (!executionId) return { recorded: false, automationId: null }
 
   const resourceId =

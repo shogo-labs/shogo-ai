@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { createElement } from "react";
 import { createReactNativeMock } from "../../../../test/react-native-mock";
 
-const listWorkspaceSessions = mock(async () => [
+const DEFAULT_SESSIONS = () => [
   {
     id: "chat-1",
     workspaceId: "w1",
@@ -25,7 +25,9 @@ const listWorkspaceSessions = mock(async () => [
     isPinned: false,
     isArchived: false,
   },
-]);
+];
+// The panel re-reads on focus, so an override has to hold for every call.
+const listWorkspaceSessions = mock(async () => DEFAULT_SESSIONS());
 const createWorkspaceSession = mock(async () => ({
   id: "chat-new",
   workspaceId: "w1",
@@ -33,6 +35,8 @@ const createWorkspaceSession = mock(async () => ({
 }));
 const updateChatSession = mock(async () => {});
 const deleteChatSession = mock(async () => {});
+// No turn is running on the server unless a test says so.
+const listWorkspaceActiveChats = mock(async () => []);
 const push = mock((_href: unknown) => {});
 
 const Icon = ({ accessibilityLabel }: { accessibilityLabel?: string }) =>
@@ -142,7 +146,11 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
   }),
 }));
 mock.module(resolve(import.meta.dir, "../../../../lib/api"), () => ({
-  api: { listWorkspaceSessions, createWorkspaceSession },
+  api: {
+    listWorkspaceSessions,
+    createWorkspaceSession,
+    listWorkspaceActiveChats,
+  },
 }));
 mock.module(resolve(import.meta.dir, "../../../../hooks/useActiveWorkspace"), () => ({
   useActiveWorkspace: () => ({ id: "w1", kind: "personal" }),
@@ -159,6 +167,9 @@ beforeEach(() => {
   updateChatSession.mockClear();
   deleteChatSession.mockClear();
   listWorkspaceSessions.mockClear();
+  listWorkspaceSessions.mockImplementation(async () => DEFAULT_SESSIONS());
+  listWorkspaceActiveChats.mockClear();
+  listWorkspaceActiveChats.mockImplementation(async () => []);
 });
 
 describe("WorkspaceChatsPanel", () => {
@@ -178,10 +189,11 @@ describe("WorkspaceChatsPanel", () => {
     render(<WorkspaceChatsPanel />);
     await screen.findByLabelText("Chat: Birthday party");
 
+    // chat-2 is the one running — not the chat on screen.
     act(() => {
       chatActivityEvents.emit({
         workspaceId: "w1",
-        streamingSessionIds: ["chat-1"],
+        streamingSessionIds: ["chat-2"],
         completedSessionIds: [],
       });
     });
@@ -198,15 +210,92 @@ describe("WorkspaceChatsPanel", () => {
     });
     expect(screen.getAllByLabelText("Chat running")).toHaveLength(1);
 
+    // The turn ending is a real transition: spinner off, unread dot on.
     act(() => {
       chatActivityEvents.emit({
         workspaceId: "w1",
         streamingSessionIds: [],
-        completedSessionIds: ["chat-1"],
+        completedSessionIds: ["chat-2"],
+        finishedSessionIds: ["chat-2"],
       });
     });
     expect(screen.queryByLabelText("Chat running")).toBeNull();
     expect(screen.getByLabelText("Chat has new activity")).toBeTruthy();
+  });
+
+  test("a blank emit (chat switch / unmount) never stops a running row", async () => {
+    render(<WorkspaceChatsPanel />);
+    await screen.findByLabelText("Chat: Birthday party");
+
+    act(() => {
+      chatActivityEvents.emit({
+        workspaceId: "w1",
+        streamingSessionIds: ["chat-2"],
+        completedSessionIds: [],
+      });
+    });
+    expect(screen.getAllByLabelText("Chat running")).toHaveLength(1);
+
+    // WorkspaceAgentChatScreen emits exactly this when you switch chats while a
+    // turn is still running somewhere else: it is not an "everything finished".
+    act(() => {
+      chatActivityEvents.emit({
+        workspaceId: "w1",
+        streamingSessionIds: [],
+        completedSessionIds: [],
+      });
+    });
+    expect(screen.getAllByLabelText("Chat running")).toHaveLength(1);
+  });
+
+  test("a turn the server reports running spins without any local event", async () => {
+    listWorkspaceActiveChats.mockImplementation(async () => [
+      {
+        chatSessionId: "chat-2",
+        turnId: "turn-1",
+        sessionName: "Trip ideas",
+        isPrimary: false,
+        projectId: null,
+        projectName: null,
+        projectHidden: false,
+        startedAt: "2099-01-01T00:00:00.000Z",
+      } as any,
+    ]);
+
+    render(<WorkspaceChatsPanel />);
+
+    await waitFor(() =>
+      expect(screen.getAllByLabelText("Chat running")).toHaveLength(1),
+    );
+    expect(listWorkspaceActiveChats).toHaveBeenCalled();
+  });
+
+  test("a pinned row shows a pin, and an unpinned one does not", async () => {
+    listWorkspaceSessions.mockImplementation(async () => [
+      {
+        id: "chat-1",
+        workspaceId: "w1",
+        name: "Birthday party",
+        createdAt: "2026-10-01T10:00:00.000Z",
+        lastActiveAt: "2026-10-01T10:00:00.000Z",
+        isPinned: true,
+        isArchived: false,
+      },
+      {
+        id: "chat-2",
+        workspaceId: "w1",
+        name: "Trip ideas",
+        createdAt: "2026-09-01T10:00:00.000Z",
+        lastActiveAt: "2026-09-01T10:00:00.000Z",
+        isPinned: false,
+        isArchived: false,
+      },
+    ]);
+
+    render(<WorkspaceChatsPanel />);
+
+    await screen.findByLabelText("Chat: Birthday party");
+    expect(screen.getAllByLabelText("Pinned")).toHaveLength(1);
   });
 
   test("pin goes through the one update path", async () => {

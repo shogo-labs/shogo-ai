@@ -5,10 +5,12 @@
  * Fails when a hosted-e2e quarantine entry (e2e/staging/quarantine.ts) has
  * expired, lacks an owner/reason, exceeds MAX_QUARANTINE_DAYS, or no longer
  * matches a test title in its spec file. Keeps quarantine a short, owned loan
- * instead of a silent way to stop running a spec.
+ * instead of a silent way to stop running a spec. Entries expiring within 7
+ * days print a `::warning` (never a failure) so an expiry is a heads-up
+ * instead of a red required check on the day.
  */
 
-import { existsSync, readFileSync } from 'fs'
+import { appendFileSync, existsSync, readFileSync } from 'fs'
 import { join, resolve } from 'path'
 import {
   MAX_QUARANTINE_DAYS,
@@ -19,6 +21,33 @@ import { CRITICAL_PATH_SPECS } from '../e2e/staging/critical-path'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
+/** Whole days from `today` (UTC midnight) until `expires`, or NaN if unparseable. */
+export function daysUntilExpiry(expires: string, today: Date): number {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(expires)) return NaN
+  const target = Date.parse(`${expires}T00:00:00Z`)
+  if (Number.isNaN(target)) return NaN
+  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
+  return Math.round((target - todayUtc) / DAY_MS)
+}
+
+/**
+ * Entries expiring within `warnDays` days that have not expired yet. CI prints
+ * these as `::warning` annotations so an expiry is a heads-up a week out
+ * instead of a red required check on the day (2026-10-25: all 11 entries
+ * expired at once and turned every PR red).
+ */
+export function quarantineWarnings(
+  entries: QuarantineEntry[],
+  opts: { today?: Date; warnDays?: number } = {},
+): QuarantineEntry[] {
+  const today = opts.today ?? new Date()
+  const warnDays = opts.warnDays ?? 7
+  return entries.filter((e) => {
+    const days = daysUntilExpiry(e.expires, today)
+    return !Number.isNaN(days) && days > 0 && days <= warnDays
+  })
+}
+
 export function validateQuarantine(
   entries: QuarantineEntry[],
   opts: { today?: Date; specDir?: string; readSpec?: (path: string) => string | null } = {},
@@ -28,19 +57,18 @@ export function validateQuarantine(
   const readSpec =
     opts.readSpec ?? ((p: string) => (existsSync(p) ? readFileSync(p, 'utf8') : null))
   const errors: string[] = []
-  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
 
   for (const e of entries) {
     const label = `${e.file} › ${e.title}`
     if (!e.owner?.trim()) errors.push(`${label}: missing owner`)
     if (!e.reason?.trim()) errors.push(`${label}: missing reason`)
 
-    const expires = /^\d{4}-\d{2}-\d{2}$/.test(e.expires) ? Date.parse(`${e.expires}T00:00:00Z`) : NaN
-    if (Number.isNaN(expires)) {
+    const days = daysUntilExpiry(e.expires, today)
+    if (Number.isNaN(days)) {
       errors.push(`${label}: expires must be YYYY-MM-DD (got "${e.expires}")`)
-    } else if (expires <= todayUtc) {
+    } else if (days <= 0) {
       errors.push(`${label}: quarantine expired on ${e.expires} — fix the spec or delete it (owner: ${e.owner})`)
-    } else if (expires - todayUtc > MAX_QUARANTINE_DAYS * DAY_MS) {
+    } else if (days > MAX_QUARANTINE_DAYS) {
       errors.push(`${label}: expires more than ${MAX_QUARANTINE_DAYS} days out`)
     }
 
@@ -77,6 +105,21 @@ export function validateCriticalPath(
   return errors
 }
 
+/** One-line description of an expiring entry, used in the annotation and summary. */
+export function describeExpiringEntry(entry: QuarantineEntry, today: Date): string {
+  const days = daysUntilExpiry(entry.expires, today)
+  const day = days === 1 ? 'day' : 'days'
+  return `${entry.file} › ${entry.title} expires ${entry.expires} (${days} ${day}, owner ${entry.owner})`
+}
+
+/** `::warning` workflow commands for entries about to expire. Never fails the job. */
+export function quarantineWarningAnnotations(entries: QuarantineEntry[], today: Date): string[] {
+  return entries.map(
+    (e) =>
+      `::warning file=e2e/staging/quarantine.ts,title=e2e quarantine expiring::${describeExpiringEntry(e, today)}`,
+  )
+}
+
 if (import.meta.main) {
   const errors = [
     ...validateQuarantine(QUARANTINE),
@@ -87,6 +130,18 @@ if (import.meta.main) {
     for (const err of errors) console.error(`  - ${err}`)
     process.exit(1)
   }
+
+  const today = new Date()
+  const expiring = quarantineWarnings(QUARANTINE, { today })
+  if (expiring.length > 0) {
+    for (const line of quarantineWarningAnnotations(expiring, today)) console.log(line)
+    const summary = process.env.GITHUB_STEP_SUMMARY
+    if (summary) {
+      const lines = expiring.map((e) => `- ${describeExpiringEntry(e, today)}`)
+      appendFileSync(summary, `### ⚠️ e2e quarantine expiring\n\n${lines.join('\n')}\n\n`)
+    }
+  }
+
   console.log(
     `e2e quarantine OK (${QUARANTINE.length} quarantined, ${CRITICAL_PATH_SPECS.length} critical-path specs)`,
   )

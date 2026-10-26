@@ -55,20 +55,58 @@ export function withCloudWorkspaces<T extends Record<string, unknown>>(where: T)
 }
 
 /**
+ * How long a pod reuses the machine-copy id set. Background workers call
+ * `machineWorkspaceIds()` on every tick of several loops, so reading it fresh
+ * each time cost ~150k queries/day (PERF-7). The set changes only when a
+ * desktop first syncs a workspace, so a short TTL is enough: the pod that
+ * ingests the batch drops its cache at once, and every other pod picks the new
+ * copy up within this window. An id that lingers after a copy is deleted only
+ * excludes a row that no longer exists.
+ */
+const MACHINE_WORKSPACE_IDS_TTL_MS = Math.max(
+  0,
+  Number(process.env.SHOGO_MACHINE_WORKSPACE_IDS_TTL_MS ?? 30_000) || 0,
+)
+
+let cachedIds: { ids: string[]; at: number } | null = null
+let inflight: Promise<string[]> | null = null
+let generation = 0
+
+/** Forget the cached id set, e.g. after a sync batch tagged a new workspace. */
+export function invalidateMachineWorkspaceIds(): void {
+  cachedIds = null
+  inflight = null
+  generation++
+}
+
+/**
  * Ids of every machine copy.
  *
  * For a worker whose table carries `workspaceId` as a plain column — no
  * relation to filter through — this is the whole guard: one indexed read of the
  * (tiny) set of paired machines, then `workspaceId: { notIn: ids }`. Leaving the
  * filter off when nothing is paired keeps the query plan unchanged for everyone
- * who has no machine.
+ * who has no machine. The set is cached per pod for
+ * `MACHINE_WORKSPACE_IDS_TTL_MS`, and concurrent callers share one read.
  */
 export async function machineWorkspaceIds(): Promise<string[]> {
-  const rows = await prisma.workspace.findMany({
-    where: MACHINE_WORKSPACE_ONLY,
-    select: { id: true },
-  })
-  return rows.map((row) => row.id)
+  if (cachedIds && Date.now() - cachedIds.at < MACHINE_WORKSPACE_IDS_TTL_MS) {
+    return cachedIds.ids
+  }
+  if (inflight) return inflight
+  const startedGeneration = generation
+  const read = prisma.workspace
+    .findMany({ where: MACHINE_WORKSPACE_ONLY, select: { id: true } })
+    .then((rows: Array<{ id: string }>) => {
+      const ids = rows.map((row) => row.id)
+      if (startedGeneration === generation) cachedIds = { ids, at: Date.now() }
+      return ids
+    })
+    .finally(() => {
+      if (inflight === read) inflight = null
+    })
+  inflight = read
+  return read
 }
 
 /** `{ workspaceId: { notIn: … } }`, or nothing at all when no machine is paired. */

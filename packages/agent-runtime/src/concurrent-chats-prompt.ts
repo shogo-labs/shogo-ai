@@ -66,7 +66,16 @@ export const NOT_OPENABLE_LABEL = 'not openable from here'
  */
 export function buildConcurrentChatsPrompt(
   chats: ConcurrentChat[],
-  opts: { isolatedEdits?: boolean; reachable?: string[] } = {},
+  opts: {
+    isolatedEdits?: boolean
+    reachable?: string[]
+    /**
+     * This is a workspace runtime, where a `<@c:CHAT_ID>` the person sends is a
+     * *reference* to a chat and sends nothing to it (SHO-191). A project
+     * runtime still delivers, so it keeps the delivery wording.
+     */
+    workspaceRuntime?: boolean
+  } = {},
 ): string | null {
   if (chats.length === 0) return null
 
@@ -90,17 +99,28 @@ export function buildConcurrentChatsPrompt(
   if (hidden > 0) lines.push(`(and ${hidden} more)`)
 
   lines.push('')
-  lines.push(
-    '- To hand work to one of them, call `chat_handoff({ chat: "<id>", message: "…" })` (or write `<@c:CHAT_ID>` in a message the person sends). The message arrives there with a one-line origin and that chat\'s agent starts its turn; nothing is posted back here automatically.',
-  )
+  if (opts.workspaceRuntime) {
+    lines.push(
+      '- To hand work to one of them, call `chat_handoff({ chat: "<id>", message: "…" })`. The message arrives there with a one-line origin and that chat\'s agent starts its turn; nothing is posted back here automatically.',
+    )
+    lines.push(
+      '- A chat the person tags with @ is a reference, not a hand-off. Nothing was sent there. Read it with `read_history` and send it something only with `chat_handoff`.',
+    )
+  } else {
+    lines.push(
+      '- To hand work to one of them, call `chat_handoff({ chat: "<id>", message: "…" })` (or write `<@c:CHAT_ID>` in a message the person sends). The message arrives there with a one-line origin and that chat\'s agent starts its turn; nothing is posted back here automatically.',
+    )
+  }
   if (reachable && shown.some((chat) => !isOpenable(chat.id))) {
     lines.push(
       `- A chat marked "${NOT_OPENABLE_LABEL}" answers \`chat_not_found\`; say so once and move on instead of retrying other ids.`,
     )
   }
-  lines.push(
-    '- A `<@c:CHAT_ID>` the person already sent has been delivered to that chat — do not re-send it with `chat_handoff`.',
-  )
+  if (!opts.workspaceRuntime) {
+    lines.push(
+      '- A `<@c:CHAT_ID>` the person already sent has been delivered to that chat — do not re-send it with `chat_handoff`.',
+    )
+  }
   if (opts.isolatedEdits) {
     lines.push('- They share one dev database, one preview/dev server and its ports with you; their commands land while you work.')
   } else {

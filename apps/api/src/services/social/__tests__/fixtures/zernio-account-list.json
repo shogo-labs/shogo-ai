@@ -1,0 +1,16 @@
+{
+  "accounts": [
+    {
+      "_id": "66aa11bb22cc33dd44ee55ff",
+      "platform": "instagram",
+      "username": "@acme",
+      "displayName": "Acme",
+      "profileId": {
+        "_id": "64f0c2a1b9e4d30012ab34cd",
+        "name": "Odin AI"
+      },
+      "tokenHealthy": true,
+      "needsReconnect": false
+    }
+  ]
+}

@@ -567,10 +567,13 @@ export function createMemberActivityTool(ctx: ToolContext): AgentTool {
     name: 'member_activity',
     label: 'Teammate Activity',
     description:
-      'Summarise what one teammate did: approvals they decided, tasks they started or finished, messages they sent, ' +
-      'meetings, the tools they used and when they were active. Use it to answer "what did Sam work on today?". ' +
-      'Owners and admins only; for anyone else the API refuses. The answer is private to the person asking, so reply ' +
-      'to them directly and never post it to a channel. Default window is today in the given timezone.',
+      'Summarise what one teammate did: approvals they decided, tasks they started or finished, messages they sent ' +
+      '(split into messages to people vs to agents vs plain channel posts), cards they created, moved, commented on ' +
+      'or assigned, meetings, the tools they used and when they were active. Use it to answer "what did Sam work on ' +
+      'today?". With detail="messages" it returns a page of exactly what they sent — full text, ids and who it was ' +
+      'aimed at — so you can quote specifics; page with cursor. With detail="board" it returns only their card ' +
+      'activity. Owners and admins only; for anyone else the API refuses. The answer is private to the person asking, ' +
+      'so reply to them directly and never post it to a channel. Default window is today in the given timezone.',
     parameters: Type.Object({
       user: Type.String({ description: 'The teammate: their email, or a user id from team_directory.' }),
       range: Type.Optional(Type.Union(
@@ -580,6 +583,16 @@ export function createMemberActivityTool(ctx: ToolContext): AgentTool {
       since: Type.Optional(Type.String({ description: 'ISO start time. Overrides range.' })),
       until: Type.Optional(Type.String({ description: 'ISO end time. Defaults to now.' })),
       timezone: Type.Optional(Type.String({ description: 'IANA timezone that defines "today", e.g. America/Los_Angeles. Default UTC.' })),
+      detail: Type.Optional(Type.Union(
+        [Type.Literal('summary'), Type.Literal('messages'), Type.Literal('board')],
+        { description: 'What to return: summary (default), messages (records of what they sent, with ids) or board (their card activity only).' },
+      )),
+      audience: Type.Optional(Type.Union(
+        [Type.Literal('person'), Type.Literal('agent'), Type.Literal('mixed'), Type.Literal('channel')],
+        { description: 'With detail="messages": only messages to people, to agents, tagged both, or untagged channel posts.' },
+      )),
+      cursor: Type.Optional(Type.String({ description: 'With detail="messages": the nextCursor from the previous page.' })),
+      limit: Type.Optional(Type.Number({ description: 'With detail="messages": rows per page, max 200. Default 50.' })),
     }),
     execute: async (_id, params: any) => {
       const workspaceId = workspaceIdOf(ctx)
@@ -600,8 +613,17 @@ export function createMemberActivityTool(ctx: ToolContext): AgentTool {
         since: params.since,
         until: params.until,
         timezone: params.timezone,
+        detail: params.detail,
+        audience: params.audience,
+        cursor: params.cursor,
+        limit: typeof params.limit === 'number' ? params.limit : undefined,
       })
-      return result.ok ? textResult({ ok: true, activity: result.data }) : apiError(result, 'Could not load teammate activity')
+      if (!result.ok) return apiError(result, 'Could not load teammate activity')
+      return textResult(
+        params?.detail === 'messages'
+          ? { ok: true, ...(result.data as Record<string, unknown>) }
+          : { ok: true, activity: result.data },
+      )
     },
   }
 }

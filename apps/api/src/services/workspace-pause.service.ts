@@ -37,6 +37,41 @@ export function resetWorkspacePauseCache(): void {
   cache.clear()
 }
 
+/**
+ * The desktop's drain hold (SHO-181).
+ *
+ * Before the desktop restarts for an update or quits it asks the API to drain:
+ * turns already running get to finish, nothing new may start, so the live
+ * counts reach zero and the stop is quiet. This is the pause flag the automatic
+ * entry points already read — only *process-wide and in memory*, never written
+ * to a workspace:
+ *
+ *  - every workspace's automatic starts are held, which is what "wait until
+ *    idle" means;
+ *  - a restart destroys this process, so the hold cannot outlive it. A crash
+ *    mid-drain cannot leave a machine that silently starts nothing — the one
+ *    failure mode that would be worse than the bug this fixes.
+ *
+ * A person's own message still runs, exactly as with the persisted pause.
+ */
+let drainHold: { at: string; reason: string } | null = null
+
+/** Turn the drain hold on or off. In-memory only; see the note above. */
+export function setDrainHold(on: boolean, reason = 'desktop-restart'): { at: string; reason: string } | null {
+  drainHold = on ? { at: new Date().toISOString(), reason } : null
+  return drainHold
+}
+
+/** The drain hold in force, or null. */
+export function readDrainHold(): { at: string; reason: string } | null {
+  return drainHold
+}
+
+/** Test seam: a fresh process has no drain hold. */
+export function resetDrainHold(): void {
+  drainHold = null
+}
+
 function parsePause(value: unknown): WorkspacePause | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Record<string, unknown>
@@ -72,6 +107,9 @@ export async function readWorkspacePause(workspaceId: string): Promise<Workspace
 
 /** True while every automatic agent start in this workspace is held. */
 export async function isWorkspaceAgentsPaused(workspaceId: string): Promise<boolean> {
+  // The desktop's drain (SHO-181) holds every workspace, so a restart waits for
+  // the same gate the persisted pause uses instead of a second, parallel check.
+  if (drainHold) return true
   return (await readWorkspacePause(workspaceId)) !== null
 }
 
@@ -138,22 +176,46 @@ export async function setWorkspacePause(
  */
 export async function resumeWorkspaceAgents(workspaceId: string): Promise<void> {
   await setWorkspacePause(workspaceId, null)
-  try {
-    const sessions = (await prisma.chatSession.findMany({
-      where: { OR: [{ workspaceId }, { project: { workspaceId } }] },
-      select: { id: true },
-    })) as Array<{ id: string }>
-    const ids = sessions.map((session) => session.id)
-    if (ids.length) {
-      const { WAKE_PAUSED_MARKERS } = await import('./background-tasks.service')
-      await (prisma as any).chatQueuedMessage
-        .deleteMany({
-          where: { sessionId: { in: ids }, kind: 'task_notification', status: 'failed', error: { in: WAKE_PAUSED_MARKERS } },
-        })
-        .catch(() => {})
+  await kickHeldWork(workspaceId)
+}
+
+/**
+ * Lift the desktop's drain hold and hand back what it held (SHO-181). Same kick
+ * as the resume above — deliberately not routed through
+ * `resumeWorkspaceAgents`, which would clear a *person's* pause as a side
+ * effect. A drain can arrive while someone has agents paused, and cancelling it
+ * must leave that pause exactly as it was.
+ */
+export async function releaseDrainHold(): Promise<void> {
+  if (!drainHold) return
+  drainHold = null
+  await kickHeldWork(null)
+}
+
+/**
+ * Re-run the sweeps that turn held automatic work back into queued work. Takes
+ * an optional workspace to park marker rows for; the sweeps themselves are
+ * global and idempotent.
+ */
+async function kickHeldWork(workspaceId: string | null): Promise<void> {
+  if (workspaceId) {
+    try {
+      const sessions = (await prisma.chatSession.findMany({
+        where: { OR: [{ workspaceId }, { project: { workspaceId } }] },
+        select: { id: true },
+      })) as Array<{ id: string }>
+      const ids = sessions.map((session) => session.id)
+      if (ids.length) {
+        const { WAKE_PAUSED_MARKERS } = await import('./background-tasks.service')
+        await (prisma as any).chatQueuedMessage
+          .deleteMany({
+            where: { sessionId: { in: ids }, kind: 'task_notification', status: 'failed', error: { in: WAKE_PAUSED_MARKERS } },
+          })
+          .catch(() => {})
+      }
+    } catch {
+      // The sweeps below re-derive the same state; a failed cleanup is not fatal.
     }
-  } catch {
-    // The sweeps below re-derive the same state; a failed cleanup is not fatal.
   }
   // Sequenced, not parallel: the sweep is what queues the held updates, so the
   // dispatcher has nothing to take until it has run.

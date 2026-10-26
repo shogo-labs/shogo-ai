@@ -22,8 +22,9 @@
  *   bun test apps/api/src/__tests__/analytics-dashboard.perf.test.ts
  */
 
-import { beforeAll, describe, expect, test } from 'bun:test'
+import { afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
+import { pinClockIntoCacheBucket, restoreClock } from './helpers/analytics-bucket'
 
 const SEEDED_EVENTS = 100_000
 const WINDOW_DAYS = 30
@@ -32,8 +33,11 @@ setupChannelsTestDb()
 
 const { prisma } = await import('../lib/prisma')
 const analytics = await import('../services/analytics.service')
-const { ANALYTICS_CACHE_BUCKET_MS, clearAnalyticsCache } = await import('../lib/analytics-cache')
+const { clearAnalyticsCache } = await import('../lib/analytics-cache')
 const db = prisma as any
+
+/** A pinned clock never outlives the test that pinned it. */
+afterEach(() => restoreClock())
 
 /** `setupChannelsTestDb` points the client at SQLite unless CHANNELS_TEST_PG_URL is set. */
 const isSqlite = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -124,7 +128,9 @@ beforeAll(async () => {
       return original(...args)
     }) as any
   }
-})
+  // Seeding 100k rows takes 4-7 s on a cold runner, past bun's 5 s default hook
+  // budget: state it instead of hoping the machine is fast (SHO-186).
+}, 120_000)
 
 function resetCounters() {
   queries.length = 0
@@ -175,12 +181,13 @@ describe('the dashboard reads usage_events once, without the JSON', () => {
   })
 
   test('a second open inside the TTL does not scan again', async () => {
-    // Align to the key's bucket first: the cache key buckets the rolling window,
-    // so a run that straddled a bucket boundary would legitimately miss and the
-    // test would be measuring the clock (QA round 1 saw exactly that flake with
-    // a 30 s bucket under a 60 s TTL).
-    const toBoundary = ANALYTICS_CACHE_BUCKET_MS - (Date.now() % ANALYTICS_CACHE_BUCKET_MS)
-    if (toBoundary < 10_000) await new Promise((r) => setTimeout(r, toBoundary + 50))
+    // The cache key buckets the rolling window, so both opens have to share a
+    // bucket — that is the invariant, not something to wait for. Pin the clock
+    // inside one: the old sleep up to the next boundary reached 10 050 ms,
+    // longer than this test's timeout, so a run starting within ~5 s of a
+    // boundary failed before it asserted and the immediate retry failed with it
+    // (SHO-186).
+    pinClockIntoCacheBucket()
 
     resetCounters()
     await analytics.getUsageDashboard({ workspaceId }, { period: '30d' })

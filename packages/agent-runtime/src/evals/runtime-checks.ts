@@ -12,9 +12,16 @@
  * rather than reimplementing pluralization.
  */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
-import type { RuntimeCheckResults, ModelCheckResult, WorkspaceIntegrity, ViteBuildReadiness } from './types'
+import type {
+  RuntimeCheckResults,
+  ModelCheckResult,
+  WorkspaceIntegrity,
+  ViteBuildReadiness,
+  WorkspaceRootCheck,
+} from './types'
 
 const LOG_PREFIX = 'runtime-check'
 const FETCH_TIMEOUT_MS = 5_000
@@ -481,6 +488,147 @@ function checkViteBuildReadiness(workspaceDir: string, verbose?: boolean): ViteB
 }
 
 // ---------------------------------------------------------------------------
+// Workspace-runtime root check (SHO-195)
+// ---------------------------------------------------------------------------
+
+/**
+ * Top-level entries a workspace root must never grow on its own. A workspace
+ * root is scaffolding around sibling project folders: the app lives in a
+ * project, so these belong under `<projectId>/`, never at the root. They are
+ * the artifacts session `545d935e` built there (`src/App.tsx`,
+ * `prisma/schema.prisma`, `package.json`); an eval may still seed some of them
+ * itself — a `poolPreseedAtRoot` case does — which is why the guard takes a
+ * baseline and only fails on what the agent added or changed.
+ *
+ * `node_modules` is deliberately not here: the runtime creates one at the root
+ * for its own tooling, so its presence says nothing about what the agent did.
+ * A root build that installed packages is caught by the `package.json` / `src/`
+ * it had to write alongside them.
+ */
+export const WORKSPACE_ROOT_APP_ENTRIES = [
+  'package.json',
+  'src',
+  'prisma',
+  'vite.config.ts',
+  'index.html',
+  'server.tsx',
+  'custom-routes.ts',
+] as const
+
+/** What an eval seeded into the root before the turn. */
+export interface WorkspaceRootGuard {
+  /**
+   * Files the eval seeded at the root, relative to it, with their sha256 at
+   * seed time. Empty for an ordinary workspace eval; the whole runtime
+   * template for a `poolPreseedAtRoot` case, where the trap is that the agent
+   * finds a working app at the root and builds in it.
+   */
+  baseline: Record<string, string>
+}
+
+/** Sha256 of a file on disk, or null when it can't be read. */
+export function hashWorkspaceFile(path: string): string | null {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Hash every file under `topLevelEntries` (recursively) so a later check can
+ * tell "still the template we seeded" from "the agent edited it".
+ */
+export function snapshotWorkspaceRoot(
+  workspaceDir: string,
+  topLevelEntries: readonly string[] = WORKSPACE_ROOT_APP_ENTRIES,
+): Record<string, string> {
+  const baseline: Record<string, string> = {}
+  const walk = (rel: string) => {
+    const abs = join(workspaceDir, rel)
+    let stat
+    try {
+      stat = statSync(abs)
+    } catch {
+      return
+    }
+    if (stat.isDirectory()) {
+      let children: string[] = []
+      try { children = readdirSync(abs) } catch { return }
+      for (const child of children) {
+        if (child === '.git') continue
+        walk(rel ? `${rel}/${child}` : child)
+      }
+      return
+    }
+    const hash = hashWorkspaceFile(abs)
+    if (hash) baseline[rel] = hash
+  }
+  for (const entry of topLevelEntries) walk(entry)
+  return baseline
+}
+
+/**
+ * Verify a workspace root still holds no app of its own after the run.
+ *
+ * Fails when the root grew one of {@link WORKSPACE_ROOT_APP_ENTRIES} that the
+ * eval did not seed (`forbidden`) or when a seeded template file was edited
+ * (`modified`). Files the agent legitimately creates at the root — `notes/…`,
+ * `WORKSPACE.md`, its own scratch files — are not app artifacts and pass.
+ *
+ * A seeded template that is **gone** (`missing`) does not fail the check: the
+ * platform itself clears a pool pre-seed at assign, so on any runtime that
+ * boots after the cleanup the baseline no longer exists on disk. A root the
+ * cleanup emptied is cleaner than one we seeded, and the run that emptied it
+ * did not leave an app behind. `missing` is still reported for visibility.
+ */
+export function checkWorkspaceRootClean(
+  workspaceDir: string,
+  guard: WorkspaceRootGuard,
+): WorkspaceRootCheck {
+  const forbidden: string[] = []
+  const modified: string[] = []
+  const missing: string[] = []
+  const baseline = guard.baseline ?? {}
+  const seededTopLevels = new Set(Object.keys(baseline).map((rel) => rel.split('/')[0]))
+
+  let entries: string[] = []
+  try {
+    entries = readdirSync(workspaceDir)
+  } catch {
+    return { ok: false, forbidden, modified, missing, entries }
+  }
+
+  for (const entry of entries) {
+    if (seededTopLevels.has(entry)) continue
+    if ((WORKSPACE_ROOT_APP_ENTRIES as readonly string[]).includes(entry)) forbidden.push(entry)
+  }
+
+  // Inside a seeded template: any file the seed did not write is the agent
+  // building in the root (e.g. `src/App.tsx` edited into a portfolio).
+  for (const topLevel of seededTopLevels) {
+    if (!(WORKSPACE_ROOT_APP_ENTRIES as readonly string[]).includes(topLevel)) continue
+    const current = snapshotWorkspaceRoot(workspaceDir, [topLevel])
+    for (const [rel, hash] of Object.entries(current)) {
+      if (!(rel in baseline)) forbidden.push(rel)
+      else if (baseline[rel] !== hash) modified.push(rel)
+    }
+  }
+
+  for (const rel of Object.keys(baseline)) {
+    if (!existsSync(join(workspaceDir, rel))) missing.push(rel)
+  }
+
+  return {
+    ok: forbidden.length === 0 && modified.length === 0,
+    forbidden,
+    modified,
+    missing,
+    entries,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main check
 // ---------------------------------------------------------------------------
 
@@ -505,6 +653,14 @@ export interface RuntimeCheckOptions {
    * Used by the codegen-safety eval to detect stripped tenant middleware.
    */
   tenantProbe?: { route: string }
+  /**
+   * Workspace-runtime root guard (SHO-195). When set, the eval booted as a
+   * workspace runtime and the root must still hold no app of its own, with
+   * any seeded template unmodified. This check runs even when nothing else
+   * does — a clean workspace root has no schema, no canvas and no Vite app,
+   * which is exactly the early-return case below.
+   */
+  workspaceRoot?: WorkspaceRootGuard
 }
 
 export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<RuntimeCheckResults | null> {
@@ -513,6 +669,12 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
   const canvasPort = canvasExpectedPort ?? apiServerPort
   const schemaPath = join(workspaceDir, 'prisma', 'schema.prisma')
   const hasSchema = existsSync(schemaPath)
+  // Runs first and unconditionally: the workspace cases assert on the root,
+  // and a correct root is an empty one, so every project-shaped probe below
+  // early-returns for exactly the runs this check exists for.
+  const workspaceRootClean = opts.workspaceRoot
+    ? checkWorkspaceRootClean(workspaceDir, opts.workspaceRoot)
+    : null
 
   // 0. Canvas compilation check (independent of skill server)
   const { compiles: canvasCompiles, errors: canvasCompileErrors } = checkCanvasCompilation(workspaceDir, verbose)
@@ -522,9 +684,41 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
     ? checkViteBuildReadiness(workspaceDir, verbose)
     : null
 
+  /**
+   * Minimal result for a run with nothing project-shaped to probe. Only
+   * reachable when a workspace-root guard was requested; every other caller
+   * keeps the historical `null` (which means "nothing to check").
+   */
+  const rootOnlyResults = (): RuntimeCheckResults | null => {
+    if (!workspaceRootClean) return null
+    if (verbose) {
+      console.log(
+        `  [${LOG_PREFIX}] Workspace root: ${workspaceRootClean.ok ? 'CLEAN' : 'DIRTY'} ` +
+          `(forbidden=${workspaceRootClean.forbidden.length}, modified=${workspaceRootClean.modified.length})`,
+      )
+    }
+    return {
+      serverHealthy: null,
+      healthEndpoint: false,
+      canListModels: false,
+      canCreateRecord: false,
+      modelResults: [],
+      missingRoutes: [],
+      canvasOrphanedFetches: [],
+      canvasFetchesValid: null,
+      workspaceIntegrity: null,
+      canvasPortCorrect: null,
+      canvasCompiles,
+      canvasCompileErrors,
+      viteBuildReadiness,
+      workspaceRootClean,
+      errors: canvasCompileErrors.map((e) => `Compile: ${e}`),
+    }
+  }
+
   if (!hasSchema && canvasCompiles === null && !viteBuildReadiness) {
     if (verbose) console.log(`  [${LOG_PREFIX}] No schema.prisma, canvas source files, or Vite project — skipping runtime checks`)
-    return null
+    return rootOnlyResults()
   }
 
   const errors: string[] = [...canvasCompileErrors.map(e => `Compile: ${e}`)]
@@ -539,7 +733,7 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
 
   if (hasSchema && workspaceIntegrity && !workspaceIntegrity.schemaHasModels && canvasCompiles === null) {
     if (verbose) console.log(`  [${LOG_PREFIX}] Schema exists but has no models and no canvas source, skipping runtime checks`)
-    return null
+    return rootOnlyResults()
   }
 
   // 1-3. API server checks (only when schema exists)
@@ -800,6 +994,7 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
     residualRecordCount,
     previewReachable,
     tenantIsolationOk,
+    workspaceRootClean,
     errors,
   }
 }

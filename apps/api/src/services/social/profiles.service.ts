@@ -18,6 +18,7 @@
 import { prisma } from '../../lib/prisma'
 import { SocialError, getSocialClient } from './client'
 import { isScopeId, localScopeFor } from './local-scope'
+import { zernioId } from './provider-ids'
 
 const db = prisma as any
 
@@ -41,12 +42,18 @@ export function isLocalScopeId(value: string): boolean {
   return isScopeId(value)
 }
 
-/** Zernio may answer `{ id }` or wrap profiles in a list; read either shape. */
+/** Zernio answers `{ profile: { _id } }`; older shapes wrap it or send `{ id }`. */
 export function pickProfileId(payload: any): string | null {
-  const candidate = payload?.id ?? payload?.profileId ?? payload?.profile?.id
-  return typeof candidate === 'string' && candidate ? candidate : null
+  return zernioId(payload, 'profile', 'data')
 }
 
+/**
+ * The profile in a list answer whose `externalId` is *exactly* ours.
+ *
+ * There is deliberately no `list[0]` fallback: Zernio's `externalId` filter is
+ * exact, but a team member can own a profile with the same `externalId`, so a
+ * first-row guess could adopt another tenant's profile.
+ */
 export function profileFromList(payload: any, externalId: string): any | null {
   const list = Array.isArray(payload)
     ? payload
@@ -55,7 +62,7 @@ export function profileFromList(payload: any, externalId: string): any | null {
       : Array.isArray(payload?.data)
         ? payload.data
         : []
-  return list.find((p: any) => p && p.externalId === externalId) ?? list[0] ?? null
+  return list.find((p: any) => p && p.externalId === externalId) ?? null
 }
 
 export async function getProfile(
@@ -100,6 +107,16 @@ export async function ensureProfile(
   const client = getSocialClient()
   let zernioProfileId: string | null = null
   let externalId = routingId
+  /**
+   * A rejected create, kept for the 502 below. When nothing can be adopted the
+   * caller only ever sees `social_profile_unresolved`, and the provider's own
+   * status, code and message are the only explanation of why the first connect
+   * failed — re-read a live 2026-10-25 409: the body names no
+   * `existingProfileId` at all, so the create is routinely the thing that
+   * failed and the 502 must not swallow it.
+   */
+  let createFailure: { status: number; code: string; message: string; details: Record<string, unknown> } | null =
+    null
   try {
     const created = await client.request<any>({
       workspaceId,
@@ -109,9 +126,23 @@ export async function ensureProfile(
       idempotencyKey: `social-profile-${routingId}`,
     })
     zernioProfileId = pickProfileId(created)
-    if (typeof created?.externalId === 'string' && created.externalId) externalId = created.externalId
+    const echoed = created?.profile?.externalId ?? created?.externalId
+    if (typeof echoed === 'string' && echoed) externalId = echoed
   } catch (err) {
     if (!(err instanceof SocialError) || (err.status !== 409 && err.status !== 422)) throw err
+    createFailure = {
+      status: err.status,
+      code: err.code,
+      message: err.message,
+      details: err.details ?? {},
+    }
+    // `profile_external_id_conflict` means our profile already exists at Zernio
+    // — a previous attempt created it and the row was never written. When the
+    // error names it, adopt it instead of guessing. (The live API sends a bare
+    // `invalid_request_error` with no id, so the list lookup below is the path
+    // that actually runs.)
+    const existing = err.details?.existingProfileId
+    if (typeof existing === 'string' && existing) zernioProfileId = existing
   }
 
   if (!zernioProfileId) {
@@ -122,12 +153,21 @@ export async function ensureProfile(
       query: { externalId: routingId },
     })
     const profile = profileFromList(found, routingId)
-    zernioProfileId = profile?.id ?? profile?.profileId ?? null
+    zernioProfileId = zernioId(profile)
     if (typeof profile?.externalId === 'string' && profile.externalId) externalId = profile.externalId
   }
 
   if (!zernioProfileId) {
-    throw new SocialError(502, 'social_profile_unresolved', 'Zernio did not return a profile id.')
+    // The create's rejection rides in the 502: without it the only thing an
+    // operator ever sees is "Zernio did not return a profile id", which is
+    // exactly as true for a 409 conflict as for a 422 the provider refused.
+    const details: Record<string, unknown> = { externalId: routingId }
+    if (createFailure) details.create = createFailure
+    console.warn(
+      `[social] no Zernio profile id for workspace ${workspaceId} (${routingId}):`,
+      JSON.stringify(details),
+    )
+    throw new SocialError(502, 'social_profile_unresolved', 'Zernio did not return a profile id.', details)
   }
 
   try {

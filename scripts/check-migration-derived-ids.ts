@@ -45,10 +45,10 @@
  *     copied to a peer, so a derived key cannot collide across regions),
  *     imported from `check-publication-drift.ts` so the two checks can never
  *     disagree about what is published;
- *   - `LEGACY_EXEMPT` — the one migration that caused the outage. It is
- *     already applied in both regions and stays as history. A new migration
- *     fixes the data (see `20261022120000_device_version_events_region_ids`).
- *     Never add to this list to make a new migration pass.
+ *   - `LEGACY_EXEMPT` — applied history, and nothing else. See the note on
+ *     that list: every entry is a migration that has already run in both
+ *     regions and is repaired forward by a later, random-id migration. It is
+ *     never a home for code written after this check existed.
  *
  * Usage
  * -----
@@ -67,25 +67,55 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
 const PG_MIGRATIONS = 'prisma/migrations'
 
 /**
- * Migrations already applied in production that this rule rejects. Rewriting
- * an applied migration changes the checksum Prisma has recorded, so these stay
- * as history and the guard's job is to stop *new* ones. Do not extend this
- * list to make a new migration pass.
+ * Migrations that already ran in production before this check existed, so this
+ * rule rejects them and nothing can be done about it here.
  *
- * - `20261021120000_add_device_version_events` — the 2026-10-22 outage itself
- *   (`'dve_' || md5(...)`). Its data is repaired forward by
- *   `20261022120000_device_version_events_region_ids`.
- * - `20260507000000_add_project_agents` — found by this guard when it landed,
- *   months after the fact: `'pa_default_' || "id"` wrote a key derived from the
- *   replicated `voice_project_configs.id`. Same class, pre-existing. It never
- *   took the mesh down (it ran before `project_agents` carried enough rows to
- *   collide), but it is exactly what a new migration must not do.
+ * The list is a ledger of applied history, not an escape hatch:
+ *
+ * - Every entry has already been applied in both regions, so its SQL cannot be
+ *   rewritten — the file is history and the data it wrote is repaired forward.
+ * - An entry excuses **one table in one file**, not the whole file, and it must
+ *   name the later migration that repairs the ids. The guard verifies that the
+ *   repair exists, comes after the migration, and really does rewrite that
+ *   table's ids to random values — so an entry can never leave the guard
+ *   permanently blind to the statement it covers. If the repair disappears, or
+ *   the exempted migration ever stops offending, the build fails and the entry
+ *   has to be dealt with.
+ * - Nothing may be added. A migration written after this check landed fails the
+ *   build instead, which is the whole point: write the id as
+ *   `@default(cuid())` or `gen_random_uuid()`, or scope the row by region.
  */
-export const LEGACY_EXEMPT: readonly string[] = [
-  '20261021120000_add_device_version_events',
-  '20260507000000_add_project_agents',
+export interface LegacyExemption {
+  /** Applied migration that wrote a content-derived id. */
+  migration: string
+  /** Published table whose ids it derived. Only this table is excused. */
+  table: string
+  /** Later migration that rewrites those ids to random ones. */
+  repairedBy: string
+}
+
+export const LEGACY_EXEMPT: readonly LegacyExemption[] = [
+  {
+    // The 2026-10-22 outage itself (`'dve_' || md5(...)`).
+    migration: '20261021120000_add_device_version_events',
+    table: 'device_version_events',
+    repairedBy: '20261022120000_device_version_events_region_ids',
+  },
+  {
+    // SHO-142 found it on its first run; SHO-146 repaired it. The file stays
+    // because it is applied history — editing it invalidates the checksum
+    // Prisma recorded for every database that already ran it.
+    migration: '20260507000000_add_project_agents',
+    table: 'project_agents',
+    repairedBy: '20261024100000_project_agents_random_ids',
+  },
 ]
 
+/**
+ * `<migration>::<table>` pairs the scan may skip. Keyed on the table so a
+ * second, unrelated offender in an exempted file still fails the build.
+ */
+const EXEMPT_KEYS = new Set(LEGACY_EXEMPT.map((e) => `${e.migration}::${e.table}`))
 
 /** Functions whose output is a function of their inputs, so of row content. */
 const DERIVED_ID_FUNCS = /\b(md5|sha1|sha256|sha512|digest|encode)\s*\(/i
@@ -509,18 +539,14 @@ function lineOf(sql: string, offset: number): number {
 export function checkMigrationSources(sources: MigrationSource[], filePrefix = ''): Violation[] {
   const violations: Violation[] = []
   for (const source of sources) {
-    if (LEGACY_EXEMPT.includes(source.name)) continue
-    const file = `${filePrefix}${source.name}/migration.sql`
-    for (const span of statementSpans(source.sql)) {
-      const written = extractWrittenId(span.text)
-      if (!written) continue
-      if (!isPublished(written.table)) continue
-      if (!isDerivedExpression(written.expression)) continue
+    for (const written of writtenIds(source, filePrefix)) {
+      if (!written.derived) continue
+      if (EXEMPT_KEYS.has(`${source.name}::${written.table}`)) continue
       violations.push({
-        file,
-        line: lineOf(source.sql, span.start),
+        file: written.file,
+        line: written.line,
         table: written.table,
-        expression: written.expression.replace(/\s+/g, ' ').slice(0, 200),
+        expression: written.expression,
         message:
           `writes a content-derived id into published table "${written.table}". Both regions ` +
           `recompute it from the same replicated rows, so they mint identical primary keys and ` +
@@ -532,7 +558,96 @@ export function checkMigrationSources(sources: MigrationSource[], filePrefix = '
   return violations
 }
 
-function listMigrations(): MigrationSource[] {
+interface WrittenId {
+  file: string
+  line: number
+  table: string
+  /** Whitespace-collapsed, for messages and comparisons. */
+  expression: string
+  /** True when the assigned expression reads row content. */
+  derived: boolean
+}
+
+/** Every write to a published table's `id`, derived or not — the raw scan. */
+function writtenIds(source: MigrationSource, filePrefix = ''): WrittenId[] {
+  const file = `${filePrefix}${source.name}/migration.sql`
+  const out: WrittenId[] = []
+  for (const span of statementSpans(source.sql)) {
+    const written = extractWrittenId(span.text)
+    if (!written) continue
+    if (!isPublished(written.table)) continue
+    out.push({
+      file,
+      line: lineOf(source.sql, span.start),
+      table: written.table,
+      expression: written.expression.replace(/\s+/g, ' ').slice(0, 200),
+      derived: isDerivedExpression(written.expression),
+    })
+  }
+  return out
+}
+
+export interface ExemptionProblem {
+  /** The `<migration> (<table>)` pair the entry claims. */
+  exemption: string
+  message: string
+}
+
+/**
+ * `LEGACY_EXEMPT` has to stay honest, or it is exactly the permanent blind spot
+ * this check exists to prevent. Every entry must name two migrations that both
+ * exist, in the right order, and the repair must actually rewrite the table's
+ * ids to something random. An entry whose migration no longer offends is stale
+ * and must go.
+ */
+export function checkLegacyExemptions(
+  sources: MigrationSource[],
+  entries: readonly LegacyExemption[] = LEGACY_EXEMPT,
+): ExemptionProblem[] {
+  const byName = new Map(sources.map((source) => [source.name, source]))
+  const problems: ExemptionProblem[] = []
+
+  for (const entry of entries) {
+    const label = `${entry.migration} (${entry.table})`
+    const exempted = byName.get(entry.migration)
+    const repair = byName.get(entry.repairedBy)
+
+    if (!exempted) {
+      problems.push({ exemption: label, message: `not in ${PG_MIGRATIONS}; delete the entry` })
+      continue
+    }
+    if (!repair) {
+      problems.push({
+        exemption: label,
+        message: `repair migration ${entry.repairedBy} does not exist; the guard would be blind`,
+      })
+      continue
+    }
+    if (entry.repairedBy <= entry.migration) {
+      problems.push({
+        exemption: label,
+        message: `repair ${entry.repairedBy} does not come after it`,
+      })
+    }
+    const repairs = writtenIds(repair).filter((w) => w.table === entry.table && !w.derived)
+    if (repairs.length === 0) {
+      problems.push({
+        exemption: label,
+        message: `repair ${entry.repairedBy} never rewrites the derived ids of "${entry.table}"`,
+      })
+    }
+    const offending = writtenIds(exempted).filter((w) => w.table === entry.table && w.derived)
+    if (offending.length === 0) {
+      problems.push({
+        exemption: label,
+        message: `no longer writes a derived id into "${entry.table}"; delete the entry`,
+      })
+    }
+  }
+  return problems
+}
+
+export function listMigrations(): MigrationSource[] {
   const root = resolve(REPO_ROOT, PG_MIGRATIONS)
   if (!existsSync(root)) {
     console.error(`[migration-ids] Could not find ${PG_MIGRATIONS}. Run from the repo root.`)
@@ -550,13 +665,28 @@ function listMigrations(): MigrationSource[] {
 function main(): number {
   const quiet = process.argv.includes('--quiet')
   const sources = listMigrations()
+
+  const exemptionProblems = checkLegacyExemptions(sources)
+  if (exemptionProblems.length > 0) {
+    console.error('[migration-ids] FAIL — LEGACY_EXEMPT is no longer honest')
+    for (const problem of exemptionProblems) {
+      console.error(`  ${problem.exemption}: ${problem.message}`)
+    }
+    console.error(
+      '\nAn exemption may only cover an already-applied migration whose ids a later migration\n' +
+        'rewrote to random values. Fix the entry, or write the repair migration.',
+    )
+    return 1
+  }
+
   const violations = checkMigrationSources(sources)
 
   if (violations.length === 0) {
     if (!quiet) {
       console.log(
         `[migration-ids] OK — ${sources.length} migration(s) checked; no published table gets an ` +
-          `id derived from row content (${LEGACY_EXEMPT.length} legacy exemption).`,
+          `id derived from row content (${LEGACY_EXEMPT.length} applied-history exemption(s), ` +
+          `each repaired forward and verified).`,
       )
     }
     return 0

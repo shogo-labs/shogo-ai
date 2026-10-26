@@ -82,6 +82,41 @@ describe("linkifyFilePaths", () => {
       "See README.md for details.",
     )
   })
+
+  test("leaves a code span that is a command alone, so no markdown lands in the backticks", () => {
+    const input = "Run `bun run src/server.ts` now"
+    expect(linkifyFilePaths(input)).toBe(input)
+    expect(linkifyFilePaths("`bun test apps/mobile/components/chat`")).toBe(
+      "`bun test apps/mobile/components/chat`",
+    )
+  })
+
+  test("does not cut a repo id in half at a version-like dot", () => {
+    for (const id of [
+      "empero-ai/Qwen3.8-4B-Distill",
+      "meta-llama/Llama-3.1-8B-Instruct",
+      "org/model-v1.2",
+    ]) {
+      expect(linkifyFilePaths(id)).toBe(id)
+      expect(linkifyFilePaths(`model ${id}`)).toBe(`model ${id}`)
+      expect(linkifyFilePaths(`\`${id}\``)).toBe(`\`${id}\``)
+    }
+  })
+
+  test("keeps a sentence-ending period outside the link", () => {
+    expect(linkifyFilePaths("Edit src/app.tsx.")).toBe(
+      `Edit [src/app.tsx](${fileHref("src/app.tsx")}).`,
+    )
+  })
+
+  test("links a multi-dot name as one path", () => {
+    expect(linkifyFilePaths("grab dist/archive.tar.gz")).toBe(
+      `grab [dist/archive.tar.gz](${fileHref("dist/archive.tar.gz")})`,
+    )
+    expect(linkifyFilePaths("see apps/x/file.test.ts")).toBe(
+      `see [apps/x/file.test.ts](${fileHref("apps/x/file.test.ts")})`,
+    )
+  })
 })
 
 describe("linkifyBareUrls", () => {

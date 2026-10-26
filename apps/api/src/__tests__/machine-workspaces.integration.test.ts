@@ -455,6 +455,14 @@ describeIfInfra('a real desktop and two real cloud pods', () => {
       throw err
     })
     expect(copied.machineInstanceId).toBeString()
+    // One snapshot at boot, then deltas. A desktop that re-snapshots on every
+    // write is SHO-188: it adopted a fresh epoch for the snapshot on the cloud
+    // but kept the pre-snapshot one locally, so every delta was refused and the
+    // whole database went again — slow enough to blow a `waitUntil` budget on a
+    // busy runner.
+    const mismatches = (workerLog.get(topology.desktop) ?? []).filter((line) => /epoch mismatch/i.test(line))
+    if (mismatches.length) dumpLogs(topology)
+    expect(mismatches).toHaveLength(0)
   }, 180_000)
 
   test('switching sync off deletes the copy, and a live desktop cannot put it back', async () => {

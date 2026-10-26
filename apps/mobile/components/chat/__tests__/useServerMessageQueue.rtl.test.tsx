@@ -405,6 +405,73 @@ describe("useServerMessageQueue", () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
     expect(turns).toEqual([{ id: "srv-1", text: "mine" }])
   })
+
+  /**
+   * SHO-205: the route dispatches the clicked row inside the POST, so a click
+   * that could not start is answered with the reason (a failed dispatch is an
+   * error answer, which is what the client throws). The row goes back in the
+   * dock carrying that reason — the message is never hidden with no turn and no
+   * explanation.
+   */
+  test("a failed answer puts the row back in the dock", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
+    postResponse = {
+      data: {
+        ok: false,
+        status: "failed",
+        error: { code: "dispatch_failed", message: "The runtime refused this message" },
+        data: { id: "q2", status: "failed" },
+      },
+    }
+
+    let failure: unknown
+    await act(async () => {
+      try {
+        await queueApi!.sendNow("q2")
+      } catch (error) {
+        failure = error
+      }
+    })
+    expect(String(failure)).toContain("The runtime refused this message")
+    expect(dockText(view)).toEqual(["first", "second"])
+    expect(turns).toEqual([])
+    expect(pendingIds).toEqual([])
+  })
+
+  /**
+   * The other half of SHO-205's client rule: a row the answer never claimed is
+   * not rescued by counting polls. The click's own answer is the only thing
+   * that reports a dispatch, so a `pending` row no longer means "three polls
+   * and it is a refusal" — only the hide's safety timeout brings it back.
+   */
+  test("a row still pending is not put back by counting polls", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
+    await act(async () => { await queueApi!.sendNow("q2") })
+    expect(dockText(view)).toEqual(["first"])
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5200)) })
+    expect(dockText(view)).toEqual(["first"])
+    expect(turns).toEqual([])
+    expect(pendingIds).toEqual([])
+    view.unmount()
+  }, 15_000)
+
+  test("a dispatch that claims the row is left alone while it runs", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
+    await act(async () => { await queueApi!.sendNow("q2") })
+
+    // `dispatching` is the server having taken it: slow is not refused.
+    act(() => runInAction(() => { collection.all[1]!.status = "dispatching" }))
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5200)) })
+    expect(queueApi!.queuedMessages.map((m) => m.id)).toEqual(["q1"])
+    view.unmount()
+  }, 15_000)
 })
 
 /**
@@ -460,6 +527,42 @@ describe("team-chat wakes waiting behind this session", () => {
     // not the next poll's.
     expect(queueApi!.queuedMessages).toEqual([])
   })
+
+  test("a Send now the drain never claims brings the wake back to the dock", async () => {
+    reset()
+    wakeList = [wake()]
+    render(<Probe isStreaming />)
+    await settle()
+    await act(async () => { await queueApi!.sendWakeNow("w1") })
+    expect(queueApi!.queuedMessages).toEqual([])
+
+    // The reply in front of it was stopped and nothing claims the wake: it is
+    // still `pending` on every poll, so it has to be sendable again.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5200)) })
+    expect(queueApi!.queuedMessages.map((m) => m.id)).toEqual(["w1"])
+  }, 15_000)
+
+  /**
+   * SHO-198, the other side of the wait: a wake the drain *does* claim is a turn
+   * now, not a queued message. It must not be put back in the dock by the same
+   * counter that rescues one nobody claimed — that would send the agent the same
+   * thread message twice.
+   */
+  test("a wake the drain claims leaves the dock and is never put back", async () => {
+    reset()
+    wakeList = [wake()]
+    render(<Probe isStreaming />)
+    await settle()
+    await act(async () => { await queueApi!.sendWakeNow("w1") })
+    expect(queueApi!.queuedMessages).toEqual([])
+
+    // Claimed: the wake is gone from the pending list, so the dock's next polls
+    // find nothing to wait for.
+    wakeList = []
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5200)) })
+    expect(queueApi!.queuedMessages).toEqual([])
+    expect(pendingIds).toEqual([])
+  }, 15_000)
 
   test("Send now keeps the row on screen until the server answers", async () => {
     reset()

@@ -63,22 +63,18 @@ import { requesterTicketHeader, workspaceTicketKey } from '../lib/requester-tick
 import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session-runtime'
 import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from '../lib/chat-references'
-import {
-  chatHandoffText,
-  deliverChatMentions,
-  isChatHandoff,
-} from '../services/chat-mention-delivery.service'
+import { chatHandoffText } from '../services/chat-mention-delivery.service'
+import { chatReferenceIds } from '../services/conversation-mentions'
 import {
   attachProjectToProject,
   syncPinnedSessionAttachments,
 } from '../services/project-attachment.service'
 import {
   clearActiveTurn,
-  markTurnEnded,
+  endTurnAndDrain,
   markTurnStarted,
   startTurnHeartbeat,
 } from '../services/chat-turn-state.service'
-import { dispatchNext } from '../services/chat-queue-dispatcher.service'
 import { historySeedForTurn, lastUserPromptText } from '../services/chat-history-seed.service'
 import { trackUsageFromStream } from './project-chat'
 
@@ -793,6 +789,27 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     parsedBody.chatContext = 'workspace'
     body = JSON.stringify(parsedBody)
 
+    // A `<@c:CHAT_ID>` in a workspace chat is a *reference*, not a send
+    // (SHO-191): nothing is posted to the tagged chat and no turn starts there.
+    // A chat picked from the "@" menu already arrives as a `{type:'chat'}`
+    // reference; a token typed, pasted or sent by a client that only encodes the
+    // text is promoted to one here, so both reach the enrich step below and get
+    // the same pointer block. The chat being written in is never a reference.
+    if (auth.userId) {
+      const mentionedText = chatHandoffText(parsedBody)
+      if (mentionedText.includes('<@c:')) {
+        const refs: any[] = Array.isArray(parsedBody?.references) ? parsedBody.references : []
+        const knownChatRefs = refs
+          .filter((ref: any) => ref?.type === 'chat' && typeof ref.id === 'string')
+          .map((ref: any) => ref.id as string)
+        const added = chatReferenceIds(mentionedText, { selfSessionId: sessionId, existing: knownChatRefs })
+        if (added.length > 0) {
+          parsedBody.references = [...refs, ...added.map((id) => ({ type: 'chat', id }))]
+          body = JSON.stringify(parsedBody)
+        }
+      }
+    }
+
     // Harden "@" references before forwarding to the runtime:
     //  - workspace refs: re-derive the summary from the DB after membership;
     //  - project refs: access-check, then DURABLY attach any newly-referenced
@@ -801,6 +818,8 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     //    attachments are env-coupled (LINKED_FOLDERS is parsed once at boot), so
     //    the anchor runtime is restarted before we resolve; refs that are
     //    already attached are a no-op and stay warm.
+    //  - chat refs: pointer mode — name the chat and how to read it, and inline
+    //    no transcript (SHO-191: this surface never sends to a tagged chat).
     if (Array.isArray(parsedBody?.references) && parsedBody.references.length > 0) {
       const wsChanged = await enrichWorkspaceReferences(parsedBody, auth.userId)
       const projectRefs = await enrichProjectReferences(parsedBody, auth.userId, workspaceId)
@@ -809,6 +828,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         parsedBody,
         auth.userId,
         workspaceId,
+        { mode: 'pointer' },
       )
       if (anchorProjectId && projectRefs.attachProjectIds.length > 0) {
         const alreadyAttached = new Set(attachedProjectIds)
@@ -840,26 +860,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       if (wsChanged || projectRefs.changed || historyChanged) body = JSON.stringify(parsedBody)
     }
 
-    // A `<@c:CHAT_ID>` token addresses another chat (SHO-52): the message is
-    // delivered there with a one-line origin and that chat's turn starts —
-    // including when it lives in another workspace, because the queue
-    // dispatches against the target session's own runtime. A message that
-    // arrived as a handoff never fans out again.
-    if (auth.userId && !isChatHandoff(parsedBody)) {
-      const handoffText = chatHandoffText(parsedBody)
-      if (handoffText.includes('<@c:')) {
-        try {
-          await deliverChatMentions({
-            text: handoffText,
-            actingUserId: auth.userId,
-            sourceSessionId: sessionId,
-            references: parsedBody?.references,
-          })
-        } catch (err: any) {
-          console.warn('[WorkspaceChat] Chat handoff failed:', err?.message ?? err)
-        }
-      }
-    }
+    // Nothing here delivers a tag to the chat it names: in the workspace chat a
+    // `<@c:CHAT_ID>` is context (see the promotion above and `chat_handoff` when
+    // the person explicitly wants something sent).
 
     // Billing anchor: the AI proxy accumulates usage keyed by projectId, and
     // build-workspace-env mints the first attached project's token as the
@@ -1175,14 +1178,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             },
           ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err)).finally(() => {
             stopTurnHeartbeat?.()
-            const ended = turnId
-              ? markTurnEnded(sessionId, turnId)
-              : Promise.resolve()
-            void ended
-              .then(() => dispatchNext(sessionId))
-              .catch((error) =>
-                console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
-              )
+            // Clearing the turn hands the session on (chat-turn-state): its own
+            // queue first, then the thread's wakes. Every ender does it there.
+            void endTurnAndDrain(sessionId, turnId).catch((error) =>
+              console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
+            )
           })
 
           // Multi-project auto-checkpoint for the NON-anchor attached projects
@@ -1264,14 +1264,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         )
       }
       if (!streamHandedOff) {
-        const ended = activityTurnId
-          ? markTurnEnded(sessionId, activityTurnId)
-          : Promise.resolve()
-        void ended
-          .then(() => dispatchNext(sessionId))
-          .catch((error) =>
-            console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
-          )
+        void endTurnAndDrain(sessionId, activityTurnId).catch((error) =>
+          console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
+        )
       }
     }
   }
@@ -1507,10 +1502,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         )
       }
       if (sessionId && response.ok) {
-        await clearActiveTurn({
-          id: sessionId,
-          OR: [{ workspaceId }, { project: { workspaceId } }],
-        }).catch((error) =>
+        await clearActiveTurn(
+          {
+            id: sessionId,
+            OR: [{ workspaceId }, { project: { workspaceId } }],
+          },
+          // Send now dispatches the row itself and answers with the outcome;
+          // starting the queue here too would race it for the same turn.
+          { handOff: parsed?.handOff === 'caller' ? 'caller' : 'queue' },
+        ).catch((error) =>
           console.warn(`[WorkspaceChat] Failed to clear stopped chat ${sessionId}:`, error),
         )
       }

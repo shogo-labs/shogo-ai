@@ -571,9 +571,10 @@ export interface ChatInputProps {
   ) => Promise<AgentHistoryResult[]>;
   /**
    * Chats the user can tag from the "@" menu, from every workspace they belong
-   * to (server-checked). Unlike `workspaceHistorySearch` these are addresses,
-   * not context: selecting one inserts `<@c:ID>` and the message is handed to
-   * that chat when it is sent.
+   * to (server-checked). Selecting one inserts `<@c:ID>` and adds a chat
+   * reference. In a workspace chat that reference is context — the agent is
+   * told which chat it is and reads it with `read_history` — while a project
+   * chat still hands the message to the tagged chat when it is sent.
    */
   chatMentionables?: (query: string) => Promise<ChatMentionable[]>;
   ideMode?: boolean;
@@ -1567,6 +1568,21 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     onTranscript: appendTranscriptToInput,
   });
 
+  /**
+   * The dictation mic stays on screen where speech recognition is missing
+   * (Firefox ships no Web Speech API): a missing button reads as a bug, a
+   * disabled one that says why reads as a limitation. `onVoiceStart` replaces
+   * dictation outright, so it is never unavailable.
+   */
+  const voiceMicUnavailable = !onVoiceStart && !voiceInput.canRecord;
+  const voiceMicLabel = onVoiceStart
+    ? (voiceStartLabel ?? "Start voice project creation")
+    : voiceInput.canRecord
+      ? "Start voice recording"
+      : isNative
+        ? "Voice typing isn't available on this device."
+        : "Voice typing isn't supported in this browser. Try Chrome, Edge, or Safari.";
+
   // Inline "@mention" highlight overlay. Mirror EXACTLY what the TextInput
   // shows (including the live voice transcript) so the pills line up with the
   // real text painted on top. Falls back to `pendingTextChangeRef` (read live
@@ -1718,9 +1734,10 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     const fileData = combinedFiles.length > 0 ? combinedFiles : undefined;
     const refData = references.length > 0 ? references : undefined;
 
-    // A tagged chat is an address, not decoration: send `<@c:ID>` in place of
-    // its "@Title" label so the message can be delivered there and a reader
-    // never sees an id.
+    // A tagged chat travels as `<@c:ID>` in place of its "@Title" label, so the
+    // chip renders and a reader never sees an id. What that token means is the
+    // surface's call: a reference the agent reads (workspace chat, SHO-191) or
+    // an address the message is handed to (project chat, SHO-52).
     onSubmit(
       encodeChatMentionTokens(trimmedContent, refData),
       fileData,
@@ -3616,55 +3633,54 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                         : undefined
                     }
                   />
-                ) : voiceInput.canRecord || onVoiceStart ? (
-                  <Pressable
-                    onPress={() => {
-                      voiceInput.clearError();
-                      if (onVoiceStart) {
-                        void Promise.resolve(onVoiceStart()).catch(() => {});
-                        return;
-                      }
-                      voiceInput.toggleRecording().catch(() => {});
-                    }}
-                    hitSlop={isNative ? 4 : undefined}
-                    disabled={disabled || isProcessingFiles}
-                    role="button"
-                    accessibilityLabel={
-                      onVoiceStart
-                        ? (voiceStartLabel ?? "Start voice project creation")
-                        : "Start voice recording"
-                    }
-                    className={cn(
-                      "rounded-full items-center justify-center active:opacity-70",
-                      isNative && !useProminentComposer
-                        ? NATIVE_COMPOSER_MIC_IDLE_CLASS
-                        : sendChrome.sizeClassName
-                    )}
-                  >
-                    <Mic
+                ) : (
+                  <WebTooltip label={voiceMicLabel}>
+                    <Pressable
+                      onPress={() => {
+                        voiceInput.clearError();
+                        if (onVoiceStart) {
+                          void Promise.resolve(onVoiceStart()).catch(() => {});
+                          return;
+                        }
+                        voiceInput.toggleRecording().catch(() => {});
+                      }}
+                      hitSlop={isNative ? 4 : undefined}
+                      disabled={disabled || isProcessingFiles || voiceMicUnavailable}
+                      role="button"
+                      accessibilityLabel={voiceMicLabel}
+                      accessibilityState={{ disabled: voiceMicUnavailable }}
                       className={cn(
-                        useProminentComposer ? "h-[18px] w-[18px]" : "h-4 w-4",
-                        !useProminentComposer &&
-                          (disabled || isProcessingFiles
-                            ? "text-muted-foreground/40"
-                            : "text-muted-foreground")
+                        "rounded-full items-center justify-center active:opacity-70",
+                        isNative && !useProminentComposer
+                          ? NATIVE_COMPOSER_MIC_IDLE_CLASS
+                          : sendChrome.sizeClassName
                       )}
-                      color={
-                        useProminentComposer
-                          ? disabled || isProcessingFiles
-                            ? chatgptComposer.placeholder
-                            : chatgptComposer.icon
-                          : undefined
-                      }
-                      strokeWidth={
-                        useProminentComposer
-                          ? NATIVE_PHONE_ICON_STROKE
-                          : undefined
-                      }
-                      size={useProminentComposer ? 20 : isNative ? 18 : 14}
-                    />
-                  </Pressable>
-                ) : null}
+                    >
+                      <Mic
+                        className={cn(
+                          useProminentComposer ? "h-[18px] w-[18px]" : "h-4 w-4",
+                          !useProminentComposer &&
+                            (disabled || isProcessingFiles || voiceMicUnavailable
+                              ? "text-muted-foreground/40"
+                              : "text-muted-foreground")
+                        )}
+                        color={
+                          useProminentComposer
+                            ? disabled || isProcessingFiles || voiceMicUnavailable
+                              ? chatgptComposer.placeholder
+                              : chatgptComposer.icon
+                            : undefined
+                        }
+                        strokeWidth={
+                          useProminentComposer
+                            ? NATIVE_PHONE_ICON_STROKE
+                            : undefined
+                        }
+                        size={useProminentComposer ? 20 : isNative ? 18 : 14}
+                      />
+                    </Pressable>
+                  </WebTooltip>
+                )}
               </View>
             )}
           </View>

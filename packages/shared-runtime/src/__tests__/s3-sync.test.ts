@@ -241,6 +241,36 @@ describe('createS3SyncForProject', () => {
     const sync = createS3SyncForProject(TEST_DIR, 'proj-1')
     expect(sync).not.toBeNull()
   })
+
+  // Regression (SHO-212): the import / marketplace-install seed path creates a
+  // *fresh* instance for a brand-new project id and uploads immediately — it
+  // never calls `downloadAll()`, so its lineage is 'unknown'. It must opt out of
+  // the guard through this factory, or every k8s import fails at syncToS3 with
+  // "downloadAll() was never called on this instance".
+  test('allowUnconditionalWrite lets a fresh seed instance write the archive', async () => {
+    process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
+    writeFileSync(join(TEST_DIR, 'seed.txt'), 'SEED')
+
+    const sync = createS3SyncForProject(TEST_DIR, 'seed-proj', { allowUnconditionalWrite: true })
+    expect(sync).not.toBeNull()
+    const stats = await sync!.uploadAll(false)
+
+    expect(stats.errors).toEqual([])
+    expect(s3Store.has('test-bucket/seed-proj/project-src.tar.gz')).toBe(true)
+    sync!.shutdown()
+  })
+
+  test('without allowUnconditionalWrite the same fresh seed instance is refused', async () => {
+    process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
+    writeFileSync(join(TEST_DIR, 'seed.txt'), 'SEED')
+
+    const sync = createS3SyncForProject(TEST_DIR, 'seed-proj')
+    const stats = await sync!.uploadAll(false)
+
+    expect(stats.errors.join()).toContain('downloadAll() was never called')
+    expect(s3Store.has('test-bucket/seed-proj/project-src.tar.gz')).toBe(false)
+    sync!.shutdown()
+  })
 })
 
 describe('initializeS3Sync', () => {

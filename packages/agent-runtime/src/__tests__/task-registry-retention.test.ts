@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { TaskRegistry } from '../task-registry'
+import { TaskRegistry, type RemoteTaskClient } from '../task-registry'
 import type { TaskOutputRow } from '../task-output'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -82,6 +82,64 @@ describe('result retention is gated on consumption', () => {
     // Exactly one read row made room for the third unread result.
     expect(reads.filter((t) => reg.get(t.entry.id))).toHaveLength(2)
     expect(unread.every((t) => reg.get(t.entry.id))).toBe(true)
+  })
+})
+
+describe('an evicted task does not leave a note behind (SHO-196)', () => {
+  /**
+   * A completion note is what wakes the agent, and `forget()` evicts entries
+   * under memory pressure. A note whose entry is gone fails every ownership
+   * guard, so the registry must not leave one for a task the API delivers.
+   */
+  function completedClient(output: string): RemoteTaskClient {
+    return {
+      async get(id) { return { id, status: 'completed', output } },
+      async cancel() {},
+      async consume() {},
+    }
+  }
+
+  test('an API-tracked card evicted by the cap takes its note with it', async () => {
+    const reg = new TaskRegistry({ maxUnconsumed: 1, unreadRetentionMs: 60_000 })
+    reg.registerRemote({
+      id: 't_card1961', source: 'work_item', title: 'SUP-1', apiTracked: true,
+      client: completedClient('moved to QA & Review (active)'),
+    })
+    await reg.refreshRemote()
+
+    const note = reg.peekNotifications().find((n) => n.taskId === 't_card1961')
+    expect(note).toBeDefined()
+    // The note says who owns it, so evicting the entry cannot lose that fact.
+    expect(note!.apiTracked).toBe(true)
+
+    // One more unread result than the cap allows: the oldest (the card) goes.
+    const local = unreadFinished(reg, 'explore')
+
+    expect(reg.get('t_card1961')).toBeUndefined()
+    expect(reg.peekNotifications().map((n) => n.taskId)).toEqual([local.entry.id])
+  })
+
+  test('a local unread note survives eviction, and its ack still clears it', async () => {
+    const reg = new TaskRegistry({ maxUnconsumed: 1, unreadRetentionMs: 60_000 })
+    const first = unreadFinished(reg, 'a')
+    await sleep(2)
+    unreadFinished(reg, 'b')
+
+    // A local result is the agent's only copy, so it outlives its entry.
+    expect(reg.get(first.entry.id)).toBeUndefined()
+    const note = reg.peekNotifications().find((n) => n.taskId === first.entry.id)
+    expect(note).toBeDefined()
+    expect(note!.apiTracked).toBeUndefined()
+    expect(note!.reported).toBeUndefined()
+
+    // Handing it to the API sticks even though there is no entry to write to.
+    reg.markReported([first.entry.id])
+    expect(reg.peekNotifications().find((n) => n.taskId === first.entry.id)!.reported).toBe(true)
+
+    // The wake turn's ack clears it with nothing to look up.
+    reg.markConsumed([first.entry.id])
+    expect(reg.peekNotifications().find((n) => n.taskId === first.entry.id)).toBeUndefined()
+    expect(reg.get(first.entry.id)).toBeUndefined()
   })
 })
 

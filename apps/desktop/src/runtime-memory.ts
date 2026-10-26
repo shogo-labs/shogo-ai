@@ -32,6 +32,60 @@ export function computeDefaultRuntimeMemoryMB(totalMemMB: number): number {
   return Math.min(8192, Math.max(3072, Math.floor(totalMemMB * 0.4)))
 }
 
+/**
+ * Budget for the commands the agent runs (`exec`), which is a different thing
+ * from the runtime's own leak ceiling above.
+ *
+ * The runtime ceiling exists to restart a leaked vite/tsserver. A command is
+ * the user's workload — a model, a build, a test suite — and borrowing the
+ * 8192-capped ceiling for it killed a 40B INT4 model (22.5 GB resident) on a
+ * 128 GB Mac (SHO-203). So the command budget is sized from the machine, not
+ * from the runtime: half of RAM, or everything above the 8 GB the rest of the
+ * app may need, whichever is larger.
+ *
+ * `max(50% of RAM, RAM - 8192)` gives 128 GB → 120 GB, 64 GB → 56 GB,
+ * 32 GB → 24 GB, 16 GB → 8 GB. The 50% floor is deliberate: sized as
+ * `RAM - 8192` alone, a 16 GB laptop would leave every command 8 GB while
+ * half the machine sits idle.
+ *
+ * Deliberately dependency-free, like the rest of this module.
+ */
+export function computeDefaultExecMemoryMB(totalMemMB: number): number {
+  if (!Number.isFinite(totalMemMB) || totalMemMB <= 0) return 8192
+  const total = Math.floor(totalMemMB)
+  return Math.max(Math.floor(total * 0.5), total - 8192)
+}
+
+/** A settings value for the command budget: explicit MB, or scaled to the host. */
+export type ExecMemorySetting = number | 'auto'
+
+/** Explicit budgets below this are a footgun, not a preference. */
+export const EXEC_MEMORY_MIN_MB = 1024
+
+/**
+ * The MB the guard enforces for `'auto'` / an explicit number. An explicit
+ * value is clamped to `[1024, totalMemMB]` — above the machine's RAM the limit
+ * could never trip before the OS killed the command with no message, which is
+ * the bug this replaces.
+ */
+export function resolveExecMemoryMB(
+  setting: ExecMemorySetting | undefined,
+  totalMemMB: number,
+): number {
+  if (setting === undefined || setting === 'auto') return computeDefaultExecMemoryMB(totalMemMB)
+  if (!Number.isFinite(setting) || setting <= 0) return computeDefaultExecMemoryMB(totalMemMB)
+  const total = Number.isFinite(totalMemMB) && totalMemMB > 0 ? Math.floor(totalMemMB) : 0
+  const ceiling = total > 0 ? total : Math.max(setting, EXEC_MEMORY_MIN_MB)
+  return Math.min(Math.max(Math.round(setting), EXEC_MEMORY_MIN_MB), ceiling)
+}
+
+/** Read a stored/handed-in setting, falling back to `'auto'` for anything else. */
+export function normalizeExecMemoryMB(value: unknown): ExecMemorySetting {
+  if (value === 'auto') return 'auto'
+  const n = typeof value === 'number' ? value : NaN
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 'auto'
+}
+
 export type HostTier = 'low' | 'standard' | 'high'
 
 /** Classify the host once so every local process applies the same budget. */

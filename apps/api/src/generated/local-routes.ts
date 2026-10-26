@@ -30,7 +30,8 @@ import {
 } from './chat-session.routes'
 import { localChatSessionHooks } from './chat-session.hooks'
 import { createChatSessionProjectRoutes, setPrisma as setPrismaChatSessionProject } from './chat-session-project.routes'
-import { createChatMessageRoutes, setPrisma as setPrismaChatMessage } from './chat-message.routes'
+import { createChatMessageRoutes, setPrisma as setPrismaChatMessage, setChatMessageHooks } from './chat-message.routes'
+import { localChatMessageHooks } from './chat-message.hooks'
 import {
   createChatQueuedMessageRoutes,
   setPrisma as setPrismaChatQueuedMessage,
@@ -73,6 +74,10 @@ export function createLocalGeneratedRoutes(prisma: any): Hono {
   setChatSessionHooks(localChatSessionHooks)
   setPrismaChatSessionProject(prisma)
   setPrismaChatMessage(prisma)
+  // A message must move its session's lastActiveAt in the database, not just in
+  // the client: the desktop list reads that column, so without this the row
+  // snaps back to its old time after a send (SHO-190).
+  setChatMessageHooks(localChatMessageHooks)
   setPrismaChatQueuedMessage(prisma)
   setChatQueuedMessageHooks(chatQueuedMessageHooks)
   setPrismaToolCallLog(prisma)

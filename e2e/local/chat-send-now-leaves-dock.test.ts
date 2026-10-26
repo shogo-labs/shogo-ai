@@ -372,8 +372,8 @@ function installServerMocks(page: Page, state: QueueState): Promise<unknown> {
           })
           return
         }
-        // The route promotes the row and stops the turn, then dispatches
-        // without waiting — so it answers with the row still on the queue.
+        // The route promotes the row, stops the turn, then dispatches it inside
+        // the request and answers with the row as it stands (SHO-205).
         const [promoted] = state.rows.splice(index, 1)
         state.rows.unshift(promoted)
         state.rows.forEach((row, position) => {
@@ -738,5 +738,44 @@ test.describe("send now takes a queued row out of the dock — local UI", () => 
     await queuedRow(page, alpha).first().getByLabel(DELETE_LABEL).click()
     await expect(queuedRow(page, alpha)).toHaveCount(0)
     expect(state.rows).toHaveLength(0)
+  })
+
+  /**
+   * SHO-205. The route dispatches the clicked row inside the POST and answers
+   * with what that came to, so the dock follows the answer instead of counting
+   * polls. `hold` is that answer: accepted, and the row the server reports is
+   * still `pending` because its turn is starting. The client must not decide a
+   * few seconds later that the click was refused — only the hide's safety
+   * timeout brings a row back when no answer arrived at all (SHO-198's 4.5 s
+   * poll-count rescue is gone).
+   */
+  test("an accepted click is not undone by counting polls", async ({ page }) => {
+    const state = newState()
+    const { alpha } = prompts(`unclaimed-${Date.now().toString(36)}`)
+    state.rows.push(restoredRow(alpha))
+    // `hold` is the real route's shape: the row is promoted, still `pending`.
+    state.sendNowMode = "hold"
+    await installStreamingFetch(page, state, {
+      lead: `unused lead prompt ${Date.now().toString(36)}`,
+      leadReply: "unused lead reply",
+      sentReply: "unused sent reply",
+    })
+    await installServerMocks(page, state)
+    await openProject(page, page.request)
+    await expect(queuedRow(page, alpha).first()).toBeVisible({ timeout: 15_000 })
+
+    await queuedRow(page, alpha).first().getByLabel(SEND_NOW_LABEL).click()
+    await expect
+      .poll(() => queuedRow(page, alpha).count(), { timeout: 1_000 })
+      .toBe(0)
+
+    // Well past the window the removed fallback used (three polls, ~4.5 s): the
+    // row stays off the dock, because the click was answered.
+    await page.waitForTimeout(8_000)
+    expect(await queuedRow(page, alpha).count()).toBe(0)
+    expect(state.rows.map((row) => row.content)).toEqual([alpha])
+    expect(state.rows[0].status).toBe("pending")
+    // It is queued, not sent: it must not have leaked into the transcript.
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
   })
 })

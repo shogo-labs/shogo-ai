@@ -555,11 +555,16 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     if (!userId) return unauthorized(c)
     const status = c.req.query('status')
     const projectId = c.req.query('projectId')
+    // Scope the read to the workspace in view: the phone polls this on Home, and
+    // a user with several workspaces was paying for every other workspace's
+    // tasks on each poll.
+    const workspaceId = c.req.query('workspaceId')
     const tasks = await prisma.agentTask.findMany({
       where: {
         userId,
         ...(status && TASK_STATUSES.has(status) ? { status: status as any } : {}),
         ...(projectId ? { projectId } : {}),
+        ...(workspaceId ? { workspaceId } : {}),
       },
       include: { project: { select: { id: true, name: true } } },
       orderBy: { updatedAt: 'desc' },

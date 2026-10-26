@@ -11,7 +11,9 @@
 
 import { prisma } from '../../lib/prisma'
 import { SocialError, getSocialClient } from './client'
-import { ensureProfile } from './profiles.service'
+import { ensureProfile, getProfile } from './profiles.service'
+import { localScopeFor } from './local-scope'
+import { zernioId } from './provider-ids'
 import { assertSocialBudget, projectedConnectRawUsd } from './usage.service'
 
 const db = prisma as any
@@ -44,9 +46,12 @@ export interface ZernioAccount {
 }
 
 export function normalizeZernioAccount(raw: any): ZernioAccount | null {
-  const id = raw?.id ?? raw?.accountId
+  const id = zernioId(raw)
   const platform = typeof raw?.platform === 'string' ? raw.platform.toLowerCase() : ''
-  const username = typeof raw?.username === 'string' ? raw.username : ''
+  // Zernio returns the handle as the person typed it (`@acme`); our UI already
+  // prints the `@`, so storing one doubles it.
+  const username =
+    typeof raw?.username === 'string' ? raw.username.trim().replace(/^@+/, '') : ''
   if (typeof id !== 'string' || !id || !platform || !username) return null
   return {
     id,
@@ -152,9 +157,17 @@ export async function syncProfileAccounts(profile: {
   return remote
 }
 
-/** Pull the current scope's accounts from Zernio and reconcile our rows. */
+/**
+ * Pull the current scope's accounts from Zernio and reconcile our rows.
+ *
+ * A scope with no profile yet has nothing to sync: asking the provider would
+ * mean creating a profile for a workspace that has never connected anything,
+ * and a brand-new workspace has zero of both. Only a connect creates a profile.
+ */
 export async function syncAccounts(workspaceId: string, workspaceName: string): Promise<any[]> {
-  const profile = await ensureProfile(workspaceId, workspaceName)
+  const scope = await localScopeFor(workspaceId)
+  const profile = await getProfile(workspaceId, scope)
+  if (!profile) return listAccounts(workspaceId)
   await syncProfileAccounts(profile)
   return listAccounts(workspaceId)
 }

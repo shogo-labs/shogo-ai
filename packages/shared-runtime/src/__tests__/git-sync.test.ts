@@ -212,11 +212,12 @@ describe('localOnly (pod-owned)', () => {
 
     // No push in localOnly mode.
     expect(fake.calls.find((c) => c.args.includes('push'))).toBeUndefined()
-    // add → diff → commit → rev-parse, then afterCommit(sha).
+    // ls-files (reserved-name scan) → add → diff → commit → rev-parse, then
+    // afterCommit(sha).
     const kinds = fake.calls.map((c) => c.args.find((a) =>
-      ['add', 'diff', 'commit', 'rev-parse', 'push'].includes(a)
+      ['ls-files', 'add', 'diff', 'commit', 'rev-parse', 'push'].includes(a)
     ))
-    expect(kinds).toEqual(['add', 'diff', 'commit', 'rev-parse'])
+    expect(kinds).toEqual(['ls-files', 'add', 'diff', 'commit', 'rev-parse'])
     expect(seen).toEqual(['deadbeefcafe'])
     expect(sync.isDegraded).toBe(false)
     expect(sync.consecutiveFailures).toBe(0)

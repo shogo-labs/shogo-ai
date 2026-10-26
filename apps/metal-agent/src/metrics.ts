@@ -232,11 +232,33 @@ export const M = {
   // Unmigrated projects kept on the tarball because the guest's LFS push failed.
   repoBundleLfsFallback: 'metal_repo_bundle_lfs_fallback_total',
   repoExportUnchanged: 'metal_repo_export_unchanged_total',
+  // Assign-time git history restore, `{outcome=}`: `foreground` (done before
+  // the open returned), `deferred` (open returned on the source's .git, the
+  // download finishing behind it), `none` (no durable repo), `failed`.
+  repoHydrate: 'metal_repo_hydrate_total',
+  // How each deferred restore ended, `{outcome=}`: `adopted`, `busy` (the
+  // workspace was in use by then, so it was left on the source's .git),
+  // `failed`, `abandoned` (the VM went away first).
+  repoHydrateDeferred: 'metal_repo_hydrate_deferred_total',
+  // Bytes and bundles the guest was asked to download, and the wall time of
+  // each restore (foreground or deferred) — divide by repoHydrate for averages.
+  repoHydrateBytes: 'metal_repo_hydrate_bytes_total',
+  repoHydrateBundles: 'metal_repo_hydrate_bundles_total',
+  repoHydrateMs: 'metal_repo_hydrate_ms_total',
   // Guest-side failures scraped from the per-VM serial console by serial-watcher.
   // These are the ONLY fleet-wide signal for in-guest breakage that survives a
   // guest too broken to ship its own telemetry (e.g. TLS failing on clock skew).
   guestErrorTotal: 'metal_guest_error_total',
   guestTlsClockSkew: 'metal_guest_tls_clock_skew_total',
+  // Guest wall-clock skew measured against the host on the first health check
+  // after a snapshot restore (see pool.probeGuestClockSkew). `guestClockSkewMs`
+  // is the worst absolute skew seen since the agent started — a restore should
+  // read a few ms, and anything in the thousands is a guest whose clock froze at
+  // snapshot time (the 2026-10-25 staging incident: 4h40m). The counter is the
+  // number of restores that came back more than GUEST_CLOCK_SKEW_ALERT_MS off,
+  // which the rehydrate clock sync then corrects.
+  guestClockSkewMs: 'metal_guest_clock_skew_ms',
+  guestClockSkewAfterRestore: 'metal_guest_clock_skew_after_restore_total',
   guestProviderError: 'metal_guest_provider_error_total',
   guestConnectionError: 'metal_guest_connection_error_total',
   guestInferenceRetry: 'metal_guest_inference_retry_total',

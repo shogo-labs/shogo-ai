@@ -45,6 +45,13 @@ export function WorkspaceChatsPanel({ onNavPress }: { onNavPress?: () => void })
   const onAgent = isMainChatPath(pathname) || /\/agent\/?$/.test(pathname)
   const routeSessionId = firstParam(params.chatSessionId)
   const activeId = onAgent ? routeSessionId || knownSessionId : null
+  const { markSeen } = chats
+
+  // The open chat is read the moment it is on screen, so a turn that ends
+  // here clears its new-activity dot instead of flagging it.
+  useEffect(() => {
+    markSeen(activeId)
+  }, [activeId, markSeen])
 
   const openChat = (sessionId: string) => {
     router.push({ pathname: '/(app)/agent', params: { chatSessionId: sessionId } } as any)

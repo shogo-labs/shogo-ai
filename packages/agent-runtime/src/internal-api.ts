@@ -712,6 +712,45 @@ export async function getPublishState(projectId: string): Promise<CheckpointCall
   })
 }
 
+/**
+ * Tell the workspace's user that something needs them (SHO-180). Goes through
+ * the same internal route as `notify_user`, which resolves the recipient
+ * (the workspace owner) server-side — a runtime has no user id to name.
+ *
+ * Best-effort by design: this reports a durability problem, so it must never
+ * throw into the durability path that reported it.
+ */
+export async function postWorkspaceNotification(input: {
+  workspaceId: string
+  title: string
+  body: string
+  actionUrl?: string
+}): Promise<boolean> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl || !input.workspaceId) return false
+  try {
+    const res = await fetch(`${apiUrl}/api/internal/reminders/notify`, {
+      method: 'POST',
+      headers: getInternalHeaders(),
+      body: JSON.stringify({
+        workspaceId: input.workspaceId,
+        title: input.title,
+        body: input.body,
+        ...(input.actionUrl ? { actionUrl: input.actionUrl } : {}),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) {
+      console.warn(`[internal-api] notify returned HTTP ${res.status}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn(`[internal-api] notify failed: ${err?.message ?? err}`)
+    return false
+  }
+}
+
 export async function publishProject(
   projectId: string,
   opts: PublishOptions,
@@ -1692,6 +1731,11 @@ export interface MemberActivityQuery {
   since?: string
   until?: string
   timezone?: string
+  /** summary (default) | messages | board */
+  detail?: 'summary' | 'messages' | 'board'
+  audience?: 'person' | 'agent' | 'mixed' | 'channel'
+  cursor?: string
+  limit?: number
 }
 
 /** Admin-only summary of what one teammate did in a window; the API enforces who may ask. */
@@ -1704,9 +1748,15 @@ export async function getMemberActivity(
   if (query.since) params.set('since', query.since)
   if (query.until) params.set('until', query.until)
   if (query.timezone) params.set('tz', query.timezone)
-  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/member-activity?${params}`, {
+  if (query.audience) params.set('audience', query.audience)
+  if (query.cursor) params.set('cursor', query.cursor)
+  if (query.limit) params.set('limit', String(query.limit))
+  // `messages` is the records route; `board` narrows the summary on the same one.
+  const path = query.detail === 'messages' ? 'member-activity/messages' : 'member-activity'
+  if (query.detail === 'board') params.set('detail', 'board')
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/${path}?${params}`, {
     method: 'GET',
-    parse: (j) => (j?.activity ?? {}) as Record<string, unknown>,
+    parse: (j) => (query.detail === 'messages' ? j : (j?.activity ?? {})) as Record<string, unknown>,
   })
 }
 

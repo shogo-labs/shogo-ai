@@ -1,0 +1,78 @@
+# SigNoz alert: metal assign timeouts
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README.
+#
+# Why: when a host's /assign runs past METAL_ASSIGN_TIMEOUT_MS (30s) the API
+# gives up and retries, and the user stays on "starting". On 2026-10-25 one open
+# hit five timeouts in 2.5 minutes while the guest downloaded git history.
+# `metal.host_errors{reason="timeout"}` counts each one. Before this alert,
+# host errors of every kind ran about 28 a day across the fleet, so 10 timeouts
+# in 15 minutes is far above normal.
+#
+# The counter only exists once something increments it, so a healthy fleet
+# has no series at all. Do NOT set alertOnAbsent.
+
+alert: MetalAssignTimeouts
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.host_errors
+              timeAggregation: increase
+              spaceAggregation: sum
+          filter:
+            expression: "reason = 'timeout'"
+          groupBy:
+            - name: host
+          legend: "{{$labels.host}} assign_timeouts"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: warning
+        op: above
+        matchType: in_total
+        target: 10
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 15m
+    frequency: 1m
+labels:
+  severity: warning
+  team: platform
+  incident_class: metal
+notificationSettings:
+  renotify:
+    enabled: true
+    interval: 6h
+    alertStates: [firing]
+annotations:
+  summary: "Metal /assign timing out on {{$labels.host}} (10+ in 15m)"
+  description: |
+    Opens on this host take longer than the API's 30s /assign budget and are
+    being retried, so users wait minutes for projects to start.
+
+    Triage:
+    1. Metal fleet dashboard, "Wake phase p95": which host.* phase grew?
+       Long source/data/git-history phases mean object storage is slow from
+       this host. A long heavy_wait phase means the host is saturated.
+    2. "Git history restore at open": `foreground` should be rare. If
+       background restores show `failed`, the git history download is failing
+       outright.
+    3. If only this host is affected, cordon it so new opens go elsewhere.
+
+    Runbook: docs/runbooks/metal-fleet.md

@@ -95,6 +95,30 @@ describe('buildConcurrentChatsPrompt', () => {
     expect(text).not.toContain('one working tree')
     expect(text).not.toContain('A file you did not change')
   })
+
+  // SHO-191: in a workspace chat a tag is a reference, never a send.
+  test('a workspace runtime says a tag is a reference, not a hand-off', () => {
+    const text = buildConcurrentChatsPrompt([chat()], { workspaceRuntime: true })!
+
+    expect(text).toContain('A chat the person tags with @ is a reference, not a hand-off')
+    expect(text).toContain('Read it with `read_history`')
+    expect(text).toContain('Nothing was sent there')
+    // The delivery wording only holds where something is delivered.
+    expect(text).not.toContain('in a message the person sends')
+    expect(text).not.toContain('has been delivered to that chat')
+    // Chat ids still resolve through the tool, unchanged.
+    expect(text).toContain('chat_handoff({ chat: "<id>", message: "…" })')
+  })
+
+  test('a project runtime keeps the delivery wording byte for byte', () => {
+    const text = buildConcurrentChatsPrompt([chat()], { reachable: ['session-1'] })!
+
+    expect(text).toContain('(or write `<@c:CHAT_ID>` in a message the person sends)')
+    expect(text).toContain('A `<@c:CHAT_ID>` the person already sent has been delivered to that chat')
+    expect(text).not.toContain('is a reference, not a hand-off')
+    // Byte-identical to the same prompt built without the option.
+    expect(text).toBe(buildConcurrentChatsPrompt([chat()], { reachable: ['session-1'], workspaceRuntime: false })!)
+  })
 })
 
 describe('concurrentChatLabel', () => {

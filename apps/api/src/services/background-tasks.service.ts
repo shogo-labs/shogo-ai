@@ -737,11 +737,41 @@ export interface LocalTaskNotice {
   text: string
 }
 
+/**
+ * Ids the runtime has already been told about, so a looping notice logs once
+ * instead of once per copy (SHO-196).
+ */
+const ignoredRuntimeNotices = new Set<string>()
+
+/**
+ * A runtime's own finished task, handed over so the API can queue its wake.
+ *
+ * The gate in here is what makes delivery idempotent (SHO-196). The runtime can
+ * re-send a note whose task entry it has already evicted, and that note's text
+ * is a snapshot of an old milestone; writing it would overwrite the current
+ * state of the row and wake the session again on every turn end.
+ */
 export async function notifyLocalTasks(chatSessionId: string, tasks: LocalTaskNotice[]): Promise<number> {
   let n = 0
   for (const task of tasks.slice(0, 50)) {
     if (typeof task?.id !== 'string' || !/^t_[A-Za-z0-9]{4,32}$/.test(task.id)) continue
     const status: BackgroundTaskStatus = isFinal(task.status) ? task.status as BackgroundTaskStatus : 'completed'
+    const existing = await db.backgroundTask.findUnique({ where: { id: task.id } })
+    // The API owns these rows (`project_call`, `agent_reply`, `work_item`): it
+    // re-arms the watch and formats the wake from the row's own output, so a
+    // runtime notice about one of them is never its to write.
+    if (existing && REMOTE_SOURCES.has(existing.source)) {
+      if (!ignoredRuntimeNotices.has(task.id)) {
+        if (ignoredRuntimeNotices.size >= 500) ignoredRuntimeNotices.clear()
+        ignoredRuntimeNotices.add(task.id)
+        console.warn(`[BackgroundTasks] ignored runtime notice for API-tracked ${existing.source} task ${task.id}`)
+      }
+      continue
+    }
+    // A local task finishes once. A second notice for the same id in the same
+    // state is a replay: it must not rewrite the row or queue another wake. A
+    // row that was never delivered is still owed its wake, so it passes through.
+    if (existing && existing.status === status && (existing.notifiedAt !== null || existing.consumed)) continue
     const now = new Date()
     await db.backgroundTask.upsert({
       where: { id: task.id },

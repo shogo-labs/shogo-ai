@@ -950,7 +950,14 @@ export const HomeScreen = observer(function HomeScreen({
     )
   }
 
-  if (!currentExperience.resolved) {
+  // The builder does not depend on the workspace kind — `appHomeSurface`
+  // returns `builder` for `forceBuilder` before it ever reads `kind` — so
+  // `/(app)/new-project` paints its greeting, composer, Import and stack chips
+  // on the first frame instead of waiting behind this skeleton for the
+  // workspace collection (which can be seconds, or never on a refresh). `/`
+  // and `/(app)/home` do pick their surface from the kind (agent chat, feed,
+  // builder), so they keep it.
+  if (!currentExperience.resolved && !forceBuilder) {
     return (
       <View className="flex-1 bg-background px-4 pt-16" testID="home-chrome-skeleton">
         <WorkspaceChromeSkeletonRows count={4} />
@@ -1009,7 +1016,9 @@ export const HomeScreen = observer(function HomeScreen({
           {`What are we building, ${firstName}?`}
         </Text>
       )}
-      {!localMode && currentExperience.kind === 'team' ? (
+      {/* `workspaceExperience(undefined)` reports team as its fail-safe kind, so
+          an unresolved first frame must not claim a Team workspace. */}
+      {!localMode && currentExperience.resolved && currentExperience.kind === 'team' ? (
         <Text
           className={`text-center text-muted-foreground ${isNativePhone ? 'mt-2' : 'mb-6'}`}
           style={heroSubtitleStyle}
@@ -1152,6 +1161,7 @@ export const HomeScreen = observer(function HomeScreen({
 
   const screen = (
     <View
+      testID="home-builder"
       className={isNativePhone && isDark ? 'flex-1' : 'flex-1 bg-background'}
       style={isNativePhone ? { backgroundColor: isDark ? 'transparent' : nativePhoneCanvas(false) } : undefined}
     >

@@ -242,4 +242,24 @@ test.describe("Chat file deep links", () => {
     await expect(mentionedFile(page, "example.com")).toHaveCount(0)
     await expect(page.locator('a[href^="https://example.com/a.md"]')).toBeVisible()
   })
+
+  test("a command in backticks and a repo id stay plain text (#SHO-208)", async () => {
+    nextReply = [
+      "Run `bun run src/server.ts` now, then load empero-ai/Qwen3.8-4B-Distill.",
+      "",
+      "Also `empero-ai/Qwen3.8-4B-Distill` in backticks.",
+    ].join("\n")
+    await send(page, "Which model and how do I start it")
+
+    // The command keeps its code span and gets no link inside it.
+    const command = page.getByText("bun run src/server.ts")
+    await expect(command).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('code a[href*="/shogo-file"]')).toHaveCount(0)
+
+    // The repo id is one plain token: no link, and nothing cut off after it.
+    await expect(page.getByText("empero-ai/Qwen3.8-4B-Distill").first()).toBeVisible()
+    await expect(page.locator('[data-testid="chat-file-link"]', { hasText: "Qwen3.8" })).toHaveCount(0)
+    await expect(page.locator('[data-testid="chat-file-chip"]', { hasText: "Qwen3.8" })).toHaveCount(0)
+    await expect(page.locator('a[href*="/shogo-file"]', { hasText: "Qwen3.8" })).toHaveCount(0)
+  })
 })

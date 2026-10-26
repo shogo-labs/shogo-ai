@@ -52,6 +52,20 @@ const OPTIMISTIC_ID_PREFIX = "temp-"
  */
 const SENT_NOW_HIDE_TIMEOUT_MS = 30_000
 
+/**
+ * Polls of a "send now" *team-chat wake* still sitting on its queue before the
+ * click is treated as a drain that is not coming. `pending` means nobody
+ * claimed it, so three quiet polls (about 4.5s) is a refusal, and the row goes
+ * back to the dock with the queue it never left rather than staying invisible
+ * until the timeout above.
+ *
+ * The chat queue's own Send now has no equivalent: its route dispatches the
+ * clicked row inside the request and answers with what happened to it, so the
+ * dock follows the answer (SHO-205). A wake is a different queue whose run
+ * starts from the stopped reply's own settle, so it keeps this wait.
+ */
+const WAKE_SENT_NOW_WAIT_POLLS = 3
+
 /** How often the dock asks for the team-chat wakes waiting behind this session. */
 const WAKE_POLL_MS = 1_500
 
@@ -91,6 +105,33 @@ function taskNotificationOf(row: IChatQueuedMessage): { paused?: boolean } | und
 
 function isTaskWakeRow(row: IChatQueuedMessage | undefined): boolean {
   return !!row && !!taskNotificationOf(row)
+}
+
+/**
+ * A queue row as plain values.
+ *
+ * A reload replaces the store's row nodes, so every node reference a render or a
+ * ref is still holding goes dead, and reading one throws ("no longer part of a
+ * state tree"). Every decision that hands a message from its row to the
+ * transcript therefore reads a snapshot it just took, never a node it kept: a
+ * throw on that path is the message vanishing — its row is off the dock and the
+ * message it stood for is never painted or attached.
+ */
+type RowSnapshot = {
+  id: string
+  status: string
+  /** The agent's own background update, never a message a person sent. */
+  isTaskWake: boolean
+  userMessage: UIMessage
+}
+
+function snapshotRow(row: IChatQueuedMessage): RowSnapshot {
+  return {
+    id: row.id,
+    status: row.status,
+    isTaskWake: isTaskWakeRow(row),
+    userMessage: queuedRowToUserMessage(row),
+  }
 }
 
 function toQueuedMessage(row: IChatQueuedMessage): QueuedMessage {
@@ -149,7 +190,7 @@ export function useServerMessageQueue({
   const { studioChat } = useSDKDomains()
   const collection = studioChat.chatQueuedMessageCollection
   const previousIdsRef = useRef<string[]>([])
-  const previousRowsRef = useRef(new Map<string, IChatQueuedMessage>())
+  const previousRowsRef = useRef(new Map<string, RowSnapshot>())
   const userRemovedIdsRef = useRef(new Set<string>())
   const pendingTurnRef = useRef<{ userMessage?: UIMessage } | null>(null)
   /**
@@ -161,6 +202,8 @@ export function useServerMessageQueue({
    * what catches that case.
    */
   const enqueuedRef = useRef(new Map<string, UIMessage>())
+  /** Polls a sent-now *wake* has spent still `pending` — see `WAKE_SENT_NOW_WAIT_POLLS`. */
+  const waitedRef = useRef(new Map<string, number>())
   const [trackedCount, setTrackedCount] = useState(0)
   /**
    * The message of a row the server has taken but whose turn this window has
@@ -187,7 +230,6 @@ export function useServerMessageQueue({
   const sentTimersRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
   )
-  const rowsRef = useRef<IChatQueuedMessage[]>([])
   /**
    * Team-chat wakes waiting behind this session's turn. They are not
    * `ChatQueuedMessage` rows — `AgentWake` is their one queue — so they are
@@ -239,7 +281,6 @@ export function useServerMessageQueue({
     [pendingUserMessage],
   )
 
-  rowsRef.current = rows
   isStreamingRef.current = isStreaming
   onTurnAvailableRef.current = onTurnAvailable
   sentIdsRef.current = sentIds
@@ -283,6 +324,7 @@ export function useServerMessageQueue({
     previousRowsRef.current = new Map()
     pendingTurnRef.current = null
     enqueuedRef.current.clear()
+    waitedRef.current.clear()
     for (const timer of sentTimersRef.current.values()) clearTimeout(timer)
     sentTimersRef.current.clear()
     setSentIds(new Set())
@@ -303,6 +345,31 @@ export function useServerMessageQueue({
   const load = useCallback(async () => {
     if (!enabled || !sessionId) return
     await collection.loadAll({ sessionId })
+  }, [collection, enabled, sessionId])
+
+  /**
+   * This session's queue as the collection holds it right now, as plain values.
+   * `null` means the collection could not be read at all, which says nothing
+   * about any row — callers must not read that as "the server took them".
+   */
+  const readQueueNow = useCallback((): RowSnapshot[] | null => {
+    if (!enabled || !sessionId) return null
+    let all: readonly IChatQueuedMessage[]
+    try {
+      all = collection.all
+    } catch {
+      return null
+    }
+    const snapshots: RowSnapshot[] = []
+    for (const row of all) {
+      try {
+        if (row.sessionId !== sessionId) continue
+        snapshots.push(snapshotRow(row))
+      } catch {
+        /* a node a reload has already replaced */
+      }
+    }
+    return snapshots
   }, [collection, enabled, sessionId])
 
   const http = useCallback(
@@ -327,6 +394,24 @@ export function useServerMessageQueue({
       `/api/agent-wakes?sessionId=${encodeURIComponent(sessionId)}`,
     )
     const list = Array.isArray(response?.data?.wakes) ? response.data.wakes : []
+    // A wake this window sent now is hidden only until the drain claims it. One
+    // still listed `pending` after a few polls was never claimed — the stop
+    // ended the reply in front of it and nothing else is coming — so it goes
+    // back to the dock to be sent again instead of staying invisible.
+    for (const wake of list as AgentWakeRow[]) {
+      if (!sentIdsRef.current.has(wake.id)) continue
+      if (wake.status !== "pending") {
+        waitedRef.current.delete(wake.id)
+        showAgain(wake.id)
+        continue
+      }
+      const waited = (waitedRef.current.get(wake.id) ?? 0) + 1
+      waitedRef.current.set(wake.id, waited)
+      if (waited >= WAKE_SENT_NOW_WAIT_POLLS) {
+        waitedRef.current.delete(wake.id)
+        showAgain(wake.id)
+      }
+    }
     // The poll runs every 1.5s: keep the same array when nothing changed, so a
     // quiet queue does not re-render the dock on every tick.
     setWakes((current) =>
@@ -334,7 +419,7 @@ export function useServerMessageQueue({
         ? current
         : (list as AgentWakeRow[]),
     )
-  }, [enabled, sessionId, http])
+  }, [enabled, sessionId, http, showAgain])
 
   const flushPendingTurn = useCallback(() => {
     if (isStreamingRef.current || !pendingTurnRef.current) return
@@ -354,12 +439,25 @@ export function useServerMessageQueue({
   const drainEnqueued = useCallback(() => {
     const tracked = enqueuedRef.current
     if (tracked.size === 0) return
-    const byId = new Map(rowsRef.current.map((row) => [row.id, row]))
+    // Read the queue as it is now, not as the last render saw it: the reload
+    // that shows the row gone is also what kills the nodes `rows` still holds.
+    const snapshots = readQueueNow()
+    if (!snapshots) return
+    const byId = new Map(snapshots.map((row) => [row.id, row]))
     let dispatched: UIMessage | undefined
     let dropped = 0
     for (const [id, userMessage] of tracked) {
       const row = byId.get(id)
-      if (row?.status === "pending") continue
+      if (row?.status === "pending") {
+        // Still on the queue, unclaimed: its turn has not started, so there is
+        // no user message to hand over yet. Keep tracking it — an ordinary
+        // queued row starts when the turn ahead of it ends, and a sent-now row
+        // was answered by its own POST (the route dispatches it), so a row
+        // still pending here is not a refusal to count down. If nothing ever
+        // starts it, the safety timeout in `hideSent` puts it back in the dock.
+        continue
+      }
+      waitedRef.current.delete(id)
       tracked.delete(id)
       dropped++
       // A failed dispatch stays on the queue with its error for the user to
@@ -372,7 +470,7 @@ export function useServerMessageQueue({
     pendingTurnRef.current = { userMessage: dispatched }
     setPendingUserMessage(dispatched)
     flushPendingTurn()
-  }, [flushPendingTurn])
+  }, [flushPendingTurn, readQueueNow])
 
   useEffect(() => {
     void load().catch((error) => {
@@ -424,9 +522,20 @@ export function useServerMessageQueue({
   useEffect(() => {
     const previous = previousIdsRef.current
     const previousRows = previousRowsRef.current
-    const current = new Set(rows.map((row) => row.id))
-    previousRowsRef.current = new Map(rows.map((row) => [row.id, row]))
-    previousIdsRef.current = rows.map((row) => row.id)
+    // Snapshot the rows this render carries, and give up on the whole pass if
+    // any of them has already been replaced by a reload: the next render sees
+    // the new rows, and nothing is lost by waiting for it.
+    const snapshots: RowSnapshot[] = []
+    for (const row of rows) {
+      try {
+        snapshots.push(snapshotRow(row))
+      } catch {
+        return
+      }
+    }
+    const current = new Set(snapshots.map((row) => row.id))
+    previousRowsRef.current = new Map(snapshots.map((row) => [row.id, row]))
+    previousIdsRef.current = snapshots.map((row) => row.id)
     // "Send now" moves any row to the front and the server can dispatch and
     // delete it before the client sees the new order, so the dispatched row
     // is not necessarily the head we last saw.
@@ -439,12 +548,11 @@ export function useServerMessageQueue({
       }
       // A task wake leaving the queue is the agent being handed its own update,
       // not a message a person sent: it must not be painted as a user bubble.
-      if (isTaskWakeRow(previousRows.get(id))) continue
+      if (previousRows.get(id)?.isTaskWake) continue
       dispatchedId ??= id
     }
     if (dispatchedId && !pendingTurnRef.current) {
-      const removed = previousRows.get(dispatchedId)
-      const userMessage = removed ? queuedRowToUserMessage(removed) : undefined
+      const userMessage = previousRows.get(dispatchedId)?.userMessage
       pendingTurnRef.current = { userMessage }
       setPendingUserMessage(userMessage)
     }
@@ -465,12 +573,14 @@ export function useServerMessageQueue({
   useEffect(() => {
     const sent = sentIdsRef.current
     if (sent.size === 0) return
-    const byId = new Map(rows.map((row) => [row.id, row]))
+    const snapshots = readQueueNow()
+    if (!snapshots) return
+    const byId = new Map(snapshots.map((row) => [row.id, row]))
     for (const id of sent) {
       const row = byId.get(id)
       if (!row || row.status === "failed") showAgain(id)
     }
-  }, [rows, showAgain])
+  }, [rows, readQueueNow, showAgain])
 
   const enqueue = useCallback(
     async (input: ServerQueueEnqueueInput) => {
@@ -563,15 +673,15 @@ export function useServerMessageQueue({
 
   const sendNow = useCallback(
     async (id: string) => {
-      const row = rowsRef.current.find((candidate) => candidate.id === id)
+      const row = readQueueNow()?.find((candidate) => candidate.id === id)
       // Register the row before the POST, the way `enqueue` does for a row it
       // creates: the server dispatches and deletes it while this window is
       // still reading the queue, and the saved user message has to reach the
       // transcript from the row either way. Tracking it also keeps the poll
       // running while the new turn streams — the rows poll stops there, and
       // the delete is what the dock has to see.
-      if (row && !isTaskWakeRow(row) && !enqueuedRef.current.has(id)) {
-        enqueuedRef.current.set(id, queuedRowToUserMessage(row))
+      if (row && !row.isTaskWake && !enqueuedRef.current.has(id)) {
+        enqueuedRef.current.set(id, row.userMessage)
         setTrackedCount((count) => count + 1)
       }
       hideSent(id)
@@ -579,13 +689,24 @@ export function useServerMessageQueue({
         await action(id, "send-now")
       } catch (error) {
         // Nothing was sent: the row is still the person's queued message, so
-        // put it back rather than chase a turn that will never start.
+        // put it back — with the server's reason on it — rather than chase a
+        // turn that will never start. The route dispatches the clicked row
+        // inside this POST, so its answer is the outcome: a throw is the row
+        // having failed to start, and `load` is what puts its error back in
+        // the dock (SHO-205).
         untrack(id)
         showAgain(id)
+        await load().catch(() => {})
         throw error
       }
+      // The row is off the queue by the time the POST returns. Hand the message
+      // over here instead of waiting for the dock's next poll: the click has
+      // already hidden the row, so a hand-off that depends on a later tick —
+      // one the panel's own turn-end, a reload or an unmount can pre-empt —
+      // loses the message from both the dock and the transcript.
+      drainEnqueued()
     },
-    [action, hideSent, showAgain, untrack],
+    [action, drainEnqueued, hideSent, load, readQueueNow, showAgain, untrack],
   )
 
   /**

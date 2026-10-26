@@ -15,7 +15,9 @@ import { shouldRouteToRemote } from "../../../../packages/shared-app/src/service
 
 mock.module("../api-url", () => ({ API_URL: "https://app.test" }))
 
-const { usageLogCsvPath, usageLogCsvUrl } = await import("../usage-log-csv")
+const { memberMessagesCsvPath, memberMessagesCsvUrl, usageLogCsvPath, usageLogCsvUrl } = await import(
+  "../usage-log-csv",
+)
 
 const MACHINE = {
   relayBaseUrl: "https://app.test/api/machines/inst-odin/w/lw-main",
@@ -56,5 +58,30 @@ describe("SHO-108 — the usage CSV comes from the workspace in view", () => {
 
   test("no filters means no query string", () => {
     expect(usageLogCsvPath("ws-cloud")).toBe("/api/workspaces/ws-cloud/analytics/usage-log.csv")
+  })
+})
+
+describe("SHO-199 — one person's messages export", () => {
+  test("names the person and the window, so the file is only their rows", () => {
+    expect(
+      memberMessagesCsvPath("ws-cloud", "user-1", { since: "2026-07-01T00:00:00.000Z", audience: "person" }),
+    ).toBe(
+      "/api/workspaces/ws-cloud/member-activity/messages.csv?user=user-1&since=2026-07-01T00%3A00%3A00.000Z&audience=person",
+    )
+  })
+
+  test("a user id that needs escaping is encoded, not pasted into the path", () => {
+    expect(memberMessagesCsvPath("ws-cloud", "user/../1")).toBe(
+      "/api/workspaces/ws-cloud/member-activity/messages.csv?user=user%2F..%2F1",
+    )
+  })
+
+  test("goes through the paired machine when its workspace is the one in view", () => {
+    expect(memberMessagesCsvUrl({ workspaceId: "ws-cloud", userId: "user-1", machine: MACHINE })).toBe(
+      "https://app.test/api/machines/inst-odin/w/lw-main/api/workspaces/lw-main/member-activity/messages.csv?user=user-1",
+    )
+    expect(memberMessagesCsvUrl({ workspaceId: "ws-cloud", userId: "user-1" })).toBe(
+      "https://app.test/api/workspaces/ws-cloud/member-activity/messages.csv?user=user-1",
+    )
   })
 })

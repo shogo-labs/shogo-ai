@@ -144,6 +144,7 @@ import { adminSignupRiskRoutes } from './routes/admin-signup-risk'
 import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, promoCreditAvailableUsd } from './config/usage-plans'
 import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
+import { projectAttachmentRoutes } from './routes/project-attachments'
 import { localLogsRoutes } from './routes/local-logs'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { publishedSiteSweepRoutes } from './routes/internal-published-sites'
@@ -1119,6 +1120,12 @@ app.get('/api/platform/visible-models', async (c) => {
 // workspace-scoped and already capped to the key holder's plan, so a local
 // Auto router cannot select a model that this cloud workspace will reject.
 app.get('/api/platform/agent-model-defaults', agentModelDefaultsRoute)
+
+// ── Project attachments: attach / list / detach (Folders panel) ──────────────
+// Mounted in BOTH cloud and local mode — the Folders panel shows project
+// attachments on every surface, and the route carries its own workspace authz.
+// Only the desktop-only *folder* picker (`/api/local/projects`) is mode-gated.
+app.route('/api/projects', projectAttachmentRoutes())
 
 // ── Local mode: folder / cloud-project pickers ──────────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {

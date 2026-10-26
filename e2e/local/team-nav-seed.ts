@@ -28,6 +28,7 @@ export interface TeamNavSeed {
   dmReply: string
   /** A second agent with no DM yet. */
   idleAgent: string
+  idleAgentProjectId: string
   projectIds: string[]
 }
 
@@ -86,7 +87,10 @@ export async function seedTeamNav(page: Page): Promise<TeamNavSeed> {
   if (!dmId) throw new Error(`agent dm failed: ${JSON.stringify(dm.json)}`)
   await api(page, "POST", `/api/conversations/${dmId}/messages`, { text: "any flaky tests lately?" })
 
-  return { suffix, workspaceId, channelName, channelId, dmAgent, dmAgentProjectId: projectIds[0]!, dmId, dmReply, idleAgent, projectIds }
+  return {
+    suffix, workspaceId, channelName, channelId, dmAgent, dmAgentProjectId: projectIds[0]!, dmId, dmReply,
+    idleAgent, idleAgentProjectId: projectIds[1]!, projectIds,
+  }
 }
 
 export async function cleanupTeamNav(page: Page, seed: TeamNavSeed): Promise<void> {

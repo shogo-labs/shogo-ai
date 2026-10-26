@@ -48,7 +48,20 @@ function isStringArray(v: unknown): v is string[] {
 
 /**
  * Vite plugin source spliced into the generated watch config. Writes the
- * current build's emitted file list to `manifestPath` after each write.
+ * current build's emitted file list to `manifestPath` after each write, plus a
+ * fingerprint of what the build serves — the canvas "Update available" toast
+ * fires only when that fingerprint changes.
+ *
+ * The fingerprint is taken over each module's *transformed source*, not over
+ * the rendered chunks. Rollup renames colliding top-level identifiers at
+ * render time, and a cached watch rebuild deconflicts them in a different
+ * order from a full build (`Decimal` vs `Decimal$1` from decimal.js-light via
+ * recharts), so the chunk bytes and their hashed filenames change on rebuilds
+ * where nothing did — every one of them raised the toast. Any real edit still
+ * changes some module's transform. Assets (CSS, HTML) are hashed as emitted,
+ * with chunk filenames neutralised because those carry the render-time hash;
+ * source maps are skipped for the same reason. A bundler without module info
+ * falls back to hashing chunk code.
  */
 export function buildOutputManifestPluginSource(manifestPath: string): string {
   return [
@@ -59,11 +72,34 @@ export function buildOutputManifestPluginSource(manifestPath: string): string {
     '    try {',
     "      const hash = createHash('sha1')",
     '      const files = Object.keys(bundle).sort()',
+    "      const chunkFiles = files.filter((f) => bundle[f].type === 'chunk')",
+    "      const moduleIds = typeof this.getModuleIds === 'function' && typeof this.getModuleInfo === 'function'",
+    '        ? Array.from(this.getModuleIds()).sort()',
+    '        : null',
+    '      if (moduleIds) {',
+    '        for (const id of moduleIds) {',
+    '          const info = this.getModuleInfo(id)',
+    "          hash.update('m\\\\0' + id + '\\\\0')",
+    "          hash.update(info && typeof info.code === 'string' ? info.code : '')",
+    "          hash.update('\\\\0')",
+    '        }',
+    '      } else {',
+    '        for (const fileName of chunkFiles) {',
+    "          hash.update('c\\\\0' + fileName + '\\\\0')",
+    '          hash.update(bundle[fileName].code)',
+    "          hash.update('\\\\0')",
+    '        }',
+    '      }',
     '      for (const fileName of files) {',
     '        const output = bundle[fileName]',
-    "        hash.update(fileName + '\\0')",
-    "        hash.update(output.type === 'asset' ? (typeof output.source === 'string' ? output.source : Buffer.from(output.source)) : output.code)",
-    '        hash.update("\\0")',
+    "        if (output.type !== 'asset' || fileName.endsWith('.map')) continue",
+    "        let source = typeof output.source === 'string' ? output.source : Buffer.from(output.source)",
+    "        if (typeof source === 'string' && moduleIds) {",
+    "          for (const chunk of chunkFiles) source = source.split(chunk).join('[chunk:' + bundle[chunk].name + ']')",
+    '        }',
+    "        hash.update('a\\\\0' + fileName + '\\\\0')",
+    '        hash.update(source)',
+    "        hash.update('\\\\0')",
     '      }',
     '      const fingerprint = hash.digest("hex")',
     `      writeFileSync(${JSON.stringify(manifestPath)}, JSON.stringify({ outDir: options.dir, files, fingerprint }))`,

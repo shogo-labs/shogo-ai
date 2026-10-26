@@ -451,29 +451,64 @@ async function participantNames(workspaceId: string, conversationIds: string[], 
   return { byConversation, orphanedDirectIds }
 }
 
-export async function listConversationsForUser(workspaceId: string, userId: string) {
-  const [general] = await ensureDefaultConversations(workspaceId)
-  // Gives every existing member their note-to-self on the next list load, so
-  // the workspace creator and older accounts need no separate backfill.
-  await ensureSelfConversation(workspaceId, userId)
-  const memberships = await db.conversationMember.findMany({
-    where: { userId, conversation: { workspaceId } },
-  })
-  if (general && !memberships.some((m: any) => m.conversationId === general.id)) {
-    const joined = await ensureGeneralMembership(general, userId)
-    if (joined) memberships.push(joined)
+export interface ListConversationsOptions {
+  /**
+   * Catch-up instead of a full list: only the conversations the reader can see
+   * that changed at or after this instant, plus their own membership rows. The
+   * client merges them into what it already has.
+   */
+  since?: Date
+}
+
+export async function listConversationsForUser(
+  workspaceId: string,
+  userId: string,
+  options: ListConversationsOptions = {},
+) {
+  const loadMemberships = () =>
+    db.conversationMember.findMany({ where: { userId, conversation: { workspaceId } } })
+  const loadConversations = () =>
+    db.conversation.findMany({
+      where: {
+        workspaceId,
+        OR: [
+          { kind: { in: ['public', 'activity'] } },
+          { id: { in: memberships.map((m: any) => m.conversationId) } },
+        ],
+      },
+      orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'asc' }],
+    })
+
+  let memberships = await loadMemberships()
+  let conversations = await loadConversations()
+  const general = conversations.find(
+    (c: any) => c.kind === 'public' && c.slug === DEFAULT_CHANNEL_SLUG,
+  )
+  // #general, #activity, the note-to-self DM and joining #general are set-up
+  // writes, not list reads: a steady-state call does the two reads above and
+  // nothing else. Only a workspace or account that is genuinely missing one of
+  // them pays for the write (and re-reads, so the new row is in the result).
+  const needsSetup =
+    !general ||
+    !conversations.some((c: any) => c.kind === 'activity') ||
+    !conversations.some((c: any) => c.dmKey === `u:${userId}`) ||
+    !memberships.some((m: any) => m.conversationId === general.id)
+  if (needsSetup) {
+    const [createdGeneral] = await ensureDefaultConversations(workspaceId)
+    // Gives every existing member their note-to-self, so the workspace creator
+    // and older accounts need no separate backfill.
+    await ensureSelfConversation(workspaceId, userId)
+    const target = general ?? createdGeneral
+    if (target && !memberships.some((m: any) => m.conversationId === target.id)) {
+      await ensureGeneralMembership(target, userId)
+    }
+    memberships = await loadMemberships()
+    conversations = await loadConversations()
+  }
+  if (options.since) {
+    conversations = await conversationsChangedSince(conversations, memberships, options.since)
   }
   const membershipByConv = new Map<string, any>(memberships.map((m: any) => [m.conversationId, m]))
-  const conversations = await db.conversation.findMany({
-    where: {
-      workspaceId,
-      OR: [
-        { kind: { in: ['public', 'activity'] } },
-        { id: { in: memberships.map((m: any) => m.conversationId) } },
-      ],
-    },
-    orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'asc' }],
-  })
 
   const directIds = conversations.filter((c: any) => c.kind === 'dm' || c.kind === 'group_dm').map((c: any) => c.id)
   const { byConversation: participants, orphanedDirectIds } = await participantNames(workspaceId, directIds, userId)
@@ -520,6 +555,28 @@ export interface LastMessage {
   authorId: string | null
   authorType: string
   createdAt: Date
+}
+
+/**
+ * The subset of a full conversation list that changed at or after `since`:
+ * the conversation row itself (a new message bumps `lastSeq`/`lastMessageAt`),
+ * the reader's own membership (a read, a star, a mute), or its doc.
+ */
+async function conversationsChangedSince(
+  conversations: any[],
+  memberships: any[],
+  since: Date,
+): Promise<any[]> {
+  if (!conversations.length) return conversations
+  const touched = new Set<string>()
+  for (const c of conversations) if (c.updatedAt >= since) touched.add(c.id)
+  for (const m of memberships) if (m.updatedAt && m.updatedAt >= since) touched.add(m.conversationId)
+  const docs = await db.conversationDoc.findMany({
+    where: { conversationId: { in: conversations.map((c: any) => c.id) }, updatedAt: { gte: since } },
+    select: { conversationId: true },
+  })
+  for (const doc of docs) touched.add(doc.conversationId)
+  return conversations.filter((c: any) => touched.has(c.id))
 }
 
 /**

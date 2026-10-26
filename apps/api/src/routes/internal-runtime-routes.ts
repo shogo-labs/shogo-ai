@@ -27,6 +27,11 @@ import {
 import { prisma } from '../lib/prisma'
 import type { Permission } from '@shogo/authz'
 import { accessibleProjectsWhere, decide, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
+import {
+  authorizeAttachmentAction,
+  filterReadableAttachments,
+  type AttachmentAuthorizer,
+} from '../services/project-attachment.authz'
 import { hydrateRepo } from '../services/git-repo-store'
 import {
   attachProject,
@@ -40,7 +45,7 @@ import { REMOTE_IMPORT_MAX_BASE64_CHARS, remoteToolPermission } from '../lib/rem
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { resolve as resolvePath } from 'path'
-import { searchWorkspaceHistory, renderWorkspaceTranscript, readWorkspacePlan } from '../lib/history-search'
+import { searchWorkspaceHistory, renderWorkspaceTranscript, readRuntimeChatTranscript, readWorkspacePlan } from '../lib/history-search'
 import {
   workspaceAgentRoutes,
   type WorkspaceAgentAuthContext,
@@ -187,6 +192,40 @@ async function enforceProjectPermission(
   const decision = await decide(access, permission, actor.principal, `${c.req.method} ${c.req.path}`)
   if (!decision.ok) return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
   return null
+}
+
+/**
+ * Authorizer for a cluster-internal runtime request. Mirrors
+ * `sessionAttachmentAuthorizer` but resolves identity through the internal
+ * actor model (service accounts stay unscoped) and uses the internal error
+ * envelope.
+ */
+function internalAttachmentAuthorizer(
+  c: Context,
+  identity: InternalIdentity,
+  workspaceId: string,
+): AttachmentAuthorizer {
+  return {
+    async requireProject(projectId: string, permission: Permission) {
+      const denied = await enforceProjectPermission(c, identity, workspaceId, projectId, permission)
+      if (denied) return denied
+      return { workspaceId }
+    },
+    async readableProjectsWhere() {
+      return readableProjectFilter(c, identity, workspaceId)
+    },
+    crossWorkspace(targetProjectId: string) {
+      return c.json(
+        {
+          error: {
+            code: 'cross_workspace',
+            message: `Project ${targetProjectId} is not in the same workspace as the anchor project`,
+          },
+        },
+        409,
+      )
+    },
+  }
 }
 
 function hideInaccessibleEdges<T extends { id: string; attachments?: Array<{ attachedProjectId: string }> }>(projects: T[]): T[] {
@@ -405,7 +444,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   /**
    * POST /api/internal/reminders/notify
-   *   body: { workspaceId, projectId?, userId, title, body, actionUrl?,
+   *   body: { workspaceId, projectId?, userId?, title, body, actionUrl?,
    *           dedupeKey?, metadata?, type?, pushType?, channelId? }
    *
    * Boundary capability behind the runtime `notify_user` tool: write one
@@ -414,6 +453,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * the user" half of the reminder path — the agent detects a due reminder in
    * MEMORY.md and calls the tool; there is no server-side reminder row or
    * scheduler here (see issue #1046).
+   *
+   * `userId` is optional: without it the workspace owner is the recipient, so a
+   * runtime-side notice that is not about one specific user (the workspace
+   * backup parking itself, SHO-180) can still reach a human.
    *
    * `type` is an existing `NotificationType` member (the enum is deliberately
    * NOT migrated — reminder-specific context rides in `metadata`), and
@@ -437,7 +480,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: 'Unauthorized' }, 401)
     }
 
-    const userId = typeof body.userId === 'string' ? body.userId : ''
+    const userId = typeof body.userId === 'string' && body.userId
+      ? body.userId
+      // A runtime knows its workspace, not its users: fall back to the
+      // workspace owner so a runtime-originated notice (e.g. "your workspace
+      // backup is failing", SHO-180) can reach a human.
+      : workspaceId
+        ? ((await prisma.member.findFirst({
+            where: { workspaceId, projectId: null, role: 'owner' },
+            orderBy: { createdAt: 'asc' },
+            select: { userId: true },
+          }))?.userId ?? '')
+        : ''
     const title = typeof body.title === 'string' ? body.title.trim() : ''
     const message = typeof body.body === 'string' ? body.body : ''
     if (!userId || !title || !message) {
@@ -973,7 +1027,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       const plan = await readWorkspacePlan(id, { workspaceId, userId })
       return plan ? c.json(plan) : c.json({ error: 'Not found' }, 404)
     }
-    const transcript = await renderWorkspaceTranscript(id, {
+    const transcript = await readRuntimeChatTranscript(id, {
       workspaceId,
       userId,
       from: Number(c.req.query('from') || 0),
@@ -2375,23 +2429,25 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const projectId = c.req.param('projectId')
     const authz = await authorizeLifecycleProject(c, projectId)
     if (!authz) return c.json({ error: 'Unauthorized' }, 401)
-    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:read')
+    const authorizer = internalAttachmentAuthorizer(c, authz.identity, authz.workspaceId)
+    const denied = await authorizeAttachmentAction(authorizer, 'list', projectId)
     if (denied) return denied
     const { listAttachments } = await import('../services/project-attachment.service')
     const rows = await listAttachments(projectId)
-    const visible = await readableProjectFilter(c, authz.identity, authz.workspaceId)
-    if (visible instanceof Response) return visible
-    if (!visible || rows.length === 0) return c.json({ projectId, attachments: rows })
-    const allowed = new Set(
-      ((await prisma.project.findMany({
-        where: { AND: [{ id: { in: rows.map((row) => row.attachedProjectId) } }, visible] },
-        select: { id: true },
-      })) as Array<{ id: string }>).map((row) => row.id),
+    const visible = await filterReadableAttachments(
+      authorizer,
+      authz.workspaceId,
+      rows,
+      async (ids, where) => {
+        const readable = (await prisma.project.findMany({
+          where: { AND: [{ id: { in: ids } }, where] },
+          select: { id: true },
+        })) as Array<{ id: string }>
+        return readable.map((row) => row.id)
+      },
     )
-    return c.json({
-      projectId,
-      attachments: rows.filter((row) => allowed.has(row.attachedProjectId)),
-    })
+    if (visible instanceof Response) return visible
+    return c.json({ projectId, attachments: visible })
   })
 
   /**
@@ -2414,18 +2470,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'attachedProjectId is required' } }, 400)
     }
     const attachMode = body.attachMode === 'readonly' ? 'readonly' : 'readwrite'
-    const anchorDenied = await enforceProjectPermission(
-      c, authz.identity, authz.workspaceId, projectId, 'project:update',
-    )
-    if (anchorDenied) return anchorDenied
-    const targetDenied = await enforceProjectPermission(
-      c,
-      authz.identity,
-      authz.workspaceId,
-      body.attachedProjectId,
-      attachMode === 'readonly' ? 'project:read' : 'project:update',
-    )
-    if (targetDenied) return targetDenied
+    const authorizer = internalAttachmentAuthorizer(c, authz.identity, authz.workspaceId)
+    const denied = await authorizeAttachmentAction(authorizer, 'attach', projectId, {
+      projectId: body.attachedProjectId,
+      attachMode,
+    })
+    if (denied) return denied
 
     try {
       const svc = await import('../services/project-attachment.service')
@@ -2479,7 +2529,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const attachedProjectId = c.req.param('attachedProjectId')
     const authz = await authorizeLifecycleProject(c, projectId)
     if (!authz) return c.json({ error: 'Unauthorized' }, 401)
-    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:update')
+    const denied = await authorizeAttachmentAction(
+      internalAttachmentAuthorizer(c, authz.identity, authz.workspaceId),
+      'detach',
+      projectId,
+    )
     if (denied) return denied
     try {
       const { detachProjectFromProject } = await import('../services/project-attachment.service')

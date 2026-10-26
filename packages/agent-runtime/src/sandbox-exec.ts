@@ -243,6 +243,75 @@ export function rewriteBunxOnWindows(command: string): string {
   return command.replace(BUNX_REWRITE_RE, (_, lead: string, trail: string) => `${lead}bun x${trail}`)
 }
 
+// ---------------------------------------------------------------------------
+// `>nul` redirections on Windows (SHO-180 / #1686)
+// ---------------------------------------------------------------------------
+// The tool description tells the model to avoid cmd habits, but `2>nul` is
+// written often enough that it matters: under Git Bash — the shell `exec` uses
+// on Windows — `nul` is not the DOS device, so the command silently creates a
+// real file called `nul` in the cwd. That file can never be indexed by git on
+// Windows, which stopped the workspace's backup sync for three days.
+//
+// Rewrite a bare `nul` *redirection target* to `/dev/null` (which Git Bash
+// provides) before spawning. Only the target is touched: a command or argument
+// merely containing `nul` — `echo nul`, `git add nul`, `nul.txt` — is left
+// alone, and so is anything inside single or double quotes.
+
+/** `[n]>` / `>>` / `&>` followed by a bare `nul`, ending a word. */
+const NUL_TARGET_RE = /(?:[0-9]|&)?>>?\s*nul(?=$|[\s;&|)<>])/iy
+
+/**
+ * Point bare `nul` redirection targets at `/dev/null`. A no-op unless the
+ * command will run under a POSIX shell (Git Bash) on Windows: cmd.exe and
+ * PowerShell already treat `nul` as the null device.
+ */
+export function rewriteNulRedirectsOnWindows(
+  command: string,
+  opts: { platform?: NodeJS.Platform; shellLabel?: string } = {},
+): string {
+  const platform = opts.platform ?? process.platform
+  if (platform !== 'win32') return command
+  if (!/(?:^|[^a-z0-9_.-])nul(?:$|[^a-z0-9_.-])/i.test(command)) return command
+  if (!(opts.shellLabel ?? '').toLowerCase().includes('bash')) return command
+
+  let out = ''
+  let quote: '"' | "'" | null = null
+  let i = 0
+  while (i < command.length) {
+    const ch = command[i]
+    if (quote) {
+      out += ch
+      if (ch === '\\' && quote === '"') {
+        out += command[i + 1] ?? ''
+        i += 2
+        continue
+      }
+      if (ch === quote) quote = null
+      i++
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      out += ch
+      i++
+      continue
+    }
+    // A redirection operator only starts a target at a word boundary.
+    if ((ch === '>' || ch === '&' || /[0-9]/.test(ch)) && (i === 0 || /[\s;&|(]/.test(command[i - 1]))) {
+      NUL_TARGET_RE.lastIndex = i
+      const m = NUL_TARGET_RE.exec(command)
+      if (m) {
+        out += `${m[0].slice(0, -3)}/dev/null`
+        i += m[0].length
+        continue
+      }
+    }
+    out += ch
+    i++
+  }
+  return out
+}
+
 // Project-scoped env vars that are safe for the agent to read.
 // These are derived per-project (HMAC of projectId + signing secret),
 // so even if the agent reads them, the blast radius is zero.
@@ -687,7 +756,9 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
 
 function nativeExec(opts: SandboxExecOptions): SandboxExecResult {
   const shell = resolveShell()
-  const finalCommand = rewriteBunxOnWindows(opts.command)
+  const finalCommand = rewriteNulRedirectsOnWindows(rewriteBunxOnWindows(opts.command), {
+    shellLabel: shell ? (shell.split(/[\\/]/).pop() || shell) : '',
+  })
   try {
     const stdout = execSync(finalCommand, {
       cwd: opts.workspaceDir,
@@ -900,7 +971,10 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   } else {
     const choice = opts.shell ? chooseShell(opts.shell) : resolvedShellChoice()
     const env = buildExecEnv(opts.workspaceDir, { extraEnv: opts.extraEnv })
-    const finalCommand = applyPipefail(rewriteBunxOnWindows(opts.command), choice.pipefail)
+    const finalCommand = applyPipefail(
+      rewriteNulRedirectsOnWindows(rewriteBunxOnWindows(opts.command), { shellLabel: choice.label }),
+      choice.pipefail,
+    )
 
     ownGroup = process.platform !== 'win32'
     if (choice.shell) {

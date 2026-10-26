@@ -239,7 +239,11 @@ spec:
             - name: PUBLISH_DATA_BUCKET
               value: "shogo-published-data-staging"
             - name: PUBLISH_DOMAIN
-              value: "shogo.one"
+              # MUST match `publish_domain` in terraform/environments/staging
+              # ("staging.shogo.one"). This API uploads into the *staging*
+              # bucket, so minting a production `shogo.one` URL serves a 404
+              # from the production Worker (SHO-207).
+              value: "staging.shogo.one"
             # --- Custom domains (Cloudflare for SaaS) ----------------------
             # Bring-your-own hostnames for published apps. INERT until the
             # `custom-domains-config` secret is populated: the helper

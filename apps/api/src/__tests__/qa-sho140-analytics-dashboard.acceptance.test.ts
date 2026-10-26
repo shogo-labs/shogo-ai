@@ -20,8 +20,9 @@
  *   cd apps/api && bun test ./src/__tests__/qa-sho140-analytics-dashboard.acceptance.test.ts
  */
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
+import { pinClockIntoCacheBucket, restoreClock } from './helpers/analytics-bucket'
 
 const QA_USER = 'qa-140-user'
 mock.module('../middleware/auth', () => ({
@@ -36,7 +37,7 @@ setupChannelsTestDb()
 
 const { prisma } = await import('../lib/prisma')
 const analytics = await import('../services/analytics.service')
-const { clearAnalyticsCache, ANALYTICS_CACHE_BUCKET_MS } = await import('../lib/analytics-cache')
+const { clearAnalyticsCache } = await import('../lib/analytics-cache')
 const { scopedAnalyticsRoutes } = await import('../routes/scoped-analytics')
 const db = prisma as any
 
@@ -70,7 +71,14 @@ beforeAll(async () => {
   workspaceId = workspace.id
   const project = await db.project.create({ data: { name: 'QA 140 project', workspaceId } })
   projectId = project.id
-  const user = await db.user.create({ data: { id: QA_USER, name: 'QA', email: `${QA_USER}-${suffix}@example.com` } })
+  // `--rerun-each` re-evaluates this file, so `beforeAll` runs again against the
+  // same database: the session user id is fixed, so adopt the row when it is
+  // already there instead of dying on a unique violation (SHO-186).
+  const user = await db.user.upsert({
+    where: { id: QA_USER },
+    create: { id: QA_USER, name: 'QA', email: `${QA_USER}-${suffix}@example.com` },
+    update: {},
+  })
   await db.member.create({ data: { userId: user.id, workspaceId, role: 'admin' } })
   const team = await Promise.all(
     ['m1', 'm2', 'm3'].map((n) =>
@@ -141,17 +149,19 @@ function watch(tracker: { scans: number; raw: string[] }) {
   }
 }
 
-/** Put the clock early in a cache bucket so two calls share one key. */
-async function alignToBucketStart() {
-  const into = Date.now() % ANALYTICS_CACHE_BUCKET_MS
-  if (into > ANALYTICS_CACHE_BUCKET_MS / 3) {
-    await new Promise((r) => setTimeout(r, ANALYTICS_CACHE_BUCKET_MS - into + 250))
-  }
-}
+/**
+ * The two calls below only share a cache key while the clock stays inside one
+ * bucket, so pin it inside one (`pinClockIntoCacheBucket`). This replaces the
+ * old "sleep up to the next boundary", which could stall a test for 40 s and
+ * left it depending on the real clock (SHO-186).
+ */
 
 beforeEach(() => {
   clearAnalyticsCache()
 })
+
+/** A pinned clock never outlives the test that pinned it. */
+afterEach(() => restoreClock())
 
 /**
  * The grouped scan sums in a different order than the three legacy loops, so a
@@ -232,7 +242,7 @@ describe('SHO-140 QA: one request, the same numbers', () => {
   }, 60_000)
 
   test('a second open inside the cache bucket reuses the scan', async () => {
-    await alignToBucketStart()
+    pinClockIntoCacheBucket()
     const tracker = { scans: 0, raw: [] as string[] }
     const stop = watch(tracker)
     try {
@@ -268,7 +278,7 @@ describe('SHO-140 QA: one request, the same numbers', () => {
   }, 60_000)
 
   test('a chart toggle and a log page each cost one request and leave the summary alone', async () => {
-    await alignToBucketStart()
+    pinClockIntoCacheBucket()
     const first = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=model&metric=spend&limit=50`)
     const tracker = { scans: 0, raw: [] as string[] }
     const stop = watch(tracker)

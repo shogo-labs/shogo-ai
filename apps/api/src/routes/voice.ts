@@ -440,8 +440,10 @@ function uiMessageText(m: UIMessage): string {
 async function upsertShogoTextMessage(params: {
   chatSessionId: string
   uiMessage: UIMessage
+  /** The signed-in person; stamped on their own prompts so they stay attributable. */
+  userId?: string | null
 }): Promise<void> {
-  const { chatSessionId, uiMessage } = params
+  const { chatSessionId, uiMessage, userId } = params
   const content = uiMessageText(uiMessage)
   const envelope: ShogoPartsEnvelope = {
     kind: 'shogo-text',
@@ -457,6 +459,7 @@ async function upsertShogoTextMessage(params: {
       : undefined
 
   try {
+    const authorUserId = role === 'user' ? userId ?? null : null
     if (id) {
       await prisma.chatMessage.upsert({
         where: { id },
@@ -467,6 +470,7 @@ async function upsertShogoTextMessage(params: {
           content,
           parts: partsJson,
           agent: 'voice',
+          authorUserId,
         },
         update: {
           content,
@@ -481,6 +485,7 @@ async function upsertShogoTextMessage(params: {
           content,
           parts: partsJson,
           agent: 'voice',
+          authorUserId,
         },
       })
     }
@@ -910,7 +915,7 @@ export function voiceRoutes() {
       for (let i = uiMessages.length - 1; i >= 0; i--) {
         const m = uiMessages[i]
         if (m.role !== 'user') break
-        await upsertShogoTextMessage({ chatSessionId, uiMessage: m })
+        await upsertShogoTextMessage({ chatSessionId, uiMessage: m, userId: auth.userId })
       }
 
       // Compose the same persona + project context block we send
@@ -979,6 +984,7 @@ export function voiceRoutes() {
             await upsertShogoTextMessage({
               chatSessionId,
               uiMessage: m,
+              userId: auth.userId,
             })
           }
         },
@@ -1095,6 +1101,7 @@ export function voiceRoutes() {
         return c.json({ error: authz.message }, authz.status)
       }
 
+      const authorUserId = role === 'user' ? auth.userId : null
       const row = id
         ? await prisma.chatMessage.upsert({
             where: { id },
@@ -1105,6 +1112,7 @@ export function voiceRoutes() {
               content: body.text,
               parts: partsJson,
               agent: 'voice',
+              authorUserId,
               ...(createdAt ? { createdAt } : {}),
             },
             update: {
@@ -1119,6 +1127,7 @@ export function voiceRoutes() {
               content: body.text,
               parts: partsJson,
               agent: 'voice',
+              authorUserId,
               ...(createdAt ? { createdAt } : {}),
             },
           })

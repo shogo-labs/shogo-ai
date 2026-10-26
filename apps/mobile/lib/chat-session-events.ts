@@ -14,6 +14,11 @@ export type ChatSessionChange = {
    *  created / renamed / deleted). When false/omitted it's an active-chat
    *  change only — update the highlight without a network round-trip. */
   refresh?: boolean
+  /** The chat whose row should read "now" right away — a send, mirrored from
+   *  the screen that sent it. List rows re-sort from it without any re-fetch. */
+  touchedSessionId?: string
+  /** Epoch ms for `touchedSessionId`'s row. */
+  lastActiveAt?: number
 }
 
 export type ChatSessionSelectRequest = {
@@ -86,7 +91,8 @@ function isCrossWindowChatSessionChange(value: unknown): value is CrossWindowCha
     typeof event.eventId === 'string' &&
     typeof event.sourceId === 'string' &&
     (typeof event.projectId === 'string' ||
-      typeof event.workspaceId === 'string')
+      typeof event.workspaceId === 'string' ||
+      typeof event.touchedSessionId === 'string')
   )
 }
 
@@ -103,6 +109,8 @@ function receiveCrossWindowChange(value: unknown): void {
     workspaceId: value.workspaceId,
     activeSessionId: value.activeSessionId,
     refresh: value.refresh,
+    touchedSessionId: value.touchedSessionId,
+    lastActiveAt: value.lastActiveAt,
   })
 }
 
@@ -214,11 +222,35 @@ export type ChatActivityEvent = {
   streamingSessionIds: string[]
   /** Session ids that finished streaming but haven't been viewed yet. */
   completedSessionIds: string[]
+  /**
+   * Sessions whose turn this publisher watched end — a real transition, never a
+   * chat switch or an unmount. It lets a list stop that row's spinner at once
+   * instead of waiting for the next server poll. Additive by design: the
+   * snapshot arrays above can go blank when the publisher resets (you switch
+   * chats), and blank must never mean "everything finished".
+   */
+  finishedSessionIds?: string[]
 }
 
 type ActivityListener = (event: ChatActivityEvent) => void
 
 const activityListeners = new Set<ActivityListener>()
+/** Last published snapshot per scope (`workspace:<id>` / `project:<id>`). */
+const lastActivityByScope = new Map<string, ChatActivityEvent>()
+
+function activityScopeKey(event: ChatActivityEvent): string | null {
+  if (event.workspaceId) return `workspace:${event.workspaceId}`
+  if (event.projectId) return `project:${event.projectId}`
+  return null
+}
+
+function isEmptySnapshot(event: ChatActivityEvent): boolean {
+  return (
+    event.streamingSessionIds.length === 0 &&
+    event.completedSessionIds.length === 0 &&
+    (event.finishedSessionIds?.length ?? 0) === 0
+  )
+}
 
 /**
  * Separate channel from `chatSessionEvents` for high-frequency streaming
@@ -226,16 +258,38 @@ const activityListeners = new Set<ActivityListener>()
  * / have new activity so the AppSidebar can mirror the spinner + activity dot
  * without re-fetching the chat list on every stream tick (which is why this
  * is decoupled from the create / rename / delete refresh events above).
+ *
+ * The last snapshot per scope is remembered and replayed to a new subscriber,
+ * so a list that mounts mid-turn (opening the chats tab while a turn runs, or
+ * opening a second window) paints the spinner immediately instead of waiting
+ * for the publisher's next tick — which, for a chat that is already streaming,
+ * may never come.
  */
 export const chatActivityEvents = {
   subscribe(fn: ActivityListener) {
     activityListeners.add(fn)
+    lastActivityByScope.forEach((event) => fn({ ...event }))
     return () => {
       activityListeners.delete(fn)
     }
   },
 
   emit(event: ChatActivityEvent) {
+    const scope = activityScopeKey(event)
+    if (scope) {
+      // Replay remembers the *snapshot*, never the one-shot finish signal: a
+      // subscriber mounting later must learn what is running, not be told a
+      // turn ended. An all-empty emit drops the slot so the next subscriber
+      // doesn't inherit a stale spinner.
+      const snapshot: ChatActivityEvent = {
+        projectId: event.projectId,
+        workspaceId: event.workspaceId,
+        streamingSessionIds: event.streamingSessionIds,
+        completedSessionIds: event.completedSessionIds,
+      }
+      if (isEmptySnapshot(snapshot)) lastActivityByScope.delete(scope)
+      else lastActivityByScope.set(scope, snapshot)
+    }
     activityListeners.forEach((fn) => fn(event))
   },
 }

@@ -19,6 +19,7 @@ import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { createBufferedTurns, type PipelineCallHooks, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
 import { describeTurn } from './turn-status'
+import { RepoAdoptGate, isWorkspaceNeutralRequest } from './repo-adopt-gate'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
   existsSync,
@@ -48,8 +49,8 @@ import {
 import {
   POOL_DIST_BASE_PLACEHOLDER,
   adoptPoolPreseedIntoMember,
-  discardPoolPreseed,
   discardPoolPreseedArtifacts,
+  discardPoolPreseedAtAssign,
   listRootEntries,
   poolDistDir,
   removePoolTemplateDist,
@@ -113,6 +114,7 @@ import {
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
   seedWorkspaceDefaults,
+  seedWorkspaceRuntimeDefaults,
   seedPersonalCompanionTemplate,
   seedLSPConfig,
   seedRuntimeTemplate,
@@ -166,7 +168,7 @@ import {
   type PortBridgeWsData,
   type PortHttpWsData,
 } from './port-bridge'
-import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorkspaceNotification, postWorktreeStatus, postPlanMirror } from './internal-api'
 import { acceptsAppToolToken } from './app-runtime-token'
 import {
   detachMemberFromRootRepo,
@@ -657,6 +659,10 @@ const workspaceStatus: {
   depsInstalled: false,
 }
 
+// Gates the metal host's late `.git` swap on nobody having used the workspace
+// (see repo-adopt-gate.ts). Declared before the app so onAssign can reset it.
+const repoAdoptGate = new RepoAdoptGate()
+
 const { app, state, logTiming } = await createRuntimeApp({
   name: 'agent-runtime',
   workDir: WORKSPACE_DIR,
@@ -665,6 +671,7 @@ const { app, state, logTiming } = await createRuntimeApp({
   authPrefixes: ['/agent', '/pool', '/diagnostics', '/terminal'],
   acceptsScopedToken: acceptsAppToolToken,
   async onAssign(projectId, envVars) {
+    repoAdoptGate.reset()
     const hostWorkspacesRoot = envVars.SHOGO_HOST_WORKSPACES_ROOT || '/host-workspaces'
     const assignedWorkspaceDir = envVars.WORKSPACE_DIR || envVars.PROJECT_DIR
     const sentinelPath = POOL_SENTINEL_PATH
@@ -945,6 +952,14 @@ const { app, state, logTiming } = await createRuntimeApp({
   },
 })
 
+// Anything that can write the workspace marks it in use for the repo adopt
+// gate, and waits if a late `.git` swap is running. Registered before every
+// route below so none of them slips past it.
+app.use('*', async (c, next) => {
+  if (!isWorkspaceNeutralRequest(c.req.method, c.req.path)) await repoAdoptGate.enter()
+  return next()
+})
+
 // Readiness probe.
 //
 // Returns 503 until either:
@@ -1120,12 +1135,16 @@ function ensureWorkspaceFiles(): void {
     // or running the legacy APP-layout migration here would corrupt the
     // user's repo (external) or the sibling project subfolders
     // (workspace). Lay down only the workspace-level `.shogo` skeleton.
-    seedWorkspaceDefaults(WORKSPACE_DIR)
     if (IS_WORKSPACE_RUNTIME) {
+      // A workspace root has no app, so its AGENTS.md must send "build me an
+      // app" through `project_create` instead of `src/App.tsx` (SHO-194).
+      seedWorkspaceRuntimeDefaults(WORKSPACE_DIR)
       writeWorkspaceManifest(WORKSPACE_DIR)
       if (workspaceKind() === 'personal') {
         seedPersonalCompanionTemplate(WORKSPACE_DIR)
       }
+    } else {
+      seedWorkspaceDefaults(WORKSPACE_DIR)
     }
     workspaceStatus.templateSeeded = true
     logTiming(
@@ -2636,6 +2655,7 @@ import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
 import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
+import { syncGuestClock } from './guest-clock'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
 import { scheduleLogWrite, flushAllLogWrites } from './runtime-log-writer'
 
@@ -3316,7 +3336,9 @@ app.post('/pool/repo-hydrated', async (c) => {
   // `bundles` means this guest can restore the incremental repo format
   // (`/pool/repo-bundles-hydrate`). The host must not fall back to the legacy
   // tarball when a manifest exists, so it refuses instead of guessing.
-  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true, bundles: true })
+  // `ifIdle` means this guest honours `ifIdle` below, so the host may hand the
+  // project out before its history arrives and swap it in afterwards.
+  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: true })
   let stagingDir: string
   try {
     stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
@@ -3338,8 +3360,8 @@ app.post('/pool/repo-hydrated', async (c) => {
   const timeoutMs = Number(body?.timeoutMs)
   const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : null
   let sync = null as GitWorkspaceSync | null
-  try {
-    const res = await adoptHydratedRepoBefore(WORKSPACE_DIR, stagingDir, {
+  const adopt = () =>
+    adoptHydratedRepoBefore(WORKSPACE_DIR, stagingDir, {
       deadline,
       ready: gitLayerReady,
       // Resumed below, once the LFS pull is done too.
@@ -3347,6 +3369,23 @@ app.post('/pool/repo-hydrated', async (c) => {
       logger: console,
       keepPaths,
     })
+  try {
+    // A late swap (the project is already being served on the source's
+    // `.git`) may only happen while nobody has used the workspace; otherwise
+    // decline and leave the tree exactly as it is. Only the swap holds the
+    // gate: the LFS pull below rewrites pointer files nobody has edited.
+    const res =
+      body?.ifIdle === true
+        ? await repoAdoptGate.adoptIfIdle(adopt, () => {
+            const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0 }
+            return activeStreams > 0 || work.turns > 0 || work.tasks > 0
+          })
+        : await adopt()
+    if (!res) {
+      rmSync(stagingDir, { recursive: true, force: true })
+      console.warn('[pool/repo-hydrated] workspace already in use — declining the late repo adopt')
+      return c.json({ error: 'workspace already in use', adopted: false, busy: true }, 409)
+    }
     if (res.headSha) cachedRepoHeadSha = res.headSha
     if (res.reset && isLfsActive()) {
       // Smudge is skipped on checkout, so files the reset rewrote may be LFS
@@ -3630,9 +3669,20 @@ app.post('/pool/quiesce', async (c) => {
 app.post('/pool/rehydrate', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const waitMs = Math.min(Math.max(Number(body?.waitMs) || 0, 0), 60_000)
+  // Before the sidecars restart, and before anything in the guest makes an
+  // HTTPS call: a guest restored from a snapshot can come back with its wall
+  // clock frozen at snapshot time (see guest-clock.ts). The host sends its
+  // clock in `hostNowMs`; a host that predates it sends nothing and this is a
+  // no-op. Logged either way, because an uncorrected skew is exactly the bug.
+  const clock = await syncGuestClock(body?.hostNowMs)
+  if (clock?.corrected) {
+    console.log(`[pool/rehydrate] clock skew ${clock.skewMs}ms corrected (residual ${clock.residualMs}ms)`)
+  } else if (clock?.error) {
+    console.error(`[pool/rehydrate] clock skew ${clock.skewMs}ms NOT corrected: ${clock.error}`)
+  }
   const projects = await rehydrateSidecars(allPreviewManagers(), waitMs)
   console.log(`[pool/rehydrate] ${JSON.stringify(projects)}`)
-  return c.json({ ok: true, projects })
+  return c.json({ ok: true, projects, ...(clock ? { clock } : {}) })
 })
 
 // Alias for `/preview/restart`. The code-agent prompt and older SDK/template
@@ -6715,12 +6765,22 @@ async function initializeEssentials(): Promise<void> {
         console.error(`[agent-runtime] Seeding anchor ${anchorId} failed:`, error.message)
       }
     }
+    // This process pre-seeded the root only when it booted as an unassigned
+    // pool VM, which is the assign — see discardPoolPreseedAtAssign for why
+    // that is the only path allowed to delete.
+    const bootedFromPool = poolPreseedDone !== null
     const discardRootPreseed = () => {
-      const removed = discardPoolPreseed(WORKSPACE_DIR)
-      if (removed.length) logTiming(`Workspace runtime: removed pool pre-seed from workspace root (${removed.join(', ')})`)
+      const result = discardPoolPreseedAtAssign(WORKSPACE_DIR, { bootedFromPool })
+      if (result.source === 'manifest') {
+        logTiming(`Workspace runtime: removed pool pre-seed from workspace root (${result.removed.join(', ')})`)
+      } else if (result.source === 'template') {
+        console.warn(
+          `[agent-runtime] Workspace runtime: the pool pre-seed manifest was missing or empty — removed the runtime template from the workspace root by name (${result.removed.join(', ')})`,
+        )
+      }
     }
-    if (preseedSettled) discardRootPreseed()
-    else poolPreseedDone?.then(discardRootPreseed).catch(() => {})
+    if (bootedFromPool && !preseedSettled) poolPreseedDone?.then(discardRootPreseed).catch(() => {})
+    else discardRootPreseed()
   } else if (poolPreseedDone) {
     poolPreseedDone.then(() => discardPoolPreseedArtifacts(WORKSPACE_DIR)).catch(() => {})
   }
@@ -6912,6 +6972,26 @@ async function initializeEssentials(): Promise<void> {
           if (cloudSyncMode === 'git_only') {
             s3SyncInstance?.setSuppressProjectArchive(true)
           }
+        },
+        // Parked means git has failed the same way 20 times in a row and will
+        // not fix itself — tell the user once instead of failing silently for
+        // days (SHO-180 / #1686).
+        onPark: (info) => {
+          const workspaceId = process.env.WORKSPACE_ID || ''
+          const what = cloudSyncMode === 'git_only' ? 'checkpoint commit' : 'push'
+          console.warn(
+            `[agent-runtime] git sync parked after ${info.consecutiveFailures} failed ${what}s: ${info.reason}`,
+          )
+          if (!workspaceId) return
+          void postWorkspaceNotification({
+            workspaceId,
+            title: 'Workspace backup has failed',
+            body:
+              `Workspace backup has failed ${info.consecutiveFailures} times: ${info.reason}` +
+              (info.lifetimeFailures > info.consecutiveFailures
+                ? ` (${info.lifetimeFailures} failures since ${info.firstFailureAt ?? 'the first attempt'})`
+                : ''),
+          })
         },
       })
       if (gitSyncInstance) {
@@ -7505,6 +7585,15 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
 } else if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: pre-seeding workspace with runtime template...')
   const rootEntriesBeforePreseed = listRootEntries(WORKSPACE_DIR)
+  if (rootEntriesBeforePreseed.length > 0) {
+    // A resumed snapshot, a reused /data/workspace drive or a container
+    // restart boots with last boot's pre-seed already in the root. The
+    // pre-seed still owns all of it, so the manifest lists every entry —
+    // this line is here so the reused-root case is visible in the logs.
+    logTiming(
+      `Pool mode: workspace root already held ${rootEntriesBeforePreseed.length} entries before the pre-seed (reused drive or snapshot)`,
+    )
+  }
   ensureWorkspaceFiles()
   const poolTechStackId = resolveWorkspaceTechStackId(WORKSPACE_DIR) || null
   let poolDistBuilt = false
@@ -7541,7 +7630,6 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
   }).finally(() => {
     try {
       writePoolPreseedManifest(WORKSPACE_DIR, {
-        entriesBefore: rootEntriesBeforePreseed,
         techStackId: poolTechStackId,
         distBuilt: poolDistBuilt,
         exclude: IS_WORKSPACE_RUNTIME

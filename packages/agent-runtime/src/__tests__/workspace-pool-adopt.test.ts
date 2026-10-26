@@ -19,6 +19,7 @@ import {
   adoptPoolPreseedIntoMember,
   discardPoolPreseed,
   discardPoolPreseedArtifacts,
+  discardPoolPreseedAtAssign,
   listRootEntries,
   poolDistDir,
   readPoolPreseedManifest,
@@ -41,8 +42,7 @@ function write(path: string, content = 'x'): void {
 }
 
 /** Lay down what an unassigned pool VM leaves in WORKSPACE_DIR. */
-function preseedRoot(opts: { dist?: boolean } = {}): string[] {
-  const before = listRootEntries(root)
+function preseedRoot(opts: { dist?: boolean } = {}): void {
   write(join(root, 'AGENTS.md'), 'workspace agents')
   write(join(root, 'config.json'), '{}')
   mkdirSync(join(root, 'memory'), { recursive: true })
@@ -67,7 +67,18 @@ function preseedRoot(opts: { dist?: boolean } = {}): string[] {
     write(join(dist, 'assets', 'index.css'), `a{background:url(${POOL_DIST_BASE_PLACEHOLDER}assets/bg.png)}`)
     write(join(dist, 'assets', 'bg.png'), POOL_DIST_BASE_PLACEHOLDER)
   }
-  return before
+}
+
+/** Pre-seed the root and write the manifest the pool would have written. */
+function preseedAndManifest(
+  opts: { dist?: boolean; techStackId?: string | null; exclude?: string[] } = {},
+) {
+  preseedRoot(opts)
+  return writePoolPreseedManifest(root, {
+    techStackId: opts.techStackId === undefined ? 'react-app' : opts.techStackId,
+    distBuilt: opts.dist === true,
+    exclude: opts.exclude,
+  })
 }
 
 beforeEach(() => {
@@ -77,6 +88,11 @@ beforeEach(() => {
   templateDir = join(tmp, 'runtime-template')
   write(join(templateDir, 'package.json'), '{"name":"template"}')
   write(join(templateDir, 'AGENTS.md'), 'template agents')
+  write(join(templateDir, 'index.html'), '<div id="root"></div>')
+  write(join(templateDir, 'vite.config.ts'), 'export default {}')
+  write(join(templateDir, 'prisma', 'schema.prisma'), 'datasource db {}')
+  write(join(templateDir, 'src', 'App.tsx'), 'export default () => "Project Ready"')
+  write(join(templateDir, 'scripts', 'generate.ts'), 'generate')
   savedTemplateEnv = process.env.RUNTIME_TEMPLATE_DIR
   process.env.RUNTIME_TEMPLATE_DIR = templateDir
 })
@@ -88,10 +104,8 @@ afterEach(() => {
 })
 
 describe('writePoolPreseedManifest', () => {
-  test('records only project entries the pre-seed created', () => {
-    write(join(root, 'preexisting.txt'))
-    const before = preseedRoot({ dist: true })
-    const manifest = writePoolPreseedManifest(root, { entriesBefore: before, techStackId: 'react-app', distBuilt: true })
+  test('records the project entries the pre-seed created', () => {
+    const manifest = preseedAndManifest({ dist: true })
     expect([...manifest.entries].sort()).toEqual(
       ['.tech-stack', 'index.html', 'node_modules', 'package.json', 'prisma', 'server.tsx', 'src'].sort(),
     )
@@ -99,12 +113,33 @@ describe('writePoolPreseedManifest', () => {
     expect(readPoolPreseedManifest(root)).toEqual(manifest)
   })
 
+  test('records a template that was already in the root before the pre-seed', () => {
+    // A resumed metal snapshot, a reused /data/workspace drive or a container
+    // restart boots with last boot's pre-seed already in place. Those entries
+    // are still the pool's, so the manifest must list them (SHO-194).
+    preseedRoot({ dist: true })
+    const manifest = writePoolPreseedManifest(root, { techStackId: 'react-app', distBuilt: true })
+    for (const entry of ['package.json', 'src', 'node_modules', 'prisma', 'server.tsx', 'index.html']) {
+      expect(manifest.entries).toContain(entry)
+    }
+  })
+
+  test('an already-present template is discarded at assign', () => {
+    // Same state as above, but read back the way an assign does it.
+    preseedRoot({ dist: true })
+    writePoolPreseedManifest(root, { techStackId: 'react-app', distBuilt: true })
+    const result = discardPoolPreseedAtAssign(root, { bootedFromPool: true })
+    expect(result.source).toBe('manifest')
+    expect(result.removed).toContain('src')
+    expect(existsSync(join(root, 'src'))).toBe(false)
+    expect(existsSync(join(root, 'package.json'))).toBe(false)
+  })
+
   test('never records project folders or excluded mounts', () => {
-    const before = preseedRoot()
+    preseedRoot()
     mkdirSync(join(root, OTHER))
     mkdirSync(join(root, 'linked-folder'))
     const manifest = writePoolPreseedManifest(root, {
-      entriesBefore: before,
       techStackId: 'react-app',
       distBuilt: false,
       exclude: ['linked-folder'],
@@ -114,9 +149,9 @@ describe('writePoolPreseedManifest', () => {
   })
 
   test('never records the git layer repo seeded during the pre-seed', () => {
-    const before = preseedRoot()
+    preseedAndManifest()
     write(join(root, '.git', 'HEAD'), 'ref: refs/heads/main')
-    const manifest = writePoolPreseedManifest(root, { entriesBefore: before, techStackId: 'react-app', distBuilt: false })
+    const manifest = writePoolPreseedManifest(root, { techStackId: 'react-app', distBuilt: false })
     expect(manifest.entries).not.toContain('.git')
   })
 
@@ -126,7 +161,8 @@ describe('writePoolPreseedManifest', () => {
   })
 
   test('distBuilt is false when no build landed', () => {
-    const manifest = writePoolPreseedManifest(root, { entriesBefore: preseedRoot(), techStackId: null, distBuilt: true })
+    preseedRoot()
+    const manifest = writePoolPreseedManifest(root, { techStackId: null, distBuilt: true })
     expect(manifest.distBuilt).toBe(false)
   })
 
@@ -138,8 +174,7 @@ describe('writePoolPreseedManifest', () => {
 
 describe('adoptPoolPreseedIntoMember', () => {
   test('moves the pre-seed into the anchor and serves the rebased dist', () => {
-    const before = preseedRoot({ dist: true })
-    writePoolPreseedManifest(root, { entriesBefore: before, techStackId: 'react-app', distBuilt: true })
+    preseedAndManifest({ dist: true })
     const anchor = join(root, ANCHOR)
 
     const result = adoptPoolPreseedIntoMember(root, anchor, { basePath: `/p/${ANCHOR}/` })
@@ -172,9 +207,8 @@ describe('adoptPoolPreseedIntoMember', () => {
   })
 
   test('leaves the root repo in place instead of nesting it in the anchor', () => {
-    const before = preseedRoot()
+    preseedAndManifest()
     write(join(root, '.git', 'HEAD'), 'ref: refs/heads/main')
-    writePoolPreseedManifest(root, { entriesBefore: before, techStackId: 'react-app', distBuilt: false })
     const anchorDir = join(root, ANCHOR)
 
     const result = adoptPoolPreseedIntoMember(root, anchorDir, { basePath: `/preview/${ANCHOR}/` })
@@ -186,14 +220,14 @@ describe('adoptPoolPreseedIntoMember', () => {
   })
 
   test('adopts without a dist when the pool did not build one', () => {
-    writePoolPreseedManifest(root, { entriesBefore: preseedRoot(), techStackId: 'react-app', distBuilt: false })
+    preseedAndManifest()
     const result = adoptPoolPreseedIntoMember(root, join(root, ANCHOR), { basePath: `/p/${ANCHOR}/` })
     expect(result).toMatchObject({ adopted: true, distReady: false })
     expect(existsSync(join(root, ANCHOR, 'dist'))).toBe(false)
   })
 
   test('refuses a member that already has source', () => {
-    writePoolPreseedManifest(root, { entriesBefore: preseedRoot(), techStackId: 'react-app', distBuilt: false })
+    preseedAndManifest()
     write(join(root, ANCHOR, 'src', 'Real.tsx'), 'real')
     expect(adoptPoolPreseedIntoMember(root, join(root, ANCHOR), { basePath: '/p/x/' })).toEqual({
       adopted: false,
@@ -203,7 +237,7 @@ describe('adoptPoolPreseedIntoMember', () => {
   })
 
   test('refuses a different tech stack but accepts an unset one', () => {
-    writePoolPreseedManifest(root, { entriesBefore: preseedRoot(), techStackId: 'react-app', distBuilt: false })
+    preseedAndManifest()
     expect(
       adoptPoolPreseedIntoMember(root, join(root, ANCHOR), { basePath: '/p/x/', techStackId: 'expo-app' }),
     ).toEqual({ adopted: false, reason: 'stack-mismatch' })
@@ -219,16 +253,16 @@ describe('adoptPoolPreseedIntoMember', () => {
   })
 })
 
-describe('discardPoolPreseed', () => {
+describe('discardPoolPreseedAtAssign', () => {
   test('removes the root app but keeps workspace files and project folders', () => {
-    const before = preseedRoot({ dist: true })
-    writePoolPreseedManifest(root, { entriesBefore: before, techStackId: 'react-app', distBuilt: true })
+    preseedAndManifest({ dist: true })
     write(join(root, OTHER, 'package.json'), '{}')
 
-    const removed = discardPoolPreseed(root)
+    const result = discardPoolPreseedAtAssign(root, { bootedFromPool: true })
 
-    expect(removed).toContain('src')
-    expect(removed).toContain('node_modules')
+    expect(result.source).toBe('manifest')
+    expect(result.removed).toContain('src')
+    expect(result.removed).toContain('node_modules')
     for (const entry of ['package.json', 'src', 'node_modules', 'prisma', 'server.tsx', 'index.html']) {
       expect(existsSync(join(root, entry))).toBe(false)
     }
@@ -240,37 +274,128 @@ describe('discardPoolPreseed', () => {
   })
 
   test('a pre-seed that finishes after assign keeps the adopted repo', () => {
-    const before = preseedRoot()
+    preseedAndManifest()
     write(join(root, '.git', 'HEAD'), 'ref: refs/heads/main')
     write(join(root, '.git', 'refs', 'heads', 'main'), 'durable')
-    writePoolPreseedManifest(root, { entriesBefore: before, techStackId: 'react-app', distBuilt: false })
 
-    const removed = discardPoolPreseed(root)
+    const result = discardPoolPreseedAtAssign(root, { bootedFromPool: true })
 
-    expect(removed).not.toContain('.git')
+    expect(result.removed).not.toContain('.git')
     expect(readFileSync(join(root, '.git', 'refs', 'heads', 'main'), 'utf-8')).toBe('durable')
     expect(existsSync(join(root, 'src'))).toBe(false)
   })
 
-  test('is a no-op without a manifest', () => {
+  test('without a manifest, removes only runtime-template names', () => {
+    preseedRoot({ dist: true })
+    write(join(root, 'research', 'notes.md'), 'user research')
+    write(join(root, 'plans', 'plan.md'), 'user plan')
+    write(join(root, 'files', 'upload.png'), 'bytes')
+    mkdirSync(join(root, OTHER))
+    write(join(root, OTHER, 'package.json'), '{}')
+    mkdirSync(join(root, 'linked-folder'))
+    rmSync(join(root, '.shogo', 'pool-preseed.json'), { force: true })
+
+    const result = discardPoolPreseedAtAssign(root, { bootedFromPool: true })
+
+    expect(result.source).toBe('template')
+    expect([...result.removed].sort()).toEqual(['index.html', 'node_modules', 'package.json', 'prisma', 'server.tsx', 'src'])
+    for (const gone of ['package.json', 'src', 'node_modules', 'prisma', 'server.tsx', 'index.html']) {
+      expect(existsSync(join(root, gone))).toBe(false)
+    }
+    for (const kept of ['AGENTS.md', 'config.json', 'memory', '.shogo', 'research', 'plans', 'files', OTHER, 'linked-folder']) {
+      expect(existsSync(join(root, kept))).toBe(true)
+    }
+  })
+
+  test('the fallback needs the runtime template marker', () => {
+    preseedRoot()
+    rmSync(join(root, '.shogo', 'install-marker'), { force: true })
+    write(join(root, 'package.json'), '{"name":"portfolio"}')
+
+    const result = discardPoolPreseedAtAssign(root, { bootedFromPool: true })
+
+    expect(result).toEqual({ source: 'none', removed: [], why: 'no-template' })
+    expect(existsSync(join(root, 'src'))).toBe(true)
+  })
+
+  test('a linked mount at the root is never recorded nor removed', () => {
+    preseedRoot()
+    const outside = join(tmp, 'outside-folder')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'notes.md'), 'the user folder')
+    symlinkSync(outside, join(root, 'linked-folder'))
+    // A mount named like a template dir must survive the template-name fallback.
+    symlinkSync(outside, join(root, 'public'))
+
+    const manifest = writePoolPreseedManifest(root, { techStackId: 'react-app', distBuilt: false })
+    expect(manifest.entries).not.toContain('linked-folder')
+    expect(manifest.entries).not.toContain('public')
+
+    discardPoolPreseedAtAssign(root, { bootedFromPool: true })
+
+    expect(readFileSync(join(root, 'linked-folder', 'notes.md'), 'utf-8')).toBe('the user folder')
+    expect(existsSync(join(root, 'public', 'notes.md'))).toBe(true)
+  })
+
+  test('the template package name marks the root without an install marker', () => {
+    preseedRoot()
+    rmSync(join(root, '.shogo', 'install-marker'), { force: true })
+    write(join(root, 'package.json'), '{"name":"template"}')
+
+    expect(discardPoolPreseedAtAssign(root, { bootedFromPool: true }).source).toBe('template')
+    expect(existsSync(join(root, 'src'))).toBe(false)
+  })
+
+  test('a resumed runtime deletes nothing and says so', () => {
+    preseedAndManifest()
+    write(join(root, 'portfolio', 'index.html'), 'the user built this here')
+
+    const logged: string[] = []
+    const originalError = console.error
+    const originalLog = console.log
+    console.error = (...args: unknown[]) => logged.push(args.map(String).join(' '))
+    console.log = (...args: unknown[]) => logged.push(args.map(String).join(' '))
+    let result
+    try {
+      result = discardPoolPreseedAtAssign(root, { bootedFromPool: false })
+    } finally {
+      console.error = originalError
+      console.log = originalLog
+    }
+
+    expect(result).toEqual({ source: 'none', removed: [], why: 'resumed-runtime' })
+    for (const entry of ['package.json', 'src', 'node_modules', 'portfolio/index.html']) {
+      expect(existsSync(join(root, entry))).toBe(true)
+    }
+    expect(readPoolPreseedManifest(root)).not.toBeNull()
+    expect(logged.join('\n')).toContain('leaving it alone')
+  })
+
+  test('discardPoolPreseed keeps its own no-manifest behaviour', () => {
     preseedRoot()
     expect(discardPoolPreseed(root)).toEqual([])
     expect(existsSync(join(root, 'package.json'))).toBe(true)
   })
 
   test('discardPoolPreseedArtifacts keeps the root app for single-project runtimes', () => {
-    const before = preseedRoot({ dist: true })
-    writePoolPreseedManifest(root, { entriesBefore: before, techStackId: 'react-app', distBuilt: true })
+    preseedAndManifest({ dist: true })
     discardPoolPreseedArtifacts(root)
     expect(existsSync(join(root, 'package.json'))).toBe(true)
     expect(existsSync(poolDistDir(root))).toBe(false)
     expect(readPoolPreseedManifest(root)).toBeNull()
   })
+
+  test('removableRootNames excludes workspace-level files the template also ships', () => {
+    preseedRoot()
+    const result = discardPoolPreseedAtAssign(root, { bootedFromPool: true })
+    expect(result.removed).not.toContain('AGENTS.md')
+    expect(readFileSync(join(root, 'AGENTS.md'), 'utf-8')).toBe('workspace agents')
+  })
 })
 
 describe('removePoolTemplateDist', () => {
   function adoptWithDist(): string {
-    writePoolPreseedManifest(root, { entriesBefore: preseedRoot({ dist: true }), techStackId: 'react-app', distBuilt: true })
+    preseedAndManifest({ dist: true })
     const anchor = join(root, ANCHOR)
     adoptPoolPreseedIntoMember(root, anchor, { basePath: `/p/${ANCHOR}/` })
     return anchor
