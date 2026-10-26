@@ -251,7 +251,10 @@ The bundled Bun binary is too old. Delete `apps/desktop/resources/bun/` and
 re-run `download-bun.mjs` to get the pinned version (`1.4.4`).
 
 **`ERR_BLOCKED_BY_CSP` for canvas iframe**
-The Electron CSP in `main.ts` needs `frame-src` for `http://localhost:*`.
+The Electron CSP — `buildLocalCsp()` in `src/local-csp.ts`, stamped on every
+local-mode response by `main.ts` — needs `frame-src` for `http://localhost:*`.
+`blob:` belongs in `frame-src` and `media-src` too, or the chat file viewer's
+blob-URL video/audio/PDF never loads (SHO-229).
 
 **App crashes immediately on double-click**
 Launch from terminal to see output:

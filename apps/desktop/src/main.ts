@@ -47,6 +47,7 @@ import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter, type D
 import { getWebDir, getBunPath, getDbPath, getWorkspacesDirDecision, getDataDir } from './paths'
 import { buildHostLimits, hostRuntimeView, writeHostLimits } from './host-limits'
 import { normalizeExecMemoryMB } from './runtime-memory'
+import { buildLocalCsp } from './local-csp'
 import { runSpotlightHint, SPOTLIGHT_SETTINGS_URL } from './spotlight-hint'
 import type { WorkspacesDirDecision } from './spotlight-exclusion'
 import {
@@ -1945,20 +1946,9 @@ function setupSessionHandlers(): void {
       }
     }
 
+    // Cloud mode sets no CSP at all, matching the web app.
     if (!isCloudMode) {
-      headers['Content-Security-Policy'] = [
-        [
-          "default-src 'self' shogo: https: http:",
-          `connect-src *`,
-          `frame-src 'self' shogo: ${apiOrigin} http://localhost:* http://127.0.0.1:* https://*.vscode-cdn.net https:`,
-          `child-src 'self' shogo: ${apiOrigin} http://localhost:* http://127.0.0.1:* https://*.vscode-cdn.net https:`,
-          "script-src 'self' shogo: blob: 'unsafe-inline' 'unsafe-eval'",
-          "worker-src 'self' shogo: blob:",
-          "style-src 'self' shogo: 'unsafe-inline'",
-          "img-src * data: blob:",
-          "font-src 'self' shogo: data: https:",
-        ].join('; ')
-      ]
+      headers['Content-Security-Policy'] = [buildLocalCsp(apiOrigin)]
     }
 
     callback({ responseHeaders: headers })
