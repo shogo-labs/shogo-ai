@@ -103,10 +103,13 @@ function MemoryForCommandsSection({
 }) {
   const explicitGB = typeof config.execMemoryMB === 'number' ? Math.round(config.execMemoryMB / 1024) : null
   const [draft, setDraft] = useState(explicitGB ? String(explicitGB) : '')
-
-  useEffect(() => {
+  // Resync during render, not in an effect: a passive effect can land after the
+  // user has already typed and overwrite their input with the old saved value.
+  const [draftFor, setDraftFor] = useState(explicitGB)
+  if (draftFor !== explicitGB) {
+    setDraftFor(explicitGB)
     setDraft(explicitGB ? String(explicitGB) : '')
-  }, [explicitGB])
+  }
 
   const current =
     config.execMemoryMB === 'auto'

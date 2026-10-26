@@ -155,9 +155,10 @@ afterEach(() => cleanup())
 const byTestId = (id: string) => document.querySelector(`[data-rn-shim="${id}"]`) as HTMLElement | null
 const currentText = () => byTestId('exec-memory-current')?.textContent ?? ''
 
-// Every row change round-trips through the bridge before it re-renders. On a
-// loaded CI runner the 1 s `waitFor` default is not enough — the custom-value
-// save timed out at 1081 ms — so give the async settle a CI-sized budget.
+// Every row change round-trips through the bridge before it re-renders, so give
+// the async settle a CI-sized budget. A longer wait does not hide a lost save:
+// the custom-value test checks the typed value survives before it clicks Set
+// (SHO-219 — a draft-sync effect used to overwrite it on loaded runners).
 const SETTLE = { timeout: 5000 }
 
 async function renderPanel() {
@@ -216,6 +217,8 @@ describe('SHO-203 Settings → Memory for agent commands', () => {
     await renderPanel()
     const input = byTestId('exec-memory-custom') as HTMLInputElement
     fireEvent.change(input, { target: { value: '40' } })
+    // What the user typed is what Set sends — nothing resets it in between.
+    expect(input.value).toBe('40')
     fireEvent.click(screen.getByText('Set'))
 
     await waitFor(() => expect(currentText()).toBe('40 GB of 128 GB'), SETTLE)
@@ -224,9 +227,24 @@ describe('SHO-203 Settings → Memory for agent commands', () => {
     // Asking for more than the machine has must not promise it: the desktop
     // clamps, and the row shows what was actually saved.
     fireEvent.change(input, { target: { value: '900' } })
+    expect(input.value).toBe('900')
     fireEvent.click(screen.getByText('Set'))
     await waitFor(() => expect(currentText()).toBe('128 GB of 128 GB'), SETTLE)
     expect(setCalls[1]).toEqual({ execMemoryMB: 900 * GB })
+  })
+
+  test('the custom box follows the saved value: a preset fills it, Auto empties it', async () => {
+    await renderPanel()
+    const input = () => byTestId('exec-memory-custom') as HTMLInputElement
+    expect(input().value).toBe('')
+
+    fireEvent.click(byTestId('exec-memory-25')!)
+    await waitFor(() => expect(currentText()).toBe('32 GB of 128 GB'), SETTLE)
+    expect(input().value).toBe('32')
+
+    fireEvent.click(byTestId('exec-memory-auto')!)
+    await waitFor(() => expect(currentText()).toBe('Auto — 120 GB of 128 GB'), SETTLE)
+    expect(input().value).toBe('')
   })
 
   test('a save the desktop refuses shows its reason instead of silently keeping the old value', async () => {
