@@ -532,6 +532,10 @@ describe('google (Gemini) model discovery', () => {
         { name: 'models/veo-3.0-generate-001', supportedGenerationMethods: ['predictLongRunning'] },
         { name: 'models/gemini-2.5-flash-preview-tts', supportedGenerationMethods: ['generateContent'] },
         { name: 'models/gemini-2.0-flash-live-001', supportedGenerationMethods: ['bidiGenerateContent'] },
+        // Image-OUTPUT Gemini ids also report generateContent; the picker is
+        // text chat only (QA round 1, SHO-231).
+        { name: 'models/gemini-2.5-flash-image', displayName: 'Nano Banana', supportedGenerationMethods: ['generateContent'] },
+        { name: 'models/gemini-2.0-flash-preview-image-generation', supportedGenerationMethods: ['generateContent'] },
       ],
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })
 

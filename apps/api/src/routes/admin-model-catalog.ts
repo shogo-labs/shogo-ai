@@ -153,9 +153,12 @@ function openRouterPerMillion(v: unknown): number | undefined {
  *  chat-capable text models so the picker isn't flooded. */
 const OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|realtime|live|dall-e|image|moderation|transcribe|search|babbage|davinci|ada|curie|codex|guard)/i
 
-/** Gemini's ListModels reports `generateContent` for a few non-text models too
- *  (TTS, Imagen, AQA) and live models — keep them out of the chat picker. */
-const GOOGLE_NON_CHAT = /(embedding|aqa|imagen|veo|tts|live)/i
+/** Gemini's ListModels reports `generateContent` for non-text models too: TTS,
+ *  Imagen, AQA, live models, and the image-OUTPUT Gemini ids
+ *  (`gemini-2.5-flash-image`, `gemini-2.0-flash-preview-image-generation`), and
+ *  Lyria music — keep them all out of the chat picker, which is text-chat
+ *  only. */
+const GOOGLE_NON_CHAT = /(embedding|aqa|imagen|veo|tts|live|image|lyria)/i
 
 async function discoverProviderModels(
   provider: string,
