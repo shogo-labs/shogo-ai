@@ -19,8 +19,8 @@
 import {
   EncodingType,
   FileSystemUploadType,
+  createUploadTask,
   readAsStringAsync,
-  uploadAsync,
 } from "expo-file-system/legacy"
 import { buildAgentWorkspaceUrl } from "./agent-workspace-url"
 
@@ -118,6 +118,46 @@ async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
 }
 
 /**
+ * Web/desktop PUT with upload progress. `fetch` cannot report how many bytes
+ * have gone out, and a 200 MB file with no feedback looks hung, so this one
+ * request goes through XHR. Returns null when there is no XHR to use, and the
+ * caller falls back to `fetch`.
+ */
+function putWithProgress(
+  url: string,
+  body: BodyInit,
+  headers: Record<string, string>,
+  onProgress: (fraction: number) => void,
+): Promise<{ status: number; raw: string }> | null {
+  if (typeof XMLHttpRequest === "undefined") return null
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open("PUT", url, true)
+    xhr.withCredentials = true
+    for (const [key, value] of Object.entries(headers)) {
+      try {
+        xhr.setRequestHeader(key, value)
+      } catch {
+        // A forbidden header on web is not worth failing the upload over.
+      }
+    }
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(Math.min(1, event.loaded / event.total))
+      }
+    }
+    xhr.onload = () => resolve({ status: xhr.status, raw: xhr.responseText ?? "" })
+    xhr.onerror = () => reject(new Error("Network request failed"))
+    xhr.onabort = () => reject(new Error("Upload aborted"))
+    try {
+      xhr.send(body as XMLHttpRequestBodyInit)
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)))
+    }
+  })
+}
+
+/**
  * Ceiling for the inline fallback. An upload can be refused for a transport
  * reason the file cannot fix (a paired-machine tunnel relays text frames, so
  * binary uploads are unsupported there). Reading the file back as base64 keeps
@@ -149,8 +189,10 @@ export async function uploadChatAttachment(params: {
   /** Extra headers (auth / cookies) for the direct-to-runtime transports. */
   headers?: Record<string, string>
   fetchImpl?: typeof fetch
+  /** Fraction of the bytes sent so far, 0…1. Called only when provided. */
+  onProgress?: (fraction: number) => void
 }): Promise<UploadedAttachmentRef> {
-  const { agentUrl, file, headers = {}, fetchImpl } = params
+  const { agentUrl, file, headers = {}, fetchImpl, onProgress } = params
   const mediaType = mediaTypeFor(file)
   const url = uploadUrl(agentUrl, file.name)
   const authHeaders = { ...headers, "content-type": mediaType }
@@ -160,24 +202,44 @@ export async function uploadChatAttachment(params: {
 
   if (file.uri) {
     // Native: streams the file off disk — no base64 read, no whole-file buffer.
-    const result = await uploadAsync(url, file.uri, {
-      httpMethod: "PUT",
-      uploadType: FileSystemUploadType.BINARY_CONTENT,
-      headers: authHeaders,
-    })
+    // `createUploadTask` is the same binary PUT as `uploadAsync` plus the
+    // progress events a 200 MB file needs.
+    const task = createUploadTask(
+      url,
+      file.uri,
+      {
+        httpMethod: "PUT",
+        uploadType: FileSystemUploadType.BINARY_CONTENT,
+        headers: authHeaders,
+      },
+      (progress) => {
+        if (!onProgress) return
+        const total = progress.totalBytesExpectedToSend || attachmentSize(file)
+        if (total > 0) onProgress(Math.min(1, progress.totalBytesSent / total))
+      },
+    )
+    const result = await task.uploadAsync()
+    if (!result) throw new Error(`Could not upload "${file.name}" (upload cancelled).`)
     raw = result.body ?? ""
     status = result.status
   } else {
-    const fetchFn = fetchImpl ?? globalThis.fetch
-    const body: BodyInit = (file.file as BodyInit | undefined) ?? (await dataUrlToBlob(file.dataUrl ?? ""))
-    const response = await fetchFn(url, {
-      method: "PUT",
-      headers: authHeaders,
-      body,
-      credentials: "include",
-    })
-    raw = await response.text().catch(() => "")
-    status = response.status
+    const body: BodyInit =
+      (file.file as BodyInit | undefined) ?? (await dataUrlToBlob(file.dataUrl ?? ""))
+    const xhrResult = onProgress ? await putWithProgress(url, body, authHeaders, onProgress) : null
+    if (xhrResult) {
+      raw = xhrResult.raw
+      status = xhrResult.status
+    } else {
+      const fetchFn = fetchImpl ?? globalThis.fetch
+      const response = await fetchFn(url, {
+        method: "PUT",
+        headers: authHeaders,
+        body,
+        credentials: "include",
+      })
+      raw = await response.text().catch(() => "")
+      status = response.status
+    }
   }
 
   const parsed = parseUploadBody(raw)
@@ -213,9 +275,11 @@ export async function prepareOutgoingFiles(
     headers?: Record<string, string>
     fetchImpl?: typeof fetch
     onUploadError?: (message: string) => void
+    /** Per-file upload progress: name + fraction of bytes sent (0…1). */
+    onUploadProgress?: (name: string, fraction: number) => void
   } = {},
 ): Promise<OutgoingFilePart[]> {
-  const { agentUrl, headers, fetchImpl, onUploadError } = options
+  const { agentUrl, headers, fetchImpl, onUploadError, onUploadProgress } = options
   const parts: OutgoingFilePart[] = []
 
   for (const file of files) {
@@ -244,7 +308,15 @@ export async function prepareOutgoingFiles(
     }
 
     try {
-      const uploaded = await uploadChatAttachment({ agentUrl, file, headers, fetchImpl })
+      const uploaded = await uploadChatAttachment({
+        agentUrl,
+        file,
+        headers,
+        fetchImpl,
+        onProgress: onUploadProgress
+          ? (fraction) => onUploadProgress(file.name, fraction)
+          : undefined,
+      })
       parts.push({
         type: "file",
         mediaType: uploaded.mediaType,

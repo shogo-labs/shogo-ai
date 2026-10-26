@@ -515,6 +515,12 @@ export interface ChatInputProps {
   ) => void;
   disabled?: boolean;
   placeholder?: string;
+  /**
+   * Set while an attachment's bytes are uploading. The composer's chips are
+   * cleared the moment the turn is submitted, so this is the only place the
+   * user can see a 200 MB upload moving.
+   */
+  uploadStatus?: { name: string; fraction: number } | null;
   isStreaming?: boolean;
   onStop?: () => void;
   selectedModel?: string;
@@ -662,6 +668,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onSubmit,
   disabled = false,
   placeholder = "Ask Shogo...",
+  uploadStatus = null,
   isStreaming = false,
   onStop,
   selectedModel: controlledModel,
@@ -786,6 +793,9 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     resetAttachments,
   } = useComposerAttachments({ maxFileSizeBytes });
   const fileSizeLimit = maxFileSizeBytes ?? MAX_FILE_SIZE;
+  const uploadPercent = uploadStatus
+    ? Math.max(0, Math.min(100, Math.round(uploadStatus.fraction * 100)))
+    : 0;
   // Coalesced-flush scaffolding for `handleChangeText` (declared here, ahead
   // of `composerDisplayValue` below, so the rendered TextInput can always
   // show the freshest typed text even on a render that fires BEFORE the
@@ -2474,6 +2484,38 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     onRemove={() => handleRemovePastedText(entry.id)}
                   />
                 ))}
+              </View>
+            )}
+
+            {/* Upload progress — the chips are cleared on submit, so this is
+                where a large attachment's bytes are visible going up. */}
+            {uploadStatus && (
+              <View
+                className="px-3 pt-2"
+                testID="chat-upload-status"
+                accessibilityRole="progressbar"
+                accessibilityLabel={`Uploading ${uploadStatus.name}, ${uploadPercent}%`}
+              >
+                <View className="flex-row items-center justify-between gap-2">
+                  <Text
+                    className="text-[11px] text-muted-foreground flex-1 min-w-0"
+                    numberOfLines={1}
+                  >
+                    {`Uploading ${uploadStatus.name}`}
+                  </Text>
+                  <Text className="text-[11px] text-muted-foreground">
+                    {`${uploadPercent}%`}
+                  </Text>
+                </View>
+                <View
+                  className="mt-1 w-full overflow-hidden rounded-full bg-muted"
+                  style={{ height: 2 }}
+                >
+                  <View
+                    className="rounded-full bg-foreground/50"
+                    style={{ height: 2, width: `${uploadPercent}%` }}
+                  />
+                </View>
               </View>
             )}
 

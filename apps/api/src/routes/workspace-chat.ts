@@ -716,7 +716,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // `chatSessionId` (its durable buffer + resume key) that we billed under.
     if (parsedBody.chatSessionId !== sessionId) {
       parsedBody.chatSessionId = sessionId
-      body = JSON.stringify(parsedBody)
     }
 
     let attachedProjectIds: string[]
@@ -737,7 +736,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       const seed = await historySeedForTurn(sessionId, lastUserPromptText(parsedBody)).catch(() => null)
       if (seed) {
         parsedBody.historySeed = seed
-        body = JSON.stringify(parsedBody)
       }
     }
 
@@ -766,7 +764,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     } else {
       delete parsedBody.focusedProjectId
     }
-    body = JSON.stringify(parsedBody)
 
     // Personal companions hide the model picker — one companion per person,
     // not a per-message user pick (see `useWorkspaceExperience`'s
@@ -781,7 +778,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     if (auth.kind === 'personal') {
       parsedBody.agentMode = getPersonalCompanionModelId()
       stampModelProvider(parsedBody)
-      body = JSON.stringify(parsedBody)
     } else if (parsedBody.agentMode) {
       // Model-tier guard: models the workspace's plan doesn't cover fall back
       // to Auto, whose tiers are already entitlement-capped (same as project
@@ -797,7 +793,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       // the forwarded body (after any tier-downgrade) so a UUID-addressed DB
       // model routes natively instead of being inferred as `custom`.
       stampModelProvider(parsedBody)
-      body = JSON.stringify(parsedBody)
     }
     await stampWorkspacePlan(parsedBody, workspaceId)
     // Tell the runtime which surface this chat is, so capability toggles and
@@ -805,7 +800,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // is anchored on the project the user happens to have open. Never trusted
     // from the client: always overwritten here.
     parsedBody.chatContext = 'workspace'
-    body = JSON.stringify(parsedBody)
 
     // A `<@c:CHAT_ID>` in a workspace chat is a *reference*, not a send
     // (SHO-191): nothing is posted to the tagged chat and no turn starts there.
@@ -823,7 +817,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         const added = chatReferenceIds(mentionedText, { selfSessionId: sessionId, existing: knownChatRefs })
         if (added.length > 0) {
           parsedBody.references = [...refs, ...added.map((id) => ({ type: 'chat', id }))]
-          body = JSON.stringify(parsedBody)
         }
       }
     }
@@ -875,12 +868,16 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           }
         }
       }
-      if (wsChanged || projectRefs.changed || historyChanged) body = JSON.stringify(parsedBody)
     }
 
     // Nothing here delivers a tag to the chat it names: in the workspace chat a
     // `<@c:CHAT_ID>` is context (see the promotion above and `chat_handoff` when
     // the person explicitly wants something sent).
+
+    // Serialise once, after every mutation above. Each of those steps used to
+    // re-`JSON.stringify` the whole body, which was fine until attachments rode
+    // inside it as base64 (SHO-213) — the same 15 MB string was built six times.
+    body = JSON.stringify(parsedBody)
 
     // Billing anchor: the AI proxy accumulates usage keyed by projectId, and
     // build-workspace-env mints the first attached project's token as the

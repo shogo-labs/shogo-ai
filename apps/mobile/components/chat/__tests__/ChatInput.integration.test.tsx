@@ -224,6 +224,27 @@ describe("ChatInput integration — chat and plan mentions", () => {
 
 // `flush` opts out of the phone-prominent composer (the mocked window is
 // phone-sized), which is the layout that renders the Advanced controls trigger.
+describe("ChatInput integration — attachment upload progress", () => {
+  test("shows the percentage while an attachment uploads", () => {
+    render(
+      <ChatInput
+        onSubmit={mock(() => {})}
+        isPro
+        uploadStatus={{ name: "bundle.zip", fraction: 0.42 }}
+      />,
+    )
+
+    expect(screen.getByTestId("chat-upload-status")).toBeTruthy()
+    expect(screen.getByText("Uploading bundle.zip")).toBeTruthy()
+    expect(screen.getByText("42%")).toBeTruthy()
+  })
+
+  test("renders nothing when no upload is running", () => {
+    render(<ChatInput onSubmit={mock(() => {})} isPro />)
+    expect(screen.queryByTestId("chat-upload-status")).toBeNull()
+  })
+})
+
 describe("ChatInput integration — agent advanced controls", () => {
   test("hides the Advanced controls trigger when the agent composer has no controls to show", () => {
     render(

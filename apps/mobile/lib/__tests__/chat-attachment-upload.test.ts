@@ -10,6 +10,8 @@ let uploadResult: { status: number; body: string } = {
   body: JSON.stringify({ savedPath: 'archive.zip' }),
 }
 let readResult: string | null = null
+/** Progress events the mocked native task replays to its callback. */
+let progressEvents: Array<{ totalBytesSent: number; totalBytesExpectedToSend: number }> = []
 
 mock.module('expo-file-system/legacy', () => ({
   EncodingType: { Base64: 'base64', UTF8: 'utf8' },
@@ -19,9 +21,14 @@ mock.module('expo-file-system/legacy', () => ({
     if (readResult === null) throw new Error('unreadable')
     return readResult
   },
-  uploadAsync: async (url: string, uri: string, options: any) => {
+  createUploadTask: (url: string, uri: string, options: any, callback?: (data: any) => void) => {
     uploadCalls.push({ url, uri, options })
-    return uploadResult
+    return {
+      uploadAsync: async () => {
+        for (const event of progressEvents) callback?.(event)
+        return uploadResult
+      },
+    }
   },
 }))
 
@@ -65,6 +72,7 @@ describe('shouldUploadAttachmentFirst', () => {
 describe('uploadChatAttachment', () => {
   beforeEach(() => {
     uploadCalls.length = 0
+    progressEvents = []
     uploadResult = { status: 200, body: JSON.stringify({ savedPath: 'archive.zip' }) }
   })
 
@@ -84,6 +92,36 @@ describe('uploadChatAttachment', () => {
     expect(uploadCalls[0].options.headers.cookie).toBe('session=abc')
     expect(ref.savedPath).toBe('archive.zip')
     expect(ref.url).toBe(`${AGENT_URL}/agent/workspace/download/archive.zip`)
+  })
+
+  test('reports upload progress from the native task, clamped to 1', async () => {
+    const seen: number[] = []
+    progressEvents = [
+      { totalBytesSent: 0, totalBytesExpectedToSend: 200 },
+      { totalBytesSent: 100, totalBytesExpectedToSend: 200 },
+      { totalBytesSent: 250, totalBytesExpectedToSend: 200 },
+    ]
+
+    await uploadChatAttachment({
+      agentUrl: AGENT_URL,
+      file: { name: 'archive.zip', type: 'application/zip', uri: 'file:///tmp/archive.zip', size: 200 },
+      onProgress: (fraction) => seen.push(fraction),
+    })
+
+    expect(seen).toEqual([0, 0.5, 1])
+  })
+
+  test('falls back to the declared size when the transport cannot report a total', async () => {
+    const seen: number[] = []
+    progressEvents = [{ totalBytesSent: 50, totalBytesExpectedToSend: 0 }]
+
+    await uploadChatAttachment({
+      agentUrl: AGENT_URL,
+      file: { name: 'archive.zip', type: 'application/zip', uri: 'file:///tmp/archive.zip', size: 200 },
+      onProgress: (fraction) => seen.push(fraction),
+    })
+
+    expect(seen).toEqual([0.25])
   })
 
   test('reports the server message when the upload is refused', async () => {

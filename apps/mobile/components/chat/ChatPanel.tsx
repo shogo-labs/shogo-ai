@@ -3708,6 +3708,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(
     null,
   )
+  // Non-null while an attachment's bytes are going up, so a 200 MB file shows
+  // movement instead of a frozen composer (the chips are cleared on submit).
+  const [uploadStatus, setUploadStatus] = useState<{
+    name: string
+    fraction: number
+  } | null>(null)
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
   const [errorDismissed, setErrorDismissed] = useState(false)
   const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
@@ -5900,6 +5906,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           agentUrl: agentBaseUrl,
           headers: nativeHeaders ? nativeHeaders() : undefined,
           fetchImpl: expoFetch ?? undefined,
+          onUploadProgress: (name, fraction) => setUploadStatus({ name, fraction }),
         })
       } catch (err) {
         const message =
@@ -5907,6 +5914,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         console.warn("[ChatPanel] Attachment upload failed:", err)
         setEmptyResponseError(message)
         return
+      } finally {
+        setUploadStatus(null)
       }
 
       const parts: Array<
@@ -8953,6 +8962,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   <ExecutionBadge />
                   <ChatInput
                     onSubmit={handleInputSubmit}
+                    uploadStatus={uploadStatus}
                     disabled={!currentSessionId || !!readOnlyReason || machineView.composeDisabled}
                     placeholder={
                       readOnlyReason ?? machineStop
