@@ -93,7 +93,11 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(row).toBeVisible({ timeout: 30_000 })
     await row.click()
     await expect(page).toHaveURL(new RegExp(`/projects/${seed.projectIds[1]}`), { timeout: 30_000 })
-    await expect(page.getByTestId("mobile-home-feed")).toHaveCount(0)
+    // SHO-220: the phone navigator is a Stack, so Home stays mounted underneath
+    // — that is what makes Back pop to a feed that was never rebuilt. It is off
+    // screen, not gone from the DOM.
+    await expect(page.getByTestId("mobile-home-feed")).not.toBeVisible()
+    await expect(page.getByTestId("project-native-back")).toBeVisible({ timeout: 30_000 })
   })
 
   test("DMs lists conversations with the latest message and opens one", async ({ page }) => {
@@ -108,7 +112,11 @@ test.describe("Team workspace: phone dock and tab screens", () => {
 
     await row.click()
     await expect(page).toHaveURL(new RegExp(`/c/${seed.dmId}`))
-    await expect(page.getByText(seed.dmReply, { exact: false }).first()).toBeVisible({ timeout: 30_000 })
+    // The DMs list stays mounted underneath the conversation (SHO-220's Stack),
+    // and its row preview carries the same text — assert on the visible copy.
+    await expect(
+      page.getByText(seed.dmReply, { exact: false }).filter({ visible: true }).first(),
+    ).toBeVisible({ timeout: 30_000 })
     // The dock stays put while reading, with DMs still the selected tab.
     await expect(tab(page, "DMs")).toHaveAttribute("aria-selected", "true")
   })
@@ -141,20 +149,23 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(page).toHaveURL(/\/more/)
     const more = page.getByTestId("more-screen")
     await expect(more).toBeVisible()
-    await expect(more.getByText("Tasks", { exact: true })).toBeVisible()
-    // SHO-7: the overflow screen names Settings, and it is always the last row.
+    // Analytics is the one row every workspace kind gets (`moreItems` pushes it
+    // unconditionally); the Tasks row this used to assert is behind
+    // TASKS_NAV_HIDDEN, which is `true` on main.
     const rows = more.getByRole("link")
+    await expect(rows.first()).toHaveAccessibleName("Analytics")
+    // SHO-7: the overflow screen names Settings, and it is always the last row.
     await expect(rows.last()).toHaveAccessibleName("Settings")
     await expect(rows.last()).toContainText("Account, workspace, integrations and billing")
-    await more.getByText("Tasks", { exact: true }).click()
-    await expect(page).toHaveURL(/\/tasks/)
+    await more.getByRole("link", { name: "Analytics" }).click()
+    await expect(page).toHaveURL(/\/analytics/)
   })
 
   test("the Settings row in More opens the settings screen", async ({ page }) => {
     await tab(page, "More").click()
     const more = page.getByTestId("more-screen")
     await more.getByRole("link", { name: "Settings" }).click()
-    await expect(page).toHaveURL(/\/settings/, { timeout: 30_000 })
+    await expect(page).toHaveURL(/\/account/, { timeout: 30_000 })
     await expect(page.getByText("Settings", { exact: true }).last()).toBeVisible({ timeout: 30_000 })
   })
 
@@ -165,7 +176,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(menu).toBeVisible()
     await expect(menu.getByRole("menuitem", { name: "Pause notifications" })).toBeVisible()
     await menu.getByRole("menuitem", { name: "Settings" }).click()
-    await expect(page).toHaveURL(/\/settings/)
+    await expect(page).toHaveURL(/\/account/)
   })
 
   test("New message is a full screen with people and agents, not a dialog", async ({ page }) => {
@@ -177,7 +188,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(page.getByTestId("new-conversation-screen")).toBeVisible()
     await expect(page.getByRole("dialog")).toHaveCount(0)
     // The dock steps aside so the picker (and keyboard) own the screen.
-    await expect(dock(page)).toHaveCount(0)
+    await expect(dock(page)).not.toBeVisible()
 
     const picker = page.getByTestId("new-message-picker")
     await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toBeVisible({ timeout: 30_000 })
@@ -188,7 +199,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     // An agent opens its DM straight away.
     await picker.getByRole("button", { name: `${seed.idleAgent}, agent` }).click()
     await expect(page).toHaveURL(/\/c\/(?!new)[^/]+/, { timeout: 30_000 })
-    await expect(page.getByTestId("new-conversation-screen")).toHaveCount(0)
+    await expect(page.getByTestId("new-conversation-screen")).not.toBeVisible()
   })
 
   test("Message an agent from DMs opens the same screen on the agents list", async ({ page }) => {
