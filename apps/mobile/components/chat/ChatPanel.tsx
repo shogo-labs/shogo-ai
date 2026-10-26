@@ -168,8 +168,10 @@ import { workspaceHttp } from "../../lib/workspace-http"
 import { agentProxyBase } from "../../lib/agent-proxy-base"
 import {
   prepareOutgoingFiles,
+  shouldUploadAttachmentFirst,
   type OutgoingFilePart,
 } from "../../lib/chat-attachment-upload"
+import { releasePreviewUrl } from "../../lib/composer-attachments"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import {
@@ -3898,6 +3900,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [currentSessionId, messagesWithQueued, optimisticUserInput])
 
+  // A big web pick paints its echo from a `blob:` object URL, and the real
+  // message carries a workspace URL instead — so once this echo is replaced or
+  // dropped, nothing can reach that blob again and it is released here. The
+  // composer deliberately keeps its own copy alive through the send (see
+  // `resetAttachments`), so the release belongs to the echo's lifetime.
+  useEffect(() => {
+    const files = optimisticUserInput?.files ?? []
+    return () => {
+      for (const file of files) releasePreviewUrl(file.previewUrl)
+    }
+  }, [optimisticUserInput])
+
   const displayMessages = useMemo((): UIMessage[] => {
     // While the stop snapshot is held, the window still shows it — merged with
     // the live array so a message sent after Stop appears under the reply it
@@ -5894,6 +5908,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setIsFollowing(true)
       showOptimisticEcho(trimmedContent, fileArray)
 
+      // The turn is in flight from here: the upload below is the first thing
+      // that can take real time on a big attachment, and the composer must
+      // already be locked and the transcript already painting the bubble
+      // (QA round 1 on SHO-213: it looked frozen for the whole upload).
+      isSendingMessageRef.current = true
+
+      // Seed the progress row before the first byte moves: a transport that
+      // reports no intermediate events (a small file, a fast link) would
+      // otherwise leave the composer looking idle for the whole upload.
+      const uploading = fileArray.find(
+        (file) => !file.savedPath && shouldUploadAttachmentFirst(file),
+      )
+      if (uploading) setUploadStatus({ name: uploading.name, fraction: 0 })
+
       // Attachments go up BEFORE the turn. The bytes are PUT to the runtime's
       // streaming route and the message carries a reference part (`savedPath`),
       // so a large archive never becomes a base64 JSON body — that inflation,
@@ -5912,6 +5940,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         const message =
           err instanceof Error ? err.message : "Could not upload the attachment."
         console.warn("[ChatPanel] Attachment upload failed:", err)
+        isSendingMessageRef.current = false
         setEmptyResponseError(message)
         return
       } finally {
@@ -5928,8 +5957,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
 
       parts.push(...outgoingParts)
-
-      isSendingMessageRef.current = true
 
       // Let EZ Mode know a new turn is starting. This is what
       // triggers the overlay to arm its heartbeat / activity buffer.

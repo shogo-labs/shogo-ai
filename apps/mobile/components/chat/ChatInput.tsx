@@ -218,6 +218,12 @@ export interface FileAttachment {
   /** Web: the picked `File`, so a large attachment uploads without base64. */
   file?: File;
   /**
+   * Web: object URL over `file` for a pick that has no inline bytes. The chip
+   * and the optimistic bubble paint from it until the upload returns a
+   * workspace URL (SHO-213).
+   */
+  previewUrl?: string;
+  /**
    * Workspace path of an already-uploaded attachment. Rebuilt from a persisted
    * message part on a resend, so the turn reuses the file on the runtime
    * instead of uploading it again.
@@ -1751,6 +1757,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         ...(f.size ? { size: f.size } : {}),
         ...(f.uri ? { uri: f.uri } : {}),
         ...(f.file ? { file: f.file } : {}),
+        ...(f.previewUrl ? { previewUrl: f.previewUrl } : {}),
       })),
       ...pastedAttachments,
     ];
@@ -2554,7 +2561,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                         <Pressable
                           onPress={() =>
                             setPreviewImageFile({
-                              url: file.dataUrl,
+                              url: file.dataUrl || file.previewUrl || "",
                               name: file.name,
                             })
                           }
@@ -2566,7 +2573,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                             style={{ width: 72, height: 72 }}
                           >
                             <Image
-                              source={{ uri: file.dataUrl }}
+                              source={{ uri: file.dataUrl || file.previewUrl }}
                               style={{ width: 72, height: 72 }}
                               resizeMode="cover"
                             />
@@ -2576,7 +2583,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                         <Pressable
                           onPress={() =>
                             setPreviewVideoFile({
-                              url: file.dataUrl,
+                              url: file.dataUrl || file.previewUrl || "",
                               name: file.name,
                             })
                           }

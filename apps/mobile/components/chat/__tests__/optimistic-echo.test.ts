@@ -59,6 +59,29 @@ describe("buildOptimisticUserMessage", () => {
     ] as any)
   })
 
+  test("shows a web pick that has no bytes yet, from its object URL", () => {
+    // A 200 MB zip on web/desktop keeps `{dataUrl:'', file}` and only gets a
+    // data URL… never. The echo must paint from the object URL or the
+    // attachment disappears from the bubble until the upload finishes
+    // (QA round 1, SHO-213).
+    const message = buildOptimisticUserMessage({
+      sessionId: "s1",
+      content: "unpack this",
+      files: [
+        {
+          dataUrl: "",
+          previewUrl: "blob:preview-1",
+          name: "bundle.zip",
+          type: "application/zip",
+        },
+      ],
+    })
+    expect(message.parts).toEqual([
+      { type: "text", text: "unpack this" },
+      { type: "file", mediaType: "application/zip", url: "blob:preview-1", name: "bundle.zip" },
+    ] as any)
+  })
+
   test("shows an attachment the composer only holds on disk", () => {
     // A file picked without a base64 read has no data URL — the upload that
     // replaces it happens after this bubble is painted, so the echo renders
