@@ -9,6 +9,7 @@
 
 import { useMemo } from 'react'
 import { createAutoResumingFetch } from './auto-resuming-fetch'
+import { trimLegacyInlineAttachments } from './trim-history-attachments'
 
 export interface ChatTransportOptions {
   /** API base URL (e.g., "http://localhost:8002" or "" for same-origin) */
@@ -83,6 +84,21 @@ export interface ChatTransportConfig {
   credentials?: RequestCredentials
   fetch?: typeof globalThis.fetch
   headers?: Record<string, string> | (() => Record<string, string>)
+  prepareSendMessagesRequest?: (options: {
+    id: string
+    messages: any[]
+    body: Record<string, any> | undefined
+    headers: HeadersInit | undefined
+    credentials: RequestCredentials | undefined
+    api: string
+    trigger: 'submit-message' | 'regenerate-message'
+    messageId: string | undefined
+  }) => {
+    body: object
+    headers?: HeadersInit
+    credentials?: RequestCredentials
+    api?: string
+  }
   prepareReconnectToStreamRequest?: (options: { id: string; api: string }) => { api?: string }
 }
 
@@ -202,6 +218,20 @@ export function useChatTransportConfig({
       credentials,
       fetch,
       headers: composedHeaders,
+      // The whole transcript is POSTed on every send, so without this a file
+      // attached earlier is re-uploaded with every later turn (SHO-213).
+      prepareSendMessagesRequest: ({ id, messages, body, headers: requestHeaders, credentials: requestCredentials, api, trigger, messageId }) => ({
+        body: {
+          ...body,
+          id,
+          messages: trimLegacyInlineAttachments(messages),
+          trigger,
+          messageId,
+        },
+        headers: requestHeaders,
+        credentials: requestCredentials,
+        api,
+      }),
       ...(resumeSnapshot && {
         // Same URL the SDK builds by default, plus the snapshot flag. The
         // auto-resuming fetch strips the query for its own `?fromSeq=N`

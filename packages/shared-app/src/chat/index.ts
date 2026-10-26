@@ -38,6 +38,12 @@ export {
 } from './useChatTransport'
 
 export {
+  trimLegacyInlineAttachments,
+  LEGACY_INLINE_IMAGE_KEEP_BYTES,
+  LEGACY_INLINE_IMAGE_KEEP_COUNT,
+} from './trim-history-attachments'
+
+export {
   createAutoResumingFetch,
   defaultBuildResumeUrl,
   type AutoResumingFetchOptions,
