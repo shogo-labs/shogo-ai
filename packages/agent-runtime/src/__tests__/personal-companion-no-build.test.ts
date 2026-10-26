@@ -11,6 +11,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { AgentGateway, PERSONAL_COMPANION_GUIDE, type GatewayConfig } from '../gateway'
+import { parseAccountContext } from '../account-context'
 
 const ROOT = '/tmp/test-sho-221-personal-no-build'
 
@@ -89,5 +90,40 @@ describe('prompt wiring', () => {
 
     const team: string = (gw as any).buildGeneralPrompt(undefined, makeConfig({ capabilityProfile: 'team' }))
     expect(team).not.toContain('## Personal Companion Mode')
+  })
+})
+
+// The stamp on the request only reaches the prompt if the gateway keeps it:
+// `setAccountContext` rebuilds the whole object per request, so a field it
+// doesn't copy is silently dead in production (QA round 1 on SHO-221).
+describe('account context survives into the prompt', () => {
+  test("a personal turn names the caller's Team workspace", () => {
+    const ws = makeWs('account-context-names')
+    const gw = new AgentGateway(ws, 'p1')
+    gw.setAccountContext(parseAccountContext({ teamWorkspaceNames: ['Acme', 'Side project'] }))
+
+    const personal: string = (gw as any).loadBootstrapContext(undefined, makeConfig({ capabilityProfile: 'personal' }))
+    expect(personal).toContain('**Acme**')
+    expect(personal).toContain('**Side project**')
+  })
+
+  test('no Team workspace yet falls back to how to create one', () => {
+    const ws = makeWs('account-context-empty')
+    const gw = new AgentGateway(ws, 'p1')
+    gw.setAccountContext(parseAccountContext({ teamWorkspaceNames: [] }))
+
+    const personal: string = (gw as any).loadBootstrapContext(undefined, makeConfig({ capabilityProfile: 'personal' }))
+    expect(personal).toContain('no Team workspace yet')
+  })
+
+  test('a request without the field clears the names, so a Team chat never sees them', () => {
+    const ws = makeWs('account-context-cleared')
+    const gw = new AgentGateway(ws, 'p1')
+    gw.setAccountContext(parseAccountContext({ teamWorkspaceNames: ['Acme'] }))
+    gw.setAccountContext(parseAccountContext({ planId: 'pro' }))
+
+    const team: string = (gw as any).loadBootstrapContext(undefined, makeConfig({ capabilityProfile: 'team' }))
+    expect(team).not.toContain('**Acme**')
+    expect(team).not.toContain('no Team workspace yet')
   })
 })

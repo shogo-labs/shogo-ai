@@ -1206,16 +1206,19 @@ export class AgentGateway {
     this.viewerContextPrompt = viewer ? buildViewerContextPrompt(viewer) : null
   }
 
-  /** Replaced on every chat request, like setViewerContext. Only the plan half
-   *  is kept: the model name a request carries describes THAT request, and a
-   *  heartbeat/schedule/pipeline turn has no request to read it from, so the
-   *  model line is rendered per turn (see `loadBootstrapContext`). */
+  /** Replaced on every chat request, like setViewerContext. The plan half and
+   *  the Team-workspace names are kept: the model name a request carries
+   *  describes THAT request, and a heartbeat/schedule/pipeline turn has no
+   *  request to read it from, so the model line is rendered per turn (see
+   *  `loadBootstrapContext`). The names are stamped on Personal chats only, and
+   *  the whole object is replaced per request, so a Team chat clears them. */
   setAccountContext(ctx: AccountContext): void {
     this.accountContext = {
       ...(ctx.planId ? { planId: ctx.planId } : {}),
       ...(typeof ctx.canPublishSubdomain === 'boolean'
         ? { canPublishSubdomain: ctx.canPublishSubdomain }
         : {}),
+      ...(ctx.teamWorkspaceNames ? { teamWorkspaceNames: ctx.teamWorkspaceNames } : {}),
     }
   }
 
