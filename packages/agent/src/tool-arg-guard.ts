@@ -18,7 +18,11 @@
  * Scope is deliberately narrow and fails open:
  * - only top-level `required` string properties are checked (no recursion);
  * - optional properties, non-string required properties and schemas without a
- *   usable `properties`/`required` pair are never flagged.
+ *   usable `properties`/`required` pair are never flagged;
+ * - a property whose schema says `'x-empty-ok': true` is exempt, for the few
+ *   tools where an empty string is a real argument rather than a lost one
+ *   (`edit_file.old_string` creates a file, `edit_file.new_string` deletes
+ *   text, `write_file.content` writes an empty file).
  */
 
 type JsonSchema = Record<string, unknown>
@@ -30,6 +34,9 @@ function isSchemaObject(value: unknown): value is JsonSchema {
 /**
  * Required top-level properties of `schema` whose own schema is `type: "string"`.
  * Computed once per tool at wrap time, then reused on every call.
+ *
+ * A property that declares `'x-empty-ok': true` is left out: for those, `""` is
+ * a real argument, not a lost one.
  */
 export function requiredStringProps(schema: unknown): string[] {
   if (!isSchemaObject(schema)) return []
@@ -43,7 +50,9 @@ export function requiredStringProps(schema: unknown): string[] {
   for (const name of required) {
     if (typeof name !== 'string') continue
     const prop = properties[name]
-    if (isSchemaObject(prop) && prop.type === 'string') names.push(name)
+    if (!isSchemaObject(prop) || prop.type !== 'string') continue
+    if (prop['x-empty-ok'] === true) continue
+    names.push(name)
   }
   return names
 }

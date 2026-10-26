@@ -140,6 +140,28 @@ describe('findEmptyRequiredArgs / requiredStringProps', () => {
     expect(findEmptyRequiredArgs({ oneOf: [{ type: 'object', required: ['a'] }] }, {})).toEqual([])
   })
 
+  test('exempts a property that declares x-empty-ok — "" is a real argument there', () => {
+    // edit_file.old_string "" creates a file, edit_file.new_string "" deletes
+    // text, write_file.content "" writes an empty file. Those schemas opt out.
+    const schema = {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        old_string: { type: 'string', 'x-empty-ok': true },
+        new_string: { type: 'string', 'x-empty-ok': true },
+      },
+      required: ['path', 'old_string', 'new_string'],
+    }
+
+    expect(requiredStringProps(schema)).toEqual(['path'])
+    expect(findEmptyRequiredArgs(schema, { path: 'a.txt', old_string: '', new_string: 'hi' })).toEqual([])
+    expect(findEmptyRequiredArgs(schema, { path: 'a.txt', old_string: 'x', new_string: '' })).toEqual([])
+    // The opt-out is per property: a blank path is still a lost argument.
+    expect(findEmptyRequiredArgs(schema, { path: '', old_string: '', new_string: '' })).toEqual(['path'])
+    // Only the literal `true` opts out.
+    expect(requiredStringProps({ type: 'object', properties: { a: { type: 'string', 'x-empty-ok': false } }, required: ['a'] })).toEqual(['a'])
+  })
+
   test('checks the top level only — nested required strings are left to schema validation', () => {
     const schema = {
       type: 'object',
@@ -217,6 +239,44 @@ describe('wrapToolsWithOrchestration — empty-argument guard', () => {
     const ok = await read.execute('call-2', { path: 'AGENTS.md' })
     expect((ok.content[0] as any).text).toBe('ok:read_file')
     expect(calls).toHaveLength(1)
+  })
+
+  test('a schema that opts out still runs with an empty required string', async () => {
+    // The real edit_file / write_file schemas mark these `'x-empty-ok': true`:
+    // "" creates a file, deletes text, or writes an empty file.
+    const editSchema = {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        old_string: { type: 'string', 'x-empty-ok': true },
+        new_string: { type: 'string', 'x-empty-ok': true },
+      },
+      required: ['path', 'old_string', 'new_string'],
+    }
+    const writeEmptySchema = {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        content: { type: 'string', 'x-empty-ok': true },
+      },
+      required: ['path', 'content'],
+    }
+    const { tool: edit, calls: editCalls } = makeTool('edit_file', editSchema)
+    const { tool: write, calls: writeCalls } = makeTool('write_file', writeEmptySchema)
+    const { tools } = wrapToolsWithOrchestration([edit, write])
+
+    await toolByName(tools, 'edit_file').execute('call-1', { path: 'a.txt', old_string: '', new_string: 'hi\n' })
+    await toolByName(tools, 'edit_file').execute('call-2', { path: 'a.txt', old_string: 'DROP\n', new_string: '' })
+    await toolByName(tools, 'write_file').execute('call-3', { path: 'empty.txt', content: '' })
+
+    expect(editCalls).toHaveLength(2)
+    expect(writeCalls).toHaveLength(1)
+
+    // The exemption is per property — a blank path is still a lost argument.
+    await expect(
+      toolByName(tools, 'edit_file').execute('call-4', { path: '', old_string: '', new_string: 'hi\n' }),
+    ).rejects.toThrow(/required argument 'path' was empty/)
+    expect(editCalls).toHaveLength(2)
   })
 
   test('leaves optional strings, required numbers and required booleans alone', async () => {
