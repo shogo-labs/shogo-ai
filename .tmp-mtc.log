@@ -1,2 +1,0 @@
-[mobile:typecheck] 1385 existing diagnostics remain (TS1117=4, TS2300=2, TS2307=543, TS2308=1, TS2322=54, TS2339=369, TS2344=3, TS2345=13, TS2352=2, TS2353=7, TS2367=1, TS2503=1, TS2578=3, TS2739=49, TS2741=77, TS2769=148, TS2867=7, TS7006=25, TS7016=7, TS7022=20, TS7024=45, TS7031=4); unresolved-identifier diagnostics are clean
-[mobile:typecheck] passed
