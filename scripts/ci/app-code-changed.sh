@@ -30,7 +30,8 @@ while IFS= read -r path; do
     # phone specs still run (it is the only job that runs them). Every other
     # file the E2E jobs execute lives outside .github (e2e/local/**, the
     # playwright configs), so it is app code by default below.
-    .github/workflows/ci.yml|.github/workflows/e2e-phone.yml) app=true; break ;;
+    .github/workflows/ci.yml) app=true; break ;;
+    .github/workflows/e2e-phone.yml) app=true; break ;;
     .github/*) continue ;;
   esac
   app=true
