@@ -4,7 +4,7 @@
  * Models Card — the single admin surface for AI model management.
  *
  * Merges what used to be three things:
- *   1. Provider API keys (Anthropic / OpenAI / OpenRouter), and
+ *   1. Provider API keys (Anthropic / OpenAI / Google / OpenRouter), and
  *   2. live provider discovery ("Available Models"), and
  *   3. the full DB model catalog CRUD ("Custom Models"),
  * into one card with a single "Add model" form.
@@ -60,15 +60,16 @@ import { invalidateVisibleModelsCache } from '../../lib/visible-models'
 const KEY_PROVIDERS = [
   { id: 'anthropic', name: 'Anthropic', placeholder: 'sk-ant-…' },
   { id: 'openai', name: 'OpenAI', placeholder: 'sk-…' },
+  { id: 'google', name: 'Google (Gemini)', placeholder: 'AIza…' },
   { id: 'openrouter', name: 'OpenRouter', placeholder: 'sk-or-…' },
   { id: 'tripo', name: 'Tripo (3D)', placeholder: 'tsk_…' },
   { id: 'higgsfield', name: 'Higgsfield (video, images, Genjutsu)', placeholder: 'key_id:key_secret' },
 ] as const
 
 /** Providers we can prefill via live discovery. OpenRouter lists without a key. */
-const DISCOVERY_PROVIDERS = ['anthropic', 'openai', 'openrouter'] as const
+const DISCOVERY_PROVIDERS = ['anthropic', 'openai', 'google', 'openrouter'] as const
 type DiscoveryProviderId = (typeof DISCOVERY_PROVIDERS)[number]
-const KEY_GATED_DISCOVERY = new Set<DiscoveryProviderId>(['anthropic', 'openai'])
+const KEY_GATED_DISCOVERY = new Set<DiscoveryProviderId>(['anthropic', 'openai', 'google'])
 
 function isDiscoveryProvider(p: string): p is DiscoveryProviderId {
   return (DISCOVERY_PROVIDERS as readonly string[]).includes(p)

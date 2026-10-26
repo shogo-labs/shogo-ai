@@ -346,10 +346,11 @@ export function resolveModelSupportsAudioInput(model: string): boolean {
 /**
  * Get the API key for a provider.
  */
-function getProviderApiKey(provider: Provider): string | null {
+export function getProviderApiKey(provider: Provider): string | null {
   switch (provider) {
     case 'anthropic':
     case 'openai':
+    case 'google':
     case 'openrouter':
       // DB-stored (admin-entered, encrypted) key first, else the env var.
       return getNativeProviderApiKeySync(provider)
@@ -1905,12 +1906,18 @@ export async function proxyAnthropicNonStream(
 // OpenAI Proxy (pass-through)
 // =============================================================================
 
-function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
+export function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
   if (modelConfig.provider === 'local' && process.env.LOCAL_LLM_BASE_URL) {
     return `${process.env.LOCAL_LLM_BASE_URL.replace(/\/$/, '')}/v1/chat/completions`
   }
   if (modelConfig.provider === 'openrouter') {
     const base = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '')
+    return `${base}/chat/completions`
+  }
+  // Gemini ships an OpenAI-compatible endpoint, so a `provider: 'google'` model
+  // rides the same pass-through as OpenAI (Bearer auth, chat-completions body).
+  if (modelConfig.provider === 'google') {
+    const base = (process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/$/, '')
     return `${base}/chat/completions`
   }
   // Custom OpenAI-compatible providers (e.g. MiMo): the admin-configured
