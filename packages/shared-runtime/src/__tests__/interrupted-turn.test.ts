@@ -12,8 +12,10 @@
  */
 import { describe, expect, test } from 'bun:test'
 import {
+  DEFAULT_RESUME_MAX_AGE_MINUTES,
   interruptedTurnNote,
   isInterruptedTurnNote,
+  resumeMaxAgeMinutes,
 } from '../interrupted-turn'
 
 describe('isInterruptedTurnNote', () => {
@@ -46,5 +48,28 @@ describe('isInterruptedTurnNote', () => {
     expect(isInterruptedTurnNote('')).toBe(false)
     expect(isInterruptedTurnNote(null)).toBe(false)
     expect(isInterruptedTurnNote(undefined)).toBe(false)
+  })
+})
+
+/**
+ * Both sides of the resume decision read the same limit (SHO-227): the runtime
+ * against its interrupted-turn marker, the API against the last human message.
+ * If they parsed the variable differently, one would restart a session the
+ * other had already decided was too old.
+ */
+describe('resumeMaxAgeMinutes', () => {
+  test('reads the configured value', () => {
+    expect(resumeMaxAgeMinutes('5')).toBe(5)
+    expect(resumeMaxAgeMinutes('1440')).toBe(1440)
+    expect(resumeMaxAgeMinutes('0')).toBe(0)
+  })
+
+  test('anything unset or unreadable is the default, not a disabled sweep', () => {
+    expect(resumeMaxAgeMinutes(undefined)).toBe(DEFAULT_RESUME_MAX_AGE_MINUTES)
+    expect(resumeMaxAgeMinutes(null)).toBe(DEFAULT_RESUME_MAX_AGE_MINUTES)
+    expect(resumeMaxAgeMinutes('')).toBe(DEFAULT_RESUME_MAX_AGE_MINUTES)
+    expect(resumeMaxAgeMinutes('soon')).toBe(DEFAULT_RESUME_MAX_AGE_MINUTES)
+    // A negative limit would otherwise make every marker "too old".
+    expect(resumeMaxAgeMinutes('-30')).toBe(0)
   })
 })

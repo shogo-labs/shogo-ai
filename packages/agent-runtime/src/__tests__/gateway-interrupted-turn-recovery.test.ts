@@ -228,3 +228,172 @@ describe('interrupted-turn recovery (SHO-121)', () => {
     expect((await storedMetadata()).inflightTurn?.resumeAttempts).toBe(0)
   })
 })
+
+/**
+ * The cap has to outlive the turn (SHO-227).
+ *
+ * SHO-121's one-resume promise held only while the resumed turn itself died.
+ * The count lived in memory and the turn's `finally` deleted it, so a resume
+ * that *finished* handed the cap straight back: the next wake turn, the next
+ * death, another resume. In the cloud that chain never ends, because a pod
+ * eviction is always just another death.
+ */
+describe('the one-resume cap survives a completed turn (SHO-227)', () => {
+  let testDir: string
+  let gateway: AgentGateway
+  const previousResume = process.env.AGENT_RESUME_MAX_AGE_MINUTES
+  const previousPlan = process.env.AGENT_MAX_PLAN_CONTINUATIONS
+
+  beforeEach(async () => {
+    testDir = makeTestDir()
+    setupWorkspace(testDir)
+    trustWorkspaceForTests(testDir)
+    delete process.env.AGENT_RESUME_MAX_AGE_MINUTES
+    process.env.AGENT_MAX_PLAN_CONTINUATIONS = '0'
+  })
+
+  afterEach(async () => {
+    if (gateway) await gateway.stop()
+    clearTrustForTests()
+    clearSessionTodos(SESSION_ID)
+    rmSync(testDir, { recursive: true, force: true })
+    for (const [key, value] of [
+      ['AGENT_RESUME_MAX_AGE_MINUTES', previousResume],
+      ['AGENT_MAX_PLAN_CONTINUATIONS', previousPlan],
+    ] as const) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+
+  async function seedInterrupted(metadata: Record<string, any>) {
+    const persistence = new SqliteSessionPersistence(testDir)
+    await persistence.save(SESSION_ID, {
+      id: SESSION_ID,
+      messages: interruptedMessages(),
+      compactedSummary: null,
+      createdAt: Date.now() - 60_000,
+      lastActivityAt: Date.now() - 60_000,
+      totalMessages: 2,
+      compactionCount: 0,
+      metadata,
+    })
+  }
+
+  async function storedMetadata(): Promise<Record<string, any>> {
+    const persistence = new SqliteSessionPersistence(testDir)
+    const data = await persistence.load(SESSION_ID)
+    return (data?.metadata ?? {}) as Record<string, any>
+  }
+
+  /**
+   * What a pod killed mid-tool leaves behind: the marker written into the
+   * session it was working in, with the messages it had so far.
+   */
+  async function theProcessDies(resumeAttempts: number): Promise<void> {
+    const persistence = new SqliteSessionPersistence(testDir)
+    const data = (await persistence.load(SESSION_ID))!
+    await persistence.save(SESSION_ID, {
+      ...data,
+      metadata: {
+        ...data.metadata,
+        inflightTurn: { id: 'turn-died', startedAt: Date.now() - 5_000, lastTool: 'exec', resumeAttempts },
+      },
+    })
+  }
+
+  async function boot(streamFn: StreamFn): Promise<void> {
+    gateway = new AgentGateway(testDir, 'test-project')
+    gateway.setStreamFn(streamFn)
+    await gateway.start()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+
+  async function stop(): Promise<void> {
+    await gateway.stop()
+    gateway = undefined as any
+  }
+
+  /** Wait until the session holds an assistant answer, without sleeping a fixed time. */
+  async function waitForAnswer(): Promise<void> {
+    const answered = () =>
+      !!gateway
+        .getSessionManager()
+        .get(SESSION_ID)
+        ?.messages.some((m) => m.role === 'assistant' && JSON.stringify(m.content).includes('Deploy finished'))
+    const deadline = Date.now() + 5_000
+    while (!answered() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
+
+  function send(text: string, turnOrigin: 'person' | 'task-wake'): Promise<void> {
+    return gateway.processChatMessageStream(text, { write: () => {} } as any, {
+      chatSessionId: SESSION_ID,
+      turnOrigin,
+    })
+  }
+
+  test('resume → task-wake turn → death: the next boot posts the note only', async () => {
+    await seedInterrupted({
+      inflightTurn: { id: 'turn-1', startedAt: Date.now() - 60_000, lastTool: 'exec', resumeAttempts: 0 },
+    })
+
+    const prompts: string[] = []
+    await boot(recordingStream((prompt) => prompts.push(prompt)))
+    await waitForAnswer()
+    expect(prompts).toHaveLength(1)
+    await stop()
+    expect((await storedMetadata()).autoResumesSinceHuman).toBe(1)
+
+    // A watch reporting back starts a normal turn and ends it. It is not a
+    // person, so the spent restart must stay spent — this is the step that used
+    // to reset the cap and let the chain run for days.
+    await boot(recordingStream((prompt) => prompts.push(prompt)))
+    await send('watch finished', 'task-wake')
+    expect((await storedMetadata()).autoResumesSinceHuman).toBe(1)
+    await stop()
+
+    await theProcessDies(1)
+
+    let modelCalls = 0
+    await boot((() => {
+      modelCalls++
+      throw new Error('the one restart was already spent on this session')
+    }) as any)
+
+    expect(modelCalls).toBe(0)
+    expect((await storedMetadata()).inflightTurn ?? null).toBeNull()
+  })
+
+  test('a person writing clears it, so the next death resumes once', async () => {
+    // Already restarted once and the restart died: the next boot says so only.
+    await seedInterrupted({
+      autoResumesSinceHuman: 1,
+      inflightTurn: { id: 'turn-2', startedAt: Date.now() - 30_000, lastTool: 'exec', resumeAttempts: 1 },
+    })
+
+    let modelCalls = 0
+    await boot((() => {
+      modelCalls++
+      throw new Error('a session that already restarted must not restart again')
+    }) as any)
+    expect(modelCalls).toBe(0)
+    await stop()
+
+    // The person comes back and writes. That is what hands the cap back.
+    await boot(recordingStream())
+    await send('go on then', 'person')
+    expect((await storedMetadata()).autoResumesSinceHuman).toBe(0)
+    await stop()
+
+    await theProcessDies(0)
+
+    const prompts: string[] = []
+    await boot(recordingStream((prompt) => prompts.push(prompt)))
+    await waitForAnswer()
+
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toContain('Pick up exactly where you left off.')
+  })
+})

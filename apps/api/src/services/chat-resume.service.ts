@@ -17,19 +17,83 @@ import {
   interruptedTurnNote,
   interruptedTurnResumeInstruction,
   isInterruptedTurnNote,
+  resumeMaxAgeMinutes,
 } from '@shogo/shared-runtime/interrupted-turn'
 import { prisma } from '../lib/prisma'
 import { dispatchNext } from './chat-queue-dispatcher.service'
+import { isAutonomousUserMessage } from './background-tasks.service'
+
+/** Why a death that could have resumed was answered with the note only. */
+export type NoResumeReason = 'already-resumed' | 'stale' | 'no-user'
 
 export interface InterruptedResumeResult {
   /** An assistant row carrying the note was written. */
   noted: boolean
   /** A `kind: 'resume'` queued message was created (and dispatched). */
   queued: boolean
+  /**
+   * Present only when the caller asked to resume and the session had already
+   * used its one automatic restart, so the transcript can be explained from
+   * logs alone (SHO-227). Absent on a plain note-only call, which is a caller
+   * decision rather than a downgrade.
+   */
+  reason?: NoResumeReason
 }
 
 /** How far back an identical note counts as the same death. */
 const NOTE_DEDUPE_WINDOW_MS = 5 * 60_000
+
+/**
+ * When a person last wrote in this session.
+ *
+ * Automatic restarts need a person (SHO-227). Anything the queue wrote on the
+ * machine's own behalf — a task wake, an earlier resume — is not one, so this
+ * walks back past them to the last real message. A session nobody has ever
+ * written in falls back to its own creation time: that is still "how long since
+ * a person was here", and a session that only ever ran automatically gets its
+ * one resume and no more.
+ */
+async function lastHumanMessageAt(chatSessionId: string, sessionCreatedAt: Date): Promise<Date> {
+  const rows: Array<{ parts: string | null; createdAt: Date }> = await prisma.chatMessage.findMany({
+    where: { sessionId: chatSessionId, role: 'user' },
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+    select: { parts: true, createdAt: true },
+  })
+  for (const row of rows) {
+    if (isAutonomousUserMessage(row.parts)) continue
+    return row.createdAt
+  }
+  return sessionCreatedAt
+}
+
+/**
+ * Whether a resume has already *run* since `since`.
+ *
+ * The dispatcher deletes a queued row once its turn starts, so the durable
+ * trace of a resume that ran is the user message it persisted. A row still in
+ * the queue is not this: that resume has not run yet, and its promise stands —
+ * `alreadyQueued` below is what stops a second one being queued on top of it.
+ */
+async function resumeRanSince(chatSessionId: string, since: Date): Promise<boolean> {
+  const rows: Array<{ parts: string | null }> = await prisma.chatMessage.findMany({
+    where: { sessionId: chatSessionId, role: 'user', createdAt: { gt: since } },
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+    select: { parts: true },
+  })
+  return rows.some((row) => hasResumePart(row.parts))
+}
+
+function hasResumePart(parts: string | null | undefined): boolean {
+  if (!parts) return false
+  try {
+    const list = JSON.parse(parts)
+    return Array.isArray(list) && list.some((part: any) => part?.type === 'data-resume')
+  } catch {
+    return false
+  }
+}
 
 /**
  * The step that never returned, read off the transcript.
@@ -65,6 +129,12 @@ export function inFlightToolName(parts: unknown): string | null {
  * Say the turn was interrupted, and queue its resume unless one is already
  * waiting.
  *
+ * A resume is an automatic restart, so it needs a person (SHO-227). Between two
+ * human messages a session gets one: a second death after that gets the note
+ * only. That rule lives here rather than in each caller, because every caller —
+ * the reattach job, the runtime's boot sweep, the dispatcher's last attempt —
+ * reaches the same function.
+ *
  * @param opts.resume `false` posts the note only — what a second death gets, so
  *   a resume that keeps dying cannot restart itself forever.
  */
@@ -74,11 +144,10 @@ export async function postInterruptedResume(
 ): Promise<InterruptedResumeResult> {
   const session = await prisma.chatSession.findUnique({
     where: { id: chatSessionId },
-    select: { id: true, createdByUserId: true, workspaceId: true, contextType: true, contextId: true },
+    select: { id: true, createdByUserId: true, workspaceId: true, contextType: true, contextId: true, createdAt: true },
   })
   if (!session) return { noted: false, queued: false }
 
-  const resuming = opts.resume !== false
   const result: InterruptedResumeResult = { noted: false, queued: false }
 
   // The step that was in flight is already on the transcript, and naming it is
@@ -94,6 +163,30 @@ export async function postInterruptedResume(
     })
   } catch {
     latestAssistant = null
+  }
+
+  // Decide before writing the note: the wording is the whole message when the
+  // answer is "this one stays stopped".
+  let resuming = opts.resume !== false
+  if (resuming) {
+    const humanAt = await lastHumanMessageAt(chatSessionId, session.createdAt)
+    const maxAgeMinutes = resumeMaxAgeMinutes(process.env.AGENT_RESUME_MAX_AGE_MINUTES)
+    if (maxAgeMinutes === 0 || Date.now() - humanAt.getTime() > maxAgeMinutes * 60_000) {
+      // Nobody has written here for hours. Restarting the work now would spend a
+      // turn on a conversation the person has walked away from.
+      resuming = false
+      result.reason = 'stale'
+    } else if (await resumeRanSince(chatSessionId, humanAt)) {
+      // This session already restarted itself once since the last person wrote.
+      // The second death is the note: the work is saved and a message picks it up.
+      resuming = false
+      result.reason = 'already-resumed'
+    }
+    if (!resuming) {
+      console.log(
+        `[ChatResume] Not resuming ${chatSessionId}: ${result.reason} (last human message ${humanAt.toISOString()})`,
+      )
+    }
   }
 
   const explicit = typeof opts.toolName === 'string' && opts.toolName.trim() ? opts.toolName.trim() : null
@@ -132,7 +225,10 @@ export async function postInterruptedResume(
   if (!resuming) return result
 
   const userId = session.createdByUserId ?? (await ownerOf(session.workspaceId, session.contextType, session.contextId))
-  if (!userId) return result
+  if (!userId) {
+    result.reason = 'no-user'
+    return result
+  }
 
   // One waiting resume is enough: a second would queue a duplicate turn on the
   // same interrupted work.
@@ -162,7 +258,10 @@ export async function postInterruptedResume(
       // No `data-task-notification` part on purpose: this is not a task wake, so
       // the wake-pause rules must not count it (see `consecutiveWakeWaits`).
       parts: JSON.stringify([{ type: 'text', text: prompt }, { type: 'data-resume', data: { toolName } }]),
-      body: JSON.stringify({ text: prompt }),
+      // `autoResume` rides the dispatch body to the runtime so the turn it starts
+      // knows it was not a person: it counts against the session's one automatic
+      // restart instead of resetting it (SHO-227).
+      body: JSON.stringify({ text: prompt, autoResume: true }),
     },
   })
   result.queued = true
