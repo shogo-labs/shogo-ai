@@ -24,6 +24,8 @@ refuses to run if the app lands on a port that another process holds.
   (`LOCAL_LLM_BASE_URL`). A marker in the user message scripts the reply:
   `long` (N numbered tokens), `hold` (wait for `release(tag)`), `tool` (text, then a
   `read_file` tool call, repeated for `rounds`, with an optional hold before a round).
+  `tool` also takes `same=1` (the same arguments every round, to drive the loop
+  detector) and `empty=1` (a blank required argument, to drive the empty-argument guard).
   Tokens look like `t<tag>w0001`, so any view can be checked for gaps, repeats and
   reordering. It records when every token was written and when the app hung up.
 - `stream-probe.ts`: samples the page every 40 ms and records which tokens are on
@@ -51,7 +53,7 @@ because switching chats through the sidebar is not scriptable from the project w
 
 The fake model ends every reply with a usage chunk and varies tool inputs per round. Without the
 first the agent reports "Agent produced no output"; without the second its loop detector stops the
-turn after 4 identical calls.
+turn after 10 identical calls.
 
 ## Budgets
 

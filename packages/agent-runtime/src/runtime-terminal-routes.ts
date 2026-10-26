@@ -41,13 +41,17 @@ export function runtimeTerminalRoutes(config: {
     if (!existsSync(workspaceDir)) {
       return c.json({ error: { code: 'workspace_not_found', message: 'Workspace not found' } }, 404)
     }
-    let body: { cwd?: string; cols?: number; rows?: number } = {}
+    let body: { cwd?: string; cols?: number; rows?: number; projectId?: string } = {}
     try { body = await c.req.json() } catch {}
     const cols = clampDim(body.cols, 1, 1000, 80)
     const rows = clampDim(body.rows, 1, 1000, 24)
     const cwd = pickCwd(body.cwd, workspaceDir)
+    // The API's terminal proxy knows which project the caller is on and passes
+    // it along; a runtime that serves several projects needs it to keep
+    // dev-server URL detection per project (SHO-200 S6).
+    const projectId = c.req.query('project') || body.projectId || null
     try {
-      const rec = manager.create({ cwd, cols, rows })
+      const rec = manager.create({ cwd, cols, rows, projectId })
       return c.json({
         id: rec.id,
         cwd: rec.session.cwd,

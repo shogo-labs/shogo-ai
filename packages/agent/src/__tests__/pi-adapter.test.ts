@@ -61,15 +61,6 @@ describe('resolveModel — custom OpenAI-compatible (DB) providers', () => {
     const model = resolveModel('custom', 'mimo-v2.5') as any
     expect(model.compat?.cacheControlFormat).toBe('anthropic')
   })
-
-  it('routes Gemini through the proxy chat-completions route, never straight to Google', () => {
-    const model = resolveModel('google', 'gemini-3.1-pro-preview') as any
-    expect(model.api).toBe('openai-completions')
-    expect(model.provider).toBe('openai')
-    expect(model.baseUrl).toBe('https://api.example.test/api/ai/v1')
-    expect(model.contextWindow).toBe(200_000)
-    expect(model.compat).toEqual({ supportsStore: false, supportsDeveloperRole: false })
-  })
 })
 
 describe('resolveModel — DB models from the dynamic registry', () => {
@@ -109,5 +100,41 @@ describe('resolveModel — DB models from the dynamic registry', () => {
 
   it('keeps the 200K default for ids the registry does not know', () => {
     expect(resolveModel('custom', 'unknown-model').contextWindow).toBe(200_000)
+  })
+})
+
+// SHO-231: a `provider: 'google'` model row (Gemini) is served by the API
+// proxy, which is the only place holding the Google key. The runtime has no
+// GOOGLE_API_KEY of its own, so it must not build a native Google model that
+// talks to generativelanguage.googleapis.com directly.
+describe('resolveModel — Google (Gemini) models', () => {
+  const GEMINI_UUID = '5b0c1c1e-9f2a-4f7d-8c2b-0a1b2c3d4e5f'
+  const PREV_OPENAI = process.env.OPENAI_BASE_URL
+  const PREV_GOOGLE = process.env.GOOGLE_BASE_URL
+
+  beforeEach(() => {
+    process.env.OPENAI_BASE_URL = 'https://api.example.test/api/ai/v1'
+    delete process.env.GOOGLE_BASE_URL
+  })
+  afterEach(() => {
+    clearDynamicModels()
+    if (PREV_OPENAI === undefined) delete process.env.OPENAI_BASE_URL
+    else process.env.OPENAI_BASE_URL = PREV_OPENAI
+    if (PREV_GOOGLE === undefined) delete process.env.GOOGLE_BASE_URL
+    else process.env.GOOGLE_BASE_URL = PREV_GOOGLE
+  })
+
+  it('routes a DB Gemini model through the proxy chat-completions endpoint', () => {
+    registerDynamicModels([{ id: GEMINI_UUID, provider: 'google', apiModel: 'gemini-2.5-flash' }])
+    const model = resolveModel('google', GEMINI_UUID)
+    expect(model.api).toBe('openai-completions')
+    expect(model.provider).toBe('openai')
+    expect(model.baseUrl).toBe('https://api.example.test/api/ai/v1')
+  })
+
+  it('keeps a static gemini id off the native Google transport too', () => {
+    const model = resolveModel('google', 'gemini-2.5-pro')
+    expect(model.api).toBe('openai-completions')
+    expect(model.baseUrl).toBe('https://api.example.test/api/ai/v1')
   })
 })

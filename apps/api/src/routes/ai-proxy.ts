@@ -349,7 +349,7 @@ export function resolveModelSupportsAudioInput(model: string): boolean {
 /**
  * Get the API key for a provider.
  */
-function getProviderApiKey(provider: Provider): string | null {
+export function getProviderApiKey(provider: Provider): string | null {
   switch (provider) {
     case 'anthropic':
     case 'openai':
@@ -1909,14 +1909,16 @@ export async function proxyAnthropicNonStream(
 // OpenAI Proxy (pass-through)
 // =============================================================================
 
-/** Google's Gemini API host. `GOOGLE_BASE_URL` overrides it for a proxy or a
- *  regional endpoint; everything else in this file goes through here so the two
- *  surfaces (chat + music) can never point at different hosts. */
+/** Google's Gemini API host. `GOOGLE_BASE_URL` may point at the OpenAI
+ *  compatibility root (`…/v1beta/openai`, what chat routing expects) or at the
+ *  bare host; native endpoints such as Lyria's Interactions API need the host. */
 function googleApiBase(): string {
-  return (process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/$/, '')
+  return (process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com')
+    .replace(/\/$/, '')
+    .replace(/\/v1beta(\/openai)?$/, '')
 }
 
-function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
+export function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
   if (modelConfig.provider === 'local' && process.env.LOCAL_LLM_BASE_URL) {
     return `${process.env.LOCAL_LLM_BASE_URL.replace(/\/$/, '')}/v1/chat/completions`
   }
@@ -1924,11 +1926,11 @@ function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
     const base = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '')
     return `${base}/chat/completions`
   }
-  // Gemini's OpenAI-compatibility endpoint. It authenticates with a Bearer
-  // token like every other chat-completions upstream, so the shared headers
-  // work unchanged.
+  // Gemini ships an OpenAI-compatible endpoint, so a `provider: 'google'` model
+  // rides the same pass-through as OpenAI (Bearer auth, chat-completions body).
   if (modelConfig.provider === 'google') {
-    return `${googleApiBase()}/v1beta/openai/chat/completions`
+    const base = (process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/$/, '')
+    return `${base}/chat/completions`
   }
   // Custom OpenAI-compatible providers (e.g. MiMo): the admin-configured
   // base URL already includes the version path (e.g. .../v1), so we just

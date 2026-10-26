@@ -15,7 +15,7 @@ process.env.SECRETS_ENCRYPTION_KEY = Buffer.from('0123456789abcdef0123456789abcd
  * is stubbed (its behavior is covered by the registry service test).
  */
 
-import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { withPrismaExports } from '../../__tests__/helpers/prisma-mock-exports'
 
 // ─── In-memory prisma store ───────────────────────────────────────────────
@@ -495,5 +495,73 @@ describe('admin provider keys (native, incl. tripo)', () => {
     expect(res.status).toBe(200)
     expect((await res.json() as any).keys.nope).toBeUndefined()
     expect([...settings.keys()].filter((k) => k.startsWith('provider-key.'))).toEqual([])
+  })
+})
+
+// SHO-231: Google (Gemini) is discoverable once chat routing lands. The picker
+// must only offer `generateContent` chat models (no embeddings / AQA / Imagen /
+// Veo / TTS / Live), strip the `models/` prefix, and report a clear error when
+// no key is configured or Google rejects the call.
+describe('google (Gemini) model discovery', () => {
+  const originalFetch = globalThis.fetch
+  let fetchCalls: Array<{ url: string; headers: Record<string, string> }> = []
+  let googleResponse: () => Response = () => new Response('{}', { status: 200 })
+
+  beforeEach(() => {
+    fetchCalls = []
+    process.env.GOOGLE_API_KEY = 'AIza-test-discovery-key'
+    globalThis.fetch = (async (input: any, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.url
+      fetchCalls.push({ url, headers: (init?.headers as Record<string, string>) ?? {} })
+      return googleResponse()
+    }) as any
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    delete process.env.GOOGLE_API_KEY
+  })
+
+  test('lists only chat-capable Gemini models', async () => {
+    googleResponse = () => new Response(JSON.stringify({
+      models: [
+        { name: 'models/gemini-2.5-pro', displayName: 'Gemini 2.5 Pro', inputTokenLimit: 1048576, supportedGenerationMethods: ['generateContent', 'countTokens'] },
+        { name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', inputTokenLimit: 1048576, supportedGenerationMethods: ['generateContent'] },
+        { name: 'models/gemini-embedding-001', displayName: 'Embedding', supportedGenerationMethods: ['embedContent'] },
+        { name: 'models/imagen-4.0-generate-001', supportedGenerationMethods: ['predict'] },
+        { name: 'models/veo-3.0-generate-001', supportedGenerationMethods: ['predictLongRunning'] },
+        { name: 'models/gemini-2.5-flash-preview-tts', supportedGenerationMethods: ['generateContent'] },
+        { name: 'models/gemini-2.0-flash-live-001', supportedGenerationMethods: ['bidiGenerateContent'] },
+        // Image-OUTPUT Gemini ids also report generateContent; the picker is
+        // text chat only (QA round 1, SHO-231).
+        { name: 'models/gemini-2.5-flash-image', displayName: 'Nano Banana', supportedGenerationMethods: ['generateContent'] },
+        { name: 'models/gemini-2.0-flash-preview-image-generation', supportedGenerationMethods: ['generateContent'] },
+      ],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+
+    const res = await get('/providers/google/models')
+    const data = await res.json() as any
+    expect(data.ok).toBe(true)
+    expect(data.models.map((m: any) => m.id)).toEqual(['gemini-2.5-flash', 'gemini-2.5-pro'])
+    const pro = data.models.find((m: any) => m.id === 'gemini-2.5-pro')
+    expect(pro.displayName).toBe('Gemini 2.5 Pro')
+    expect(pro.contextLength).toBe(1048576)
+    expect(fetchCalls[0].url).toContain('generativelanguage.googleapis.com/v1beta/models')
+    expect(fetchCalls[0].headers['x-goog-api-key']).toBe('AIza-test-discovery-key')
+  })
+
+  test('says no key is configured instead of calling Google', async () => {
+    delete process.env.GOOGLE_API_KEY
+    const data = await (await get('/providers/google/models')).json() as any
+    expect(data.ok).toBe(false)
+    expect(data.error).toBe('No API key configured for google.')
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('surfaces a Google rejection', async () => {
+    googleResponse = () => new Response('nope', { status: 429 })
+    const data = await (await get('/providers/google/models')).json() as any
+    expect(data.ok).toBe(false)
+    expect(data.error).toBe('Google returned 429')
   })
 })

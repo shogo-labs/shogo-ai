@@ -1178,11 +1178,11 @@ export class PlatformApi {
     return res.data ?? { ok: false, affiliate: {} }
   }
 
-  /** Live model list from a native provider (anthropic / openai / openrouter),
-   * discovered with the configured key. OpenRouter's catalog is public, so it
-   * lists even without a key. */
+  /** Live model list from a native provider (anthropic / openai / google /
+   * openrouter), discovered with the configured key. OpenRouter's catalog is
+   * public, so it lists even without a key. */
   async getProviderModels(
-    provider: 'anthropic' | 'openai' | 'openrouter',
+    provider: 'anthropic' | 'openai' | 'google' | 'openrouter',
   ): Promise<{ ok: boolean; models: DiscoveredProviderModel[]; error?: string }> {
     const res = await this.http.get<{
       ok: boolean
@@ -1195,7 +1195,7 @@ export class PlatformApi {
   /** Persist which discovered provider models are enabled. Each entry upserts a
    * DB model row (enable) or flips it disabled (enable: false). */
   async setProviderModelsEnabled(
-    provider: 'anthropic' | 'openai',
+    provider: 'anthropic' | 'openai' | 'google',
     models: Array<{ id: string; displayName?: string; contextWindow?: number; enabled: boolean }>,
   ): Promise<void> {
     await this.http.request(

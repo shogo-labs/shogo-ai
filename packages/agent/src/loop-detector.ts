@@ -13,11 +13,11 @@
  */
 
 export interface LoopDetectorConfig {
-  /** Max times the same tool+input can repeat before triggering (default: 3) */
+  /** Max times the same tool+input can repeat before triggering (default: 10) */
   maxIdenticalCalls: number
-  /** Max times identical outputs can repeat before triggering (default: 3) */
+  /** Max times identical outputs can repeat before triggering (default: 10) */
   maxIdenticalOutputs: number
-  /** Window size for cycle detection (default: 6) */
+  /** Window size for cycle detection (default: 10) */
   cycleWindowSize: number
   /** Min cycle length to detect (default: 2, e.g. A→B→A→B) */
   minCycleLength: number
@@ -45,8 +45,8 @@ interface ToolCallEntry {
 }
 
 const DEFAULT_CONFIG: LoopDetectorConfig = {
-  maxIdenticalCalls: 4,
-  maxIdenticalOutputs: 4,
+  maxIdenticalCalls: 10,
+  maxIdenticalOutputs: 10,
   cycleWindowSize: 10,
   minCycleLength: 2,
   maxConsecutiveNoProgress: 5,

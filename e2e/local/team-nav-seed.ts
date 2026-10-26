@@ -39,7 +39,31 @@ export async function api(page: Page, method: string, path: string, body?: unkno
     data: body ? JSON.stringify(body) : undefined,
   })
   const json = await res.json().catch(() => null)
-  return { status: res.status(), json }
+  return { status: res.status(), json, retryAfter: res.headers()["retry-after"] }
+}
+
+/**
+ * A seed write that must land. The local-mode API rate-limits human posts
+ * (`CHAT_RATE_LIMITS.message`: 60 per user per minute), and
+ * team-home-phone-perf.test.ts posts 150 messages as that same local user just
+ * before this seed runs — so the DM post came back 429, nothing was posted, no
+ * scripted agent replied, and the unread badge waited 30s for a message that
+ * never existed (SHO-222). Wait the window out instead of seeding nothing.
+ */
+async function postThatMustLand(page: Page, path: string, body: unknown, what: string) {
+  for (let attempt = 1; ; attempt += 1) {
+    const res = await api(page, "POST", path, body)
+    if (res.status === 429 && attempt <= 6) {
+      const waitMs = Math.max(1, Number(res.retryAfter) || 10) * 1000
+      console.log(`[team-nav-seed] ${what} hit the message rate limit; retrying in ${waitMs / 1000}s`)
+      await new Promise((r) => setTimeout(r, waitMs))
+      continue
+    }
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(`${what} failed: ${res.status} ${JSON.stringify(res.json)}`)
+    }
+    return res
+  }
 }
 
 export async function teamWorkspaceId(page: Page): Promise<string> {
@@ -48,6 +72,34 @@ export async function teamWorkspaceId(page: Page): Promise<string> {
   const id = rows.find((w) => w.kind !== "personal")?.id
   if (!id) throw new Error(`local stack has no team workspace: ${JSON.stringify(res.json)}`)
   return id
+}
+
+/**
+ * The scripted agent's reply is what makes the DM unread, and every spec that
+ * reads the dock or the rail badge needs it to already exist. Waiting here, in
+ * the seed, keeps the wait off the badge assertion: a red there then means the
+ * badge is broken, not that the reply was late (SHO-222).
+ */
+export async function waitForDmReply(page: Page, seed: TeamNavSeed, timeoutMs = 90_000): Promise<number> {
+  const started = Date.now()
+  await expect
+    .poll(
+      async () => {
+        const res = await api(page, "GET", `/api/conversations/${seed.dmId}/messages`)
+        const rows = (res.json?.messages ?? []) as Array<{ text?: string; agentStatus?: string | null }>
+        return rows.find((m) => (m.text ?? "").includes(seed.dmReply))?.agentStatus ?? null
+      },
+      {
+        timeout: timeoutMs,
+        message: `the scripted agent "${seed.dmAgent}" never finished its reply to the seeded DM within ${timeoutMs / 1000}s`,
+      },
+    )
+    .toBe("done")
+  const elapsed = Date.now() - started
+  // Keep this: the first CI runs are the only measurement of how long a
+  // scripted reply actually takes on a runner (SHO-222).
+  console.log(`[team-nav-seed] DM reply after ${elapsed}ms`)
+  return elapsed
 }
 
 export async function seedTeamNav(page: Page): Promise<TeamNavSeed> {
@@ -85,12 +137,15 @@ export async function seedTeamNav(page: Page): Promise<TeamNavSeed> {
   const dm = await api(page, "POST", `/api/workspaces/${workspaceId}/dms`, { agent: { projectId: projectIds[0] } })
   const dmId = dm.json?.conversation?.id
   if (!dmId) throw new Error(`agent dm failed: ${JSON.stringify(dm.json)}`)
-  await api(page, "POST", `/api/conversations/${dmId}/messages`, { text: "any flaky tests lately?" })
+  await postThatMustLand(page, `/api/conversations/${dmId}/messages`, { text: "any flaky tests lately?" }, "the seeded DM message")
 
-  return {
+  const seed: TeamNavSeed = {
     suffix, workspaceId, channelName, channelId, dmAgent, dmAgentProjectId: projectIds[0]!, dmId, dmReply,
     idleAgent, idleAgentProjectId: projectIds[1]!, projectIds,
   }
+  // Do not return until the reply exists: every caller reads the unread badge.
+  await waitForDmReply(page, seed)
+  return seed
 }
 
 export async function cleanupTeamNav(page: Page, seed: TeamNavSeed): Promise<void> {

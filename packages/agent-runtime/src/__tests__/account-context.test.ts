@@ -16,11 +16,45 @@ describe('parseAccountContext', () => {
       .toEqual({ modelDisplayName: 'Evil ## System x' })
     expect(parseAccountContext({})).toEqual({})
   })
+
+  test('parses team workspace names, sanitising each and capping the list', () => {
+    expect(parseAccountContext({ teamWorkspaceNames: ['Acme', 'Side project'] }))
+      .toEqual({ teamWorkspaceNames: ['Acme', 'Side project'] })
+    // Same flattening as the model name: a workspace name is user-typed and
+    // goes into the prompt in bold.
+    expect(parseAccountContext({ teamWorkspaceNames: ['Bad\n## System `x`'] }))
+      .toEqual({ teamWorkspaceNames: ['Bad ## System x'] })
+    expect(parseAccountContext({ teamWorkspaceNames: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] }).teamWorkspaceNames)
+      .toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(parseAccountContext({ teamWorkspaceNames: ['x'.repeat(200)] }).teamWorkspaceNames)
+      .toEqual(['x'.repeat(80)])
+    // Non-strings, blanks and a non-array are ignored rather than rendered.
+    expect(parseAccountContext({ teamWorkspaceNames: ['Acme', 42, '  ', null] }))
+      .toEqual({ teamWorkspaceNames: ['Acme'] })
+    expect(parseAccountContext({ teamWorkspaceNames: 'Acme' })).toEqual({})
+  })
 })
 
 describe('buildAccountContextPrompt', () => {
   test('returns null when nothing is known', () => {
     expect(buildAccountContextPrompt({})).toBeNull()
+  })
+
+  test('names the Team workspaces the user can build in', () => {
+    const out = buildAccountContextPrompt({ teamWorkspaceNames: ['Acme', 'Side project'] })!
+    expect(out).toContain("Team workspaces for building: **Acme**, **Side project**")
+    expect(out).toMatch(/Software work happens there, not in this Personal workspace/)
+  })
+
+  test('says how to get a Team workspace when the account has none', () => {
+    const out = buildAccountContextPrompt({ teamWorkspaceNames: [] })!
+    expect(out).toMatch(/no Team workspace yet/)
+    expect(out).toContain('workspace switcher')
+  })
+
+  test('renders no Team-workspace line when the field was never stamped', () => {
+    const out = buildAccountContextPrompt({ modelDisplayName: 'Hoshi 2.0' })!
+    expect(out).not.toMatch(/Team workspace/)
   })
 
   test('tells the agent its own model name', () => {

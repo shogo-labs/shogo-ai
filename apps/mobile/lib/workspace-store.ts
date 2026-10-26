@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
+import * as SecureStore from 'expo-secure-store'
 import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 
 const STORAGE_KEY = 'shogo:active-workspace-id'
 const KIND_STORAGE_KEY = 'shogo:active-workspace-kind'
 const SWITCH_INTENT_STORAGE_KEY = 'shogo:active-workspace-switch'
+const NATIVE_STORAGE_KEYS: Record<string, string> = {
+  [STORAGE_KEY]: 'shogo_active_workspace_id',
+  [KIND_STORAGE_KEY]: 'shogo_active_workspace_kind',
+  [SWITCH_INTENT_STORAGE_KEY]: 'shogo_active_workspace_switch',
+}
 
 export type CachedWorkspaceKind = 'personal' | 'team'
 
@@ -45,10 +51,39 @@ interface WorkspaceSwitchIntent {
   at: number
 }
 
-let nativeActiveWorkspaceId: string | null = null
-let nativeActiveWorkspaceKind: { id: string; kind: CachedWorkspaceKind } | null = null
-let nativeSwitchIntent: WorkspaceSwitchIntent | null = null
+// SecureStore's synchronous API makes the selected workspace available to
+// useSyncExternalStore on the first render. Cache values to avoid repeat native
+// bridge reads during renders; SecureStore restores them after a restart.
+const nativeStorageCache = new Map<string, string | null>()
 const listeners = new Set<() => void>()
+
+function getNativeStorageItem(key: string): string | null {
+  if (nativeStorageCache.has(key)) return nativeStorageCache.get(key) ?? null
+
+  const nativeKey = NATIVE_STORAGE_KEYS[key]
+  if (!nativeKey) return null
+  let value: string | null = null
+  try {
+    value = SecureStore.getItem(nativeKey)
+  } catch {
+    // Keep the native store usable for this session if SecureStore is unavailable.
+  }
+  nativeStorageCache.set(key, value)
+  return value
+}
+
+function setNativeStorageItem(key: string, value: string | null): void {
+  nativeStorageCache.set(key, value)
+  const nativeKey = NATIVE_STORAGE_KEYS[key]
+  if (!nativeKey) return
+  try {
+    // SecureStore has no synchronous delete method. An empty value is treated
+    // as absent by readers and preserves the store's synchronous API.
+    SecureStore.setItem(nativeKey, value ?? '')
+  } catch {
+    // Keep the native store usable for this session if SecureStore is unavailable.
+  }
+}
 
 /** Another window (e.g. the desktop island) switched workspace. */
 function onStorage(event: StorageEvent): void {
@@ -73,7 +108,7 @@ function emitActiveWorkspaceId(): void {
 
 function persistActiveWorkspaceId(id: string | null): void {
   if (Platform.OS !== 'web' || typeof window === 'undefined') {
-    nativeActiveWorkspaceId = id
+    setNativeStorageItem(STORAGE_KEY, id)
     return
   }
   if (id == null) safeRemoveItem(STORAGE_KEY)
@@ -82,14 +117,27 @@ function persistActiveWorkspaceId(id: string | null): void {
 
 export function getActiveWorkspaceId(): string | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') {
-    return nativeActiveWorkspaceId
+    return getNativeStorageItem(STORAGE_KEY) || null
   }
   return safeGetItem(STORAGE_KEY)
 }
 
 function readSwitchIntent(): WorkspaceSwitchIntent | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') {
-    return nativeSwitchIntent
+    const raw = getNativeStorageItem(SWITCH_INTENT_STORAGE_KEY)
+    if (!raw) return null
+    try {
+      const parsed = JSON.parse(raw) as { id?: unknown; left?: unknown; at?: unknown }
+      if (typeof parsed.id === 'string' && typeof parsed.at === 'number') {
+        const left = Array.isArray(parsed.left)
+          ? parsed.left.filter((value): value is string => typeof value === 'string')
+          : []
+        return { id: parsed.id, left, at: parsed.at }
+      }
+    } catch {
+      // Ignore a corrupt record; it must never block a write.
+    }
+    return null
   }
   const raw = safeGetItem(SWITCH_INTENT_STORAGE_KEY)
   if (!raw) return null
@@ -109,7 +157,10 @@ function readSwitchIntent(): WorkspaceSwitchIntent | null {
 
 function persistSwitchIntent(intent: WorkspaceSwitchIntent | null): void {
   if (Platform.OS !== 'web' || typeof window === 'undefined') {
-    nativeSwitchIntent = intent
+    setNativeStorageItem(
+      SWITCH_INTENT_STORAGE_KEY,
+      intent == null ? null : JSON.stringify(intent),
+    )
     return
   }
   if (intent == null) safeRemoveItem(SWITCH_INTENT_STORAGE_KEY)
@@ -212,7 +263,20 @@ export function clearActiveWorkspaceId(): void {
 
 function readCachedWorkspaceKind(): { id: string; kind: CachedWorkspaceKind } | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') {
-    return nativeActiveWorkspaceKind
+    const raw = getNativeStorageItem(KIND_STORAGE_KEY)
+    if (!raw) return null
+    try {
+      const parsed = JSON.parse(raw) as { id?: unknown; kind?: unknown }
+      if (
+        typeof parsed.id === 'string' &&
+        (parsed.kind === 'personal' || parsed.kind === 'team')
+      ) {
+        return { id: parsed.id, kind: parsed.kind }
+      }
+    } catch {
+      // Ignore a corrupt cache and treat the kind as unknown.
+    }
+    return null
   }
   const raw = safeGetItem(KIND_STORAGE_KEY)
   if (!raw) return null
@@ -234,7 +298,10 @@ function persistCachedWorkspaceKind(
   record: { id: string; kind: CachedWorkspaceKind } | null,
 ): void {
   if (Platform.OS !== 'web' || typeof window === 'undefined') {
-    nativeActiveWorkspaceKind = record
+    setNativeStorageItem(
+      KIND_STORAGE_KEY,
+      record == null ? null : JSON.stringify(record),
+    )
     return
   }
   if (record == null) safeRemoveItem(KIND_STORAGE_KEY)
@@ -244,8 +311,8 @@ function persistCachedWorkspaceKind(
 /**
  * Last known `kind` for `workspaceId`, or null when this id has never been
  * resolved on this device. Read synchronously so the first paint can use it.
- * On web that is localStorage; on native it is the in-memory value kept next
- * to the active workspace id.
+ * On web that is localStorage; on native it is SecureStore, cached in memory
+ * for the lifetime of the current app process.
  */
 export function getCachedWorkspaceKind(
   workspaceId: string | null | undefined,

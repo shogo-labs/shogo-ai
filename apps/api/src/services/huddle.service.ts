@@ -19,7 +19,7 @@ import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { routeToHomeRegion } from '../lib/home-region-route'
 import { deleteRoom, liveKitConfig, listRoomIdentities, mintJoinToken, muteParticipantMicrophone, receiveWebhook, removeRoomParticipant } from '../lib/livekit'
-import { dispatchNotesAgent, notesFallbackAvailability, setRoomNotesMetadata } from '../lib/livekit-notes'
+import { dispatchNotesAgent, isHiddenNotesAgent, notesFallbackAvailability, setRoomNotesMetadata } from '../lib/livekit-notes'
 import { dedupeHandoverSegments } from './huddle-notes-coverage'
 import { sendVoipPush, type VoipPayload, type VoipSendResult } from '../lib/apns'
 import { sendPushToUser } from '../lib/push-notifications'
@@ -237,18 +237,24 @@ async function serialize(row: any): Promise<HuddleView> {
     startedById: row.startedById,
     startedAt: new Date(row.startedAt).toISOString(),
     messageId: row.messageId ?? null,
-    participants: [...byUser.values()].map((p) => {
-      if (isGuestId(p.userId)) {
-        return { userId: p.userId, name: guestName.get(p.userId) ?? 'Guest', image: null, joinedAt: new Date(p.joinedAt).toISOString(), guest: true }
-      }
-      const user = userById.get(p.userId)
-      return {
-        userId: p.userId,
-        name: user?.name || user?.email || 'Someone',
-        image: user?.image ?? null,
-        joinedAt: new Date(p.joinedAt).toISOString(),
-      }
-    }),
+    participants: [...byUser.values()]
+      // Only people belong on the roster: a guest let in through the link, or an
+      // identity that resolves to a real user. Anything else (a LiveKit agent, a
+      // row written before the webhook learned to skip them) would surface as
+      // "Someone" — a participant nobody invited and nobody can be.
+      .filter((p) => isGuestId(p.userId) || userById.has(p.userId))
+      .map((p) => {
+        if (isGuestId(p.userId)) {
+          return { userId: p.userId, name: guestName.get(p.userId) ?? 'Guest', image: null, joinedAt: new Date(p.joinedAt).toISOString(), guest: true }
+        }
+        const user = userById.get(p.userId)
+        return {
+          userId: p.userId,
+          name: user?.name || user?.email || 'Someone',
+          image: user?.image ?? null,
+          joinedAt: new Date(p.joinedAt).toISOString(),
+        }
+      }),
     chatMembers,
     invited: pending.map((i) => {
       const user = userById.get(i.userId)
@@ -292,7 +298,7 @@ async function chatMembersOf(row: { id: string; conversationId: string }): Promi
     const members = await db.conversationMember.findMany({ where: { conversationId: row.conversationId, memberType: 'user' }, select: { userId: true } })
     for (const m of members) if (m.userId) ids.add(m.userId)
   }
-  return [...ids].filter((id) => !isGuestId(id)).sort()
+  return [...ids].filter((id) => !isGuestId(id) && !isHiddenNotesAgent(id)).sort()
 }
 
 export interface HuddleChatTarget {
@@ -773,9 +779,13 @@ async function reconcile(row: any): Promise<void> {
 
   const live = await listRoomIdentities(config, row.roomName)
   if (!live) return
-  const stale = (row.participants ?? []).filter(
-    (p: any) => !live.has(p.userId) && now - new Date(p.joinedAt).getTime() > CONNECT_GRACE_MS,
-  )
+  const stale = (row.participants ?? []).filter((p: any) => {
+    // An agent is never a person, so a row for one is always stale — even while
+    // it is genuinely in the room. Left open it would count as someone still
+    // here, and the huddle would never end after the last person left.
+    if (isHiddenNotesAgent(p.userId)) return true
+    return !live.has(p.userId) && now - new Date(p.joinedAt).getTime() > CONNECT_GRACE_MS
+  })
   if (!stale.length) return
   await db.huddleParticipant.updateMany({
     where: { id: { in: stale.map((p: any) => p.id) }, leftAt: null },
@@ -1103,6 +1113,10 @@ export async function applyLiveKitEvent(input: HuddleLiveKitEvent): Promise<void
   }
   const identity = input.identity
   if (!identity) return
+  // The notes fallback is a LiveKit agent, not a person. It joins every huddle
+  // that has notes on, so without this it becomes a roster row whose id is no
+  // user, and the client shows it as "Someone" — a participant nobody invited.
+  if (isHiddenNotesAgent(identity)) return
 
   if (input.event === 'participant_joined') {
     if (row.participants.some((p: any) => p.userId === identity)) return

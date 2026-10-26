@@ -20,7 +20,7 @@ Service Level Objectives for the Shogo AI platform, informed by the
 |---|---|---|
 | Cold start (warm pool hit) | < 15s p95 | Time from assignment to gateway ready |
 | Tool execution | < 30s p95 | Time for single tool call |
-| Agent loop detection | < 3 identical calls | Circuit breaker triggers |
+| Agent loop detection | < 10 identical calls | Circuit breaker triggers |
 
 ## API Server SLOs
 

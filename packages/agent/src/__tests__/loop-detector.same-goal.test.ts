@@ -58,14 +58,44 @@ describe('LoopDetector — no-progress / same-goal heuristic', () => {
     expect(last?.loopDetected).toBe(false)
   })
 
-  test('regression guard: the existing identical-call detector still fires', () => {
+  test('regression guard: the identical-call detector still fires at 10', () => {
     const d = new LoopDetector()
     let last
-    for (let i = 0; i < 4; i++) {
-      last = d.recordAndCheck('exec', { command: 'curl http://x' }, { exitCode: 1, stderr: 'refused' })
+    // Successful outputs on purpose: 5 failing ones would trip no_progress first.
+    for (let i = 0; i < 10; i++) {
+      last = d.recordAndCheck('exec', { command: 'curl http://x' }, { exitCode: 0, stdout: 'ok' })
     }
     expect(last?.loopDetected).toBe(true)
-    // The 4 identical calls trip identical_calls before no_progress is evaluated.
+    // The 10 identical calls trip identical_calls before no_progress is evaluated.
     expect(last?.reason).toBe('identical_calls')
+  })
+
+  test('default thresholds: 9 identical calls are tolerated, the 10th stops the turn', () => {
+    const d = new LoopDetector()
+    const successful = { exitCode: 0, stdout: 'ok' }
+
+    for (let i = 0; i < 9; i++) {
+      const r = d.recordAndCheck('read_file', { path: 'AGENTS.md', offset: 1 }, successful)
+      expect(r.loopDetected).toBe(false)
+    }
+
+    const tenth = d.recordAndCheck('read_file', { path: 'AGENTS.md', offset: 1 }, successful)
+    expect(tenth.loopDetected).toBe(true)
+    expect(tenth.reason).toBe('identical_calls')
+    expect(tenth.pattern).toBe('read_file called 10 times with identical input')
+  })
+
+  test('default thresholds: identical_outputs fires at 10 when identical_calls is raised', () => {
+    const d = new LoopDetector({ maxIdenticalCalls: 50 })
+    const successful = { exitCode: 0, stdout: 'ok' }
+
+    for (let i = 0; i < 9; i++) {
+      expect(d.recordAndCheck('read_file', { path: 'AGENTS.md' }, successful).loopDetected).toBe(false)
+    }
+
+    const tenth = d.recordAndCheck('read_file', { path: 'AGENTS.md' }, successful)
+    expect(tenth.loopDetected).toBe(true)
+    expect(tenth.reason).toBe('identical_outputs')
+    expect(tenth.pattern).toBe('Last 10 tool calls produced identical input+output')
   })
 })

@@ -58,19 +58,19 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
   code_review: ['impact_radius', 'detect_changes', 'review_context', 'read_lints', 'server_sync'],
   // Editing/running the agent's OWN runtime workspace: checkpoints,
   // publishing, plan mutation, canvas/system state. Personal workspaces
-  // disable this whole bundle — they delegate real software work to the
-  // `project_*` tools (a *hidden* builder project) instead of building in
-  // their own runtime.
+  // disable this whole bundle — a personal companion does not build
+  // software at all; it points the user at their Team workspace.
   builder: [
     'checkpoint', 'publish', 'create_plan', 'update_plan', 'system_apply',
     'canvas_create', 'canvas_update', 'canvas_delete', 'canvas_publish', 'canvas_preview',
     'expose_port',
   ],
   // Composing MULTIPLE projects into one workspace runtime (attach/detach,
-  // mount-for-preview). `project_create` / `project_call` / `project_list` /
-  // `project_configure` are deliberately NOT in this group — those stay
-  // enabled for personal workspaces (one hidden builder project per goal,
-  // delegated to rather than composed alongside).
+  // mount-for-preview). The project-delegation subset
+  // (`project_create` / `project_call` / `project_list` / `project_configure`)
+  // is deliberately NOT in this group — it is listed by name in
+  // `CAPABILITY_PROFILES.personal.disabledToolNames` instead, because only
+  // personal workspaces lose it (SHO-221).
   project_composition: [
     'project_attach', 'project_detach', 'list_projects', 'mount_project', 'unmount_project', 'preview_project',
   ],
@@ -95,9 +95,10 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
 /**
  * Individual tool names always classified regardless of profile — the
  * conversation plumbing, universal workspace-agent primitives (profile /
- * goals), and the project-delegation subset every profile keeps. Existing
+ * goals), and the project-delegation subset a TEAM profile keeps. Existing
  * per-capability feature flags (`imageGenEnabled`, `memoryEnabled`, …) can
- * still remove these; `CAPABILITY_PROFILES` never does.
+ * still remove these; `CAPABILITY_PROFILES` only removes them for personal
+ * (see `personal.disabledToolNames`).
  */
 export const CORE_TOOL_NAMES = [
   'ask_user', 'skill', 'quick_action',
@@ -145,7 +146,16 @@ export const CAPABILITY_PROFILES: Record<CapabilityProfileName, CapabilityProfil
   },
   personal: {
     disabledToolGroups: ['shell', 'code_review', 'builder', 'project_composition', 'orchestration'],
-    disabledToolNames: [],
+    // A personal companion does not build software (SHO-221). It has no
+    // project tools at all, so there is no hidden builder project to hand
+    // work to: the agent tells the user to switch to their Team workspace
+    // instead. Removing the tools (rather than making them refuse) matches
+    // how the groups above are gated — the model cannot be talked into a
+    // build it has no tool for, and subagents inherit the same filter.
+    disabledToolNames: [
+      'project_create', 'project_call', 'project_configure', 'project_list',
+      'connect_project', 'copy_to_project',
+    ],
     activeMode: 'none',
     allowedModes: ['none'],
     shellEnabled: false,

@@ -32,6 +32,12 @@ const MAX_BYTES_PER_REQUEST = 1_000_000
 const IDLE_PUSH_INTERVAL_MS = 30_000
 /** Poll for new changes. Cheap: one indexed `SELECT max(seq)`. */
 const POLL_INTERVAL_MS = 500
+/**
+ * Wait after the cloud refuses the device key (401/403). A refused key does not
+ * fix itself in seconds, and retrying on the normal backoff cost ~41k refused
+ * pushes a day from six machines (PERF-9).
+ */
+const AUTH_RETRY_MS = 10 * 60_000
 
 export interface SyncBatchModel {
   model: string
@@ -133,6 +139,7 @@ export class MachineSyncPusher {
   private instanceId: string | null = null
   private triggersInstalled = false
   private pushes = 0
+  private authBlockedUntil = 0
 
   constructor(opts: MachineSyncPusherOptions) {
     this.opts = opts
@@ -199,6 +206,8 @@ export class MachineSyncPusher {
   }
 
   private nextDelay(): number {
+    const authWait = this.authBlockedUntil - Date.now()
+    if (authWait > 0) return authWait
     if (this.failureCount > 0) {
       return Math.min(POLL_INTERVAL_MS * 2 ** Math.min(this.failureCount, 5), 30_000)
     }
@@ -208,6 +217,7 @@ export class MachineSyncPusher {
   /** One push attempt. Never throws. */
   async tick(): Promise<void> {
     if (this.stopped || this.ticking) return
+    if (Date.now() < this.authBlockedUntil) return
     this.ticking = true
     try {
       const apiKey = this.opts.getApiKey()
@@ -394,13 +404,14 @@ export class MachineSyncPusher {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-api-key': apiKey,
+        authorization: `Bearer ${apiKey}`,
       },
       body: toJson(body),
     })
 
     if (response.ok) {
       this.failureCount = 0
+      this.authBlockedUntil = 0
       this.lastError = null
       this.pushes++
       this.lastAckedAt = Date.now()
@@ -426,6 +437,11 @@ export class MachineSyncPusher {
     }
     this.failureCount++
     this.lastError = code ?? `HTTP ${response.status}`
+    if (response.status === 401 || response.status === 403) {
+      this.authBlockedUntil = Date.now() + AUTH_RETRY_MS
+      this.log(`[MachineSync] Cloud refused the device key (${this.lastError}); retrying in ${AUTH_RETRY_MS / 60_000} min`)
+      return false
+    }
     this.log(`[MachineSync] Cloud rejected batch: ${this.lastError}`)
     return false
   }

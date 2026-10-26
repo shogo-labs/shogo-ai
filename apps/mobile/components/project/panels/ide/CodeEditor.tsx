@@ -423,6 +423,11 @@ export function CodeEditor({
         // and just hides the dialog, matching VS Code's
         // `"editor.unusualLineTerminators": "off"` setting.
         unusualLineTerminators: "off",
+        // SHO-215: a file dropped from the OS is an UPLOAD, not an edit.
+        // Monaco's drop-into-editor would otherwise paste the file's path (or
+        // its text) into the buffer; the Workbench-level drop zone owns the
+        // gesture and uploads to the workspace instead.
+        dropIntoEditor: { enabled: false },
         // A viewer's file is a read-out, not a buffer: Monaco refuses input
         // and the gutter/scroll behaviour stays as in the IDE.
         readOnly,

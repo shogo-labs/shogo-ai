@@ -20,6 +20,9 @@
  *       calls the model again, which continues with the next segment. Add
  *       holdAt=R to wait for release(tag) before round R's segment starts
  *       (R=0 is the first request), and gap=ms to delay each continuation.
+ *       same=1 sends the SAME read_file args every round (drives the loop
+ *       detector); empty=1 sends read_file with path "" (drives the
+ *       empty-argument guard). Both keep distinct tokens per round.
  *
  * Every token is `t<tag>w<NNNN>` so any view can be checked for gaps,
  * repeats and reordering just by parsing its text (see stream-probe.ts).
@@ -94,6 +97,10 @@ interface Marker {
   cmd?: string
   /** `tool`: the file the fake model reads (a path the agent can resolve). */
   path?: string
+  /** `tool`: send the same read_file args every round instead of varying them. */
+  same?: boolean
+  /** `tool`: send read_file with `path: ""` — a lost-arguments call. */
+  empty?: boolean
 }
 
 // Values may contain `|` so a `bg` marker can script a real pipeline
@@ -106,18 +113,32 @@ const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
  * The agent stops a turn that repeats the same tool call with identical input (loop
  * detection), or after several failing calls in a row. So every round reads a longer
  * slice of a file that exists: distinct input, always a success.
+ *
+ * `same` keeps the args identical on purpose (that is the loop being tested) and
+ * `empty` drops the required `path` to drive the empty-argument guard.
  */
-const toolArgs = (_tag: string, round: number, path = 'AGENTS.md'): Record<string, unknown> => ({
-  path,
-  offset: 1,
-  limit: round + 1,
-})
+const toolArgs = (_tag: string, round: number, path = 'AGENTS.md', mode?: 'same' | 'empty'): Record<string, unknown> => {
+  if (mode === 'empty') return { path: '' }
+  if (mode === 'same') return { path, offset: 1, limit: 1 }
+  return { path, offset: 1, limit: round + 1 }
+}
 
 export function marker(
   script: 'long' | 'hold' | 'tool' | 'bg',
   tag: string,
   n: number,
-  options: { ms?: number; rounds?: number; holdAt?: number; gap?: number; cmd?: string; path?: string } = {},
+  options: {
+    ms?: number
+    rounds?: number
+    holdAt?: number
+    gap?: number
+    cmd?: string
+    path?: string
+    /** `tool`: repeat the same read_file args every round (loop-detector scenario). */
+    same?: boolean
+    /** `tool`: send read_file with `path: ""` (empty-argument-guard scenario). */
+    empty?: boolean
+  } = {},
 ): string {
   const parts = [`tag=${tag}`, `n=${n}`, `ms=${options.ms ?? 10}`]
   if (options.rounds !== undefined) parts.push(`rounds=${options.rounds}`)
@@ -125,6 +146,8 @@ export function marker(
   if (options.gap !== undefined) parts.push(`gap=${options.gap}`)
   if (options.cmd !== undefined) parts.push(`cmd=${options.cmd.replace(/ /g, '_')}`)
   if (options.path !== undefined) parts.push(`path=${options.path}`)
+  if (options.same) parts.push('same=1')
+  if (options.empty) parts.push('empty=1')
   return `[[e2e:${script}:${parts.join(':')}]]`
 }
 
@@ -156,6 +179,8 @@ function parseMarker(text: string): Marker | null {
     gap: Number(params.gap ?? 0),
     ...(script === 'bg' ? { cmd: (params.cmd ?? 'sleep_2').replace(/_/g, ' ') } : {}),
     ...(params.path ? { path: params.path } : {}),
+    ...(script === 'tool' && params.same === '1' ? { same: true } : {}),
+    ...(script === 'tool' && params.empty === '1' ? { empty: true } : {}),
   }
 }
 
@@ -438,8 +463,11 @@ export class FakeLlmServer {
         ? (toolNames.includes('exec') ? 'exec' : undefined)
         : TOOL_PREFERENCE.find((n) => toolNames.includes(n))
       if (name) {
+        const mode = parsed.empty ? 'empty' : parsed.same ? 'same' : undefined
         const args = JSON.stringify(
-          background ? { command: parsed.cmd, background: true } : toolArgs(parsed.tag, round, parsed.path),
+          background
+            ? { command: parsed.cmd, background: true }
+            : toolArgs(parsed.tag, round, parsed.path, mode),
         )
         const id = `call_${parsed.tag}_${round}`
         res.write(chunk({ tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: '' } }] }))

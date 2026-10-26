@@ -3164,7 +3164,10 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
     label: 'Write File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace. /tmp/... is rewritten to .tmp/...' }),
-      content: Type.String({ description: 'Content to write. UTF-8 text, or base64 when encoding is "base64".' }),
+      content: Type.String({
+        description: 'Content to write. UTF-8 text, or base64 when encoding is "base64". Pass "" for an empty file.',
+        'x-empty-ok': true,
+      }),
       append: Type.Optional(
         Type.Boolean({
           description: 'Append instead of overwrite (default: false). Ignored for base64 writes.',
@@ -3882,10 +3885,14 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
       old_string: Type.String({
-        description: 'Exact text to find in the file',
+        description:
+          'Exact text to find in the file. Pass "" to create a file that does not exist yet.',
+        'x-empty-ok': true,
       }),
       new_string: Type.String({
-        description: 'Replacement text (must differ from old_string)',
+        description:
+          'Replacement text (must differ from old_string). Pass "" to delete the matched text.',
+        'x-empty-ok': true,
       }),
       replace_all: Type.Optional(
         Type.Boolean({

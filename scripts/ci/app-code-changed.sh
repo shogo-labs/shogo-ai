@@ -26,10 +26,12 @@ while IFS= read -r path; do
     docs/*|apps/docs/*|plans/*|.githooks/*|scripts/bench/*) continue ;;
     *.md|LICENSE|LICENSE.*|.gitignore) continue ;;
     # Workflows are not app code — except CI itself, whose change must prove
-    # the suite still runs. Every other file the E2E jobs execute lives
-    # outside .github (e2e/local/**, the playwright configs), so it is app
-    # code by default below.
+    # the suite still runs, and the phone workflow, whose change must prove the
+    # phone specs still run (it is the only job that runs them). Every other
+    # file the E2E jobs execute lives outside .github (e2e/local/**, the
+    # playwright configs), so it is app code by default below.
     .github/workflows/ci.yml) app=true; break ;;
+    .github/workflows/e2e-phone.yml) app=true; break ;;
     .github/*) continue ;;
   esac
   app=true

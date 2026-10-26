@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   ExternalLink,
 } from "lucide-react-native";
+import { pdfPreviewErrorText, resolvePdfPreviewUrl } from "./pdf-preview-url";
 
 /**
  * Lightweight previewers for non-text non-image binary files. Each component
@@ -32,19 +33,72 @@ export function isFontPath(path: string): boolean { return FONT_EXTS.has(extOf(p
 
 // ─── PDF ────────────────────────────────────────────────────────────────
 export function PdfPreview({ url, name }: { url: string; name: string; path: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let owned: string | null = null;
+    setSrc(null);
+    setError(null);
+
+    resolvePdfPreviewUrl(url)
+      .then((resolved) => {
+        if (cancelled) {
+          if (resolved.owned) URL.revokeObjectURL(resolved.url);
+          return;
+        }
+        if (resolved.owned) owned = resolved.url;
+        setSrc(resolved.url);
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(pdfPreviewErrorText(cause, name));
+      });
+
+    return () => {
+      cancelled = true;
+      if (owned) URL.revokeObjectURL(owned);
+    };
+  }, [url, name]);
+
   return (
     <div className="flex h-full flex-col">
       <ChromeBar icon={<FileText size={13} className="shrink-0 text-[color:var(--ide-accent-file-icon)]" />}
                  name={name} url={url} extra="PDF · browser-rendered" />
-      <iframe
-        title={name}
-        src={url}
-        className="flex-1 w-full bg-[color:var(--ide-bg)]"
-        // sandbox is intentionally permissive enough for the browser's built-in
-        // PDF viewer (Chromium PDFium / Firefox PDF.js) to run; we don't grant
-        // top-navigation or popup escapes.
-        sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"
-      />
+      {error ? (
+        <div className="flex flex-1 items-center justify-center bg-[color:var(--ide-bg)] p-6">
+          <div className="flex flex-col items-center gap-2">
+            <div className="flex items-center gap-2 text-[color:var(--ide-error)]">
+              <AlertTriangle size={14} />
+              <span className="text-[12px]">{error}</span>
+            </div>
+            <button
+              onClick={() => window.open(url, "_blank", "noopener,noreferrer")}
+              className="rounded border border-[color:var(--ide-border)] px-2 py-1 text-[11px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
+            >
+              Open in new tab
+            </button>
+          </div>
+        </div>
+      ) : src ? (
+        // No `sandbox`: Chromium will not run its PDF viewer in a sandboxed
+        // frame at all, and shows "This page has been blocked by Chrome".
+        // Framing stays safe because `src` is always a blob typed
+        // application/pdf (see pdf-preview-url.ts) — never a live document.
+        <iframe
+          title={name}
+          src={src}
+          className="flex-1 w-full bg-[color:var(--ide-bg)]"
+          data-testid="pdf-preview-frame"
+        />
+      ) : (
+        <div
+          className="flex flex-1 items-center justify-center bg-[color:var(--ide-bg)] text-[12px] text-[color:var(--ide-muted)]"
+          data-testid="pdf-preview-loading"
+        >
+          Loading {name}…
+        </div>
+      )}
     </div>
   );
 }

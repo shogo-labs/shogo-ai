@@ -30,7 +30,7 @@ const ORIGINAL_ENV = {
 
 process.env.AI_PROXY_SECRET = 'google-test-secret'
 process.env.GOOGLE_API_KEY = 'goog-test'
-process.env.GOOGLE_BASE_URL = 'https://google.test'
+process.env.GOOGLE_BASE_URL = 'https://google.test/v1beta/openai'
 process.env.SHOGO_LOCAL_MODE = 'true'
 delete process.env.SHOGO_API_KEY
 delete process.env.SHOGO_CLOUD_URL
@@ -110,7 +110,7 @@ beforeEach(() => {
   lastFetchInit = undefined
   nextFetchResponses = []
   process.env.GOOGLE_API_KEY = 'goog-test'
-  process.env.GOOGLE_BASE_URL = 'https://google.test'
+  process.env.GOOGLE_BASE_URL = 'https://google.test/v1beta/openai'
 })
 
 const { Hono } = await import('hono')

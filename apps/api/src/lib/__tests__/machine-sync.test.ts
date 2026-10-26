@@ -478,6 +478,46 @@ describe('the pusher', () => {
     expect(rejections).toHaveLength(0)
   })
 
+  test('the device key goes in Authorization: Bearer, the header the auth middleware reads', async () => {
+    const { db, changes } = fakeDesktopDb({ rows: { chatMessage: [{ id: 'm1', sessionId: 's1', content: 'hi' }] } })
+    rowSeq(changes, 'ChatMessage', 'm1')
+    const headers: Record<string, string>[] = []
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'shogo_sk_device',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: (async (_url: string, init: any) => {
+        headers.push(init.headers)
+        return new Response(JSON.stringify({ ok: true, cursor: 1 }), { status: 200 })
+      }) as unknown as typeof fetch,
+    })
+    await pusher.tick()
+    expect(headers).toHaveLength(1)
+    expect(headers[0].authorization).toBe('Bearer shogo_sk_device')
+    expect(headers[0]['x-api-key']).toBeUndefined()
+  })
+
+  test('a refused device key (401) pauses pushing for minutes, not seconds', async () => {
+    const { db, changes } = fakeDesktopDb({ rows: { chatMessage: [{ id: 'm1', sessionId: 's1', content: 'hi' }] } })
+    rowSeq(changes, 'ChatMessage', 'm1')
+    responses = [{ status: 401, body: { error: { code: 'unauthorized' } } }]
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'shogo_sk_device',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: fakeFetch(),
+    })
+    await pusher.tick()
+    expect(posted).toHaveLength(1)
+    expect(pusher.status.lastError).toBe('unauthorized')
+    expect((pusher as any).nextDelay()).toBeGreaterThanOrEqual(9 * 60_000)
+    // A mutation's syncNow() does not hammer the cloud during the pause either.
+    await pusher.syncNow()
+    expect(posted).toHaveLength(1)
+  })
+
   test('nothing is pushed without a device key or an instance id', async () => {
     const { db, changes } = fakeDesktopDb({ rows: { chatMessage: [] } })
     rowSeq(changes, 'ChatMessage', 'm1')

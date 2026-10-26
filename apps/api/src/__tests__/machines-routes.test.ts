@@ -92,7 +92,8 @@ const mockPrisma = {
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 mock.module('../routes/api-keys', () => ({
-  resolveApiKey: async () => null,
+  resolveApiKey: async (key: string) =>
+    key === 'shogo_sk_device' ? { userId: 'u-1', workspaceId: 'ws-cloud' } : null,
 }))
 mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: async () => {},
@@ -608,5 +609,39 @@ describe('machine workspace relay', () => {
     // A create carries the workspace in its body, and it must be the machine's
     // own id — the cloud id the UI was showing resolves to nothing there.
     expect(JSON.parse(seen.body).workspaceId).toBe('lw-1')
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────
+// POST /api/machines/:id/sync — device-key auth (PERF-9)
+// ────────────────────────────────────────────────────────────────────
+
+describe('POST /api/machines/:id/sync auth', () => {
+  function push(app: Hono, headers: Record<string, string>) {
+    return app.request('/api/machines/i-1/sync', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify({ mode: 'changes', epoch: 'e', cursor: 0, models: [] }),
+    })
+  }
+
+  test('a desktop that sends its key as x-api-key (builds before the fix) is accepted', async () => {
+    seedInstance()
+    syncStateRow = { instanceId: 'i-1', enabled: false, lastIngestAt: null, cursor: 7 }
+    const res = await push(buildApp(null), { 'x-api-key': 'shogo_sk_device' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ok: true, disabled: true, cursor: 7 })
+  })
+
+  test('an unknown x-api-key is still refused with 401', async () => {
+    seedInstance()
+    const res = await push(buildApp(null), { 'x-api-key': 'shogo_sk_wrong' })
+    expect(res.status).toBe(401)
+  })
+
+  test('a person’s session is not a device key', async () => {
+    seedInstance()
+    const res = await push(buildApp({ ...OWNER, workspaceId: 'ws-cloud', via: 'session' }), {})
+    expect(res.status).toBe(401)
   })
 })

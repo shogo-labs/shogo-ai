@@ -36,6 +36,7 @@ import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list
 import { applyBatch, deleteMachineCopy, ownershipFailure } from '../lib/machine-sync/ingest'
 import { invalidateMachineWorkspaceIds } from '../lib/machine-workspace'
 import { PRIMARY_REGION, RAW_REGION_ID } from '../lib/region'
+import { resolveApiKey } from './api-keys'
 
 /**
  * How long one request waits for a cold machine's tunnel before answering.
@@ -570,7 +571,20 @@ export function machineRoutes() {
   // cloud tables with the desktop's ids and the workspace tagged with
   // `machineInstanceId`, so every read panel is served by the normal routes.
   router.post('/machines/:id/sync', async (c) => {
-    const auth = c.get('auth') as any
+    let auth = c.get('auth') as any
+    // Desktops up to the PERF-9 fix send the key as `x-api-key`, which the auth
+    // middleware does not read, so every push was refused. Accept it here, for
+    // this route only, so those builds sync without an update.
+    if (auth?.via !== 'apiKey') {
+      const legacyKey = c.req.header('x-api-key')
+      if (legacyKey?.startsWith('shogo_sk_')) {
+        const deviceAppVersion = c.req.header('X-Shogo-Device-App-Version')
+        const resolved = await resolveApiKey(legacyKey, deviceAppVersion ? { deviceAppVersion } : undefined).catch(() => null)
+        if (resolved) {
+          auth = { userId: resolved.userId, workspaceId: resolved.workspaceId, isAuthenticated: true, via: 'apiKey' }
+        }
+      }
+    }
     // A device key resolves to a principal scoped to the workspace its key was
     // issued in. Only that machine may push, and only for itself.
     const instanceId = c.req.param('id')

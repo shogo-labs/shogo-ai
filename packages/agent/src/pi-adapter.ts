@@ -31,7 +31,6 @@ import {
 } from '@mariozechner/pi-ai'
 import type { AgentMessage, StreamFn } from '@mariozechner/pi-agent-core'
 import {
-  getContextWindowTokens,
   getDynamicModel,
   getMaxOutputTokens,
   isAnthropicBacked,
@@ -96,29 +95,14 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
     return resolveModel('anthropic', modelId)
   }
 
-  // Gemini goes through the proxy's chat-completions route like a custom
-  // model: the proxy holds the Google key (cloud) or the stored one (desktop)
-  // and carries Gemini thought signatures in `reasoning_details`, which this
-  // provider already round-trips by tool-call id.
-  if (provider === 'google') {
-    return {
-      id: modelId,
-      name: modelId,
-      api: 'openai-completions',
-      provider: 'openai',
-      baseUrl: resolveBaseUrl('openai') ?? getDefaultBaseUrl('openai'),
-      reasoning: true,
-      input: ['text', 'image'],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: getContextWindowTokens(modelId) ?? contextWindow,
-      maxTokens: getMaxOutputTokens(modelId),
-      compat: { supportsStore: false, supportsDeveloperRole: false },
-    } as Model<Api>
-  }
-
-  if (provider === 'custom') {
+  // A DB-defined Google model (Gemini) is addressed by an opaque UUID the
+  // runtime can't classify, and the proxy is the only place that holds the
+  // Google key — so route it through the proxy's OpenAI-compatible
+  // chat-completions endpoint exactly like a custom provider. Gemini's
+  // upstream is reached from the API server (`provider: 'google'`).
+  if (provider === 'custom' || provider === 'google') {
     const baseUrl = resolveBaseUrl('openai') ?? getDefaultBaseUrl('openai')
-    const deepSeek = isDeepSeekModel(modelId)
+    const deepSeek = provider === 'custom' && isDeepSeekModel(modelId)
     return {
       id: modelId,
       name: modelId,
