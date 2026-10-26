@@ -19,6 +19,11 @@ import {
   type TextStreamReader,
   type TrackPublication,
 } from 'livekit-client'
+// Static on purpose: the effects module imports livekit-client too (through
+// @livekit/track-processors). As its own dynamic import it made livekit-client
+// shared by two async chunks, and Metro then hoisted all 1.38 MB of it into the
+// `__common` chunk every page loads. This file is already loaded lazily.
+import * as fx from './huddle-camera-effects'
 import type { CameraEffectsConfig } from './huddle-camera-effects'
 import {
   CAPTION_TOPIC,
@@ -370,7 +375,6 @@ export async function connectHuddleRoom(
     const track = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track
     if (!(track instanceof LocalVideoTrack)) return
     try {
-      const fx = await import('./huddle-camera-effects')
       if (!effects || !fx.hasCameraEffects(effects)) {
         if (track.getProcessor()) await track.stopProcessor()
         return
