@@ -447,39 +447,70 @@ async function collapseFailedWakeRows(chatSessionId: string, keepId: string, tas
   await (prisma as any).chatQueuedMessage.deleteMany({ where: { id: { in: stale } } }).catch(() => {})
 }
 
+/** What starting one claimed row came to. */
+export type QueueRowOutcome =
+  | { started: true; rowId: string }
+  | { started: false; rowId: string; error: string }
+
 /**
- * Claim and start the oldest pending message for a session.
- *
- * The database claim is deliberately conditional. Multiple API instances may
- * observe the same idle session after a turn completes, but only one can move
- * a row from pending to dispatching. In multi-region mode only the session's
- * home region dispatches; peers return false and the home region's turn-end
- * hook or drain worker picks the replicated row up.
+ * Drop or hold a wake nobody should run now, and say why in a line a person can
+ * read. Returns that reason.
  */
-export async function dispatchNext(chatSessionId: string): Promise<boolean> {
-  if (!(await isHomeRegionSession(chatSessionId))) return false
-  if (!(await isSessionIdle(chatSessionId))) return false
+async function settleSkippedWake(row: QueueRow, skip: string): Promise<string> {
+  if (skip === 'consumed') {
+    await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } }).catch(() => {})
+    return 'This update has already been delivered'
+  }
+  await (prisma as any).chatQueuedMessage.updateMany({
+    where: { id: row.id, status: 'dispatching' },
+    data: { status: 'failed', error: skip, body: pausedBody(row.body) },
+  }).catch(() => {})
+  await clearPausedWakeRows(row.sessionId, row.id)
+  await holdPausedWake(row)
+  return skip
+}
+
+/**
+ * The oldest row of a session that may actually run: wakes whose tasks the
+ * agent already saw (a turn started in between) are dropped, and a paused one
+ * is held so it survives the pause without being retried while it lasts.
+ */
+async function claimNextDispatchableRow(chatSessionId: string): Promise<QueueRow | null> {
   let row = await claimNext(chatSessionId)
-  // Wakes whose tasks the agent already saw (a turn started in between) are
-  // dropped; a paused one is held so it survives the pause without being
-  // retried while it lasts.
   while (row && row.kind === 'task_notification') {
     const skip = await taskWakeSkipReason(row)
     if (!skip) break
-    if (skip === 'consumed') {
-      await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } }).catch(() => {})
-    } else {
-      await (prisma as any).chatQueuedMessage.updateMany({
-        where: { id: row.id, status: 'dispatching' },
-        data: { status: 'failed', error: skip, body: pausedBody(row.body) },
-      }).catch(() => {})
-      await clearPausedWakeRows(chatSessionId, row.id)
-      await holdPausedWake(row)
-    }
+    await settleSkippedWake(row, skip)
     row = await claimNext(chatSessionId)
   }
-  if (!row) return false
+  return row
+}
 
+/**
+ * Claim one named row — the one a person is acting on — instead of the head.
+ * Conditional on it still being `pending`, so two clicks, or a click racing the
+ * turn-end drain, still start it exactly once.
+ */
+async function claimRow(chatSessionId: string, rowId: string): Promise<QueueRow | null> {
+  const candidate = await (prisma as any).chatQueuedMessage.findFirst({
+    where: { id: rowId, sessionId: chatSessionId, status: 'pending' },
+  })
+  if (!candidate) return null
+  const claimed = await (prisma as any).chatQueuedMessage.updateMany({
+    where: { id: rowId, sessionId: chatSessionId, status: 'pending' },
+    data: { status: 'dispatching', error: null },
+  })
+  if (claimed.count !== 1) return null
+  return candidate as QueueRow
+}
+
+/**
+ * Persist and start a row this process has claimed, and settle the row with the
+ * outcome: deleted when its turn started, `failed` with the reason when it did
+ * not. Returns that outcome, so the caller that has a person waiting on the
+ * answer can say what happened instead of guessing.
+ */
+async function startClaimedRow(row: QueueRow): Promise<QueueRowOutcome> {
   try {
     const body = parseJson<QueueBody>(row.body, {})
     await persistQueuedUserMessage(row, body)
@@ -494,8 +525,8 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
     }
     await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } })
     // A wake landed (or a person's message went through): the pause is over.
-    await clearPausedWakeRows(chatSessionId)
-    return true
+    await clearPausedWakeRows(row.sessionId)
+    return { started: true, rowId: row.id }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await (prisma as any).chatQueuedMessage.updateMany({
@@ -508,7 +539,7 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
     if (row.kind === 'task_notification') {
       const taskIds = taskWakeIds(row)
       const { capped } = await releaseTaskWake(row, { dropPersisted: true })
-      await collapseFailedWakeRows(chatSessionId, row.id, taskIds)
+      await collapseFailedWakeRows(row.sessionId, row.id, taskIds)
       if (capped.length) {
         await (prisma as any).chatQueuedMessage.updateMany({
           where: { id: row.id, status: 'failed' },
@@ -538,14 +569,65 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
           data: { error: `Could not resume this turn after ${MAX_WAKE_ATTEMPTS} attempts: ${message}`.slice(0, 4_000) },
         }).catch(() => {})
         const { postInterruptedResume } = await import('./chat-resume.service')
-        await postInterruptedResume(chatSessionId, { resume: false, toolName: resumeToolName(row.parts) }).catch((err: any) =>
-          console.warn(`[ChatQueue] Stopped-resume note for ${chatSessionId} failed:`, err?.message ?? err),
+        await postInterruptedResume(row.sessionId, { resume: false, toolName: resumeToolName(row.parts) }).catch((err: any) =>
+          console.warn(`[ChatQueue] Stopped-resume note for ${row.sessionId} failed:`, err?.message ?? err),
         )
       }
     }
     console.error(`[ChatQueue] Failed to dispatch ${row.id}:`, error)
-    return false
+    return { started: false, rowId: row.id, error: message }
   }
+}
+
+/**
+ * Claim and start the oldest pending message for a session.
+ *
+ * The database claim is deliberately conditional. Multiple API instances may
+ * observe the same idle session after a turn completes, but only one can move
+ * a row from pending to dispatching. In multi-region mode only the session's
+ * home region dispatches; peers return false and the home region's turn-end
+ * hook or drain worker picks the replicated row up.
+ */
+export async function dispatchNext(chatSessionId: string): Promise<boolean> {
+  if (!(await isHomeRegionSession(chatSessionId))) return false
+  if (!(await isSessionIdle(chatSessionId))) return false
+  const row = await claimNextDispatchableRow(chatSessionId)
+  if (!row) return false
+  return (await startClaimedRow(row)).started
+}
+
+/**
+ * Start one named row now — the row a person pressed Send now on — and report
+ * what happened to it.
+ *
+ * Not gated on `isSessionIdle`: the stop that preceded this call *is* the
+ * preemption, and the runtime's `/agent/chat` waits on its live-turn gate while
+ * the stopped turn unwinds. Waiting for the session to read idle instead is
+ * what left the row promoted and unclaimed, with the only starter left being a
+ * timer (SHO-198) or nothing at all (SHO-205).
+ */
+export async function dispatchQueuedRow(chatSessionId: string, rowId: string): Promise<QueueRowOutcome> {
+  if (!(await isHomeRegionSession(chatSessionId))) {
+    return { started: false, rowId, error: 'This chat is served from another region — try again there' }
+  }
+  const row = await claimRow(chatSessionId, rowId)
+  if (row) {
+    if (row.kind === 'task_notification') {
+      const skip = await taskWakeSkipReason(row)
+      if (skip) return { started: false, rowId, error: await settleSkippedWake(row, skip) }
+    }
+    return startClaimedRow(row)
+  }
+  // Somebody else has it: the turn-end drain, another click or another pod
+  // claimed it between the click and here. That is the row starting, not the
+  // row failing — the claim is what makes it one turn either way.
+  const current = await (prisma as any).chatQueuedMessage.findUnique({
+    where: { id: rowId },
+    select: { status: true, error: true },
+  })
+  if (!current) return { started: true, rowId }
+  if (current.status === 'dispatching') return { started: true, rowId }
+  return { started: false, rowId, error: current.error ?? 'This message could not be started' }
 }
 
 export async function resetStuckDispatching(

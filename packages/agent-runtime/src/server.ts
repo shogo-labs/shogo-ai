@@ -19,6 +19,7 @@ import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { createBufferedTurns, type PipelineCallHooks, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
 import { describeTurn } from './turn-status'
+import { RepoAdoptGate, isWorkspaceNeutralRequest } from './repo-adopt-gate'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
   existsSync,
@@ -658,6 +659,10 @@ const workspaceStatus: {
   depsInstalled: false,
 }
 
+// Gates the metal host's late `.git` swap on nobody having used the workspace
+// (see repo-adopt-gate.ts). Declared before the app so onAssign can reset it.
+const repoAdoptGate = new RepoAdoptGate()
+
 const { app, state, logTiming } = await createRuntimeApp({
   name: 'agent-runtime',
   workDir: WORKSPACE_DIR,
@@ -666,6 +671,7 @@ const { app, state, logTiming } = await createRuntimeApp({
   authPrefixes: ['/agent', '/pool', '/diagnostics', '/terminal'],
   acceptsScopedToken: acceptsAppToolToken,
   async onAssign(projectId, envVars) {
+    repoAdoptGate.reset()
     const hostWorkspacesRoot = envVars.SHOGO_HOST_WORKSPACES_ROOT || '/host-workspaces'
     const assignedWorkspaceDir = envVars.WORKSPACE_DIR || envVars.PROJECT_DIR
     const sentinelPath = POOL_SENTINEL_PATH
@@ -944,6 +950,14 @@ const { app, state, logTiming } = await createRuntimeApp({
       console.error(`[agent-runtime] onRefreshEnv sidecar restart failed: ${err?.message ?? err}`)
     }
   },
+})
+
+// Anything that can write the workspace marks it in use for the repo adopt
+// gate, and waits if a late `.git` swap is running. Registered before every
+// route below so none of them slips past it.
+app.use('*', async (c, next) => {
+  if (!isWorkspaceNeutralRequest(c.req.method, c.req.path)) await repoAdoptGate.enter()
+  return next()
 })
 
 // Readiness probe.
@@ -2641,6 +2655,7 @@ import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
 import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
+import { syncGuestClock } from './guest-clock'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
 import { scheduleLogWrite, flushAllLogWrites } from './runtime-log-writer'
 
@@ -3321,7 +3336,9 @@ app.post('/pool/repo-hydrated', async (c) => {
   // `bundles` means this guest can restore the incremental repo format
   // (`/pool/repo-bundles-hydrate`). The host must not fall back to the legacy
   // tarball when a manifest exists, so it refuses instead of guessing.
-  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true, bundles: true })
+  // `ifIdle` means this guest honours `ifIdle` below, so the host may hand the
+  // project out before its history arrives and swap it in afterwards.
+  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: true })
   let stagingDir: string
   try {
     stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
@@ -3343,8 +3360,8 @@ app.post('/pool/repo-hydrated', async (c) => {
   const timeoutMs = Number(body?.timeoutMs)
   const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : null
   let sync = null as GitWorkspaceSync | null
-  try {
-    const res = await adoptHydratedRepoBefore(WORKSPACE_DIR, stagingDir, {
+  const adopt = () =>
+    adoptHydratedRepoBefore(WORKSPACE_DIR, stagingDir, {
       deadline,
       ready: gitLayerReady,
       // Resumed below, once the LFS pull is done too.
@@ -3352,6 +3369,23 @@ app.post('/pool/repo-hydrated', async (c) => {
       logger: console,
       keepPaths,
     })
+  try {
+    // A late swap (the project is already being served on the source's
+    // `.git`) may only happen while nobody has used the workspace; otherwise
+    // decline and leave the tree exactly as it is. Only the swap holds the
+    // gate: the LFS pull below rewrites pointer files nobody has edited.
+    const res =
+      body?.ifIdle === true
+        ? await repoAdoptGate.adoptIfIdle(adopt, () => {
+            const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0 }
+            return activeStreams > 0 || work.turns > 0 || work.tasks > 0
+          })
+        : await adopt()
+    if (!res) {
+      rmSync(stagingDir, { recursive: true, force: true })
+      console.warn('[pool/repo-hydrated] workspace already in use — declining the late repo adopt')
+      return c.json({ error: 'workspace already in use', adopted: false, busy: true }, 409)
+    }
     if (res.headSha) cachedRepoHeadSha = res.headSha
     if (res.reset && isLfsActive()) {
       // Smudge is skipped on checkout, so files the reset rewrote may be LFS
@@ -3635,9 +3669,20 @@ app.post('/pool/quiesce', async (c) => {
 app.post('/pool/rehydrate', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const waitMs = Math.min(Math.max(Number(body?.waitMs) || 0, 0), 60_000)
+  // Before the sidecars restart, and before anything in the guest makes an
+  // HTTPS call: a guest restored from a snapshot can come back with its wall
+  // clock frozen at snapshot time (see guest-clock.ts). The host sends its
+  // clock in `hostNowMs`; a host that predates it sends nothing and this is a
+  // no-op. Logged either way, because an uncorrected skew is exactly the bug.
+  const clock = await syncGuestClock(body?.hostNowMs)
+  if (clock?.corrected) {
+    console.log(`[pool/rehydrate] clock skew ${clock.skewMs}ms corrected (residual ${clock.residualMs}ms)`)
+  } else if (clock?.error) {
+    console.error(`[pool/rehydrate] clock skew ${clock.skewMs}ms NOT corrected: ${clock.error}`)
+  }
   const projects = await rehydrateSidecars(allPreviewManagers(), waitMs)
   console.log(`[pool/rehydrate] ${JSON.stringify(projects)}`)
-  return c.json({ ok: true, projects })
+  return c.json({ ok: true, projects, ...(clock ? { clock } : {}) })
 })
 
 // Alias for `/preview/restart`. The code-agent prompt and older SDK/template

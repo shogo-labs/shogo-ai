@@ -197,6 +197,10 @@ jobs:
 
     env:
       E2E_TARGET_URL: ${{ inputs.target == 'production' && 'https://studio.shogo.ai' || 'https://studio.staging.shogo.ai' }}
+      # Apex published apps are minted under for this target. Set explicitly
+      # (not only derived) so a wrong API PUBLISH_DOMAIN in the overlay shows up
+      # as a failing publish assertion instead of a silently-passing regex.
+      E2E_PUBLISH_DOMAIN: ${{ inputs.target == 'production' && 'shogo.one' || 'staging.shogo.one' }}
       E2E_STRIPE_MODE: ${{ inputs.target == 'production' && 'live' || 'test' }}
       E2E_SUITE: ${{ inputs.suite || 'full' }}
       E2E_WORKERS: ${{ inputs.workers }}

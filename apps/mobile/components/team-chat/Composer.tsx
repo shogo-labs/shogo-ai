@@ -8,7 +8,7 @@
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Image, Platform, Pressable, Text, View } from 'react-native'
-import { AlarmClock, Check, Clock, Hash, Smile, Users } from 'lucide-react-native'
+import { AlarmClock, AudioLines, Check, Clock, Hash, Smile, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   ChatInput,
@@ -304,7 +304,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const recorder = useVoiceNoteRecorder()
   const [recordingError, setRecordingError] = useState<string | null>(null)
   // Files staged from a recording, so "send" hands them to the shared uploader.
-  const onVoiceStart = useCallback(async () => {
+  // Triggered from the left-hand clip button — the mic on the right stays
+  // dictation, the same as every other composer in the product.
+  const startVoiceNote = useCallback(async () => {
     setError(null)
     setNotice(null)
     setRecordingError(null)
@@ -377,6 +379,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       <Pressable onPress={() => setEmojiOpen((v) => !v)} accessibilityLabel="Emoji" className="rounded-md p-1 active:bg-muted hover:bg-muted">
         <Smile size={14} className="text-muted-foreground" />
       </Pressable>
+      <Pressable onPress={() => void startVoiceNote()} accessibilityLabel="Record a voice note" className="rounded-md p-1 active:bg-muted hover:bg-muted">
+        <AudioLines size={14} className="text-muted-foreground" />
+      </Pressable>
       {alsoToChannelToggle}
     </View>
   )
@@ -447,8 +452,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           leadingControls={leadingControls}
           trailingControls={trailingControls}
           plusMenuExtras={plusMenuExtras}
-          onVoiceStart={onVoiceStart}
-          voiceStartLabel="Record a voice note"
           inputTestID="team-composer-input"
           inputAccessibilityLabel="Message"
         />

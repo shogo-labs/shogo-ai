@@ -71,6 +71,7 @@ mock.module('../../../../lib/api', () => ({
       project: currentProject,
       attachments: [],
     }),
+    listProjectAttachments: async () => ({ attachments: [] }),
   },
 }))
 

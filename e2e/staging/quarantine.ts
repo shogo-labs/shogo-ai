@@ -32,52 +32,14 @@ export interface QuarantineEntry {
 /** Longest a spec may stay quarantined before it must be fixed or deleted. */
 export const MAX_QUARANTINE_DAYS = 14
 
-const CLOUD_ATTACH_404 =
-  "Product bug, not a flaky test: the cloud Folders panel calls /api/local/projects/:id(/attachments), " +
-  "which is only mounted when SHOGO_LOCAL_MODE=true (apps/api/src/server.ts), so attach/detach 404s on " +
-  "staging. Needs a workspace-authorized cloud attachments route; the local router only checks that a user " +
-  "is signed in and must not be mounted in cloud as-is."
-
-export const QUARANTINE: QuarantineEntry[] = [
-  ...[
-    "attach B to A via the Folders panel",
-    "agent in A can reach B",
-    "cross-project READ: agent reads a file in B",
-    "cross-project WRITE: agent edits a file in B",
-    "the edit is visible in B's own runtime",
-    "A's own top-level listing has no B folder",
-    "read-only attach of C: the mode is shown (and enforced on local desktop)",
-    "detach B; the attachment is gone",
-    "link a local folder via the stubbed picker",
-  ].map((title) => ({
-    file: "workspace-attachments.test.ts",
-    title,
-    owner: "@lacvapps",
-    reason: CLOUD_ATTACH_404,
-    expires: "2026-11-08",
-  })),
-  {
-    file: "agent-publish.test.ts",
-    title: "agent publishes to {subdomain}.shogo.one and returns a live URL",
-    owner: "@lacvapps",
-    reason:
-      "Infra bug, not a flaky test: staging uploads to shogo-published-apps-staging " +
-      "(k8s/overlays/staging PUBLISH_BUCKET) but mints {subdomain}.shogo.one URLs, and the " +
-      "*.shogo.one Worker serves from shogo-published-apps-production, so every staging " +
-      "publish 404s with ObjectNotFound. *.staging.shogo.one does not resolve yet.",
-    expires: "2026-11-08",
-  },
-  {
-    file: "agent-publish.test.ts",
-    title: "publishing a subdomain already taken by another project fails",
-    owner: "@lacvapps",
-    reason:
-      "Infra bug, not a flaky test: on staging the publish call times out while assigning the " +
-      "subdomain (agent retried 3x, run 36605288919), so project A never reserves it and " +
-      "project B has nothing to collide with. Needs staging API logs.",
-    expires: "2026-11-08",
-  },
-]
+/**
+ * Nothing is quarantined today. The 11 entries that expired on 2026-10-25 were
+ * not flaky — they were three real bugs, fixed in SHO-207: the cloud
+ * attachments route only existed in local mode, staging minted production
+ * publish URLs, and the collision test raced a reservation that landed too late.
+ * Keep this list empty unless a spec is genuinely broken and cannot be fixed.
+ */
+export const QUARANTINE: QuarantineEntry[] = []
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")

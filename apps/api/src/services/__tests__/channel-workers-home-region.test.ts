@@ -101,8 +101,10 @@ const { sendDueScheduledMessages, fireDueReminders } = await import('../chat-ite
 const { runDigestPass, _setDigestSenderForTests } = await import('../chat-digest')
 const { indexPendingMessages, _setEmbeddingProviderForTests } = await import('../conversation-semantic')
 const { settleOrphanedAgentReplies, sweepDeadAgentReplies } = await import('../conversation-agent-dispatcher')
+const { invalidateMachineWorkspaceIds } = await import('../../lib/machine-workspace')
 
 beforeEach(() => {
+  invalidateMachineWorkspaceIds()
   state.calls = []
   state.home = HOME
   state.homeIds = new Set(['ws-home'])

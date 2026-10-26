@@ -22,6 +22,30 @@ import { useActiveWorkspace } from './useActiveWorkspace'
 const PROJECT_REFRESH_INTERVAL_MS = 30_000
 const POLL_MS = 5_000
 
+/** Same tasks, same order, nothing about them changed: keep the previous array. */
+function sameTasks(prev: AgentTask[], next: AgentTask[]): boolean {
+  if (prev === next) return true
+  if (prev.length !== next.length) return false
+  for (let i = 0; i < next.length; i += 1) {
+    const a = prev[i] as AgentTask & { updatedAt?: string }
+    const b = next[i] as AgentTask & { updatedAt?: string }
+    if (a.id !== b.id || a.status !== b.status || a.updatedAt !== b.updatedAt) return false
+  }
+  return true
+}
+
+/** Same active turns: compare by chat, turn id and status only. */
+function sameActiveChats(prev: ActiveChatTurn[], next: ActiveChatTurn[]): boolean {
+  if (prev === next) return true
+  if (prev.length !== next.length) return false
+  for (let i = 0; i < next.length; i += 1) {
+    const a = prev[i] as unknown as Record<string, unknown>
+    const b = next[i] as unknown as Record<string, unknown>
+    if (a.chatSessionId !== b.chatSessionId || a.status !== b.status || a.turnId !== b.turnId) return false
+  }
+  return true
+}
+
 export interface AgentActivityOptions {
   /** Poll while true; pass the screen's focus state. */
   polling?: boolean
@@ -88,12 +112,20 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
           const [, , next, chats] = await Promise.all([
             light ? Promise.resolve() : notifications.loadAll(),
             projectLoad,
-            api.listAgentTasks(http),
+            // Only this workspace's tasks: the route filters server-side, so a
+            // multi-workspace account no longer downloads every other
+            // workspace's tasks on each poll.
+            api.listAgentTasks(http, workspace?.id ? { workspaceId: workspace.id } : {}),
             // Active chats are supplementary; a failure here must not hide agent tasks.
             workspace?.id ? api.listWorkspaceActiveChats(http, workspace.id).catch(() => null) : Promise.resolve([]),
           ])
-          setTasks(next.filter((task: { workspaceId?: string | null }) => !workspace?.id || task.workspaceId === workspace.id))
-          if (chats) setActiveChats(chats)
+          // A paired computer's workspace is resolved client-side, so keep the
+          // local filter for that case; the server already scoped the rest.
+          const scoped = isRemoteSource || !workspace?.id
+            ? next.filter((task: { workspaceId?: string | null }) => !workspace?.id || task.workspaceId === workspace.id)
+            : next
+          setTasks((prev) => (sameTasks(prev, scoped) ? prev : scoped))
+          if (chats) setActiveChats((prev) => (sameActiveChats(prev, chats) ? prev : chats))
         } catch (cause) {
           setError(cause instanceof Error ? cause.message : 'Could not load activity')
         } finally {

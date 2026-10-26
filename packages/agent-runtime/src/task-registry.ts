@@ -301,6 +301,14 @@ export interface TaskNotification {
   shellLabel?: string
   tail: string
   remote?: boolean
+  /**
+   * The note carries its own ownership flags. The entry that produced it can be
+   * evicted while the note is still pending (`forget`), and a guard that reads
+   * the entry then fails open and hands an API-owned note to the API as a local
+   * task — which the API turns back into a wake, forever (SHO-196).
+   */
+  apiTracked?: boolean
+  reported?: boolean
   /** When the task settled; a turn only injects notes that finished after it started. */
   finishedAt?: number
 }
@@ -721,6 +729,11 @@ export class TaskRegistry {
       clearTimeout(entry.retentionTimer)
       entry.retentionTimer = undefined
     }
+    // A note the API owns dies with its entry: the API re-arms the row and wakes
+    // the session itself, so a note left behind here is a stale mirror that
+    // nothing can consume. A local unread note survives — it is the agent's only
+    // copy of the result — and it now carries its own flags (SHO-196).
+    if (entry.apiTracked || entry.reported) this.completionNotes.delete(id)
     this.entries.delete(id)
     this.recent.delete(id)
     if (entry.ref && this.aliases.get(entry.ref) === id) this.aliases.delete(entry.ref)
@@ -758,6 +771,8 @@ export class TaskRegistry {
       shellLabel: entry.result?.shellLabel,
       tail: entry.result?.tail || tailLines(stripAnsi(this.readOutput(entry))),
       remote: entry.remote,
+      apiTracked: entry.apiTracked || undefined,
+      reported: entry.reported || undefined,
       finishedAt: entry.finishedAt,
     }
   }
@@ -797,18 +812,24 @@ export class TaskRegistry {
 
   /** The agent has seen the final result; never notify about it again. */
   markConsumed(ids: string[]): void {
-    const apiIds: string[] = []
+    const apiIds = new Set<string>()
     for (const raw of ids) {
-      const entry = this.get(raw)
+      const resolved = this.resolveId(raw)
+      // Cleared before the entry lookup: a wake turn's ack must retire the note
+      // even when the entry that queued it has been evicted. Leaving it is what
+      // makes an orphan note survive every ack (SHO-196).
+      const note = this.completionNotes.get(resolved)
+      this.completionNotes.delete(resolved)
+      if (note?.apiTracked || note?.reported) apiIds.add(resolved)
+      const entry = this.entries.get(resolved)
       if (!entry || entry.consumed) continue
       entry.consumed = true
-      this.completionNotes.delete(entry.id)
       // Reading the result ends its unread lease: the short window applies now.
       if (entry.finishedAt) this.armRetention(entry)
-      if (entry.apiTracked || entry.reported) apiIds.push(entry.id)
+      if (entry.apiTracked || entry.reported) apiIds.add(entry.id)
     }
-    if (apiIds.length > 0 && this.remote) {
-      void this.remote.consume(apiIds).catch(() => {})
+    if (apiIds.size > 0 && this.remote) {
+      void this.remote.consume([...apiIds]).catch(() => {})
     }
   }
 
@@ -861,7 +882,12 @@ export class TaskRegistry {
   /** Notes for these tasks were handed to the API to wake the session; consumption must be reported back. */
   markReported(ids: string[]): void {
     for (const id of ids) {
-      const entry = this.get(id)
+      const resolved = this.resolveId(id)
+      // The note is flagged too, so a pending one is not handed over again after
+      // its entry is evicted (SHO-196).
+      const note = this.completionNotes.get(resolved)
+      if (note) note.reported = true
+      const entry = this.entries.get(resolved)
       if (entry) entry.reported = true
     }
   }

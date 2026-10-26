@@ -590,6 +590,20 @@ export function isLiveStripeEnv(): boolean {
 }
 
 /**
+ * Apex that published apps live under for this target: staging mints
+ * `{subdomain}.staging.shogo.one`, everything else `{subdomain}.shogo.one`.
+ * Override with `E2E_PUBLISH_DOMAIN` (set explicitly in `e2e-hosted.yml` next
+ * to `E2E_TARGET_URL`). Deriving it instead of hardcoding keeps the publish
+ * assertions honest on both environments (SHO-207).
+ */
+export function publishDomain(): string {
+  const explicit = process.env.E2E_PUBLISH_DOMAIN?.trim()
+  if (explicit) return explicit.replace(/^\.+/, "").toLowerCase()
+  const target = (process.env.E2E_TARGET_URL || process.env.STAGING_URL || "").toLowerCase()
+  return target.includes("staging.shogo.ai") ? "staging.shogo.one" : "shogo.one"
+}
+
+/**
  * Resolves the URL for the e2e bootstrap backdoor. Tests that call into
  * `/api/internal/e2e/*` should target the same API host used elsewhere
  * (`E2E_API_URL` → `STAGING_API_URL` → `E2E_TARGET_URL` → …).

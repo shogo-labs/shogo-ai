@@ -644,7 +644,12 @@ export async function runImport(
   if (isKubernetes() && process.env.S3_WORKSPACES_BUCKET) {
     await emit({ phase: 'syncToS3', status: 'running' })
     const syncStart = Date.now()
-    const sync = createS3SyncForProject(projectDir, project.id)
+    // Importing seeds a brand-new project id wholesale; there is no prior read
+    // to anchor a conditional write, so opt out of the lineage guard (same
+    // reason as marketplace install).
+    const sync = createS3SyncForProject(projectDir, project.id, {
+      allowUnconditionalWrite: true,
+    })
     if (!sync) {
       // Misconfiguration (e.g. bucket env truthy but empty string). Treat
       // as fatal — see comment above.

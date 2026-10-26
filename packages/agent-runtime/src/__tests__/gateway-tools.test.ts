@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync, symlinkSync, existsSync } from 'fs'
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync, symlinkSync, existsSync } from 'fs'
 import { join } from 'path'
+import { tmpdir } from 'os'
 import { createTools, TOOL_GROUP_MAP, ALL_TOOL_NAMES, resolveToolNames, hostToContainer, containerToHost, type ToolContext } from '../gateway-tools'
+import { PermissionEngine } from '../permission-engine'
 import { FileStateCache } from '../file-state-cache'
 import { TaskRegistry } from '../task-registry'
 import { taskOutputDir } from '../task-output'
@@ -74,11 +76,11 @@ describe('gateway-tools', () => {
       expect(result.exitCode).toBe(0)
     })
 
-    test('blocks destructive commands', async () => {
-      // Lightweight isBlockedCommand only catches a recursive-star remove; the
-      // PermissionEngine has broader patterns but isn't active in this test context.
-      const result = await exec(createCtx(), 'exec', { command: 'cd /tmp && ' + ['r','m',' -','r','f',' *'].join('') })
-      expect(result.error).toContain('Blocked command')
+    test('does not block a recursive-star remove', async () => {
+      writeFileSync(join(TEST_DIR, 'stale.log'), 'x')
+      const result = await exec(createCtx(), 'exec', { command: 'rm -rf *.log' })
+      expect(String(result.error ?? '')).not.toContain('Blocked command')
+      expect(existsSync(join(TEST_DIR, 'stale.log'))).toBe(false)
     })
 
     test('returns stderr on failure', async () => {
@@ -181,6 +183,32 @@ describe('gateway-tools', () => {
         expect(true).toBe(false)
       } catch (err: any) {
         expect(err.message).toContain('outside workspace')
+      }
+    })
+
+    test('a folder-linked desktop runtime in full_autonomy reads a path outside the roots (SHO-209)', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'sho-209-outside-'))
+      const outsideFile = join(outsideDir, 'note.txt')
+      writeFileSync(outsideFile, 'outside the project')
+
+      const oldLocal = process.env.SHOGO_LOCAL_MODE
+      const oldLinked = process.env.LINKED_FOLDERS
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      process.env.LINKED_FOLDERS = JSON.stringify([TEST_DIR])
+      try {
+        const engine = (mode: 'full_autonomy' | 'balanced') =>
+          createCtx({ permissionEngine: new PermissionEngine({ workspaceDir: TEST_DIR, preference: { mode } }) })
+
+        const allowed = await exec(engine('full_autonomy'), 'read_file', { path: outsideFile })
+        expect(allowed.content).toBe('outside the project')
+
+        await expect(exec(engine('balanced'), 'read_file', { path: outsideFile })).rejects.toThrow(/allowed folders/i)
+      } finally {
+        if (oldLocal === undefined) delete process.env.SHOGO_LOCAL_MODE
+        else process.env.SHOGO_LOCAL_MODE = oldLocal
+        if (oldLinked === undefined) delete process.env.LINKED_FOLDERS
+        else process.env.LINKED_FOLDERS = oldLinked
+        rmSync(outsideDir, { recursive: true, force: true })
       }
     })
 

@@ -118,8 +118,18 @@ export async function isViewerActive(workspaceId: string): Promise<boolean> {
   return true
 }
 
+/**
+ * Machine relay calls mark the viewer on every request, so a busy panel would
+ * SET the same Redis key many times a second. The key lives 2 min; refreshing
+ * it at most every 30 s per pod keeps it alive with a wide margin (PERF-6).
+ */
+const VIEWER_REFRESH_MS = 30_000
+
 export async function markViewerActive(workspaceId: string) {
-  activeViewers.set(workspaceId, Date.now())
+  const now = Date.now()
+  const last = activeViewers.get(workspaceId)
+  if (last !== undefined && now - last < VIEWER_REFRESH_MS) return
+  activeViewers.set(workspaceId, now)
   await markViewerActiveRedis(workspaceId).catch((err) => {
     console.warn('[RemoteControl] markViewerActiveRedis failed:', (err as Error).message)
   })
@@ -712,35 +722,51 @@ export function instanceRoutes() {
     // The worker sends both, the desktop sends neither, so the default
     // 'desktop' here keeps existing clients on the existing row shape.
     const kind = parseInstanceKind(c.req.header('x-shogo-kind') || body.kind)
-
-    const instance = await prisma.instance.upsert({
-      where: {
-        workspaceId_userId_hostname: {
-          workspaceId: resolved.workspaceId,
-          userId: resolved.userId,
-          hostname: body.hostname,
-        },
-      },
-      update: {
-        name: body.name || body.hostname,
-        os: body.os || null,
-        arch: body.arch || null,
-        kind,
-        lastSeenAt: new Date(),
-        metadata: (body.metadata ?? undefined) as any,
-      },
-      create: {
+    const where = {
+      workspaceId_userId_hostname: {
         workspaceId: resolved.workspaceId,
         userId: resolved.userId,
-        name: body.name || body.hostname,
         hostname: body.hostname,
-        os: body.os || null,
-        arch: body.arch || null,
-        kind,
-        lastSeenAt: new Date(),
-        metadata: (body.metadata ?? undefined) as any,
       },
-    })
+    }
+
+    // A viewer puts the desktop on a 5 s poll; writing the row on every one of
+    // those was ~190k upserts/day for a lastSeenAt nobody reads that finely
+    // (PERF-6). Read first and only write when something changed or the
+    // timestamp is getting old. The read is a unique-index lookup.
+    const fields = {
+      name: body.name || body.hostname,
+      os: body.os || null,
+      arch: body.arch || null,
+      kind,
+      metadata: body.metadata,
+    }
+    const existing = await prisma.instance.findUnique({ where })
+    const instance =
+      existing && !heartbeatNeedsWrite(existing, fields)
+        ? existing
+        : await prisma.instance.upsert({
+            where,
+            update: {
+              name: fields.name,
+              os: fields.os,
+              arch: fields.arch,
+              kind,
+              lastSeenAt: new Date(),
+              metadata: (body.metadata ?? undefined) as any,
+            },
+            create: {
+              workspaceId: resolved.workspaceId,
+              userId: resolved.userId,
+              name: fields.name,
+              hostname: body.hostname,
+              os: fields.os,
+              arch: fields.arch,
+              kind,
+              lastSeenAt: new Date(),
+              metadata: (body.metadata ?? undefined) as any,
+            },
+          })
 
     const wsRequested = isWsRequested(instance.wsRequestedAt)
     const nextPollIn = await computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
@@ -1691,6 +1717,68 @@ export function instanceRoutes() {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Rewrite `lastSeenAt` at least this often. Well inside the 2 min
+ * `isRecentlySeenViaHeartbeat` window, so a skipped write never turns a live
+ * machine into `offline`.
+ */
+const HEARTBEAT_WRITE_MIN_INTERVAL_MS = 30_000
+
+/** Key-order independent: Postgres `jsonb` hands keys back in its own order. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    return `{${Object.keys(obj)
+      .filter((k) => obj[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value ?? null)
+}
+
+/**
+ * `uptime` ticks on every beat and `machine.generatedAt` on every snapshot
+ * (20 s); neither is a reason to write the row.
+ */
+function stableMetadata(metadata: unknown): string {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return canonicalJson(metadata)
+  const { uptime: _uptime, ...rest } = metadata as Record<string, unknown>
+  const machine = rest.machine
+  if (machine && typeof machine === 'object' && !Array.isArray(machine)) {
+    const { generatedAt: _generatedAt, ...machineRest } = machine as Record<string, unknown>
+    rest.machine = machineRest
+  }
+  return canonicalJson(rest)
+}
+
+export function heartbeatNeedsWrite(
+  existing: {
+    name: string | null
+    os: string | null
+    arch: string | null
+    kind: InstanceKind
+    lastSeenAt: Date | null
+    metadata: unknown
+  },
+  next: {
+    name: string
+    os: string | null
+    arch: string | null
+    kind: InstanceKind
+    metadata: Record<string, unknown> | undefined
+  },
+  now: number = Date.now(),
+): boolean {
+  if (!existing.lastSeenAt) return true
+  if (now - existing.lastSeenAt.getTime() >= HEARTBEAT_WRITE_MIN_INTERVAL_MS) return true
+  if (existing.name !== next.name || existing.os !== next.os || existing.arch !== next.arch) return true
+  if (existing.kind !== next.kind) return true
+  if (next.metadata !== undefined && stableMetadata(existing.metadata) !== stableMetadata(next.metadata)) return true
+  return false
+}
 
 export function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
   if (!lastSeenAt) return false

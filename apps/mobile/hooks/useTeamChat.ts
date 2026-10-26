@@ -84,6 +84,9 @@ export function useMyUserId(): string | null {
 const listCache = new Map<string, ConversationSummary[]>()
 const listChangedListeners = new Set<(workspaceId: string) => void>()
 
+/** Slack for the client's own clock against the server's when it starts a catch-up cursor. */
+const CATCH_UP_SKEW_MS = 5_000
+
 /** Ask mounted lists to refetch (after creating/joining/leaving a conversation). */
 export function invalidateConversationList(workspaceId: string): void {
   listChangedListeners.forEach((l) => l(workspaceId))
@@ -96,6 +99,9 @@ export function useConversationList(workspaceId: string | null | undefined) {
   const [loading, setLoading] = useState(!workspaceId || !listCache.has(workspaceId))
   const [error, setError] = useState<string | null>(null)
   const inflight = useRef<Promise<void> | null>(null)
+  // The server clock of the last list this hook holds. A reconnect asks for what
+  // changed after it instead of re-downloading every conversation.
+  const syncedAt = useRef<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!workspaceId) return
@@ -104,9 +110,12 @@ export function useConversationList(workspaceId: string | null | undefined) {
       try {
         const next = await api.list(workspaceId)
         listCache.set(workspaceId, next)
+        // Our clock, not the server's, so start the cursor slightly in the past:
+        // a few unchanged rows in the first catch-up cost nothing, while a
+        // cursor ahead of the server would skip a change.
+        syncedAt.current = new Date(Date.now() - CATCH_UP_SKEW_MS).toISOString()
         setList(next)
         setError(null)
-        if (me) cacheList(me, workspaceId, next)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not load conversations')
       } finally {
@@ -116,10 +125,47 @@ export function useConversationList(workspaceId: string | null | undefined) {
     })()
     inflight.current = run
     return run
-  }, [workspaceId, me])
+  }, [workspaceId])
+
+  /** Reconnect/foreground: merge only the conversations that changed since our last sync. */
+  const catchUp = useCallback(async () => {
+    if (!workspaceId) return
+    if (inflight.current) return inflight.current
+    const since = syncedAt.current
+    if (!since) return refresh()
+    const run = (async () => {
+      try {
+        const { conversations: changed, syncedAt: serverNow } = await api.listSince(workspaceId, since)
+        if (serverNow) syncedAt.current = serverNow
+        if (!changed.length) return
+        setList((current) => {
+          const byId = new Map(changed.map((c) => [c.id, c]))
+          const merged = current.map((c) => byId.get(c.id) ?? c)
+          const known = new Set(current.map((c) => c.id))
+          const added = changed.filter((c) => !known.has(c.id))
+          const next = added.length ? [...merged, ...added] : merged
+          listCache.set(workspaceId, next)
+          return next
+        })
+        setError(null)
+      } catch (err) {
+        // A failed catch-up is not worth an error banner: fall back to a full
+        // list. Clear the in-flight marker first, or `refresh` short-circuits on
+        // it and the fallback never runs.
+        inflight.current = null
+        void refresh()
+        setError(err instanceof Error ? err.message : 'Could not load conversations')
+      } finally {
+        inflight.current = null
+      }
+    })()
+    inflight.current = run
+    return run
+  }, [refresh, workspaceId])
 
   useEffect(() => {
     setList(workspaceId ? listCache.get(workspaceId) ?? [] : [])
+    syncedAt.current = null
     if (workspaceId && me && !listCache.has(workspaceId)) {
       void readCachedList(me, workspaceId).then((cached) => {
         if (!cached || listCache.has(workspaceId)) return
@@ -129,6 +175,14 @@ export function useConversationList(workspaceId: string | null | undefined) {
     }
     void refresh()
   }, [workspaceId, me, refresh])
+
+  // Persisting the list is a side effect of it changing, not part of the state
+  // update: one write per settled list, debounced by the cache itself, instead
+  // of a whole-list write inside every realtime event.
+  useEffect(() => {
+    if (!workspaceId || !me || !list.length) return
+    cacheList(me, workspaceId, list)
+  }, [list, me, workspaceId])
 
   useEffect(() => {
     const onChanged = (id: string) => {
@@ -145,16 +199,12 @@ export function useConversationList(workspaceId: string | null | undefined) {
   useTeamChatEvents(workspaceId, (event) => {
     if (!workspaceId || !me) return
     if (event.type === 'ready') {
-      void refresh()
+      void catchUp()
       return
     }
     setList((current) => {
       const update = applyListEvent(current, event, me, activeRef.current)
       if (update.refetch) queueMicrotask(() => void refresh())
-      if (update.list !== current) {
-        listCache.set(workspaceId, update.list)
-        cacheList(me, workspaceId, update.list)
-      }
       return update.list
     })
   })
@@ -165,7 +215,7 @@ export function useConversationList(workspaceId: string | null | undefined) {
   }, [active])
 
   const groups = useMemo(() => groupForSidebar(list), [list])
-  return { list, groups, loading, error, refresh }
+  return useMemo(() => ({ list, groups, loading, error, refresh }), [list, groups, loading, error, refresh])
 }
 
 // ─── Channel directory (for `#` references) ──────────────────────────────────

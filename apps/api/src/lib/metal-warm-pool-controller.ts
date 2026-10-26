@@ -98,6 +98,21 @@ const wakePhase = meter.createHistogram('metal.wake_phase_ms', {
   description: 'Per-phase wall time of a runtime wake; api.* phases run in the API, host.* phases on the metal host',
   unit: 'ms',
 })
+const timeToReady = meter.createHistogram('metal.time_to_ready_ms', {
+  description:
+    'What the user waited: first resolve attempt to a usable runtime URL, across the 30s /assign retries. ' +
+    'Labelled by path (resumed|assigned|reused|after_timeout), host_id and region',
+  unit: 'ms',
+})
+const repoHydrateCounter = meter.createCounter('metal.repo_hydrate', {
+  description:
+    'Assign-time git history restores by mode: foreground (open waited), deferred (open returned on the ' +
+    "source's .git, history swapped in later), none (no durable repo), failed",
+})
+const repoHydrateBytes = meter.createHistogram('metal.repo_hydrate_bytes', {
+  description: 'Bytes of git history a fresh assign had to download',
+  unit: 'By',
+})
 
 // --- Per-host fleet gauges (SigNoz) ------------------------------------------
 // The counters above cover the ROUTER path (assign/wake/errors). These observable
@@ -378,6 +393,13 @@ interface HostEntry extends MetalHostRegistration {
 /** A host is considered live if it heartbeat within this window. */
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const ASSIGN_TIMEOUT_MS = parseInt(process.env.METAL_ASSIGN_TIMEOUT_MS || '30000', 10)
+
+/** Each recent cold open on a host counts as this many assigned VMs when placing new projects. */
+const COLD_OPEN_WEIGHT = Math.max(0, parseFloat(process.env.METAL_PLACEMENT_COLD_OPEN_WEIGHT || '2'))
+const COLD_OPEN_WINDOW_MS = parseInt(process.env.METAL_PLACEMENT_COLD_OPEN_WINDOW_MS || '600000', 10)
+
+/** Resolve outcomes the caller retries into the same placement: the user is still waiting. */
+const RETRIED_WAKE_MODES = new Set(['assign_timeout', 'owner_unreachable', 'assign_failed_owner', 'all_hosts_failed'])
 /**
  * Upper bound on a host's /stop reply, which includes the durable snapshot
  * upload. Kept under the ~100s edge proxy limit because the user stop route
@@ -549,6 +571,27 @@ interface AssignResult {
   totalMs?: number
   /** Cold boot only: why the host did not resume a snapshot. */
   staleReason?: string
+  /** Fresh assign only: how the git history restore went (absent on older agents). */
+  repo?: RepoRestoreReport
+  /**
+   * `reused` only: the open that brought this VM up, when the request that
+   * started it timed out before it could report (absent on older agents).
+   */
+  lateWake?: {
+    mode: 'assigned' | 'resumed'
+    source?: string
+    staleReason?: string
+    phases?: Record<string, number>
+    totalMs?: number
+    repo?: RepoRestoreReport
+  }
+}
+
+interface RepoRestoreReport {
+  mode: 'foreground' | 'deferred' | 'none' | 'failed'
+  bytes: number
+  bundles: number
+  foregroundMs: number
 }
 
 /** A cached resolution of a project to its runtime URL (see URL_CACHE_TTL_MS). */
@@ -633,6 +676,8 @@ export class MetalWarmPoolController {
   private urlCache = new Map<string, UrlCacheEntry>()
   private foreignPublishedReleaseAt = new Map<string, number>()
   private stats = { assigned: 0, resumed: 0, reused: 0, coldMiss: 0, cacheHit: 0, hostErrors: 0, noHost: 0 }
+  /** Per host: when this replica last sent it a cold open (see coldOpenPenalty). */
+  private recentColdOpens = new Map<string, number[]>()
   /** Cordoned hostIds (admin drain) — excluded from NEW placements. Synced from
    * the shared registry on each resolve so every API replica honors a cordon. */
   private cordoned = new Set<string>()
@@ -786,7 +831,9 @@ export class MetalWarmPoolController {
    *   1. the host that holds the project locally (cache hit) — from the shared
    *      registry placement if provided, else local stickiness; a local resume
    *      is sub-second vs a cross-host S3 pull or a cold boot;
-   *   2. remaining live hosts UNDER the disk high-watermark, lightest-load first;
+   *   2. remaining live hosts UNDER the disk high-watermark, lightest-load first,
+   *      where load also counts the cold opens this replica sent there recently
+   *      (see coldOpenPenalty);
    *   3. hosts AT/OVER the high-watermark last (they're shedding via GC, so
    *      placing a new cold project there just fights the sweep).
    */
@@ -803,9 +850,35 @@ export class MetalWarmPoolController {
         const ap = overWatermark(a) ? 1 : 0
         const bp = overWatermark(b) ? 1 : 0
         if (ap !== bp) return ap - bp
-        return loadRatio(a) - loadRatio(b)
+        return loadRatio(a) + this.coldOpenPenalty(a) - (loadRatio(b) + this.coldOpenPenalty(b))
       })
     return preferred ? [preferred, ...rest] : rest
+  }
+
+  /**
+   * Load-ratio surcharge for cold opens recently sent to `host`.
+   *
+   * `assigned` alone balances how many VMs each host RUNS, not how many it is
+   * BOOTING. Two hosts can sit at 47 and 50 VMs while one takes every new
+   * project: on 2026-10-22..25 latitude-dal-1 took 1,601 fresh assigns to
+   * dal-2's 45, and its concurrent hydrates fought over one uplink (p50 open
+   * 16s vs 4s). Each recent cold open counts as COLD_OPEN_WEIGHT VMs for
+   * COLD_OPEN_WINDOW_MS, so new placements alternate instead of piling up.
+   */
+  private coldOpenPenalty(host: HostEntry): number {
+    const opens = this.recentColdOpens.get(host.hostId)
+    if (!opens?.length) return 0
+    const cutoff = this.now() - COLD_OPEN_WINDOW_MS
+    while (opens.length && opens[0] < cutoff) opens.shift()
+    return (opens.length * COLD_OPEN_WEIGHT) / MAX_VMS_PER_HOST
+  }
+
+  private noteColdOpen(hostId: string): void {
+    if (COLD_OPEN_WEIGHT <= 0) return
+    const opens = this.recentColdOpens.get(hostId) ?? []
+    opens.push(this.now())
+    if (opens.length > 500) opens.splice(0, opens.length - 500)
+    this.recentColdOpens.set(hostId, opens)
   }
 
   /**
@@ -943,6 +1016,7 @@ export class MetalWarmPoolController {
     opts: AssignOpts = {},
   ): Promise<string> {
     return tracer.startActiveSpan('metal.get_pod_url', { attributes: { 'project.id': projectId } }, async (span) => {
+      const resolveStartedAt = this.now()
       const wake = new WakeTiming()
       let wakeMode = 'failed'
       let wakeHost: AssignResult | undefined
@@ -1074,7 +1148,9 @@ export class MetalWarmPoolController {
               this.stats.assigned++
               this.stats.coldMiss++
               coldMissCounter.add(1)
+              this.noteColdOpen(host.hostId)
             }
+            await this.recordTimeToReady(span, projectId, resolveStartedAt, wakeMode, res, host)
             // Cache the resolution so repeat requests skip /assign entirely.
             if (URL_CACHE_TTL_MS > 0) {
               this.urlCache.set(projectId, {
@@ -1101,7 +1177,10 @@ export class MetalWarmPoolController {
             }
 
             this.stats.hostErrors++
-            hostErrorCounter.add(1, { host: host.hostId })
+            hostErrorCounter.add(1, {
+              host: host.hostId,
+              reason: isAssignTimeout(err) ? 'timeout' : err instanceof MetalHostUnreachableError ? 'unreachable' : 'error',
+            })
 
             // A timeout is not a failure, it is an unfinished boot.
             //
@@ -1119,6 +1198,7 @@ export class MetalWarmPoolController {
             // it is the one bringing the project up — and let the caller retry
             // into it rather than scattering the project across the fleet.
             if (isAssignTimeout(err)) {
+              this.noteColdOpen(host.hostId)
               this.projectHost.set(projectId, host.hostId)
               void this.registry.setPlacement(projectId, host.hostId, 'local').catch(() => {})
               this.urlCache.delete(projectId)
@@ -1191,10 +1271,70 @@ export class MetalWarmPoolController {
         span.recordException(err)
         throw err
       } finally {
+        // The caller retries these into the same host, so the user is still
+        // waiting: remember when the wait began for metal.time_to_ready_ms.
+        if (RETRIED_WAKE_MODES.has(wakeMode)) {
+          void this.registry.markWakeStart?.(projectId, resolveStartedAt)?.catch(() => {})
+        }
         wake.record(span, wakeMode, wakeHost, wakeHostEntry)
         span.end()
       }
     })
+  }
+
+  /**
+   * Record what the user waited for this runtime. A slow open spans several
+   * resolves (each /assign gives up after ASSIGN_TIMEOUT_MS and the caller
+   * retries), so the wait starts at the first attempt, shared across replicas
+   * via the registry. The retry that finally succeeds usually re-attaches the
+   * VM the timed-out attempt left booting; its host phases arrive as
+   * `lateWake` and are recorded here so slow opens are not invisible.
+   */
+  private async recordTimeToReady(
+    span: { setAttribute(k: string, v: string | number): unknown },
+    projectId: string,
+    resolveStartedAt: number,
+    wakeMode: string,
+    res: AssignResult,
+    host: HostEntry,
+  ): Promise<void> {
+    const firstAttemptAt = (await this.registry.takeWakeStart?.(projectId)?.catch(() => null)) ?? null
+    const waitedMs = Math.max(0, this.now() - (firstAttemptAt ?? resolveStartedAt))
+    const path = firstAttemptAt ? 'after_timeout' : wakeMode
+    span.setAttribute('wake.time_to_ready_ms', waitedMs)
+    span.setAttribute('wake.ready_path', path)
+    timeToReady.record(waitedMs, { path, host_id: host.hostId, region: host.region })
+
+    const repo = res.repo ?? (firstAttemptAt ? res.lateWake?.repo : undefined)
+    if (repo) {
+      span.setAttribute('wake.repo.mode', repo.mode)
+      span.setAttribute('wake.repo.bytes', repo.bytes)
+      span.setAttribute('wake.repo.bundles', repo.bundles)
+      span.setAttribute('wake.repo.foreground_ms', repo.foregroundMs)
+      repoHydrateCounter.add(1, { mode: repo.mode, host_id: host.hostId })
+      if (repo.bytes > 0) repoHydrateBytes.record(repo.bytes, { host_id: host.hostId })
+    }
+
+    const late = firstAttemptAt ? res.lateWake : undefined
+    if (late) {
+      const mode = `late_${late.mode}`
+      span.setAttribute('wake.late.mode', late.mode)
+      if (late.staleReason) span.setAttribute('wake.late.stale_reason', late.staleReason)
+      if (typeof late.totalMs === 'number') {
+        span.setAttribute('wake.late.host.total_ms', late.totalMs)
+        wakeTotal.record(late.totalMs, {
+          mode,
+          source: late.source ?? 'none',
+          stale_reason: late.staleReason ?? 'none',
+          host_id: host.hostId,
+        })
+      }
+      for (const [phase, ms] of Object.entries(late.phases ?? {})) {
+        if (typeof ms !== 'number') continue
+        span.setAttribute(`wake.late.host.${phase}_ms`, ms)
+        wakePhase.record(ms, { phase: `host.${phase}`, mode, host_id: host.hostId })
+      }
+    }
   }
 
   /** Whether `host` reports a running VM for `projectId`. False when it can't say. */
@@ -1987,15 +2127,16 @@ class WakeTiming {
     })
     span.setAttribute('wake.mode', mode)
     span.setAttribute('wake.total_ms', total)
-    wakeTotal.record(total, { mode, source, stale_reason: staleReason })
+    const hostId = hostEntry?.hostId ?? 'none'
+    wakeTotal.record(total, { mode, source, stale_reason: staleReason, host_id: hostId })
     for (const [phase, ms] of Object.entries(this.ms)) {
       span.setAttribute(`wake.api.${phase}_ms`, Math.round(ms))
-      wakePhase.record(ms, { phase: `api.${phase}`, mode })
+      wakePhase.record(ms, { phase: `api.${phase}`, mode, host_id: hostId })
     }
     for (const [phase, ms] of Object.entries(host?.phases ?? {})) {
       if (typeof ms !== 'number') continue
       span.setAttribute(`wake.host.${phase}_ms`, ms)
-      wakePhase.record(ms, { phase: `host.${phase}`, mode })
+      wakePhase.record(ms, { phase: `host.${phase}`, mode, host_id: hostId })
     }
     if (typeof host?.totalMs === 'number') span.setAttribute('wake.host.total_ms', host.totalMs)
   }

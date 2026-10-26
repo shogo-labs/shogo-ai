@@ -38,8 +38,6 @@ import { CommitDetailPanel } from "./CommitDetailPanel";
 import { relativeTime } from "./gitAvatar";
 import { ROW_HEIGHT, type DisplayRow } from "./types";
 
-const PUBLISH_DOMAIN = "shogo.one";
-
 type Selection = { kind: "wip" } | { kind: "commit"; sha: string } | null;
 
 export function GraphView({
@@ -163,7 +161,7 @@ export function GraphView({
     [createCheckpoint, graph, refetchCheckpoints],
   );
 
-  const liveUrl = publish.subdomain ? `https://${publish.subdomain}.${PUBLISH_DOMAIN}` : null;
+  const liveUrl = publish.subdomain ? `https://${publish.subdomain}.${publish.publishDomain}` : null;
 
   const handleViewLive = useCallback(() => {
     if (liveUrl) Linking.openURL(liveUrl);
@@ -232,6 +230,7 @@ export function GraphView({
           <PublishStrip
             isPublished={publish.isPublished}
             subdomain={publish.subdomain}
+            publishDomain={publish.publishDomain}
             liveUrl={liveUrl}
             aheadOfLive={aheadOfLive}
             isRepublishing={isRepublishing}
@@ -389,6 +388,7 @@ function Header({
 function PublishStrip({
   isPublished,
   subdomain,
+  publishDomain,
   liveUrl,
   aheadOfLive,
   isRepublishing,
@@ -397,6 +397,8 @@ function PublishStrip({
 }: {
   isPublished: boolean;
   subdomain: string | null;
+  /** Apex the API publishes to (`staging.shogo.one` on staging). */
+  publishDomain: string;
   liveUrl: string | null;
   aheadOfLive: boolean;
   isRepublishing: boolean;
@@ -418,7 +420,7 @@ function PublishStrip({
             title="Open the live site"
             className="flex items-center gap-1 font-medium text-[color:var(--ide-text-strong)] hover:underline"
           >
-            {subdomain}.{PUBLISH_DOMAIN}
+            {subdomain}.{publishDomain}
             <ExternalLink size={11} className="text-[color:var(--ide-muted)]" />
           </button>
           <span className="flex-1" />

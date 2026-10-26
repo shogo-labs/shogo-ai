@@ -21,6 +21,6 @@ describe('bundle-report', () => {
 
   test('budgets stay at the measured async-route ceilings', () => {
     expect(MAIN_CHUNK_BUDGET_BYTES).toBe(2_500_000)
-    expect(COMMON_CHUNK_BUDGET_BYTES).toBe(13_000_000)
+    expect(COMMON_CHUNK_BUDGET_BYTES).toBe(12_000_000)
   })
 })

@@ -5,8 +5,8 @@ import React from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import {
   Check,
+  ArrowLeft,
   History,
-  Menu,
   MessageSquare,
   MessagesSquare,
   MoreHorizontal,
@@ -38,7 +38,7 @@ const NATIVE_REMOTE_INDICATOR_WIDTH = 138;
 export function NativePhoneHeader({
   projectName,
   projectMenu,
-  onOpenSidebar,
+  onBack,
   showTrustBadge,
   trustLevel,
   onToggleTrust,
@@ -55,7 +55,8 @@ export function NativePhoneHeader({
 }: {
   projectName: string;
   projectMenu: React.ReactNode;
-  onOpenSidebar?: () => void;
+  /** Back to Home. A project is a screen you go into, so it never gets a hamburger. */
+  onBack?: () => void;
   showTrustBadge: boolean;
   trustLevel?: "restricted" | "trusted";
   onToggleTrust?: () => void;
@@ -127,10 +128,10 @@ export function NativePhoneHeader({
           }}
         >
           <NativeCircleButton
-            icon={Menu}
-            onPress={() => onOpenSidebar?.()}
-            accessibilityLabel="Open project sidebar"
-            testID="project-native-sidebar"
+            icon={ArrowLeft}
+            onPress={() => onBack?.()}
+            accessibilityLabel="Back"
+            testID="project-native-back"
           />
           <View className="flex-row items-center gap-2">
             {remoteHostIndicator}

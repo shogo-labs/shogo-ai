@@ -43,7 +43,7 @@ mock.module("@monaco-editor/react", () => ({
 
 // ─── Stub the side-effect modules CodeEditor pulls in at module-eval time ─
 mock.module("../monaco/workspaceModels", () => ({ setMonacoRef: () => {} }));
-mock.module("../monaco/extraLibs", () => ({ setupExtraLibs: () => {} }));
+mock.module("../monaco/extraLibs", () => ({ setupExtraLibs: async () => {} }));
 mock.module("../agentFixProvider", () => ({ setupAgentFix: () => {} }));
 mock.module("../monaco/themes", () => ({
   registerDesktopThemes: () => {},

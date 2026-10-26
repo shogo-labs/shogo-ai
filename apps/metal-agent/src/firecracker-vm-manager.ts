@@ -111,6 +111,41 @@ export interface FcSnapshot {
  */
 const ORPHAN_PROC_GRACE_MS = parseInt(process.env.METAL_ORPHAN_PROC_GRACE_MS || '120000', 10)
 
+/**
+ * Kernel cmdline for a guest boot. `clocksource=kvm-clock` is not optional:
+ * a snapshot restore's `clock_realtime` (fc-api.loadSnapshot) only advances
+ * kvm-clock, and the kernel picks its clocksource at boot. On a host with
+ * `constant_tsc`/`nonstop_tsc` (every metal host) an unqualified guest switches
+ * `kvm-clock` → `tsc` within milliseconds of boot, and TSC is not moved by
+ * KVM_CLOCK_REALTIME — so the guest resumes with the wall clock frozen at the
+ * moment the snapshot was taken (staging, 2026-10-25: 4h40m behind after a
+ * 4h40m suspend, which is also what breaks outbound TLS with "certificate is
+ * not yet valid"). Pinning the clocksource makes `clock_realtime` effective for
+ * every snapshot taken from a VM booted with this cmdline. Snapshots taken
+ * before this change keep their frozen clock until they cold-boot; the
+ * `POST /pool/rehydrate` clock sync is the backstop for those.
+ */
+export function guestBootArgs(o: { bootIpArg: string; guestInit?: string; extra?: string }): string {
+  return [
+    'console=ttyS0',
+    'reboot=k',
+    'panic=1',
+    'pci=off',
+    'root=/dev/vda',
+    'rw',
+    'clocksource=kvm-clock',
+    'i8042.noaux',
+    'i8042.nomux',
+    'i8042.nopnp',
+    'i8042.dumbkbd',
+    o.bootIpArg,
+    o.guestInit ? `init=${o.guestInit}` : '',
+    o.extra ?? '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
 export class FirecrackerVMManager {
   private procs = new Map<string, Subprocess>()
   /**
@@ -165,23 +200,7 @@ export class FirecrackerVMManager {
   }
 
   private baseBootArgs(net: VmNet, extra?: string): string {
-    return [
-      'console=ttyS0',
-      'reboot=k',
-      'panic=1',
-      'pci=off',
-      'root=/dev/vda',
-      'rw',
-      'i8042.noaux',
-      'i8042.nomux',
-      'i8042.nopnp',
-      'i8042.dumbkbd',
-      net.bootIpArg,
-      this.cfg.guestInit ? `init=${this.cfg.guestInit}` : '',
-      extra ?? '',
-    ]
-      .filter(Boolean)
-      .join(' ')
+    return guestBootArgs({ bootIpArg: net.bootIpArg, guestInit: this.cfg.guestInit, extra })
   }
 
   private spawnFc(id: string, socketPath: string, serialLog: string): Subprocess {

@@ -5,7 +5,7 @@
  * desktop and mobile. People and agents use the same row: a person shows a
  * presence dot, an agent shows a bot mark.
  */
-import { useState, type ReactNode } from 'react'
+import { memo, useState, type ReactNode } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { Bot, ChevronDown, ChevronRight, Hash, Lock, Pencil, Plus, Radio, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -68,8 +68,19 @@ export interface ConversationRowProps {
   onPress: (c: ConversationSummary) => void
 }
 
-export function ConversationRow({ conversation: c, workspaceId, active = false, preview = false, onPress }: ConversationRowProps) {
-  const comfortable = usePhoneLayout()
+/**
+ * The row without a `useWindowDimensions` subscription of its own. Long lists
+ * render this with a `comfortable` they resolved once, so a list of 150 rows
+ * does not hold 150 dimension subscriptions.
+ */
+export const ConversationRowView = memo(function ConversationRowView({
+  conversation: c,
+  workspaceId,
+  active = false,
+  preview = false,
+  onPress,
+  comfortable,
+}: ConversationRowProps & { comfortable: boolean }) {
   const density = densityFor(comfortable)
   const Icon = iconFor(c)
   const unread = !active && isConversationUnread(c)
@@ -156,6 +167,11 @@ export function ConversationRow({ conversation: c, workspaceId, active = false, 
       <CountPill count={mentions} />
     </Pressable>
   )
+})
+
+export function ConversationRow(props: ConversationRowProps) {
+  const comfortable = usePhoneLayout()
+  return <ConversationRowView {...props} comfortable={comfortable} />
 }
 
 export interface PanelSectionProps {
@@ -169,43 +185,78 @@ export interface PanelSectionProps {
   children: ReactNode
 }
 
+export interface PanelSectionHeaderProps {
+  label: string
+  addLabel?: string
+  onAdd?: () => void
+  /** Hide the chevron and keep the section open. */
+  fixed?: boolean
+  expanded: boolean
+  onToggle?: () => void
+  /** Resolved once by the list, so headers in a long list stay hook-free. */
+  comfortable: boolean
+}
+
+/** The chevron, label and "+" of a section, without its rows. */
+export const PanelSectionHeader = memo(function PanelSectionHeader({
+  label,
+  addLabel,
+  onAdd,
+  fixed,
+  expanded,
+  onToggle,
+  comfortable,
+}: PanelSectionHeaderProps) {
+  const density = densityFor(comfortable)
+  const Chevron = expanded ? ChevronDown : ChevronRight
+  return (
+    <View className="flex-row items-center">
+      <Pressable
+        onPress={onToggle}
+        accessibilityRole="button"
+        aria-expanded={expanded}
+        accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+        className={cn(
+          'flex-1 flex-row items-center gap-1.5 rounded-lg px-1 py-1',
+          comfortable ? 'active:bg-accent/50' : 'hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60',
+        )}
+      >
+        <Text
+          className={cn(
+            'flex-1 text-muted-foreground',
+            comfortable
+              ? `font-semibold uppercase tracking-wider ${density.text.label}`
+              : 'text-[13px] font-medium text-sidebar-muted-foreground',
+          )}
+        >
+          {label}
+        </Text>
+        {!fixed && <Chevron size={12} className="text-muted-foreground" />}
+      </Pressable>
+      {onAdd && (
+        <Pressable onPress={onAdd} accessibilityRole="button" accessibilityLabel={addLabel} className="rounded-md p-1 active:bg-accent/50 hover:bg-accent/50">
+          <Plus size={12} className="text-muted-foreground" />
+        </Pressable>
+      )}
+    </View>
+  )
+})
+
 /** A collapsible, labelled group of rows with an optional "+" action. */
 export function PanelSection({ label, addLabel, onAdd, fixed, defaultCollapsed, children }: PanelSectionProps) {
   const comfortable = usePhoneLayout()
-  const density = densityFor(comfortable)
   const [expanded, setExpanded] = useState(!defaultCollapsed)
-  const Chevron = expanded ? ChevronDown : ChevronRight
   return (
     <View className={comfortable ? 'mb-2' : 'mb-2 mt-3'}>
-      <View className="flex-row items-center">
-        <Pressable
-          onPress={() => !fixed && setExpanded((v) => !v)}
-          accessibilityRole="button"
-          aria-expanded={expanded}
-          accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
-          className={cn(
-            'flex-1 flex-row items-center gap-1.5 rounded-lg px-1 py-1',
-            comfortable ? 'active:bg-accent/50' : 'hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60',
-          )}
-        >
-          <Text
-            className={cn(
-              'flex-1 text-muted-foreground',
-              comfortable
-                ? `font-semibold uppercase tracking-wider ${density.text.label}`
-                : 'text-[13px] font-medium text-sidebar-muted-foreground',
-            )}
-          >
-            {label}
-          </Text>
-          {!fixed && <Chevron size={12} className="text-muted-foreground" />}
-        </Pressable>
-        {onAdd && (
-          <Pressable onPress={onAdd} accessibilityRole="button" accessibilityLabel={addLabel} className="rounded-md p-1 active:bg-accent/50 hover:bg-accent/50">
-            <Plus size={12} className="text-muted-foreground" />
-          </Pressable>
-        )}
-      </View>
+      <PanelSectionHeader
+        label={label}
+        addLabel={addLabel}
+        onAdd={onAdd}
+        fixed={fixed}
+        expanded={expanded}
+        onToggle={fixed ? undefined : () => setExpanded((v) => !v)}
+        comfortable={comfortable}
+      />
       {(expanded || fixed) && children}
     </View>
   )

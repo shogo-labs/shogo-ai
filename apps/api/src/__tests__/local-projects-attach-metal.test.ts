@@ -13,6 +13,20 @@ import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: {} }))
 
+// This spec covers mount/restart behaviour, not the authz policy (which has its
+// own suite in project-attachments-route.test.ts). Keep every real export (many
+// modules import this one) and allow all permissions so the real
+// `authorizeAttachmentAction` still runs with a stubbed RBAC engine.
+const realAuthz = await import('../lib/authz')
+mock.module('../lib/authz', () => ({
+  ...realAuthz,
+  authorize: async (_c: unknown, _permission: string, scope: { projectId: string }) => ({
+    ok: true,
+    access: { workspaceId: 'ws-1', projectId: scope.projectId },
+  }),
+  accessibleProjectsWhere: async () => null,
+}))
+
 const calls = { attach: [] as unknown[], detach: [] as unknown[], stop: [] as string[], spawnOpts: [] as string[] }
 
 class ProjectAttachmentError extends Error {

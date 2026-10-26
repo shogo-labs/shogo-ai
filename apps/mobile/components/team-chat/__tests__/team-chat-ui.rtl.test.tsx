@@ -291,9 +291,23 @@ mock.module('@/components/ui/button', () => ({
   ButtonText: ({ children }: any) => createElement('div', null, children),
 }))
 mock.module('../../../lib/platform-config', () => ({ usePlatformConfig: () => ({ features: { billing: false, ezMode: false } }) }))
+// Dictation is unavailable in a DOM test, so `canRecord` is a switch: it is how
+// the composer's two voice affordances are told apart.
+const voiceInputState = { canRecord: false }
 mock.module('../../chat/useVoiceInput', () => ({
-  useVoiceInput: () => ({ isBusy: false, isRecording: false, liveTranscript: '', canRecord: false, error: null, clearError() {}, toggleRecording: async () => {} }),
+  useVoiceInput: () => ({ isBusy: false, isRecording: false, liveTranscript: '', canRecord: voiceInputState.canRecord, error: null, clearError() {}, toggleRecording: async () => {} }),
 }))
+// A voice note records through MediaRecorder on a device; the recorder here is a
+// switch so the composer's trigger can be observed.
+const recorderState = {
+  isRecording: false,
+  level: 0,
+  elapsedMs: 0,
+  start: mock(async () => {}),
+  stop: mock(async () => null),
+  cancel: mock(() => {}),
+}
+mock.module('../../../lib/use-voice-note', () => ({ useVoiceNoteRecorder: () => recorderState }))
 mock.module('../../chat/VoiceWaveform', () => ({ VoiceWaveform: () => null }))
 mock.module('../../chat/AttachSourceSheet', () => ({ AttachSourceSheet: () => null }))
 mock.module('../../chat/ContextTracker', () => ({ ContextTracker: () => null, formatTokenCount: (n: number) => String(n) }))
@@ -439,6 +453,46 @@ describe('Composer', () => {
     render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
     expect(screen.queryByTestId('interaction-mode-trigger')).toBeNull()
     expect(screen.queryByLabelText('Advanced controls')).toBeNull()
+  })
+
+  // The mic used to record a voice note here, which made it the only composer in
+  // the product where it didn't dictate. The two affordances are now distinct:
+  // the mic dictates, the clip button on the left records.
+  test('the mic dictates and the clip button on the left records a voice note', () => {
+    voiceInputState.canRecord = true
+    try {
+      render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
+      expect(screen.getByLabelText('Start voice recording')).toBeTruthy()
+      expect(screen.getByLabelText('Record a voice note')).toBeTruthy()
+    } finally {
+      voiceInputState.canRecord = false
+    }
+  })
+
+  test('where dictation is unsupported the mic explains itself instead of vanishing', () => {
+    render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
+    expect(
+      screen.getByLabelText("Voice typing isn't supported in this browser. Try Chrome, Edge, or Safari."),
+    ).toBeTruthy()
+  })
+
+  test('the clip button starts a recording, which replaces the composer', () => {
+    const start = mock(async () => {})
+    recorderState.start = start
+    render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
+    fireEvent.click(screen.getByLabelText('Record a voice note'))
+    expect(start).toHaveBeenCalled()
+  })
+
+  test('while a voice note records the recording bar stands in for the composer', () => {
+    recorderState.isRecording = true
+    try {
+      render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
+      expect(screen.getByLabelText('Finish recording')).toBeTruthy()
+      expect(screen.queryByLabelText('Message')).toBeNull()
+    } finally {
+      recorderState.isRecording = false
+    }
   })
 })
 

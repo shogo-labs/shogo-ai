@@ -889,6 +889,22 @@ export function teamChatApi() {
       return (await http.get<{ conversations: ConversationSummary[] }>(`${ws(workspaceId)}/conversations`)).data
         .conversations ?? []
     },
+    /**
+     * Reconnect/foreground catch-up: the conversations that changed since the
+     * last full list, plus the server's clock so the next call has its cursor.
+     * Merged into what the client already has instead of re-downloading 150 rows.
+     */
+    async listSince(
+      workspaceId: string,
+      since: string,
+    ): Promise<{ conversations: ConversationSummary[]; syncedAt: string | null }> {
+      const data = (
+        await http.get<{ conversations?: ConversationSummary[]; syncedAt?: string }>(
+          `${ws(workspaceId)}/conversations?since=${encodeURIComponent(since)}`,
+        )
+      ).data
+      return { conversations: data.conversations ?? [], syncedAt: data.syncedAt ?? null }
+    },
     async createChannel(workspaceId: string, input: { name: string; kind: 'public' | 'private'; topic?: string }) {
       return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/conversations`, input)).data
         .conversation
