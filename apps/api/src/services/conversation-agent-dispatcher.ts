@@ -36,11 +36,13 @@ import {
 } from './conversation.service'
 import type { IRuntimeManager } from '../lib/runtime'
 import { publishConversationEvent } from '../lib/conversation-bus'
+import { recordChainPaused } from '../lib/agent-chain-metrics'
 import { enqueueAgentReplySlot, agentReplySlotState, type AgentReplySlot, type QueuedPosition } from './agent-reply-slots'
 import { resolveAgentReplyCapacity } from './agent-reply-capacity'
 import {
   agentTurnsSinceHuman,
   chainLimitHit,
+  chainLimitMax,
   envInt,
   humanChain,
   MAX_AGENT_CHAIN_DEPTH,
@@ -552,7 +554,7 @@ async function startChained(conversation: any, row: any, targets: AgentTarget[])
     void runAgentReply({ conversation, trigger: row, target, userId: chain.originUserId!, chain: next })
       .catch((err) => console.error('[ChannelAgent] chained reply failed:', err))
   }
-  if (tripped) await postChainPaused(conversation, row, chain, tripped)
+  if (tripped) await postChainPaused(conversation, row, chain, tripped, turns + started.length)
   return started
 }
 
@@ -563,13 +565,32 @@ function pausedReason(limit: ChainLimit): string {
 }
 
 /** Stop a chain: a system note in the thread that tags (and notifies) whoever started it. */
-async function postChainPaused(conversation: any, trigger: any, chain: AgentChain, limit: ChainLimit): Promise<void> {
+async function postChainPaused(
+  conversation: any,
+  trigger: any,
+  chain: AgentChain,
+  limit: ChainLimit,
+  turns: number,
+): Promise<void> {
+  const threadRootId = replyThreadRoot(conversation, trigger)
+  const max = chainLimitMax(limit)
+  // Counted before the note is posted: the pause happened either way, and a
+  // failed post must not make the limit look quieter than it is.
+  recordChainPaused({
+    limit,
+    turns,
+    depth: chain.depth,
+    max,
+    workspaceId: conversation.workspaceId,
+    conversationId: conversation.id,
+    threadRootId,
+  })
   const result = await postMessage({
     conversationId: conversation.id,
     authorType: 'system',
-    threadRootId: replyThreadRoot(conversation, trigger),
+    threadRootId,
     text: `Paused ${pausedReason(limit)}. <@u:${chain.originUserId}>, reply here to continue.`,
-    blocks: { chainPaused: { limit, depth: chain.depth } },
+    blocks: { chainPaused: { limit, depth: chain.depth, turns, max } },
     systemMentions: true,
   })
   const { afterMessagePosted } = await import('./conversation-pipeline')
