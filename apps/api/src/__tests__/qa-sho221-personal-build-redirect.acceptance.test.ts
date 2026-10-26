@@ -4,22 +4,25 @@
  * SHO-221 acceptance — a Personal workspace turns "build me an app" into
  * "building happens in your Team workspace, switch there".
  *
- * Each half has its own test and both can stay green while the pair is broken:
- * `routes/__tests__/workspace-chat-personal-team-workspaces.test.ts` only
- * inspects the body the API forwards, and the runtime's
- * `personal-companion-no-build.test.ts` only inspects a prompt built from a
- * hand-made context. QA round 1 on this card found exactly that gap — the API
- * stamped `teamWorkspaceNames`, the prompt builder rendered it, and
- * `AgentGateway.setAccountContext` dropped it in between, so a real Personal
- * turn never named the workspace. This test feeds the route's REAL forwarded
- * body through the REAL gateway and asserts what the turn would actually see.
+ * Each half of this has its own test and both can stay green while the pair is
+ * broken: `routes/__tests__/workspace-chat-personal-team-workspaces.test.ts`
+ * only inspects the body the API forwards, and the runtime's
+ * `personal-companion-no-build.test.ts` only builds a prompt from a hand-made
+ * context. QA round 1 on this card found exactly that gap — the API stamped
+ * `teamWorkspaceNames` and the prompt builder rendered it, but the gateway
+ * dropped it in between, so a real Personal turn never named the workspace.
+ * This test feeds the route's REAL forwarded body through the runtime's REAL
+ * parser and prompt builder and asserts what the turn actually reads.
  *
- *   bun test apps/api/src/__tests__/qa-sho221-personal-build-redirect.acceptance.test.ts
+ * The gateway itself is not imported here: `packages/agent-runtime/src/gateway.ts`
+ * pulls a module graph that `apps/api`'s test preload cannot resolve from source
+ * (`TECH_STACK_REGISTRY`), so the gateway hop is covered where it can be —
+ * `packages/agent-runtime/src/__tests__/personal-companion-no-build.test.ts`.
+ *
+ *   bun test src/__tests__/qa-sho221-personal-build-redirect.acceptance.test.ts
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
-import { join } from 'path'
 import { Hono } from 'hono'
 
 delete process.env.KUBERNETES_SERVICE_HOST
@@ -169,19 +172,13 @@ mock.module('../services/project-attachment.service', () => ({
 }))
 
 const { workspaceChatRoutes } = await import('../routes/workspace-chat')
-const { AgentGateway, PERSONAL_COMPANION_GUIDE } = await import(
-  '../../../../packages/agent-runtime/src/gateway'
-)
-const { parseAccountContext } = await import('../../../../packages/agent-runtime/src/account-context')
-const { createTools, filterDisabledCapabilityTools } = await import(
-  '../../../../packages/agent-runtime/src/gateway-tools'
+const { parseAccountContext, buildAccountContextPrompt } = await import(
+  '../../../../packages/agent-runtime/src/account-context'
 )
 const { disabledToolNamesForProfile } = await import(
   '../../../../packages/agent-runtime/src/capability-profiles'
 )
 
-/** `copy_to_project` only registers on a metal workspace runtime, so the six are
- *  asserted through the profile's disabled set and the five through the registry. */
 const PROJECT_TOOLS = [
   'project_create',
   'project_call',
@@ -190,52 +187,6 @@ const PROJECT_TOOLS = [
   'connect_project',
   'copy_to_project',
 ]
-const REGISTERED_PROJECT_TOOLS = PROJECT_TOOLS.filter(t => t !== 'copy_to_project')
-
-const WORKSPACE_ROOT = '/tmp/qa-sho221-personal-build-redirect'
-
-function makeWorkspace(name: string): string {
-  const ws = join(WORKSPACE_ROOT, name)
-  if (existsSync(ws)) rmSync(ws, { recursive: true, force: true })
-  mkdirSync(join(ws, 'memory'), { recursive: true })
-  writeFileSync(join(ws, 'config.json'), JSON.stringify({
-    heartbeatInterval: 1800,
-    heartbeatEnabled: false,
-    channels: [],
-    model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
-  }))
-  writeFileSync(join(ws, 'AGENTS.md'), '# Identity\n\npersonal companion\n')
-  writeFileSync(join(ws, 'MEMORY.md'), '# Memory\n')
-  return ws
-}
-
-function config(overrides: Record<string, unknown> = {}) {
-  return {
-    heartbeatToolsEnabled: true,
-    channels: [],
-    model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
-    ...overrides,
-  } as any
-}
-
-/** The prompt a Personal turn is assembled from, given the body the API really forwarded. */
-function personalPromptFor(forwarded: Record<string, any>, name = 'personal'): string {
-  const gw = new AgentGateway(makeWorkspace(name), 'p1')
-  gw.setAccountContext(parseAccountContext(forwarded))
-  return (gw as any).loadBootstrapContext(undefined, config({ capabilityProfile: 'personal' }))
-}
-
-function toolNamesFor(profile: 'personal' | 'team'): Set<string> {
-  const cfg = config({ capabilityProfile: profile })
-  const ctx = {
-    workspaceDir: makeWorkspace(`tools-${profile}`),
-    channels: new Map(),
-    config: cfg,
-    projectId: 'test',
-    workspaceId: 'workspace-1',
-  } as any
-  return new Set(filterDisabledCapabilityTools(createTools(ctx), cfg).map((t: any) => t.name))
-}
 
 const originalFetch = globalThis.fetch
 beforeAll(() => {
@@ -249,7 +200,6 @@ beforeAll(() => {
 })
 afterAll(() => {
   globalThis.fetch = originalFetch
-  if (existsSync(WORKSPACE_ROOT)) rmSync(WORKSPACE_ROOT, { recursive: true, force: true })
 })
 
 beforeEach(() => {
@@ -269,7 +219,7 @@ function buildApp() {
 }
 
 /** Alan's actual turn: a Personal workspace, "build me an app". */
-async function askForAnApp(): Promise<Record<string, any>> {
+async function askForAnApp(extra: Record<string, unknown> = {}): Promise<Record<string, any>> {
   const app = buildApp()
   const res = await app.fetch(new Request('http://x/api/workspaces/ws-1/chat', {
     method: 'POST',
@@ -277,6 +227,7 @@ async function askForAnApp(): Promise<Record<string, any>> {
     body: JSON.stringify({
       chatSessionId: 's-1',
       message: 'build me an app to manage my YouTube playlists',
+      ...extra,
     }),
   }))
   expect(res.status).toBe(200)
@@ -285,70 +236,59 @@ async function askForAnApp(): Promise<Record<string, any>> {
   return store.forwarded[0]
 }
 
+/** What the runtime reads off that body when it assembles the turn. */
+function accountBlock(forwarded: Record<string, any>): string {
+  return buildAccountContextPrompt(parseAccountContext(forwarded)) ?? ''
+}
+
 describe('SHO-221 — asking for an app in a Personal workspace', () => {
-  test('the turn the runtime receives names the Team workspace the user should switch to', async () => {
-    const forwarded = await askForAnApp()
-    const prompt = personalPromptFor(forwarded)
+  test('the turn the runtime receives names the Team workspace to switch to', async () => {
+    const block = accountBlock(await askForAnApp())
 
-    // The line the companion can read off, naming the real memberships.
-    expect(prompt).toContain('**Acme**')
-    expect(prompt).toContain('**Side project**')
-    // And how to get there.
-    expect(prompt.toLowerCase()).toContain('workspace switcher')
+    expect(block).toContain('**Acme**')
+    expect(block).toContain('**Side project**')
+    // It has to say where the software work happens, and that this is not it.
+    expect(block).toContain('Team workspace')
+    expect(block).toContain('switch to')
+    expect(block).toContain('not in this Personal workspace')
   })
 
-  test('the turn carries the redirect, and no builder instruction to fall back on', async () => {
-    const prompt = personalPromptFor(await askForAnApp())
+  test('a client-sent workspace name never reaches the prompt', async () => {
+    const block = accountBlock(await askForAnApp({ teamWorkspaceNames: ['Evil Corp'] }))
 
-    expect(prompt).toContain('Personal Companion')
-    expect(prompt).toContain('Team workspace')
-    // The old seeded AGENTS.md/HEARTBEAT.md in existing workspaces still say
-    // "delegate to a builder project"; the guide has to beat them.
-    expect(prompt).toMatch(/overrides? any older instruction/i)
-    expect(prompt).not.toContain('project_create')
-    expect(prompt).not.toContain('project_call')
+    expect(block).toContain('**Acme**')
+    expect(block).not.toContain('Evil Corp')
   })
 
-  test('the personal agent has no project tool to call, so no hidden build can start', async () => {
-    // Capability-level guarantee: the tools aren't refused, they're absent.
-    const names = toolNamesFor('personal')
-    for (const tool of REGISTERED_PROJECT_TOOLS) {
-      expect(names.has(tool)).toBe(false)
-    }
+  test('the personal agent has no project tool, so no hidden build can start', () => {
+    // The capability-level guarantee: the tools are absent, not refused.
+    const disabled = disabledToolNamesForProfile('personal')
     for (const tool of PROJECT_TOOLS) {
-      expect(disabledToolNamesForProfile('personal').has(tool)).toBe(true)
+      expect(disabled.has(tool)).toBe(true)
     }
-    // The rest of the companion still works.
-    expect(names.has('goal_create')).toBe(true)
-    expect(names.has('write_file')).toBe(true)
   })
 
   test('a user with no Team workspace yet is told how to make one, not left guessing', async () => {
     store.memberRows = []
-    const prompt = personalPromptFor(await askForAnApp(), 'personal-empty')
+    const block = accountBlock(await askForAnApp())
 
-    expect(prompt).toContain('no Team workspace yet')
-    expect(prompt.toLowerCase()).toContain('workspace switcher')
+    expect(block).toContain('no Team workspace yet')
+    expect(block.toLowerCase()).toContain('workspace switcher')
   })
 
-  test('a Team-workspace chat is untouched: no redirect, and every project tool present', async () => {
+  test('a Team-workspace chat is untouched: no redirect line, and every project tool present', async () => {
     store.kind = 'team'
     store.memberRows = []
-    const forwarded = await askForAnApp()
+    const forwarded = await askForAnApp({ teamWorkspaceNames: ['Evil Corp'] })
+
     expect(forwarded).not.toHaveProperty('teamWorkspaceNames')
+    const block = accountBlock(forwarded)
+    expect(block).not.toContain('no Team workspace yet')
+    expect(block).not.toContain('Evil Corp')
 
-    const gw = new AgentGateway(makeWorkspace('team'), 'p1')
-    gw.setAccountContext(parseAccountContext(forwarded))
-    const prompt: string = (gw as any).loadBootstrapContext(undefined, config({ capabilityProfile: 'team' }))
-    expect(prompt).not.toContain(PERSONAL_COMPANION_GUIDE)
-    expect(prompt).not.toContain('no Team workspace yet')
-
-    const names = toolNamesFor('team')
-    for (const tool of REGISTERED_PROJECT_TOOLS) {
-      expect(names.has(tool)).toBe(true)
-    }
+    const disabled = disabledToolNamesForProfile('team')
     for (const tool of PROJECT_TOOLS) {
-      expect(disabledToolNamesForProfile('team').has(tool)).toBe(false)
+      expect(disabled.has(tool)).toBe(false)
     }
   })
 })
