@@ -312,6 +312,20 @@ export function resolveWorkspaceBackgroundMax(): number {
 }
 
 /**
+ * How long a preview pinged by the UI counts as "on screen" and is therefore
+ * exempt from the warm-preview LRU (SHO-226).
+ *
+ * The client pings `POST /projects/:id/preview/active` every 60s while the
+ * canvas is mounted and visible, so a 3-minute window survives two missed
+ * pings (a backgrounded tab, a slow request) before the preview becomes
+ * evictable again.
+ */
+export function resolvePreviewViewTtlMs(): number {
+  const n = parseInt(process.env.PREVIEW_VIEW_TTL_MS || '', 10)
+  return Number.isFinite(n) && n > 0 ? n : 3 * 60_000
+}
+
+/**
  * The worker's global runtime ceiling (`maxRuntimes`), one source of truth.
  *
  * It has to be at least preview + background + one workspace-session runtime,
@@ -469,13 +483,26 @@ export class RuntimeManager implements IRuntimeManager {
    * most-recently-opened first. We keep the last {@link workspacePreviewMax}
    * anchored previews warm and evict the least-recently-used beyond the cap
    * (instead of stopping a runtime the moment the user navigates away — fast
-   * switch-back stays warm). Updated on `startProjectWorkspace` and `touch`,
-   * pruned on `stop`. Cloud (k8s) uses the same MRU concept but keeps the
-   * top-N warm via keep-alive pings rather than stopping (Knative scale-to-
-   * zero owns teardown there) — see warm-pool keep-warm.
+   * switch-back stays warm). Updated only by UI open signals — `startWorkspace`,
+   * a foreground `startProjectWorkspace`, and {@link markPreviewActive} — never
+   * by agent/chat traffic (see {@link touch}). Pruned on `stop`. Cloud (k8s)
+   * uses the same MRU concept but keeps the top-N warm via keep-alive pings
+   * rather than stopping (Knative scale-to-zero owns teardown there) — see
+   * warm-pool keep-warm.
    */
   private workspacePreviewMru: string[] = []
   private readonly workspacePreviewMax: number = resolveWorkspacePreviewMax()
+
+  /**
+   * When the UI last told us each runtime key is ON SCREEN
+   * (`POST /projects/:id/preview/active`, SHO-226). A key pinged within
+   * {@link previewViewTtlMs} is never the warm-preview LRU victim — it is
+   * treated like an open terminal session and keeps the set over the cap —
+   * because the preview the user is looking at is the one thing the cap must
+   * not take. Pruned on `stop`.
+   */
+  private readonly previewViewedAt: Map<string, number> = new Map()
+  private readonly previewViewTtlMs: number = resolvePreviewViewTtlMs()
 
   /**
    * Completely separate pool for BACKGROUND (local heartbeat) runtimes. The
@@ -3162,10 +3189,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * Move a warm-preview key to the front of the MRU. Covers both runtime
    * flavours the cap protects: a project-anchored preview (`ws:proj:<id>`) and
    * a workspace-session runtime (`ws:<id>` — one per open workspace, see
-   * {@link startWorkspace}). No-ops for background (heartbeat) runtimes so a
-   * heartbeat-triggered agent turn — whose AI-proxy calls flow through
-   * {@link touch} — can't quietly pull a background runtime into the foreground
+   * {@link startWorkspace}). No-ops for background (heartbeat/agent) runtimes
+   * so agent work can't quietly pull a background runtime into the foreground
    * preview set and count it against the cap.
+   *
+   * Callers must be UI signals only (a foreground `startProjectWorkspace`,
+   * `startWorkspace`, {@link markPreviewActive}) — never {@link touch}.
    */
   private recordWorkspaceMru(key: string): void {
     if (!key.startsWith('ws:')) return
@@ -3257,6 +3286,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * MRU, so they neither count toward the cap nor get evicted here, and — just
    * as importantly — they can never push a real, open preview out of the warm
    * set. (They're bounded by the background pool above.)
+   *
+   * A key the UI pinged as on screen within {@link previewViewTtlMs} is never
+   * the victim either (SHO-226): MRU position alone is a lie once an agent is
+   * mid-turn (it used to reorder the MRU on every proxy call), so the preview
+   * the user is actually looking at is pinned by an explicit signal instead.
    */
   private async enforceWorkspacePreviewCap(): Promise<void> {
     const cap = this.workspacePreviewMax
@@ -3272,6 +3306,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     await this.refreshActivityFor(evictable)
     let overBy = livePreviews.length - cap
     for (const key of evictable) {
+      if (this.isPreviewOnScreen(key)) {
+        console.log(
+          `[RuntimeManager] Workspace preview LRU: keeping ${key} over cap=${cap}: on screen (pinged ${this.viewedAgoMs(key)}ms ago)`,
+        )
+        continue
+      }
       const verdict = await this.isBusy(key)
       if (verdict.dead) {
         await this.reapDeadRuntime(key, 'preview LRU', verdict)
@@ -3299,9 +3339,22 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     if (overBy > 0) {
       console.log(
         `[RuntimeManager] Workspace preview LRU: ${livePreviews.length} live over cap=${cap}, ` +
-          `${overBy} kept busy or unverifiable`,
+          `${overBy} kept busy, on screen or unverifiable`,
       )
     }
+  }
+
+  /** Has the UI pinged this key as on screen within the view TTL? */
+  private isPreviewOnScreen(key: string): boolean {
+    const at = this.previewViewedAt.get(key)
+    if (!at) return false
+    return Date.now() - at < this.previewViewTtlMs
+  }
+
+  /** ms since the UI last pinged this key as on screen (for the decision log). */
+  private viewedAgoMs(key: string): number | undefined {
+    const at = this.previewViewedAt.get(key)
+    return at ? Date.now() - at : undefined
   }
 
   /** ms since this runtime was last used, for the decision log. */
@@ -3665,6 +3718,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     this.liveTerminalSessions.delete(key)
     const mi = this.workspacePreviewMru.indexOf(key)
     if (mi >= 0) this.workspacePreviewMru.splice(mi, 1)
+    this.previewViewedAt.delete(key)
     this.dropBackgroundMru(key)
   }
 
@@ -3910,6 +3964,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * chunk and on every project-scoped model call so the reaper only
    * sees a slot as "idle" when the user really has stepped away.
    *
+   * Deliberately does NOT touch the warm-preview MRU (SHO-226). It used to,
+   * and since this fires on every AI-proxy call and SSE chunk, any agent
+   * mid-turn sat at the head of the MRU forever — so the three warm-preview
+   * slots filled with agent runtimes and the preview the user was actually
+   * looking at was the one evicted. Busy runtimes are already protected by
+   * {@link isBusy}; recency comes only from UI signals
+   * ({@link markPreviewActive}, a foreground `startProjectWorkspace`).
+   *
    * Safe no-op if `projectId` has no runtime.
    */
   touch(projectId: string): void {
@@ -3917,8 +3979,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     try {
       // Resolve to the anchored `ws:proj:<id>` key under the workspace-
       // runtime model so the worker resets the right slot's idle window
-      // (a bare-UUID touch would miss the anchored slot entirely). Keep the
-      // anchored preview warm in the MRU so an active chat survives the cap.
+      // (a bare-UUID touch would miss the anchored slot entirely).
       const key = this.resolveRuntimeKey(projectId)
       const runtime = this.runtimes.get(key)
       if (runtime?.remoteRuntime) {
@@ -3926,11 +3987,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // Keep it alive for active chat/agent traffic without routing a
         // remote key through the local WorkerRuntimeManager.
         runtime.remoteRuntime.touch()
-        if (key.startsWith('ws:proj:')) this.recordWorkspaceMru(key)
         return
       }
       this.agentManager.touch(key)
-      if (key.startsWith('ws:proj:')) this.recordWorkspaceMru(key)
     } catch (err: any) {
       console.warn(`[RuntimeManager] touch(${projectId}) failed: ${err?.message ?? err}`)
     }
@@ -3950,13 +4009,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * when you return.
    *
    * Unlike {@link touch} (which fires on every agent-proxy/AI-proxy request and
-   * MUST stay neutral so a heartbeat-driven turn can't promote a background
-   * runtime into the foreground cap), this is called ONLY from the UI preview
-   * open signal (`GET /sandbox/url`). It therefore both:
-   *   - promotes a background (heartbeat) runtime the user just opened into the
-   *     protected foreground preview set, and
-   *   - moves it to the front of the MRU so it can never be the LRU victim
-   *     while it is on screen.
+   * MUST stay neutral so agent work can't promote a background runtime into the
+   * foreground cap), this is called ONLY from UI preview signals: the preview
+   * open (`GET /sandbox/url`) and the visible-canvas ping
+   * (`POST /projects/:id/preview/active`, SHO-226). It therefore both:
+   *   - promotes a background (heartbeat/agent) runtime the user just opened
+   *     into the protected foreground preview set, and
+   *   - moves it to the front of the MRU and records it as on screen, so it can
+   *     never be the LRU victim while it is being viewed.
    *
    * Safe no-op when the project has no running anchored runtime (cloud
    * K8s/metal modes, or not yet started).
@@ -3976,6 +4036,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         this.dropBackgroundMru(key)
       }
       this.recordWorkspaceMru(key)
+      // "On screen" outranks MRU order: pin it out of the LRU for the TTL even
+      // if it happens to sit at the tail.
+      this.previewViewedAt.set(key, Date.now())
       if (rt.remoteRuntime) rt.remoteRuntime.touch()
       else this.agentManager.touch(key)
       // A newly-promoted preview can push the foreground set over the cap;

@@ -7,6 +7,8 @@ import { join } from 'path'
 import {
   RuntimeManager,
   projectWorkspaceRuntimeKey,
+  resolveRuntimeMaxCount,
+  resolveWorkspaceBackgroundMax,
   resolveWorkspacePreviewMax,
   workspaceRuntimeKey,
 } from '../lib/runtime/manager'
@@ -35,6 +37,8 @@ type PrivateRM = RuntimeManager & {
   agentManager: any
   agentManagedProjects: Set<string>
   workspacePreviewMru: string[]
+  workspaceBackgroundMru: string[]
+  previewViewedAt: Map<string, number>
   resolveRuntimeKey: (projectId: string) => string
   recordWorkspaceMru: (key: string) => void
   enforceWorkspacePreviewCap: () => Promise<void>
@@ -144,14 +148,17 @@ describe('RuntimeManager — workspace ws:proj: keying', () => {
     expect(rm.usedPorts.has(37200)).toBe(false)
   })
 
-  test('touch(projectId) touches the anchored key and records it as most-recent', () => {
+  test('touch(projectId) resets the worker idle slot but does NOT record a preview', () => {
     const rm = newManager()
     const key = seedAnchored(rm, 'p1', 37201)
 
     rm.touch('p1')
 
     expect(rm.agentManager.touch).toHaveBeenCalledWith(key)
-    expect(rm.workspacePreviewMru[0]).toBe(key)
+    // SHO-226: `touch` fires on every AI-proxy call and SSE chunk, so an agent
+    // mid-turn used to sit at the head of the MRU forever and fill the three
+    // warm-preview slots with agent runtimes. Recency comes from UI signals only.
+    expect(rm.workspacePreviewMru).not.toContain(key)
   })
 
   test('resolveRuntimeKey always uses the anchored key', () => {
@@ -181,7 +188,7 @@ describe('RuntimeManager — warm-3 preview LRU', () => {
     expect(stopped).toEqual([k4])
   })
 
-  test('touch reorders the MRU so a refreshed project survives eviction', async () => {
+  test('touch does not reorder the MRU, so the true LRU is still the victim', async () => {
     const rm = newManager()
     const k1 = seedAnchored(rm, 'p1', 37220)
     const k2 = seedAnchored(rm, 'p2', 37221)
@@ -189,8 +196,10 @@ describe('RuntimeManager — warm-3 preview LRU', () => {
     const k4 = seedAnchored(rm, 'p4', 37223)
     rm.workspacePreviewMru = [k1, k2, k3, k4]
 
-    // Touch the oldest (p4) — it becomes most-recent; p3 is now the LRU.
+    // An agent mid-turn proxies through `touch` continuously. It must not be
+    // able to pull the tail entry forward (SHO-226).
     rm.touch('p4')
+    rm.touch('p3')
 
     const stopped: string[] = []
     ;(rm as any).stop = mock(async (key: string) => {
@@ -200,8 +209,20 @@ describe('RuntimeManager — warm-3 preview LRU', () => {
 
     await rm.enforceWorkspacePreviewCap()
 
-    expect(stopped).toEqual([k3])
-    expect(rm.workspacePreviewMru[0]).toBe(k4)
+    expect(stopped).toEqual([k4])
+    expect(rm.workspacePreviewMru).toEqual([k1, k2, k3, k4])
+  })
+
+  test('touch on a background key neither promotes nor records it', async () => {
+    const rm = newManager()
+    const bg = seedAnchored(rm, 'p1', 37224)
+    rm.runtimes.get(bg)!.background = true
+
+    rm.touch('p1')
+
+    expect(rm.agentManager.touch).toHaveBeenCalledWith(bg)
+    expect(rm.workspacePreviewMru).not.toContain(bg)
+    expect(rm.runtimes.get(bg)!.background).toBe(true)
   })
 
   test('no eviction when at or under the cap', async () => {
@@ -219,6 +240,236 @@ describe('RuntimeManager — warm-3 preview LRU', () => {
     await rm.enforceWorkspacePreviewCap()
 
     expect(stopped).toEqual([])
+  })
+})
+
+/**
+ * SHO-226. Desktop previews "sometimes didn't load": team-chat / board /
+ * `project_call` wakes resolved the callee through `resolveProjectPodUrl`
+ * without `background: true`, so every agent that woke up became a foreground
+ * warm preview; `touch()` then kept them at the head of the MRU on every
+ * AI-proxy call. The three warm-preview slots filled with agent runtimes and
+ * the preview the user was looking at was the one evicted.
+ */
+describe('RuntimeManager — agent work never takes a warm-preview slot', () => {
+  /**
+   * Stand in for `doStartMergedRuntime`: publish a live record for the key so
+   * `startProjectWorkspace` runs its real post-start bookkeeping (the
+   * background tagging and the MRU/background-pool recording under test).
+   */
+  function stubSpawn(rm: PrivateRM) {
+    let nextPort = 38000
+    ;(rm as any).getProjectInfo = mock(async () => ({}))
+    ;(rm as any).doStartMergedRuntime = mock(async (spec: any) => {
+      const port = nextPort++
+      const runtime = {
+        id: spec.key,
+        port,
+        agentPort: port + 1000,
+        status: 'running',
+        url: `http://localhost:${port}`,
+        startedAt: Date.now() - 10 * 60_000,
+        process: null,
+        agentProcess: fakeProcess(),
+      }
+      rm.runtimes.set(spec.key, runtime)
+      rm.agentManagedProjects.add(spec.key)
+      rm.usedPorts.add(port)
+      return runtime
+    })
+  }
+
+  test('4 busy agent wakes stay in the background pool and evict none of 3 open previews', async () => {
+    const rm = newManager()
+    stubSpawn(rm)
+    const stopped: string[] = []
+    ;(rm as any).stop = mock(async (key: string) => {
+      stopped.push(key)
+      rm.runtimes.delete(key)
+    })
+
+    // Three project previews opened in the UI (`/sandbox/url`).
+    const previews: string[] = []
+    for (const id of ['p1', 'p2', 'p3']) {
+      await rm.startProjectWorkspace(id, { workspaceId: 'w1' })
+      rm.markPreviewActive(id)
+      previews.push(projectWorkspaceRuntimeKey(id))
+    }
+
+    // Four agents woken by a team-chat / board / project_call wake.
+    const agents: string[] = []
+    for (const id of ['a1', 'a2', 'a3', 'a4']) {
+      await rm.startProjectWorkspace(id, { workspaceId: 'w1', background: true })
+      agents.push(projectWorkspaceRuntimeKey(id))
+    }
+    // ...all of them mid-turn, which is what kept them at the MRU head before.
+    for (const key of agents) markBusy(key)
+    for (const id of ['a1', 'a2', 'a3', 'a4']) rm.touch(id)
+
+    await rm.enforceWorkspacePreviewCap()
+    await rm.enforceWorkspaceBackgroundCap()
+
+    // Not one preview was stopped, and the agent runtimes are not previews.
+    expect(stopped).toEqual([])
+    // The preview MRU holds exactly the three UI opens (most-recent first), and
+    // no agent runtime ever got in.
+    expect([...rm.workspacePreviewMru].sort()).toEqual([...previews].sort())
+    for (const key of agents) {
+      expect(rm.workspacePreviewMru).not.toContain(key)
+      expect(rm.workspaceBackgroundMru).toContain(key)
+      expect(rm.runtimes.get(key)!.background).toBe(true)
+    }
+    for (const key of previews) expect(rm.runtimes.get(key)!.background).toBe(false)
+  })
+
+  test('an agent wake for a project already open as a preview leaves it foreground', async () => {
+    const rm = newManager()
+    stubSpawn(rm)
+
+    await rm.startProjectWorkspace('p1', { workspaceId: 'w1' })
+    rm.markPreviewActive('p1')
+    const key = projectWorkspaceRuntimeKey('p1')
+    expect(rm.runtimes.get(key)!.background).toBe(false)
+
+    // The agent wakes the same project while the user has it open.
+    await rm.startProjectWorkspace('p1', { workspaceId: 'w1', background: true })
+
+    expect(rm.runtimes.get(key)!.background).toBe(false)
+    expect(rm.workspacePreviewMru).toContain(key)
+    expect(rm.workspaceBackgroundMru).not.toContain(key)
+  })
+
+  test('markPreviewActive promotes a background (agent) runtime into the preview set', async () => {
+    const rm = newManager()
+    stubSpawn(rm)
+
+    await rm.startProjectWorkspace('a1', { workspaceId: 'w1', background: true })
+    const key = projectWorkspaceRuntimeKey('a1')
+    expect(rm.runtimes.get(key)!.background).toBe(true)
+    expect(rm.workspaceBackgroundMru).toContain(key)
+
+    // The user opens that project — today's behaviour, and the escape hatch
+    // for "the agent was already running it".
+    rm.markPreviewActive('a1')
+
+    expect(rm.runtimes.get(key)!.background).toBe(false)
+    expect(rm.workspacePreviewMru).toContain(key)
+    expect(rm.workspaceBackgroundMru).not.toContain(key)
+  })
+})
+
+/**
+ * SHO-226, second half: MRU position is a poor proxy for "on screen" (an agent
+ * mid-turn used to own the head), so the UI pings `preview/active` and that pin
+ * is what protects the preview being viewed.
+ */
+describe('RuntimeManager — the preview on screen is pinned', () => {
+  test('a pinged preview is never the LRU victim, even at the tail', async () => {
+    const rm = newManager()
+    const viewed = seedAnchored(rm, 'p1', 38100)
+    const other2 = seedAnchored(rm, 'p2', 38101)
+    const other3 = seedAnchored(rm, 'p3', 38102)
+    const other4 = seedAnchored(rm, 'p4', 38103)
+
+    const stopped: string[] = []
+    ;(rm as any).stop = mock(async (key: string) => {
+      stopped.push(key)
+      rm.runtimes.delete(key)
+    })
+
+    rm.markPreviewActive('p1')
+    // Three later UI opens push the viewed preview back to the tail of the MRU —
+    // exactly the position the cap would evict.
+    rm.workspacePreviewMru = [other2, other3, other4, viewed]
+
+    await rm.enforceWorkspacePreviewCap()
+
+    expect(stopped).toEqual([])
+    expect(rm.runtimes.has(viewed)).toBe(true)
+  })
+
+  test('markPreviewActive resets the worker idle slot (no idle-eviction for a viewed preview)', () => {
+    const rm = newManager()
+    const key = seedAnchored(rm, 'p1', 38110)
+
+    rm.markPreviewActive('p1')
+
+    expect(rm.agentManager.touch).toHaveBeenCalledWith(key)
+  })
+
+  test('once the view TTL lapses with no ping, the preview is evictable again', async () => {
+    const prevTtl = process.env.PREVIEW_VIEW_TTL_MS
+    // A manager built with a 1ms view window: the pin has already lapsed by
+    // the time the cap runs.
+    process.env.PREVIEW_VIEW_TTL_MS = '1'
+    let rm: PrivateRM
+    try {
+      rm = newManager()
+    } finally {
+      if (prevTtl === undefined) delete process.env.PREVIEW_VIEW_TTL_MS
+      else process.env.PREVIEW_VIEW_TTL_MS = prevTtl
+    }
+    const newest = seedAnchored(rm, 'p1', 38120)
+    const other2 = seedAnchored(rm, 'p2', 38121)
+    const other3 = seedAnchored(rm, 'p3', 38122)
+    const lapsed = seedAnchored(rm, 'p4', 38123)
+
+    const stopped: string[] = []
+    ;(rm as any).stop = mock(async (key: string) => {
+      stopped.push(key)
+      rm.runtimes.delete(key)
+    })
+
+    rm.markPreviewActive('p4')
+    rm.workspacePreviewMru = [newest, other2, other3, lapsed]
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    await rm.enforceWorkspacePreviewCap()
+
+    expect(stopped).toEqual([lapsed])
+  })
+
+  test('stopping a runtime forgets its view pin', async () => {
+    const rm = newManager()
+    const key = seedAnchored(rm, 'p1', 38130)
+    rm.markPreviewActive('p1')
+    expect((rm as any).previewViewedAt.has(key)).toBe(true)
+
+    await rm.stop(key, 'test')
+
+    expect((rm as any).previewViewedAt.has(key)).toBe(false)
+  })
+})
+
+/**
+ * Moving agent runtimes into the background pool is only safe if the worker's
+ * global ceiling can hold preview + background at once — otherwise the global
+ * LRU starts taking open previews (SHO-143).
+ */
+describe('RuntimeManager — the worker ceiling holds both pools', () => {
+  test('resolveRuntimeMaxCount leaves room for preview + background + headroom', () => {
+    const prevTier = process.env.SHOGO_HOST_TIER
+    const prevPreview = process.env.WORKSPACE_PREVIEW_MAX
+    const prevBackground = process.env.WORKSPACE_BACKGROUND_MAX
+    const prevMax = process.env.RUNTIME_MAX_COUNT
+    delete process.env.SHOGO_HOST_TIER
+    delete process.env.WORKSPACE_PREVIEW_MAX
+    delete process.env.WORKSPACE_BACKGROUND_MAX
+    delete process.env.RUNTIME_MAX_COUNT
+    try {
+      const preview = resolveWorkspacePreviewMax()
+      const background = resolveWorkspaceBackgroundMax()
+      expect(background).toBe(10)
+      // 4 busy agents + 3 previews is 7 live runtimes; the ceiling must be
+      // above that so the worker's global LRU never targets a preview.
+      expect(resolveRuntimeMaxCount()).toBeGreaterThanOrEqual(preview + background)
+      expect(resolveRuntimeMaxCount()).toBeGreaterThanOrEqual(7)
+    } finally {
+      if (prevTier !== undefined) process.env.SHOGO_HOST_TIER = prevTier
+      if (prevPreview !== undefined) process.env.WORKSPACE_PREVIEW_MAX = prevPreview
+      if (prevBackground !== undefined) process.env.WORKSPACE_BACKGROUND_MAX = prevBackground
+      if (prevMax !== undefined) process.env.RUNTIME_MAX_COUNT = prevMax
+    }
   })
 })
 

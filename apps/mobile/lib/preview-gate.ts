@@ -204,6 +204,121 @@ export function projectIdFromAgentProxyUrl(agentUrl: string | null | undefined):
   return match?.[1] ?? null
 }
 
+// ---------------------------------------------------------------------------
+// "Is the preview I am looking at still alive?" (SHO-226)
+// ---------------------------------------------------------------------------
+
+/**
+ * How often a visible canvas pings `POST /projects/:id/preview/active`.
+ *
+ * The iframe talks straight to `localhost:<agentPort>/p/<id>`, so after
+ * `/sandbox/url` returns, the API never hears from that preview again — the
+ * warm-preview LRU and the worker's idle reaper both see it as idle and one of
+ * them eventually stops it under the user. A minute is frequent enough to keep
+ * the pin fresh (the manager's view TTL is 3 minutes) without adding chatter.
+ */
+export const PREVIEW_ACTIVE_PING_MS = 60_000
+
+/** Consecutive `/preview/status` poll failures that mean "the runtime is gone". */
+export const PREVIEW_STATUS_ERROR_LIMIT = 2
+
+/**
+ * How many times the canvas re-resolves before it stops trying and shows the
+ * recovery UI. Re-resolving restarts the runtime, so an unbounded loop would
+ * respawn it forever on a genuinely broken project.
+ */
+export const PREVIEW_RECOVERY_MAX_ATTEMPTS = 3
+
+/** Subset of the `/preview/active` JSON this module reads. */
+export interface PreviewActivePing {
+  ok?: boolean
+  running?: boolean
+  /**
+   * Agent-runtime port of the live runtime. `null`/absent when the mode does
+   * not own a host runtime (cloud no-op) — the port check is then skipped
+   * rather than treated as a mismatch.
+   */
+  agentPort?: number | null
+}
+
+export function previewActiveUrl(apiBaseUrl: string, projectId: string): string {
+  return `${apiBaseUrl.replace(/\/+$/, '')}/api/projects/${encodeURIComponent(projectId)}/preview/active`
+}
+
+/**
+ * The agent-runtime port the canvas iframe is currently pointed at, from
+ * `/sandbox/url`'s `canvasBaseUrl` (`http://localhost:5173/p/<id>` → 5173).
+ * `null` when the URL carries no explicit port (subdomain / cloud mode), which
+ * makes the port comparison a no-op there.
+ */
+export function agentPortFromCanvasBaseUrl(
+  canvasBaseUrl: string | null | undefined,
+): number | null {
+  if (!canvasBaseUrl) return null
+  try {
+    const port = new URL(canvasBaseUrl).port
+    const parsed = Number(port)
+    return port && Number.isFinite(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** Did this ping say the runtime the iframe points at is up and unchanged? */
+export function isPreviewPingHealthy(
+  ping: PreviewActivePing | null,
+  canvasBaseUrl: string | null | undefined,
+): boolean {
+  if (!ping || ping.ok !== true) return false
+  if (ping.running === false) return false
+  const expected = agentPortFromCanvasBaseUrl(canvasBaseUrl)
+  const actual = typeof ping.agentPort === 'number' ? ping.agentPort : null
+  // A port we can't compare on either side is not evidence of a problem.
+  if (expected != null && actual != null && expected !== actual) return false
+  return true
+}
+
+export type PreviewPingDecision = 'keep' | 'recover' | 'give-up'
+
+export interface PreviewPingVerdict {
+  decision: PreviewPingDecision
+  /** Consecutive failure signals; back to 0 as soon as a ping comes back healthy. */
+  failures: number
+}
+
+/**
+ * Turn a `/preview/active` ping into "keep the iframe, re-resolve it, or give
+ * up". Pure so the recovery policy can be unit-tested without a canvas.
+ *
+ * A ping is a failure signal when the request itself failed, the API says the
+ * runtime is not running, it reports a different agent port than the iframe is
+ * using (the runtime respawned elsewhere), or `/preview/status` has failed
+ * twice in a row. After {@link PREVIEW_RECOVERY_MAX_ATTEMPTS} consecutive
+ * failures the caller stops re-resolving and surfaces its recovery UI.
+ */
+export function decidePreviewPing(input: {
+  ping: PreviewActivePing | null
+  canvasBaseUrl?: string | null
+  /** Consecutive `/preview/status` poll failures. */
+  statusErrorStreak?: number
+  /** Failure count from the previous verdict. */
+  failures?: number
+}): PreviewPingVerdict {
+  const failures = input.failures ?? 0
+  const statusErrors = input.statusErrorStreak ?? 0
+  if (
+    isPreviewPingHealthy(input.ping ?? null, input.canvasBaseUrl) &&
+    statusErrors < PREVIEW_STATUS_ERROR_LIMIT
+  ) {
+    return { decision: 'keep', failures: 0 }
+  }
+  const next = failures + 1
+  return {
+    decision: next >= PREVIEW_RECOVERY_MAX_ATTEMPTS ? 'give-up' : 'recover',
+    failures: next,
+  }
+}
+
 export function previewWakeUrl(apiBaseUrl: string, projectId: string): string {
   return `${apiBaseUrl.replace(/\/+$/, '')}/api/preview/${encodeURIComponent(projectId)}/wake`
 }

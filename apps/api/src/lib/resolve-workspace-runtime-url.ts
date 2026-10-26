@@ -132,6 +132,7 @@ export interface ResolveWorkspaceRuntimeOpts {
       localFolders: string[]
       readonlyProjectIds: string[]
       openAttemptId?: string
+      background?: boolean
     },
     manager?: IRuntimeManager,
   ) => Promise<IProjectRuntime>
@@ -191,6 +192,7 @@ async function defaultHostStartProject(
     localFolders: string[]
     readonlyProjectIds: string[]
     openAttemptId?: string
+    background?: boolean
   },
   manager?: IRuntimeManager,
 ): Promise<IProjectRuntime> {
@@ -353,6 +355,11 @@ export async function resolveWorkspaceRuntimeUrl(
         localFolders: opts.localFolders ?? [],
         readonlyProjectIds: opts.readonlyProjectIds ?? [],
         openAttemptId: opts.openAttemptId,
+        // Agent-initiated resolves (team-chat/board/`project_call` wakes) start
+        // in the background pool, so they never take one of the three warm
+        // preview slots and evict the preview the user is looking at
+        // (SHO-226). A UI open still arrives here without `background`.
+        ...(opts.background ? { background: true } : {}),
       },
       opts.runtimeManager,
     )

@@ -112,6 +112,48 @@ describe('resolveProjectPodUrl — anchored workspace runtime', () => {
     expect(startProjectWorkspace).toHaveBeenCalledTimes(1)
   })
 
+  /**
+   * SHO-226. `background` used to be consumed only by the metal keep-warm
+   * branch, so on the desktop it was silently dropped and an agent wake took a
+   * warm-preview slot — evicting the preview the user was looking at.
+   */
+  test('forwards background: true to the host start (agent wakes)', async () => {
+    const startProjectWorkspace = mock(async (_id: string, options: Record<string, unknown>) => {
+      expect(options.background).toBe(true)
+      return runtime
+    })
+    const result = await resolveProjectPodUrl('project-1', {
+      ...testOptions({ runtimeManager: { startProjectWorkspace } }),
+      background: true,
+    })
+    expect(result.mode).toBe('host')
+    expect(startProjectWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  test('leaves background off a UI open', async () => {
+    const startProjectWorkspace = mock(async (_id: string, options: Record<string, unknown>) => {
+      expect('background' in options).toBe(false)
+      return runtime
+    })
+    await resolveProjectPodUrl('project-1', {
+      ...testOptions({ runtimeManager: { startProjectWorkspace } }),
+    })
+    expect(startProjectWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  test('forwards background to the injected host start seam too', async () => {
+    const startProject = mock(async (_id: string, options: Record<string, unknown>) => {
+      expect(options.background).toBe(true)
+      return runtime
+    })
+    const result = await resolveProjectPodUrl('project-1', {
+      ...testOptions({ _hostStartProject: startProject }),
+      background: true,
+    })
+    expect(result.mode).toBe('host')
+    expect(startProject).toHaveBeenCalledTimes(1)
+  })
+
   test('uses the anchored metal driver before the k8s driver, mounting only the project itself', async () => {
     const metalResolver = mock(async (
       workspaceId: string,

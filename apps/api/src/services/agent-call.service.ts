@@ -506,7 +506,13 @@ async function resolveCalleeRuntime(projectId: string): Promise<CalleeRuntime> {
     if (overridden) return { kind: 'url', url: overridden }
     if (process.env.SHOGO_LOCAL_MODE === 'true') {
       const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
-      return { kind: 'url', url: (await resolveProjectPodUrl(projectId, { logTag: 'AgentCall' })).url }
+      // An agent wake is BACKGROUND work: it must not take one of the three
+      // warm-preview slots and evict the preview the user is looking at
+      // (SHO-226). An already-foreground runtime stays foreground.
+      return {
+        kind: 'url',
+        url: (await resolveProjectPodUrl(projectId, { logTag: 'AgentCall', background: true })).url,
+      }
     }
     const { resolveAgentProxyPodUrl } = await import('../lib/agent-proxy-resolver')
     const resolution = await resolveAgentProxyPodUrl(projectId, { logTag: 'AgentCall' })
@@ -525,6 +531,8 @@ async function resolveCalleeRuntime(projectId: string): Promise<CalleeRuntime> {
 async function fetchCalleeRuntime(projectId: string, path: string): Promise<Response> {
   const { fetchFromProjectRuntime } = await import('../lib/chat-runtime-fetch')
   return fetchFromProjectRuntime(projectId, path, { method: 'GET' }, {
+    // Following a callee's turn is agent work — background, never a preview.
+    background: true,
     resolveUrl: async (id) => {
       const target = await resolveCalleeRuntime(id)
       if (target.kind === 'url') return target.url
@@ -879,7 +887,10 @@ async function wakeRemoteTarget(projectId: string, logTag: string): Promise<{ ur
     const overridden = runtimeUrlOverride ? await runtimeUrlOverride(projectId) : null
     if (overridden) return { url: overridden }
     const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
-    return { url: (await resolveProjectPodUrl(projectId, { logTag })).url }
+    // A wake is agent work, not a UI open: background pool, so it can never
+    // take a warm-preview slot from the preview on screen (SHO-226). A project
+    // the user then opens is promoted by `markPreviewActive`.
+    return { url: (await resolveProjectPodUrl(projectId, { logTag, background: true })).url }
   } catch (err: any) {
     const { WorkspaceCapacityError, describeCapacityRefusal } = await import('../lib/workspace-compute-budget')
     if (err instanceof WorkspaceCapacityError) {
@@ -990,8 +1001,10 @@ export async function forwardToProjectRuntime(
     } else if (process.env.SHOGO_LOCAL_MODE === 'true') {
       // Desktop: every project runs on the host RuntimeManager. The tunnel /
       // Redis resolver below is cloud-only and stays out of the local bundle.
+      // Agent-initiated forwards are background work (SHO-226): they must not
+      // consume a warm-preview slot.
       const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
-      runtimeUrl = (await resolveProjectPodUrl(projectId, { logTag: 'AgentCall' })).url
+      runtimeUrl = (await resolveProjectPodUrl(projectId, { logTag: 'AgentCall', background: true })).url
     } else {
       const { resolveAgentProxyPodUrl } = await import('../lib/agent-proxy-resolver')
       const resolution = await resolveAgentProxyPodUrl(projectId, { logTag: 'AgentCall' })

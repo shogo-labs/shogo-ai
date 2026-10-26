@@ -1822,7 +1822,7 @@ async function workspaceFileFetcher(input: { workspaceId: string; projectId: str
   return async (path: string) => {
     try {
       return input.projectId
-        ? await fetchFromProjectRuntime(input.projectId, workspaceDownloadPath(path), init)
+        ? await fetchFromProjectRuntime(input.projectId, workspaceDownloadPath(path), init, { background: true })
         : await fetchFromWorkspaceRuntime(input.workspaceId, [], workspaceDownloadPath(path), init)
     } catch {
       return null

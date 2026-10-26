@@ -28,6 +28,9 @@ const REQUIRED_LOCAL_ROUTES = [
   'GET /api/projects/:projectId/thumbnail.png',
   'POST /api/projects/:projectId/thumbnail/capture',
   'POST /api/projects/:projectId/runtime/prewarm',
+  // SHO-226: the visible canvas pings this so the preview on screen is never
+  // the warm-preview LRU victim. Desktop is the surface that evicts.
+  'POST /api/projects/:projectId/preview/active',
   'POST /api/generate-project-name',
   'GET /api/templates',
   'POST /api/workspaces/personal',
