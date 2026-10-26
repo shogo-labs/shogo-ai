@@ -78,6 +78,7 @@ import {
   startTurnHeartbeat,
 } from '../services/chat-turn-state.service'
 import { historySeedForTurn, lastUserPromptText } from '../services/chat-history-seed.service'
+import { compactChatSession } from '../services/chat-compact.service'
 import { trackUsageFromStream } from './project-chat'
 
 // Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
@@ -1480,6 +1481,59 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       console.warn('[WorkspaceChat] retry-now error:', error?.message || error)
       return c.json({ success: false, error: error?.message }, 502)
     }
+  })
+
+  // "Summarize now" on a workspace-scoped chat (SHO-230).
+  //
+  // The dock used to call the project compact route for every chat. A
+  // workspace chat's session lives on the *workspace* runtime, so that request
+  // reached a runtime that had never heard of it, took the "evicted" branch,
+  // and folded the entire ChatMessage history inline — minutes of spinner on a
+  // long chat, and never the `queued` answer a live turn should get.
+  router.post('/workspaces/:workspaceId/chat/compact', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const workspaceId = c.req.param('workspaceId')
+
+    let parsed: any = {}
+    try {
+      parsed = JSON.parse((await c.req.text()) || '{}')
+    } catch {
+      /* empty body */
+    }
+    const sessionId: string | undefined =
+      c.req.header('X-Chat-Session-Id') || parsed?.chatSessionId || parsed?.sessionId
+    if (!sessionId) {
+      return c.json({ compacted: false, queued: false, reason: 'missing chatSessionId' }, 400)
+    }
+
+    let attachedProjectIds: string[] = []
+    let runtimeExtra: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] } = {}
+    try {
+      const args = await loadRuntimeArgs(workspaceId, sessionId, auth.userId)
+      attachedProjectIds = args.attachedProjectIds
+      runtimeExtra = args.extra
+    } catch (err) {
+      return mapSessionError(c, err)
+    }
+    const runtimeRes = await resolveOr501(
+      c,
+      workspaceId,
+      attachedProjectIds,
+      'WorkspaceCompact',
+      runtimeExtra,
+      auth.kind,
+    )
+    if ('res' in runtimeRes) return runtimeRes.res
+
+    const { body, status } = await compactChatSession({
+      chatSessionId: sessionId,
+      logTag: '[WorkspaceChat]',
+      signal: c.req.raw.signal,
+      fetchRuntime: (path, init) =>
+        fetchFromWorkspaceRuntime(workspaceId, attachedProjectIds, path, init, runtimeExtra),
+    })
+    return c.json(body, status as any)
   })
 
   // Stop/interrupt active generation on the workspace runtime.

@@ -19,26 +19,30 @@ type Status = { kind: "idle" } | { kind: "working" } | { kind: "done" | "info" |
 
 export function ContextSummarySection({
   projectId,
+  workspaceId,
   chatSessionId,
 }: {
   projectId?: string | null
+  /** Workspace id for a workspace-scoped chat — its session lives on the workspace runtime. */
+  workspaceId?: string | null
   chatSessionId?: string | null
 }) {
   const [status, setStatus] = useState<Status>({ kind: "idle" })
-  const disabled = !projectId || !chatSessionId || status.kind === "working"
+  const disabled =
+    !chatSessionId || (!projectId && !workspaceId) || status.kind === "working"
 
   const onPress = useCallback(async () => {
-    if (!projectId || !chatSessionId) return
+    if (!chatSessionId || (!projectId && !workspaceId)) return
     setStatus({ kind: "working" })
     try {
-      const result = await requestContextCompaction(projectId, chatSessionId)
+      const result = await requestContextCompaction({ projectId, workspaceId, chatSessionId })
       if (result.compacted) {
         const before = result.tokensBefore !== undefined ? formatTokenCount(result.tokensBefore) : "?"
         const after = result.tokensAfter !== undefined ? formatTokenCount(result.tokensAfter) : "?"
         setStatus({ kind: "done", text: `Summarized · ${before} → ${after} tokens` })
         return
       }
-      if (result.queued) {
+      if (result.timedOut || result.queued) {
         setStatus({ kind: "info", text: result.reason ?? "Will summarize at the next step" })
         return
       }
@@ -46,7 +50,7 @@ export function ContextSummarySection({
     } catch (err: any) {
       setStatus({ kind: "error", text: err?.message ?? "Couldn't summarize context" })
     }
-  }, [projectId, chatSessionId])
+  }, [projectId, workspaceId, chatSessionId])
 
   const statusColor =
     status.kind === "error"

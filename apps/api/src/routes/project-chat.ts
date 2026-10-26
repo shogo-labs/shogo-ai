@@ -56,7 +56,8 @@ import {
   markTurnStarted,
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
-import { historySeedForTurn, lastUserPromptText, summarizeSessionFromDb } from "../services/chat-history-seed.service"
+import { historySeedForTurn, lastUserPromptText } from "../services/chat-history-seed.service"
+import { compactChatSession } from "../services/chat-compact.service"
 import { countLineChanges } from "../lib/tool-line-stats"
 import { fetchFromProjectRuntime } from "../lib/chat-runtime-fetch"
 import { importCloudModule } from "../lib/cloud-import"
@@ -123,43 +124,6 @@ export interface TrackedStreamResult {
 
 /** API and runtime clocks differ; a turn-start this much earlier still counts as the expected turn. */
 const TURN_START_CLOCK_SKEW_MS = 30_000
-
-/**
- * Write the transcript row for a compaction that happened with no live turn to
- * carry the SSE frame (the dock's manual button on an idle session).
- *
- * The part shape is identical to what `trackUsageFromStream` persists for an
- * auto compaction, so the divider renders the same way whether it came from a
- * turn or from the button.
- */
-async function persistCompactionRow(
-  chatSessionId: string,
-  data: {
-    trigger: 'auto' | 'manual'
-    tokensBefore: number
-    tokensAfter: number
-    messagesBefore: number
-    messagesAfter: number
-    summaryChars: number
-  },
-): Promise<void> {
-  try {
-    const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
-    if (!session) return
-    await prisma.chatMessage.create({
-      data: {
-        sessionId: chatSessionId,
-        role: 'assistant',
-        content: '',
-        parts: JSON.stringify([{ type: 'data-context-summarized', data }]),
-        agent: 'technical',
-        model: 'auto',
-      },
-    })
-  } catch (err: any) {
-    console.warn('[ProjectChat] Failed to persist compaction row:', err?.message ?? err)
-  }
-}
 
 /**
  * Scan a teed copy of the AI SDK stream for usage/tool-call data.
@@ -2360,101 +2324,39 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   /**
    * POST /projects/:projectId/chat/compact - Summarize this chat's context now
    *
-   * The context-usage dock's button. Proxies to the runtime's
+   * The context-usage dock's button. Proxies to the project runtime's
    * `/agent/sessions/:id/compact` and, when the session was idle and actually
    * compacted, writes the transcript row itself (an idle session has no live
    * turn to carry the SSE frame). A live turn returns 202 `queued` and the row
    * lands with the assistant message at the next step.
    *
-   * Always surfaces the runtime's own `reason` — a fake success would make the
-   * dock's ring and the transcript disagree.
+   * The work itself lives in `compactChatSession` so the workspace-scoped
+   * route runs exactly the same path (SHO-230).
    */
   router.post("/projects/:projectId/chat/compact", async (c) => {
     const projectId = c.req.param("projectId")
-    try {
-      const project = await validateProject(projectId)
-      if (!project) {
-        return c.json(
-          { error: { code: "project_not_found", message: "Project not found" }, compacted: false },
-          404,
-        )
-      }
-      let parsed: any = {}
-      try { parsed = JSON.parse(await c.req.text()) } catch { /* empty body */ }
-      const chatSessionId =
-        c.req.header("X-Chat-Session-Id") || parsed?.chatSessionId || parsed?.sessionId
-      if (typeof chatSessionId !== "string" || !chatSessionId) {
-        return c.json({ compacted: false, queued: false, reason: "missing chatSessionId" }, 400)
-      }
-
-      const response = await fetchFromRuntime(
-        projectId,
-        `/agent/sessions/${encodeURIComponent(chatSessionId)}/compact`,
-        { method: "POST", body: "{}", signal: c.req.raw.signal },
+    const project = await validateProject(projectId)
+    if (!project) {
+      return c.json(
+        { error: { code: "project_not_found", message: "Project not found" }, compacted: false },
+        404,
       )
-      const result: any = await response.json().catch(() => ({}))
-      // An idle or evicted session is the normal case here, not an error: the
-      // runtime holds nothing in memory, so `compactSession()` answers
-      // `unknown-session`, which `server.ts` turns into HTTP 404 with
-      // `{reason: "session not found"}`. The rows are all in ChatMessage, so
-      // summarize them API-side and store the block on the ChatSession
-      // (SHO-137 round 3, R5). This branch has to come BEFORE `!response.ok`,
-      // or the 404 returns first and the button is dead on exactly the chats
-      // that need it most (round 4, B1).
-      const evicted =
-        response.status === 404 ||
-        result?.status === "unknown-session" ||
-        result?.error === "unknown-session" ||
-        result?.reason === "session not found"
-      if (evicted) {
-        const fromDb = await summarizeSessionFromDb(chatSessionId)
-        if (!fromDb) {
-          return c.json(
-            { compacted: false, queued: false, status: "nothing-to-compact", reason: "no stored messages to summarize" },
-            200,
-          )
-        }
-        await persistCompactionRow(chatSessionId, {
-          trigger: "manual",
-          tokensBefore: 0,
-          tokensAfter: 0,
-          messagesBefore: fromDb.messagesBefore,
-          messagesAfter: fromDb.messagesAfter,
-          summaryChars: fromDb.summary.length,
-        })
-        return c.json({
-          compacted: true,
-          queued: false,
-          status: "compacted",
-          source: "db",
-          messagesBefore: fromDb.messagesBefore,
-          messagesAfter: fromDb.messagesAfter,
-          summaryChars: fromDb.summary.length,
-        })
-      }
-
-      if (!response.ok) {
-        return c.json(
-          { compacted: false, queued: false, reason: result?.error ?? result?.reason ?? `runtime ${response.status}` },
-          response.status as any,
-        )
-      }
-
-      if (result?.compacted) {
-        await persistCompactionRow(chatSessionId, {
-          trigger: "manual",
-          tokensBefore: Number(result.tokensBefore) || 0,
-          tokensAfter: Number(result.tokensAfter) || 0,
-          messagesBefore: Number(result.messagesBefore) || 0,
-          messagesAfter: Number(result.messagesAfter) || 0,
-          summaryChars: Number(result.summaryChars) || 0,
-        })
-      }
-      return c.json(result, response.status as any)
-    } catch (error: any) {
-      console.warn("[ProjectChat] compact error:", error?.message || error)
-      return c.json({ compacted: false, queued: false, reason: error?.message ?? "compact failed" }, 502)
     }
+    let parsed: any = {}
+    try { parsed = JSON.parse(await c.req.text()) } catch { /* empty body */ }
+    const chatSessionId =
+      c.req.header("X-Chat-Session-Id") || parsed?.chatSessionId || parsed?.sessionId
+    if (typeof chatSessionId !== "string" || !chatSessionId) {
+      return c.json({ compacted: false, queued: false, reason: "missing chatSessionId" }, 400)
+    }
+
+    const { body, status } = await compactChatSession({
+      chatSessionId,
+      logTag: "[ProjectChat]",
+      signal: c.req.raw.signal,
+      fetchRuntime: (path, init) => fetchFromRuntime(projectId, path, init),
+    })
+    return c.json(body, status as any)
   })
 
   /**

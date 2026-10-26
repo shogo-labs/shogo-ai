@@ -545,6 +545,12 @@ export interface ChatInputProps {
    */
   projects?: ProjectMentionOption[];
   chatSessionId?: string | null;
+  /**
+   * Workspace id when this chat is workspace-scoped. The context dock's
+   * "Summarize now" has to reach the workspace runtime that owns the session,
+   * which only this id can address (SHO-230).
+   */
+  chatWorkspaceId?: string | null;
   workspaceHistorySearch?: (
     query: string,
     kind?: "chat" | "plan"
@@ -657,6 +663,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   projectId,
   projects = [],
   chatSessionId,
+  chatWorkspaceId,
   workspaceHistorySearch,
   chatMentionables,
   ideMode = false,
@@ -2034,6 +2041,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         contextUsage={contextUsage}
         contextBreakdown={contextBreakdown}
         projectId={projectId}
+        workspaceId={chatWorkspaceId}
         chatSessionId={chatSessionId}
       />
 
