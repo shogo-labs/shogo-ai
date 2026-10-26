@@ -3958,6 +3958,7 @@ export const CLOUD_FORWARDED_AI_PREFIXES = [
   '/ai/v1/images/',
   '/ai/v1/media/',
   '/ai/v1/videos/',
+  '/ai/v1/music/',
   '/ai/v1/3d/',
   '/ai/v1/audio/',
 ] as const

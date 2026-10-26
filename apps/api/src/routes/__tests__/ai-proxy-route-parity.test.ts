@@ -294,11 +294,12 @@ describe('proxy route parity', () => {
     })
   }
 
-  test('the ai-proxy forwarded prefixes still cover the media, 3D and audio families', async () => {
+  test('the ai-proxy forwarded prefixes still cover the media, 3D, music and audio families', async () => {
     expect(cloudForwardedAiPrefixes(await readRouter('../ai-proxy.ts'))).toEqual([
       '/ai/v1/images/',
       '/ai/v1/media/',
       '/ai/v1/videos/',
+      '/ai/v1/music/',
       '/ai/v1/3d/',
       '/ai/v1/audio/',
     ])
