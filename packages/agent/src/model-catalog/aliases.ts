@@ -33,6 +33,14 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'opus': 'claude-opus-5-5',
   'opus-5': 'claude-opus-5',
   'gpt54mini': 'gpt-5.4-mini',
+
+  // Google shorthand aliases
+  'gemini': 'gemini-3.8-flash',
+  'gemini-flash': 'gemini-3.8-flash',
+  'gemini-pro': 'gemini-3.1-pro-preview',
+  'gemini-flash-lite': 'gemini-3.5-flash-lite',
+  'argon': 'gemini-4-argon',
+  'gemini-argon': 'gemini-4-argon',
 }
 
 // ---------------------------------------------------------------------------

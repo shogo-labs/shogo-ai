@@ -5,12 +5,14 @@ import {
   MODEL_CATALOG,
   IMAGE_MODEL_CATALOG,
   VIDEO_MODEL_CATALOG,
+  MUSIC_MODEL_CATALOG,
   HIGGSFIELD_LEGACY_MODEL_ALIASES,
   AUTO_MODEL_ID,
   OPENROUTER_MODEL_PREFIX,
   type ModelEntry,
   type ImageModelEntry,
   type VideoModelEntry,
+  type MusicModelEntry,
   type ModelTier,
   type ModelFamily,
   type ModelGeneration,
@@ -92,6 +94,19 @@ export function getImageModelEntry(id: string): ImageModelEntry | undefined {
 export function getVideoModelEntry(id: string): VideoModelEntry | undefined {
   const resolved = resolveMediaModelId(id)
   return (VIDEO_MODEL_CATALOG as Record<string, VideoModelEntry>)[resolved]
+}
+
+/** Look up a music model by catalog id. Returns undefined for unknown models. */
+export function getMusicModelEntry(id: string): MusicModelEntry | undefined {
+  if (id in MUSIC_MODEL_CATALOG) {
+    return (MUSIC_MODEL_CATALOG as Record<string, MusicModelEntry>)[id]
+  }
+  // Accept the upstream id too (`lyria-3-clip-preview`), so a caller holding
+  // Google's own name still resolves to the catalog entry and its price.
+  for (const entry of Object.values(MUSIC_MODEL_CATALOG) as MusicModelEntry[]) {
+    if (entry.apiModel === id) return entry
+  }
+  return undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +274,7 @@ export function getModelFamily(id: string): ModelFamily {
   if (lower.includes('haiku')) return 'haiku'
   if (lower.includes('fable')) return 'fable'
   if (lower.startsWith('gpt')) return 'gpt'
+  if (lower.startsWith('gemini')) return 'gemini'
   return 'other'
 }
 
@@ -314,6 +330,20 @@ export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
   'gpt-6-sol':     { inputPerMillion: 2.00,  cacheWritePerMillion: 2.50,  cachedInputPerMillion: 0.20, outputPerMillion: 10.00 },
   'gpt-6-luna':    { inputPerMillion: 0.10,  cacheWritePerMillion: 0.125, cachedInputPerMillion: 0.01, outputPerMillion: 0.50 },
   'gpt-live-1':    { inputPerMillion: 0, cacheWritePerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
+  // Google-published rates (ai.google.dev/gemini-api/docs/pricing, Oct 2026).
+  // Gemini caches implicitly and has no cache-write charge, so the write rate
+  // is the 1.25x-of-input convention the OpenAI buckets use. `gemini-3-1-pro`
+  // is the ≤200k-input tier; above 200k Google charges $4/$18, which this flat
+  // shape cannot express — the catalog entry caps its `contextWindow` at 200k
+  // so that tier is never served.
+  'gemini-3-1-pro':        { inputPerMillion: 2.00, cacheWritePerMillion: 2.50,  cachedInputPerMillion: 0.20,  outputPerMillion: 12.00 },
+  // Argon is $2/$10/$0.10 until 2026-11-30, then $4/$20/$0.20. Same treatment
+  // as 3.8 Flash below: bill the rate Google charges today.
+  'gemini-4-argon':        { inputPerMillion: 2.00, cacheWritePerMillion: 2.50,  cachedInputPerMillion: 0.10,  outputPerMillion: 10.00 },
+  // Promotional rates through 2026-12-31; on 2027-01-01 they double to
+  // $1.50 in / $7.50 out / $0.15 cached.
+  'gemini-3-8-flash':      { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 3.75 },
+  'gemini-3-5-flash-lite': { inputPerMillion: 0.30, cacheWritePerMillion: 0.375, cachedInputPerMillion: 0.03,  outputPerMillion: 2.50 },
 }
 
 /**

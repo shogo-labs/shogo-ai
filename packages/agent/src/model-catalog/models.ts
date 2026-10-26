@@ -28,13 +28,14 @@ export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
 export type ImageProvider = 'openai' | 'google' | 'local' | 'higgsfield'
 export type VideoProvider = 'higgsfield'
 export type ModelTier = 'economy' | 'standard' | 'premium'
-export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'other'
+export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'gemini' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
 export type ModelKind = 'chat' | 'live'
 export type BillingModel =
   | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus' | 'claude-fable-5-1'
   | 'gpt-6-astra' | 'gpt-6-sol' | 'gpt-6-luna' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
   | 'claude-opus-5-5' | 'claude-haiku-5-5'
+  | 'gemini-3-1-pro' | 'gemini-3-8-flash' | 'gemini-3-5-flash-lite' | 'gemini-4-argon'
 export type AgentMode = 'basic' | 'advanced'
 
 /**
@@ -252,6 +253,30 @@ export interface VideoModelEntry {
   optionsByEndpoint?: Readonly<Record<string, readonly ModelOptionField[]>>
   /** Native audio: the endpoint declares `sound` or `generate_audio`. */
   audio?: boolean
+}
+
+export type MusicProvider = 'google'
+
+/**
+ * One music-generation model (Google Lyria). Unlike image/video these are
+ * priced per generated track, not per second or per resolution tier, and they
+ * are called through Google's Interactions API rather than `:predict`.
+ */
+export interface MusicModelEntry {
+  id: string
+  provider: MusicProvider
+  apiModel: string
+  displayName: string
+  /** One line telling an agent when to pick this model. */
+  bestFor?: string
+  /** Fixed track length in seconds; absent when the prompt controls it. */
+  durationSeconds?: number
+  /** Longest track the model will produce, in seconds. */
+  maxDurationSeconds: number
+  /** Upstream list price for one track, in USD. */
+  usdPerRequest: number
+  /** Container the model returns. */
+  outputFormat: 'mp3'
 }
 
 
@@ -606,6 +631,78 @@ export const MODEL_CATALOG = {
     capabilities: { supportsAudioInput: true },
   },
 
+  // Google — current generation. Reached through the AI proxy's
+  // OpenAI-compatible Gemini endpoint (`/v1beta/openai/chat/completions`), so
+  // every surface (pod, desktop, cloud) needs only a Google key on the API
+  // server, never in the runtime.
+  //
+  // `contextWindow` is 200k on 3.1 Pro even though Google serves 1M: its price
+  // steps up above 200k input tokens ($4/$18 per 1M vs $2/$12) and
+  // `MODEL_DOLLAR_COSTS` is a flat per-bucket table, so serving the long
+  // context would be billed at the short-context rate. Cap it instead.
+  'gemini-4-argon': {
+    id: 'gemini-4-argon',
+    provider: 'google',
+    apiModel: 'gemini-4-argon',
+    displayName: 'Gemini 4 Argon',
+    shortDisplayName: 'Argon',
+    tier: 'premium',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-4-argon',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 1_048_576,
+    reasoningEffort: 'high',
+    description: 'Google\'s flagship reasoner: complex software engineering, deep maths and long-decode generation up to 1M tokens.',
+  },
+  'gemini-3.1-pro-preview': {
+    id: 'gemini-3.1-pro-preview',
+    provider: 'google',
+    apiModel: 'gemini-3.1-pro-preview',
+    displayName: 'Gemini 3.1 Pro',
+    shortDisplayName: 'Gemini 3.1 Pro',
+    tier: 'premium',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-3-1-pro',
+    contextWindow: 200_000,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'high',
+    description: 'Google\'s flagship reasoning model: long-horizon agentic work, large-codebase analysis and multimodal input.',
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
+  },
+  'gemini-3.8-flash': {
+    id: 'gemini-3.8-flash',
+    provider: 'google',
+    apiModel: 'gemini-3.8-flash',
+    displayName: 'Gemini 3.8 Flash',
+    shortDisplayName: 'Gemini 3.8 Flash',
+    tier: 'standard',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-3-8-flash',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'medium',
+    description: 'The current Gemini Flash: fast and cheap enough for everyday agent turns, with a 1M-token window.',
+  },
+  'gemini-3.5-flash-lite': {
+    id: 'gemini-3.5-flash-lite',
+    provider: 'google',
+    apiModel: 'gemini-3.5-flash-lite',
+    displayName: 'Gemini 3.5 Flash-Lite',
+    shortDisplayName: 'Flash-Lite 3.5',
+    tier: 'economy',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-3-5-flash-lite',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'minimal',
+    description: 'The cheapest Gemini: high-volume translation, extraction and simple data processing.',
+  },
+
   // OpenAI — legacy
   'gpt-5.6-sol': {
     id: 'gpt-5.6-sol',
@@ -779,3 +876,39 @@ export const VIDEO_MODEL_CATALOG = {
 } as const satisfies Record<string, VideoModelEntry>
 
 export type VideoModelId = keyof typeof VIDEO_MODEL_CATALOG
+
+// ---------------------------------------------------------------------------
+// Music Model Catalog
+// ---------------------------------------------------------------------------
+
+/**
+ * Google Lyria, through the Interactions API. Prices are Google's published
+ * per-track rates (ai.google.dev/gemini-api/docs/pricing, Oct 2026): the Clip
+ * model is a fixed 30-second draft, Lyria 3.5 writes a full song whose length
+ * the prompt controls.
+ */
+export const MUSIC_MODEL_CATALOG = {
+  'lyria-3-clip': {
+    id: 'lyria-3-clip',
+    provider: 'google',
+    apiModel: 'lyria-3-clip-preview',
+    displayName: 'Lyria 3 Clip',
+    bestFor: 'A 30-second draft, loop or sting — cheapest way to audition an idea',
+    durationSeconds: 30,
+    maxDurationSeconds: 30,
+    usdPerRequest: 0.04,
+    outputFormat: 'mp3',
+  },
+  'lyria-3.5': {
+    id: 'lyria-3.5',
+    provider: 'google',
+    apiModel: 'lyria-3.5',
+    displayName: 'Lyria 3.5',
+    bestFor: 'A full song with verses, choruses and vocals, up to about 3 minutes',
+    maxDurationSeconds: 180,
+    usdPerRequest: 0.08,
+    outputFormat: 'mp3',
+  },
+} as const satisfies Record<string, MusicModelEntry>
+
+export type MusicModelId = keyof typeof MUSIC_MODEL_CATALOG

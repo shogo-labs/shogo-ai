@@ -350,6 +350,7 @@ function getProviderApiKey(provider: Provider): string | null {
   switch (provider) {
     case 'anthropic':
     case 'openai':
+    case 'google':
     case 'openrouter':
       // DB-stored (admin-entered, encrypted) key first, else the env var.
       return getNativeProviderApiKeySync(provider)
@@ -1913,6 +1914,13 @@ function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
     const base = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '')
     return `${base}/chat/completions`
   }
+  // Gemini's OpenAI-compatibility endpoint. It authenticates with a Bearer
+  // token like every other chat-completions upstream, so the shared headers
+  // work unchanged.
+  if (modelConfig.provider === 'google') {
+    const base = (process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/$/, '')
+    return `${base}/v1beta/openai/chat/completions`
+  }
   // Custom OpenAI-compatible providers (e.g. MiMo): the admin-configured
   // base URL already includes the version path (e.g. .../v1), so we just
   // append the chat-completions route.
@@ -1929,6 +1937,150 @@ function isOpenRouterHost(modelConfig: ModelConfig): boolean {
 /** Hoshi stays DeepSeek-shaped for the runtime. BYOK `openrouter:` models keep OpenRouter's native payload. */
 function shouldRewriteOpenRouterReasoning(modelConfig: ModelConfig): boolean {
   return modelConfig.upstream === 'deepseek' && isOpenRouterHost(modelConfig)
+}
+
+// ---------------------------------------------------------------------------
+// Gemini thought signatures
+// ---------------------------------------------------------------------------
+
+/**
+ * Gemini 3 and newer enforce thought signatures on function calls: every
+ * `tool_call` the model emitted has to come back carrying the
+ * `extra_content.google.thought_signature` it was issued with, or the next
+ * request fails with a 400 ("Function call is missing a thought_signature in
+ * functionCall parts") and the model silently loses reasoning continuity.
+ *
+ * pi-ai's OpenAI-completions provider has no field for `extra_content`, but it
+ * does round-trip `reasoning_details` entries of `type: 'reasoning.encrypted'`,
+ * matching them back to tool calls by `id`. So the proxy carries the signature
+ * in that slot: lift it off the tool call in the response, put it back on the
+ * tool call in the next request.
+ *
+ * A call we have no signature for (history imported from another model, a
+ * trimmed conversation) gets Google's documented escape hatch rather than
+ * being sent bare.
+ */
+const GOOGLE_SKIP_SIGNATURE = 'skip_thought_signature_validator'
+
+function googleThoughtSignature(toolCall: any): string | undefined {
+  const signature = toolCall?.extra_content?.google?.thought_signature
+  return typeof signature === 'string' && signature.length > 0 ? signature : undefined
+}
+
+/**
+ * Move `tool_calls[].extra_content.google.thought_signature` onto
+ * `reasoning_details`, where the runtime will persist it. Returns true when the
+ * payload changed.
+ */
+export function liftGoogleThoughtSignatures(payload: any): boolean {
+  const choices = payload?.choices
+  if (!Array.isArray(choices)) return false
+  let changed = false
+  for (const choice of choices) {
+    for (const field of ['delta', 'message'] as const) {
+      const part = choice?.[field]
+      const toolCalls = part?.tool_calls
+      if (!Array.isArray(toolCalls)) continue
+      const details: any[] = Array.isArray(part.reasoning_details) ? [...part.reasoning_details] : []
+      let added = false
+      for (const toolCall of toolCalls) {
+        const signature = googleThoughtSignature(toolCall)
+        if (!signature) continue
+        delete toolCall.extra_content
+        const id = typeof toolCall.id === 'string' && toolCall.id ? toolCall.id : undefined
+        if (!id || details.some((detail) => detail?.id === id)) continue
+        details.push({ type: 'reasoning.encrypted', id, data: signature })
+        added = true
+      }
+      if (!added) continue
+      part.reasoning_details = details
+      changed = true
+    }
+  }
+  return changed
+}
+
+/**
+ * Put stored thought signatures back on the assistant tool calls of an outgoing
+ * request, and drop the fields Gemini's OpenAI layer has no use for.
+ */
+export function applyGoogleThoughtSignatures(messages: any[]): any[] {
+  return messages.map((message: any) => {
+    const normalized: any = { ...message }
+    if (normalized.role === 'developer') normalized.role = 'system'
+    if (normalized.role !== 'assistant') return normalized
+
+    // Gemini replays its reasoning through signatures, not reasoning text.
+    const details = Array.isArray(normalized.reasoning_details) ? normalized.reasoning_details : []
+    delete normalized.reasoning_details
+    delete normalized.reasoning_content
+    delete normalized.reasoning
+
+    if (!Array.isArray(normalized.tool_calls) || normalized.tool_calls.length === 0) return normalized
+    const signatureById = new Map<string, string>()
+    for (const detail of details) {
+      if (detail?.type === 'reasoning.encrypted' && typeof detail.id === 'string' && typeof detail.data === 'string') {
+        signatureById.set(detail.id, detail.data)
+      }
+    }
+    normalized.tool_calls = normalized.tool_calls.map((toolCall: any) => ({
+      ...toolCall,
+      extra_content: {
+        google: {
+          thought_signature: (typeof toolCall?.id === 'string' ? signatureById.get(toolCall.id) : undefined) ?? GOOGLE_SKIP_SIGNATURE,
+        },
+      },
+    }))
+    return normalized
+  })
+}
+
+/**
+ * Per-stream rewriter for Gemini SSE. A signature can arrive in the same chunk
+ * as its tool call or in a later chunk that only carries the call's `index`, so
+ * the id is remembered across lines.
+ */
+export function createGoogleSseRewriter(): (line: string) => string {
+  const idByIndex = new Map<number, string>()
+  return (line: string) => {
+    if (!line.startsWith('data: ')) return line
+    const raw = line.slice(6).trim()
+    if (!raw || raw === '[DONE]') return line
+    let parsed: any
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return line
+    }
+    const choices = Array.isArray(parsed?.choices) ? parsed.choices : []
+    let changed = false
+    for (const choice of choices) {
+      const delta = choice?.delta
+      const toolCalls = delta?.tool_calls
+      if (!Array.isArray(toolCalls)) continue
+      const found: Array<{ id: string; data: string }> = []
+      for (const toolCall of toolCalls) {
+        const index = typeof toolCall?.index === 'number' ? toolCall.index : undefined
+        const id = typeof toolCall?.id === 'string' && toolCall.id ? toolCall.id : undefined
+        if (index !== undefined && id) idByIndex.set(index, id)
+        const signature = googleThoughtSignature(toolCall)
+        if (!signature) continue
+        delete toolCall.extra_content
+        const owner = id ?? (index === undefined ? undefined : idByIndex.get(index))
+        if (!owner) continue
+        found.push({ id: owner, data: signature })
+        changed = true
+      }
+      if (found.length === 0) continue
+      const details: any[] = Array.isArray(delta.reasoning_details) ? [...delta.reasoning_details] : []
+      for (const item of found) {
+        if (details.some((detail) => detail?.id === item.id)) continue
+        details.push({ type: 'reasoning.encrypted', id: item.id, data: item.data })
+      }
+      delta.reasoning_details = details
+    }
+    return changed ? `data: ${JSON.stringify(parsed)}` : line
+  }
 }
 
 function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): Record<string, string> {
