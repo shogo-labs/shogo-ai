@@ -25,6 +25,12 @@ describe('buildLocalCsp', () => {
     expect(directive(csp, 'child-src')).toContain('blob:')
   })
 
+  test('lets the PDF viewer load its own chrome://resources UI', () => {
+    // The blob frame inherits this policy, and Chromium's viewer builds its UI
+    // from `chrome://resources`; without the scheme the frame is blank.
+    expect(directive(csp, 'script-src')).toContain('chrome:')
+  })
+
   test('keeps the API origin framable', () => {
     expect(directive(csp, 'frame-src')).toContain(API)
     expect(directive(csp, 'child-src')).toContain(API)
@@ -34,12 +40,13 @@ describe('buildLocalCsp', () => {
     expect(directive(csp, 'img-src')).toContain('blob:')
   })
 
-  test('leaves script-src and default-src as they were', () => {
+  test('leaves default-src alone and only adds chrome: to script-src', () => {
     expect(directive(csp, 'default-src')).toEqual(["'self'", 'shogo:', 'https:', 'http:'])
     expect(directive(csp, 'script-src')).toEqual([
       "'self'",
       'shogo:',
       'blob:',
+      'chrome:',
       "'unsafe-inline'",
       "'unsafe-eval'",
     ])

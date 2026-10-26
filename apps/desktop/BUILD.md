@@ -254,7 +254,10 @@ re-run `download-bun.mjs` to get the pinned version (`1.4.4`).
 The Electron CSP — `buildLocalCsp()` in `src/local-csp.ts`, stamped on every
 local-mode response by `main.ts` — needs `frame-src` for `http://localhost:*`.
 `blob:` belongs in `frame-src` and `media-src` too, or the chat file viewer's
-blob-URL video/audio/PDF never loads (SHO-229).
+blob-URL video/audio/PDF never loads (SHO-229). The blob PDF frame also needs
+`chrome:` in `script-src` — a `blob:` document inherits this policy and
+Chromium's PDF viewer loads its UI from `chrome://resources`; without it the
+frame is allowed but paints blank.
 
 **App crashes immediately on double-click**
 Launch from terminal to see output:

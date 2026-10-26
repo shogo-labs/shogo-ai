@@ -13,7 +13,13 @@
  * Images escaped this because `img-src` already allowed `blob:`.
  *
  * `media-src` covers `<video>`/`<audio>`, `frame-src`/`child-src` cover the
- * PDF preview's typed-`application/pdf` blob frame (SHO-224).
+ * PDF preview's typed-`application/pdf` blob frame (SHO-224). That blob frame
+ * also needs `chrome:` in `script-src`: a `blob:` document inherits the
+ * creating page's policy, and Chromium's PDF viewer builds its own UI from
+ * `chrome://resources/…` — without the scheme the frame is allowed but paints
+ * blank, and the block is invisible to the page (the violations fire in the
+ * viewer's document). `chrome:` names only the browser's own resource scheme —
+ * a normal page's request for a `chrome://` script still never resolves.
  */
 export function buildLocalCsp(apiOrigin: string): string {
   return [
@@ -21,7 +27,7 @@ export function buildLocalCsp(apiOrigin: string): string {
     `connect-src *`,
     `frame-src 'self' shogo: blob: ${apiOrigin} http://localhost:* http://127.0.0.1:* https://*.vscode-cdn.net https:`,
     `child-src 'self' shogo: blob: ${apiOrigin} http://localhost:* http://127.0.0.1:* https://*.vscode-cdn.net https:`,
-    "script-src 'self' shogo: blob: 'unsafe-inline' 'unsafe-eval'",
+    "script-src 'self' shogo: blob: chrome: 'unsafe-inline' 'unsafe-eval'",
     "worker-src 'self' shogo: blob:",
     "style-src 'self' shogo: 'unsafe-inline'",
     "img-src * data: blob:",
