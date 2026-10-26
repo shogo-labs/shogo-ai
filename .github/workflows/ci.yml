@@ -676,6 +676,10 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
+      # The phone specs (`PHONE_SPECS` in the config, the `iphone-15-pro` and
+      # `pixel-7` projects) are testIgnore'd by `--project=chromium` and run in
+      # .github/workflows/e2e-phone.yml, which installs WebKit. Do not add those
+      # projects here: this job has no WebKit and no room in its cap (SHO-222).
       - name: Run e2e/local
         if: ${{ !matrix.spec }}
         env:

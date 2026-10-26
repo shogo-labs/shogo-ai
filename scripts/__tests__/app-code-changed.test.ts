@@ -61,6 +61,13 @@ describe('app-code-changed.sh', () => {
     expect(classify(['.github/workflows/ci.yml']).app).toBe('app=true')
   })
 
+  // The phone workflow is the only job that runs the phone specs, so a PR that
+  // edits it must still run them (SHO-222). Every other workflow stays ignored.
+  it('fails open on e2e-phone.yml itself', () => {
+    expect(classify(['.github/workflows/e2e-phone.yml']).app).toBe('app=true')
+    expect(classify(['.github/workflows/e2e-phone.yml', 'docs/a.md']).app).toBe('app=true')
+  })
+
   it('fails open on an empty diff', () => {
     expect(classify([]).app).toBe('app=true')
   })

@@ -29,6 +29,24 @@ export async function coveredBy(target: Locator): Promise<string | null> {
 }
 
 /**
+ * Expo's web dev server paints `#error-toast` above the app whenever the bundle
+ * logged anything, and an empty toast still swallows pointer events — a click
+ * on a control underneath never lands (`<div id="error-toast"> intercepts
+ * pointer events`, SHO-222). It is a dev-server artifact that the production
+ * bundle does not have, so a spec that only wants to tap the app keeps it out
+ * of the way, including a toast that appears mid-test.
+ */
+export async function ignoreDevErrorToast(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const drop = () => document.getElementById("error-toast")?.remove()
+    drop()
+    // `document` itself, not documentElement: an init script can run before the
+    // root element exists.
+    new MutationObserver(drop).observe(document, { childList: true, subtree: true })
+  })
+}
+
+/**
  * Local mode opens the Personal workspace (the companion chat); the project
  * home ("What are we building") lives in the Team workspace. Make the team
  * workspace active and land on its home.

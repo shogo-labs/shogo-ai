@@ -10,7 +10,7 @@
  * team-chat-agents.test.ts. `E2E_LOCAL_START_STACK=1` sets both up.
  */
 import { expect, test, type Page } from "@playwright/test"
-import { coveredBy, LOCAL_API_BASE } from "./helpers"
+import { coveredBy, ignoreDevErrorToast, LOCAL_API_BASE } from "./helpers"
 import { activateTeamWorkspace, api, cleanupTeamNav, seedTeamNav, signIn, type TeamNavSeed } from "./team-nav-seed"
 
 const rail = (page: Page) => page.getByRole("navigation", { name: "Workspace tabs" })
@@ -28,6 +28,7 @@ test.describe("Team workspace: desktop rail and panels", () => {
     test.setTimeout(180_000)
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
     page = await context.newPage()
+    await ignoreDevErrorToast(page)
     await signIn(page)
     seed = await seedTeamNav(page)
     await activateTeamWorkspace(page, seed.workspaceId)
@@ -46,8 +47,9 @@ test.describe("Team workspace: desktop rail and panels", () => {
       await expect(tab(page, name)).toBeVisible()
     }
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
-    // The scripted agent answered the seeded DM while nobody was looking.
-    await expect(rail(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible({ timeout: 30_000 })
+    // `seedTeamNav` waited for the scripted reply, so the DM is already unread:
+    // this line only fails if the rail's badge is broken (SHO-222).
+    await expect(rail(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible()
     // Home is this person's workspace-agent chats, not the activity inbox. The
     // list is flat (SHO-119): no "Workspace agent" section header, just rows.
     await expect(panel(page, "workspace-chats-panel")).toBeVisible()

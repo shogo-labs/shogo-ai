@@ -9,6 +9,7 @@
  * Runs in the `iphone-15-pro` and `pixel-7` projects (see playwright.config.ts).
  */
 import { expect, test, type Page } from "@playwright/test"
+import { ignoreDevErrorToast } from "./helpers"
 import { activateTeamWorkspace, cleanupTeamNav, seedTeamNav, signIn, type TeamNavSeed } from "./team-nav-seed"
 
 const dock = (page: Page) => page.getByTestId("team-dock")
@@ -35,6 +36,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
   })
 
   test.beforeEach(async ({ page }) => {
+    await ignoreDevErrorToast(page)
     await signIn(page)
     await activateTeamWorkspace(page, seed.workspaceId)
     await page.goto("/")
@@ -48,8 +50,9 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(dock(page).getByRole("button", { name: "Search" })).toBeVisible()
     await expect(page.getByRole("navigation", { name: "Workspace tabs" })).toHaveCount(0)
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
-    // The scripted agent replied to the seeded DM while nobody was looking.
-    await expect(dock(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible({ timeout: 30_000 })
+    // `seedTeamNav` waited for the scripted reply, so the DM is already unread:
+    // this line only fails if the dock's badge is broken (SHO-222).
+    await expect(dock(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible()
   })
 
   test("Home is a feed with the workspace agent, not a settings list", async ({ page }) => {
@@ -233,6 +236,7 @@ test.describe("Personal workspace: phone bottom bar and page titles", () => {
   const selected = (page: Page) => page.locator('[role="tab"][aria-selected="true"]')
 
   test.beforeEach(async ({ page }) => {
+    await ignoreDevErrorToast(page)
     await signIn(page)
     await page.goto("/")
     await expect(bar(page).first()).toBeVisible({ timeout: 60_000 })
