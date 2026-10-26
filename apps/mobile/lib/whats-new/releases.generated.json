@@ -1,5 +1,41 @@
 [
   {
+    "version": "2.4",
+    "slug": "v2-4",
+    "title": "Shogo 2.4",
+    "date": "2026-10-26",
+    "announce": true,
+    "intro": "In 2.4, huddles take their own notes, and you can bring your agent into the call by saying \"hey Shogo\". You can publish to your social accounts without leaving Shogo. Agents are easier to follow and to steer while they work, and your workspaces move with you between computers and the cloud.",
+    "highlights": [
+      {
+        "title": "Huddles that take notes",
+        "description": "Calls write a speaker-labelled transcript and post a summary when they end. Turn on live captions, or say \"hey Shogo\" to bring in your agent.",
+        "icon": "activity"
+      },
+      {
+        "title": "Publish to social from Shogo",
+        "description": "Connect Instagram, TikTok and more, publish to several accounts at once, and answer comments and DMs from one inbox.",
+        "icon": "rocket"
+      },
+      {
+        "title": "Agents that keep moving",
+        "description": "One chat mode, a dock that shows every running agent, Send now for queued messages, and longer runs that stop themselves when they loop.",
+        "icon": "sparkles"
+      },
+      {
+        "title": "Your workspace, anywhere",
+        "description": "Export a whole workspace and import it elsewhere, run several local workspaces, and reach your computer's workspaces from the cloud.",
+        "icon": "server"
+      },
+      {
+        "title": "A smoother IDE",
+        "description": "Drop files and folders anywhere in the IDE, preview PDFs, and import a .shogo file in one step. Cloud projects open faster.",
+        "icon": "code"
+      }
+    ],
+    "url": "https://docs.shogo.ai/changelog/v2-4"
+  },
+  {
     "version": "2.3",
     "slug": "v2-3",
     "title": "Shogo 2.3",
