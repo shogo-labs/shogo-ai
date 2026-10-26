@@ -604,4 +604,18 @@ describe('project credentials for runtime-spawned code', () => {
     expect(res.status).toBe(401)
     expect(elCalls).toHaveLength(0)
   })
+
+  test("one project's token cannot spend on a sibling project", async () => {
+    const res = await fetch(`${process.env.SHOGO_API_URL}/api/voice/music?projectId=proj-b`, {
+      method: 'POST',
+      headers: {
+        'x-runtime-token': deriveRuntimeToken('proj-a'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ prompt: 'lofi' }),
+    })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'forbidden', detail: 'Runtime token scope mismatch' })
+    expect(elCalls).toHaveLength(0)
+  })
 })
