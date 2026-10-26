@@ -289,10 +289,14 @@ export class MCPClientManager {
     if (!alreadyInstalled) {
       console.log(`[MCPClient] Installing ${packageName} to ${mcpPkgDir}...`)
       try {
+        // npm runs the package's lifecycle scripts (postinstall), so this is
+        // third-party code: it gets no runtime token on a workspace runtime,
+        // where the inherited one is the workspace token (SHO-228).
+        const installEnv = withoutWorkspaceRuntimeToken({ ...process.env, HOME: this.workspaceDir })
         execSync(`npm install --prefix "${mcpPkgDir}" --omit=dev --no-audit --no-fund ${packageName}`, {
           timeout: 120_000,
           stdio: 'pipe',
-          env: { ...process.env, HOME: this.workspaceDir },
+          env: installEnv,
         })
         console.log(`[MCPClient] Installed ${packageName} to workspace cache`)
       } catch (err: any) {
