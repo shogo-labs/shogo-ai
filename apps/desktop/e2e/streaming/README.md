@@ -51,7 +51,7 @@ because switching chats through the sidebar is not scriptable from the project w
 
 The fake model ends every reply with a usage chunk and varies tool inputs per round. Without the
 first the agent reports "Agent produced no output"; without the second its loop detector stops the
-turn after 4 identical calls.
+turn after 10 identical calls.
 
 ## Budgets
 
