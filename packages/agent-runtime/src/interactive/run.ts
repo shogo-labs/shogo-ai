@@ -6,8 +6,8 @@
  * Drives the in-process `AgentGateway` for both the interactive REPL and the
  * headless one-shot (`-p`) mode. The gateway is the same engine the HTTP
  * runtime uses — we just hand it a terminal `TurnStore` instead of an SSE
- * writer, so we inherit tools, permissions, MCP, plan/ask modes, compaction
- * and session management without any HTTP hop.
+ * writer, so we inherit tools, permissions, MCP, compaction and session
+ * management without any HTTP hop.
  *
  * `runHeadless` is dependency-injected (`gateway`, `out`, `err`) so it can be
  * unit-tested with a fake gateway and no LLM.

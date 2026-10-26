@@ -120,7 +120,7 @@ function App({ gateway, cwd, model: initialModel, sessionId: initialSessionId }:
       try {
         await gateway.processChatMessageStream(prompt, store, {
           chatSessionId: sessionRef.current,
-              modelOverride: model,
+          modelOverride: model,
         })
       } catch (e: any) {
         store.write({ type: 'error', errorText: e?.message ?? String(e) })
