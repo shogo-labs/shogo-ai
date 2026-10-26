@@ -303,7 +303,15 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   router.get('/workspaces/:workspaceId/conversations', async (c) => {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
-    return c.json({ conversations: await listConversationsForUser(auth.workspaceId, auth.userId) })
+    // `since` is the reconnect/foreground catch-up: only what changed, merged
+    // into the list the client already has, instead of a full re-download.
+    const sinceRaw = c.req.query('since')
+    const parsed = sinceRaw ? new Date(sinceRaw) : null
+    const since = parsed && !Number.isNaN(parsed.getTime()) ? parsed : undefined
+    return c.json({
+      conversations: await listConversationsForUser(auth.workspaceId, auth.userId, { since }),
+      syncedAt: new Date().toISOString(),
+    })
   })
 
   /** Approvals agents are waiting on that this person can answer (viewers see none). */

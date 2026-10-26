@@ -58,7 +58,32 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     const feed = page.getByTestId("mobile-home-feed")
     await expect(feed).toBeVisible()
     await expect(feed.getByRole("button", { name: "Ask the workspace agent" })).toBeVisible()
-    await expect(feed.getByRole("button", { name: /switch workspace$/ })).toBeVisible()
+    // The workspace avatar is the sidebar's only button (SHO-220): Home has no
+    // hamburger, and the title is a title rather than a workspace switcher.
+    await expect(feed.getByRole("button", { name: /open workspace sidebar$/ })).toBeVisible()
+    await expect(feed.getByRole("button", { name: /switch workspace$/ })).toHaveCount(0)
+  })
+
+  test("the workspace avatar opens the sidebar, and the drawer closes again", async ({ page }) => {
+    await page.goto("/home")
+    const feed = page.getByTestId("mobile-home-feed")
+    const avatar = feed.getByRole("button", { name: /open workspace sidebar$/ })
+    await expect(avatar).toBeVisible({ timeout: 30_000 })
+    await avatar.click()
+    const sidebar = page.getByLabel("App sidebar")
+    await expect(sidebar).toBeVisible({ timeout: 15_000 })
+    await expect(sidebar.getByText("Channels", { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+  })
+
+  test("a project is a screen you go into: Back, not a hamburger", async ({ page }) => {
+    await page.goto(`/projects/${seed.projectIds[1]}`)
+    // SHO-220: a project header never opens the workspace sidebar; its leading
+    // control pops back to Home, where the avatar is.
+    const back = page.getByTestId("project-native-back")
+    await expect(back).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByTestId("project-native-sidebar")).toHaveCount(0)
+    await back.click()
+    await expect(page).not.toHaveURL(new RegExp(`/projects/${seed.projectIds[1]}`), { timeout: 30_000 })
   })
 
   test("tapping a project on Home opens the project", async ({ page }) => {

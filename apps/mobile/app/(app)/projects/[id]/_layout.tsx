@@ -67,7 +67,6 @@ import {
   chatActivityEvents,
 } from "../../../../lib/chat-session-events";
 import { deliverPendingDesktopIslandNewChat } from "../../../../lib/desktop-island";
-import { projectSidebarEvents } from "../../../../lib/project-sidebar-events";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
 import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
@@ -3786,9 +3785,12 @@ export default observer(function ProjectLayout() {
       !!(window as any).shogoDesktop?.isDesktop
         ? handleOpenCodeWorkbench
         : undefined,
-    onOpenSidebar:
+    onBack:
       Platform.OS !== "web"
-        ? () => projectSidebarEvents.requestOpenProject(projectId!)
+        ? () => {
+            if (router.canGoBack()) router.back();
+            else router.replace("/(app)/home" as any);
+          }
         : undefined,
     idePrimarySideBarPosition,
     onIdePrimarySideBarPositionChange: setIdePrimarySideBarPosition,

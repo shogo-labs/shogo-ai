@@ -134,8 +134,8 @@ export interface ProjectTopBarProps {
    */
   onCanvasPrewarm?: () => void;
   onOpenCodeWorkbench?: () => void;
-  /** Native phone only: open the shared drawer on this project's chat list. */
-  onOpenSidebar?: () => void;
+  /** Native phone only: back to Home (a project never gets a hamburger). */
+  onBack?: () => void;
   idePrimarySideBarPosition?: IdePrimarySideBarPosition;
   onIdePrimarySideBarPositionChange?: (
     position: IdePrimarySideBarPosition,

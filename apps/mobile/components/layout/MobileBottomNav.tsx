@@ -346,6 +346,17 @@ export function MobileBottomNav() {
       setSettingsOpen(true);
     },
   };
+  // In a project the ⚙️ is that project's settings, the way Slack's channel
+  // details are — workspace settings stay reachable from the sidebar.
+  const projectMoreItem = {
+    id: "more",
+    label: "More",
+    Icon: Settings,
+    onPress: () => {
+      setOpenProjectSettings(true);
+      setSettingsOpen(true);
+    },
+  };
   const projectItems = [
     {
       id: "chat",
@@ -371,7 +382,7 @@ export function MobileBottomNav() {
       Icon: ClipboardList,
       onPress: () => openProjectSurface("plans"),
     },
-    moreItem,
+    projectMoreItem,
   ];
 
   // The team vs. personal tab set (and order) is owned by the experience

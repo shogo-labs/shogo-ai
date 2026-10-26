@@ -818,10 +818,11 @@ export const api = {
     return res.data
   },
 
-  async listAgentTasks(http: HttpClient, params: { status?: string; projectId?: string } = {}) {
+  async listAgentTasks(http: HttpClient, params: { status?: string; projectId?: string; workspaceId?: string } = {}) {
     const query = new URLSearchParams()
     if (params.status) query.set('status', params.status)
     if (params.projectId) query.set('projectId', params.projectId)
+    if (params.workspaceId) query.set('workspaceId', params.workspaceId)
     const suffix = query.toString() ? `?${query.toString()}` : ''
     const res = await http.get<{ ok?: boolean; items?: AgentTask[] }>(`/api/agent-tasks${suffix}`)
     return res.data?.items ?? []
