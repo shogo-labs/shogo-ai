@@ -76,9 +76,10 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
-    # Two phone projects over four specs. The stack itself (SQLite push, API,
-    # Metro web) takes several minutes of this on a cold runner.
-    timeout-minutes: 25
+    # Measured on the first green PR run: 5m of setup (WebKit download, Metro,
+    # packages) + 20m of specs = 22m50s of wall clock. 40 leaves room for a
+    # loaded runner without letting a wedged job hold a runner for an hour.
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
