@@ -76,6 +76,15 @@ they're managed separately as YAML/JSON files under this directory:
 - `alerts/metal-resumed-wake-slow.yaml` — warns when snapshot resumes
   (`metal.wake_total_ms{mode="resumed"}`, the API's whole /assign time) pass
   5s at p95 for 15+ minutes.
+- `alerts/metal-time-to-ready-slow.yaml` — warns when the user-visible open
+  time (`metal.time_to_ready_ms`, first /assign attempt to ready URL,
+  including timeouts and retries) passes 60s at p95 for 15+ minutes.
+- `alerts/metal-assign-timeouts.yaml` — warns when a host's /assign runs past
+  the API's 30s budget 10+ times in 15 minutes (`metal.host_errors{reason="timeout"}`;
+  each one is a retry the user waits through).
+- `alerts/metal-repo-hydrate-failing.yaml` — warns when 5+ opens on a host in
+  30 minutes fail to restore git history (`metal.repo_hydrate{mode="failed"}`;
+  they run on the source's `.git` with git writes blocked).
 - `alerts/metal-cold-boot-ratio-high.yaml` — warns when cold boots exceed 40%
   of wakes that needed work for 30+ minutes (snapshots being discarded or
   never taken; the 2026-10 20s-wake regression).

@@ -205,6 +205,8 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
           totalMs: r.totalMs,
           staleReason: r.staleReason,
           bootRootfsIdentity: r.bootRootfsIdentity,
+          repo: r.repo,
+          lateWake: r.lateWake,
         })
       }
 

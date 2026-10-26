@@ -233,6 +233,62 @@ export class RepoHydrateRefusedError extends Error {
 export class RepoAdoptUncertainError extends Error {}
 
 /**
+ * `repoUntrustedReason` while an assign-time repo restore finishes behind an
+ * open that already returned (see `hydrateRepoAtAssign`).
+ */
+/** How long a finished open waits for the retry that reports it (see reportOpen). */
+const LATE_WAKE_TTL_MS = 15 * 60_000
+
+export const REPO_DEFERRED_REASON = 'repo hydrate still downloading in the background'
+
+/** The assign-time repo restore, as reported to the control plane. */
+export interface RepoRestoreInfo {
+  /** `deferred`: the open returned on the source's `.git`; the history swaps in later. */
+  mode: 'foreground' | 'deferred' | 'none' | 'failed'
+  bytes: number
+  bundles: number
+  /** How long the open itself waited on it. */
+  foregroundMs: number
+}
+
+/** A repo restore up to (not including) the swap into the live tree. */
+type RepoStage =
+  | { kind: 'none' }
+  /** Legacy guest: overlaid in place, nothing left to swap. */
+  | { kind: 'applied'; parentEtag?: string; bytes: number }
+  | {
+      kind: 'staging'
+      parentEtag?: string
+      keepPaths: string[]
+      bytes: number
+      bundles: number
+      /** The guest can refuse a late swap once the workspace is in use. */
+      canDefer: boolean
+      /** For logs: what is being restored. */
+      describe: string
+      /** The download into the staging dir, already running. */
+      download: Promise<void>
+    }
+
+/** True if `p` settles (either way) within `ms`. Never throws. */
+async function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      p.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
  * The top-level paths whose durable source is not older than the durable repo.
  * When the repo's age is unknown, nothing is kept (the legacy full reset).
  *
@@ -566,6 +622,8 @@ export interface AssignedVm {
    * another VM's write and never grounds for promotion.
    */
   repoLinked?: boolean
+  /** How the assign-time repo restore went, reported once with the open. Memory only. */
+  repoRestore?: RepoRestoreInfo
   /** Last `repoHeadSha` the guest reported; export when it changes. */
   repoHeadSha?: string
   /**
@@ -936,6 +994,8 @@ export class MetalWarmPool {
   private inFlight = new Set<string>()
   /** Collapses concurrent open (assign|resume) calls for the same project. */
   private openFlight = new Singleflight<OpenResult | PrewarmedResult | null>()
+  /** Last finished non-reused open per runtime key, for `lateWake`. */
+  private lastOpen = new Map<string, LateWake>()
   /** Why the most recent resume attempt for a project declined its snapshot; read by open(). */
   private lastStaleReason = new Map<string, StaleReason>()
   /** Collapses concurrent suspend calls for the same project. */
@@ -1869,6 +1929,7 @@ export class MetalWarmPool {
       return done({ handle: a.handle, mode: 'assigned', staleReason, bootRootfsIdentity: this.bootRootfsIdentity(a) })
     })
     if (r?.mode === 'prewarmed') return r
+    const reported = this.reportOpen(projectId, r as OpenResult)
     // Always-on: paid tiers (control plane sets SHOGO_ALWAYS_ON) must never be
     // idle-suspended by the reaper. Re-assert on EVERY open — this is the one
     // path with `env`, so it also (re)applies the flag after a resume (which
@@ -1885,9 +1946,48 @@ export class MetalWarmPool {
         this.writeLive(a)
       }
     }
-    // openFlight value is never null here (assign throws on failure), but keep
-    // the type honest for canResume races.
-    return r as OpenResult
+    return reported
+  }
+
+  /**
+   * Attach what the control plane needs to see how an open went, and keep a
+   * copy for the slow case. The control plane stops waiting on /assign after
+   * 30s, so a slow open's phases die with the request that timed out; its
+   * retry is then a `reused` hit. That retry gets the stashed open as
+   * `lateWake`, once, so the slow opens are exactly the ones still measured.
+   */
+  private reportOpen(projectId: string, r: OpenResult): OpenResult {
+    if (r.reused) {
+      const late = this.lastOpen.get(projectId)
+      this.lastOpen.delete(projectId)
+      if (late && Date.now() - late.at <= LATE_WAKE_TTL_MS) return { ...r, lateWake: late }
+      return r
+    }
+    const a = this.assigned.get(projectId)
+    const repo = r.mode === 'assigned' ? a?.repoRestore : undefined
+    if (a) a.repoRestore = undefined
+    const out: OpenResult = repo ? { ...r, repo } : r
+    const late: LateWake = {
+      at: Date.now(),
+      mode: r.mode,
+      ...(r.source ? { source: r.source } : {}),
+      ...(r.staleReason ? { staleReason: r.staleReason } : {}),
+      phases: r.phases ?? {},
+      totalMs: r.totalMs ?? 0,
+      ...(repo ? { repo } : {}),
+    }
+    this.lastOpen.set(projectId, late)
+    if (this.lastOpen.size > 500) {
+      const cutoff = Date.now() - LATE_WAKE_TTL_MS
+      for (const [k, v] of this.lastOpen) if (v.at < cutoff) this.lastOpen.delete(k)
+    }
+    console.log(
+      `[pool] opened ${projectId} mode=${r.mode}${r.source ? `/${r.source}` : ''}` +
+        `${r.staleReason ? ` stale=${r.staleReason}` : ''} total=${r.totalMs ?? '?'}ms` +
+        `${repo ? ` repo=${repo.mode}(${repo.bundles}b/${repo.bytes}B in ${repo.foregroundMs}ms)` : ''} ` +
+        `phases=${JSON.stringify(r.phases ?? {})}`,
+    )
+    return out
   }
 
   /** Claim + assign a warm VM to a project (or boot one on a cold miss). */
@@ -2116,13 +2216,17 @@ export class MetalWarmPool {
     // member's files each turn and is exported under the runtime key. Skipping
     // the hydrate leaves the replacement VM create-only against an archive
     // that already exists, so every later export is refused as a conflict.
+    let repoDeferred = false
     try {
       // A published runtime never commits, and resetting its tree to a `.git`
       // HEAD would replace the source it just restored.
       const r = publishedSourceId(projectId)
         ? { hydrated: false as const, parentEtag: undefined }
-        : await timer.time('hydrate_repo', () => this.hydrateRepo(projectId, vm.handle, env, sourceTimes))
-      if (r.hydrated) {
+        : await timer.time('hydrate_repo', () => this.hydrateRepoAtAssign(a, vm.handle, env, sourceTimes))
+      if (r === 'deferred') {
+        // finishRepoDeferred owns the rest, including clearing repoHydratePending.
+        repoDeferred = true
+      } else if (r.hydrated) {
         a.repoParentEtag = r.parentEtag
         // A workspace runtime has no source backup of its own (members are
         // backed up per project), so the durable merged-root repo is what
@@ -2130,7 +2234,7 @@ export class MetalWarmPool {
         // refused a durable snapshot push and every wake would cold-boot.
         if (projectId.startsWith('ws:')) a.workspaceOrigin = 'backup'
       }
-      a.repoLinked = true
+      if (!repoDeferred) a.repoLinked = true
     } catch (err: any) {
       const reason = `repo hydrate failed at assign (${err?.message ?? err})`
       this.distrustRepo(a, reason)
@@ -2141,11 +2245,13 @@ export class MetalWarmPool {
         err?.message ?? err,
       )
     } finally {
-      a.repoHydratePending = false
-      a.repoHeadSha = undefined
-      a.repoExportedHeadSha = undefined
-      a.repoExportSha = undefined
-      this.writeLive(a)
+      if (!repoDeferred) {
+        a.repoHydratePending = false
+        a.repoHeadSha = undefined
+        a.repoExportedHeadSha = undefined
+        a.repoExportSha = undefined
+        this.writeLive(a)
+      }
     }
 
     // Server-backed published VM: overlay the live site's writable state
@@ -3297,13 +3403,32 @@ export class MetalWarmPool {
     env: Record<string, string>,
     sourceTimes: Record<string, number | null> = {},
   ): Promise<{ hydrated: boolean; parentEtag?: string; keptPaths?: string[] }> {
+    const stage = await this.prepareRepoStage(projectId, handle, env, sourceTimes)
+    if (stage.kind === 'none') return { hydrated: false }
+    if (stage.kind === 'applied') return { hydrated: true, parentEtag: stage.parentEtag }
+    await stage.download
+    return this.adoptRepoStage(projectId, handle, env, stage)
+  }
+
+  /**
+   * Everything before the swap: read the durable lineage, probe the guest and
+   * START the download into the staging dir (returned as `download`, not
+   * awaited). Staging never touches the live tree, which is what lets an open
+   * stop waiting for it.
+   */
+  private async prepareRepoStage(
+    projectId: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    sourceTimes: Record<string, number | null>,
+  ): Promise<RepoStage> {
     // A manifest is authoritative once it exists, so the tarball is never read then.
     const read = await this.repoManifest(projectId)
-    if (read) return this.hydrateRepoFromBundles(projectId, handle, env, read, sourceTimes)
+    if (read) return this.prepareRepoStageFromBundles(projectId, handle, env, read, sourceTimes)
     const ref = await this.repoRef(projectId)
     if (!ref) {
       console.log(`[pool] no durable repo for ${projectId} — guest keeps its seeded .git`)
-      return { hydrated: false }
+      return { kind: 'none' }
     }
     // Stage, then have the guest swap `.git` in and reset the tree to HEAD.
     // Overlaying straight onto the live `.git` leaves a template seed commit
@@ -3314,7 +3439,7 @@ export class MetalWarmPool {
       console.log(`[pool] guest has no /pool/repo-hydrated — overlaying ${projectId} repo the legacy way`)
       await this.applyArchive(handle, env, ref, `${projectId} repo`)
       console.log(`[pool] hydrated .git for ${projectId} (${ref.bytes} bytes, etag=${ref.etag ?? 'none'})`)
-      return { hydrated: true, parentEtag: ref.etag ?? undefined }
+      return { kind: 'applied', parentEtag: ref.etag ?? undefined, bytes: ref.bytes }
     }
 
     const keepPaths = repoKeepPaths(sourceTimes, ref.lastModified ?? null)
@@ -3324,13 +3449,16 @@ export class MetalWarmPool {
           `paths out of the reset — leaving the tree as hydrated`,
       )
     }
-    await this.applyArchive(handle, env, ref, `${projectId} repo`, REPO_STAGING_DIR)
-    await this.adoptStagedRepo(handle, env, keepPaths)
-    console.log(
-      `[pool] hydrated .git for ${projectId} (${ref.bytes} bytes, etag=${ref.etag ?? 'none'}` +
-        `${keepPaths.length ? `, kept newer source at ${keepPaths.join(', ')}` : ''})`,
-    )
-    return { hydrated: true, parentEtag: ref.etag ?? undefined, keptPaths: keepPaths }
+    return {
+      kind: 'staging',
+      parentEtag: ref.etag ?? undefined,
+      keepPaths,
+      bytes: ref.bytes,
+      bundles: 0,
+      canDefer: probe.ifIdle === true,
+      describe: `(${ref.bytes} bytes, etag=${ref.etag ?? 'none'}`,
+      download: this.applyArchive(handle, env, ref, `${projectId} repo`, REPO_STAGING_DIR),
+    }
   }
 
   /**
@@ -3338,13 +3466,13 @@ export class MetalWarmPool {
    * bundle into the staging dir, then adopts it like a tarball. A guest without
    * the capability is refused, not handed the stale tarball.
    */
-  private async hydrateRepoFromBundles(
+  private async prepareRepoStageFromBundles(
     projectId: string,
     handle: FcVmHandle,
     env: Record<string, string>,
     read: RepoManifestRead,
     sourceTimes: Record<string, number | null>,
-  ): Promise<{ hydrated: boolean; parentEtag?: string; keptPaths?: string[] }> {
+  ): Promise<RepoStage> {
     const probe = await this.callRepoHydrated(handle, env, { probe: true })
     if (probe?.bundles !== true) {
       throw new Error(
@@ -3362,7 +3490,7 @@ export class MetalWarmPool {
     const totalBytes = bundles.reduce((n, b) => n + b.bytes, 0)
     const downloadMs = Math.max(this.cfg.hydrateTimeoutMs, this.hydrateBudgetMs(totalBytes))
     // Staging only: a failure here leaves the live tree exactly as it was.
-    await this.callRepoBundlesHydrate(
+    const download = this.callRepoBundlesHydrate(
       handle,
       env,
       {
@@ -3373,22 +3501,178 @@ export class MetalWarmPool {
       },
       downloadMs + this.repoHydratedSlackMs,
     )
-    await this.adoptStagedRepo(handle, env, keepPaths)
+    return {
+      kind: 'staging',
+      parentEtag: read.etag ?? undefined,
+      keepPaths,
+      bytes: totalBytes,
+      bundles: bundles.length,
+      canDefer: probe.ifIdle === true,
+      describe: `from ${bundles.length} bundle(s) (${totalBytes} bytes, manifest etag=${read.etag ?? 'none'}`,
+      download,
+    }
+  }
+
+  /** Swap a fully downloaded stage in. `ifIdle`: the guest refuses (409) once the workspace has been used. */
+  private async adoptRepoStage(
+    projectId: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    stage: Extract<RepoStage, { kind: 'staging' }>,
+    opts: { ifIdle?: boolean } = {},
+  ): Promise<{ hydrated: boolean; parentEtag?: string; keptPaths?: string[] }> {
+    const { keepPaths } = stage
+    await this.adoptStagedRepo(handle, env, keepPaths, opts)
     console.log(
-      `[pool] hydrated .git for ${projectId} from ${bundles.length} bundle(s) (${totalBytes} bytes, ` +
-        `manifest etag=${read.etag ?? 'none'}${keepPaths.length ? `, kept newer source at ${keepPaths.join(', ')}` : ''})`,
+      `[pool] hydrated .git for ${projectId} ${stage.describe}` +
+        `${keepPaths.length ? `, kept newer source at ${keepPaths.join(', ')}` : ''})`,
     )
-    return { hydrated: true, parentEtag: read.etag ?? undefined, keptPaths: keepPaths }
+    return { hydrated: true, parentEtag: stage.parentEtag, keptPaths: keepPaths }
+  }
+
+  /**
+   * The assign-time repo restore, bounded by `repoForegroundMs`.
+   *
+   * Source, data and home are already in place, so the guest can serve on the
+   * source's own `.git`. If the history download is still running when the
+   * budget runs out, the open returns now and {@link finishRepoDeferred} swaps
+   * the history in afterwards, but only while nobody has used the workspace
+   * (the guest enforces that; see `ifIdle` on /pool/repo-hydrated). A guest
+   * that cannot enforce it is waited for, exactly as before.
+   */
+  private async hydrateRepoAtAssign(
+    a: AssignedVm,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    sourceTimes: Record<string, number | null>,
+  ): Promise<{ hydrated: boolean; parentEtag?: string } | 'deferred'> {
+    const t0 = performance.now()
+    let outcome: RepoRestoreInfo['mode'] = 'failed'
+    let bytes = 0
+    let bundles = 0
+    try {
+      const stage = await this.prepareRepoStage(a.projectId, handle, env, sourceTimes)
+      if (stage.kind !== 'none') bytes = stage.bytes
+      if (stage.kind === 'staging') bundles = stage.bundles
+      if (stage.kind === 'none') {
+        outcome = 'none'
+        return { hydrated: false }
+      }
+      if (stage.kind === 'applied') {
+        metrics.inc(M.repoHydrateBytes, stage.bytes)
+        outcome = 'foreground'
+        return { hydrated: true, parentEtag: stage.parentEtag }
+      }
+      metrics.inc(M.repoHydrateBytes, stage.bytes)
+      metrics.inc(M.repoHydrateBundles, stage.bundles)
+      const budget = this.cfg.repoForegroundMs
+      if (stage.canDefer && budget > 0) {
+        const finished = await settlesWithin(stage.download, budget)
+        if (!finished) {
+          outcome = 'deferred'
+          this.deferRepoHydrate(a, handle, env, stage, t0)
+          return 'deferred'
+        }
+      }
+      await stage.download
+      const r = await this.adoptRepoStage(a.projectId, handle, env, stage)
+      outcome = 'foreground'
+      return r
+    } finally {
+      const ms = Math.round(performance.now() - t0)
+      a.repoRestore = { mode: outcome, bytes, bundles, foregroundMs: ms }
+      metrics.inc(`${M.repoHydrate}{outcome="${outcome}"}`)
+      if (outcome !== 'deferred') metrics.inc(M.repoHydrateMs, ms)
+    }
+  }
+
+  private deferRepoHydrate(
+    a: AssignedVm,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    stage: Extract<RepoStage, { kind: 'staging' }>,
+    t0: number,
+  ): void {
+    // Persisted, so an agent restart mid-download leaves the VM untrusted for
+    // repo writes (today's failure state) rather than linked to a lineage its
+    // `.git` never adopted. Cleared once the swap lands.
+    a.repoUntrustedReason = REPO_DEFERRED_REASON
+    this.writeLive(a)
+    console.warn(
+      `[pool] repo hydrate for ${a.projectId} still downloading after ${this.cfg.repoForegroundMs}ms ` +
+        `${stage.describe}) — serving the source's .git now, finishing in the background`,
+    )
+    void this.finishRepoDeferred(a, handle, env, stage, t0)
+  }
+
+  private async finishRepoDeferred(
+    a: AssignedVm,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    stage: Extract<RepoStage, { kind: 'staging' }>,
+    t0: number,
+  ): Promise<void> {
+    let outcome: 'adopted' | 'busy' | 'failed' | 'abandoned' = 'failed'
+    try {
+      await stage.download
+      if (this.assigned.get(a.projectId) !== a) {
+        outcome = 'abandoned'
+        return
+      }
+      const r = await this.adoptRepoStage(a.projectId, handle, env, stage, { ifIdle: true })
+      if (a.repoUntrustedReason === REPO_DEFERRED_REASON) a.repoUntrustedReason = undefined
+      a.repoParentEtag = r.parentEtag
+      if (r.hydrated && a.projectId.startsWith('ws:')) a.workspaceOrigin = 'backup'
+      a.repoLinked = true
+      outcome = 'adopted'
+    } catch (err: any) {
+      if (this.assigned.get(a.projectId) !== a) {
+        outcome = 'abandoned'
+        return
+      }
+      const busy = err instanceof RepoHydrateRefusedError && err.status === 409
+      outcome = busy ? 'busy' : 'failed'
+      const reason = busy
+        ? 'repo hydrate finished after the workspace was in use — kept the source .git'
+        : `repo hydrate failed in the background (${err?.message ?? err})`
+      this.distrustRepo(a, reason)
+      if (err instanceof RepoAdoptUncertainError) this.distrustSource(a, reason)
+      console.error(
+        `[pool] deferred repo hydrate for ${a.projectId} ${busy ? 'not adopted' : 'failed'} — this VM stays ` +
+          `UNTRUSTED for repo.git and will NOT overwrite it:`,
+        busy ? reason : (err?.message ?? err),
+      )
+    } finally {
+      const ms = Math.round(performance.now() - t0)
+      metrics.inc(`${M.repoHydrateDeferred}{outcome="${outcome}"}`)
+      metrics.inc(M.repoHydrateMs, ms)
+      a.repoHydratePending = false
+      a.repoHeadSha = undefined
+      a.repoExportedHeadSha = undefined
+      a.repoExportSha = undefined
+      if (this.assigned.get(a.projectId) === a) this.writeLive(a)
+      console.log(`[pool] deferred repo hydrate for ${a.projectId}: ${outcome} after ${ms}ms`)
+    }
   }
 
   /** Swap the staged `.git` in and reset the tree. Past the deadline the guest declines. */
-  private async adoptStagedRepo(handle: FcVmHandle, env: Record<string, string>, keepPaths: string[]): Promise<void> {
+  private async adoptStagedRepo(
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    keepPaths: string[],
+    opts: { ifIdle?: boolean } = {},
+  ): Promise<void> {
     const timeoutMs = this.cfg.hydrateTimeoutMs
     try {
       await this.callRepoHydrated(
         handle,
         env,
-        { stagingDir: REPO_STAGING_DIR, timeoutMs, ...(keepPaths.length ? { keepPaths } : {}) },
+        {
+          stagingDir: REPO_STAGING_DIR,
+          timeoutMs,
+          ...(keepPaths.length ? { keepPaths } : {}),
+          ...(opts.ifIdle ? { ifIdle: true } : {}),
+        },
         timeoutMs + this.repoHydratedSlackMs,
       )
     } catch (err: any) {
@@ -3459,9 +3743,9 @@ export class MetalWarmPool {
   protected async callRepoHydrated(
     handle: FcVmHandle,
     env: Record<string, string>,
-    body: { probe: true } | { stagingDir: string; timeoutMs?: number; keepPaths?: string[] },
+    body: { probe: true } | { stagingDir: string; timeoutMs?: number; keepPaths?: string[]; ifIdle?: boolean },
     waitMs: number = this.cfg.hydrateTimeoutMs,
-  ): Promise<{ deadline?: boolean; bundles?: boolean } | null> {
+  ): Promise<{ deadline?: boolean; bundles?: boolean; ifIdle?: boolean } | null> {
     const token = env.RUNTIME_AUTH_SECRET
     const res = await fetch(`${handle.agentUrl}/pool/repo-hydrated`, {
       method: 'POST',
@@ -3471,7 +3755,7 @@ export class MetalWarmPool {
     })
     if (res.status === 404) return null
     if (!res.ok) throw new RepoHydrateRefusedError(res.status, await res.text())
-    return ((await res.json().catch(() => ({}))) ?? {}) as { deadline?: boolean; bundles?: boolean }
+    return ((await res.json().catch(() => ({}))) ?? {}) as { deadline?: boolean; bundles?: boolean; ifIdle?: boolean }
   }
 
   protected repoRef(projectId: string): Promise<ArchiveRef | null> {
@@ -6395,4 +6679,19 @@ export interface OpenResult {
   totalMs?: number
   /** Cold boot only: why no snapshot was resumed. */
   staleReason?: StaleReason
+  /** Fresh assign only: how the git history restore went. */
+  repo?: RepoRestoreInfo
+  /** `reused` only: the open this VM came from, if nobody received it (see reportOpen). */
+  lateWake?: LateWake
+}
+
+/** A finished open, kept for the retry that follows a control-plane timeout. */
+export interface LateWake {
+  at: number
+  mode: 'assigned' | 'resumed'
+  source?: 'local' | 'store'
+  staleReason?: StaleReason
+  phases: Record<string, number>
+  totalMs: number
+  repo?: RepoRestoreInfo
 }

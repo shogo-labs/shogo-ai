@@ -232,6 +232,19 @@ export const M = {
   // Unmigrated projects kept on the tarball because the guest's LFS push failed.
   repoBundleLfsFallback: 'metal_repo_bundle_lfs_fallback_total',
   repoExportUnchanged: 'metal_repo_export_unchanged_total',
+  // Assign-time git history restore, `{outcome=}`: `foreground` (done before
+  // the open returned), `deferred` (open returned on the source's .git, the
+  // download finishing behind it), `none` (no durable repo), `failed`.
+  repoHydrate: 'metal_repo_hydrate_total',
+  // How each deferred restore ended, `{outcome=}`: `adopted`, `busy` (the
+  // workspace was in use by then, so it was left on the source's .git),
+  // `failed`, `abandoned` (the VM went away first).
+  repoHydrateDeferred: 'metal_repo_hydrate_deferred_total',
+  // Bytes and bundles the guest was asked to download, and the wall time of
+  // each restore (foreground or deferred) — divide by repoHydrate for averages.
+  repoHydrateBytes: 'metal_repo_hydrate_bytes_total',
+  repoHydrateBundles: 'metal_repo_hydrate_bundles_total',
+  repoHydrateMs: 'metal_repo_hydrate_ms_total',
   // Guest-side failures scraped from the per-VM serial console by serial-watcher.
   // These are the ONLY fleet-wide signal for in-guest breakage that survives a
   // guest too broken to ship its own telemetry (e.g. TLS failing on clock skew).

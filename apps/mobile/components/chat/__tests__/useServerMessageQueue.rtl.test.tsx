@@ -407,23 +407,54 @@ describe("useServerMessageQueue", () => {
   })
 
   /**
-   * SHO-198: the click hides the row, and the reply it replaces is already
-   * stopped — so if the dispatch never claims the row, the message is gone from
-   * both the dock and the transcript with nothing to bring it back. A row the
-   * server leaves `pending` is one nobody claimed: the turn is not coming, and
-   * the message goes back to the dock for a retry instead of waiting out the
-   * hide's safety timeout.
+   * SHO-205: the route dispatches the clicked row inside the POST, so a click
+   * that could not start is answered with the reason (a failed dispatch is an
+   * error answer, which is what the client throws). The row goes back in the
+   * dock carrying that reason — the message is never hidden with no turn and no
+   * explanation.
    */
-  test("a send now the server never claims comes back to the dock", async () => {
+  test("a failed answer puts the row back in the dock", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
+    postResponse = {
+      data: {
+        ok: false,
+        status: "failed",
+        error: { code: "dispatch_failed", message: "The runtime refused this message" },
+        data: { id: "q2", status: "failed" },
+      },
+    }
+
+    let failure: unknown
+    await act(async () => {
+      try {
+        await queueApi!.sendNow("q2")
+      } catch (error) {
+        failure = error
+      }
+    })
+    expect(String(failure)).toContain("The runtime refused this message")
+    expect(dockText(view)).toEqual(["first", "second"])
+    expect(turns).toEqual([])
+    expect(pendingIds).toEqual([])
+  })
+
+  /**
+   * The other half of SHO-205's client rule: a row the answer never claimed is
+   * not rescued by counting polls. The click's own answer is the only thing
+   * that reports a dispatch, so a `pending` row no longer means "three polls
+   * and it is a refusal" — only the hide's safety timeout brings it back.
+   */
+  test("a row still pending is not put back by counting polls", async () => {
     reset()
     const view = render(<Probe isStreaming />)
     act(() => runInAction(() => { collection.all.push(row("q1", 0, "first"), row("q2", 1, "second")) }))
     await act(async () => { await queueApi!.sendNow("q2") })
     expect(dockText(view)).toEqual(["first"])
 
-    // The row is still `pending` on every poll, so no turn ever started.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5200)) })
-    expect(queueApi!.queuedMessages.map((m) => m.id)).toEqual(["q1", "q2"])
+    expect(dockText(view)).toEqual(["first"])
     expect(turns).toEqual([])
     expect(pendingIds).toEqual([])
     view.unmount()

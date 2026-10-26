@@ -3,7 +3,8 @@
 #
 # Fixes the connection-drop class (the 2026-06-25 `SSL SYSCALL error: EOF
 # detected` flap that rotted sub_from_india for hours), independent of data
-# conflicts. Two changes, applied to all three CNPG clusters:
+# conflicts. Two changes, applied to both CNPG clusters (US + EU; India was
+# decommissioned 2026-07-07):
 #
 #   1. Append TCP keepalives to every subscriber conninfo so an idle/slow
 #      cross-region socket gets probed instead of silently reaped by a NAT/LB.
@@ -35,7 +36,6 @@ KEEPALIVES='keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_co
 REGIONS=(
 "context-cp7l2tcj76q platform-pg-2 US"
 "context-cbbetkypxva platform-pg-1 EU"
-"context-c4w44igvdfa platform-pg-2 India"
 )
 
 echo "############ 1. subscriber conninfo keepalives ############"

@@ -72,11 +72,10 @@ import {
 } from '../services/project-attachment.service'
 import {
   clearActiveTurn,
-  markTurnEnded,
+  endTurnAndDrain,
   markTurnStarted,
   startTurnHeartbeat,
 } from '../services/chat-turn-state.service'
-import { dispatchNext } from '../services/chat-queue-dispatcher.service'
 import { historySeedForTurn, lastUserPromptText } from '../services/chat-history-seed.service'
 import { trackUsageFromStream } from './project-chat'
 
@@ -1193,14 +1192,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             },
           ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err)).finally(() => {
             stopTurnHeartbeat?.()
-            const ended = turnId
-              ? markTurnEnded(sessionId, turnId)
-              : Promise.resolve()
-            void ended
-              .then(() => dispatchNext(sessionId))
-              .catch((error) =>
-                console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
-              )
+            // Clearing the turn hands the session on (chat-turn-state): its own
+            // queue first, then the thread's wakes. Every ender does it there.
+            void endTurnAndDrain(sessionId, turnId).catch((error) =>
+              console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
+            )
           })
 
           // Multi-project auto-checkpoint for the NON-anchor attached projects
@@ -1282,14 +1278,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         )
       }
       if (!streamHandedOff) {
-        const ended = activityTurnId
-          ? markTurnEnded(sessionId, activityTurnId)
-          : Promise.resolve()
-        void ended
-          .then(() => dispatchNext(sessionId))
-          .catch((error) =>
-            console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
-          )
+        void endTurnAndDrain(sessionId, activityTurnId).catch((error) =>
+          console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
+        )
       }
     }
   }
@@ -1525,10 +1516,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         )
       }
       if (sessionId && response.ok) {
-        await clearActiveTurn({
-          id: sessionId,
-          OR: [{ workspaceId }, { project: { workspaceId } }],
-        }).catch((error) =>
+        await clearActiveTurn(
+          {
+            id: sessionId,
+            OR: [{ workspaceId }, { project: { workspaceId } }],
+          },
+          // Send now dispatches the row itself and answers with the outcome;
+          // starting the queue here too would race it for the same turn.
+          { handOff: parsed?.handOff === 'caller' ? 'caller' : 'queue' },
+        ).catch((error) =>
           console.warn(`[WorkspaceChat] Failed to clear stopped chat ${sessionId}:`, error),
         )
       }

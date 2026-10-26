@@ -4,8 +4,9 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { getRuntimeManager } from '../lib/runtime'
+import { pinWorkspaceToHomeRegion } from '../lib/chat-region-pin'
 import { verifySessionAccess, type HookContext } from '../generated/chat-queued-message.hooks'
-import { dispatchNext } from '../services/chat-queue-dispatcher.service'
+import { dispatchNext, dispatchQueuedRow } from '../services/chat-queue-dispatcher.service'
 import { projectChatRoutes } from './project-chat'
 import { workspaceChatRoutes } from './workspace-chat'
 
@@ -48,17 +49,8 @@ function taskNotificationOf(value: string | null | undefined): Record<string, an
 }
 
 /**
- * How long after a "send now" the promoted row is asked for again.
- *
- * The stop clears the session's turn on a hop of its own, so the dispatch that
- * follows the click can still find the session busy and leave the row promoted
- * but unclaimed. The turn it would be waiting for is the one the click just
- * stopped, so nothing else is coming to move the queue along — without this,
- * "send now" stops the reply and then sends nothing (SHO-198).
+ * Both actions reorder or dispatch the queue, so they need write access to the session.
  */
-const SEND_NOW_DISPATCH_RETRY_MS = 2_000
-
-/** Both actions reorder or dispatch the queue, so they need write access to the session. */
 async function getAuthorizedRow(c: any, id: string): Promise<any | Response> {
   const queued = await (prisma as any).chatQueuedMessage.findUnique({ where: { id }, select: { sessionId: true } })
   if (!queued) return c.json({ error: { code: 'not_found', message: 'Queued message not found' } }, 404)
@@ -73,6 +65,7 @@ async function getAuthorizedRow(c: any, id: string): Promise<any | Response> {
           contextId: true,
           workspaceId: true,
           activeTurnId: true,
+          project: { select: { workspaceId: true } },
         },
       },
     },
@@ -88,6 +81,10 @@ async function stopActiveTurn(row: any, userId: string): Promise<void> {
     'X-Queue-User-Id': userId,
     'X-Billing-User-Id': userId,
   }
+  // `handOff: 'caller'` tells the stop route not to start the queue itself: this
+  // route dispatches the clicked row as soon as the turn is clear, and answers
+  // the click with what that came to. Two starters would race for one turn.
+  const body = JSON.stringify({ chatSessionId: row.sessionId, handOff: 'caller' })
   let response: Response
   if (row.session.contextType === 'project' && row.session.contextId) {
     response = await projectChatRoutes({
@@ -96,7 +93,7 @@ async function stopActiveTurn(row: any, userId: string): Promise<void> {
       new Request(`http://internal/projects/${encodeURIComponent(row.session.contextId)}/chat/stop`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ chatSessionId: row.sessionId }),
+        body,
       }),
     )
   } else if (row.session.workspaceId) {
@@ -109,7 +106,7 @@ async function stopActiveTurn(row: any, userId: string): Promise<void> {
       new Request(`http://internal/workspaces/${encodeURIComponent(row.session.workspaceId)}/chat/stop`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ chatSessionId: row.sessionId }),
+        body,
       }),
     )
   } else {
@@ -173,6 +170,15 @@ export function chatQueuedMessageActionsRoutes(): Hono {
     if (!userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
+    // Every write below (promote, claim, turn start) has to happen in the
+    // session's home region, or two regions claim the same row and insert the
+    // same `chat_messages.id`. Forwarding the whole click is the same pin the
+    // chat routes use, so the region that answers is the one that dispatches.
+    const workspaceId = row.session.workspaceId ?? row.session.project?.workspaceId ?? null
+    if (workspaceId) {
+      const pinned = await pinWorkspaceToHomeRegion(c, workspaceId)
+      if (pinned) return pinned
+    }
 
     const first = await (prisma as any).chatQueuedMessage.findFirst({
       where: { sessionId: row.sessionId, status: { in: ['pending', 'failed'] } },
@@ -194,32 +200,22 @@ export function chatQueuedMessageActionsRoutes(): Hono {
         },
       }, 502)
     }
-    // Ask again shortly if the first dispatch found the session still busy: the
-    // stop that clears the turn has a hop of its own, and by then the row is
-    // promoted and waiting. The retry runs only while the row is still queued,
-    // so a dispatch that did land — or a person who removed it — is left alone.
-    void dispatchNext(row.sessionId)
-      .then((started) => {
-        if (started) return
-        const retry = setTimeout(async () => {
-          try {
-            const still = await (prisma as any).chatQueuedMessage.findUnique({
-              where: { id },
-              select: { status: true },
-            })
-            if (still?.status === 'pending') await dispatchNext(row.sessionId)
-          } catch (error) {
-            console.warn(`[ChatQueue] Dispatch retry for ${id} failed:`, error)
-          }
-        }, SEND_NOW_DISPATCH_RETRY_MS)
-        // Never hold the process open for a retry nobody is waiting on.
-        ;(retry as any)?.unref?.()
-      })
-      .catch((error) => {
-        console.warn(`[ChatQueue] Dispatch after send now for ${id} failed:`, error)
-      })
+
+    // The stop is the preemption, so this row starts now — claimed by id, not
+    // "whatever the queue picks if it reads idle", and awaited so the click is
+    // answered with what actually happened instead of a promise a timer has to
+    // keep (SHO-205).
+    const outcome = await dispatchQueuedRow(row.sessionId, id)
     const updated = await (prisma as any).chatQueuedMessage.findUnique({ where: { id } })
-    return c.json({ ok: true, data: updated })
+    if (!outcome.started) {
+      return c.json({
+        ok: false,
+        status: 'failed',
+        error: { code: 'dispatch_failed', message: outcome.error },
+        data: updated,
+      }, 502)
+    }
+    return c.json({ ok: true, status: 'started', data: updated })
   })
 
   router.post('/:id/resume', async (c) => {

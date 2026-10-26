@@ -52,11 +52,10 @@ import {
 } from "../lib/chat-attachments"
 import {
   clearActiveTurn,
-  markTurnEnded,
+  endTurnAndDrain,
   markTurnStarted,
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
-import { dispatchNext } from "../services/chat-queue-dispatcher.service"
 import { historySeedForTurn, lastUserPromptText, summarizeSessionFromDb } from "../services/chat-history-seed.service"
 import { countLineChanges } from "../lib/tool-line-stats"
 import { fetchFromProjectRuntime } from "../lib/chat-runtime-fetch"
@@ -2016,14 +2015,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             console.error("[ProjectChat] Usage tracking error:", err)
           ).finally(() => {
             stopTurnHeartbeat?.()
-            const ended = turnId
-              ? markTurnEnded(incomingChatSessionId, turnId)
-              : Promise.resolve()
-            void ended
-              .then(() => dispatchNext(incomingChatSessionId))
-              .catch((error) =>
-                console.warn(`[ProjectChat] Failed to finish queued chat ${incomingChatSessionId}:`, error),
-              )
+            // Clearing the turn hands the session on (chat-turn-state): its own
+            // queue first, then the thread's wakes. Every ender does it there.
+            void endTurnAndDrain(incomingChatSessionId, turnId).catch((error) =>
+              console.warn(`[ProjectChat] Failed to finish queued chat ${incomingChatSessionId}:`, error),
+            )
           })
 
           chatSpan.setAttribute("chat.status", response.status)
@@ -2194,14 +2190,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err: any) =>
             console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
           )
-          const ended = activityTurnId
-            ? markTurnEnded(incomingChatSessionId, activityTurnId)
-            : Promise.resolve()
-          void ended
-            .then(() => dispatchNext(incomingChatSessionId))
-            .catch((error) =>
-              console.warn(`[ProjectChat] Failed to finish queued chat ${incomingChatSessionId}:`, error),
-            )
+          void endTurnAndDrain(incomingChatSessionId, activityTurnId).catch((error) =>
+            console.warn(`[ProjectChat] Failed to finish queued chat ${incomingChatSessionId}:`, error),
+          )
         }
       }
     } catch (error: any) {
@@ -2526,7 +2517,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         await silenceStoppedSession(chatSessionId, projectId)
       }
       if (typeof chatSessionId === "string" && chatSessionId && response.ok) {
-        await clearActiveTurn({ id: chatSessionId, contextId: projectId }).catch((error) =>
+        await clearActiveTurn(
+          { id: chatSessionId, contextId: projectId },
+          // Send now dispatches the row itself and answers with the outcome;
+          // starting the queue here too would race it for the same turn.
+          { handOff: parsed?.handOff === "caller" ? "caller" : "queue" },
+        ).catch((error) =>
           console.warn(`[ProjectChat] Failed to clear stopped chat ${chatSessionId}:`, error),
         )
       }
