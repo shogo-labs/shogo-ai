@@ -3785,13 +3785,13 @@ export default observer(function ProjectLayout() {
       !!(window as any).shogoDesktop?.isDesktop
         ? handleOpenCodeWorkbench
         : undefined,
-    onBack:
-      Platform.OS !== "web"
-        ? () => {
-            if (router.canGoBack()) router.back();
-            else router.replace("/(app)/home" as any);
-          }
-        : undefined,
+    // Back is the same handler on every platform: a narrow web viewport renders
+    // this same phone header, and an arrow that does nothing is worse than no
+    // arrow. Wide web and desktop never render it.
+    onBack: () => {
+      if (router.canGoBack()) router.back();
+      else router.replace("/(app)/home" as any);
+    },
     idePrimarySideBarPosition,
     onIdePrimarySideBarPositionChange: setIdePrimarySideBarPosition,
     ideEmbed: isIdeChatEmbed,
