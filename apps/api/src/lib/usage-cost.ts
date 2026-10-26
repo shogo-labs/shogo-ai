@@ -308,6 +308,16 @@ export function calculateHiggsfieldUsageCost(estimate: { rawUsd: number }): Usag
 }
 
 /**
+ * USD for one Lyria song. Google bills music generation flat per song (there is
+ * no token meter and no free tier), so the catalog's `usdPerRequest` is the
+ * whole cost — marked up like every other media charge.
+ */
+export function calculateMusicUsageCost(usdPerSong: number): UsageCostResult {
+  const rawUsd = Math.max(0, usdPerSong)
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+}
+
+/**
  * USD for a Genjutsu edit: the vendor's per-source-second rate for the chosen
  * resolution times the clip's length, marked up. Returns `null` when the model
  * has no rate for that resolution or the duration is unknown — callers must

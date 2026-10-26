@@ -128,11 +128,9 @@ export function toModelResponse(row: any) {
   }
 }
 
-// Providers we can discover live + fully route today. Google is intentionally
-// excluded until chat routing lands (see plan "Deferred"), so it can't be
-// half-enabled here. OpenRouter's catalog is public, so it discovers even
-// without a key.
-const DISCOVERY_PROVIDERS = new Set(['anthropic', 'openai', 'openrouter'])
+// Providers we can discover live + fully route today. OpenRouter's catalog is
+// public, so it discovers even without a key.
+const DISCOVERY_PROVIDERS = new Set(['anthropic', 'openai', 'openrouter', 'google'])
 
 interface DiscoveredModel {
   id: string
@@ -154,6 +152,10 @@ function openRouterPerMillion(v: unknown): number | undefined {
 /** OpenAI's /models lists embeddings, audio, image, moderation, etc. Keep only
  *  chat-capable text models so the picker isn't flooded. */
 const OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|realtime|live|dall-e|image|moderation|transcribe|search|babbage|davinci|ada|curie|codex|guard)/i
+
+/** Gemini's /models lists every modality on the account. The picker only wants
+ *  text chat, so drop the image, video, music, speech and embedding families. */
+const GOOGLE_NON_CHAT = /(embedding|imagen|veo|lyria|tts|aqa|omni|image|learnlm)/i
 
 async function discoverProviderModels(
   provider: string,
@@ -227,6 +229,38 @@ async function discoverProviderModels(
         .sort((a, b) => a.id.localeCompare(b.id))
       return { ok: true, models }
     }
+    if (provider === 'google') {
+      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000', {
+        headers: { 'x-goog-api-key': apiKey },
+        signal: AbortSignal.timeout(8000),
+      })
+      if (!res.ok) return { ok: false, models: [], error: `Google returned ${res.status}` }
+      const data = (await res.json()) as {
+        models?: Array<{
+          name: string
+          displayName?: string
+          inputTokenLimit?: number
+          supportedGenerationMethods?: string[]
+        }>
+      }
+      const models = (data.models || [])
+        .map((m) => ({
+          id: m.name.replace(/^models\//, ''),
+          displayName: m.displayName,
+          inputTokenLimit: m.inputTokenLimit,
+          methods: m.supportedGenerationMethods || [],
+        }))
+        .filter((m) => m.id && m.methods.includes('generateContent') && !GOOGLE_NON_CHAT.test(m.id))
+        .map((m) => ({
+          id: m.id,
+          displayName: m.displayName || m.id,
+          ...(Number.isFinite(m.inputTokenLimit) && (m.inputTokenLimit as number) > 0
+            ? { contextLength: m.inputTokenLimit }
+            : {}),
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id))
+      return { ok: true, models }
+    }
     return { ok: false, models: [], error: `unsupported provider: ${provider}` }
   } catch (err: any) {
     return { ok: false, models: [], error: `Cannot reach ${provider}: ${err?.message || err}` }
@@ -246,6 +280,7 @@ function inferFamily(provider: string, id: string): string {
     return 'other'
   }
   if (provider === 'openai') return 'gpt'
+  if (provider === 'google') return 'gemini'
   return 'other'
 }
 

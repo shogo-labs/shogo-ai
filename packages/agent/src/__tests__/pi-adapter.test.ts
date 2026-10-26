@@ -61,6 +61,15 @@ describe('resolveModel — custom OpenAI-compatible (DB) providers', () => {
     const model = resolveModel('custom', 'mimo-v2.5') as any
     expect(model.compat?.cacheControlFormat).toBe('anthropic')
   })
+
+  it('routes Gemini through the proxy chat-completions route, never straight to Google', () => {
+    const model = resolveModel('google', 'gemini-3.1-pro-preview') as any
+    expect(model.api).toBe('openai-completions')
+    expect(model.provider).toBe('openai')
+    expect(model.baseUrl).toBe('https://api.example.test/api/ai/v1')
+    expect(model.contextWindow).toBe(200_000)
+    expect(model.compat).toEqual({ supportsStore: false, supportsDeveloperRole: false })
+  })
 })
 
 describe('resolveModel — DB models from the dynamic registry', () => {

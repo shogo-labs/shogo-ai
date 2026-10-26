@@ -21,6 +21,10 @@ import {
   type ShogoLlmProvider,
 } from './llm/index.js'
 import {
+  createShogoMusicGenerator,
+  type ShogoMusicGenerator,
+} from './llm/music.js'
+import {
   DirectTelephonyClient,
   HostedRuntimeTokenClient,
   HostedTelephonyClient,
@@ -112,6 +116,18 @@ export interface ShogoClient<DB = unknown> {
   llm: ShogoLlmProvider | null
 
   /**
+   * Lyria music generation through the Shogo gateway, with the same
+   * credentials as {@link ShogoClient.llm} (no Google key needed). `null`
+   * when neither a runtime token nor a Shogo API key is available.
+   *
+   * ```ts
+   * const song = await shogo.generateMusic!({ prompt: 'a lo-fi beat about rain' })
+   * await Bun.write('public/rain.mp3', song.bytes)
+   * ```
+   */
+  generateMusic: ShogoMusicGenerator | null
+
+  /**
    * Voice module — Twilio + ElevenLabs telephony.
    *
    * `voice.telephony` resolves to:
@@ -150,6 +166,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   projects: ProjectsApi
   db: DB
   llm: ShogoLlmProvider | null
+  generateMusic: ShogoMusicGenerator | null
   voice: ShogoVoiceModule
   _http: HttpClient
 
@@ -203,6 +220,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     // `buildLlm` for precedence + warning rules (mirrors voice).
     this.shogoCloudUrl = config.shogoCloudUrl
     this.llm = this.buildLlm(config.shogoApiKey ?? null)
+    this.generateMusic = this.buildMusic(config.shogoApiKey ?? null)
 
     this.voice = {
       live: this.buildLive(config.shogoApiKey),
@@ -241,6 +259,14 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
         baseUrl: this.shogoCloudUrl,
       })
     }
+    return null
+  }
+
+  private buildMusic(shogoApiKey: string | null): ShogoMusicGenerator | null {
+    const runtimeToken =
+      typeof process !== 'undefined' ? process.env?.RUNTIME_AUTH_SECRET : undefined
+    if (runtimeToken) return createShogoMusicGenerator({ runtimeToken, baseUrl: this.shogoCloudUrl })
+    if (shogoApiKey) return createShogoMusicGenerator({ apiKey: shogoApiKey, baseUrl: this.shogoCloudUrl })
     return null
   }
 
@@ -332,6 +358,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   setShogoApiKey(key: string | null): void {
     this.shogoApiKey = key
     this.llm = this.buildLlm(key)
+    this.generateMusic = this.buildMusic(key)
     this.voice = {
       live: this.buildLive(key),
       telephony: this.buildTelephony(key),

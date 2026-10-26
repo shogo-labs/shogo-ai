@@ -31,6 +31,7 @@ import {
 } from '@mariozechner/pi-ai'
 import type { AgentMessage, StreamFn } from '@mariozechner/pi-agent-core'
 import {
+  getContextWindowTokens,
   getDynamicModel,
   getMaxOutputTokens,
   isAnthropicBacked,
@@ -93,6 +94,26 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
   // places prompt-cache breakpoints. The proxy maps the id to its apiModel.
   if (provider === 'custom' && isAnthropicBacked(dynamic)) {
     return resolveModel('anthropic', modelId)
+  }
+
+  // Gemini goes through the proxy's chat-completions route like a custom
+  // model: the proxy holds the Google key (cloud) or the stored one (desktop)
+  // and carries Gemini thought signatures in `reasoning_details`, which this
+  // provider already round-trips by tool-call id.
+  if (provider === 'google') {
+    return {
+      id: modelId,
+      name: modelId,
+      api: 'openai-completions',
+      provider: 'openai',
+      baseUrl: resolveBaseUrl('openai') ?? getDefaultBaseUrl('openai'),
+      reasoning: true,
+      input: ['text', 'image'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: getContextWindowTokens(modelId) ?? contextWindow,
+      maxTokens: getMaxOutputTokens(modelId),
+      compat: { supportsStore: false, supportsDeveloperRole: false },
+    } as Model<Api>
   }
 
   if (provider === 'custom') {

@@ -66,9 +66,9 @@ const KEY_PROVIDERS = [
 ] as const
 
 /** Providers we can prefill via live discovery. OpenRouter lists without a key. */
-const DISCOVERY_PROVIDERS = ['anthropic', 'openai', 'openrouter'] as const
+const DISCOVERY_PROVIDERS = ['anthropic', 'openai', 'openrouter', 'google'] as const
 type DiscoveryProviderId = (typeof DISCOVERY_PROVIDERS)[number]
-const KEY_GATED_DISCOVERY = new Set<DiscoveryProviderId>(['anthropic', 'openai'])
+const KEY_GATED_DISCOVERY = new Set<DiscoveryProviderId>(['anthropic', 'openai', 'google'])
 
 function isDiscoveryProvider(p: string): p is DiscoveryProviderId {
   return (DISCOVERY_PROVIDERS as readonly string[]).includes(p)
@@ -76,7 +76,7 @@ function isDiscoveryProvider(p: string): p is DiscoveryProviderId {
 
 const PROVIDER_OPTIONS = ['anthropic', 'openai', 'openrouter', 'google', 'local', 'custom'] as const
 const MODEL_TIER_OPTIONS = ['economy', 'standard', 'premium'] as const
-const MODEL_FAMILY_OPTIONS = ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'other'] as const
+const MODEL_FAMILY_OPTIONS = ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'gemini', 'other'] as const
 const MODEL_GENERATION_OPTIONS = ['current', 'legacy'] as const
 const MODEL_REASONING_EFFORT_OPTIONS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const
 

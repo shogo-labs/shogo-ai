@@ -652,6 +652,8 @@ export interface GatewayConfig {
   imageGenEnabled?: boolean
   /** Whether the generate_video tool is enabled (default: false — opt-in, billed per second) */
   videoGenEnabled?: boolean
+  /** Whether the generate_music tool is enabled (default: false — opt-in, billed per song) */
+  musicGenEnabled?: boolean
   /** Whether the generate_3d_model tool is enabled (default: false — opt-in, billed per task) */
   threeDGenEnabled?: boolean
   /** Whether memory tools are enabled (default: true) */
@@ -5715,6 +5717,7 @@ export class AgentGateway {
     const channelsGuideOn = cfg.channelsEnabled !== false
     const imageGuideOn = cfg.imageGenEnabled !== false
     const videoGuideOn = cfg.videoGenEnabled === true
+    const musicGuideOn = cfg.musicGenEnabled === true
     const threeDGuideOn = cfg.threeDGenEnabled === true
     const heartbeatGuideOn = cfg.heartbeatToolsEnabled !== false
 
@@ -5731,6 +5734,7 @@ export class AgentGateway {
       channels: channelsGuideOn,
       media: imageGuideOn,
       video: videoGuideOn,
+      music: musicGuideOn,
       threeD: threeDGuideOn,
       // Personal workspaces and the workspace agent have no subagent
       // orchestration at all; the media tools are direct on every profile.

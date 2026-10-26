@@ -39,6 +39,11 @@ const EXT_BY_CONTENT_TYPE: Record<string, string> = {
   'video/mp4': '.mp4',
   'video/webm': '.webm',
   'video/quicktime': '.mov',
+  'audio/mpeg': '.mp3',
+  'audio/mp3': '.mp3',
+  'audio/wav': '.wav',
+  'audio/x-wav': '.wav',
+  'audio/wave': '.wav',
 }
 
 export function extensionForContentType(contentType: string | undefined, fallback: string): string {
@@ -484,12 +489,12 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'list_media_models',
     description:
-      'List the image, video and 3D models you can use: what each is best for, whether it accepts reference images or a start frame, its endpoints, every documented parameter (allowed values, ranges, defaults) and its Shogo price (per image, per second of video, or per clip). ' +
-      'Pass model to see just that model — the best way to check which fields its `options` accepts before calling generate_image or generate_video. Check prices here before planning a batch so you can budget it.',
+      'List the image, video, music and 3D models you can use: what each is best for, whether it accepts reference images or a start frame, its endpoints, every documented parameter (allowed values, ranges, defaults) and its Shogo price (per image, per second of video, per song, or per clip). ' +
+      'Pass model to see just that model — the best way to check which fields its `options` accepts before calling generate_image, generate_video or generate_music. Check prices here before planning a batch so you can budget it.',
     label: 'List Media Models',
     parameters: Type.Object({
       kind: Type.Optional(
-        Type.Union([Type.Literal('image'), Type.Literal('video'), Type.Literal('3d'), Type.Literal('presets'), Type.Literal('all')], {
+        Type.Union([Type.Literal('image'), Type.Literal('video'), Type.Literal('music'), Type.Literal('3d'), Type.Literal('presets'), Type.Literal('all')], {
           description: 'Which models to list (default: "all"); "presets" lists the Genjutsu Restyle style ids',
         }),
       ),
@@ -500,7 +505,7 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
       ),
     }),
     execute: async (_toolCallId, params, signal) => {
-      const { kind = 'all', model } = params as { kind?: 'image' | 'video' | '3d' | 'presets' | 'all'; model?: string }
+      const { kind = 'all', model } = params as { kind?: 'image' | 'video' | 'music' | '3d' | 'presets' | 'all'; model?: string }
       const proxy = proxyConfig(ctx)
       if (!proxy) return textResult({ error: 'Media models are not available: AI proxy not configured.' })
 
@@ -525,7 +530,7 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
       try {
         const query = new URLSearchParams()
         if (model) query.set('model', model)
-        if (kind === 'image' || kind === 'video') query.set('kind', kind)
+        if (kind === 'image' || kind === 'video' || kind === 'music') query.set('kind', kind)
         const suffix = query.size > 0 ? `?${query.toString()}` : ''
         const response = await fetch(`${proxy.base}/v1/media/models${suffix}`, {
           headers: { Authorization: `Bearer ${proxy.token}` },
@@ -534,12 +539,14 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
         if (!response.ok) {
           return textResult({ error: friendlyMediaError('Listing media models', response.status, await response.text()) })
         }
-        const data = (await response.json()) as { images?: unknown[]; videos?: unknown[]; currency?: string; note?: string }
+        const data = (await response.json()) as { images?: unknown[]; videos?: unknown[]; music?: unknown[]; currency?: string; note?: string }
         const imageOn = ctx.config?.imageGenEnabled !== false
         const videoOn = ctx.config?.videoGenEnabled === true
+        const musicOn = ctx.config?.musicGenEnabled === true
         const threeDOn = ctx.config?.threeDGenEnabled === true
         const showImages = kind === 'all' || kind === 'image'
         const showVideos = kind === 'all' || kind === 'video'
+        const showMusic = kind === 'all' || kind === 'music'
         const show3d = kind === 'all' || kind === '3d'
         // 3D models come from their own route, and only when the capability is on:
         // each task is billed, so there is no point advertising them otherwise.
@@ -550,6 +557,7 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
             : { models_3d: [], models_3d_note: '3D generation is off for this project (the Tripo key is not the problem). The user can enable it in Capabilities.' }
         const images = data.images ?? []
         const videos = data.videos ?? []
+        const music = data.music ?? []
         return textResult({
           ...(showImages && imageOn ? { images } : {}),
           ...(showVideos
@@ -557,8 +565,13 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
               ? { videos }
               : { videos: [], videos_note: 'Video generation is off for this project. The user can enable it in Capabilities.' }
             : {}),
+          ...(showMusic
+            ? musicOn
+              ? { music }
+              : { music: [], music_note: 'Music generation is off for this project. The user can enable it in Capabilities.' }
+            : {}),
           ...(models3d ?? {}),
-          ...(model && images.length === 0 && videos.length === 0 && (kind === 'all' || kind === 'image' || kind === 'video')
+          ...(model && images.length === 0 && videos.length === 0 && music.length === 0 && (kind === 'all' || kind === 'image' || kind === 'video' || kind === 'music')
             ? { note: `No model matches '${model}'. Call list_media_models without model for the full list.` }
             : {}),
           currency: data.currency ?? 'USD',
@@ -989,11 +1002,113 @@ async function checkVideoJob(
   }
 }
 
+// ---------------------------------------------------------------------------
+// generate_music
+// ---------------------------------------------------------------------------
+
+const MUSIC_MODEL_GUIDE =
+  '"lyria-3-clip" (default) for a 30-second clip, loop or sting; "lyria-3.5" for a full song of a couple of minutes'
+
+function createGenerateMusicTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'generate_music',
+    description:
+      'Generate music from a text prompt: a full song with vocals (verses, choruses, bridge) or a 30-second clip for a loop, sting or intro. ' +
+      `Models: ${MUSIC_MODEL_GUIDE}. ` +
+      'Describe genre, mood, instruments, tempo and structure, and ask for a length in the prompt when it matters ("a 90-second cinematic build"). ' +
+      'Saves an MP3 to audio/ by default; pass path to save anywhere in the workspace. Billed per song (about $0.04 a clip, $0.08 a full song; list_media_models kind "music" has exact prices). ' +
+      'Takes roughly 30-90 seconds.',
+    label: 'Generate Music',
+    parameters: Type.Object({
+      prompt: Type.String({
+        description: 'The song: genre, mood, instruments, tempo, structure, and the subject of any lyrics',
+      }),
+      model: Type.Optional(
+        Type.String({ description: `Music model id: ${MUSIC_MODEL_GUIDE}. Omit it to use the workspace default.` }),
+      ),
+      lyrics: Type.Optional(
+        Type.String({ description: 'Your own lyrics, with section tags like [Verse], [Chorus], [Bridge]. Omit to let the model write them.' }),
+      ),
+      instrumental: Type.Optional(Type.Boolean({ description: 'No vocals (default false). Cannot be combined with lyrics.' })),
+      path: Type.Optional(Type.String({ description: 'Output path anywhere in the workspace (e.g. "public/audio/theme.mp3")' })),
+      filename: Type.Optional(Type.String({ description: 'Destination filename under audio/ (ignored when path is set)' })),
+    }),
+    execute: async (_toolCallId, params, signal) => {
+      const p = params as {
+        prompt?: string
+        model?: string
+        lyrics?: string
+        instrumental?: boolean
+        path?: string
+        filename?: string
+      }
+      const proxy = proxyConfig(ctx)
+      if (!proxy) return textResult({ error: 'Music generation is not available: AI proxy not configured.' })
+      const prompt = (p.prompt ?? '').trim()
+      if (!prompt) {
+        return textResult({ error: 'prompt is required — describe the style, mood and structure you want.' })
+      }
+
+      let target: OutputTarget
+      try {
+        target = resolveOutputTarget(ctx, {
+          path: p.path,
+          filename: p.filename,
+          defaultDir: 'audio',
+          prefix: 'music',
+          defaultExt: '.mp3',
+        })
+      } catch (err: any) {
+        return textResult({ error: err.message })
+      }
+
+      let result: {
+        model?: string
+        audio?: { b64_json?: string; mime_type?: string }
+        text?: string
+        usd?: { raw?: number; billed?: number }
+        elapsed_ms?: number
+      }
+      try {
+        const response = await fetch(`${proxy.base}/v1/music/generations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${proxy.token}` },
+          body: JSON.stringify({ prompt, model: p.model, lyrics: p.lyrics, instrumental: p.instrumental }),
+          signal,
+        })
+        if (!response.ok) {
+          return textResult({ error: friendlyMediaError('Music generation', response.status, await response.text()) })
+        }
+        result = (await response.json()) as typeof result
+      } catch (err: any) {
+        return textResult({ error: `Music generation error: ${err.message}` })
+      }
+
+      const b64 = result.audio?.b64_json
+      if (!b64) return textResult({ error: 'No audio received from the provider.' })
+      const buffer = Buffer.from(b64, 'base64')
+      const out = target.pathFor(0, 1, result.audio?.mime_type)
+      writeFileSync(out.absolute, buffer)
+
+      return textResult({
+        path: out.workspacePath,
+        model: result.model ?? p.model,
+        mime_type: result.audio?.mime_type ?? 'audio/mpeg',
+        bytes: buffer.length,
+        elapsed_ms: result.elapsed_ms,
+        billed_usd: result.usd?.billed,
+        ...(result.text ? { lyrics: result.text } : {}),
+      })
+    },
+  }
+}
+
 /** Media tools registered alongside `generate_image` (gating lives in `filterDisabledCapabilityTools`). */
 export function createMediaTools(ctx: ToolContext): AgentTool[] {
   return [
     createListMediaModelsTool(ctx),
     createGenerateVideoTool(ctx),
+    createGenerateMusicTool(ctx),
     ...createThreeDTools(ctx),
   ]
 }

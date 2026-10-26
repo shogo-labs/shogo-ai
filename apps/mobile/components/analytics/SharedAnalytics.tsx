@@ -204,7 +204,9 @@ const FAMILY_BG_COLOR: Record<AnalyticsModelFamily, string> = {
   opus: 'bg-purple-500/15 border-purple-500/20',
   sonnet: 'bg-blue-500/15 border-blue-500/20',
   haiku: 'bg-emerald-500/15 border-emerald-500/20',
+  fable: 'bg-amber-500/15 border-amber-500/20',
   gpt: 'bg-green-500/15 border-green-500/20',
+  gemini: 'bg-indigo-500/15 border-indigo-500/20',
   'o-series': 'bg-teal-500/15 border-teal-500/20',
   other: 'bg-muted border-border',
 }
@@ -213,7 +215,9 @@ const FAMILY_TEXT_COLOR: Record<AnalyticsModelFamily, string> = {
   opus: 'text-purple-400',
   sonnet: 'text-blue-400',
   haiku: 'text-emerald-400',
+  fable: 'text-amber-400',
   gpt: 'text-green-400',
+  gemini: 'text-indigo-400',
   'o-series': 'text-teal-400',
   other: 'text-muted-foreground',
 }

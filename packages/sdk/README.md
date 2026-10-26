@@ -704,6 +704,31 @@ Pass `null` to clear the provider (e.g. on sign-out).
   on the cloud directly with your Shogo key as `x-api-key`; the
   OpenAI-compatible path loses fidelity on conversion.
 
+### Music generation (Lyria)
+
+`client.generateMusic` uses the same credentials as `client.llm` (the pod's
+`RUNTIME_AUTH_SECRET`, or `shogoApiKey` outside a pod), so an app needs no
+Google key. It is server-only; call it from `custom-routes.ts`.
+
+```ts
+import { shogo } from '@/lib/shogo'
+
+app.post('/jingle', async (c) => {
+  const { prompt } = await c.req.json()
+  const song = await shogo.generateMusic!({
+    prompt,                 // style, mood, instruments, length
+    model: 'lyria-3-clip',  // default: 30-second clip; 'lyria-3.5' = full song
+    // lyrics: '[Verse]\n…\n[Chorus]\n…',  or  instrumental: true
+  })
+  await Bun.write('public/jingle.mp3', song.bytes)
+  return c.json({ url: '/jingle.mp3', lyrics: song.lyrics, billedUsd: song.billedUsd })
+})
+```
+
+Each song is billed to the workspace (about $0.04 per clip, $0.08 per full
+song before markup). Errors throw with the gateway's `message`, `status` and
+`code` (e.g. `402` when the workspace is out of usage).
+
 ## Machines & external triggers
 
 `client.machines` exposes the workspace's paired desktops + `shogo worker`

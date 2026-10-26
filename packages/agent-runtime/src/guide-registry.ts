@@ -158,6 +158,8 @@ export interface CapabilitiesIndexFlags {
   media?: boolean
   /** Whether the media line advertises video generation (default: false) */
   video?: boolean
+  /** Whether the media line advertises music generation (default: false) */
+  music?: boolean
   /** Whether the media line advertises the 3D tools (default: false) */
   threeD?: boolean
   /** Heartbeat scheduling line (default: true) */
@@ -181,6 +183,7 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
   const channels = flags.channels !== false
   const media = flags.media !== false
   const video = flags.video === true
+  const music = flags.music === true
   const threeD = flags.threeD === true
   const subagents = flags.subagents !== false
   const heartbeat = flags.heartbeat !== false
@@ -224,7 +227,7 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
     '- **tool-planning**: Batching tool calls and handling uploaded files in files/. Reference when planning complex multi-step tool sequences.',
     '- **memory**: When to save/skip memory entries in MEMORY.md. Read when deciding whether to persist information.',
   )
-  if (media || video || threeD) {
+  if (media || video || music || threeD) {
     const kinds: string[] = []
     const direct: string[] = []
     if (media) {
@@ -234,6 +237,10 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
     if (video) {
       kinds.push('video generation')
       direct.push('`generate_video`')
+    }
+    if (music) {
+      kinds.push('music generation')
+      direct.push('`generate_music`')
     }
     if (threeD) {
       kinds.push('3D model generation')
