@@ -23,6 +23,7 @@ import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { useGitStatusContext } from "./git/GitStatusContext";
 import type { GitShortCode } from "./git/bridge";
 import { computeDropZone } from "./file-tree-drop-zone";
+import { isOsFileDrag } from "./os-drop";
 import { buildCompactFolderChain } from "./explorer-compact-folders";
 import { useDragAutoScroll } from "./useDragAutoScroll";
 import { renameSelectionEnd, validateEntryName } from "./entry-name";
@@ -53,8 +54,6 @@ export interface FileTreeHandlers {
   onOpenToSide?: (node: TreeNode) => void;
   /** Open the Search view restricted to a folder ("Find in Folder…"). */
   onFindInFolder?: (node: TreeNode) => void;
-  /** Files dragged in from the OS; `dest` null = workspace root. */
-  onUploadFiles?: (files: File[], dest: TreeNode | null) => void;
   /** Absolute filesystem path for "Copy Path" (null when unknown, e.g. cloud). */
   absolutePath?: (node: TreeNode) => string | null;
 }
@@ -111,30 +110,6 @@ function flatten(
 function parentOf(path: string): string {
   const i = path.lastIndexOf("/");
   return i < 0 ? "" : path.slice(0, i);
-}
-
-/** Real files dragged in from the OS (not in-app tree drags, not folders). */
-function osFilesFrom(dt: DataTransfer): File[] {
-  if (Array.from(dt.types ?? []).includes("application/x-ide-path")) return [];
-  const out: File[] = [];
-  const items = Array.from(dt.items ?? []);
-  if (items.length > 0) {
-    for (const it of items) {
-      if (it.kind !== "file") continue;
-      const entry = (it as DataTransferItem & { webkitGetAsEntry?: () => { isDirectory?: boolean } | null }).webkitGetAsEntry?.();
-      if (entry?.isDirectory) continue;
-      const f = it.getAsFile();
-      if (f) out.push(f);
-    }
-    return out;
-  }
-  return Array.from(dt.files ?? []);
-}
-
-/** Directory node that contains `node` (null = workspace root). */
-function findParentDir(tree: TreeNode[], node: TreeNode): TreeNode | null {
-  const p = parentOf(node.path);
-  return p === "" ? null : findDirNode(tree, node.rootId, p);
 }
 
 /** Stable key used across the selection state (root-aware so folder names
@@ -1072,6 +1047,7 @@ export function FileTree({
         if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
         dragActiveRef.current = false;
         autoScroll.stop();
+        setDropTarget(null);
       }}
       onDrop={() => {
         dragActiveRef.current = false;
@@ -1214,9 +1190,15 @@ export function FileTree({
               e.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={(e) => {
-              const isOs = e.dataTransfer.types.includes("Files") && !!handlers.onUploadFiles;
+              const isOs = isOsFileDrag(e.dataTransfer);
               if (node.kind !== "dir") {
-                if (isOs) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }
+                if (isOs) {
+                  // A drop on a file row lands in that file's folder — light
+                  // up the folder row so the destination is visible.
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "copy";
+                  setDropTarget(parentOf(node.path));
+                }
                 return;
               }
               e.preventDefault();
@@ -1225,14 +1207,11 @@ export function FileTree({
             }}
             onDragLeave={() => setDropTarget((p) => (p === node.path ? null : p))}
             onDrop={(e) => {
+              // OS-file drops are handled once, by the Workbench-level drop
+              // zone (see os-drop-zone.ts) — the tree only owns in-app moves.
+              if (isOsFileDrag(e.dataTransfer)) return;
               e.preventDefault();
               setDropTarget(null);
-              const external = osFilesFrom(e.dataTransfer);
-              if (external.length > 0 && handlers.onUploadFiles) {
-                e.stopPropagation();
-                handlers.onUploadFiles(external, node.kind === "dir" ? node : (findParentDir(tree, node) ?? null));
-                return;
-              }
               if (node.kind !== "dir") return;
               const src = e.dataTransfer.getData("application/x-ide-path");
               const srcRoot = e.dataTransfer.getData("application/x-ide-root");
@@ -1248,6 +1227,8 @@ export function FileTree({
             }}
             onContextMenu={(e) => openContextMenu(e, node)}
             data-tree-path={node.path}
+            data-tree-kind={node.kind}
+            data-tree-root={node.rootId}
             role="treeitem"
             aria-level={depth + 1}
             aria-selected={isSelected || isMulti}
@@ -1315,18 +1296,15 @@ export function FileTree({
         className="min-h-[40px]"
         onDragOver={(e) => {
           e.preventDefault();
-          e.dataTransfer.dropEffect = e.dataTransfer.types.includes("Files") ? "copy" : "move";
+          e.dataTransfer.dropEffect = isOsFileDrag(e.dataTransfer) ? "copy" : "move";
           setDropTarget("__root__");
         }}
         onDragLeave={() => setDropTarget((p) => (p === "__root__" ? null : p))}
         onDrop={(e) => {
+          // OS-file drops go through the Workbench-level drop zone.
+          if (isOsFileDrag(e.dataTransfer)) return;
           e.preventDefault();
           setDropTarget(null);
-          const external = osFilesFrom(e.dataTransfer);
-          if (external.length > 0 && handlers.onUploadFiles) {
-            handlers.onUploadFiles(external, null);
-            return;
-          }
           const src = e.dataTransfer.getData("application/x-ide-path");
           if (!src) return;
           const srcNode = findNode(tree, src);

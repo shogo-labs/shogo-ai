@@ -85,6 +85,8 @@ import {
 } from "./zen-mode";
 import { useTheme } from "../../../../contexts/theme";
 import { isBinaryFilePath } from "@shogo-ai/sdk/file-types";
+import { useOsFileDrop } from "./os-drop-zone";
+import type { DropDestination, DroppedEntry } from "./os-drop";
 import {
   RefreshCw,
   History,
@@ -96,11 +98,18 @@ import {
   PanelLeftClose,
   ChevronsDownUp,
   GitBranch,
+  Upload,
   X,
 } from "lucide-react-native";
 
 let groupSeq = 1;
 const newGroupId = () => `g${groupSeq++}`;
+
+/** Per-file cap for OS drops. `writeFileBytes` is base64-over-JSON, so a big
+ *  file is also a big request — 25 MB is the ceiling we've always used. */
+const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+/** How many files upload at once (see `handleUploadFiles`). */
+const UPLOAD_CONCURRENCY = 4;
 
 type PrimarySideBarPosition = "left" | "right";
 /** Human-friendly viewer name for error toasts when readFileUrl is missing. */
@@ -469,9 +478,17 @@ export function Workbench({
   const activeGroup = groups[activeGroupIdx] ?? groups[0];
   const active = activeGroup?.files.find((f) => f.id === activeGroup.activeId) ?? null;
 
+  const toastTimerRef = useRef<number | null>(null);
   const showToast = useCallback((msg: string, ms = 1400) => {
+    // A newer toast supersedes the previous one — without this, the earlier
+    // timer fired and blanked the newer message (an upload's progress toast
+    // disappearing mid-upload).
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
     setToast(msg);
-    window.setTimeout(() => setToast(null), ms);
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null;
+      setToast(null);
+    }, ms);
   }, []);
 
   // Keep the terminal panel informed of the active editor file and selection
@@ -1393,49 +1410,144 @@ export function Workbench({
     [svcOf, loadRoot, showToast, askConfirm],
   );
 
+  /**
+   * Upload everything that was dropped — one file, a dozen, or a folder tree
+   * from Finder/Explorer. `dest` null = the workspace root.
+   *
+   * Nested folders need no `mkdir`: the agent runtime creates the parent
+   * directory of every write, and `LocalFs` creates intermediate handles.
+   */
   const handleUploadFiles = useCallback(
-    async (files: File[], dest: TreeNode | null) => {
-      const rootId = dest?.rootId ?? roots.find((r) => r.kind === "agent")?.id ?? roots[0]?.id;
+    async (entries: DroppedEntry[], dest: DropDestination | null) => {
+      const rootId =
+        (dest?.rootId && services[dest.rootId] ? dest.rootId : null) ??
+        roots.find((r) => r.kind === "agent")?.id ??
+        roots[0]?.id;
       if (!rootId) return;
       const svc = svcOf(rootId);
       if (!svc?.writeFileBytes) {
         showToast("Uploading files isn't supported for this workspace", 2500);
         return;
       }
-      const dir = dest && !dest.isRoot ? dest.path : "";
-      const existing = new Set(flattenFiles(roots.find((r) => r.id === rootId)?.tree ?? []).map((n) => n.path));
-      let done = 0;
-      for (const f of files) {
-        if (f.size > 25 * 1024 * 1024) {
-          showToast(`${f.name} is larger than 25 MB — skipped`, 3000);
-          continue;
-        }
-        const path = dir ? `${dir}/${f.name}` : f.name;
-        if (existing.has(path)) {
-          const choice = await askConfirm({
-            title: `Replace ${f.name}?`,
-            message: `A file named "${f.name}" already exists in this location.`,
-            buttons: [
-              { label: "Cancel", value: "cancel" as const, variant: "primary" },
-              { label: "Replace", value: "replace" as const, variant: "danger" },
-            ],
-            cancelValue: "cancel" as const,
-          });
-          if (choice !== "replace") continue;
-        }
-        try {
-          await svc.writeFileBytes(path, new Uint8Array(await f.arrayBuffer()));
-          done++;
-        } catch (err) {
-          showToast(`Upload failed for ${f.name}: ${err instanceof Error ? err.message : String(err)}`, 3500);
-        }
+      const writeBytes = svc.writeFileBytes.bind(svc);
+      const dir = dest?.rootId === rootId ? (dest?.path ?? "") : "";
+      const destLabel = dir || roots.find((r) => r.id === rootId)?.label || "the workspace root";
+
+      const oversized = entries.filter((e) => e.file.size > UPLOAD_MAX_BYTES);
+      const queue = entries
+        .filter((e) => e.file.size <= UPLOAD_MAX_BYTES)
+        .map((e) => ({ path: dir ? `${dir}/${e.path}` : e.path, file: e.file }));
+
+      if (oversized.length > 0) {
+        const names = oversized.slice(0, 2).map((e) => e.path).join(", ");
+        showToast(
+          oversized.length === 1
+            ? `${names} is larger than 25 MB — skipped`
+            : `${oversized.length} files are larger than 25 MB — skipped (${names}${
+                oversized.length > 2 ? ` and ${oversized.length - 2} more` : ""
+              })`,
+          4000,
+        );
       }
-      if (done > 0) {
-        showToast(done === 1 ? `Uploaded ${files[0].name}` : `Uploaded ${done} files`);
+      if (queue.length === 0) return;
+
+      const existing = new Set(
+        flattenFiles(roots.find((r) => r.id === rootId)?.tree ?? []).map((n) => n.path),
+      );
+      const clashCount = queue.filter((item) => existing.has(item.path)).length;
+
+      // Resolve clashes one prompt at a time (a second prompt would cancel the
+      // first), offering Replace all / Skip all once there's more than one.
+      const approved: { path: string; file: File }[] = [];
+      let replaceAll = false;
+      let skipAll = false;
+      for (const item of queue) {
+        if (existing.has(item.path) && !replaceAll) {
+          if (skipAll) continue;
+          const name = item.path.slice(item.path.lastIndexOf("/") + 1);
+          const choice = await askConfirm({
+            title: `Replace ${name}?`,
+            message: `A file named "${name}" already exists in ${destLabel}.`,
+            buttons: [
+              ...(clashCount > 1
+                ? [
+                    { label: "Skip all", value: "skip-all" as const, variant: "secondary" as const },
+                    { label: "Replace all", value: "replace-all" as const, variant: "danger" as const },
+                  ]
+                : []),
+              { label: "Skip", value: "skip" as const, variant: "secondary" as const },
+              { label: "Replace", value: "replace" as const, variant: "danger" as const },
+            ],
+            cancelValue: "skip" as const,
+          });
+          if (choice === "skip") continue;
+          if (choice === "skip-all") {
+            skipAll = true;
+            continue;
+          }
+          if (choice === "replace-all") replaceAll = true;
+        }
+        approved.push(item);
+      }
+      if (approved.length === 0) return;
+
+      const total = approved.length;
+      const uploaded: string[] = [];
+      const failures: { path: string; message: string }[] = [];
+      let settled = 0;
+      if (total > 1) showToast(`Uploading 0 of ${total}…`, 60_000);
+
+      const uploadOne = async (item: { path: string; file: File }) => {
+        try {
+          await writeBytes(item.path, new Uint8Array(await item.file.arrayBuffer()));
+          uploaded.push(item.path);
+        } catch (err) {
+          failures.push({
+            path: item.path,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        } finally {
+          settled += 1;
+          if (total > 1) showToast(`Uploading ${settled} of ${total}…`, 60_000);
+        }
+      };
+
+      // Four at a time: enough to keep a big drop moving without drowning the
+      // runtime's base64-over-JSON write path.
+      let next = 0;
+      await Promise.all(
+        Array.from({ length: Math.min(UPLOAD_CONCURRENCY, total) }, async () => {
+          while (next < approved.length) await uploadOne(approved[next++]);
+        }),
+      );
+
+      const parts: string[] = [];
+      if (uploaded.length > 0) {
+        parts.push(
+          uploaded.length === 1
+            ? `Uploaded ${uploaded[0]} to ${destLabel}`
+            : `Uploaded ${uploaded.length} files to ${destLabel}`,
+        );
+      }
+      if (failures.length > 0) {
+        parts.push(
+          failures.length === 1
+            ? `${failures[0].path} failed: ${failures[0].message}`
+            : `${failures.length} files failed (${failures[0].path}: ${failures[0].message})`,
+        );
+      }
+      if (parts.length > 0) showToast(parts.join(" — "), failures.length > 0 ? 6000 : 3000);
+
+      if (uploaded.length > 0) {
         await loadRoot(rootId);
+        // Reveal only when the Explorer is what the user is looking at —
+        // dropping onto the editor shouldn't yank them out of another view.
+        if (sidebarOpen && activity === "files") {
+          revealInExplorerRef.current?.(dir || uploaded[0]);
+        }
       }
     },
-    [roots, svcOf, showToast, askConfirm, loadRoot],
+    [roots, services, svcOf, showToast, askConfirm, loadRoot, sidebarOpen, activity],
   );
 
   const handleMove = useCallback(
@@ -1589,6 +1701,17 @@ export function Workbench({
     [activeGroupIdx, openFileInGroup],
   );
 
+  // ─── OS file drop (one zone for the whole IDE) ───────────────────────
+  // Capture-phase listeners scoped to the IDE root + the bottom drawer (which
+  // is mounted outside the Workbench). A drop on a folder row lands in that
+  // folder; anywhere else lands in the workspace root.
+  const defaultDropRoot = roots.find((r) => r.kind === "agent") ?? roots[0] ?? null;
+  const { active: osDropActive } = useOsFileDrop({
+    scopeRef: ideRootRef,
+    enabled: paneVisible,
+    onDrop: (entries, dest) => void handleUploadFiles(entries, dest),
+  });
+
   const treeHandlers: FileTreeHandlers = useMemo(
     () => ({
       onOpen: handleOpenFile,
@@ -1599,7 +1722,6 @@ export function Workbench({
       onDownload: handleDownload,
       onLoadSubtree: loadSubtree,
       onCopy: handleCopy,
-      onUploadFiles: (files, dest) => void handleUploadFiles(files, dest),
       onOpenToSide: openToSide,
       onFindInFolder: (node) =>
         openSearch({ include: node.isRoot ? "" : node.path, query: undefined }),
@@ -1609,7 +1731,7 @@ export function Workbench({
         return node.path ? workspaceFsPath(root, node.path) : root;
       },
     }),
-    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree, handleCopy, handleUploadFiles, openToSide, openSearch],
+    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree, handleCopy, openToSide, openSearch],
   );
 
   // ─── Save ────────────────────────────────────────────────────────────
@@ -3033,9 +3155,20 @@ export function Workbench({
     <GitStatusProvider snapshot={gitSnapshot}>
     <div
       ref={ideRootRef}
-      className="shogo-ide flex h-full w-full min-w-0 min-h-0 flex-col overflow-hidden"
+      className="shogo-ide relative flex h-full w-full min-w-0 min-h-0 flex-col overflow-hidden"
       data-theme={themeMode}
     >
+      {osDropActive && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-black/20">
+          <div className="rounded-lg border-2 border-dashed border-[color:var(--ide-primary)] bg-[color:var(--ide-surface)] px-6 py-4 text-center shadow-xl">
+            <Upload size={22} className="mx-auto mb-2 text-[color:var(--ide-primary)]" />
+            <div className="text-[13px] font-medium text-[color:var(--ide-text-strong)]">Drop to upload</div>
+            <div className="mt-0.5 text-[11px] text-[color:var(--ide-muted)]">
+              into {defaultDropRoot?.label ?? "the workspace root"}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex flex-1 min-h-0">
         <div className={`flex flex-1 min-w-0 ${primarySideBarPosition === "left" ? "order-4" : "order-1"}`}>
           <div className="flex flex-1 min-w-0 flex-col">
