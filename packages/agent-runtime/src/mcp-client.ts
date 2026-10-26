@@ -21,6 +21,7 @@ import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { isPreinstalledMcpId, isMcpServerAllowed, isCatalogEntry, getPreinstalledPackages, builtinCapabilityRefusal } from './mcp-catalog'
 import { getSanitizedEnv } from './sandbox-exec'
+import { withoutWorkspaceRuntimeToken } from './project-process-env'
 import { shouldRouteThroughCloud, getCloudDispatcher, type McpTransportPin } from './lib/cloud-fetcher'
 import { enforceImageSizeLimit } from './image-size-guard'
 
@@ -326,13 +327,17 @@ export class MCPClientManager {
     console.log(`[MCPClient] Starting MCP server "${name}": ${fullCommand}`)
 
     const writableHome = this.workspaceDir || '/tmp'
+    // Third-party code: on a workspace runtime the inherited
+    // RUNTIME_AUTH_SECRET is the workspace token, valid for every project
+    // here, so the server gets none at all.
+    const serverEnv = withoutWorkspaceRuntimeToken(getSanitizedEnv())
 
     let transport: StdioClientTransport
     try {
       transport = new StdioClientTransport({
         command: config.command,
         args: config.args,
-        env: { ...getSanitizedEnv(), HOME: writableHome, npm_config_cache: join(writableHome, '.npm'), ...config.env } as Record<string, string>,
+        env: { ...serverEnv, HOME: writableHome, npm_config_cache: join(writableHome, '.npm'), ...config.env } as Record<string, string>,
         cwd: config.cwd || writableHome,
         stderr: 'pipe',
       })

@@ -168,3 +168,8 @@ export {
   type LiveErrorEvent,
   type LiveWebRtcSession,
 } from './live/client.js'
+
+export {
+  readRuntimeAuthSecret,
+  WORKSPACE_RUNTIME_TOKEN_MESSAGE,
+} from './runtime-token.js'

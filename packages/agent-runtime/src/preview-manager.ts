@@ -148,6 +148,7 @@ export function emitBuildLine(
 import { createServer } from 'net'
 import { pkg, resolveBinInvocation } from '@shogo/shared-runtime'
 import { fetchAppRuntimeToken } from './app-runtime-token'
+import { resolveProjectProcessEnv } from './project-process-env'
 import {
   previewBuildLogPath,
   previewConsoleLogPath,
@@ -173,6 +174,13 @@ import {
   inFlightWorkspaceInstall,
   resolveWorkspaceTechStackId,
 } from './workspace-defaults'
+
+/**
+ * Re-exported for the modules and tests that have always imported the rule
+ * from here; the implementation lives in `project-process-env.ts` so every
+ * spawn site can share it without importing this module.
+ */
+export { resolveProjectProcessEnv } from './project-process-env'
 
 const LOG_PREFIX = 'preview-manager'
 /** Matches CanvasBuildManager's debounce so an agent's burst of edits coalesces into one export. */
@@ -877,43 +885,6 @@ export function resolveApiServerEnv(input: {
   out.API_SERVER_PORT = portStr
   out.SKILL_SERVER_PORT = portStr
   out.DATABASE_URL = resolveSidecarDatabaseUrl(parentEnv, cwd, projectId)
-  return out
-}
-
-/**
- * Env for any process that runs project code: the API sidecar, builds,
- * watchers, Expo and Prisma. The `@shogo-ai/sdk` in that process reads
- * RUNTIME_AUTH_SECRET, PROJECT_ID and RUNTIME_PORT from it.
- *
- * In a workspace runtime the inherited workspace token is replaced by the
- * project's own token, or removed when there is none, and PROJECT_ID names
- * the project rather than the workspace.
- */
-export function resolveProjectProcessEnv(input: {
-  parentEnv: NodeJS.ProcessEnv
-  projectId?: string
-  appRuntimeToken?: string | null
-}): Record<string, string> {
-  const { parentEnv, projectId, appRuntimeToken } = input
-  const out: Record<string, string> = {}
-  for (const [k, v] of Object.entries(parentEnv)) {
-    if (typeof v === 'string') out[k] = v
-  }
-  // parentEnv.PORT is the runtime's own port. The SDK tools client uses it
-  // to reach the runtime over 127.0.0.1; the sidecar overwrites PORT with
-  // its bind port afterwards.
-  out.RUNTIME_PORT = parentEnv.PORT ?? '8080'
-  // The merged map is a workspace transport detail — project code must not
-  // see a sibling project's connection string.
-  delete out.WORKSPACE_DATABASE_URLS
-  if (parentEnv.WORKSPACE_RUNTIME === 'true') {
-    if (projectId) out.PROJECT_ID = projectId
-    if (projectId && appRuntimeToken) out.RUNTIME_AUTH_SECRET = appRuntimeToken
-    else delete out.RUNTIME_AUTH_SECRET
-  }
-  if (parentEnv.SHOGO_LOCAL_MODE === 'true' && !parentEnv.SHOGO_API_URL) {
-    out.SHOGO_API_URL = 'http://localhost:8002'
-  }
   return out
 }
 

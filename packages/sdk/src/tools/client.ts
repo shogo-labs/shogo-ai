@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import type { ToolsClientConfig, ToolSchema, ToolExecuteResult } from './types.js'
+import { readRuntimeAuthSecret } from '../runtime-token.js'
 
 /**
  * Path layout for the tools HTTP API. The browser-facing client targets
@@ -159,7 +160,7 @@ let defaultServerClient: ToolsClient | null = null
 export function getServerToolsClient(config?: ToolsClientConfig): ToolsClient {
   if (defaultServerClient && !config) return defaultServerClient
 
-  const runtimeToken = process.env.RUNTIME_AUTH_SECRET
+  const runtimeToken = readRuntimeAuthSecret()
   const portRaw = process.env.RUNTIME_PORT
   if (!runtimeToken || !portRaw) {
     throw new Error(
