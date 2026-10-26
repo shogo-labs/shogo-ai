@@ -2510,7 +2510,9 @@ export class AgentGateway {
     let images: ImageContent[] | undefined
     let effectiveText = text
     if (options?.fileParts && options.fileParts.length > 0) {
-      const parsed = parseFileAttachments(options.fileParts)
+      const parsed = parseFileAttachments(options.fileParts, {
+        workspaceDir: this.workspaceDir,
+      })
       if (parsed.images.length > 0) {
         images = parsed.images
         this.emitLog(`Attached ${parsed.images.length} image(s) for vision`)

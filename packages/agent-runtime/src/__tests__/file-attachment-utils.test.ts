@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { afterEach, beforeEach, describe, test, expect } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   _fileAttachmentSeamForTests,
   extractFilePartsAsText,
+  MAX_INLINE_ATTACHMENT_BYTES,
   parseFileAttachments,
   transcribeAudioParts,
   type FilePart,
@@ -297,6 +301,53 @@ describe('transcribeAudioParts', () => {
     expect(result).toContain('clip 2')
     expect(result.split('\n\n')).toHaveLength(2)
   })
+
+  test('transcribes an uploaded audio reference by reading its bytes from disk', async () => {
+    process.env.OPENAI_API_KEY = 'sk-direct'
+    const workspaceDir = mkdtempSync(join(tmpdir(), 'shogo-audio-ref-test-'))
+    try {
+      mkdirSync(join(workspaceDir, 'files'), { recursive: true })
+      const bytes = Buffer.from('ID3-uploaded-clip')
+      writeFileSync(join(workspaceDir, 'files', 'memo.mp3'), bytes)
+
+      let uploaded: Uint8Array | null = null
+      globalThis.fetch = (async (_url: string, init: any) => {
+        const file = init.body.get('file') as Blob
+        uploaded = new Uint8Array(await file.arrayBuffer())
+        return new Response(JSON.stringify({ text: 'from disk' }), { status: 200 })
+      }) as any
+
+      const parts: FilePart[] = [
+        { type: 'file', mediaType: 'audio/mpeg', name: 'memo.mp3', savedPath: 'files/memo.mp3' },
+      ]
+      const result = await transcribeAudioParts(parts, { workspaceDir })
+
+      expect(result).toContain('auto-transcribed]: from disk')
+      expect(result).toContain('files/memo.mp3')
+      expect(Buffer.from(uploaded!).equals(bytes)).toBe(true)
+    } finally {
+      rmSync(workspaceDir, { recursive: true, force: true })
+    }
+  })
+
+  test('reports a reference clip whose file is gone instead of calling fetch', async () => {
+    process.env.OPENAI_API_KEY = 'sk-direct'
+    const workspaceDir = mkdtempSync(join(tmpdir(), 'shogo-audio-ref-test-'))
+    try {
+      let called = false
+      globalThis.fetch = (async () => { called = true; return new Response('{}') }) as any
+
+      const parts: FilePart[] = [
+        { type: 'file', mediaType: 'audio/mpeg', name: 'gone.mp3', savedPath: 'files/gone.mp3' },
+      ]
+      const result = await transcribeAudioParts(parts, { workspaceDir })
+
+      expect(result).toContain('Could not read the uploaded clip')
+      expect(called).toBe(false)
+    } finally {
+      rmSync(workspaceDir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('parseFileAttachments — base64 decode failure (catch arm)', () => {
@@ -345,5 +396,93 @@ describe('extractFilePartsAsText (deprecated re-export)', () => {
     // Parity check: extractFilePartsAsText is documented as a thin wrapper
     // around parseFileAttachments — confirm both produce identical strings.
     expect(text).toBe(parseFileAttachments(parts).textContext)
+  })
+})
+
+describe('parseFileAttachments — reference parts (upload-first transport)', () => {
+  let workspaceDir: string
+
+  beforeEach(() => {
+    workspaceDir = mkdtempSync(join(tmpdir(), 'shogo-file-attach-test-'))
+    mkdirSync(join(workspaceDir, 'files'), { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(workspaceDir, { recursive: true, force: true })
+  })
+
+  test('inlines a text reference part from disk and reports its saved path', () => {
+    writeFileSync(join(workspaceDir, 'files', 'note.txt'), 'hello from disk', 'utf-8')
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'text/plain', name: 'note.txt', savedPath: 'files/note.txt' },
+    ]
+
+    const result = parseFileAttachments(parts, { workspaceDir })
+
+    expect(result.textContext).toContain('hello from disk')
+    expect(result.textContext).toContain('Saved to workspace at `files/note.txt`')
+  })
+
+  test('sends a reference image to the model as base64 read from disk', () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02])
+    writeFileSync(join(workspaceDir, 'files', 'shot.png'), png)
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'image/png', name: 'shot.png', savedPath: 'files/shot.png' },
+    ]
+
+    const result = parseFileAttachments(parts, { workspaceDir })
+
+    expect(result.images).toHaveLength(1)
+    expect(result.images[0].data).toBe(png.toString('base64'))
+    expect(result.images[0].mimeType).toBe('image/png')
+    expect(result.textContext).toContain('files/shot.png')
+  })
+
+  test('announces a reference that is no longer in the workspace', () => {
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'text/plain', name: 'gone.txt', savedPath: 'files/gone.txt' },
+    ]
+
+    const result = parseFileAttachments(parts, { workspaceDir })
+
+    expect(result.images).toEqual([])
+    expect(result.textContext).toContain('Not found in the workspace at `files/gone.txt`')
+  })
+
+  test('refuses a reference path that escapes the workspace', () => {
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'text/plain', name: 'passwd', savedPath: '../../etc/passwd' },
+    ]
+
+    const result = parseFileAttachments(parts, { workspaceDir })
+
+    expect(result.textContext).toContain('Not found in the workspace')
+  })
+
+  test('inlines only the head of a large reference file and points at the saved path', () => {
+    const big = 'x'.repeat(MAX_INLINE_ATTACHMENT_BYTES + 4096)
+    writeFileSync(join(workspaceDir, 'files', 'big.txt'), big, 'utf-8')
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'text/plain', name: 'big.txt', savedPath: 'files/big.txt' },
+    ]
+
+    const result = parseFileAttachments(parts, { workspaceDir })
+
+    expect(result.textContext).toContain('[Truncated:')
+    expect(result.textContext).toContain('files/big.txt')
+    expect(result.textContext.length).toBeLessThan(big.length)
+  })
+
+  test('defers an audio reference for transcription instead of inlining it', () => {
+    writeFileSync(join(workspaceDir, 'files', 'clip.mp3'), Buffer.from([0x49, 0x44, 0x33]))
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'audio/mpeg', name: 'clip.mp3', savedPath: 'files/clip.mp3' },
+    ]
+
+    const result = parseFileAttachments(parts, { workspaceDir })
+
+    expect(result.audioParts).toHaveLength(1)
+    expect(result.audioParts[0].savedPath).toBe('files/clip.mp3')
+    expect(result.textContext).toBe('')
   })
 })

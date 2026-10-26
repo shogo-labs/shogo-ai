@@ -166,6 +166,10 @@ import { useBillingData } from "@shogo/shared-app/hooks"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceHttp } from "../../lib/workspace-http"
 import { agentProxyBase } from "../../lib/agent-proxy-base"
+import {
+  prepareOutgoingFiles,
+  type OutgoingFilePart,
+} from "../../lib/chat-attachment-upload"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import {
@@ -5762,7 +5766,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const match = dataUrl.match(/^data:([^;]+);/)
     return match?.[1] || "application/octet-stream"
   }, [])
-
   // Internal function that actually sends a message (used by queue processor)
   // Isolated "actually put it on the wire" step, factored out of
   // `sendMessageInternal` so a network-class failure can be queued for
@@ -5885,23 +5888,37 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setIsFollowing(true)
       showOptimisticEcho(trimmedContent, fileArray)
 
+      // Attachments go up BEFORE the turn. The bytes are PUT to the runtime's
+      // streaming route and the message carries a reference part (`savedPath`),
+      // so a large archive never becomes a base64 JSON body — that inflation,
+      // repeated through the client, the API and the runtime, is what made big
+      // attachments time out (SHO-213). Small images stay inline: vision needs
+      // their bytes on this very request.
+      let outgoingParts: OutgoingFilePart[] = []
+      try {
+        outgoingParts = await prepareOutgoingFiles(fileArray, {
+          agentUrl: agentBaseUrl,
+          headers: nativeHeaders ? nativeHeaders() : undefined,
+          fetchImpl: expoFetch ?? undefined,
+        })
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Could not upload the attachment."
+        console.warn("[ChatPanel] Attachment upload failed:", err)
+        setEmptyResponseError(message)
+        return
+      }
+
       const parts: Array<
         | { type: "text"; text: string }
-        | { type: "file"; mediaType: string; url: string; name?: string }
+        | OutgoingFilePart
       > = []
 
       if (trimmedContent) {
         parts.push({ type: "text", text: trimmedContent })
       }
 
-      fileArray.forEach((file) => {
-        parts.push({
-          type: "file",
-          mediaType: file.type || extractMediaType(file.dataUrl),
-          url: file.dataUrl,
-          ...(file.name ? { name: file.name } : {}),
-        })
-      })
+      parts.push(...outgoingParts)
 
       isSendingMessageRef.current = true
 
@@ -5981,13 +5998,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }
       }
 
-      if (fileArray.length > 0) {
-        messagePayload.files = fileArray.map((file) => ({
-          type: "file" as const,
-          mediaType: file.type || extractMediaType(file.dataUrl),
-          url: file.dataUrl,
-          ...(file.name ? { name: file.name } : {}),
-        }))
+      if (outgoingParts.length > 0) {
+        messagePayload.files = outgoingParts
       }
 
       try {
@@ -6066,7 +6078,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       deliverMessage,
       featureId,
       phase,
-      extractMediaType,
+      agentBaseUrl,
+      nativeHeaders,
+      expoFetch,
       workspaceId,
       userId,
       projectId,
@@ -7115,6 +7129,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       dataUrl: p.url,
       name: p.name ?? p.filename ?? "file",
       type: p.mediaType ?? extractMediaType(p.url),
+      ...(typeof p.savedPath === "string" ? { savedPath: p.savedPath } : {}),
     }))
     const files: FileAttachment[] | undefined =
       cachedFiles && cachedFiles.length > 0
@@ -7449,6 +7464,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               dataUrl: p.url,
               name: p.name ?? p.filename ?? "file",
               type: p.mediaType ?? extractMediaType(p.url),
+              ...(typeof p.savedPath === "string" ? { savedPath: p.savedPath } : {}),
             }))
           : undefined
       if (!content && !files) return

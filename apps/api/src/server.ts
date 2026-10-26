@@ -110,6 +110,7 @@ import {
 } from './lib/title-parse'
 import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
 import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
+import { isChatAttachmentUpload } from './lib/chat-attachment-upload'
 import { techStackRoutes } from './routes/tech-stacks'
 import { apiKeyRoutes, resolveApiKey } from './routes/api-keys'
 import { parseProjectSettings, encodeProjectSettingsForWrite } from './lib/project-settings'
@@ -3510,6 +3511,22 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // canonical project URL work for external webhooks regardless of
   // where the agent actually runs.
   if (resolution.kind === 'tunnel') {
+    // An attachment upload is raw file bytes, and the tunnel relays bodies as
+    // text frames — which would corrupt them. Refuse explicitly so the client
+    // can fall back to the inline (data URL) path it used before SHO-213
+    // instead of hanging on a mangled upload.
+    if (isChatAttachmentUpload(c.req.method, path)) {
+      return c.json(
+        {
+          error: {
+            code: 'attachment_upload_unsupported',
+            message:
+              'Streamed attachment uploads are not available through a paired machine tunnel — send the file inline instead.',
+          },
+        },
+        501,
+      )
+    }
     try {
       const { relayAgentProxyViaTunnel } = await import('./lib/tunnel-relay')
       const tunnelHeaders: Record<string, string> = {}
@@ -3579,8 +3596,16 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     headers.set('x-chat-session-id', chatSessionIdHeader)
   }
 
-  let requestBody: ArrayBuffer | undefined
-  if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+  // Attachment bytes are streamed, never buffered: a 200 MB archive would
+  // otherwise sit in this process's memory twice (SHO-213). A stream can only
+  // be forwarded once, so that path also skips the cold-start retry loop.
+  const streamUpload = isChatAttachmentUpload(c.req.method, path)
+  let requestBody: ArrayBuffer | ReadableStream<Uint8Array> | undefined
+  if (streamUpload) {
+    const declaredLength = c.req.header('content-length')
+    if (declaredLength) headers.set('content-length', declaredLength)
+    requestBody = c.req.raw.body ?? undefined
+  } else if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     requestBody = await c.req.arrayBuffer()
   }
 
@@ -3588,7 +3613,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
 
   // Retry with exponential backoff for cold-start transient errors.
   // Knative pods can take 60-90s to cold start (S3 restore + deps install).
-  const MAX_RETRIES = 24
+  const MAX_RETRIES = streamUpload ? 1 : 24
   const BASE_DELAY_MS = 500
   const MAX_DELAY_MS = 5000
   const FETCH_TIMEOUT_MS = 1_800_000
@@ -3609,9 +3634,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       const response = await fetch(targetUrl, {
         method: c.req.method,
         headers,
-        body: requestBody,
+        body: requestBody as any,
         signal: proxyFetchSignal,
-      })
+        ...(streamUpload ? { duplex: 'half' } : {}),
+      } as RequestInit)
 
       if (!response.ok && response.status >= 500 && attempt < MAX_RETRIES) {
         const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)

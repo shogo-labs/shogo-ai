@@ -23,6 +23,7 @@ import { context, metrics, propagation, SpanStatusCode, trace } from '@opentelem
 import type { IRuntimeManager } from '../lib/runtime'
 import { ChatLatency } from '../lib/chat-latency'
 import { workspaceDownloadPath } from '../lib/chat-attachments'
+import { isChatAttachmentUpload } from '../lib/chat-attachment-upload'
 import { captureWake, type WakeInfo } from '../lib/wake-capture'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing-runtime'
@@ -320,8 +321,24 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
 
     try {
       const method = c.req.method
-      const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.arrayBuffer()
-      const response = await fetch(`${runtimeRes.url}${path}${qs}`, { method, headers, body })
+      // Attachment bytes are streamed, never buffered — see
+      // `chat-attachment-upload.ts` (SHO-213).
+      const streamUpload = isChatAttachmentUpload(method, path)
+      if (streamUpload) {
+        const declared = c.req.header('content-length')
+        if (declared) headers.set('content-length', declared)
+      }
+      const body = streamUpload
+        ? c.req.raw.body
+        : method === 'GET' || method === 'HEAD'
+          ? undefined
+          : await c.req.arrayBuffer()
+      const response = await fetch(`${runtimeRes.url}${path}${qs}`, {
+        method,
+        headers,
+        body,
+        ...(streamUpload ? { duplex: 'half' } : {}),
+      } as RequestInit)
       const responseHeaders = new Headers()
       const respContentType = response.headers.get('content-type')
       if (respContentType) responseHeaders.set('content-type', respContentType)

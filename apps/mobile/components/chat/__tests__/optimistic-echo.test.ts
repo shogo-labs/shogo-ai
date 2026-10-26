@@ -58,6 +58,29 @@ describe("buildOptimisticUserMessage", () => {
       { type: "file", mediaType: "image/png", url: "data:image/png;base64,AA", name: "a.png" },
     ] as any)
   })
+
+  test("shows an attachment the composer only holds on disk", () => {
+    // A file picked without a base64 read has no data URL — the upload that
+    // replaces it happens after this bubble is painted, so the echo renders
+    // from the local uri instead of an empty part.
+    const message = buildOptimisticUserMessage({
+      sessionId: "s1",
+      content: "",
+      files: [{ dataUrl: "", uri: "file:///tmp/report.pdf", name: "report.pdf", type: "application/pdf" }],
+    })
+    expect(message.parts).toEqual([
+      { type: "file", mediaType: "application/pdf", url: "file:///tmp/report.pdf", name: "report.pdf" },
+    ] as any)
+  })
+
+  test("drops a file part with nothing to show", () => {
+    const message = buildOptimisticUserMessage({
+      sessionId: "s1",
+      content: "hi",
+      files: [{ name: "ghost.txt", type: "text/plain" }],
+    })
+    expect(message.parts).toEqual([{ type: "text", text: "hi" }] as any)
+  })
 })
 
 describe("appendOptimisticEcho", () => {

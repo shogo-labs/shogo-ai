@@ -211,8 +211,18 @@ export interface FileAttachment {
   dataUrl: string;
   name: string;
   type: string;
-  /** Voice notes recorded on a phone: a local file, uploaded without base64. */
+  /** Declared size in bytes, when the picker knew it. */
+  size?: number;
+  /** Native: the picked file on disk, uploaded without a base64 read. */
   uri?: string;
+  /** Web: the picked `File`, so a large attachment uploads without base64. */
+  file?: File;
+  /**
+   * Workspace path of an already-uploaded attachment. Rebuilt from a persisted
+   * message part on a resend, so the turn reuses the file on the runtime
+   * instead of uploading it again.
+   */
+  savedPath?: string;
   /** Voice notes: clip length in ms. */
   durationMs?: number;
   /** Voice notes: waveform levels 0-100, space separated. */
@@ -1728,6 +1738,9 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         dataUrl: f.dataUrl,
         name: f.name,
         type: f.type,
+        ...(f.size ? { size: f.size } : {}),
+        ...(f.uri ? { uri: f.uri } : {}),
+        ...(f.file ? { file: f.file } : {}),
       })),
       ...pastedAttachments,
     ];

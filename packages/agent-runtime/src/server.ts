@@ -231,7 +231,14 @@ import { subscribe as subscribeScreencast, getLastFrame as getLastScreencastFram
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
 import { SlackAgentAdapter } from './channels/slack-agent'
-import { saveUploadedFileParts, buildUploadedFilesNote } from './upload-attachments'
+import {
+  saveUploadedFileParts,
+  buildUploadedFilesNote,
+  attachmentSummaryLine,
+  isReferenceAttachmentPart,
+  resolveReferenceAttachment,
+} from './upload-attachments'
+import { chatAttachmentRoutes } from './chat-attachment-routes'
 import { buildIdeContext, buildReferencedContext } from './reference-context'
 import { maybeRunInteractive } from './interactive/entry'
 import { evaluateServerBacked } from './published-detect'
@@ -1860,7 +1867,7 @@ app.post('/agent/chat', async (c) => {
         .join('\n')
 
       userFileParts = last.parts.filter(
-        (p: any) => p.type === 'file' && p.url,
+        (p: any) => p.type === 'file' && (p.url || p.savedPath),
       )
     }
   }
@@ -1929,14 +1936,48 @@ app.post('/agent/chat', async (c) => {
   }
 
   // Save uploaded files to the agent's workspace so they're accessible to the
-  // agent via its workspace tools (read_file, search, exec/unzip, etc.). Every
-  // base64 data-URL part is persisted regardless of MIME type — even archives
-  // and unknown binaries — and the saved path is annotated back onto the file
-  // part so downstream parsing can surface it to the agent.
+  // agent via its workspace tools (read_file, search, exec/unzip, etc.).
+  //
+  // Two transports reach here (SHO-213):
+  //   - reference parts, whose bytes the client already PUT to
+  //     `/agent/chat/attachments` — resolve `savedPath`, never re-save;
+  //   - legacy `data:` URL parts, whose bytes still ride in this request (old
+  //     clients, eval runners, pasted long text) — persist them as before.
+  // Either way the saved path is annotated back onto the file part so
+  // downstream parsing can surface it to the agent.
   if (userFileParts.length > 0) {
+    const referenceSummaries: string[] = []
+    let referenceZipUploaded = false
+    for (const part of userFileParts.filter(isReferenceAttachmentPart)) {
+      const resolved = resolveReferenceAttachment(WORKSPACE_DIR, part)
+      if (resolved === 'outside') {
+        // A path that escapes the workspace is a caller bug at best and an
+        // attempt to read the host filesystem at worst — refuse the turn.
+        return c.json(
+          {
+            error: {
+              code: 'invalid_attachment_path',
+              message: `Attachment path is outside the workspace: ${part.savedPath}`,
+            },
+          },
+          400,
+        )
+      }
+      if (resolved === 'missing') {
+        console.warn(`[AgentChat] attachment reference is gone: ${part.savedPath}`)
+        continue
+      }
+      part.savedPath = resolved.savedPath
+      if (!part.mediaType) part.mediaType = resolved.mediaType
+      referenceSummaries.push(
+        attachmentSummaryLine(resolved.savedPath, resolved.mediaType, resolved.bytes),
+      )
+      if (resolved.isZip) referenceZipUploaded = true
+    }
+
     const { saved, savedSummaries, zipUploaded } = saveUploadedFileParts({
       workspaceDir: WORKSPACE_DIR,
-      parts: userFileParts,
+      parts: userFileParts.filter((part) => !isReferenceAttachmentPart(part)),
     })
 
     for (const sf of saved) {
@@ -1944,7 +1985,10 @@ app.post('/agent/chat', async (c) => {
       try { getIndexEngine().indexFile('files', sf.baseName).catch(() => {}) } catch { /* best-effort */ }
     }
 
-    const note = buildUploadedFilesNote(savedSummaries, zipUploaded)
+    const note = buildUploadedFilesNote(
+      [...referenceSummaries, ...savedSummaries],
+      zipUploaded || referenceZipUploaded,
+    )
     if (note) {
       userText = userText ? `${userText}\n\n${note}` : note
     }
@@ -1997,7 +2041,7 @@ app.post('/agent/chat', async (c) => {
       sessionManager,
       chatSessionKey,
       allMessages.slice(0, -1),
-      { label: 'chat_history' },
+      { label: 'chat_history', workspaceDir: WORKSPACE_DIR },
     )
     if (seeded > 0) {
       console.log(`[AgentRuntime][chat] seeded ${seeded} history message(s) for session ${chatSessionKey}`)
@@ -4563,6 +4607,17 @@ app.route('/', workspaceFileRoutes({
   getProjectRoot: projectScopeRoot,
   onFileWritten: notifyCanvasWorkspaceWrite,
   onFileDeleted: notifyCanvasWorkspaceDelete,
+}))
+
+// Chat attachment bytes, uploaded before the turn that references them.
+// Streaming PUT so a large archive never becomes a base64 JSON body — see
+// chat-attachment-routes.ts and SHO-213.
+app.route('/', chatAttachmentRoutes({
+  workspaceDir: WORKSPACE_DIR,
+  onFileWritten: (saved) => {
+    if (saved.isZip) return
+    try { getIndexEngine().indexFile('files', saved.baseName).catch(() => {}) } catch { /* best-effort */ }
+  },
 }))
 
 // Upload files (multipart/form-data)
