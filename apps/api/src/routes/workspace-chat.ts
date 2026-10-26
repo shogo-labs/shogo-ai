@@ -34,6 +34,7 @@ import { wrapSseStreamWithKeepalive } from '@shogo/shared-runtime/sse-keepalive'
 import { createStreamTrace, traceStream } from '@shogo/shared-runtime/stream-trace'
 import { stampModelProvider } from '../lib/stamp-model-provider'
 import { stampWorkspacePlan } from '../lib/stamp-workspace-plan'
+import { stampTeamWorkspaceNames } from '../lib/stamp-team-workspace-names'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
 import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
@@ -764,6 +765,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       delete parsedBody.focusedProjectId
     }
 
+    // Never trusted from the client: only a personal chat carries
+    // `teamWorkspaceNames` (stamped below), so drop anything a client sent.
+    delete parsedBody.teamWorkspaceNames
+
     // Personal companions hide the model picker — one companion per person,
     // not a per-message user pick (see `useWorkspaceExperience`'s
     // `showModelPicker: !isPersonal`) — so the model is a platform-wide
@@ -777,6 +782,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     if (auth.kind === 'personal') {
       parsedBody.agentMode = getPersonalCompanionModelId()
       stampModelProvider(parsedBody)
+      // A personal companion doesn't build software (SHO-221): it points the
+      // user at their Team workspace. Name theirs so it can say which one.
+      await stampTeamWorkspaceNames(parsedBody, auth.userId)
     } else if (parsedBody.agentMode) {
       // Model-tier guard: models the workspace's plan doesn't cover fall back
       // to Auto, whose tiers are already entitlement-capped (same as project

@@ -79,6 +79,11 @@ const IDEAL_TEXT =
   'Each of those goes in its own project: the bakery landing page (React + Vite), ' +
   'the browser game, and the sales dashboard. The project agent owns the code there.'
 
+/** SHO-221: what a Personal workspace should say to "build me an app". */
+const TEAM_REDIRECT_TEXT =
+  "I don't build apps in this Personal workspace — building happens in your Team workspace, " +
+  'Acme. Open the workspace switcher in the sidebar and pick it; I can help you shape the spec here.'
+
 // ---------------------------------------------------------------------------
 // The staging regression: session 545d935e
 // ---------------------------------------------------------------------------
@@ -470,7 +475,13 @@ describe('case scoring', () => {
       (c) => c.id === 'used-existing-project' || c.id === 'same-project-followup',
     )
     const isBuild = ev.validationCriteria.some((c) => c.id === 'created-then-delegated')
+    const isRedirect = ev.validationCriteria.some((c) => c.id === 'redirects-to-team-workspace')
 
+    if (isRedirect) {
+      // SHO-221: a Personal workspace builds nothing and points at the Team
+      // workspace instead — no project tool is even available to call.
+      return result([call('read_file', { path: 'AGENTS.md' })], { runtimeChecks: cleanRoot() }, TEAM_REDIRECT_TEXT)
+    }
     if (!isBuild && !isExisting) {
       return result([call('write_file', { path: 'notes/today.md' })], { runtimeChecks: cleanRoot() }, IDEAL_TEXT)
     }
@@ -522,6 +533,21 @@ describe('case scoring', () => {
       expect(scoreOf(ev, handBuilt).score).toBeLessThan(70)
     })
   }
+
+  test('ws-build-personal: delegating to a hidden builder project fails', () => {
+    // The old behaviour (SHO-221): project_create + project_call from a
+    // Personal workspace, which produced a project that never ran.
+    const ev = WORKSPACE_BUILDS_EVALS.find((e) => e.id === 'ws-build-personal')!
+    const delegated = result(
+      [
+        call('project_create', { name: 'Run tracker' }, { ok: true, project: { id: CREATED_ID } }),
+        call('project_call', { project: CREATED_ID, prompt: 'build a run tracker app' }),
+      ],
+      { runtimeChecks: cleanRoot() },
+      'Done — your app is being built.',
+    )
+    expect(scoreOf(ev, delegated).score).toBeLessThan(70)
+  })
 })
 
 describe('the staging shape, end to end', () => {

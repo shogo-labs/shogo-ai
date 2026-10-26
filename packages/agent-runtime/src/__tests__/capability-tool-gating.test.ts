@@ -10,6 +10,7 @@
 
 import { describe, test, expect } from 'bun:test'
 import { createTools, enabledSocialPlatforms, filterDisabledCapabilityTools, filterSubagentOnlyTools, type ToolContext } from '../gateway-tools'
+import { disabledToolNamesForProfile } from '../capability-profiles'
 import type { GatewayConfig } from '../gateway'
 
 function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -220,7 +221,7 @@ describe('filterDisabledCapabilityTools', () => {
     }
   })
 
-  test('personal profile removes builder/shell/team tools but keeps delegation and goals', () => {
+  test('personal profile removes builder/shell/team tools and every project tool, but keeps goals', () => {
     const n = personalNames(makeConfig({ capabilityProfile: 'personal', gitWorktreesEnabled: true }))
     for (const tool of [
       'exec',
@@ -235,6 +236,14 @@ describe('filterDisabledCapabilityTools', () => {
       'team_create',
       'team_task_create',
       'list_projects',
+      // SHO-221: a personal companion doesn't build software, so it has no
+      // way to start a hidden builder project either.
+      'project_list',
+      'project_create',
+      'project_configure',
+      'project_call',
+      'connect_project',
+      'copy_to_project',
     ]) {
       expect(n.has(tool)).toBe(false)
     }
@@ -242,11 +251,7 @@ describe('filterDisabledCapabilityTools', () => {
       'read_file',
       'write_file',
       'edit_file',
-      'project_list',
-      'project_create',
-      'project_configure',
       'capabilities_configure',
-      'project_call',
       'agent_profile_get',
       'agent_profile_set',
       'goal_create',
@@ -257,6 +262,16 @@ describe('filterDisabledCapabilityTools', () => {
     ]) {
       expect(n.has(tool)).toBe(true)
     }
+  })
+
+  test('team profile keeps all six project tools', () => {
+    const n = names(makeConfig({ capabilityProfile: 'team' }))
+    // `copy_to_project` only registers on a metal workspace runtime, so it is
+    // asserted through the profile's disabled set, not the registered tools.
+    for (const tool of ['project_list', 'project_create', 'project_configure', 'project_call', 'connect_project']) {
+      expect(n.has(tool)).toBe(true)
+    }
+    expect(disabledToolNamesForProfile('team').has('copy_to_project')).toBe(false)
   })
 })
 

@@ -569,6 +569,25 @@ function worksInExistingProject(projectId: string): ValidationCriterion {
   }
 }
 
+/**
+ * SHO-221 — a Personal workspace doesn't build. The agent must not reach for a
+ * project at all, and must tell the user that building happens in their Team
+ * workspace. The text check is loose on purpose (the exact wording is the
+ * model's); the tool-call check is the load-bearing half.
+ */
+function redirectsToTeamWorkspace(): ValidationCriterion {
+  return {
+    id: 'redirects-to-team-workspace',
+    description: 'Calls no project_* tool and says building happens in the Team workspace',
+    phase: 'execution',
+    points: 33,
+    validate: (r) =>
+      noProjectCreated(r) &&
+      !r.toolCalls.some((c) => c.name.startsWith('project_') || c.name === 'connect_project' || c.name === 'copy_to_project') &&
+      /team workspace/i.test(r.allResponseText),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Cases
 // ---------------------------------------------------------------------------
@@ -607,7 +626,7 @@ export const WORKSPACE_BUILDS_EVALS: AgentEval[] = [
   },
   {
     id: 'ws-build-personal',
-    name: 'Personal workspace: builds the app in a project, never in the root',
+    name: 'Personal workspace: says building happens in the Team workspace, and builds nothing',
     category: 'workspace-builds',
     level: 2,
     input: 'make me a little app to track my runs',
@@ -615,7 +634,7 @@ export const WORKSPACE_BUILDS_EVALS: AgentEval[] = [
     workspaceRuntime: { kind: 'personal' },
     toolMocks: WORKSPACE_TOOL_MOCKS,
     maxScore: 100,
-    validationCriteria: [NO_ROOT_BUILD, ROOT_STILL_CLEAN, createsAndDelegates()],
+    validationCriteria: [NO_ROOT_BUILD, ROOT_STILL_CLEAN, redirectsToTeamWorkspace()],
   },
   {
     id: 'ws-build-phrasings',

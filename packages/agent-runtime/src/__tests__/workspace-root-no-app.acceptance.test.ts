@@ -159,7 +159,12 @@ describe('SHO-194: a workspace root that booted from the warm pool', () => {
     discardPoolPreseedAtAssign(root, { bootedFromPool: true })
 
     const agents = readFileSync(join(root, 'AGENTS.md'), 'utf-8')
-    expect(agents).toContain('project_create')
+    // SHO-221: the companion persona replaces the workspace-runtime default,
+    // which told it to build through project_create — a personal workspace
+    // doesn't build at all.
+    expect(agents).toContain('Personal Companion')
+    expect(agents).toContain('Team')
+    expect(agents).not.toContain('project_create')
     expect(agents).not.toContain('Edit src/App.tsx for the main UI')
   })
 
