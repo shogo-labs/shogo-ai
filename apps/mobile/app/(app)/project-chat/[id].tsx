@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useLocalSearchParams, useRouter } from "expo-router";
-import type { InteractionMode } from "../../../components/chat/ChatInput";
 import { ProjectChatView } from "../../../components/project/ProjectChatView";
 import { SessionBreadcrumb } from "../../../components/team-chat/SessionBreadcrumb";
 import {
@@ -14,15 +13,6 @@ function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function initialInteractionMode(
-  value: string | string[] | undefined
-): InteractionMode | undefined {
-  const mode = firstParam(value);
-  return mode === "agent" || mode === "ask" || mode === "plan"
-    ? mode
-    : undefined;
-}
-
 export default function ProjectChatScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
@@ -30,7 +20,6 @@ export default function ProjectChatScreen() {
     chatSessionId?: string | string[];
     chatScope?: string | string[];
     initialMessage?: string | string[];
-    initialInteractionMode?: string | string[];
     newChatNonce?: string | string[];
     newChat?: string | string[];
     startEzMode?: string | string[];
@@ -48,7 +37,6 @@ export default function ProjectChatScreen() {
       newChatNonce={firstParam(params.newChatNonce)}
       chatScope={firstParam(params.chatScope) === "workspace" ? "workspace" : "project"}
       initialMessage={firstParam(params.initialMessage)}
-      initialInteractionMode={initialInteractionMode(params.initialInteractionMode)}
       // Name the open chat in the URL, so this chat is shareable and a reload
       // comes back to it rather than to a blank create-on-open chat.
       urlChatSessionId={firstChatSessionParam(params.chatSessionId)}

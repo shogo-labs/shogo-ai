@@ -206,7 +206,6 @@ import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import {
   ChatInput,
   DEFAULT_MODEL,
-  type InteractionMode,
   type FileAttachment,
   type ChatReference,
   type ProjectMentionOption,
@@ -214,10 +213,6 @@ import {
   type RestoreDraftRequest,
 } from "./ChatInput"
 import type { AgentHistoryResult } from "@shogo-ai/sdk/agent"
-import {
-  loadInteractionModePreference,
-  saveInteractionModePreference,
-} from "../../lib/interaction-mode-preference"
 import { useDualPlan } from "../../lib/dual-plan-preference"
 import {
   isChatStalled,
@@ -499,8 +494,6 @@ export interface ChatPanelProps {
   onCollapsedChange?: (collapsed: boolean) => void
   initialMessage?: string
   initialFiles?: FileAttachment[]
-  /** When set (e.g. from home composer), overrides stored interaction mode for this session and first message */
-  initialInteractionMode?: InteractionMode
   /** Personal-shell composer prefill; stages text without sending it. */
   prefillRequest?: RestoreDraftRequest | null
   /**
@@ -999,7 +992,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onCollapsedChange,
   initialMessage,
   initialFiles,
-  initialInteractionMode,
   prefillRequest,
   onPrefillConsumed,
   composer: composerProp,
@@ -1573,63 +1565,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     !isModelControlled && modelPrefLoaded,
   )
 
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>(
-    () => initialInteractionMode ?? "agent",
-  )
-
-  useEffect(() => {
-    // A forced mode (e.g. the personal companion shell always forcing
-    // "agent") wins outright — loading/restoring a persisted preference here
-    // would just be immediately overridden by the forced-mode effect below,
-    // and doing so on every mount is a wasted async round trip at best.
-    if (composer.forcedMode) return
-    if (initialInteractionMode) {
-      setInteractionMode(initialInteractionMode)
-      void saveInteractionModePreference(initialInteractionMode)
-      return
-    }
-    void loadInteractionModePreference().then((stored) => {
-      if (stored) {
-        setInteractionMode(stored)
-      }
-    })
-  }, [initialInteractionMode, composer.forcedMode])
-
-  // Mirror interactionMode in a ref so callbacks (sendMessageInternal, queue
-  // processor) always observe the latest value even when fired in the same
-  // tick as a mode change (e.g. plan confirm → switch to agent → send).
-  const interactionModeRef = useRef<InteractionMode>(interactionMode)
-  useEffect(() => {
-    interactionModeRef.current = interactionMode
-  }, [interactionMode])
-
-  useEffect(() => {
-    if (!composer.forcedMode) return
-    interactionModeRef.current = composer.forcedMode
-    setInteractionMode(composer.forcedMode)
-  }, [composer.forcedMode])
-
-  const handleInteractionModeChange = useCallback((mode: InteractionMode) => {
-    interactionModeRef.current = mode
-    setInteractionMode(mode)
-    void saveInteractionModePreference(mode)
-  }, [])
-
-  // Dual Plan preference — singleton-backed hook so the chat input, Plans
-  // panel header, and user settings page all stay in sync. Persistent
-  // per-device; the toggle stays sticky across sessions. Default is ON.
-  const [dualPlan, setDualPlanAsync] = useDualPlan()
+  // Dual Plan preference — singleton-backed hook so the Plans panel header and
+  // user settings page stay in sync. Persistent per-device; the toggle stays
+  // sticky across sessions. Default is ON.
+  const [dualPlan] = useDualPlan()
   const dualPlanRef = useRef<boolean>(dualPlan)
   useEffect(() => {
     dualPlanRef.current = dualPlan
   }, [dualPlan])
-  const handleDualPlanChange = useCallback(
-    (next: boolean) => {
-      dualPlanRef.current = next
-      void setDualPlanAsync(next)
-    },
-    [setDualPlanAsync],
-  )
 
   const [restoreDraftRequest, setRestoreDraftRequest] =
     useState<RestoreDraftRequest | null>(null)
@@ -5473,16 +5416,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const planStreamRef = useRef(planStream)
   planStreamRef.current = planStream
 
-  useEffect(() => {
-    if (!isActivePanel) return
-    const next = isStreaming && interactionMode === "plan"
-    const ctx = planStreamRef.current
-    if (!ctx) return
-    if (ctx.isPlanStreaming === next) return
-    ctx.setIsPlanStreaming(next)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStreaming, interactionMode, isActivePanel])
-
   // Track the last plan we published so we can return the SAME object
   // identity when nothing about the create_plan args has changed. Without
   // this, every streaming token rebuilt a fresh `normalizePlanData({...})`
@@ -5555,6 +5488,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
     lastDerivedPlanRef.current = { sig, plan: fresh }
     return fresh
   }, [isStreaming, messages])
+
+  // A plan is "streaming" while a `create_plan` call is still arriving — that
+  // is what lights the Plans panel's streaming row.
+  useEffect(() => {
+    if (!isActivePanel) return
+    const next = derivedStreamingPlan != null
+    const ctx = planStreamRef.current
+    if (!ctx) return
+    if (ctx.isPlanStreaming === next) return
+    ctx.setIsPlanStreaming(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derivedStreamingPlan, isActivePanel])
 
   // Throttle the publish to the shared `PlanStreamContext` so a long
   // `create_plan` stream doesn't notify every `usePlanStream()` consumer
@@ -6019,7 +5964,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
           projectId,
           focusedProjectId,
           agentMode: perMsgModel || selectedModel,
-          interactionMode: interactionModeRef.current,
           dualPlan: dualPlanRef.current,
           clientTurnId,
           // Live canvas preview size (phone vs desktop). The runtime
@@ -6043,9 +5987,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           extra: extraBody,
         })
         console.log(
-          "[ChatPanel][send] bodyExtra — interactionMode:",
-          bodyExtra.interactionMode,
-          "agentMode:",
+          "[ChatPanel][send] bodyExtra — agentMode:",
           bodyExtra.agentMode,
           "hasConfirmedPlan:",
           !!bodyExtra.confirmedPlan,
@@ -6084,8 +6026,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     ],
   )
 
-  // Register bridge endpoints so the EZ Mode overlay can send messages
-  // and toggle interaction mode on our behalf. The registrar is a no-op
+  // Register bridge endpoints so the EZ Mode overlay can send messages on our
+  // behalf. The registrar is a no-op
   // when no <ChatBridgeProvider> is mounted (e.g. tests), so it's safe to
   // call unconditionally.
   const bridgeSend = useCallback(
@@ -6094,12 +6036,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
     [sendMessageInternal],
   )
-  const bridgeSetMode = useCallback(
-    (mode: InteractionMode) => {
-      handleInteractionModeChange(mode)
-    },
-    [handleInteractionModeChange],
-  )
   const {
     emitTurnStart: bridgeEmitTurnStart,
     emitToolActivity: bridgeEmitToolActivity,
@@ -6107,7 +6043,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     setSubagentCards: bridgeSetSubagentCards,
   } = useChatBridgeRegistrar({
     send: bridgeSend,
-    setMode: bridgeSetMode,
   })
   useEffect(() => {
     emitTurnStartRef.current = bridgeEmitTurnStart
@@ -6707,7 +6642,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
         projectId,
         focusedProjectId,
         agentMode: perMsgModel || selectedModel,
-        interactionMode: interactionModeRef.current,
         dualPlan: dualPlanRef.current,
         viewer: canvasViewerPayload({
           isPhoneViewport,
@@ -6898,7 +6832,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [handleSendMessage],
   )
 
-  // Plan confirmation: switch to Agent mode and execute.
+  // Plan confirmation: execute the plan in this same chat.
   // Keep the PlanCard visible with confirmed state for a few seconds before dismissing.
   const confirmDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -6912,20 +6846,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setConfirmedPlan(planToBuild)
       pendingPlanRef.current = null
       setPendingPlan(null)
-      console.log(
-        "[ChatPanel][confirm-plan] BEFORE mode change — stateMode:",
-        interactionMode,
-        "refMode:",
-        interactionModeRef.current,
-        "selectedModel:",
-        selectedModel,
-      )
-      handleInteractionModeChange("agent")
-      console.log(
-        "[ChatPanel][confirm-plan] AFTER mode change — refMode:",
-        interactionModeRef.current,
-        "(state will update on next render)",
-      )
       handleSendMessage("Execute the confirmed plan.", undefined, modelId)
       if (confirmDismissTimerRef.current)
         clearTimeout(confirmDismissTimerRef.current)
@@ -6933,7 +6853,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setConfirmedPlan(null)
       }, 4000)
     },
-    [handleSendMessage, handleInteractionModeChange],
+    [handleSendMessage],
   )
 
   // Build from Plans panel: execute a saved plan with selected model
@@ -6945,14 +6865,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
     )
       return
     lastBuildNonceRef.current = buildPlanRequest.nonce
-    const { plan, modelId: requestedMode } = buildPlanRequest
+    const { plan, modelId } = buildPlanRequest
     const planToBuild = normalizePlanData(plan)
     confirmedPlanRef.current = planToBuild
     setConfirmedPlan(planToBuild)
     pendingPlanRef.current = null
     setPendingPlan(null)
-    handleInteractionModeChange("agent")
-    handleSendMessage("Execute the confirmed plan.", undefined, requestedMode)
+    handleSendMessage("Execute the confirmed plan.", undefined, modelId)
     if (confirmDismissTimerRef.current)
       clearTimeout(confirmDismissTimerRef.current)
     confirmDismissTimerRef.current = setTimeout(() => {
@@ -6961,7 +6880,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     onBuildPlanConsumed?.(buildPlanRequest.nonce)
   }, [
     buildPlanRequest,
-    handleInteractionModeChange,
     handleSendMessage,
     onBuildPlanConsumed,
   ])
@@ -7931,7 +7849,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (pendingPlanRef.current) handleConfirmPlan(pendingPlanRef.current, modelId)
   }
   islandPlanFeedbackRef.current = (text) => {
-    handleInteractionModeChange("plan")
     handleSendMessage(text)
   }
   islandSendRef.current = (text, files) => handleSendMessage(text, files)
@@ -8947,11 +8864,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                           ? questionPresentation === "sheet"
                             ? "Respond to the question, or type a message..."
                             : "Respond to the question below, or type a message..."
-                          : interactionMode === "plan"
-                            ? "Describe what you want to plan..."
-                            : interactionMode === "ask"
-                              ? "Ask a question..."
-                              : "Ask Shogo..."
+                          : "Ask Shogo..."
                     }
                     isStreaming={isStreaming}
                     onStop={handleStop}
@@ -8967,10 +8880,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onSendAgentWakeNow={handleSendAgentWakeNow}
                     onRemoveAgentWake={handleRemoveAgentWake}
                     onResumeTaskWakes={handleResumeTaskWakes}
-                    interactionMode={interactionMode}
-                    onInteractionModeChange={handleInteractionModeChange}
-                    dualPlan={dualPlan}
-                    onDualPlanChange={handleDualPlanChange}
                     contextUsage={contextUsage}
                     contextBreakdown={contextBreakdown}
                     quickActions={quickActions}

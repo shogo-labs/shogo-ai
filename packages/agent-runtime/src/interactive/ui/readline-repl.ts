@@ -131,8 +131,7 @@ export async function runReadlineRepl(options: ReplOptions): Promise<void> {
     try {
       await gateway.processChatMessageStream(cmd.text, store, {
         chatSessionId: sessionId,
-        interactionMode: 'agent',
-        modelOverride: model,
+          modelOverride: model,
       })
     } catch (e: any) {
       out.write(red(`\n  ${e?.message ?? e}\n`))

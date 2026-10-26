@@ -111,7 +111,6 @@ import {
   useChatBridge,
 } from "../../../../components/voice-mode/ChatBridgeContext";
 import { EzModeChatPanel } from "../../../../components/voice-mode/EzModeChatPanel";
-import type { InteractionMode } from "../../../../components/chat/ChatInput";
 import { DEFAULT_MODEL } from "../../../../components/chat/ChatInput";
 import {
   loadModelPreference,
@@ -266,7 +265,6 @@ export default observer(function ProjectLayout() {
      */
     chatScope?: string;
     initialMessage?: string;
-    initialInteractionMode?: string;
     appTemplateName?: string;
     showIntegrations?: string;
     /** When '1', enter EZ Mode immediately on mount (homepage mic flow). */
@@ -379,15 +377,6 @@ export default observer(function ProjectLayout() {
   const [capturedChatScope] = useState<"project" | "workspace">(() =>
     params.chatScope === "workspace" ? "workspace" : "project"
   );
-  const [capturedInitialInteractionMode] = useState<
-    InteractionMode | undefined
-  >(() => {
-    const raw = params.initialInteractionMode;
-    const m = Array.isArray(raw) ? raw[0] : raw;
-    if (m === "agent" || m === "plan" || m === "ask")
-      return m as InteractionMode;
-    return undefined;
-  });
   const [capturedInitialFiles] = useState(() => consumePendingFiles());
   // APP_MODE_DISABLED: capturedAppTemplateName removed
   const [capturedShowIntegrations] = useState(
@@ -3583,9 +3572,6 @@ export default observer(function ProjectLayout() {
                   isInitialSession
                     ? capturedInitialMessage
                     : debugSeed ?? undefined
-                }
-                initialInteractionMode={
-                  isInitialSession ? capturedInitialInteractionMode : undefined
                 }
                 initialFiles={
                   isInitialSession ? capturedInitialFiles : undefined

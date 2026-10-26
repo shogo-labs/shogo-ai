@@ -11,7 +11,6 @@ import { useDomainActions } from "../../contexts/domain"
 import { useOpenQuestionCount } from "../../hooks/useOpenQuestions"
 import { API_URL } from "../../lib/api"
 import { loadModelPreference } from "../../lib/agent-mode-preference"
-import type { ChatSendInteractionMode } from "../../lib/chat-send-body"
 import { DEFAULT_MODEL } from "../chat/ChatInput"
 import { buddyStateForSnapshot } from "./buddy/buddy-state"
 import { IslandBuddy, type IslandBuddyEntrance } from "./buddy/IslandBuddy"
@@ -73,8 +72,6 @@ import {
 
 const PEEK_MS = 4000
 const MAX_CARD_HEIGHT = 640
-/** The island always sends in agent mode; plan mode lives in the full app. */
-const ISLAND_INTERACTION_MODE: ChatSendInteractionMode = "agent"
 const PICKER_WIDTH = 300
 const PICKER_HEIGHT = 320
 
@@ -742,9 +739,7 @@ export const IslandApp = observer(function IslandApp({
       onStop={session ? () => void session.stop() : undefined}
       onSend={async (text, files) => {
         const result = session
-          ? await session.send(text, files, {
-              interactionMode: ISLAND_INTERACTION_MODE,
-            })
+          ? await session.send(text, files)
           : isWorkspaceAgentId(target.projectId)
             ? await startAgentChat({ text, files })
             : await startNewChat(target.projectId, target.projectName, {
@@ -810,7 +805,6 @@ export const IslandApp = observer(function IslandApp({
           workspaceId,
           userId,
           modelId,
-          interactionMode: ISLAND_INTERACTION_MODE,
           workspaceAgent: isWorkspaceAgentChat(view),
         }}
       >

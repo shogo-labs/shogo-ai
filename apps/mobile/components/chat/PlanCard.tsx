@@ -316,7 +316,7 @@ function PlanCardImpl({
         <View className="flex-row items-center gap-2 px-4 py-3 border-t border-border bg-green-50 dark:bg-green-950/30">
           <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" size={16} />
           <Text className="text-xs font-medium text-green-700 dark:text-green-400">
-            Plan build started - executing in Agent mode...
+            Building the plan…
           </Text>
         </View>
       )}

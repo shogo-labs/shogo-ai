@@ -48,16 +48,15 @@ export function openPlanItems(todos: readonly SessionTodo[] | undefined): Sessio
 export interface PlanContinuationSurface {
   isHeartbeat: boolean
   isChannelTurn: boolean
-  interactionMode: 'agent' | 'plan' | 'ask'
 }
 
 /**
  * A heartbeat exists to run on a timer and end; a channel turn answers a
- * message that is not a plan; plan/ask mode may not act on what it would
- * continue. None of them may spend extra model calls on an unfinished list.
+ * message that is not a plan. Neither may spend extra model calls on an
+ * unfinished list.
  */
 export function planContinuationAllowedFor(surface: PlanContinuationSurface): boolean {
-  return !surface.isHeartbeat && !surface.isChannelTurn && surface.interactionMode === 'agent'
+  return !surface.isHeartbeat && !surface.isChannelTurn
 }
 
 export interface PlanContinuationTurn {

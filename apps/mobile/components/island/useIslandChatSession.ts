@@ -25,7 +25,7 @@ import {
 } from "@shogo/shared-app/domain"
 import { API_URL, api } from "../../lib/api"
 import { workspaceHttp } from "../../lib/workspace-http"
-import { buildChatSendBody, generateClientTurnId, type ChatSendInteractionMode } from "../../lib/chat-send-body"
+import { buildChatSendBody, generateClientTurnId } from "../../lib/chat-send-body"
 import { buildStopRequest } from "../../lib/chat-stop"
 import { resolveChatScope } from "../../lib/chat-scope"
 import type { IslandPermissionDecision, IslandPlanSummary } from "../../lib/desktop-island"
@@ -76,8 +76,9 @@ export type IslandQuestion =
     }
 
 export interface IslandSendOptions {
-  interactionMode?: ChatSendInteractionMode
   modelId?: string
+  /** A plan the user confirmed in the island; the turn executes it. */
+  confirmedPlan?: PlanData
 }
 
 export interface IslandChatSession {
@@ -111,7 +112,6 @@ export interface IslandSessionContext {
   userId?: string
   /** Model for sends that don't pick one. */
   modelId: string
-  interactionMode: ChatSendInteractionMode
   /** Chat runs against the workspace-agent runtime, not a project runtime. */
   workspaceAgent?: boolean
 }
@@ -248,7 +248,7 @@ export function useOwnedIslandSession(
   ctx: IslandSessionContext,
   initialSend?: { text: string; files?: IslandFileRef[]; attachments?: IslandAttachment[] } | null,
 ): IslandChatSession {
-  const { bridge, projectId, sessionId, workspaceId, userId, modelId, interactionMode, workspaceAgent } = ctx
+  const { bridge, projectId, sessionId, workspaceId, userId, modelId, workspaceAgent } = ctx
   const actions = useDomainActions()
   const { collection, load } = useSessionHistory(sessionId)
   // The workspace agent is addressed by workspace, not by project; sending a
@@ -374,7 +374,7 @@ export function useOwnedIslandSession(
     async (
       text: string,
       attachments: IslandAttachment[],
-      options: IslandSendOptions & { confirmedPlan?: PlanData | null } = {},
+      options: IslandSendOptions = {},
     ): Promise<IslandResult> => {
       const content = text.trim()
       if (!content && attachments.length === 0) return OK
@@ -388,7 +388,6 @@ export function useOwnedIslandSession(
         userId,
         projectId: chatProjectId,
         agentMode: options.modelId || modelId,
-        interactionMode: options.interactionMode ?? interactionMode,
         clientTurnId,
         confirmedPlan: options.confirmedPlan,
       })
@@ -420,7 +419,7 @@ export function useOwnedIslandSession(
         return fail(err)
       }
     },
-    [actions, chatProjectId, chatWorkspaceId, interactionMode, modelId, sendMessage, serverQueue, sessionId, userId],
+    [actions, chatProjectId, chatWorkspaceId, modelId, sendMessage, serverQueue, sessionId, userId],
   )
 
   const send = useCallback(
@@ -521,14 +520,13 @@ export function useOwnedIslandSession(
         ? sendAttachments("Execute the confirmed plan.", [], {
             modelId: buildModelId,
             confirmedPlan: plan,
-            interactionMode: "agent",
           })
         : Promise.resolve(OK),
     [plan, sendAttachments],
   )
 
   const sendPlanFeedback = useCallback(
-    (text: string) => sendAttachments(text, [], { interactionMode: "plan" }),
+    (text: string) => sendAttachments(text, []),
     [sendAttachments],
   )
 

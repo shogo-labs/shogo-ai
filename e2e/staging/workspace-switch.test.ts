@@ -74,8 +74,7 @@ function switcherCreateRow(page: Page) {
 
 /**
  * gluestack's Popover trigger is a React Native Web Pressable that doesn't
- * always answer Playwright's synthetic click — the same issue documented on
- * `selectInteractionMode` in ./helpers.ts. Retry with raw pointer events,
+ * always answer Playwright's synthetic click. Retry with raw pointer events,
  * then a direct DOM click, before giving up.
  */
 async function openAccountPopover(page: Page, currentWorkspaceName: string) {

@@ -42,12 +42,7 @@ import {
   ChatInput,
   DEFAULT_MODEL,
   type FileAttachment,
-  type InteractionMode,
 } from '../../components/chat/ChatInput'
-import {
-  loadInteractionModePreference,
-  saveInteractionModePreference,
-} from '../../lib/interaction-mode-preference'
 import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
 import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
@@ -283,7 +278,6 @@ export const HomeScreen = observer(function HomeScreen({
     iosKeyboardAvoiding: iosComposerAvoiding,
   })
 
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL)
   // Gate stale-selection reconciliation until the persisted preference has
   // loaded. Otherwise the reconciler runs against the initial slug default
@@ -339,16 +333,9 @@ export const HomeScreen = observer(function HomeScreen({
   const lastRefusedRef = useRef<{
     text: string
     files?: FileAttachment[]
-    mode: InteractionMode
   } | null>(null)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   // APP_MODE_DISABLED: homeAppTemplates state removed
-
-  useEffect(() => {
-    void loadInteractionModePreference().then((stored) => {
-      if (stored) setInteractionMode(stored)
-    })
-  }, [])
 
   // The cloud workspace: identity, billing and membership are the cloud
   // account's even while a paired computer's workspace is open.
@@ -471,11 +458,6 @@ export const HomeScreen = observer(function HomeScreen({
     return name.split(' ')[0] || 'there'
   }, [user?.name])
 
-  const handleHomeInteractionModeChange = useCallback((mode: InteractionMode) => {
-    setInteractionMode(mode)
-    void saveInteractionModePreference(mode)
-  }, [])
-
   const handleHomeModelChange = useCallback((modelId: string) => {
     setSelectedModel(modelId)
     void saveModelPreference(modelId)
@@ -490,13 +472,6 @@ export const HomeScreen = observer(function HomeScreen({
     handleHomeModelChange,
     modelPrefLoaded,
   )
-
-  const homeComposerPlaceholder =
-    interactionMode === 'plan'
-      ? 'Describe what you want to plan...'
-      : interactionMode === 'ask'
-        ? 'Ask a question...'
-        : undefined
 
   /**
    * Create the chat session for a freshly-created home project. When the
@@ -636,7 +611,6 @@ export const HomeScreen = observer(function HomeScreen({
   const createProjectFromPrompt = useCallback(async (
     text: string,
     files?: FileAttachment[],
-    submissionInteractionMode: InteractionMode = interactionMode,
   ) => {
     if (!text.trim() || !user?.id || !currentWorkspace?.id) return
 
@@ -675,7 +649,7 @@ export const HomeScreen = observer(function HomeScreen({
             // The machine is asleep or still waking: the banner says so and
             // offers Try again, so keep the submission to re-run rather than
             // showing a second, worse explanation in an alert.
-            lastRefusedRef.current = { text, files, mode: submissionInteractionMode }
+            lastRefusedRef.current = { text, files }
             return
           }
           const detail = err?.message || err?.details?.error?.message || String(err)
@@ -713,7 +687,6 @@ export const HomeScreen = observer(function HomeScreen({
           chatSessionId: consumed.chatSessionId,
           chatScope: consumed.chatScope,
           initialMessage: text,
-          initialInteractionMode: submissionInteractionMode,
         },
       } as any)
 
@@ -756,7 +729,6 @@ export const HomeScreen = observer(function HomeScreen({
     currentWorkspace?.id,
     ensureDraftProject,
     http,
-    interactionMode,
     posthog,
     prewarmHomeDraft,
     projects,
@@ -796,7 +768,6 @@ export const HomeScreen = observer(function HomeScreen({
           id: consumed.projectId,
           chatSessionId: consumed.chatSessionId,
           chatScope: consumed.chatScope,
-          initialInteractionMode: interactionMode,
           startEzMode: '1',
           autoStartVoice: '1',
         },
@@ -807,7 +778,6 @@ export const HomeScreen = observer(function HomeScreen({
   }, [
     currentWorkspace?.id,
     ensureDraftProject,
-    interactionMode,
     isCreating,
     posthog,
     projects,
@@ -816,15 +786,10 @@ export const HomeScreen = observer(function HomeScreen({
   ])
 
   const handlePromptSubmit = useCallback(
-    (
-      text: string,
-      files?: FileAttachment[],
-      modeOverride?: InteractionMode,
-    ): void | false => {
-      const submissionInteractionMode = modeOverride ?? interactionMode
-      void createProjectFromPrompt(text, files, submissionInteractionMode)
+    (text: string, files?: FileAttachment[]): void | false => {
+      void createProjectFromPrompt(text, files)
     },
-    [createProjectFromPrompt, interactionMode],
+    [createProjectFromPrompt],
   )
 
   const handleTemplatePress = useCallback(async (listing: HomeListing) => {
@@ -924,7 +889,7 @@ export const HomeScreen = observer(function HomeScreen({
     const refused = lastRefusedRef.current
     if (!refused) return
     lastRefusedRef.current = null
-    return createProjectFromPrompt(refused.text, refused.files, refused.mode)
+    return createProjectFromPrompt(refused.text, refused.files)
   }, [createProjectFromPrompt])
   const machineView = useMachineWorkspace({
     machineName: machineInstance?.name,
@@ -1035,11 +1000,8 @@ export const HomeScreen = observer(function HomeScreen({
         onSubmit={(text, files) => handlePromptSubmit(text, files)}
         submitting={isCreating}
         disabled={machineView.composeDisabled}
-        placeholder={homeComposerPlaceholder}
-        typingPlaceholder={interactionMode === 'agent'}
+        typingPlaceholder
         composer={currentExperience.composer}
-        interactionMode={interactionMode}
-        onInteractionModeChange={handleHomeInteractionModeChange}
         selectedModel={selectedModel}
         onModelChange={handleHomeModelChange}
         isPro={hasAdvancedModelAccess}

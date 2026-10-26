@@ -3,7 +3,7 @@
 
 import { createContext, useContext, type ComponentType, type ReactNode } from "react"
 import { View, Text, Pressable, Modal, ScrollView } from "react-native"
-import { ChevronDown, ChevronUp, Languages } from "lucide-react-native"
+import { ChevronDown, ChevronUp } from "lucide-react-native"
 import type { NativeAttachAction } from "../../lib/native-attachment-picker"
 import { resolveShortName } from "../../lib/visible-models"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -87,99 +87,6 @@ export function compactNativeModelLabel(modelId: string): string {
   if (lower.includes("gemini")) return "Gemini"
   if (lower.includes("gpt")) return "GPT"
   return label.length > 12 ? `${label.slice(0, 9)}…` : label
-}
-
-type PlusModeOption<T extends string> = {
-  id: T
-  label: string
-  description: string
-  Icon: ComponentType<{ size?: number; className?: string }>
-}
-
-export function ComposerPlusModeList<T extends string>({
-  modes,
-  selectedId,
-  onSelect,
-  dualPlan = false,
-  onDualPlanChange,
-  dualPlanDisabled,
-  dualPlanTestId,
-}: {
-  modes: PlusModeOption<T>[]
-  selectedId: T
-  onSelect: (id: T) => void
-  dualPlan?: boolean
-  onDualPlanChange?: (next: boolean) => void
-  dualPlanDisabled?: boolean
-  dualPlanTestId?: string
-}) {
-  return (
-    <View className="py-1">
-      {modes.map((mode) => {
-        const isSelected = mode.id === selectedId
-        return (
-          <Pressable
-            key={mode.id}
-            onPress={() => onSelect(mode.id)}
-            className={cn(
-              "flex-row items-center gap-3 p-3 rounded-lg mb-1",
-              isSelected && mode.id === "agent" && "bg-accent",
-              isSelected && mode.id === "plan" && "border border-amber-500/35 bg-amber-500/12",
-              isSelected && mode.id === "ask" && "border border-emerald-500/35 bg-emerald-500/12",
-            )}
-          >
-            <View className="w-10 items-center">
-              <mode.Icon
-                className={cn(
-                  "h-5 w-5",
-                  isSelected && mode.id === "plan" && "text-amber-400",
-                  isSelected && mode.id === "ask" && "text-emerald-400",
-                  (!isSelected || mode.id === "agent") && "text-muted-foreground",
-                )}
-                size={PHONE_DENSITY.icon.sm}
-              />
-            </View>
-            <View className="flex-1">
-              <Text
-                className={cn(
-                  PHONE_DENSITY.text.label,
-                  "font-medium",
-                  isSelected && mode.id === "plan" && "text-amber-400",
-                  isSelected && mode.id === "ask" && "text-emerald-400",
-                  (!isSelected || mode.id === "agent") && "text-foreground",
-                )}
-              >
-                {mode.label}
-              </Text>
-              <Text className={cn(PHONE_DENSITY.text.caption, "text-muted-foreground")}>{mode.description}</Text>
-            </View>
-          </Pressable>
-        )
-      })}
-      {selectedId === "plan" ? (
-        <Pressable
-          testID={dualPlanTestId}
-          disabled={dualPlanDisabled}
-          onPress={() => onDualPlanChange?.(!dualPlan)}
-          accessibilityLabel="Also generate a stakeholder summary"
-          className={cn(
-            "mx-1 mb-1 flex-row items-center gap-3 rounded-lg p-3",
-            dualPlan ? "border border-sky-500/35 bg-sky-500/12" : "bg-muted/40",
-          )}
-        >
-          <View className="w-10 items-center">
-            <Languages className={dualPlan ? "text-sky-400" : "text-muted-foreground"} size={PHONE_DENSITY.icon.sm} />
-          </View>
-          <View className="flex-1">
-            <Text className={cn(PHONE_DENSITY.text.label, "font-medium text-foreground")}>Stakeholder summary</Text>
-            <Text className={cn(PHONE_DENSITY.text.caption, "text-muted-foreground")}>
-              Also generate a summary for stakeholders
-            </Text>
-          </View>
-        </Pressable>
-      ) : null}
-    </View>
-  )
 }
 
 export function ComposerPlusSheet({

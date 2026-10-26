@@ -27,7 +27,6 @@ export interface InteractiveGateway {
     options?: {
       modelOverride?: string
       userId?: string
-      interactionMode?: 'agent' | 'plan' | 'ask'
       chatSessionId?: string
     },
   ): Promise<void>
@@ -82,7 +81,6 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<number> 
   try {
     await gateway.processChatMessageStream(prompt, store, {
       chatSessionId: sessionId,
-      interactionMode: 'agent',
       modelOverride: model,
     })
   } catch (e: any) {

@@ -155,10 +155,6 @@ mock.module('../../lib/pending-license', () => ({
   getPendingLicenseCode: () => null,
   clearPendingLicenseCode: () => {},
 }))
-mock.module('../../lib/interaction-mode-preference', () => ({
-  loadInteractionModePreference: async () => null,
-  saveInteractionModePreference: async () => {},
-}))
 mock.module('../../lib/agent-mode-preference', () => ({
   loadModelPreference: async () => null,
   saveModelPreference: async () => {},

@@ -52,12 +52,10 @@ describe('openPlanItems', () => {
 })
 
 describe('planContinuationAllowedFor', () => {
-  test('only a chat turn in agent mode may spend a continuation', () => {
-    expect(planContinuationAllowedFor({ isHeartbeat: false, isChannelTurn: false, interactionMode: 'agent' })).toBe(true)
-    expect(planContinuationAllowedFor({ isHeartbeat: true, isChannelTurn: false, interactionMode: 'agent' })).toBe(false)
-    expect(planContinuationAllowedFor({ isHeartbeat: false, isChannelTurn: true, interactionMode: 'agent' })).toBe(false)
-    expect(planContinuationAllowedFor({ isHeartbeat: false, isChannelTurn: false, interactionMode: 'plan' })).toBe(false)
-    expect(planContinuationAllowedFor({ isHeartbeat: false, isChannelTurn: false, interactionMode: 'ask' })).toBe(false)
+  test('only a chat turn may spend a continuation', () => {
+    expect(planContinuationAllowedFor({ isHeartbeat: false, isChannelTurn: false })).toBe(true)
+    expect(planContinuationAllowedFor({ isHeartbeat: true, isChannelTurn: false })).toBe(false)
+    expect(planContinuationAllowedFor({ isHeartbeat: false, isChannelTurn: true })).toBe(false)
   })
 })
 

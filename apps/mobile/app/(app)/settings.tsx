@@ -1219,8 +1219,8 @@ function DualPlanCard() {
               Generate summaries for plans
             </Text>
             <Text className="text-sm text-muted-foreground mt-0.5">
-              When on, every plan you generate also gets a stakeholder summary
-              alongside the technical body. You can flip between the Technical
+              When on, every plan the agent writes also gets a stakeholder
+              summary alongside the technical body. You can flip between the Technical
               and Summary views from any plan, and generate summaries on demand
               for older plans.
             </Text>

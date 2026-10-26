@@ -2050,7 +2050,6 @@ app.post('/agent/chat', async (c) => {
   // session override so the Account prompt line names the model this turn
   // actually sends (SHO-145).
   const modelDisplayName = (body.modelDisplayName as string | undefined) || undefined
-  const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
   // Which surface this chat belongs to. The API proxy stamps it (workspace
@@ -2062,7 +2061,7 @@ app.post('/agent/chat', async (c) => {
       : IS_WORKSPACE_RUNTIME && !process.env.WORKSPACE_ANCHOR_PROJECT_ID
         ? 'workspace'
         : 'project'
-  console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, modelProvider: ${modelProvider ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
+  console.log(`[AgentRuntime][chat] received — agentMode: ${modelOverride ?? '(none)'}, modelProvider: ${modelProvider ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
 
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
@@ -2093,7 +2092,6 @@ app.post('/agent/chat', async (c) => {
       fileParts: userFileParts.length > 0 ? userFileParts : undefined,
       userId: chatUserId,
       requesterTicket,
-      interactionMode,
       confirmedPlan,
       dualPlan,
       chatSessionId: chatSessionKey,

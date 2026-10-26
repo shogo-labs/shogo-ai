@@ -10737,33 +10737,26 @@ export function expectedCoreToolsForAgentMode(config: import('./gateway').Gatewa
   return core
 }
 
-export type RestrictedMode = 'plan' | 'ask' | 'coordinator'
+export type RestrictedMode = 'coordinator'
 
 /**
- * Build a dispatch-only stub for a tool that exists in agent mode but was
- * filtered out by the current restricted mode. The agent loop resolves tools by
- * name via `tools.find()`; without a stub a hallucinated call to a filtered tool
- * surfaces an opaque "Tool X not found". This returns a mode-aware error instead
- * so the model self-corrects (switch to Agent mode / delegate) rather than
- * looping. Stubs are NOT advertised (kept out of the iterated/mapped tool list),
- * so they don't reintroduce the tool the mode intentionally hides.
+ * Build a dispatch-only stub for a tool that exists normally but was filtered
+ * out by coordinator mode. The agent loop resolves tools by name via
+ * `tools.find()`; without a stub a hallucinated call to a filtered tool
+ * surfaces an opaque "Tool X not found". This returns a coordinator-specific
+ * error instead so the model self-corrects (delegate) rather than looping.
+ * Stubs are NOT advertised (kept out of the iterated/mapped tool list), so they
+ * don't reintroduce the tool coordinator mode intentionally hides.
  */
 export function createModeUnavailableTool(name: string, mode: RestrictedMode): AgentTool {
-  const modeLabel = mode === 'plan' ? 'Plan mode' : mode === 'ask' ? 'Ask mode' : 'Coordinator mode'
-  const guidance =
-    mode === 'plan'
-      ? 'Plan mode is read-only — finish planning, then switch to Agent mode to edit files or run commands.'
-      : mode === 'ask'
-        ? 'Ask mode is read-only — switch to Agent mode to take this action.'
-        : 'This coordinator session is read-only — delegate the action to a worker agent instead of calling the tool directly.'
   return {
     name,
-    description: `(${name} is unavailable in ${modeLabel})`,
+    description: `(${name} is unavailable in coordinator mode)`,
     label: name,
     parameters: Type.Object({}, { additionalProperties: true }),
     execute: async () =>
       textResult({
-        error: `The "${name}" tool is not available in ${modeLabel}. ${guidance}`,
+        error: `The "${name}" tool is not available in coordinator mode. This coordinator session is read-only — delegate the action to a worker agent instead of calling the tool directly.`,
         toolUnavailableInMode: mode,
       }),
   }

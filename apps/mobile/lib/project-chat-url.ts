@@ -28,7 +28,6 @@ export const CHAT_URL_ONE_SHOT_PARAMS = [
   'newChat',
   'newChatNonce',
   'initialMessage',
-  'initialInteractionMode',
   'startEzMode',
   'autoStartVoice',
 ] as const

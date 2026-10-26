@@ -79,7 +79,6 @@ type QueueBody = {
   projectId?: string
   focusedProjectId?: string
   agentMode?: string
-  interactionMode?: string
   dualPlan?: boolean
   timezone?: string
   clientTurnId?: string

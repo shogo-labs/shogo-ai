@@ -1613,11 +1613,12 @@ chat agent through a translator persona — via voice **or** text, sharing the
 same system prompt and tools. The example below is exactly how the Shogo IDE
 mounts its own EZ Mode on top of the existing chat.
 
-The persona exposes two client-side tools:
+The persona exposes one client-side tool (plus an optional activity lookup):
 
 - `send_to_chat(text)` — forward a plain-English instruction to the technical
   chat agent.
-- `set_mode(mode)` — switch the chat between `"agent"` and `"plan"`.
+- `get_recent_activity()` — read a short log of recent background work, so a
+  spoken summary can be grounded in what actually happened.
 
 Step 1 — one shared ElevenLabs agent:
 

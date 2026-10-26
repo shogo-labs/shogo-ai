@@ -10,8 +10,8 @@ const row = {
   parts: JSON.stringify([{ type: "text", text: "queued prompt" }]),
   body: JSON.stringify({
     agentMode: "auto",
-    interactionMode: "agent",
     text: "queued prompt",
+
   }),
   status: "pending",
   position: 0,

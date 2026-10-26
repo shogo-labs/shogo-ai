@@ -561,11 +561,11 @@ export const EditableUserMessage = memo(function EditableUserMessage({
           // an `px-3` text inset; the inline editor doesn't add
           // its own on top.
           flush
-          // The queue, interaction-mode and quick-actions surfaces
-          // belong to the bottom composer's lifecycle — exposing
-          // them from inside a historical edit would mean the user
-          // could queue a message from an edit-in-progress bubble,
-          // which is confusing. Keep them inert here.
+          // The queue and quick-actions surfaces belong to the bottom
+          // composer's lifecycle — exposing them from inside a
+          // historical edit would mean the user could queue a message
+          // from an edit-in-progress bubble, which is confusing. Keep
+          // them inert here.
           queuedMessages={[]}
           dimWhenDisabled={false}
         />

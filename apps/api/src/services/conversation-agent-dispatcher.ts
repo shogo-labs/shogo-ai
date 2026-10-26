@@ -1458,7 +1458,6 @@ async function invokeChat(args: InvokeArgs): Promise<Response> {
     chatSessionId: args.sessionId,
     userId: args.userId,
     agentMode: await agentModeFor(args.projectId, args.workspaceId),
-    interactionMode: 'agent',
     clientTurnId: `channel-agent-${args.sessionId}-${crypto.randomUUID()}`,
   })
   const headers = {

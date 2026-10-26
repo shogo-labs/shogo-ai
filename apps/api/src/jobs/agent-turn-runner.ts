@@ -243,7 +243,6 @@ export async function executeWorkspaceAgentTurn(input: {
         chatSessionId: input.sessionId,
         userId: input.userId,
         agentMode: 'auto',
-        interactionMode: 'agent',
         clientTurnId: input.clientTurnId,
       }),
     }),

@@ -416,7 +416,6 @@ async function runAgentTask(
       // map. This is especially important in local mode, where the map points
       // at the configured Ollama model instead of a cloud Claude id.
       agentMode: 'auto',
-      interactionMode: 'agent',
       // A retry is a new delegated execution, not a transport retry of the
       // previous execution. Give it a fresh idempotency key.
       clientTurnId: `agent-task-${task.id}-${crypto.randomUUID()}`,

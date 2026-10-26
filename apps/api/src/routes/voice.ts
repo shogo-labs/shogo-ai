@@ -855,10 +855,10 @@ export function voiceRoutes() {
    * Request body: `{ messages: UIMessage[] }` (AI SDK v6 format).
    * Response: UI message stream.
    *
-   * The two tools (`send_to_chat`, `set_mode`) are declared WITHOUT an
-   * `execute` function — they are executed client-side by the overlay,
-   * which supplies results via `useChat().addToolOutput` before the
-   * translator's next turn.
+   * The two tools (`send_to_chat`, `get_recent_activity`) are declared
+   * WITHOUT an `execute` function — they are executed client-side by the
+   * overlay, which supplies results via `useChat().addToolOutput` before
+   * the translator's next turn.
    */
   router.post('/voice/translator/chat/:chatSessionId', async (c) => {
     const auth = c.get('auth')

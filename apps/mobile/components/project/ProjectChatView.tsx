@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { observer } from "mobx-react-lite";
 import { useAuth } from "../../contexts/auth";
 import { useDomainActions } from "@shogo/shared-app/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
-import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { ChatPanel } from "../chat/ChatPanel";
-import type { InteractionMode } from "../chat/ChatInput";
 import { consumePendingFiles } from "../../lib/pending-image-store";
 import { resolveChatScope } from "../../lib/chat-scope";
 import {
@@ -29,7 +27,6 @@ export interface ProjectChatViewProps {
   newChatNonce?: string;
   chatScope?: "workspace" | "project";
   initialMessage?: string;
-  initialInteractionMode?: InteractionMode;
   /** Rendered above the chat (for example a breadcrumb). */
   header?: ReactNode;
   /**
@@ -52,7 +49,6 @@ export const ProjectChatView = observer(function ProjectChatView({
   newChatNonce,
   chatScope,
   initialMessage,
-  initialInteractionMode,
   header,
   urlChatSessionId,
   hasOneShotUrlParams,
@@ -65,13 +61,11 @@ export const ProjectChatView = observer(function ProjectChatView({
   const { user } = useAuth();
   const workspace = useActiveWorkspace();
   const experience = useWorkspaceExperience();
-  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
   const actions = useDomainActions();
   const agentColor = buddyAvatarColor(useAgentLook(workspace?.id, projectId ?? null));
   // Initial creation arrives here directly on native. Capture one-shot values
   // so a route re-render cannot resend the prompt or lose pending attachments.
   const [capturedInitialMessage] = useState(() => initialMessage);
-  const [capturedInitialInteractionMode] = useState(() => initialInteractionMode);
   const [capturedInitialFiles] = useState(() => consumePendingFiles());
   const [chatSessionId, setChatSessionId] = useState<string | null>(
     requestedSessionId ?? null
@@ -92,21 +86,6 @@ export const ProjectChatView = observer(function ProjectChatView({
     enabled: !!onChatSessionUrlChange,
     setParams: onChatSessionUrlChange,
   });
-  // Personal main and side chats intentionally stay Agent-only. A project
-  // chat has its own model/runtime, so mobile exposes Ask and Plan from the
-  // existing composer plus-sheet without changing desktop presentation.
-  const composer = useMemo(
-    () =>
-      usesMobileWorkspaceChrome
-        ? {
-            ...experience.composer,
-            showInteractionModes: true,
-            forcedMode: undefined,
-          }
-        : experience.composer,
-    [experience.composer, usesMobileWorkspaceChrome]
-  );
-
   useEffect(() => {
     setChatSessionId(requestedSessionId ?? null);
   }, [requestedSessionId]);
@@ -161,8 +140,7 @@ export const ProjectChatView = observer(function ProjectChatView({
         onChatSessionChange={setChatSessionId}
         initialMessage={capturedInitialMessage}
         initialFiles={capturedInitialFiles}
-        initialInteractionMode={capturedInitialInteractionMode}
-        composer={composer}
+        composer={experience.composer}
         presentation="agent"
         className="flex-1"
         isActive

@@ -79,15 +79,14 @@ todos:
 // ---------------------------------------------------------------------------
 
 const PHASE_1_PROMPT =
-  'I want to build a user authentication system with JWT tokens, password hashing, ' +
-  'and role-based access control. Create a plan for how to implement this.'
+  'Make a plan first, do not build anything yet: I want to build a user authentication ' +
+  'system with JWT tokens, password hashing, and role-based access control.'
 
 const PHASE_1: AgentEval = {
   id: 'plan-creation',
-  name: 'Plan Lifecycle: Creation — create a structured plan in plan mode',
+  name: 'Plan Lifecycle: Creation — create a structured plan when asked to plan first',
   category: 'plan',
   level: 2,
-  interactionMode: 'plan',
   input: PHASE_1_PROMPT,
   conversationHistory: [],
   maxScore: 20,
@@ -134,14 +133,13 @@ const PHASE_1: AgentEval = {
 // ---------------------------------------------------------------------------
 
 const PHASE_2_PROMPT =
-  'Actually, I also need OAuth2 support with Google and GitHub providers. Update the existing plan to include this.'
+  'Do not build anything yet — actually, I also need OAuth2 support with Google and GitHub providers. Update the existing plan to include this.'
 
 const PHASE_2: AgentEval = {
   id: 'plan-update',
   name: 'Plan Lifecycle: Update — modify existing plan with new requirements',
   category: 'plan',
   level: 3,
-  interactionMode: 'plan',
   input: PHASE_2_PROMPT,
   conversationHistory: [
     { role: 'user', content: PHASE_1_PROMPT },
@@ -270,8 +268,6 @@ interface PlanCreationSpec {
   level: 1 | 2 | 3 | 4 | 5
   /** Keywords the plan body should reference (any match). */
   domainTerms: string[]
-  /** Defaults to 'plan'. Set 'agent' for auto-plan cases. */
-  interactionMode?: 'agent' | 'plan'
   /** Whether to require read-only research before create_plan. Defaults true. */
   requireResearch?: boolean
 }
@@ -320,7 +316,6 @@ function makePlanCreationEval(spec: PlanCreationSpec): AgentEval {
     name: spec.name,
     category: 'plan',
     level: spec.level,
-    interactionMode: spec.interactionMode ?? 'plan',
     input: spec.prompt,
     conversationHistory: [],
     workspaceFiles: APP_SEED_FILES,
@@ -385,7 +380,6 @@ const AGENT_MODE_AUTOPLAN = makePlanCreationEval({
     'when reconnecting.',
   level: 4,
   domainTerms: ['presence', 'conflict', 'offline', 'sync', 'collaborat'],
-  interactionMode: 'agent',
   // Auto-plan from complexity; the model may dive into reading first or plan up front.
   requireResearch: false,
 })

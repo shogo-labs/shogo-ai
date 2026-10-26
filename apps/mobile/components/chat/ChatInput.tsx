@@ -8,7 +8,6 @@
  * - Rounded container with subtle border
  * - Clean TextInput with "Ask Shogo..." placeholder
  * - Bottom toolbar with action buttons
- * - Agent mode selector via popover dropdown
  *
  * Supports image attachments via file picker, drag-and-drop, and paste (web).
  * Native: Expo ImagePicker + DocumentPicker (AttachSourceSheet + native-attachment-picker).
@@ -23,7 +22,6 @@ import React, {
   useMemo,
   useRef,
   useState,
-  type ComponentType,
   type ReactNode,
 } from "react";
 import {
@@ -71,12 +69,11 @@ import {
   type WorkspaceExperienceComposer,
 } from "@shogo/shared-app";
 
-/** Full composer (model picker + interaction modes, no forced mode) — the default for any caller that doesn't pass `composer`. */
+/** Full composer (model picker shown) — the default for any caller that doesn't pass `composer`. */
 const DEFAULT_CHAT_INPUT_COMPOSER: WorkspaceExperienceComposer =
   workspaceExperience("team").composer;
 const MESSAGING_COMPOSER: WorkspaceExperienceComposer = {
   showModelPicker: false,
-  showInteractionModes: false,
 };
 import {
   Plus,
@@ -89,11 +86,9 @@ import {
   Bot,
   Cpu,
   ClipboardList,
-  MessageCircleQuestion,
   Check,
   Mic,
   Sparkles,
-  Languages,
   Play,
   Cloud,
   SlidersHorizontal,
@@ -144,7 +139,6 @@ import {
 } from "../../lib/composer-phone";
 import { executeNativeAttachAction } from "../../lib/native-attachment-picker";
 import {
-  ComposerPlusModeList,
   ComposerPlusSection,
   ComposerPlusSheet,
   compactNativeModelLabel,
@@ -166,38 +160,6 @@ import {
   useComposerLayoutMode,
   useProminentComposerHeight,
 } from "./composer";
-
-export type InteractionMode = "agent" | "plan" | "ask";
-
-export interface InteractionModeConfig {
-  id: InteractionMode;
-  label: string;
-  description: string;
-  Icon: ComponentType<{ size?: number; className?: string }>;
-}
-
-export const INTERACTION_MODES: InteractionModeConfig[] = [
-  {
-    id: "agent",
-    label: "Agent",
-    description: "Full autonomous mode — reads, writes, executes",
-    Icon: Bot,
-  },
-  {
-    id: "plan",
-    label: "Plan",
-    description: "Research and create a plan before making changes",
-    Icon: ClipboardList,
-  },
-  {
-    id: "ask",
-    label: "Ask",
-    description: "Just answer questions, no tools or changes",
-    Icon: MessageCircleQuestion,
-  },
-];
-
-const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"];
 
 /**
  * Show a native browser tooltip on hover (web only). Wraps children in a
@@ -526,17 +488,13 @@ export interface ChatInputProps {
   onRemoveAgentWake?: (wakeId: string) => void | Promise<void>;
   /** Deliver the updates a paused session is holding (the waiting chip's Resume). */
   onResumeTaskWakes?: (messageId: string) => void;
-  interactionMode?: InteractionMode;
-  onInteractionModeChange?: (mode: InteractionMode) => void;
   /**
    * Composer capability descriptor (`workspaceExperience(kind).composer`).
-   * Defaults to the full composer (model picker + interaction modes shown).
-   * Pass `workspaceExperience('personal').composer` to hide plan/ask and
-   * model controls for the companion shell.
+   * Defaults to the full composer (model picker shown). Pass
+   * `workspaceExperience('personal').composer` to hide the model controls for
+   * the companion shell.
    */
   composer?: WorkspaceExperienceComposer;
-  dualPlan?: boolean;
-  onDualPlanChange?: (enabled: boolean) => void;
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null;
   /** Per-turn category rollup from `data-prompt-breakdown`, shown in the popover opened by clicking the context ring. Null before the first turn. */
   contextBreakdown?: ContextBreakdownData | null;
@@ -666,11 +624,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onSendAgentWakeNow,
   onRemoveAgentWake,
   onResumeTaskWakes,
-  interactionMode: controlledInteractionMode,
-  onInteractionModeChange,
   composer: composerProp,
-  dualPlan = false,
-  onDualPlanChange,
   contextUsage,
   contextBreakdown,
   quickActions = [],
@@ -814,7 +768,6 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     inputHeightRef.current = nextHeight;
     setInputHeight(nextHeight);
   }, []);
-  const [interactionModeOpen, setInteractionModeOpen] = useState(false);
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [plusExpandedId, setPlusExpandedId] = useState<string | null>(null);
@@ -841,35 +794,6 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       }
     },
     [onModelChange, effectiveIsPro, onUpgradeClick]
-  );
-
-  const [internalInteractionMode, setInternalInteractionMode] =
-    useState<InteractionMode>("agent");
-  const interactionMode = controlledInteractionMode ?? internalInteractionMode;
-
-  const handleInteractionModeChange = useCallback(
-    (mode: InteractionMode) => {
-      if (onInteractionModeChange) {
-        onInteractionModeChange(mode);
-      } else {
-        setInternalInteractionMode(mode);
-      }
-    },
-    [onInteractionModeChange]
-  );
-
-  const cycleInteractionMode = useCallback(() => {
-    if (disabled) return;
-    const currentIndex = INTERACTION_MODE_ORDER.indexOf(interactionMode);
-    const nextIndex = (currentIndex + 1) % INTERACTION_MODE_ORDER.length;
-    handleInteractionModeChange(INTERACTION_MODE_ORDER[nextIndex]);
-  }, [disabled, handleInteractionModeChange, interactionMode]);
-
-  const currentInteractionConfig = useMemo(
-    () =>
-      INTERACTION_MODES.find((m) => m.id === interactionMode) ||
-      INTERACTION_MODES[0],
-    [interactionMode]
   );
 
   const [quickActionsOpen, setQuickActionsOpen] = useState(false);
@@ -2759,16 +2683,6 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     return;
                   }
                   if (
-                    composer.showInteractionModes &&
-                    Platform.OS === "web" &&
-                    e.nativeEvent.key === "Tab" &&
-                    e.nativeEvent.shiftKey
-                  ) {
-                    e.preventDefault();
-                    cycleInteractionMode();
-                    return;
-                  }
-                  if (
                     Platform.OS === "web" &&
                     e.nativeEvent.key === "Enter" &&
                     !e.nativeEvent.shiftKey
@@ -2910,24 +2824,6 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                         />
                       </ComposerPlusSection>
                     ) : null}
-                    {composer.showInteractionModes ? (
-                      <ComposerPlusSection
-                        id="mode"
-                        label="Mode"
-                        value={currentInteractionConfig.label}
-                        Icon={currentInteractionConfig.Icon}
-                      >
-                        <ComposerPlusModeList
-                          modes={INTERACTION_MODES}
-                          selectedId={interactionMode}
-                          onSelect={handleInteractionModeChange}
-                          dualPlan={dualPlan}
-                          onDualPlanChange={onDualPlanChange}
-                          dualPlanDisabled={disabled}
-                          dualPlanTestId="dual-plan-toggle"
-                        />
-                      </ComposerPlusSection>
-                    ) : null}
                     {agentControls ? (
                       <ComposerPlusSection
                         id="environment"
@@ -2985,9 +2881,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                 <>
                   {leadingControls}
                   {presentation === "agent" &&
-                  (composer.showInteractionModes ||
-                    showModelPicker ||
-                    quickActions.length > 0) ? (
+                  (showModelPicker || quickActions.length > 0) ? (
                     <Popover
                       placement="top"
                       size="xs"
@@ -3021,43 +2915,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     >
                       <PopoverBackdrop />
                       <PopoverContent className="w-[248px] p-2">
-                        {composer.showInteractionModes ? (
-                          <>
-                            <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                              Mode
-                            </Text>
-                            <View className="flex-row gap-1">
-                              {INTERACTION_MODES.map((mode) => (
-                                <Pressable
-                                  key={mode.id}
-                                  onPress={() => {
-                                    handleInteractionModeChange(mode.id);
-                                    setAgentControlsOpen(false);
-                                  }}
-                                  className={cn(
-                                    "flex-1 items-center rounded-md px-1.5 py-1.5",
-                                    interactionMode === mode.id
-                                      ? "bg-primary/12"
-                                      : "bg-muted/50"
-                                  )}
-                                >
-                                  <Text
-                                    className={cn(
-                                      "text-xs",
-                                      interactionMode === mode.id
-                                        ? "text-primary"
-                                        : "text-muted-foreground"
-                                    )}
-                                  >
-                                    {mode.label}
-                                  </Text>
-                                </Pressable>
-                              ))}
-                            </View>
-                          </>
-                        ) : null}
                         {showModelPicker ? (
-                          <View className="mt-2 border-t border-border/60 pt-2">
+                          <View className="border-t border-border/60 pt-2">
                             <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                               Model
                             </Text>
@@ -3099,187 +2958,32 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                       </PopoverContent>
                     </Popover>
                   ) : null}
-                  {composer.showInteractionModes && presentation !== "agent" ? (
-                    <>
-                      {/* Interaction mode selector (Agent / Plan / Ask) */}
-                      <Popover
-                        placement="top"
-                        size="xs"
-                        isOpen={interactionModeOpen}
-                        onOpen={() => setInteractionModeOpen(true)}
-                        onClose={() => setInteractionModeOpen(false)}
-                        trigger={(triggerProps) => (
-                          <WebTooltip
-                            label={`Mode: ${currentInteractionConfig.label}`}
-                          >
-                            <Pressable
-                              {...triggerProps}
-                              hitSlop={isNative ? 6 : undefined}
-                              disabled={disabled}
-                              accessibilityLabel={`Mode: ${currentInteractionConfig.label}`}
-                              className={cn(
-                                isNative
-                                  ? "h-8 w-8 items-center justify-center rounded-lg"
-                                  : "h-[22px] w-[22px] items-center justify-center rounded-md",
-                                interactionMode === "agent" && "bg-muted/50",
-                                interactionMode === "plan" &&
-                                  "border border-amber-500/45 bg-amber-500/12",
-                                interactionMode === "ask" &&
-                                  "border border-emerald-500/45 bg-emerald-500/12"
-                              )}
-                              testID="interaction-mode-trigger"
-                            >
-                              <currentInteractionConfig.Icon
-                                className={cn(
-                                  "h-3.5 w-3.5",
-                                  interactionMode === "agent" &&
-                                    "text-muted-foreground",
-                                  interactionMode === "plan" &&
-                                    "text-amber-400",
-                                  interactionMode === "ask" &&
-                                    "text-emerald-400"
-                                )}
-                                size={isNative ? 16 : 14}
-                              />
-                            </Pressable>
-                          </WebTooltip>
-                        )}
-                      >
-                        <PopoverBackdrop />
-                        <PopoverContent className="w-[140px] p-0">
-                          <View className="py-1">
-                            {INTERACTION_MODES.map((mode) => {
-                              const isSelected = mode.id === interactionMode;
-                              return (
-                                <Pressable
-                                  key={mode.id}
-                                  testID={`interaction-mode-option-${mode.id}`}
-                                  onPress={() => {
-                                    handleInteractionModeChange(mode.id);
-                                    setInteractionModeOpen(false);
-                                  }}
-                                  className={cn(
-                                    "flex-row items-center p-1 rounded-lg mb-1",
-                                    isSelected &&
-                                      mode.id === "agent" &&
-                                      "bg-accent",
-                                    isSelected &&
-                                      mode.id === "plan" &&
-                                      "border border-amber-500/35 bg-amber-500/12",
-                                    isSelected &&
-                                      mode.id === "ask" &&
-                                      "border border-emerald-500/35 bg-emerald-500/12"
-                                  )}
-                                >
-                                  <View className="w-8 items-center">
-                                    <mode.Icon
-                                      className={cn(
-                                        "h-3.5 w-3.5",
-                                        isSelected &&
-                                          mode.id === "plan" &&
-                                          "text-amber-400",
-                                        isSelected &&
-                                          mode.id === "ask" &&
-                                          "text-emerald-400",
-                                        (!isSelected || mode.id === "agent") &&
-                                          "text-muted-foreground"
-                                      )}
-                                      size={6}
-                                    />
-                                  </View>
-                                  <View className="flex-1">
-                                    <Text
-                                      className={cn(
-                                        "text-xs",
-                                        isSelected &&
-                                          mode.id === "plan" &&
-                                          "text-amber-400",
-                                        isSelected &&
-                                          mode.id === "ask" &&
-                                          "text-emerald-400",
-                                        (!isSelected || mode.id === "agent") &&
-                                          "text-foreground"
-                                      )}
-                                    >
-                                      {mode.label}
-                                    </Text>
-                                  </View>
-                                </Pressable>
-                              );
-                            })}
-                            {ezAvailable && (
-                              <>
-                                <View className="h-px bg-border/50 mx-2 my-1" />
-                                <Pressable
-                                  testID="ez-mode-toggle"
-                                  onPress={() => {
-                                    bridge?.toggleEzMode();
-                                    setInteractionModeOpen(false);
-                                  }}
-                                  className={cn(
-                                    "flex-row items-center p-1 rounded-lg mb-1",
-                                    ezActive &&
-                                      "border border-violet-500/35 bg-violet-500/12"
-                                  )}
-                                >
-                                  <View className="w-8 items-center">
-                                    <Sparkles
-                                      className={cn(
-                                        "h-3.5 w-3.5",
-                                        ezActive
-                                          ? "text-violet-400"
-                                          : "text-muted-foreground"
-                                      )}
-                                      size={6}
-                                    />
-                                  </View>
-                                  <View className="flex-1">
-                                    <Text
-                                      className={cn(
-                                        "text-xs",
-                                        ezActive
-                                          ? "text-violet-400"
-                                          : "text-foreground"
-                                      )}
-                                    >
-                                      EZ Mode
-                                    </Text>
-                                  </View>
-                                </Pressable>
-                              </>
-                            )}
-                          </View>
-                        </PopoverContent>
-                      </Popover>
-                    </>
-                  ) : null}
-
-                  {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
-                per-device preference: once on, every plan generated in Plan
-                mode also produces a stakeholder summary. */}
-                  {interactionMode === "plan" &&
-                    presentation !== "agent" &&
-                    agentControls && (
-                    <WebTooltip label="Also generate a stakeholder summary">
+                  {/* EZ Mode — voice-first overlay toggle (web only). */}
+                  {ezAvailable && presentation !== "agent" && (
+                    <WebTooltip
+                      label={ezActive ? "Leave EZ Mode" : "Switch to EZ Mode"}
+                    >
                       <Pressable
-                        testID="dual-plan-toggle"
+                        testID="ez-mode-toggle"
                         hitSlop={isNative ? 6 : undefined}
                         disabled={disabled}
-                        onPress={() => onDualPlanChange?.(!dualPlan)}
-                        accessibilityLabel="Also generate a stakeholder summary"
+                        onPress={() => bridge?.toggleEzMode()}
+                        accessibilityLabel={
+                          ezActive ? "Leave EZ Mode" : "Switch to EZ Mode"
+                        }
                         className={cn(
                           isNative
                             ? "h-8 w-8 items-center justify-center rounded-lg"
                             : "h-[22px] w-[22px] items-center justify-center rounded-md",
-                          dualPlan
-                            ? "border border-sky-500/45 bg-sky-500/12"
+                          ezActive
+                            ? "border border-violet-500/45 bg-violet-500/12"
                             : "bg-muted/50"
                         )}
                       >
-                        <Languages
+                        <Sparkles
                           className={cn(
                             "h-3.5 w-3.5",
-                            dualPlan ? "text-sky-400" : "text-muted-foreground"
+                            ezActive ? "text-violet-400" : "text-muted-foreground"
                           )}
                           size={isNative ? 16 : 14}
                         />

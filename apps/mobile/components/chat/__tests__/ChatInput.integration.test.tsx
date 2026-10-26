@@ -232,7 +232,7 @@ describe("ChatInput integration — agent advanced controls", () => {
         isPro
         flush
         presentation="agent"
-        composer={{ showModelPicker: false, showInteractionModes: false }}
+        composer={{ showModelPicker: false }}
         quickActions={[]}
       />,
     )
@@ -247,7 +247,7 @@ describe("ChatInput integration — agent advanced controls", () => {
         isPro
         flush
         presentation="agent"
-        composer={{ showModelPicker: true, showInteractionModes: false }}
+        composer={{ showModelPicker: true }}
         quickActions={[]}
       />,
     )

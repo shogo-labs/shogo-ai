@@ -771,7 +771,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               {searchQuery ? "No plans match your search" : "No plans yet"}
             </Text>
             <Text className={isNative ? "text-sm text-muted-foreground/70 text-center mt-1" : "text-xs text-muted-foreground/70 text-center mt-1"}>
-              Switch to Plan mode in the chat to create one
+              Ask the agent to plan something and it shows up here
             </Text>
           </View>
         ) : filteredPlans.length > 0 ? (

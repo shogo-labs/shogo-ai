@@ -2452,7 +2452,6 @@ export class AgentGateway {
       userId?: string
       /** API-signed proof of who sent this message (see integration-credentials.ts). */
       requesterTicket?: string
-      interactionMode?: 'agent' | 'plan' | 'ask'
       confirmedPlan?: { name: string; overview: string; plan: string; todos?: Array<{ id: string; content: string }>; filepath?: string }
       dualPlan?: boolean
       chatSessionId?: string
@@ -2566,10 +2565,9 @@ export class AgentGateway {
       activeSkill = result.activeSkill
     }
 
-    const interactionMode = options?.confirmedPlan ? 'agent' : (options?.interactionMode || 'agent')
     const dualPlan = options?.dualPlan === true
-    console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), dualPlan: ${dualPlan}, sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
-    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode, dualPlan, options?.requesterTicket, options?.chatContext)
+    console.log(`[Gateway][processChatMessageStream] dualPlan: ${dualPlan}, sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
+    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, dualPlan, options?.requesterTicket, options?.chatContext)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -3075,7 +3073,6 @@ export class AgentGateway {
     uiWriter?: { write(chunk: Record<string, any>): void },
     activeSkill?: { name: string },
     images?: ImageContent[],
-    interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
     dualPlan: boolean = false,
     /** Only chat turns a person started carry one; see integration-credentials.ts. */
     requesterTicket?: string,
@@ -3093,7 +3090,7 @@ export class AgentGateway {
     }
 
     this._currentTask = isHeartbeat ? 'heartbeat' : prompt.slice(0, 120)
-    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode, dualPlan, requesterTicket, chatContext)
+    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, dualPlan, requesterTicket, chatContext)
     this.turnLocks.set(sessionId, turnPromise)
     try {
       return await turnPromise
@@ -3114,7 +3111,6 @@ export class AgentGateway {
     uiWriter?: { write(chunk: Record<string, any>): void },
     activeSkill?: { name: string },
     images?: ImageContent[],
-    interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
     dualPlan: boolean = false,
     requesterTicket?: string,
     chatContext?: ChatContext,
@@ -3253,34 +3249,7 @@ export class AgentGateway {
       turnModelDisplayName,
     )
 
-    console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
-    // Interaction mode system prompt injection
-    if (interactionMode === 'plan') {
-      const planModePrompt = [
-        '## PLAN MODE ACTIVE',
-        '',
-        'Plan mode is active. You MUST NOT edit source files, run mutating commands, or otherwise change the workspace before the user clicks Build. This supersedes all other instructions.',
-        'Exception: you may create or update the plan artifact using create_plan/update_plan; those tools only write under .shogo/plans/ for user review.',
-        '',
-        'Your job:',
-        `1. Research the user's request using read-only tools (read_file, ${isSearchEnabled() ? 'search, ' : ''}web, etc.)`,
-        '2. If you need more information, ask clarifying questions using ask_user',
-        '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
-        '4. If there are multiple valid approaches, ask the user which they prefer',
-        '5. When you have enough context, call create_plan with a structured plan',
-        '6. If the user asks to modify, refine, or extend an existing plan, use update_plan with the plan\'s filepath instead of creating a new one',
-        '7. The plan should be concise, specific, and actionable — cite file paths and code snippets',
-        '8. Do NOT make any changes until the user confirms the plan',
-      ].join('\n')
-      systemPrompt = planModePrompt + '\n\n---\n\n' + systemPrompt
-    } else if (interactionMode === 'ask') {
-      const askModePrompt = [
-        '## ASK MODE ACTIVE',
-        '',
-        'Ask mode is active. You are in a read-only conversational mode. Answer the user\'s questions directly using your knowledge and conversation context. You have no tools available. Do not attempt to make changes, run commands, or take any actions. Just provide helpful, informative answers.',
-      ].join('\n')
-      systemPrompt = askModePrompt + '\n\n---\n\n' + systemPrompt
-    }
+    console.log(`[Gateway][_agentTurnInner] building system prompt — sessionId: ${sessionId}`)
 
     if (this.config.coordinatorMode) {
       const { COORDINATOR_SYSTEM_PROMPT } = await import('./coordinator-prompt')
@@ -3471,35 +3440,18 @@ export class AgentGateway {
     // by imageGenEnabled / videoGenEnabled / threeDGenEnabled.)
     assembledTools = filterSubagentOnlyTools(assembledTools, turnConfig)
 
-    // Snapshot the full agent-mode tool set BEFORE any read-only mode
-    // restriction. Used to (a) guarantee core tools survive in agent mode and
-    // (b) build mode-aware dispatch stubs for tools a restricted mode removes.
+    // Snapshot the full agent tool set BEFORE the coordinator restriction.
+    // Used to build dispatch stubs for tools coordinator mode removes.
     const agentModeToolNames = new Set(assembledTools.map(t => t.name))
 
-    // Interaction mode tool restrictions
     let restrictedMode: RestrictedMode | null = null
-    if (interactionMode === 'ask') {
-      restrictedMode = 'ask'
-      assembledTools = []
-    } else if (interactionMode === 'plan') {
-      restrictedMode = 'plan'
-      const PLAN_MODE_ALLOWED = new Set([
-        'read_file', ...(isSearchEnabled() ? ['search'] : []),
-        'web',
-        'memory_read', 'memory_search', 'search_history', 'read_history',
-        'ask_user', 'todo_write', 'create_plan', 'update_plan',
-        'skill',
-      ])
-      assembledTools = assembledTools.filter(t => PLAN_MODE_ALLOWED.has(t.name))
-    }
-
     if (this.config.coordinatorMode) {
-      restrictedMode = restrictedMode ?? 'coordinator'
+      restrictedMode = 'coordinator'
       const { COORDINATOR_READONLY_TOOLS } = await import('./coordinator-prompt')
       assembledTools = assembledTools.filter(t => COORDINATOR_READONLY_TOOLS.has(t.name))
     }
 
-    // WS7: in agent (edit) mode, guarantee the core tools are always callable.
+    // WS7: guarantee the core tools are always callable.
     // A registration/MCP-merge race or an unexpected filter previously dropped
     // exec/edit_file/write_file, surfacing as "Tool not found" mid-session.
     if (!restrictedMode) {
@@ -3515,8 +3467,8 @@ export class AgentGateway {
       }
     }
 
-    // WS7: dispatch-only stubs so a hallucinated call to a tool a restricted
-    // mode removed returns a mode-aware error instead of "Tool not found".
+    // WS7: dispatch-only stubs so a hallucinated call to a tool coordinator
+    // mode removed returns the coordinator error instead of "Tool not found".
     // Not advertised — injected only into the Proxy's `find` path below.
     const modeFilteredStubs: AgentTool[] = []
     if (restrictedMode) {
@@ -5093,7 +5045,7 @@ export class AgentGateway {
       if (
         maxPlanContinuations > 0 &&
         sessionId &&
-        planContinuationAllowedFor({ isHeartbeat, isChannelTurn: !!streamTarget, interactionMode })
+        planContinuationAllowedFor({ isHeartbeat, isChannelTurn: !!streamTarget })
       ) {
         let planContinuations = 0
         while (planContinuations < maxPlanContinuations) {

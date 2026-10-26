@@ -294,54 +294,6 @@ export function createApiKeySubmitButton(page: Page) {
     .first()
 }
 
-// ── Interaction mode helpers ─────────────────────────────────────────────────
-
-export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" | "Ask") {
-  // Ensure no active stream (stop button gone) so the trigger is enabled
-  await waitForAgentResponse(page)
-  const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
-  await trigger.waitFor({ state: "visible", timeout: 5_000 })
-
-  // gluestack-ui Popover trigger uses React Native Web Pressable which may not
-  // respond to Playwright's synthetic click. Use dispatchEvent as fallback.
-  await trigger.click()
-  await page.waitForTimeout(600)
-
-  const option = interactionModeOption(page, mode)
-  let popoverVisible = await option.isVisible().catch(() => false)
-
-  if (!popoverVisible) {
-    // Fallback: dispatch pointer events directly on the DOM element
-    await trigger.dispatchEvent("pointerdown")
-    await page.waitForTimeout(100)
-    await trigger.dispatchEvent("pointerup")
-    await page.waitForTimeout(600)
-    popoverVisible = await option.isVisible().catch(() => false)
-  }
-
-  if (!popoverVisible) {
-    // Last resort: evaluate JS click on the raw DOM node
-    await trigger.evaluate((el: HTMLElement) => el.click())
-    await page.waitForTimeout(600)
-  }
-
-  await option.waitFor({ state: "visible", timeout: 10_000 })
-  await option.click()
-  await page.waitForTimeout(300)
-}
-
-/**
- * A row in the composer's interaction-mode popover. Rows carry
- * `interaction-mode-option-<id>`; the exact-label fallback covers builds that
- * predate that testID.
- */
-export function interactionModeOption(page: Page, mode: "Agent" | "Plan" | "Ask") {
-  return page
-    .getByTestId(`interaction-mode-option-${mode.toLowerCase()}`)
-    .or(page.getByText(mode, { exact: true }).filter({ visible: true }).last())
-    .first()
-}
-
 /**
  * The home composer uses an animated typewriter placeholder
  * (`"Ask Shogo to " + rotating suggestion`), so the old
@@ -364,8 +316,8 @@ export function homeComposerInput(page: Page) {
 }
 
 /**
- * The in-project composer. Its placeholder changes with the interaction mode
- * ("Ask a question...", "Describe what to plan...") so target the testID.
+ * The in-project composer. Target the testID: the placeholder rotates on the
+ * home composer and can change on the project one.
  */
 export function projectComposerInput(page: Page) {
   return page.getByTestId("project-composer-input")

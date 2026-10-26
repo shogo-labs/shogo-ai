@@ -75,7 +75,6 @@ describe('planChatUrlWrite', () => {
       newChat: undefined,
       newChatNonce: undefined,
       initialMessage: undefined,
-      initialInteractionMode: undefined,
       startEzMode: undefined,
       autoStartVoice: undefined,
     })

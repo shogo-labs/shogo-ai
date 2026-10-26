@@ -451,8 +451,8 @@ describe('Composer', () => {
 
   test('agent-only controls stay out of team chat', () => {
     render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
-    expect(screen.queryByTestId('interaction-mode-trigger')).toBeNull()
     expect(screen.queryByLabelText('Advanced controls')).toBeNull()
+    expect(screen.queryByTestId('ez-mode-toggle')).toBeNull()
   })
 
   // The mic used to record a voice note here, which made it the only composer in

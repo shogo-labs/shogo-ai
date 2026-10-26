@@ -12,11 +12,10 @@ const base = {
   workspaceId: "workspace-1",
   userId: "user-1",
   agentMode: "claude-sonnet",
-  interactionMode: "plan" as const,
 }
 
 describe("buildChatSendBody", () => {
-  test("carries the session, scope, and mode fields", () => {
+  test("carries the session and scope fields", () => {
     const body = buildChatSendBody({ ...base, clientTurnId: "ctid-1" })
     expect(body).toEqual(
       expect.objectContaining({
@@ -26,7 +25,6 @@ describe("buildChatSendBody", () => {
         workspaceId: "workspace-1",
         userId: "user-1",
         agentMode: "claude-sonnet",
-        interactionMode: "plan",
         clientTurnId: "ctid-1",
       }),
     )
@@ -36,7 +34,7 @@ describe("buildChatSendBody", () => {
     expect("references" in body).toBe(false)
   })
 
-  test("a confirmed plan is normalized and forces agent mode", () => {
+  test("a confirmed plan is normalized", () => {
     const body = buildChatSendBody({
       ...base,
       confirmedPlan: {
@@ -47,7 +45,6 @@ describe("buildChatSendBody", () => {
         filepath: "/nested/dir/feature.plan.md",
       },
     })
-    expect(body.interactionMode).toBe("agent")
     expect(body.confirmedPlan).toEqual(
       expect.objectContaining({ todos: [], filepath: ".shogo/plans/feature.plan.md" }),
     )
@@ -57,11 +54,10 @@ describe("buildChatSendBody", () => {
     const body = buildChatSendBody({
       ...base,
       references: [],
-      extra: { text: "wire text", interactionMode: "ask" },
+      extra: { text: "wire text" },
     })
     expect("references" in body).toBe(false)
     expect(body.text).toBe("wire text")
-    expect(body.interactionMode).toBe("ask")
   })
 })
 
